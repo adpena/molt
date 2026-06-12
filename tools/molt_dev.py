@@ -139,6 +139,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import harness_memory_guard
+
 # --------------------------------------------------------------------------
 # Constants / locations
 # --------------------------------------------------------------------------
@@ -200,6 +202,62 @@ class DriverError(Exception):
         self.code = code
 
 
+def _run_driver_command(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    input_text: str | None = None,
+    timeout: float | None = 60.0,
+    prefix: str = "MOLT_DEV",
+) -> subprocess.CompletedProcess[str]:
+    """Run one bounded captured driver command through the shared guard."""
+    return harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix=prefix,
+        cwd=cwd or DEFAULT_REPO,
+        env=env,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _run_driver_command_bytes(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float,
+    prefix: str,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one bounded captured driver command with byte-exact output custody."""
+    return harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix=prefix,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=False,
+        timeout=timeout,
+    )
+
+
+def _run_live_gate(cmd: str, *, repo: Path, env: dict[str, str]) -> int:
+    """Run a manifest gate live through memory custody while preserving shell syntax."""
+    proc = harness_memory_guard.guarded_completed_process(
+        ["/bin/sh", "-c", cmd],
+        prefix="MOLT_TEST_SUITE",
+        cwd=repo,
+        env=env,
+        capture_output=False,
+        text=True,
+        timeout=None,
+    )
+    return proc.returncode
+
+
 # --------------------------------------------------------------------------
 # Git plumbing (bytes-stable; never a shell TEXT tool whose output a proxy
 # could rewrite — only plumbing that emits stable IDs / explicit exit codes)
@@ -224,11 +282,9 @@ class Git:
         check: bool = True,
         input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        proc = subprocess.run(
+        proc = _run_driver_command(
             ["git", "-C", str(self.repo), *args],
-            capture_output=True,
-            text=True,
-            input=input_text,
+            input_text=input_text,
         )
         if check and proc.returncode != 0:
             raise DriverError(
@@ -543,15 +599,14 @@ def _verify_interpreter_version(exe: str, want: str) -> tuple[bool, str]:
     (not parsed from a path or a `uv` claim), so a .venv symlink flip cannot
     masquerade as the requested version.
     """
-    proc = subprocess.run(
+    proc = _run_driver_command(
         [
             exe,
             "-c",
             "import sys; print('%d.%d' % sys.version_info[:2]); "
             "print(sys.version.replace(chr(10), ' '))",
         ],
-        capture_output=True,
-        text=True,
+        timeout=30.0,
     )
     if proc.returncode != 0:
         return False, proc.stderr.strip() or f"exit {proc.returncode}"
@@ -584,10 +639,9 @@ def resolve_python(version: str, *, prefer_uv: bool = True) -> str:
 
     candidates: list[tuple[str, str]] = []  # (label, exe)
     if prefer_uv and shutil.which("uv"):
-        proc = subprocess.run(
+        proc = _run_driver_command(
             ["uv", "python", "find", version],
-            capture_output=True,
-            text=True,
+            timeout=30.0,
         )
         if proc.returncode == 0:
             exe = proc.stdout.strip().splitlines()[0].strip() if proc.stdout else ""
@@ -790,8 +844,14 @@ def verify_toolchain(
                     str(binary),
                     *probe_args,
                 ]
-                with out_path.open("wb") as fh:
-                    proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT)
+                proc = _run_driver_command_bytes(
+                    cmd,
+                    cwd=git.repo,
+                    env=os.environ.copy(),
+                    timeout=float(timeout) + 30.0,
+                    prefix="MOLT_DEV",
+                )
+                out_path.write_bytes((proc.stdout or b"") + (proc.stderr or b""))
                 probe_exit = proc.returncode
                 marker_found = _file_contains(out_path, marker)
             finally:
@@ -919,11 +979,10 @@ def _resolve_repo_venv(repo: Path) -> Path | None:
     own = repo / ".venv"
     if (own / "bin" / "python").exists():
         return own
-    proc = subprocess.run(
+    proc = _run_driver_command(
         ["git", "rev-parse", "--git-common-dir"],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
+        cwd=repo,
+        timeout=30.0,
     )
     if proc.returncode == 0:
         common = Path(proc.stdout.strip())
@@ -956,8 +1015,7 @@ def run_gate(cmd: str, repo: Path, env: dict[str, str]) -> int:
         venv = _resolve_repo_venv(repo)
         if venv is not None:
             env = {**env, "MOLT_VENV": str(venv)}
-    proc = subprocess.run(cmd, shell=True, cwd=str(repo), env=env)
-    return proc.returncode
+    return _run_live_gate(cmd, repo=repo, env=env)
 
 
 # --------------------------------------------------------------------------
@@ -1538,15 +1596,49 @@ def _detached_state_dir(name: str, override: str | None) -> Path:
     return root / name
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _exec_wait_rc(command: list[str], env: dict[str, str]) -> int:
+    """Exec ``command`` in a child and return shell-style exit status."""
+    if not command:
+        os.write(1, b"detached-run: empty command\n")
+        return 127
+    child = os.fork()
+    if child == 0:
+        try:
+            os.execvpe(command[0], command, env)
+        except FileNotFoundError as exc:
+            os.write(1, f"detached-run: exec failed: {exc}\n".encode())
+            os._exit(127)
+        except Exception as exc:  # noqa: BLE001 - child must report every exec death
+            os.write(1, f"detached-run: exec crashed: {exc}\n".encode())
+            os._exit(126)
+    while True:
+        try:
+            _, status = os.waitpid(child, 0)
+            break
+        except InterruptedError:
+            continue
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 126
+
+
 def _detached_daemonize(
     state: Path, command: list[str], cwd: Path, env: dict[str, str]
 ) -> int:
     """Double-fork + setsid; the grandchild runs `command` and writes rc.
 
     Returns (in the ORIGINAL process) the daemon pid read back from the state
-    dir. The grandchild NEVER returns: it execs the command via subprocess,
-    records the exit status (127 exec-failure / 126 crash sentinels included)
-    and `os._exit`s, so no parent atexit/exception machinery runs twice.
+    dir. The grandchild NEVER returns: it forks/execs the command, records the
+    exit status (127 exec-failure / 126 crash sentinels included), and
+    `os._exit`s, so no parent atexit/exception machinery runs twice.
     """
     pid_f = state / "pid"
     first = os.fork()
@@ -1565,33 +1657,32 @@ def _detached_daemonize(
             os.dup2(fd, 2)
             null = os.open(os.devnull, os.O_RDONLY)
             os.dup2(null, 0)
-            (state / "sid").write_text(str(os.getsid(0)), encoding="utf-8")
-            pid_f.write_text(str(os.getpid()), encoding="utf-8")
+            _atomic_write_text(state / "sid", str(os.getsid(0)))
+            _atomic_write_text(pid_f, str(os.getpid()))
             os.chdir(cwd)
             try:
-                rc = subprocess.call(command, env=env)
-            except FileNotFoundError as exc:
-                # os.write(1, ...) — NOT print(): after dup2 the Python-level
-                # sys.stdout may still be a wrapper the spawning context
-                # installed (pytest capture, custom streams); the fd is the
-                # only stdout the daemon truly owns.
-                os.write(1, f"detached-run: exec failed: {exc}\n".encode())
-                rc = 127
+                rc = _exec_wait_rc(command, env)
             except Exception as exc:  # noqa: BLE001 — daemon must record ANY death
                 os.write(1, f"detached-run: daemon crashed: {exc}\n".encode())
                 rc = 126
-            (state / "rc").write_text(str(rc), encoding="utf-8")
+            _atomic_write_text(state / "rc", str(rc))
         finally:
             os._exit(0)
     # Original process: reap the first child (exits immediately post-fork) and
     # wait — bounded — for the daemon's pid file to appear.
     os.waitpid(first, 0)
     deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and not pid_f.exists():
+    daemon_pid: int | None = None
+    while time.monotonic() < deadline:
+        if pid_f.exists():
+            raw_pid = pid_f.read_text(encoding="utf-8").strip()
+            if raw_pid:
+                daemon_pid = int(raw_pid)
+                break
         time.sleep(0.05)
-    if not pid_f.exists():
+    if daemon_pid is None:
         raise DriverError(f"detached-run: daemon never wrote {pid_f} within 5s")
-    return int(pid_f.read_text(encoding="utf-8").strip())
+    return daemon_pid
 
 
 def cmd_detached_run(args: argparse.Namespace) -> int:
@@ -1634,7 +1725,8 @@ def cmd_detached_run(args: argparse.Namespace) -> int:
                 f"detached-run: --env needs K=V, got {kv!r}", code=EXIT_USAGE
             )
         env[key] = value
-    (state / "cmd.json").write_text(
+    _atomic_write_text(
+        state / "cmd.json",
         json.dumps(
             {
                 "argv": command,
@@ -1644,7 +1736,6 @@ def cmd_detached_run(args: argparse.Namespace) -> int:
             },
             indent=2,
         ),
-        encoding="utf-8",
     )
     daemon_pid = _detached_daemonize(state, command, cwd, env)
     _ok(f"detached {args.name!r} spawned: pid {daemon_pid}")
@@ -1803,10 +1894,9 @@ def _cleanup_worktree(
     if force_sha is not None or has_residual_churn:
         remove_args.append("--force")
     remove_args.append(str(repo))
-    proc = subprocess.run(
+    proc = _run_driver_command(
         ["git", "-C", str(main_repo), *remove_args],
-        capture_output=True,
-        text=True,
+        timeout=120.0,
     )
     if proc.returncode != 0:
         _fail(
@@ -1868,19 +1958,17 @@ def _difftest_capture(
     swallowed hang — it raises DriverError so a wedged build/run never reads as
     a passing diff.
     """
-    try:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
+    proc = _run_driver_command_bytes(
+        cmd,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+        prefix="MOLT_DIFF",
+    )
+    if getattr(proc, "timed_out", False):
         raise DriverError(
             f"difftest: command timed out after {timeout}s: {' '.join(cmd)}"
-        ) from exc
+        )
     return proc.returncode, proc.stdout or b"", proc.stderr or b""
 
 
@@ -1943,12 +2031,12 @@ def cmd_difftest(args: argparse.Namespace) -> int:
 
     # Loud refusal if the frontend isn't importable (deps gap), so a missing
     # dependency is never mistaken for a compiler bug in the diff.
-    probe = subprocess.run(
+    probe = _run_driver_command(
         [cpython, "-c", "import molt.cli"],
         env=base_env,
-        cwd=str(root),
-        capture_output=True,
-        text=True,
+        cwd=root,
+        timeout=30.0,
+        prefix="MOLT_DIFF",
     )
     if probe.returncode != 0:
         last = (probe.stderr.strip().splitlines() or ["<no stderr>"])[-1]

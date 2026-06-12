@@ -20,7 +20,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v1";
+const BACKEND_CACHE_NAMESPACE_VERSION: &str = "molt-backend-tir-cache-v2-exception-regions";
 const DEFAULT_MEMORY_CACHE_BYTES_FALLBACK: usize = 64 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_AVAILABLE_BYTES_MIN: usize = 8 * 1024 * 1024;
 const DEFAULT_MEMORY_CACHE_BYTES_MIN: usize = 32 * 1024 * 1024;

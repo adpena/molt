@@ -1,0 +1,6 @@
+from __future__ import annotations
+
+from _sitecustomize import install_test_memory_guard_sitecustomize
+
+
+install_test_memory_guard_sitecustomize(__file__)

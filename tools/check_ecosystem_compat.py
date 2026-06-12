@@ -16,7 +16,7 @@ encode doc 24's audit:
   * tools/ecosystem/dynamism_features.json  — the SINGLE SOURCE OF TRUTH for
     every dynamism feature's status (supported / typed-shim / bridge / partial /
     unsupported), each with file:line evidence carried over from doc 24.
-  * tools/ecosystem/package_triage.json     — the 25 audited packages, each with
+  * tools/ecosystem/package_triage.json     — the audited packages, each with
     the features it REQUIRES on its import + commonly-used path.
 
 A package's verdict is the MIN over its required features' verdict classes (the
@@ -63,11 +63,17 @@ the guard FAILS when, for any package:
   * its evidence SHA changed while the verdict was unchanged (the provenance
     that justified the verdict changed -> re-verify), or
   * it has no baseline entry (a new package needs an explicit verdict), or
-and globally when:
+and globally, across the package universe that already exists in the committed
+baseline, when:
   * `compatible_floor` decreased (the count of `compatible` packages may only
     rise), or
   * `incompatible_ceiling` increased, or `partial_ceiling` increased (those
-    counts may only fall — same one-way asymmetry as the satellite ceiling).
+    counts may only fall for existing packages — same one-way asymmetry as the
+    satellite ceiling).
+
+Package-universe expansion is explicit: a new audited package may be added with
+an honest fail-closed verdict, then `--update-baseline` records the larger
+universe. Existing package verdicts remain down-only.
 
 Graduating a feature in dynamism_features.json (e.g. D16 module __getattr__
 lands -> status `unsupported` becomes `supported`) automatically RE-DERIVES every
@@ -372,6 +378,17 @@ def verdict_distribution(derived: dict[str, dict]) -> dict[str, int]:
     return counts
 
 
+def verdict_distribution_for_names(
+    derived: dict[str, dict], names: set[str]
+) -> dict[str, int]:
+    counts = {v: 0 for v in VERDICT_ORDER}
+    for name in names:
+        d = derived.get(name)
+        if d is not None:
+            counts[d["verdict"]] += 1
+    return counts
+
+
 def load_baseline() -> dict:
     if not BASELINE_PATH.exists():
         return {}
@@ -385,11 +402,14 @@ def _baseline_payload(derived: dict[str, dict]) -> dict:
             "Fail-closed, DOWN-ONLY ecosystem-compatibility baseline. Generated "
             "by tools/check_ecosystem_compat.py --update-baseline. Every package "
             "verdict here is DERIVED from tools/ecosystem/dynamism_features.json + "
-            "package_triage.json — never hand-edited. compatible_floor may only "
-            "INCREASE; incompatible_ceiling and partial_ceiling may only DECREASE "
-            "(the guard refuses the wrong direction). Graduate a feature's status "
-            "(with evidence) to improve verdicts, then regenerate. See the script "
-            "docstring and docs/design/foundation/24_ecosystem_compat_gap_audit.md."
+            "package_triage.json — never hand-edited. For packages already in the "
+            "committed baseline, compatible_floor may only INCREASE and "
+            "incompatible_ceiling / partial_ceiling may only DECREASE (the guard "
+            "refuses the wrong direction). New audited packages may expand the "
+            "universe with honest fail-closed verdicts; existing package verdicts "
+            "remain down-only. Graduate a feature's status (with evidence) to "
+            "improve verdicts, then regenerate. See the script docstring and "
+            "docs/design/foundation/24_ecosystem_compat_gap_audit.md."
         ),
         "compatible_floor": dist["compatible"],
         "incompatible_ceiling": dist["incompatible-by-design"],
@@ -427,10 +447,36 @@ def cmd_update_baseline() -> int:
     # baseline rewrite. The good metric (compatible_floor) may only rise; the bad
     # metrics (ceilings) may only fall.
     if prev:
-        if new["compatible_floor"] < prev.get("compatible_floor", 0):
+        prev_pkgs = set(prev.get("packages", {}))
+        cur_pkgs = set(derived)
+        removed = sorted(prev_pkgs - cur_pkgs)
+        if removed:
+            print(
+                "REFUSING to remove package baseline entries without an explicit "
+                f"migration: {removed}. Package-universe shrinkage can hide "
+                "compatibility regressions; keep the entry or land a dedicated "
+                "matrix-pruning change with updated policy.",
+                file=sys.stderr,
+            )
+            return 1
+        for name in sorted(prev_pkgs & cur_pkgs):
+            cur = derived[name]
+            base = prev["packages"][name]
+            if VERDICT_RANK[cur["verdict"]] > VERDICT_RANK[base["verdict"]]:
+                print(
+                    f"REFUSING to regress existing package {name}: "
+                    f"{base['verdict']} -> {cur['verdict']}. Package-universe "
+                    "expansion is allowed, but existing package verdicts remain "
+                    "down-only.",
+                    file=sys.stderr,
+                )
+                return 1
+        common_dist = verdict_distribution_for_names(derived, prev_pkgs)
+        if common_dist["compatible"] < prev.get("compatible_floor", 0):
             print(
                 f"REFUSING to lower compatible_floor "
-                f"{prev.get('compatible_floor')} -> {new['compatible_floor']}. "
+                f"{prev.get('compatible_floor')} -> {common_dist['compatible']} "
+                "across the existing package universe. "
                 "A regression made fewer packages compatible. Fix the regression "
                 "instead of widening the baseline.",
                 file=sys.stderr,
@@ -438,11 +484,16 @@ def cmd_update_baseline() -> int:
             return 1
         for key in ("incompatible_ceiling", "partial_ceiling"):
             prev_v = prev.get(key)
-            if prev_v is not None and new[key] > prev_v:
+            metric = {
+                "incompatible_ceiling": "incompatible-by-design",
+                "partial_ceiling": "partial",
+            }[key]
+            if prev_v is not None and common_dist[metric] > prev_v:
                 print(
-                    f"REFUSING to raise {key} {prev_v} -> {new[key]}. A "
-                    "regression moved a package to a worse class. Fix it instead "
-                    "of widening the baseline.",
+                    f"REFUSING to raise {key} {prev_v} -> {common_dist[metric]} "
+                    "across the existing package universe. A regression moved a "
+                    "package to a worse class. Fix it instead of widening the "
+                    "baseline.",
                     file=sys.stderr,
                 )
                 return 1

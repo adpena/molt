@@ -8,6 +8,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    kind_result_absorbs_operand_ownership_table, opcode_result_absorbs_operand_ownership_table,
+};
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
@@ -63,25 +66,11 @@ fn is_pure_move_copy(attrs: &AttrDict) -> bool {
 }
 
 /// Returns `true` when an `OpCode::Copy` op is the passthrough carrier for a
-/// container constructor (`list_new`, `dict_new`, `tuple_new`, `set_new`, or the
-/// `build_*` spellings). Such ops consume their operands *into a new container*
-/// that may outlive the frame, so every operand must be treated as escaping —
-/// exactly like the first-class `BuildList`/`BuildDict`/… opcodes.
+/// container constructor. Such ops absorb their operand lifetimes into a new
+/// container that may outlive the frame, so every operand must be treated as
+/// escaping — exactly like the first-class `BuildList`/`BuildDict`/… opcodes.
 fn is_container_builder_passthrough(attrs: &AttrDict) -> bool {
-    matches!(
-        attr_str(attrs, "_original_kind"),
-        Some(
-            "list_new"
-                | "dict_new"
-                | "tuple_new"
-                | "set_new"
-                | "frozenset_new"
-                | "build_list"
-                | "build_dict"
-                | "build_tuple"
-                | "build_set"
-        )
-    )
+    attr_str(attrs, "_original_kind").is_some_and(kind_result_absorbs_operand_ownership_table)
 }
 
 /// Returns `true` if the named builtin only borrows (reads) its arguments and
@@ -360,6 +349,10 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
     // Step 3: Classify each use.
     for (&val, uses) in &use_map {
         for use_info in uses {
+            if opcode_result_absorbs_operand_ownership_table(use_info.opcode) {
+                escapes.insert(val, EscapeState::GlobalEscape);
+                continue;
+            }
             match use_info.opcode {
                 // Generic Call: conservative — value escapes.
                 OpCode::Call => {
@@ -525,6 +518,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::TypeGuard
                 | OpCode::IncRef
                 | OpCode::DecRef
+                | OpCode::DeleteVar
                 | OpCode::GetIter
                 | OpCode::IterNext
                 | OpCode::IterNextUnboxed
@@ -563,8 +557,10 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                         escapes.insert(val, EscapeState::GlobalEscape);
                     }
                 }
-                // Build containers: if alloc'd value is an element, it escapes
-                // into the new container (which may itself escape).
+                // Other constructors/captures whose result may retain operands.
+                // BuildList/Dict/Tuple/Set are normally consumed by the generated
+                // absorption fact above; keeping them here is the fail-closed
+                // exhaustive match behavior if that table ever changes.
                 OpCode::BuildList
                 | OpCode::BuildDict
                 | OpCode::BuildTuple
@@ -751,9 +747,9 @@ fn dict_requiring_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
     dict_required
 }
 
-/// Returns `true` when an op is an `ObjectNewBound` allocation whose class
-/// defines a `__del__` finalizer (the frontend stamps `defines_del=true` on the
-/// op after resolving `__del__` through the class MRO, excluding `object`).
+/// Returns `true` when an op produces a value whose proven runtime class defines
+/// a `__del__` finalizer (the frontend stamps `defines_del=true` after resolving
+/// `__del__` through the class MRO, excluding `object`).
 ///
 /// Such an instance has a finalizer that CPython runs at the LAST reference
 /// drop. Stack-promoting it (→ `ObjectNewBoundStack`, which the runtime stamps
@@ -763,17 +759,16 @@ fn dict_requiring_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
 /// the shared mechanism behind the standing LLVM/WASM `__del__` parity hole: on
 /// every lane the escape pass classified a non-escaping finalizer-bearing
 /// instance as promotable and stripped its release.
-pub(crate) fn object_new_bound_defines_del(op: &TirOp) -> bool {
-    op.opcode == OpCode::ObjectNewBound
-        && matches!(op.attrs.get("defines_del"), Some(AttrValue::Bool(true)))
+pub(crate) fn op_result_defines_del(op: &TirOp) -> bool {
+    !op.results.is_empty() && matches!(op.attrs.get("defines_del"), Some(AttrValue::Bool(true)))
 }
 
-/// The set of allocation ROOTS (`ObjectNewBound` results) whose class defines a
-/// `__del__` finalizer — transitively through pure SSA-move copies. This is the
-/// single FinalizerSensitive fact (design 27): the ONE source of truth that every
-/// fast-path / lifetime-shortening optimization must query before touching such a
-/// value's representation or refcount, so the "finalizer never runs" state is made
-/// UNREPRESENTABLE rather than empirically-not-reached.
+/// The set of value roots whose proven runtime class defines a `__del__`
+/// finalizer — transitively through pure SSA-move copies. This is the single
+/// FinalizerSensitive fact (design 27): the ONE source of truth that every
+/// fast-path / lifetime-shortening optimization must query before touching such
+/// a value's representation or refcount, so the "finalizer never runs" state is
+/// made UNREPRESENTABLE rather than empirically-not-reached.
 ///
 /// Such an instance MUST stay heap-allocated with a live refcount so the
 /// finalizer-aware `dec_ref_ptr` dispatches `__del__` at the last drop; it must
@@ -789,12 +784,13 @@ pub(crate) fn object_new_bound_defines_del(op: &TirOp) -> bool {
 /// finalizer-bearing alloc and propagated FORWARD across pure-move copies (the
 /// same `is_pure_move_copy` alias relation `rewritable_alloc_roots` uses), so it
 /// reaches every value that names the same heap object — and in particular the
-/// alloc result that `apply` rewrites and whose RC ops it would otherwise strip.
+/// alloc/call result that `apply` rewrites or whose RC ops it would otherwise
+/// strip.
 pub(crate) fn finalizer_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
     let mut del_required: HashSet<ValueId> = HashSet::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if object_new_bound_defines_del(op) {
+            if op_result_defines_del(op) {
                 for &result in &op.results {
                     del_required.insert(result);
                 }

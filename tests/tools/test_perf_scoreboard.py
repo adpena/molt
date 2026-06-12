@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for _p in (REPO_ROOT / "tools", REPO_ROOT / "src"):
@@ -17,6 +18,7 @@ for _p in (REPO_ROOT / "tools", REPO_ROOT / "src"):
         sys.path.insert(0, str(_p))
 
 import perf_scoreboard as ps  # noqa: E402
+import harness_memory_guard  # noqa: E402
 
 
 def _cell(
@@ -315,6 +317,55 @@ def test_codon_equivalence_allowlist_is_conservative() -> None:
     assert "tests/benchmarks/bench_etl_orders.py" not in ps.CODON_EQUIVALENT_BENCHMARKS
     # A numeric kernel IS.
     assert "tests/benchmarks/bench_fib.py" in ps.CODON_EQUIVALENT_BENCHMARKS
+
+
+def test_codon_build_uses_benchmark_memory_guard(monkeypatch, tmp_path) -> None:
+    calls: list[dict] = []
+
+    def _fake_guarded_completed_process(cmd, **kwargs):
+        calls.append({"cmd": cmd, **kwargs})
+        out_path = Path(cmd[cmd.index("-o") + 1])
+        out_path.write_bytes(b"codon-binary")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="",
+            stderr="",
+            timed_out=False,
+        )
+
+    monkeypatch.setattr(
+        ps.harness_memory_guard,
+        "guarded_completed_process",
+        _fake_guarded_completed_process,
+    )
+    monkeypatch.setattr(ps, "_measure_codon_warm", lambda *args, **kwargs: 0.007)
+
+    runner = ps.CodonRunner(str(tmp_path / "bin" / "codon"))
+    runner._tmp_root = tmp_path
+    cell = _cell(benchmark="tests/benchmarks/bench_fib.py")
+    log_lines: list[str] = []
+
+    runner.measure_into(
+        cell,
+        script_path=REPO_ROOT / "tests" / "benchmarks" / "bench_fib.py",
+        run_args=[],
+        samples=1,
+        warmup=0,
+        rss_mb=512,
+        timeout_s=3.0,
+        log_lines=log_lines,
+    )
+
+    assert cell.codon_equivalent is True
+    assert cell.codon_warm_s == 0.007
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["prefix"] == "MOLT_BENCH"
+    assert call["cwd"] == ps.REPO_ROOT
+    assert call["capture_output"] is True
+    assert call["text"] is True
+    assert call["timeout"] == 300
+    assert call["cmd"][:3] == [str(tmp_path / "bin" / "codon"), "build", "-release"]
 
 
 def test_backend_binary_resolver_probes_target_roots(monkeypatch, tmp_path) -> None:
@@ -835,6 +886,97 @@ def test_require_quiescent_forces_nonauthoritative(monkeypatch) -> None:
     assert prov2["quiescent"] is False
 
 
+# --- safe_run custody -------------------------------------------------------
+
+
+def test_safe_run_json_uses_benchmark_memory_guard(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def _fake_guarded_completed_process(cmd, **kwargs):
+        calls.append({"cmd": cmd, **kwargs})
+        return SimpleNamespace(
+            returncode=0,
+            stdout="child-output\n",
+            stderr=(
+                'SAFE_RUN {"status":"ok","exit":0,'
+                '"elapsed_s":0.125,"peak_rss_mib":9}\n'
+            ),
+            timed_out=False,
+        )
+
+    monkeypatch.setattr(
+        ps.harness_memory_guard,
+        "guarded_completed_process",
+        _fake_guarded_completed_process,
+    )
+
+    outcome = ps._safe_run_json(
+        [sys.executable, "-c", "print('ok')"],
+        env={},
+        rss_mb=123,
+        timeout_s=4.0,
+        label="unit",
+        capture_stdout=True,
+    )
+
+    assert outcome.ok is True
+    assert outcome.elapsed_s == 0.125
+    assert outcome.peak_rss_mib == 9.0
+    assert outcome.stdout == "child-output\n"
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["prefix"] == "MOLT_BENCH"
+    assert call["cwd"] == ps.REPO_ROOT
+    assert call["capture_output"] is True
+    assert call["text"] is True
+    assert call["timeout"] == 34.0
+    assert call["cmd"][:2] == [sys.executable, str(ps.SAFE_RUN)]
+    assert "--json" in call["cmd"]
+    assert "--rss-mb" in call["cmd"]
+    assert "--timeout" in call["cmd"]
+
+
+def test_profiling_popen_uses_benchmark_process_group(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def _fake_limits_from_env(prefix, env):
+        calls.append({"limits_prefix": prefix, "limits_env": env})
+        return "limits"
+
+    def _fake_process_group_kwargs(limits, *, env):
+        calls.append({"pg_limits": limits, "pg_env": env})
+        return {"start_new_session": True}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            calls.append({"cmd": cmd, **kwargs})
+
+    monkeypatch.setattr(
+        ps.harness_memory_guard,
+        "limits_from_env",
+        _fake_limits_from_env,
+    )
+    monkeypatch.setattr(
+        ps.harness_memory_guard,
+        "batch_process_group_kwargs",
+        _fake_process_group_kwargs,
+    )
+    monkeypatch.setattr(ps.subprocess, "Popen", _FakePopen)
+
+    proc = ps._profiling_popen(["sample", "target"], env={"K": "V"})
+
+    assert isinstance(proc, _FakePopen)
+    assert calls[0] == {"limits_prefix": "MOLT_BENCH", "limits_env": {"K": "V"}}
+    assert calls[1] == {"pg_limits": "limits", "pg_env": {"K": "V"}}
+    launch = calls[2]
+    assert launch["cmd"] == ["sample", "target"]
+    assert launch["env"] == {"K": "V"}
+    assert launch["stdout"] == ps.subprocess.DEVNULL
+    assert launch["stderr"] == ps.subprocess.DEVNULL
+    assert launch["text"] is True
+    assert launch["start_new_session"] is True
+
+
 # --- Cycle attribution (Rule 1: cycles, not alloc-count) --------------------
 
 
@@ -960,19 +1102,28 @@ def test_inner_repeat_wraps_canonical_main_shape() -> None:
 def test_inner_repeat_output_is_one_shot_repeated_n_times() -> None:
     # The transform must be semantics-preserving: running it under CPython prints
     # the one-shot output exactly N times (proven without any molt build).
-    import subprocess
     import tempfile
 
-    one = subprocess.run(
-        [sys.executable, "-c", _LOOPABLE_BENCH], capture_output=True, text=True
+    one = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", _LOOPABLE_BENCH],
+        prefix="MOLT_TEST",
+        capture_output=True,
+        text=True,
+        timeout=30.0,
+        cwd=REPO_ROOT,
     ).stdout
     plan = ir.analyze(_LOOPABLE_BENCH, inner_loops=4)
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(plan.source)
         path = f.name
     try:
-        looped = subprocess.run(
-            [sys.executable, path], capture_output=True, text=True
+        looped = harness_memory_guard.guarded_completed_process(
+            [sys.executable, path],
+            prefix="MOLT_TEST",
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+            cwd=REPO_ROOT,
         ).stdout
     finally:
         Path(path).unlink()

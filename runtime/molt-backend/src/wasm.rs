@@ -34,6 +34,7 @@ const TASK_KIND_FUTURE: i64 = 0;
 const TASK_KIND_GENERATOR: i64 = 1;
 const TASK_KIND_COROUTINE: i64 = 2;
 const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
+const SIMPLE_I64_ARITY5_RET_I64_TYPE: u32 = 12;
 
 /// Poll/async function names that occupy the prefix slots of the indirect
 /// function table (right after the sentinel slot at index 0).  Defined once
@@ -73,6 +74,10 @@ const POLL_TABLE_FUNCS: &[&str] = &[
     "contextlib_async_exitstack_exit_poll",
     "contextlib_async_exitstack_enter_context_poll",
 ];
+
+fn is_shared_drop_fact_marker(kind: &str) -> bool {
+    matches!(kind, "drop_inserted" | "exception_region_drops_inserted")
+}
 
 fn gpu_runtime_call_symbol(kind: &str) -> Option<&'static str> {
     match kind {
@@ -438,6 +443,18 @@ impl TypeSectionExt for TypeSection {
 }
 
 // Constant folding pass is now shared via crate::fold_constants in passes.rs.
+
+fn canonical_static_import_type_idx(name: &str, registry_type_idx: u32) -> u32 {
+    match name {
+        // The runtime import transaction ABI is the five-carrier importlib
+        // primitive `(name, globals, locals, fromlist, level) -> object`. The
+        // runtime-callable wrapper generator uses the same arity authority, so
+        // the imported function type must match or the fifth local remains on
+        // the wrapper stack after `call`.
+        "importlib_import_transaction" => SIMPLE_I64_ARITY5_RET_I64_TYPE,
+        _ => registry_type_idx,
+    }
+}
 
 fn box_int(val: i64) -> i64 {
     let masked = (val as u64) & POINTER_MASK;
@@ -2991,7 +3008,11 @@ impl WasmBackend {
 
         // Host Imports — driven by static registry (see wasm_imports.rs).
         for &(name, type_idx) in crate::wasm_imports::IMPORT_REGISTRY {
-            add_import(name, type_idx, &mut self.import_ids);
+            add_import(
+                name,
+                canonical_static_import_type_idx(name, type_idx),
+                &mut self.import_ids,
+            );
         }
 
         let reloc_enabled = self.options.reloc_enabled;
@@ -6159,7 +6180,7 @@ impl WasmBackend {
                 }
                 lu
             };
-            let (rc_skip_inc, _rc_skip_dec) =
+            let (rc_skip_inc, rc_skip_dec) =
                 crate::passes::compute_rc_coalesce_skips(ops, &last_use_local);
             let live_object_locals_for_call =
                 |rel_idx: usize, out_name: Option<&String>| -> Vec<u32> {
@@ -8233,11 +8254,7 @@ impl WasmBackend {
                         let args = op.args.as_ref().unwrap();
                         let func_local = locals[&args[0]];
                         func.instruction(&Instruction::LocalGet(func_local));
-                        emit_call(
-                            func,
-                            reloc_enabled,
-                            import_ids["function_defaults_version"],
-                        );
+                        emit_call(func, reloc_enabled, import_ids["function_defaults_version"]);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
@@ -12632,12 +12649,13 @@ impl WasmBackend {
                         }
                     }
                     "dec_ref" | "release" => {
-                        if !rc_skip_inc.contains(&rel_idx) {
-                            let args_names =
-                                op.args.as_ref().expect("dec_ref/release args missing");
-                            let src_name = args_names
-                                .first()
-                                .expect("dec_ref/release requires one source arg");
+                        let args_names = op.args.as_ref().expect("dec_ref/release args missing");
+                        let src_name = args_names
+                            .first()
+                            .expect("dec_ref/release requires one source arg");
+                        if !rc_skip_inc.contains(&rel_idx)
+                            && !rc_skip_dec.contains(src_name.as_str())
+                        {
                             let src = locals[src_name];
                             func.instruction(&Instruction::LocalGet(src));
                             emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
@@ -14636,6 +14654,13 @@ impl WasmBackend {
                         func.instruction(&Instruction::LocalGet(len));
                         func.instruction(&Instruction::I32WrapI64);
                         func.instruction(&Instruction::MemoryFill(0));
+                    }
+                    kind if is_shared_drop_fact_marker(kind) => {
+                        // Shared TIR drop-fact markers are compile-time
+                        // evidence only. WASM consumes the materialized
+                        // inc_ref/dec_ref/release ops, so marker ops must be
+                        // explicit no-ops instead of falling through the
+                        // unknown-op default.
                     }
                     _ => {}
                 }
@@ -17619,6 +17644,36 @@ mod tests {
 
     /// Extract `(param_count, result_count)` for every func type in a module's
     /// type section, in section order.
+    fn wasm_function_import_names(wasm: &[u8]) -> Vec<String> {
+        let mut imports = Vec::new();
+        for payload in Parser::new(0).parse_all(wasm) {
+            if let Ok(Payload::ImportSection(reader)) = payload {
+                for import in reader.into_imports().flatten() {
+                    if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
+                        imports.push(import.name.to_string());
+                    }
+                }
+            }
+        }
+        imports
+    }
+
+    fn wasm_function_import_type_indices(wasm: &[u8]) -> BTreeMap<String, u32> {
+        let mut imports = BTreeMap::new();
+        for payload in Parser::new(0).parse_all(wasm) {
+            if let Ok(Payload::ImportSection(reader)) = payload {
+                for import in reader.into_imports().flatten() {
+                    let type_idx = match import.ty {
+                        TypeRef::Func(idx) | TypeRef::FuncExact(idx) => idx,
+                        _ => continue,
+                    };
+                    imports.insert(import.name.to_string(), type_idx);
+                }
+            }
+        }
+        imports
+    }
+
     fn wasm_type_section_signatures(wasm: &[u8]) -> Vec<(usize, usize)> {
         use wasmparser::CompositeInnerType;
         let mut sigs = Vec::new();
@@ -17635,6 +17690,95 @@ mod tests {
             }
         }
         sigs
+    }
+
+    #[test]
+    fn import_transaction_callable_wrapper_matches_runtime_import_abi() {
+        let mut import_transaction = wasm_test_op("builtin_func", Some("fn"), vec![]);
+        import_transaction.s_value = Some("molt_importlib_import_transaction".to_string());
+        import_transaction.value = Some(5);
+        let func = wasm_test_function(
+            "import_transaction_callable",
+            vec![],
+            None,
+            vec![import_transaction, wasm_test_op("ret_void", None, vec![])],
+        );
+        let ir = SimpleIR {
+            functions: vec![func],
+            profile: None,
+        };
+        let wasm = WasmBackend::with_options(WasmCompileOptions {
+            native_eh_enabled: false,
+            reloc_enabled: false,
+            ..WasmCompileOptions::default()
+        })
+        .compile(ir);
+
+        wasmparser::Validator::new()
+            .validate_all(&wasm)
+            .expect("import transaction wrapper must be structurally valid WASM");
+
+        let imports = wasm_function_import_type_indices(&wasm);
+        let sigs = wasm_type_section_signatures(&wasm);
+        let import_type = *imports
+            .get("importlib_import_transaction")
+            .expect("import transaction runtime import must be registered");
+        assert_eq!(
+            sigs[import_type as usize],
+            (5, 1),
+            "importlib_import_transaction import ABI must consume the five values emitted by its callable wrapper"
+        );
+    }
+
+    #[test]
+    fn shared_drop_fact_marker_set_is_explicit_for_wasm() {
+        assert!(is_shared_drop_fact_marker("drop_inserted"));
+        assert!(is_shared_drop_fact_marker(
+            "exception_region_drops_inserted"
+        ));
+        assert!(!is_shared_drop_fact_marker("inc_ref"));
+        assert!(!is_shared_drop_fact_marker("dec_ref"));
+        assert!(!is_shared_drop_fact_marker("release"));
+    }
+
+    #[test]
+    fn generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes() {
+        let mut owned = wasm_test_op("const_str", Some("v0"), vec![]);
+        owned.s_value = Some("owned".to_string());
+        let func = wasm_test_function(
+            "exception_drop",
+            vec![],
+            None,
+            vec![
+                wasm_test_op("exception_region_drops_inserted", None, vec![]),
+                owned,
+                wasm_test_op("exception_pop", None, vec![]),
+                wasm_test_op("dec_ref", None, vec!["v0"]),
+                wasm_test_op("ret_void", None, vec![]),
+            ],
+        );
+        let ir = SimpleIR {
+            functions: vec![func],
+            profile: None,
+        };
+        for (native_eh_enabled, expect_exception_pop) in [(true, false), (false, true)] {
+            let options = WasmCompileOptions {
+                native_eh_enabled,
+                reloc_enabled: false,
+                ..WasmCompileOptions::default()
+            };
+            let wasm = WasmBackend::with_options(options).compile(ir.clone());
+            let imports = wasm_function_import_names(&wasm);
+            assert_eq!(
+                imports.iter().any(|name| name == "exception_pop"),
+                expect_exception_pop,
+                "generic WASM exception_pop import mismatch for native_eh_enabled={native_eh_enabled}; imports={imports:?}"
+            );
+            assert!(
+                imports.iter().any(|name| name == "dec_ref_obj"),
+                "generic WASM shared drops must keep dec_ref_obj import for native_eh_enabled={native_eh_enabled}; imports={imports:?}"
+            );
+        }
     }
 
     /// Structural guard for the static WASM type section. The backend emits a

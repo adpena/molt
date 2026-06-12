@@ -307,8 +307,7 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
             continue;
         };
         let kind = op.kind.as_str();
-        let (is_len, is_ord_at, is_eq) =
-            (kind == "len", kind == "ord_at", kind == "eq");
+        let (is_len, is_ord_at, is_eq) = (kind == "len", kind == "ord_at", kind == "eq");
         // A `guard_tag` / `guard_type` asserting the field's type is redundant
         // (a `string_split_field` provably yields a `str` or raises first), so it
         // is a bounds-expressible use that the rewrite simply DROPS.
@@ -360,11 +359,15 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
         if op.kind != "string_split_field" {
             continue;
         }
-        let Some(args) = op.args.as_ref() else { continue };
+        let Some(args) = op.args.as_ref() else {
+            continue;
+        };
         if args.len() != 3 {
             continue;
         }
-        let Some(field) = op.out.as_deref() else { continue };
+        let Some(field) = op.out.as_deref() else {
+            continue;
+        };
         // The three property ops we splice in place of `string_split_field` can
         // raise `IndexError` (out-of-range field index) exactly as it does. We
         // rely on the EXISTING `check_exception` the frontend always emits right
@@ -400,9 +403,10 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
                 let eq_op = &func_ir.ops[u.op_index];
                 let eq_args = eq_op.args.as_deref().unwrap_or(&[]);
                 let other_is_const = eq_args.len() == 2
-                    && eq_args.iter().enumerate().any(|(p, a)| {
-                        p != u.arg_pos && const_strings.contains(a.as_str())
-                    });
+                    && eq_args
+                        .iter()
+                        .enumerate()
+                        .any(|(p, a)| p != u.arg_pos && const_strings.contains(a.as_str()));
                 if other_is_const {
                     eq_ops.push(u.op_index);
                 } else {
@@ -2601,8 +2605,8 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
         }
     }
 
-    if let Ok(raw) = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS")
-        && let Ok(module_symbols) = serde_json::from_str::<Vec<String>>(&raw)
+    if let Some(module_symbols) =
+        crate::stdlib_module_symbols::stdlib_module_symbols_from_env_or_panic()
     {
         for module_symbol in module_symbols {
             let init_name = format!("molt_init_{module_symbol}");

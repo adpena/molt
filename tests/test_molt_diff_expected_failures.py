@@ -786,6 +786,109 @@ def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
     assert cmd[cmd.index("--stdlib-profile") + 1] == "full"
 
 
+def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    seen_envs: list[dict[str, str]] = []
+    diff_root = tmp_path / "diff-root"
+    diff_cache = tmp_path / "persistent-cache"
+    target_root = tmp_path / "target-root"
+
+    def fake_run_with_optional_time(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        seen_envs.append(dict(env))
+        output_path = Path(cmd[cmd.index("--output") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.delenv("MOLT_CACHE", raising=False)
+    monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
+    monkeypatch.setattr(module, "_diff_cache_root", lambda: diff_cache)
+    monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
+    monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
+    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
+    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+
+    stdout, stderr, rc = module.run_molt_build_only(
+        "tests/differential/stdlib/unicodedata_basic.py",
+        "dev",
+    )
+
+    assert (stdout, stderr, rc) == ("", "", 0)
+    assert seen_envs[0]["MOLT_CACHE"] == str(diff_cache)
+    assert diff_cache.is_dir()
+
+
+def test_run_molt_build_only_preserves_explicit_molt_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    seen_envs: list[dict[str, str]] = []
+    explicit_cache = tmp_path / "explicit-cache"
+    diff_root = tmp_path / "diff-root"
+    target_root = tmp_path / "target-root"
+
+    def fake_run_with_optional_time(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        seen_envs.append(dict(env))
+        output_path = Path(cmd[cmd.index("--output") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def fail_diff_cache_root() -> Path:
+        raise AssertionError("explicit MOLT_CACHE should not call _diff_cache_root")
+
+    monkeypatch.setenv("MOLT_CACHE", str(explicit_cache))
+    monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
+    monkeypatch.setattr(module, "_diff_cache_root", fail_diff_cache_root)
+    monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
+    monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
+    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
+    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+
+    stdout, stderr, rc = module.run_molt_build_only(
+        "tests/differential/stdlib/unicodedata_basic.py",
+        "dev",
+    )
+
+    assert (stdout, stderr, rc) == ("", "", 0)
+    assert seen_envs[0]["MOLT_CACHE"] == str(explicit_cache)
+    assert explicit_cache.is_dir()
+
+
 def test_diff_root_defaults_to_repo_tmp_diff_when_ext_root_unset(
     monkeypatch, tmp_path: Path
 ) -> None:

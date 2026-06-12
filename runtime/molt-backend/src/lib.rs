@@ -36,12 +36,16 @@ mod native_backend_consts;
 use native_backend_consts::*;
 mod passes;
 mod representation_plan;
+mod stdlib_module_symbols;
 /// The representation lattice element (the orthogonal carrier axis to
 /// `TirType`). Re-exported publicly because it appears in the signature of the
 /// `pub` `tir::lower_to_lir::lower_function_to_lir` (Phase 1 of the typed-IR
 /// convergence), which the WASM/LIR codegen path drives with the proven
 /// `repr_by_value`.
 pub use crate::representation_plan::Repr;
+pub use crate::stdlib_module_symbols::{
+    STDLIB_MODULE_SYMBOLS_ENV, parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
+};
 pub mod tir;
 pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir};
 pub use crate::passes::{

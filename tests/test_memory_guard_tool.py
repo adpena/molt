@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -88,6 +89,95 @@ def test_watched_pids_includes_reparented_process_group_members() -> None:
     assert memory_guard.watched_pids(samples, 100) == {100, 101, 102}
 
 
+def test_watched_pids_excludes_host_control_plane_group() -> None:
+    samples = {
+        100: memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            pgid=100,
+        ),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            250_000,
+            "/Users/adpena/Projects/molt/target/debug/molt-backend",
+            pgid=100,
+        ),
+        200: memory_guard.ProcessSample(200, 1, 20, "unrelated", pgid=200),
+    }
+
+    assert memory_guard.watched_pids(samples, 100) == set()
+
+
+def test_watched_pids_excludes_plain_claude_control_plane_group() -> None:
+    samples = {
+        100: memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "claude",
+            pgid=100,
+        ),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            250_000,
+            "/Users/adpena/Projects/molt/target/debug/molt-backend",
+            pgid=100,
+        ),
+        200: memory_guard.ProcessSample(200, 1, 20, "unrelated", pgid=200),
+    }
+
+    assert memory_guard.is_host_control_plane_process(samples[100])
+    assert memory_guard.watched_pids(samples, 100) == set()
+
+
+def test_watched_pids_excludes_claude_code_executable_group() -> None:
+    samples = {
+        100: memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "/opt/homebrew/bin/claude-code --continue",
+            pgid=100,
+        ),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            250_000,
+            "/Users/adpena/Projects/molt/target/debug/molt-backend",
+            pgid=100,
+        ),
+    }
+
+    assert memory_guard.is_host_control_plane_process(samples[100])
+    assert memory_guard.watched_pids(samples, 100) == set()
+
+
+def test_watched_pids_excludes_node_launched_claude_code_group() -> None:
+    samples = {
+        100: memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+            pgid=100,
+        ),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            250_000,
+            "/Users/adpena/Projects/molt/target/debug/molt-backend",
+            pgid=100,
+        ),
+    }
+
+    assert memory_guard.is_host_control_plane_process(samples[100])
+    assert memory_guard.watched_pids(samples, 100) == set()
+
+
 def test_process_tree_tracker_keeps_reparented_new_session_child_after_seen() -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
     first = {
@@ -115,6 +205,31 @@ def test_process_tree_tracker_keeps_reparented_new_session_child_after_seen() ->
         rss_kb=30,
         command="grandchild",
     )
+
+
+def test_process_tree_tracker_does_not_absorb_root_ambient_process_group() -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    samples = {
+        100: memory_guard.ProcessSample(100, 50, 10, "pytest current", pgid=500),
+        50: memory_guard.ProcessSample(
+            50,
+            1,
+            20,
+            "/Applications/Codex.app/Contents/MacOS/Codex app-server",
+            pgid=500,
+        ),
+        200: memory_guard.ProcessSample(
+            200,
+            50,
+            30,
+            "/Users/adpena/Projects/molt/.venv/bin/python3 tests/molt_diff.py",
+            pgid=200,
+        ),
+    }
+
+    assert tracker.update(samples) == {100}
+    assert tracker.known_pids == {100}
+    assert tracker.known_pgids == {100}
 
 
 def test_find_rss_violation_catches_reparented_process_group_member() -> None:
@@ -175,6 +290,234 @@ def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
     assert (102, memory_guard.signal.SIGKILL) in sent_pids
 
 
+def test_terminate_watched_processes_skips_host_control_plane_root_group(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    samples = {
+        100: memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            pgid=100,
+        ),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            250_000,
+            "/Users/adpena/Projects/molt/target/debug/molt-backend",
+            pgid=100,
+        ),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    )
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent_pids.append((pid, sig)),
+    )
+
+    memory_guard.terminate_watched_processes(
+        100,
+        samples=samples,
+        watched={100, 101},
+        grace=0.001,
+    )
+
+    assert sent_groups == []
+    assert sent_pids == []
+
+
+def test_protected_process_groups_include_external_codex_descendant_not_owned_child() -> None:
+    if memory_guard.os.name != "posix":
+        return
+    samples = {
+        100: memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            pgid=100,
+        ),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            10_000,
+            "/bin/zsh -l",
+            pgid=101,
+        ),
+        777: memory_guard.ProcessSample(
+            777,
+            101,
+            250_000,
+            "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
+            pgid=777,
+        ),
+        999: memory_guard.ProcessSample(
+            999,
+            100,
+            30_000,
+            "python tools/memory_guard.py -- pytest",
+            pgid=999,
+        ),
+        200: memory_guard.ProcessSample(
+            200,
+            999,
+            250_000,
+            "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
+            pgid=200,
+        ),
+    }
+
+    protected = memory_guard.protected_process_group_ids(
+        samples,
+        self_pid=999,
+        self_pgid=999,
+    )
+
+    assert 100 in protected
+    assert 777 in protected
+    assert 999 in protected
+    assert 200 not in protected
+
+
+def test_protected_process_groups_include_external_claude_descendant_not_owned_child() -> None:
+    if memory_guard.os.name != "posix":
+        return
+    samples = {
+        100: memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "claude --dangerously-skip-permissions",
+            pgid=100,
+        ),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            10_000,
+            "/bin/zsh -c source /Users/adpena/.claude/shell-snapshots/snapshot-zsh",
+            pgid=101,
+        ),
+        777: memory_guard.ProcessSample(
+            777,
+            101,
+            250_000,
+            "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
+            pgid=777,
+        ),
+        999: memory_guard.ProcessSample(
+            999,
+            1,
+            30_000,
+            "python tools/memory_guard.py -- pytest",
+            pgid=999,
+        ),
+        200: memory_guard.ProcessSample(
+            200,
+            999,
+            250_000,
+            "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
+            pgid=200,
+        ),
+    }
+
+    protected = memory_guard.protected_process_group_ids(
+        samples,
+        self_pid=999,
+        self_pgid=999,
+    )
+
+    assert 100 in protected
+    assert 101 in protected
+    assert 777 in protected
+    assert 999 in protected
+    assert 200 not in protected
+
+
+def test_terminate_single_process_group_refuses_protected_group(monkeypatch) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    samples = {
+        100: memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            pgid=100,
+        ),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            250_000,
+            "/Users/adpena/Projects/molt/target/debug/molt-backend",
+            pgid=100,
+        ),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    )
+
+    assert memory_guard._terminate_single_process_group(100, grace=0.001) is True
+
+    assert sent_groups == []
+
+
+def test_terminate_watched_processes_filters_protected_escaped_pid(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    samples = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            500_000,
+            "/Applications/Codex.app/Contents/Resources/codex app-server",
+            pgid=777,
+        ),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+
+    def fake_killpg(pgid, sig):
+        sent_groups.append((pgid, sig))
+        if sig == memory_guard.signal.SIGTERM:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent_pids.append((pid, sig)),
+    )
+
+    memory_guard.terminate_watched_processes(
+        100,
+        samples=samples,
+        watched={100, 101},
+        grace=0.001,
+    )
+
+    assert (100, memory_guard.signal.SIGTERM) in sent_groups
+    assert all(pid != 101 for pid, _sig in sent_pids)
+
+
 def test_terminate_watched_processes_never_killpgs_shared_child_group(
     monkeypatch,
 ) -> None:
@@ -212,6 +555,53 @@ def test_terminate_watched_processes_never_killpgs_shared_child_group(
     assert (101, memory_guard.signal.SIGTERM) in sent_pids
     assert (101, memory_guard.signal.SIGKILL) in sent_pids
     assert all(pid != 200 for pid, _sig in sent_pids)
+
+
+def test_terminate_watched_processes_never_kills_host_control_plane_group(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    samples = {
+        100: memory_guard.ProcessSample(
+            100,
+            27404,
+            20,
+            "uv run python tests/molt_diff.py --jobs 1",
+            pgid=700,
+        ),
+        27404: memory_guard.ProcessSample(
+            27404,
+            27335,
+            500_000,
+            "/Applications/Codex.app/Contents/Resources/codex app-server",
+            pgid=700,
+        ),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    )
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent_pids.append((pid, sig)),
+    )
+
+    memory_guard.terminate_watched_processes(
+        100,
+        samples=samples,
+        watched={100},
+        grace=0.001,
+    )
+
+    assert sent_groups == []
+    assert sent_pids == []
 
 
 def test_find_rss_violation_ignores_unrelated_processes() -> None:
@@ -367,6 +757,44 @@ def test_adaptive_budget_clamps_large_hosts_below_rss_conversion_cap() -> None:
     assert memory_guard.max_rss_kb_from_gb(budget.max_process_rss_gb) > 0
 
 
+def test_parse_darwin_vm_stat_available_bytes() -> None:
+    text = """
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                             10.
+Pages active:                           99.
+Pages inactive:                         20.
+Pages speculative:                       3.
+Pages purgeable:                         2.
+Pages wired down:                       88.
+Pages occupied by compressor:            7.
+"""
+
+    available = memory_guard._parse_darwin_vm_stat_available_bytes(text)
+
+    assert available == (10 + 20 + 3 + 2) * 16_384
+
+
+def test_available_memory_bytes_uses_darwin_vm_stat(monkeypatch) -> None:
+    class Result:
+        returncode = 0
+        stdout = (
+            "Mach Virtual Memory Statistics: (page size of 4096 bytes)\n"
+            "Pages free: 2.\n"
+            "Pages inactive: 3.\n"
+            "Pages speculative: 5.\n"
+            "Pages purgeable: 7.\n"
+        )
+
+    monkeypatch.setattr(memory_guard.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        memory_guard.subprocess,
+        "run",
+        lambda *args, **kwargs: Result(),
+    )
+
+    assert memory_guard.available_memory_bytes(environ={}) == 17 * 4096
+
+
 def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:
     seen_accounted: list[int] = []
 
@@ -450,6 +878,29 @@ def test_run_command_passes_through_success() -> None:
     assert result.stdout == "ok\n"
     assert result.elapsed_s is not None
     assert result.elapsed_s > 0
+
+
+def test_run_guarded_binary_capture_preserves_bytes() -> None:
+    result = memory_guard.run_guarded(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "data = sys.stdin.buffer.read(); "
+                "sys.stdout.buffer.write(data[::-1]); "
+                "sys.stderr.buffer.write(b'err:' + data[:2])"
+            ),
+        ],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        input=b"\xffabc",
+        text=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == b"cba\xff"
+    assert result.stderr == b"err:\xffa"
 
 
 def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> None:
@@ -602,6 +1053,7 @@ def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> Non
         max_total_rss_kb=160 * 1024,
         poll_interval=1.0,
         child_rlimit_kb=None,
+        sampler=lambda: {},
     )
 
     assert result.returncode == memory_guard.GUARD_RETURN_CODE
@@ -613,7 +1065,7 @@ def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> Non
 def test_run_command_rusage_catches_short_lived_allocator_spike() -> None:
     if memory_guard.os.name != "posix" or not hasattr(memory_guard.os, "wait4"):
         return
-    script = "buf = bytearray(192 * 1024 * 1024); print(len(buf))"
+    script = "import os\nbuf = bytearray(192 * 1024 * 1024)\nos._exit(0)"
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", script],
@@ -694,6 +1146,125 @@ def test_exit_signal_payload_classifies_shell_signal_status() -> None:
         "name": "SIGTERM",
         "conventional_shell_status": True,
     }
+
+
+def test_cargo_incremental_quarantine_moves_only_incremental_dirs(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    debug_file = target / "debug" / "incremental" / "unit-a" / "work.o"
+    triple_file = (
+        target
+        / "aarch64-apple-darwin"
+        / "dev-fast"
+        / "incremental"
+        / "unit-b"
+        / "work.o"
+    )
+    non_incremental = target / "debug" / "deps" / "libmolt.rlib"
+    for path in (debug_file, triple_file, non_incremental):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+
+    receipt = memory_guard._quarantine_cargo_incremental_state(
+        reason="signal_exit",
+        target_dir=target,
+        command=["cargo", "test"],
+        cwd=tmp_path,
+    )
+
+    assert not (target / "debug" / "incremental").exists()
+    assert not (target / "aarch64-apple-darwin" / "dev-fast" / "incremental").exists()
+    assert non_incremental.exists()
+    assert len(receipt.moved_paths) == 2
+    assert receipt.errors == ()
+    assert receipt.quarantine_dir is not None
+    quarantine_dir = Path(receipt.quarantine_dir)
+    assert (quarantine_dir / "debug" / "incremental" / "unit-a" / "work.o").exists()
+    assert (
+        quarantine_dir
+        / "aarch64-apple-darwin"
+        / "dev-fast"
+        / "incremental"
+        / "unit-b"
+        / "work.o"
+    ).exists()
+    assert receipt.receipt_path is not None
+    payload = json.loads(Path(receipt.receipt_path).read_text(encoding="utf-8"))
+    assert payload["reason"] == "signal_exit"
+    assert payload["target_dir"] == str(target)
+    assert payload["command"] == ["cargo", "test"]
+    assert len(payload["moved_paths"]) == 2
+
+
+def test_cargo_incremental_quarantine_prunes_old_receipts(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    parent = target / ".molt_state" / "quarantine" / "cargo_incremental"
+    for index in range(3):
+        stale = parent / f"stale-{index}"
+        stale.mkdir(parents=True)
+        os.utime(stale, (index + 1, index + 1))
+    live_file = target / "debug" / "incremental" / "unit" / "work.o"
+    live_file.parent.mkdir(parents=True, exist_ok=True)
+    live_file.write_text("work", encoding="utf-8")
+
+    receipt = memory_guard._quarantine_cargo_incremental_state(
+        reason="timeout",
+        target_dir=target,
+        command=["cargo", "build"],
+        cwd=tmp_path,
+        retention_keep=2,
+    )
+
+    assert receipt.quarantine_dir is not None
+    remaining = sorted(path.name for path in parent.iterdir() if path.is_dir())
+    assert len(remaining) == 2
+    assert Path(receipt.quarantine_dir).name in remaining
+    assert receipt.pruned_quarantine_dirs
+
+
+def test_run_guarded_signal_exit_quarantines_cargo_incremental(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    live_file = target / "debug" / "incremental" / "unit" / "work.o"
+    live_file.parent.mkdir(parents=True, exist_ok=True)
+    live_file.write_text("work", encoding="utf-8")
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        cwd=tmp_path,
+        env={"CARGO_TARGET_DIR": str(target)},
+        sampler=lambda: {},
+    )
+
+    assert result.returncode == -15
+    assert result.cargo_incremental_quarantine is None
+    assert live_file.exists()
+
+    fake_cargo = tmp_path / "cargo"
+    fake_cargo.write_text(
+        f"#!{sys.executable}\n"
+        "import os, signal\n"
+        "os.kill(os.getpid(), signal.SIGTERM)\n",
+        encoding="utf-8",
+    )
+    fake_cargo.chmod(0o755)
+    result = memory_guard.run_guarded(
+        [str(fake_cargo)],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        cwd=tmp_path,
+        env={"CARGO_TARGET_DIR": str(target)},
+        sampler=lambda: {},
+    )
+
+    assert result.returncode != 0
+    assert result.cargo_incremental_quarantine is not None
+    assert "quarantined Cargo incremental state" in result.stderr
+    assert not (target / "debug" / "incremental").exists()
 
 
 def test_main_enforces_timeout_and_writes_summary(
@@ -784,15 +1355,94 @@ def test_main_reports_signal_status_without_guard_violation(
     assert payload["incident"]["elapsed_s"] == pytest.approx(0.3)
 
 
+def test_main_reports_cargo_incremental_quarantine_summary(
+    tmp_path, capsys: pytest.CaptureFixture[str], monkeypatch
+) -> None:
+    summary_path = tmp_path / "signal-summary.json"
+    target = tmp_path / "target"
+    quarantine = target / ".molt_state" / "quarantine" / "cargo_incremental" / "q"
+    receipt = memory_guard.CargoIncrementalQuarantine(
+        reason="signal_exit",
+        recorded_at="2026-06-12T00:00:00Z",
+        target_dir=str(target),
+        quarantine_dir=str(quarantine),
+        command=("cargo", "test"),
+        cwd=str(tmp_path),
+        moved_paths=(
+            memory_guard.CargoIncrementalQuarantineMove(
+                original_path=str(target / "debug" / "incremental"),
+                quarantined_path=str(quarantine / "debug" / "incremental"),
+            ),
+        ),
+        receipt_path=str(quarantine / "receipt.json"),
+    )
+
+    def fake_run_guarded(_command, **_kwargs):
+        return memory_guard.GuardResult(
+            returncode=143,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.3,
+            cargo_incremental_quarantine=receipt,
+        )
+
+    monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--max-total-rss-gb",
+            "18",
+            "--poll-interval",
+            "0.01",
+            "--summary-json",
+            str(summary_path),
+            "--",
+            "cargo",
+            "test",
+        ]
+    )
+
+    assert rc == 143
+    stderr = capsys.readouterr().err
+    assert "quarantined Cargo incremental state after signal_exit" in stderr
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["cargo_incremental_quarantine"]["reason"] == "signal_exit"
+    assert payload["cargo_incremental_quarantine"]["target_dir"] == str(target)
+    assert len(payload["cargo_incremental_quarantine"]["moved_paths"]) == 1
+    assert payload["incident"]["cleanup"] == "quarantined Cargo incremental state"
+
+
 def test_main_reports_incident_repro_context(
     tmp_path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch,
 ) -> None:
     summary_path = tmp_path / "rss-summary.json"
+    current_root = tmp_path / "pytest-memory-guard"
+    current_test_path = current_root / "pytest-current-test.json"
+    monkeypatch.setattr(memory_guard, "PYTEST_OUTER_GUARD_SUMMARY_DIR", current_root)
+    current_root.mkdir(parents=True)
+    current_test_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "nodeid": "tests/test_memory_guard_tool.py::live_unit",
+                "phase": "call",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     env = {
         "PATH": "/usr/bin",
         "PYTEST_CURRENT_TEST": "tests/test_memory_guard_tool.py::unit (call)",
+        "MOLT_PYTEST_CURRENT_TEST_FILE": str(current_test_path),
         "MOLT_SESSION_ID": "unit-session",
         "SECRET_TOKEN": "must-not-leak",
     }
@@ -846,9 +1496,139 @@ def test_main_reports_incident_repro_context(
     repro = payload["repro"]
     assert repro["command"] == [sys.executable, "-c", "pass"]
     assert repro["pytest"]["current_test"] == env["PYTEST_CURRENT_TEST"]
+    assert (
+        repro["pytest"]["current_test_file"]["payload"]["nodeid"]
+        == "tests/test_memory_guard_tool.py::live_unit"
+    )
     assert repro["env"]["MOLT_SESSION_ID"] == "unit-session"
     assert "SECRET_TOKEN" not in repro["env"]
     assert repro["limits"]["max_total_rss_gb"] == pytest.approx(3.0)
+
+
+def test_repro_context_reads_xdist_worker_current_test_sidecars(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    current_root = tmp_path / "pytest-memory-guard"
+    aggregate_path = current_root / "pytest-current-test.json"
+    worker_dir = aggregate_path.with_name(f"{aggregate_path.name}.d")
+    worker_dir.mkdir(parents=True)
+    worker_path = worker_dir / "gw0-4321_current-test.json"
+    worker_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "pid": 4321,
+                "nodeid": "tests/test_xdist.py::test_memory",
+                "phase": "call",
+                "xdist_worker": "gw0",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(memory_guard, "PYTEST_OUTER_GUARD_SUMMARY_DIR", current_root)
+    monkeypatch.setattr(
+        memory_guard,
+        "sample_processes",
+        lambda: {
+            4321: memory_guard.ProcessSample(
+                pid=4321,
+                ppid=100,
+                rss_kb=1,
+                command="pytest worker gw0",
+            ),
+            9876: memory_guard.ProcessSample(
+                pid=9876,
+                ppid=4321,
+                rss_kb=4 * 1024 * 1024,
+                command="python hungry.py",
+            ),
+        },
+    )
+
+    repro = memory_guard.repro_context_payload(
+        command=[sys.executable, "-m", "pytest", "-n", "2"],
+        cwd=tmp_path,
+        environ={
+            "MOLT_PYTEST_CURRENT_TEST_FILE": str(aggregate_path),
+            "PYTEST_XDIST_WORKER": "",
+        },
+        incident_pid=9876,
+    )
+
+    current_test = repro["pytest"]["current_test_file"]
+    assert current_test["missing"] is True
+    records = current_test["worker_records"]
+    assert records[0]["incident_match"] == "pid_lineage"
+    assert records[0]["payload"]["nodeid"] == "tests/test_xdist.py::test_memory"
+
+
+def test_repro_context_rejects_noncanonical_current_test_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    current_root = tmp_path / "pytest-memory-guard"
+    outside_path = tmp_path / "outside" / "pytest-current-test.json"
+    outside_path.parent.mkdir()
+    outside_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(memory_guard, "PYTEST_OUTER_GUARD_SUMMARY_DIR", current_root)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
+
+    repro = memory_guard.repro_context_payload(
+        command=[sys.executable, "-m", "pytest"],
+        cwd=tmp_path,
+        environ={"MOLT_PYTEST_CURRENT_TEST_FILE": str(outside_path)},
+    )
+
+    current_test = repro["pytest"]["current_test_file"]
+    assert current_test["rejected"] == "noncanonical"
+    assert current_test["canonical_root"] == str(current_root)
+
+
+def test_repro_context_includes_bounded_host_control_plane(monkeypatch, tmp_path: Path) -> None:
+    long_command = "/Applications/Codex.app/Contents/MacOS/Codex " + ("x" * 800)
+    samples = {
+        10: memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=500_000,
+            command=long_command,
+        ),
+        11: memory_guard.ProcessSample(
+            pid=11,
+            ppid=10,
+            pgid=10,
+            rss_kb=200_000,
+            command="/Users/adpena/Projects/molt/target/release-fast/molt-backend",
+        ),
+        999: memory_guard.ProcessSample(
+            pid=999,
+            ppid=10,
+            pgid=999,
+            rss_kb=10,
+            command="python tools/memory_guard.py",
+        ),
+    }
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getppid", lambda: 10)
+    monkeypatch.setattr(memory_guard, "_safe_getpgrp", lambda: 999)
+
+    repro = memory_guard.repro_context_payload(
+        command=[sys.executable, "-m", "pytest"],
+        cwd=tmp_path,
+        environ={},
+    )
+
+    host = repro["host_control_plane"]
+    assert host["host_pgids"] == [10]
+    assert 10 in host["protected_pgids"]
+    assert host["samples"][0]["pid"] == 10
+    assert host["samples"][0]["command"].endswith("...<truncated>")
+    assert len(host["samples"][0]["command"]) < len(long_command)
 
 
 def test_main_rejects_unsafe_threshold(capsys: pytest.CaptureFixture[str]) -> None:

@@ -21,15 +21,15 @@ use crate::{
     classmethod_func_bits, clear_exception, dataclass_desc_ptr, dataclass_dict_bits,
     dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
     dict_set_in_place, exception_class_bits, exception_dict_bits, exception_kind_bits,
-    exception_last_bits_noinc, exception_pending, exception_type_bits_from_name, inc_ref_bits,
-    init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intern_static_name,
-    is_builtin_class_bits, is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits,
-    module_dict_bits, molt_awaitable_await, molt_bound_method_new, molt_exception_last,
-    molt_function_get_code, molt_function_get_globals, molt_iter, molt_iter_next, obj_eq,
-    obj_from_bits, object_class_bits, object_field_get_ptr_raw, object_set_class_bits,
-    object_type_id, profile_hit_unchecked, property_get_bits, raise_exception, runtime_state,
-    seq_vec_ref, staticmethod_func_bits, string_bytes, string_len, string_obj_to_owned, type_name,
-    type_of_bits,
+    exception_last_bits_noinc, exception_pending, exception_stack_pop, exception_stack_push,
+    exception_type_bits_from_name, inc_ref_bits, init_atomic_bits, instance_dict_bits,
+    instance_set_dict_bits, intern_static_name, is_builtin_class_bits, is_missing_bits, is_truthy,
+    issubclass_bits, maybe_ptr_from_bits, module_dict_bits, molt_awaitable_await,
+    molt_bound_method_new, molt_exception_last, molt_function_get_code, molt_function_get_globals,
+    molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_class_bits, object_field_get_ptr_raw,
+    object_set_class_bits, object_type_id, profile_hit_unchecked, property_get_bits,
+    raise_exception, runtime_state, seq_vec_ref, staticmethod_func_bits, string_bytes, string_len,
+    string_obj_to_owned, type_name, type_of_bits,
 };
 
 const ATTR_NAME_INLINE_CAP: usize = 32;
@@ -636,10 +636,11 @@ pub(crate) fn clear_attribute_error_if_pending(_py: &PyToken<'_>) -> bool {
     false
 }
 
-pub(crate) unsafe fn module_attr_lookup(
+unsafe fn module_attr_lookup_impl(
     _py: &PyToken<'_>,
     ptr: *mut u8,
     attr_bits: u64,
+    allow_missing: bool,
 ) -> Option<u64> {
     unsafe {
         crate::gil_assert();
@@ -762,14 +763,43 @@ pub(crate) unsafe fn module_attr_lookup(
             obj_from_bits(getattr_name_bits),
         ) && let Some(getattr_bits) = dict_get_in_place(_py, dict_ptr, getattr_name_bits)
         {
+            if allow_missing {
+                exception_stack_push();
+            }
             let res_bits = call_callable1(_py, getattr_bits, attr_bits);
             if exception_pending(_py) {
+                if allow_missing && clear_attribute_error_if_pending(_py) {
+                    exception_stack_pop(_py);
+                    return None;
+                }
+                if allow_missing {
+                    exception_stack_pop(_py);
+                }
                 return None;
+            }
+            if allow_missing {
+                exception_stack_pop(_py);
             }
             return Some(res_bits);
         }
         None
     }
+}
+
+pub(crate) unsafe fn module_attr_lookup(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    attr_bits: u64,
+) -> Option<u64> {
+    unsafe { module_attr_lookup_impl(_py, ptr, attr_bits, false) }
+}
+
+pub(crate) unsafe fn module_attr_lookup_allow_missing(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    attr_bits: u64,
+) -> Option<u64> {
+    unsafe { module_attr_lookup_impl(_py, ptr, attr_bits, true) }
 }
 
 pub(crate) unsafe fn dir_collect_from_dict_ptr(
@@ -1335,7 +1365,11 @@ pub(crate) unsafe fn attr_lookup_ptr_allow_missing(
 ) -> Option<u64> {
     unsafe {
         crate::gil_assert();
-        let res = attr_lookup_ptr_any(_py, obj_ptr, attr_bits);
+        let res = if object_type_id(obj_ptr) == TYPE_ID_MODULE {
+            module_attr_lookup_allow_missing(_py, obj_ptr, attr_bits)
+        } else {
+            attr_lookup_ptr_any(_py, obj_ptr, attr_bits)
+        };
         if matches!(
             std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
             Some("1")

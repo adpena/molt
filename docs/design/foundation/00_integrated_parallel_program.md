@@ -109,8 +109,9 @@ convergence:
   reconciled in the same arc. No compatibility switch remains.
 - **Finalizer boundary blocker:** finalizer dispatch is present, but non-escaping
   finalizer-bearing objects can still drop at SSA last read instead of Python
-  `del` / scope-exit, and standalone inline `__del__` exceptions can escape the
-  compiled frame instead of being written as unraisable.
+  `del` / scope-exit. Standalone and resurrection-plus-raise inline `__del__`
+  exceptions now route through the synthetic unraisable handler; ordering remains
+  the live boundary blocker.
 
 ### RC-1b — ExceptionRegion ownership (design 45)
 

@@ -2,7 +2,7 @@ use super::ops::TirOp;
 use super::values::{TirValue, ValueId};
 
 /// Unique identifier for a basic block within a function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockId(pub u32);
 
 /// Structural loop role for a basic block, used to preserve loop markers

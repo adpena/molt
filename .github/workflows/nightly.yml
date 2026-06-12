@@ -232,19 +232,19 @@ jobs:
 
       - name: Quint verify — build determinism
         run: |
-          quint verify formal/quint/molt_build_determinism.qnt \
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- quint verify formal/quint/molt_build_determinism.qnt \
             --invariant=Inv --max-steps=10
         continue-on-error: true
 
       - name: Quint verify — runtime determinism
         run: |
-          quint verify formal/quint/molt_runtime_determinism.qnt \
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- quint verify formal/quint/molt_runtime_determinism.qnt \
             --invariant=Inv --max-steps=10
         continue-on-error: true
 
       - name: Quint verify — midend pipeline
         run: |
-          quint verify formal/quint/molt_midend_pipeline.qnt \
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- quint verify formal/quint/molt_midend_pipeline.qnt \
             --invariant=Inv --max-steps=10
         continue-on-error: true
 
@@ -375,12 +375,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-deny --locked
 
       - name: cargo deny check
         run: |
           if [ -f deny.toml ]; then
-            cargo deny check
+            python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo deny check
           else
             echo "SKIP: deny.toml not found"
           fi

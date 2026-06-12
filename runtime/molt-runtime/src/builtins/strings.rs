@@ -2,6 +2,9 @@ use crate::PyToken;
 use memchr::{memchr, memchr2, memmem};
 use molt_obj_model::MoltObject;
 
+use crate::const_data_cache::{
+    ConstDataLiteralKind, const_data_literal_insert, const_data_literal_lookup,
+};
 use crate::{
     MAX_SMALL_LIST, TYPE_ID_STRING, alloc_bytes, alloc_list_with_capacity, alloc_string,
     dec_ref_bits, inc_ref_bits, obj_from_bits, object_type_id, seq_vec, string_bytes,
@@ -1861,131 +1864,11 @@ fn is_wtf8(bytes: &[u8]) -> bool {
 
 // --- String/bytes FFI ---
 
-// --- Const string intern cache ---
-// `const_str` IR ops in the native backend call `molt_string_from_bytes` with a
-// pointer into a fixed data segment.  The *same* pointer+len pair always refers to
-// the same string literal, so we can use the raw pointer as a cheap cache key to
-// avoid re-allocating the string object on every execution of the same `const_str`.
-//
-// The cache is TLS, direct-mapped, 32 slots.  On a hit we inc-ref the cached bits
-// and return them.  On a miss we allocate normally and cache the result.
-
-const CONST_STR_CACHE_SIZE: usize = 32; // must be power of 2
-
-struct ConstStrCacheEntry {
-    /// Raw data-segment pointer used as identity key.
-    data_ptr: usize,
-    len: usize,
-    bits: u64,
-}
-
-struct ConstStrCache {
-    slots: [Option<ConstStrCacheEntry>; CONST_STR_CACHE_SIZE],
-}
-
-impl ConstStrCache {
-    const fn new() -> Self {
-        const NONE: Option<ConstStrCacheEntry> = None;
-        Self {
-            slots: [NONE; CONST_STR_CACHE_SIZE],
-        }
-    }
-
-    #[inline]
-    fn slot_index(data_ptr: usize, len: usize) -> usize {
-        // Mix pointer and length for a quick hash.
-        let h = data_ptr.wrapping_mul(0x9e37_79b9) ^ len;
-        h & (CONST_STR_CACHE_SIZE - 1)
-    }
-
-    fn lookup(&self, data_ptr: usize, len: usize) -> Option<u64> {
-        let idx = Self::slot_index(data_ptr, len);
-        self.slots[idx]
-            .as_ref()
-            .filter(|e| e.data_ptr == data_ptr && e.len == len)
-            .map(|e| e.bits)
-    }
-
-    fn insert(&mut self, _py: &crate::PyToken<'_>, data_ptr: usize, len: usize, bits: u64) {
-        let idx = Self::slot_index(data_ptr, len);
-        if let Some(prev) = self.slots[idx].take() {
-            dec_ref_bits(_py, prev.bits);
-        }
-        inc_ref_bits(_py, bits);
-        // Mark the cached string as immortal so dec_ref from generated code
-        // is a no-op. This prevents the refcount from dropping to 0 while
-        // the intern cache still holds a reference — the root cause of the
-        // SIGTRAP heap corruption (dec_ref on stale cache entries).
-        {
-            let obj = obj_from_bits(bits);
-            if let Some(ptr) = obj.as_ptr() {
-                unsafe {
-                    let header_ptr = ptr.sub(std::mem::size_of::<crate::object::MoltHeader>())
-                        as *mut crate::object::MoltHeader;
-                    (*header_ptr).flags |= crate::object::HEADER_FLAG_IMMORTAL;
-                }
-            }
-        }
-        self.slots[idx] = Some(ConstStrCacheEntry {
-            data_ptr,
-            len,
-            bits,
-        });
-    }
-
-    fn clear(&mut self, _py: &crate::PyToken<'_>) {
-        for slot in self.slots.iter_mut() {
-            if let Some(prev) = slot.take() {
-                dec_ref_bits(_py, prev.bits);
-            }
-        }
-    }
-}
-
-use std::cell::RefCell;
-#[cfg(target_arch = "wasm32")]
-use std::sync::Mutex;
 use std::sync::OnceLock;
-
-#[cfg(not(target_arch = "wasm32"))]
-thread_local! {
-    static CONST_STR_TLS: RefCell<ConstStrCache> = const { RefCell::new(ConstStrCache::new()) };
-}
-
-#[cfg(target_arch = "wasm32")]
-static CONST_STR_WASM: OnceLock<Mutex<ConstStrCache>> = OnceLock::new();
-
-fn with_const_str_cache<R>(f: impl FnOnce(&mut ConstStrCache) -> R) -> R {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let cache = CONST_STR_WASM.get_or_init(|| Mutex::new(ConstStrCache::new()));
-        let mut guard = cache.lock().unwrap();
-        return f(&mut guard);
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        CONST_STR_TLS.with(|cell| f(&mut cell.borrow_mut()))
-    }
-}
 
 fn trace_string_from_bytes() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
     *TRACE.get_or_init(|| std::env::var("MOLT_TRACE_STRING_FROM_BYTES").as_deref() == Ok("1"))
-}
-
-/// Clear the const-string intern cache (called during runtime teardown).
-pub fn clear_const_str_cache(_py: &crate::PyToken<'_>) {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let cache = CONST_STR_WASM.get_or_init(|| Mutex::new(ConstStrCache::new()));
-        cache.lock().unwrap().clear(_py);
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = CONST_STR_TLS.try_with(|cell| {
-            cell.borrow_mut().clear(_py);
-        });
-    }
 }
 
 #[inline]
@@ -2045,7 +1928,9 @@ pub unsafe extern "C" fn molt_string_from_bytes(
             // `const_str` ops always pass the same data-segment pointer for
             // the same literal, so (ptr, len) is an identity key.
             let data_key = ptr as usize;
-            if let Some(bits) = with_const_str_cache(|cache| cache.lookup(data_key, len)) {
+            if let Some(bits) =
+                const_data_literal_lookup(ConstDataLiteralKind::String, data_key, len)
+            {
                 inc_ref_bits(_py, bits);
                 write_bits_out(out, bits);
                 if trace_string_from_bytes() {
@@ -2077,9 +1962,7 @@ pub unsafe extern "C" fn molt_string_from_bytes(
 
             // Cache the newly allocated string for future calls with the
             // same data-segment pointer.
-            with_const_str_cache(|cache| {
-                cache.insert(_py, data_key, len, bits);
-            });
+            const_data_literal_insert(_py, ConstDataLiteralKind::String, data_key, len, bits);
 
             write_bits_out(out, bits);
             if trace_string_from_bytes() {
@@ -2128,11 +2011,24 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
                 write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
                 return 0;
             }
+            let data_key = ptr as usize;
+            if let Some(bits) =
+                const_data_literal_lookup(ConstDataLiteralKind::Bytes, data_key, len)
+            {
+                inc_ref_bits(_py, bits);
+                write_bits_out(out, bits);
+                if trace {
+                    eprintln!("[molt bytes_from_bytes] cache hit bits=0x{:x}", bits);
+                }
+                return 0;
+            }
             let slice = std::slice::from_raw_parts(ptr, len);
             let obj_ptr = alloc_bytes(_py, slice);
             if obj_ptr.is_null() {
                 return 2;
             }
+            let bits = MoltObject::from_ptr(obj_ptr).bits();
+            const_data_literal_insert(_py, ConstDataLiteralKind::Bytes, data_key, len, bits);
             if trace {
                 let header = crate::object::header_from_obj_ptr(obj_ptr);
                 eprintln!(
@@ -2143,7 +2039,7 @@ pub unsafe extern "C" fn molt_bytes_from_bytes(
                     (*header).flags
                 );
             }
-            write_bits_out(out, MoltObject::from_ptr(obj_ptr).bits());
+            write_bits_out(out, bits);
             0
         })
     }

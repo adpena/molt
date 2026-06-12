@@ -71,6 +71,9 @@ Implemented foundation:
 - Native backend codegen uses a persistent daemon by default to amortize Cranelift startup.
 - Runtime/backend rebuilds and daemon lifecycle are lock-coordinated under shared build state (`<CARGO_TARGET_DIR>/.molt_state/`).
 - Throughput tooling/playbook exists (`tools/throughput_env.sh`, `tools/throughput_matrix.py`, `tools/molt_cache_prune.py`) with enforced external-volume defaults and explicit emergency override paths.
+- Respected `PYTHONPATH` duplicates of repo-owned roots stay internal, preserving stdlib transitive closure and avoiding slow link/runtime discovery failures when developers run with `PYTHONPATH=src`.
+- Backend IR preparation rejects direct calls to module-owned symbols outside the materialized module graph before codegen, with function/op repro coordinates, while lazy `MODULE_IMPORT` stays a runtime boundary.
+- Differential builds reuse the persistent diff cache root by default and expose `--stdlib-profile` for fast one-file full-stdlib import loops.
 
 Planned acceleration lanes:
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): harden backend daemon lane (multi-job compile API, richer health telemetry, and deterministic restart semantics under high contention).
@@ -137,7 +140,7 @@ Type coverage TODOs tracked here for CI parity:
 - Implemented: `runpy.run_path` now executes via runtime intrinsic (`molt_runpy_run_path`) after bootstrap-aware resolution, removing Python-side `NotImplementedError` fallback for supported source payloads.
 - Implemented: traceback exception-chain formatting is runtime-lowered through `molt_traceback_format_exception`; `traceback.py` delegates `format_exception`/`TracebackException.format` chain shaping, `extract_tb` payload shaping (`molt_traceback_extract_tb`), stack frame entry retrieval (`molt_getframe`), and `TracebackException.from_exception` chain extraction (`molt_traceback_exception_chain_payload`) to Rust intrinsics.
 - Implemented: traceback `__suppress_context__` probing now lowers through `molt_traceback_exception_suppress_context`, removing Python-side getattr fallback probing in `TracebackException`.
-- Implemented: `importlib.import_module` now dispatches through runtime intrinsic `molt_module_import` (no Python `__import__` fallback path in the stdlib shim).
+- Implemented: `importlib.import_module` now dispatches through runtime intrinsic `molt_importlib_import_transaction` (no Python `__import__` fallback path in the stdlib shim), and frontend literal/static-call folding is refused after `importlib.import_module` is rebound through `importlib` or any module alias.
 - Implemented: build-time import collection now propagates constant module names through helper-call wrappers (for example `_probe(MODULE_NAME)`), so `_molt_importer` includes the required dynamic stdlib modules/submodules and bootstrap/import behavior stays deterministic across module and submodule probes.
 - TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): project-root builds (package discovery hardening, `__init__` edge handling, deterministic dependency graph caching).
 - Implemented: relative import resolution honors `__package__`/`__spec__` metadata (including `__main__`), namespace packages, and CPython-matching missing/beyond-top-level errors.

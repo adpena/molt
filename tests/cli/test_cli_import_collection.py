@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 import types
-from typing import cast
+from typing import Mapping, cast
 
 import molt.cli as cli
 import pytest
@@ -62,7 +62,8 @@ def _install_fake_backend_compile(
     monkeypatch: pytest.MonkeyPatch,
     *,
     output_bytes: bytes = b"OBJ",
-    backend_inputs: list[bytes] | None = None,
+    backend_inputs: list[bytes | None] | None = None,
+    backend_ir_files: list[Path] | None = None,
     seen_envs: list[dict[str, str] | None] | None = None,
 ) -> None:
     def fake_run_subprocess_captured_to_tempfiles(
@@ -70,8 +71,11 @@ def _install_fake_backend_compile(
     ) -> subprocess.CompletedProcess[bytes]:
         backend_input = kwargs.get("input")
         if backend_inputs is not None:
-            assert isinstance(backend_input, bytes)
+            assert backend_input is None or isinstance(backend_input, bytes)
             backend_inputs.append(backend_input)
+        if backend_ir_files is not None:
+            assert "--ir-file" in cmd
+            backend_ir_files.append(Path(cmd[cmd.index("--ir-file") + 1]))
         env = cast(dict[str, str] | None, kwargs.get("env"))
         if seen_envs is not None:
             seen_envs.append(dict(env) if env is not None else None)
@@ -126,6 +130,16 @@ def test_resolve_module_path_prefers_package_over_module(tmp_path: Path) -> None
     assert cli._resolve_module_path("shadowed", [tmp_path]) == package_init
 
 
+def test_resolve_module_path_requires_exact_case(tmp_path: Path) -> None:
+    package_dir = tmp_path / "tinygrad"
+    package_dir.mkdir()
+    tensor = package_dir / "tensor.py"
+    tensor.write_text("class Tensor:\n    pass\n", encoding="utf-8")
+
+    assert cli._resolve_module_path("tinygrad.tensor", [tmp_path]) == tensor
+    assert cli._resolve_module_path("tinygrad.Tensor", [tmp_path]) is None
+
+
 def test_stdlib_test_support_layout_resolves_like_cpython() -> None:
     stdlib_root = cli._stdlib_root_path()
     support_pkg = cli._resolve_module_path("test.support", [stdlib_root])
@@ -159,24 +173,22 @@ def test_write_importer_module_is_transaction_shim(tmp_path: Path) -> None:
 def test_write_importer_module_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path_type = type(tmp_path)
-    original_write_text = path_type.write_text
-    writes = 0
+    importer_path = tmp_path / f"{cli.IMPORTER_MODULE_NAME}.py"
+    original_replace = os.replace
+    replaced_destinations: list[Path] = []
 
-    def wrapped_write_text(
-        self: Path, data: str, *args: object, **kwargs: object
-    ) -> int:
-        nonlocal writes
-        if self == tmp_path / f"{cli.IMPORTER_MODULE_NAME}.py":
-            writes += 1
-        return original_write_text(self, data, *args, **kwargs)
+    def record_replace(src: object, dst: object) -> None:
+        destination = Path(dst)
+        if destination == importer_path:
+            replaced_destinations.append(destination)
+        original_replace(src, dst)
 
-    monkeypatch.setattr(path_type, "write_text", wrapped_write_text)
+    monkeypatch.setattr(os, "replace", record_replace)
 
     cli._write_importer_module(tmp_path)
     cli._write_importer_module(tmp_path)
 
-    assert writes == 1
+    assert replaced_destinations == [importer_path]
 
 
 def test_generated_importer_delegates_to_import_transaction(
@@ -234,6 +246,115 @@ def test_generated_importer_can_import_builtins_through_transaction(
 
     assert result is py_builtins
     assert import_calls == [("builtins", None, None, (), 0)]
+
+
+def _frontend_main_ops_for_import_source(
+    source: str, **kwargs: object
+) -> list[dict[str, object]]:
+    gen = SimpleTIRGenerator(**kwargs)
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    return next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+
+def _frontend_import_transaction_calls(
+    ops: list[dict[str, object]],
+) -> set[tuple[str, tuple[str, ...], int, bool]]:
+    const_str = {
+        op["out"]: op["s_value"]
+        for op in ops
+        if op.get("kind") == "const_str"
+        and isinstance(op.get("out"), str)
+        and isinstance(op.get("s_value"), str)
+    }
+    const_int = {
+        op["out"]: op["value"]
+        for op in ops
+        if op.get("kind") == "const"
+        and isinstance(op.get("out"), str)
+        and isinstance(op.get("value"), int)
+    }
+    const_none = {
+        op["out"]
+        for op in ops
+        if op.get("kind") == "const_none" and isinstance(op.get("out"), str)
+    }
+    tuple_args = {
+        op["out"]: tuple(op.get("args") or ())
+        for op in ops
+        if op.get("kind") == "tuple_new" and isinstance(op.get("out"), str)
+    }
+    transaction_funcs = {
+        op["out"]
+        for op in ops
+        if op.get("kind") == "builtin_func"
+        and op.get("s_value") == "molt_importlib_import_transaction"
+        and isinstance(op.get("out"), str)
+    }
+
+    calls: set[tuple[str, tuple[str, ...], int, bool]] = set()
+    for op in ops:
+        if op.get("kind") != "call_func":
+            continue
+        args = op.get("args")
+        if not isinstance(args, list) or len(args) != 6:
+            continue
+        callee, name_var, globals_var, _locals_var, fromlist_var, level_var = args
+        if callee not in transaction_funcs:
+            continue
+        name = const_str.get(name_var)
+        level = const_int.get(level_var)
+        fromlist_vars = tuple_args.get(fromlist_var)
+        if not isinstance(name, str) or not isinstance(level, int):
+            continue
+        if fromlist_vars is None:
+            continue
+        fromlist = tuple(
+            const_str[var]
+            for var in fromlist_vars
+            if isinstance(var, str) and isinstance(const_str.get(var), str)
+        )
+        calls.add((name, fromlist, level, globals_var in const_none))
+    return calls
+
+
+def test_source_import_syntax_uses_import_transaction_not_module_import() -> None:
+    ops = _frontend_main_ops_for_import_source(
+        "import pkg.helper as helper\nimport json\n",
+        known_modules={"json", "pkg", "pkg.helper"},
+        stdlib_allowlist={"json"},
+    )
+
+    assert all(op.get("kind") != "module_import" for op in ops)
+    calls = _frontend_import_transaction_calls(ops)
+    assert ("pkg.helper", ("*",), 0, False) in calls
+    assert ("json", (), 0, False) in calls
+
+
+def test_relative_from_import_syntax_leaves_package_context_to_transaction() -> None:
+    ops = _frontend_main_ops_for_import_source(
+        "from .helper import ping\n",
+        module_name="pkg.main",
+        module_spec_name="pkg.main",
+        source_path="/tmp/pkg/main.py",
+        known_modules={"pkg", "pkg.helper"},
+    )
+
+    assert all(op.get("kind") != "module_import" for op in ops)
+    calls = _frontend_import_transaction_calls(ops)
+    assert ("helper", ("ping",), 1, False) in calls
+
+
+def test_import_transaction_implementation_modules_use_bootstrap_imports() -> None:
+    ops = _frontend_main_ops_for_import_source(
+        "import os\nimport sys\n",
+        module_name="importlib",
+        known_modules={"os", "sys"},
+        stdlib_allowlist={"os", "sys"},
+    )
+
+    assert any(op.get("kind") == "module_import" for op in ops)
+    assert not _frontend_import_transaction_calls(ops)
 
 
 def test_generated_importer_does_not_require_import_support_modules(
@@ -331,8 +452,56 @@ def test_materialize_import_plan_does_not_rescan_importlib_support(
         diagnostics_enabled=False,
     )
 
-    assert not import_plan.runtime_import_support_policy.needs_runtime_import_support
+    assert import_plan.runtime_import_support_policy == prepared.runtime_import_support_policy
     assert "demo" in import_plan.module_graph
+
+
+def test_materialize_import_plan_retains_external_native_artifact_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, _artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path
+    )
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import nativepkg\n")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    module_reasons: dict[str, set[str]] = {}
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path, external_root],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+        import_admission_policy=policy,
+    )
+    assert error is None
+    assert prepared is not None
+
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    assert import_plan.native_artifact_plan == policy.native_artifact_plan
+    assert import_plan.native_artifact_plan.digest() == policy.native_artifact_plan.digest()
+    assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
 
 
 def test_core_closure_preserves_stdlib_nested_scan_exceptions(
@@ -363,7 +532,84 @@ def test_core_closure_preserves_stdlib_nested_scan_exceptions(
     assert "core_closure" in module_reasons["copy"]
 
 
-def test_prepare_entry_module_graph_marks_static_entry_as_importer_free(
+def test_core_closure_copy_reaches_backend_stdlib_symbol_contract(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("value = 1\n")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    module_reasons: dict[str, set[str]] = {}
+
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=True,
+        module_reasons=module_reasons,
+        json_output=False,
+        target="native",
+    )
+
+    assert error is None
+    assert prepared is not None
+    import_plan = cli._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons=module_reasons,
+        stdlib_root=cli._stdlib_root_path(),
+        artifacts_root=tmp_path / "artifacts",
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+    frontend_analysis, frontend_error = cli._prepare_frontend_analysis(
+        module_graph=import_plan.module_graph,
+        module_graph_metadata=import_plan.module_graph_metadata,
+        module_resolution_cache=import_plan.module_resolution_cache,
+        project_root=tmp_path,
+        entry_module="demo",
+        json_output=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    assert frontend_error is None
+    assert frontend_analysis is not None
+    module_graph_metadata = cli._build_module_graph_metadata(
+        import_plan.module_graph,
+        generated_module_source_paths=import_plan.generated_module_source_paths,
+        entry_module="demo",
+        namespace_module_names=import_plan.namespace_module_names,
+        module_source_catalog=frontend_analysis.module_source_catalog,
+        module_deps=frontend_analysis.module_deps,
+    )
+    backend_setup = cli._prepare_backend_cache_setup(
+        cache_enabled=False,
+        ir={"functions": []},
+        target="native",
+        target_triple=None,
+        profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="bin",
+        is_wasm=False,
+        linked=False,
+        project_root=ROOT,
+        cache_dir=str(tmp_path / "cache"),
+        output_artifact=tmp_path / "demo.o",
+        warnings=[],
+        entry_module="demo",
+        module_graph_metadata=module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        stdlib_profile="micro",
+    )
+
+    assert "copy" in backend_setup.stdlib_module_symbols
+    assert "collections" in backend_setup.stdlib_module_symbols
+    assert backend_setup.stdlib_module_symbols_json is not None
+    assert "copy" in json.loads(backend_setup.stdlib_module_symbols_json)
+
+
+def test_prepare_entry_module_graph_marks_source_import_syntax_runtime_supported(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
@@ -385,7 +631,9 @@ def test_prepare_entry_module_graph_marks_static_entry_as_importer_free(
     assert error is None
     assert prepared is not None
     assert not prepared.runtime_import_support_policy.needs_generated_importer
-    assert not prepared.runtime_import_support_policy.needs_runtime_import_support
+    assert prepared.runtime_import_support_policy.needs_runtime_import_support
+    assert "importlib.util" in prepared.module_graph
+    assert "importlib.machinery" in prepared.module_graph
 
 
 def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_supported(
@@ -449,7 +697,7 @@ def test_prepare_entry_module_graph_keeps_dependency_function_dynamic_import_laz
 
     assert error is None
     assert prepared is not None
-    assert not prepared.runtime_import_support_policy.needs_runtime_import_support
+    assert prepared.runtime_import_support_policy.needs_runtime_import_support
     assert "pkg.device" in prepared.module_graph
     assert "pkg.runtime.ops_cpu" not in prepared.module_graph
 
@@ -670,6 +918,11 @@ def test_import_plan_freezes_graph_and_allowlist(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError):
         import_plan.module_graph["extra"] = entry_path  # type: ignore[index]
+    metadata = import_plan.module_graph_metadata
+    with pytest.raises(TypeError):
+        metadata.module_is_package_by_module["extra"] = False  # type: ignore[index]
+    with pytest.raises(TypeError):
+        metadata.logical_source_path_by_module["demo"] = "other.py"  # type: ignore[index]
     assert isinstance(import_plan.stdlib_allowlist, frozenset)
     assert isinstance(import_plan.known_modules, frozenset)
     assert isinstance(import_plan.known_modules_sorted, tuple)
@@ -745,25 +998,22 @@ def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_suppor
 def test_write_namespace_module_avoids_rewriting_identical_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path_type = type(tmp_path)
-    original_write_text = path_type.write_text
-    writes = 0
     expected_path = tmp_path / "namespace_demo_pkg.py"
+    original_replace = os.replace
+    replaced_destinations: list[Path] = []
 
-    def wrapped_write_text(
-        self: Path, data: str, *args: object, **kwargs: object
-    ) -> int:
-        nonlocal writes
-        if self == expected_path:
-            writes += 1
-        return original_write_text(self, data, *args, **kwargs)
+    def record_replace(src: object, dst: object) -> None:
+        destination = Path(dst)
+        if destination == expected_path:
+            replaced_destinations.append(destination)
+        original_replace(src, dst)
 
-    monkeypatch.setattr(path_type, "write_text", wrapped_write_text)
+    monkeypatch.setattr(os, "replace", record_replace)
 
     cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
     cli._write_namespace_module("demo.pkg", ["/tmp/demo/pkg"], tmp_path)
 
-    assert writes == 1
+    assert replaced_destinations == [expected_path]
 
 
 def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
@@ -890,6 +1140,94 @@ def test_stdlib_allowlist_is_cached(
     assert info.hits >= 1
     assert info.currsize >= 1
     cli._stdlib_allowlist_cached.cache_clear()
+
+
+def test_respect_pythonpath_keeps_repo_src_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src_root = ROOT / "src"
+    monkeypatch.setenv("PYTHONPATH", str(src_root))
+
+    resolved = cli._resolve_module_root_resolution(
+        ROOT,
+        ROOT,
+        respect_pythonpath=True,
+        lib_paths=[],
+    )
+
+    assert src_root.resolve() in resolved.roots
+    assert src_root.resolve() not in resolved.external_roots
+
+
+def test_static_backend_ir_module_call_closure_accepts_graph_modules() -> None:
+    ir = {
+        "functions": [
+            {
+                "name": "molt_init_demo",
+                "ops": [
+                    {
+                        "kind": "call",
+                        "s_value": "copy__copy",
+                        "args": ["v0"],
+                        "out": "v1",
+                    },
+                ],
+            }
+        ]
+    }
+
+    assert cli._static_backend_ir_module_call_closure_issue(
+        ir,
+        {"demo": Path("demo.py"), "copy": Path("copy.py")},
+        {"copy", "demo"},
+    ) is None
+    assert cli._static_backend_ir_module_call_targets(ir, {"copy", "demo"}) == (
+        ("copy", "copy__copy", "molt_init_demo", 0),
+    )
+
+
+def test_static_backend_ir_module_call_closure_reports_missing_module() -> None:
+    ir = {
+        "functions": [
+            {
+                "name": "molt_init_collections",
+                "ops": [
+                    {
+                        "kind": "call",
+                        "s_value": "copy__copy",
+                        "args": ["v0"],
+                        "out": "v1",
+                    },
+                ],
+            }
+        ]
+    }
+
+    issue = cli._static_backend_ir_module_call_closure_issue(
+        ir, {"collections": Path("collections.py")}, {"collections", "copy"}
+    )
+
+    assert issue is not None
+    assert "copy__copy (copy) at molt_init_collections[0]" in issue
+    assert "graph_modules=1" in issue
+
+
+def test_static_backend_ir_module_call_closure_allows_lazy_missing_import() -> None:
+    ir = {
+        "functions": [
+            {
+                "name": "zipfile__ZipFile_read",
+                "ops": [
+                    {"kind": "const_str", "s_value": "bz2", "out": "v0"},
+                    {"kind": "module_import", "args": ["v0"], "out": "v1"},
+                ],
+            }
+        ]
+    }
+
+    assert cli._static_backend_ir_module_call_closure_issue(
+        ir, {"zipfile": Path("zipfile.py")}, {"zipfile", "bz2"}
+    ) is None
 
 
 def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
@@ -1042,6 +1380,42 @@ def test_external_package_parent_closure_cannot_backdoor_children(
     assert "externalpkg.sub.massive" not in prepared.module_graph
 
 
+def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    site = tmp_path / "site"
+    project.mkdir()
+    package = site / "tinygrad"
+    package.mkdir(parents=True)
+    entry = project / "main.py"
+    entry.write_text("from tinygrad import Tensor\n", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "from .tensor import Tensor\n__all__ = ['Tensor']\n",
+        encoding="utf-8",
+    )
+    tensor = package / "tensor.py"
+    tensor.write_text("class Tensor:\n    pass\n", encoding="utf-8")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [project.resolve(), site.resolve()]
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        [*module_roots, stdlib_root],
+        module_roots,
+        stdlib_root,
+        project,
+        cli._stdlib_allowlist(),
+        skip_modules=cli.STUB_MODULES,
+        stub_parents=cli.STUB_PARENT_MODULES,
+    )
+
+    assert {"tinygrad", "tinygrad.tensor"} <= set(graph)
+    assert graph["tinygrad.tensor"] == tensor
+    assert "tinygrad.Tensor" not in graph
+    assert "tinygrad.Tensor" in explicit_imports
+
+
 def test_module_graph_policy_digest_includes_external_admission(
     tmp_path: Path,
 ) -> None:
@@ -1056,6 +1430,403 @@ def test_module_graph_policy_digest_includes_external_admission(
     assert cli._module_graph_policy_digest({"sys"}, bounded) != (
         cli._module_graph_policy_digest({"sys"}, closed)
     )
+
+
+def _write_external_native_package(
+    tmp_path: Path,
+    *,
+    package: str = "nativepkg",
+    artifact_bytes: bytes = b"native-extension",
+    write_manifest: bool = True,
+    checksum_override: str | None = None,
+    manifest_overrides: dict[str, Any] | None = None,
+    shim_source: str | None = None,
+) -> tuple[Path, Path, Path]:
+    external_root = tmp_path / "site"
+    package_dir = external_root.joinpath(*package.split("."))
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text(
+        f"import {package}._native\nVALUE = 1\n",
+        encoding="utf-8",
+    )
+    artifact_path = package_dir / "_native.so"
+    artifact_path.write_bytes(artifact_bytes)
+    manifest_path = package_dir / "extension_manifest.json"
+    if write_manifest:
+        extension_sha = hashlib.sha256(artifact_bytes).hexdigest()
+        manifest = {
+            "schema_version": 1,
+            "module": f"{package}._native",
+            "molt_c_api_version": "1",
+            "abi_tag": "molt_abi1",
+            "python_tag": "py3",
+            "target_triple": "x86_64-unknown-linux-gnu",
+            "platform_tag": "x86_64_unknown_linux_gnu",
+            "capabilities": ["module.extension.exec"],
+            "extension": "_native.so",
+            "extension_sha256": checksum_override or extension_sha,
+        }
+        if manifest_overrides:
+            manifest.update(manifest_overrides)
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    if shim_source is not None:
+        (package_dir / "_native.so.molt.py").write_text(
+            shim_source,
+            encoding="utf-8",
+        )
+    return external_root, artifact_path, manifest_path
+
+
+def test_external_static_package_native_artifact_plan_validates_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, artifact_path, manifest_path = _write_external_native_package(
+        tmp_path
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+
+    assert error is None
+    assert policy is not None
+    assert policy.admitted_external_packages == frozenset({"nativepkg"})
+    assert len(policy.native_artifact_plan.artifacts) == 1
+    artifact = policy.native_artifact_plan.artifacts[0]
+    assert artifact.package == "nativepkg"
+    assert artifact.module == "nativepkg._native"
+    assert artifact.package_dir == (external_root / "nativepkg").resolve()
+    assert artifact.path == artifact_path.resolve()
+    assert artifact.manifest_path == manifest_path.resolve()
+    assert artifact.capabilities == ("module.extension.exec",)
+    assert artifact.extension_sha256 == hashlib.sha256(
+        artifact_path.read_bytes()
+    ).hexdigest()
+    assert policy.digest_payload()["native_artifact_plan"]["artifacts"][0][
+        "manifest_sha256"
+    ] == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def test_external_static_package_native_artifact_requires_sidecar_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    external_root, artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        write_manifest=False,
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+
+    assert policy is None
+    assert error == 2
+    stderr = capsys.readouterr().err
+    assert "native-artifact custody errors" in stderr
+    assert "extension_manifest.json" in stderr
+    assert str(artifact_path) in stderr
+
+
+def test_external_static_package_native_artifact_requires_matching_checksum(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    external_root, _artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        checksum_override="0" * 64,
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+
+    assert policy is None
+    assert error == 2
+    assert "extension_sha256 mismatch" in capsys.readouterr().err
+
+
+def test_external_static_package_native_artifact_rejects_module_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    external_root, _artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        manifest_overrides={"module": "otherpkg._native"},
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+
+    assert policy is None
+    assert error == 2
+    assert "does not match native artifact module" in capsys.readouterr().err
+
+
+def test_external_static_package_native_artifact_rejects_extension_path_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    external_root, _artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        manifest_overrides={"extension": "nested/_native.so"},
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+
+    assert policy is None
+    assert error == 2
+    assert "does not match native artifact" in capsys.readouterr().err
+
+
+def test_external_static_package_native_artifact_rejects_invalid_manifest_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    external_root, _artifact_path, manifest_path = _write_external_native_package(
+        tmp_path
+    )
+    manifest_path.write_text("{", encoding="utf-8")
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+
+    assert policy is None
+    assert error == 2
+    assert "invalid extension manifest" in capsys.readouterr().err
+
+
+def test_module_graph_policy_digest_includes_native_artifact_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, artifact_path, manifest_path = _write_external_native_package(
+        tmp_path,
+        artifact_bytes=b"native-extension-v1",
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    first_policy, first_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert first_error is None
+    assert first_policy is not None
+
+    artifact_path.write_bytes(b"native-extension-v2")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["extension_sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    second_policy, second_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert second_error is None
+    assert second_policy is not None
+
+    assert first_policy.native_artifact_plan.digest() != (
+        second_policy.native_artifact_plan.digest()
+    )
+    assert cli._module_graph_policy_digest({"sys"}, first_policy) != (
+        cli._module_graph_policy_digest({"sys"}, second_policy)
+    )
+
+
+def test_external_native_artifact_output_custody_accepts_native_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, _artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert error is None
+    assert policy is not None
+    output_layout = cli._BuildOutputLayout(
+        is_wasm=False,
+        is_wasm_freestanding=False,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_mlir_emit=False,
+        split_runtime=False,
+        linked=False,
+        target_triple=None,
+        emit_mode="bin",
+        output_artifact=tmp_path / "output.o",
+        output_binary=tmp_path / "app",
+        linked_output_path=None,
+        emit_ir_path=None,
+    )
+
+    assert (
+        cli._external_native_artifact_output_custody_error(
+            native_artifact_plan=policy.native_artifact_plan,
+            output_layout=output_layout,
+            target="native",
+        )
+        is None
+    )
+
+
+def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, _artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert error is None
+    assert policy is not None
+    unsupported_layouts = [
+        (
+            "native",
+            cli._BuildOutputLayout(
+                is_wasm=False,
+                is_wasm_freestanding=False,
+                is_rust_transpile=False,
+                is_luau_transpile=False,
+                is_mlir_emit=False,
+                split_runtime=False,
+                linked=False,
+                target_triple=None,
+                emit_mode="obj",
+                output_artifact=tmp_path / "output.o",
+                output_binary=None,
+                linked_output_path=None,
+                emit_ir_path=None,
+            ),
+        ),
+        (
+            "wasm",
+            cli._BuildOutputLayout(
+                is_wasm=True,
+                is_wasm_freestanding=False,
+                is_rust_transpile=False,
+                is_luau_transpile=False,
+                is_mlir_emit=False,
+                split_runtime=False,
+                linked=True,
+                target_triple=None,
+                emit_mode="wasm",
+                output_artifact=tmp_path / "output.wasm",
+                output_binary=None,
+                linked_output_path=tmp_path / "output_linked.wasm",
+                emit_ir_path=None,
+            ),
+        ),
+        (
+            "rust",
+            cli._BuildOutputLayout(
+                is_wasm=False,
+                is_wasm_freestanding=False,
+                is_rust_transpile=True,
+                is_luau_transpile=False,
+                is_mlir_emit=False,
+                split_runtime=False,
+                linked=False,
+                target_triple=None,
+                emit_mode="bin",
+                output_artifact=tmp_path / "output.rs",
+                output_binary=None,
+                linked_output_path=None,
+                emit_ir_path=None,
+            ),
+        ),
+        (
+            "luau",
+            cli._BuildOutputLayout(
+                is_wasm=False,
+                is_wasm_freestanding=False,
+                is_rust_transpile=True,
+                is_luau_transpile=True,
+                is_mlir_emit=False,
+                split_runtime=False,
+                linked=False,
+                target_triple=None,
+                emit_mode="bin",
+                output_artifact=tmp_path / "output.luau",
+                output_binary=None,
+                linked_output_path=None,
+                emit_ir_path=None,
+            ),
+        ),
+        (
+            "mlir",
+            cli._BuildOutputLayout(
+                is_wasm=False,
+                is_wasm_freestanding=False,
+                is_rust_transpile=False,
+                is_luau_transpile=False,
+                is_mlir_emit=True,
+                split_runtime=False,
+                linked=False,
+                target_triple=None,
+                emit_mode="bin",
+                output_artifact=tmp_path / "output.mlir",
+                output_binary=None,
+                linked_output_path=None,
+                emit_ir_path=None,
+            ),
+        ),
+    ]
+
+    for target, output_layout in unsupported_layouts:
+        error_message = cli._external_native_artifact_output_custody_error(
+            native_artifact_plan=policy.native_artifact_plan,
+            output_layout=output_layout,
+            target=target,
+        )
+        assert error_message is not None
+        assert "External static native packages require native binary output" in (
+            error_message
+        )
+        assert f"target={target}" in error_message
+        assert "packages=nativepkg" in error_message
+
+
+def test_wrapper_build_cache_semantic_env_tracks_external_static_packages() -> None:
+    semantic_env = cli._wrapper_build_cache_semantic_env(
+        {
+            "MOLT_EXTERNAL_STATIC_PACKAGES": "nativepkg",
+            "MOLT_MODULE_ROOTS": "/tmp/site",
+            "IGNORED": "value",
+        }
+    )
+
+    assert semantic_env == {
+        "MOLT_EXTERNAL_STATIC_PACKAGES": "nativepkg",
+        "MOLT_MODULE_ROOTS": "/tmp/site",
+    }
 
 
 def test_frontend_known_modules_do_not_authorize_unknown_children() -> None:
@@ -1208,6 +1979,27 @@ def test_backend_ir_text_is_compact() -> None:
     assert '"functions"' in text
 
 
+def test_backend_ir_lease_streams_json_without_bytes_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_backend_ir_bytes",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("backend IR lease must not materialize bytes")
+        ),
+    )
+
+    lease_path = cli._write_backend_ir_lease(
+        tmp_path,
+        {"functions": [{"name": "main", "ops": [{"kind": "ret_void"}]}]},
+    )
+
+    assert lease_path.parent == tmp_path / "tmp" / "backend-ir-leases"
+    payload = json.loads(lease_path.read_text())
+    assert payload["functions"][0]["name"] == "main"
+
+
 def test_link_fingerprint_reuses_inputs_digest_when_unchanged(tmp_path: Path) -> None:
     stub = tmp_path / "main_stub.c"
     obj = tmp_path / "output.o"
@@ -1263,6 +2055,28 @@ def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> N
     assert first["hash"] != second["hash"]
 
 
+def test_write_link_fingerprint_reports_json_warning_on_metadata_loss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_metadata_write(path: Path, payload: Mapping[str, object]) -> None:
+        del path, payload
+        raise OSError("state volume read-only")
+
+    monkeypatch.setattr(cli, "_write_runtime_fingerprint", raise_metadata_write)
+
+    warning = cli._write_link_fingerprint_if_needed(
+        link_skipped=False,
+        link_fingerprint={"hash": "fingerprint"},
+        link_fingerprint_path=tmp_path / "state" / "link.json",
+        json_output=True,
+    )
+
+    assert warning is not None
+    assert "failed to write link fingerprint metadata" in warning
+    assert "state volume read-only" in warning
+
+
 def _write_shared_stdlib_test_contract(stdlib_obj: Path, cache_key: str) -> str:
     manifest = cli._shared_stdlib_manifest(
         cache_key=cache_key,
@@ -1305,7 +2119,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         inputs: list[Path],
         link_cmd: list[str],
         stored_fingerprint: dict[str, object] | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, str | None]:
         del project_root, link_cmd, stored_fingerprint
         captured_inputs[:] = inputs
         return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
@@ -1485,6 +2299,286 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
     assert staged_stdlib.read_bytes() == b"stdlib"
 
 
+def test_stage_external_native_artifacts_prunes_removed_shim_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path,
+        shim_source="value = 911\n",
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert error is None
+    assert policy is not None
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir()
+    staged_once = cli._stage_external_package_native_artifacts_for_build(
+        policy.native_artifact_plan,
+        artifacts_root=artifacts_root,
+    )
+    assert len(staged_once) == 1
+    staged_shim = staged_once[0].runtime_root / "nativepkg" / "_native.so.molt.py"
+    assert staged_shim.read_text(encoding="utf-8") == "value = 911\n"
+
+    artifact_path.with_name("_native.so.molt.py").unlink()
+    staged_twice = cli._stage_external_package_native_artifacts_for_build(
+        policy.native_artifact_plan,
+        artifacts_root=artifacts_root,
+    )
+
+    assert len(staged_twice) == 1
+    assert not staged_shim.exists()
+    assert staged_shim not in staged_twice[0].staged_support_paths
+
+
+def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external_root, artifact_path, manifest_path = _write_external_native_package(
+        tmp_path,
+        shim_source="value = 911\n",
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    output_obj = tmp_path / "output.o"
+    output_obj.write_bytes(b"\x7fELFobject")
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    runtime_lib.write_bytes(b"archive")
+    output_binary = tmp_path / "app"
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir()
+    captured_inputs: list[Path] = []
+    captured_link_cmd: list[str] = []
+
+    def fake_link_fingerprint(
+        *,
+        project_root: Path,
+        inputs: list[Path],
+        link_cmd: list[str],
+        stored_fingerprint: dict[str, object] | None = None,
+    ) -> dict[str, str]:
+        del project_root, link_cmd, stored_fingerprint
+        captured_inputs[:] = inputs
+        return {"hash": "fingerprint", "rustc": None, "inputs_digest": None}
+
+    def fake_run_native_link_command(
+        *,
+        link_cmd: list[str],
+        json_output: bool,
+        link_timeout: float | None,
+    ) -> subprocess.CompletedProcess[str]:
+        del json_output, link_timeout
+        captured_link_cmd[:] = link_cmd
+        return subprocess.CompletedProcess(link_cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_link_fingerprint", fake_link_fingerprint)
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True)
+    monkeypatch.setattr(cli, "_run_native_link_command", fake_run_native_link_command)
+
+    prepared, error = cli._prepare_native_link(
+        output_artifact=output_obj,
+        trusted=False,
+        capabilities_list=None,
+        artifacts_root=artifacts_root,
+        json_output=False,
+        output_binary=output_binary,
+        runtime_lib=runtime_lib,
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev-fast",
+        target_triple=None,
+        sysroot_path=None,
+        profile="dev",
+        project_root=tmp_path,
+        diagnostics_enabled=False,
+        phase_starts={},
+        link_timeout=None,
+        warnings=[],
+        native_artifact_plan=policy.native_artifact_plan,
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert len(prepared.external_native_artifacts) == 1
+    staged = prepared.external_native_artifacts[0]
+    expected_runtime_root = (
+        artifacts_root
+        / "external_static_packages"
+        / policy.native_artifact_plan.digest()
+    )
+    assert staged.runtime_root == expected_runtime_root
+    assert staged.staged_path == expected_runtime_root / "nativepkg" / "_native.so"
+    assert (
+        staged.staged_manifest_path
+        == expected_runtime_root / "nativepkg" / "extension_manifest.json"
+    )
+    staged_init = expected_runtime_root / "nativepkg" / "__init__.py"
+    staged_shim = expected_runtime_root / "nativepkg" / "_native.so.molt.py"
+    assert staged.staged_path.read_bytes() == artifact_path.read_bytes()
+    assert json.loads(staged.staged_manifest_path.read_text(encoding="utf-8")) == (
+        json.loads(manifest_path.read_text(encoding="utf-8"))
+    )
+    assert staged_init.read_text(encoding="utf-8").startswith("import nativepkg._native")
+    assert staged_shim.read_text(encoding="utf-8") == "value = 911\n"
+    assert staged.staged_path in captured_inputs
+    assert staged.staged_manifest_path in captured_inputs
+    assert staged_init in captured_inputs
+    assert staged_shim in captured_inputs
+    stub_content = prepared.stub_path.read_text(encoding="utf-8")
+    assert str(expected_runtime_root.resolve()) in stub_content
+    native_main_start = stub_content.index("int main")
+    assert (
+        stub_content.index("molt_set_runtime_module_roots();", native_main_start)
+        < stub_content.index("molt_runtime_init();", native_main_start)
+    )
+    assert str(staged.staged_path) not in captured_link_cmd
+    assert str(staged.staged_manifest_path) not in captured_link_cmd
+
+
+def test_render_native_main_stub_embeds_runtime_module_roots_before_init(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "artifacts" / "external_static_packages" / "digest"
+
+    stub_content = cli._render_native_main_stub(
+        trusted=False,
+        capabilities_list=None,
+        runtime_module_roots=(runtime_root,),
+    )
+
+    assert "static void molt_set_runtime_module_roots()" in stub_content
+    assert str(runtime_root.resolve()) in stub_content
+    assert "getenv(\"MOLT_MODULE_ROOTS\")" in stub_content
+    assert "setenv(\"MOLT_MODULE_ROOTS\", roots, 1)" in stub_content
+    native_main_start = stub_content.index("int main")
+    assert (
+        stub_content.index("molt_set_runtime_module_roots();", native_main_start)
+        < stub_content.index("molt_runtime_init();", native_main_start)
+    )
+
+
+def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    external_root, artifact_path, _manifest_path = _write_external_native_package(
+        tmp_path
+    )
+    monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
+    policy, policy_error = cli._resolve_import_admission_policy(
+        external_module_roots=(external_root,),
+        json_output=False,
+    )
+    assert policy_error is None
+    assert policy is not None
+    artifact_path.write_bytes(b"mutated-after-validation")
+    output_obj = tmp_path / "output.o"
+    output_obj.write_bytes(b"\x7fELFobject")
+    runtime_lib = tmp_path / "libmolt_runtime.a"
+    runtime_lib.write_bytes(b"archive")
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir()
+
+    prepared, error = cli._prepare_native_link(
+        output_artifact=output_obj,
+        trusted=False,
+        capabilities_list=None,
+        artifacts_root=artifacts_root,
+        json_output=False,
+        output_binary=tmp_path / "app",
+        runtime_lib=runtime_lib,
+        molt_root=tmp_path,
+        runtime_cargo_profile="dev-fast",
+        target_triple=None,
+        sysroot_path=None,
+        profile="dev",
+        project_root=tmp_path,
+        diagnostics_enabled=False,
+        phase_starts={},
+        link_timeout=None,
+        warnings=[],
+        native_artifact_plan=policy.native_artifact_plan,
+    )
+
+    assert prepared is None
+    assert error == 2
+    stderr = capsys.readouterr().err
+    assert "Failed to stage external native artifacts" in stderr
+    assert "checksum changed before staging" in stderr
+    staged_path = (
+        artifacts_root
+        / "external_static_packages"
+        / policy.native_artifact_plan.digest()
+        / "nativepkg"
+        / "_native.so"
+    )
+    assert not staged_path.exists()
+
+
+def test_build_native_link_success_data_reports_external_native_artifacts(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "artifacts" / "external_static_packages" / "digest"
+    staged = cli._StagedExternalPackageNativeArtifact(
+        package="nativepkg",
+        module="nativepkg._native",
+        runtime_root=runtime_root,
+        source_path=tmp_path / "site" / "nativepkg" / "_native.so",
+        source_manifest_path=(
+            tmp_path / "site" / "nativepkg" / "extension_manifest.json"
+        ),
+        staged_path=runtime_root / "nativepkg" / "_native.so",
+        staged_manifest_path=runtime_root / "nativepkg" / "extension_manifest.json",
+        staged_support_paths=(runtime_root / "nativepkg" / "_native.so.molt.py",),
+        extension_sha256="e" * 64,
+        manifest_sha256="m" * 64,
+        capabilities=("module.extension.exec",),
+        abi_tag="molt_abi1",
+        target_triple="x86_64-unknown-linux-gnu",
+        platform_tag="x86_64_unknown_linux_gnu",
+    )
+
+    data = cli._build_native_link_success_data(
+        target="native",
+        target_triple=None,
+        source_path=tmp_path / "demo.py",
+        output_binary=tmp_path / "app",
+        deterministic=False,
+        trusted=False,
+        capabilities_list=None,
+        capability_profiles=None,
+        capabilities_source=None,
+        sysroot_path=None,
+        cache_info={},
+        emit_mode="bin",
+        profile="dev",
+        native_arch_perf_enabled=False,
+        output_obj=tmp_path / "output.o",
+        stub_path=tmp_path / "main_stub.c",
+        runtime_lib=tmp_path / "libmolt_runtime.a",
+        link_skipped=False,
+        external_native_artifacts=(staged,),
+    )
+
+    assert data["artifacts"]["external_static_packages_root"] == str(runtime_root)
+    assert data["artifacts"]["external_native_artifact_0"] == str(staged.staged_path)
+    assert data["artifacts"]["external_native_artifact_0_manifest"] == str(
+        staged.staged_manifest_path
+    )
+    assert data["external_native_artifacts"] == [staged.json_payload()]
+
+
 def test_build_native_link_command_does_not_read_ambient_stdlib_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1611,7 +2705,37 @@ def test_windows_link_omits_icf_for_fn_identity(
     assert "-Wl,/OPT:ICF" not in link_cmd
 
 
-def test_cache_payloads_for_ir_share_sorted_function_order() -> None:
+def _legacy_streamed_cache_digest(
+    payload_ir: Mapping[str, object],
+    *,
+    target: str,
+    target_triple: str | None,
+    variant: str,
+    schema_version: str,
+) -> str:
+    payload = json.dumps(
+        payload_ir,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=cli._json_ir_default,
+    ).encode("utf-8")
+    suffix = target_triple or target
+    if variant:
+        suffix = f"{suffix}:{variant}"
+    return hashlib.sha256(
+        payload
+        + b"|"
+        + suffix.encode("utf-8")
+        + b"|"
+        + cli._cache_fingerprint().encode("utf-8")
+        + b"|"
+        + cli._cache_tooling_fingerprint().encode("utf-8")
+        + b"|"
+        + schema_version.encode("utf-8")
+    ).hexdigest()
+
+
+def test_streamed_cache_keys_preserve_legacy_payload_semantics() -> None:
     ir = {
         "functions": [
             {"name": "zeta", "ops": []},
@@ -1620,12 +2744,49 @@ def test_cache_payloads_for_ir_share_sorted_function_order() -> None:
         "profile": {"hash": "abc"},
         "runtime_feedback": {"hot_functions": ["alpha"]},
     }
-    module_payload, backend_payload = cli._cache_payloads_for_ir(ir)
-    module_text = module_payload.decode("utf-8")
-    backend_text = backend_payload.decode("utf-8")
+    module_payload_ir = cli._cache_ir_payload_ir(ir)
+    backend_payload_ir = cli._cache_backend_payload_ir(ir)
+    module_text = json.dumps(
+        module_payload_ir,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=cli._json_ir_default,
+    )
+    backend_text = json.dumps(
+        backend_payload_ir,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=cli._json_ir_default,
+    )
     assert module_text.index('"name":"alpha"') < module_text.index('"name":"zeta"')
     assert backend_text.index('"name":"alpha"') < backend_text.index('"name":"zeta"')
     assert '"top_level_extras_digest"' in backend_text
+    assert cli._cache_key(ir, "native", None, "variant") == _legacy_streamed_cache_digest(
+        module_payload_ir,
+        target="native",
+        target_triple=None,
+        variant="variant",
+        schema_version=cli._CACHE_KEY_SCHEMA_VERSION,
+    )
+    assert cli._function_cache_key(
+        ir, "native", None, "variant"
+    ) == _legacy_streamed_cache_digest(
+        backend_payload_ir,
+        target="native",
+        target_triple=None,
+        variant="variant",
+        schema_version=cli._FUNCTION_CACHE_KEY_SCHEMA_VERSION,
+    )
+
+
+def test_frontend_parallel_layer_result_take_releases_result_map() -> None:
+    layer_state = cli._fresh_frontend_parallel_layer_state()
+    result = {"ok": True, "functions": [{"name": "pkg__module", "ops": []}]}
+    layer_state.results["pkg"] = result
+
+    assert cli._take_frontend_parallel_layer_result(layer_state, "pkg") is result
+    assert "pkg" not in layer_state.results
+    assert cli._take_frontend_parallel_layer_result(layer_state, "pkg") is None
 
 
 def test_shared_module_resolution_cache_reduces_repeated_resolution(
@@ -4919,6 +6080,8 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
     assert set(payload["known_classes"]) == {"MainClass", "DepClass"}
     assert set(payload["known_func_defaults"]) == {"main", "alpha"}
     assert payload["pgo_hot_functions"] == ["main::hot"]
+    assert "source" not in payload
+    assert payload["source_lease"]["kind"] == "inline"
 
 
 def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
@@ -5072,6 +6235,110 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
     assert len(worker_payloads) == 2
     assert set(context_digest_by_module) == {"main", "alpha"}
     assert calls == 2
+
+
+def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
+    tmp_path: Path,
+) -> None:
+    module_graph = {
+        "main": tmp_path / "main.py",
+        "alpha": tmp_path / "alpha.py",
+    }
+    module_graph["main"].write_text("import alpha\nVALUE = alpha.VALUE\n")
+    module_graph["alpha"].write_text("VALUE = 1\n")
+    module_source_catalog = cli._build_module_source_catalog(module_graph)
+    module_graph_metadata = cli._build_module_graph_metadata(
+        module_graph,
+        generated_module_source_paths={},
+        entry_module="main",
+        namespace_module_names=set(),
+        module_source_catalog=module_source_catalog,
+        module_deps={"main": {"alpha"}, "alpha": set()},
+    )
+
+    cached_results, worker_payloads, context_digest_by_module, batch_error = (
+        cli._prepare_frontend_parallel_batch(
+            ["main"],
+            module_graph=module_graph,
+            module_source_catalog=module_source_catalog,
+            project_root=tmp_path,
+            known_classes_snapshot={},
+            module_resolution_cache=cli._ModuleResolutionCache(),
+            parse_codec="json",
+            type_hint_policy="ignore",
+            fallback_policy="error",
+            type_facts=None,
+            enable_phi=True,
+            known_modules={"main", "alpha"},
+            stdlib_allowlist=set(),
+            known_func_defaults={},
+            module_deps={"main": {"alpha"}, "alpha": set()},
+            module_chunk_max_ops=0,
+            optimization_profile="dev",
+            pgo_hot_function_names=set(),
+            known_modules_sorted=("alpha", "main"),
+            stdlib_allowlist_sorted=(),
+            pgo_hot_function_names_sorted=(),
+            module_dep_closures={
+                "main": frozenset({"main", "alpha"}),
+                "alpha": frozenset({"alpha"}),
+            },
+            module_graph_metadata=module_graph_metadata,
+            path_stat_by_module={
+                name: path.stat() for name, path in module_graph.items()
+            },
+            module_chunking=False,
+            dirty_lowering_modules={"main"},
+            target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        )
+    )
+
+    assert batch_error is None
+    assert cached_results == {}
+    assert set(context_digest_by_module) == {"main"}
+    assert len(worker_payloads) == 1
+    payload = worker_payloads[0][1]
+    assert "source" not in payload
+    assert payload["source_lease"]["kind"] == "path"
+    assert payload["source_lease"]["path"] == str(module_graph["main"])
+    result = cli._frontend_lower_module_worker(payload)
+    assert result["ok"] is True
+
+
+def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text("VALUE = 1\n")
+    lease = cli._ModuleSourceLease.path_backed(module_path)
+    module_path.write_text("VALUE = 100\n")
+
+    result = cli._frontend_lower_module_worker(
+        cli._module_worker_payload(
+            "main",
+            module_path=module_path,
+            logical_source_path=str(module_path),
+            source_lease=lease,
+            parse_codec="json",
+            type_hint_policy="ignore",
+            fallback_policy="error",
+            module_is_namespace=False,
+            entry_module=None,
+            type_facts=None,
+            enable_phi=True,
+            known_modules=("main",),
+            known_classes_snapshot={},
+            stdlib_allowlist_sorted=(),
+            known_func_defaults={},
+            module_deps={"main": set()},
+            module_chunking=False,
+            module_chunk_max_ops=0,
+            optimization_profile="dev",
+            pgo_hot_function_names=(),
+            module_dep_closures={"main": frozenset({"main"})},
+        )
+    )
+
+    assert result["ok"] is False
+    assert "Source lease" in result["error"]
 
 
 def test_module_lowering_context_payload_scopes_type_facts() -> None:
@@ -5955,7 +7222,7 @@ def test_parallel_build_allows_scoped_type_facts(
     assert compile_diagnostics["frontend_parallel"]["reason"] == "enabled"
 
 
-def test_build_one_shot_backend_compile_uses_bytes_input(
+def test_build_one_shot_backend_compile_uses_ir_file_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
@@ -5979,8 +7246,13 @@ def test_build_one_shot_backend_compile_uses_bytes_input(
     monkeypatch.setattr(cli, "_backend_daemon_enabled", lambda: False)
     monkeypatch.setattr(cli, "_backend_bin_path", lambda *args, **kwargs: backend_bin)
     monkeypatch.setattr(cli, "_ensure_backend_binary", lambda *args, **kwargs: True)
-    backend_inputs: list[bytes] = []
-    _install_fake_backend_compile(monkeypatch, backend_inputs=backend_inputs)
+    backend_inputs: list[bytes | None] = []
+    backend_ir_files: list[Path] = []
+    _install_fake_backend_compile(
+        monkeypatch,
+        backend_inputs=backend_inputs,
+        backend_ir_files=backend_ir_files,
+    )
 
     rc = cli.build(
         str(entry),
@@ -5993,9 +7265,10 @@ def test_build_one_shot_backend_compile_uses_bytes_input(
 
     assert rc == 0
     assert len(backend_inputs) == 1
-    # Backend input is msgpack-encoded (binary), not JSON
-    assert isinstance(backend_inputs[0], bytes)
-    assert len(backend_inputs[0]) > 0
+    assert backend_inputs[0] is None
+    assert len(backend_ir_files) == 1
+    assert backend_ir_files[0].parent == project / "tmp" / "backend-ir-leases"
+    assert not backend_ir_files[0].exists()
 
 
 def test_build_skips_daemon_preflight_when_socket_exists(
@@ -6171,6 +7444,50 @@ def test_read_module_source_falls_back_for_encoding_cookie(
         cli._read_module_source(source_path)
         == "# -*- coding: latin-1 -*-\nname = 'café'\n"
     )
+
+
+def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
+    tmp_path: Path,
+) -> None:
+    main_path = tmp_path / "main.py"
+    dep_path = tmp_path / "dep.py"
+    main_path.write_text("import dep\nVALUE = dep.VALUE\n", encoding="utf-8")
+    dep_path.write_text("VALUE = 41\n", encoding="utf-8")
+    module_graph = {"main": main_path, "dep": dep_path}
+    metadata = cli._build_module_graph_metadata(
+        module_graph,
+        generated_module_source_paths={},
+        entry_module="main",
+        namespace_module_names=set(),
+    )
+    resolution_cache = cli._ModuleResolutionCache()
+
+    analysis, failure = cli._prepare_frontend_analysis(
+        module_graph=module_graph,
+        module_graph_metadata=metadata,
+        module_resolution_cache=resolution_cache,
+        project_root=tmp_path,
+        entry_module="main",
+        json_output=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert failure is None
+    assert analysis is not None
+    assert analysis.module_sources == {}
+    assert analysis.module_trees == {}
+    assert resolution_cache.source_cache == {}
+    assert resolution_cache.ast_cache == {}
+    main_lease = analysis.module_source_catalog.lease_for("main", main_path)
+    assert main_lease.path_backed_source is True
+    assert main_lease.source_size == main_path.stat().st_size
+    assert (
+        analysis.module_source_catalog.read_source(
+            "main", main_path, resolution_cache
+        )
+        == "import dep\nVALUE = dep.VALUE\n"
+    )
+    assert resolution_cache.source_cache == {}
 
 
 def _compile_with_backend_daemon_non_wasm(
@@ -6893,7 +8210,10 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         generated_module_source_paths={},
         entry_module="entry",
         namespace_module_names=set(),
-        module_sources={"entry": "print('ok')\n"},
+        module_source_catalog=cli._build_module_source_catalog(
+            {"entry": source_path},
+            module_sources={"entry": "print('ok')\n"},
+        ),
         is_wasm=False,
         target_triple=None,
         frontend_parallel_details={},
@@ -7387,7 +8707,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
     assert removed == []
 
 
-def test_start_backend_daemon_uses_short_probe_for_stale_socket_with_live_pid(
+def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7459,7 +8779,7 @@ def test_start_backend_daemon_uses_short_probe_for_stale_socket_with_live_pid(
         del args
         ready_calls += 1
         wait_timeouts.append(cast(float | None, kwargs.get("ready_timeout")))
-        return ready_calls > 1, None
+        return False, None
 
     monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", fake_wait_until_ready)
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: _FakePopen())
@@ -7489,9 +8809,9 @@ def test_start_backend_daemon_uses_short_probe_for_stale_socket_with_live_pid(
         is True
     )
     assert wait_timeouts[0] == 0.25
-    assert ready_calls >= 2
-    assert terminated == [1234]
-    assert removed == [identity_path]
+    assert ready_calls == 1
+    assert terminated == []
+    assert removed == []
 
 
 def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
@@ -8207,7 +9527,7 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
         ),
     )
 
-    runtime_context = cli._prepare_backend_runtime_context(
+    runtime_context, failure = cli._prepare_backend_runtime_context(
         prepared_backend_setup=prepared_backend_setup,
         is_wasm_freestanding=False,
         json_output=True,
@@ -8218,6 +9538,8 @@ def test_prepare_backend_runtime_context_passes_resolved_modules_to_wasm_runtime
         resolved_modules={"asyncio", "ssl"},
     )
 
+    assert failure is None
+    assert runtime_context is not None
     assert runtime_context.ensure_runtime_wasm_shared() is True
     assert runtime_context.ensure_runtime_wasm_reloc() is True
     assert captured == [
@@ -8455,6 +9777,7 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0")
+    stored_fingerprint = {"artifact_sha256": cli._sha256_file(runtime_wasm)}
     verification_calls: list[tuple[frozenset[str], str]] = []
 
     monkeypatch.setattr(
@@ -8480,6 +9803,7 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
             or False
         ),
     )
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: stored_fingerprint)
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
     monkeypatch.setattr(
         cli, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
@@ -8519,6 +9843,27 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
         verification_calls[0][0]
     )
     assert "stdlib_net" not in verification_calls[0][0]
+
+
+def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = tmp_path / "runtime.wasm"
+    artifact.write_bytes(b"\0asm\x01\0\0\0")
+    fingerprint_path = tmp_path / "missing.fingerprint"
+
+    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args: False)
+
+    assert (
+        cli._runtime_artifact_fingerprint_matches(
+            artifact,
+            {"hash": "expected"},
+            fingerprint_path,
+            require_artifact_digest=True,
+        )
+        is False
+    )
 
 
 def test_ensure_runtime_wasm_writes_integrity_sidecar_after_copy(
@@ -8645,11 +9990,13 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
+    stored_fingerprint = {"artifact_sha256": cli._sha256_file(runtime_wasm)}
 
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "same"}
     )
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: stored_fingerprint)
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
     monkeypatch.setattr(
         cli, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
@@ -8722,6 +10069,42 @@ def test_prepare_non_native_build_result_stages_runtime_wasm_sidecar(
     assert prepared.artifacts["runtime_wasm"] == str(staged)
 
 
+def _install_fake_wasm_link_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    link_calls: list[list[str]] | None = None,
+) -> None:
+    def fake_run(
+        cmd: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        command = list(cmd)
+        if "--output" not in command:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if link_calls is not None:
+            link_calls.append(command)
+        output_path = Path(command[command.index("--output") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"\0asm\x01\0\0\0linked")
+        if "--split-runtime" in command:
+            split_dir = Path(command[command.index("--split-output-dir") + 1])
+            split_dir.mkdir(parents=True, exist_ok=True)
+            (split_dir / "app.wasm").write_bytes(b"\0asm\x01\0\0\0app")
+            (split_dir / "molt_runtime.wasm").write_bytes(
+                b"\0asm\x01\0\0\0runtime"
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+
+
+def _write_split_runtime_vfs_support(molt_root: Path) -> None:
+    vfs_support = molt_root / "wasm" / "molt_vfs_browser.js"
+    vfs_support.parent.mkdir(parents=True, exist_ok=True)
+    vfs_support.write_text("globalThis.MoltVfs = class {};\n", encoding="utf-8")
+
+
 def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_wasm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -8736,12 +10119,7 @@ def test_prepare_non_native_build_result_skips_runtime_wasm_sidecar_for_linked_w
     runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
 
-    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
-        del kwargs
-        linked_wasm.write_bytes(b"\0asm\x01\0\0\0linked")
-        return subprocess.CompletedProcess(args[0], 0, "", "")
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    _install_fake_wasm_link_runner(monkeypatch)
 
     prepared, err = cli._prepare_non_native_build_result(
         is_rust_transpile=False,
@@ -8789,16 +10167,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     wasm_link.write_text("# linker\n", encoding="utf-8")
     link_calls: list[list[str]] = []
 
-    def fake_run(
-        cmd: list[str],
-        **kwargs: object,
-    ) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        link_calls.append(list(cmd))
-        linked_wasm.write_bytes(b"\0asm\x01\0\0\0linked")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
     monkeypatch.setattr(cli, "_validate_wasm_structural", lambda path: None)
 
     common_kwargs = {
@@ -8824,21 +10193,21 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     first, first_err = cli._prepare_non_native_build_result(**common_kwargs)
     assert first_err is None
     assert first is not None
-    assert link_calls == [
-        [
-            sys.executable,
-            str(wasm_link),
-            "--runtime",
-            str(runtime_reloc_wasm),
-            "--input",
-            str(output_wasm),
-            "--output",
-            str(linked_wasm),
-            "--optimize",
-            "--optimize-level",
-            "Oz",
-        ]
+    assert len(link_calls) == 1
+    first_cmd = link_calls[0]
+    assert first_cmd[:6] == [
+        sys.executable,
+        str(wasm_link),
+        "--runtime",
+        str(runtime_reloc_wasm),
+        "--input",
+        str(output_wasm),
     ]
+    linked_output_arg = Path(first_cmd[first_cmd.index("--output") + 1])
+    assert linked_output_arg.parent == linked_wasm.parent
+    assert linked_output_arg.name.startswith(f".{linked_wasm.name}.")
+    assert linked_output_arg.name.endswith(".tmp")
+    assert first_cmd[-3:] == ["--optimize", "--optimize-level", "Oz"]
 
     second, second_err = cli._prepare_non_native_build_result(**common_kwargs)
     assert second_err is None
@@ -8859,14 +10228,12 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
     runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    vfs_support = tmp_path / "wasm" / "molt_vfs_browser.js"
+    vfs_support.parent.mkdir(parents=True, exist_ok=True)
+    vfs_support.write_text("globalThis.MoltVfs = class {};\n", encoding="utf-8")
     shared_required: list[frozenset[str]] = []
 
-    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
-        del kwargs
-        linked_wasm.write_bytes(b"\0asm\x01\0\0\0linked")
-        return subprocess.CompletedProcess(args[0], 0, "", "")
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    _install_fake_wasm_link_runner(monkeypatch)
     monkeypatch.setattr(
         cli,
         "_collect_wasm_module_import_names",
@@ -8916,17 +10283,10 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
     runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    _write_split_runtime_vfs_support(tmp_path)
     shared_required: list[frozenset[str]] = []
 
-    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
-        del kwargs
-        linked_wasm.write_bytes(b"\0asm\x01\0\0\0linked")
-        split_dir = output_wasm.parent
-        (split_dir / "app.wasm").write_bytes(b"\0asm\x01\0\0\0app")
-        (split_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\0\0\0runtime")
-        return subprocess.CompletedProcess(args[0], 0, "", "")
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    _install_fake_wasm_link_runner(monkeypatch)
     monkeypatch.setattr(
         cli,
         "_collect_wasm_module_import_names",
@@ -8989,17 +10349,10 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     runtime_wasm.write_bytes(b"\0asm\x01\0\0\0runtime")
     runtime_reloc_wasm = tmp_path / "runtime" / "molt_runtime_reloc.wasm"
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+    _write_split_runtime_vfs_support(tmp_path)
     export_ref_calls: list[Path] = []
 
-    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
-        del kwargs
-        linked_wasm.write_bytes(b"\0asm\x01\0\0\0linked")
-        split_dir = output_wasm.parent
-        (split_dir / "app.wasm").write_bytes(b"\0asm\x01\0\0\0app")
-        (split_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\0\0\0runtime")
-        return subprocess.CompletedProcess(args[0], 0, "", "")
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    _install_fake_wasm_link_runner(monkeypatch)
     monkeypatch.setattr(
         cli,
         "_collect_wasm_module_import_names",
@@ -9166,17 +10519,17 @@ def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
 ) -> None:
     monkeypatch.setenv("MOLT_SUBPROCESS_KEEPALIVE_SECS", "0.01")
     result = cli._run_subprocess_captured_to_tempfiles(
-        [
-            sys.executable,
-            "-c",
-            "import time; print('ok'); time.sleep(0.05)",
-        ],
+            [
+                sys.executable,
+                "-c",
+                "import time; print('ok'); time.sleep(0.3)",
+            ],
         timeout=1.0,
         progress_label="Tempfile helper",
     )
     assert result.returncode == 0
     assert result.stdout.decode("utf-8").strip() == "ok"
-    assert "Tempfile helper still running..." in capsys.readouterr().err
+    assert "Tempfile helper: still running" in capsys.readouterr().err
 
 
 def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint(
@@ -9219,7 +10572,12 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
     runtime.write_bytes(b"\0asm\x01\0\0\0")
     current_src.write_bytes(b"\0asm\x01\0\0\0")
 
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: {"hash": "ok"})
+    stored_fingerprint = {
+        "hash": "ok",
+        "artifact_sha256": cli._sha256_file(runtime),
+    }
+
+    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: stored_fingerprint)
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "ok"}
     )
@@ -9278,6 +10636,10 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
     cargo_runtime.parent.mkdir(parents=True, exist_ok=True)
     cargo_runtime.write_bytes(b"\0asm\x01\0\0\0runtime")
     fingerprint = {"hash": "ok", "rustc": "rustc", "inputs_digest": "inputs"}
+    stored_fingerprint = {
+        **fingerprint,
+        "artifact_sha256": cli._sha256_file(cargo_runtime),
+    }
     cargo_builds: list[list[str]] = []
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
@@ -9288,12 +10650,20 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
     monkeypatch.setattr(
         cli,
         "_read_runtime_fingerprint",
-        lambda path: fingerprint if "runtime_fingerprints" in os.fspath(path) else None,
+        lambda path: (
+            stored_fingerprint if "runtime_fingerprints" in os.fspath(path) else None
+        ),
     )
     monkeypatch.setattr(
         cli,
         "_artifact_needs_rebuild",
-        lambda artifact, current, stored: current != stored,
+        lambda artifact, current, stored: (
+            stored is None
+            or current is None
+            or stored.get("hash") != current.get("hash")
+            or stored.get("rustc") != current.get("rustc")
+            or stored.get("inputs_digest") != current.get("inputs_digest")
+        ),
     )
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
     monkeypatch.setattr(
@@ -9347,6 +10717,10 @@ def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
     staticlib.parent.mkdir(parents=True, exist_ok=True)
     staticlib.write_bytes(b"!<arch>\nprebuilt")
     fingerprint = {"hash": "ok", "rustc": "rustc", "inputs_digest": "inputs"}
+    stored_fingerprint = {
+        **fingerprint,
+        "artifact_sha256": cli._sha256_file(staticlib),
+    }
     cargo_builds: list[list[str]] = []
     linked_from: list[Path] = []
 
@@ -9355,7 +10729,13 @@ def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
     )
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: None)
+    monkeypatch.setattr(
+        cli,
+        "_read_runtime_fingerprint",
+        lambda path: (
+            stored_fingerprint if "runtime_fingerprints" in os.fspath(path) else None
+        ),
+    )
     monkeypatch.setattr(cli, "_inspect_wasm_binary", lambda path: "valid")
 
     def fake_link_runtime_staticlib_to_reloc_wasm(
@@ -9639,6 +11019,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         lambda *args, **kwargs: None,
         lambda: (None, None),
         tmp_path,
+        cli._EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     )
 
     monkeypatch.setattr(
@@ -9688,21 +11069,24 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
     monkeypatch.setattr(
         cli,
         "_prepare_backend_runtime_context",
-        lambda **kwargs: cli._PreparedBackendRuntimeContext(
-            runtime_state=kwargs["prepared_backend_setup"].runtime_state,
-            runtime_lib=runtime_lib,
-            runtime_wasm=None,
-            runtime_reloc_wasm=None,
-            ensure_runtime_wasm_shared=lambda required=None: True,
-            ensure_runtime_wasm_reloc=lambda required=None: True,
-            cache_setup=kwargs["prepared_backend_setup"].cache_setup,
-            cache_hit=False,
-            cache_hit_tier=None,
-            cache_key="module-cache",
-            function_cache_key=None,
-            cache_path=tmp_path / "module-cache.o",
-            function_cache_path=None,
-            stdlib_object_path=None,
+        lambda **kwargs: (
+            cli._PreparedBackendRuntimeContext(
+                runtime_state=kwargs["prepared_backend_setup"].runtime_state,
+                runtime_lib=runtime_lib,
+                runtime_wasm=None,
+                runtime_reloc_wasm=None,
+                ensure_runtime_wasm_shared=lambda required=None: True,
+                ensure_runtime_wasm_reloc=lambda required=None: True,
+                cache_setup=kwargs["prepared_backend_setup"].cache_setup,
+                cache_hit=False,
+                cache_hit_tier=None,
+                cache_key="module-cache",
+                function_cache_key=None,
+                cache_path=tmp_path / "module-cache.o",
+                function_cache_path=None,
+                stdlib_object_path=None,
+            ),
+            None,
         ),
     )
     monkeypatch.setattr(
@@ -10050,11 +11434,16 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
         del kwargs
-        backend_cmds.append(list(cmd))
         assert cmd[0] == str(backend_bin)
+        output = Path(cmd[cmd.index("--output") + 1])
+        if output.name.startswith("molt_backend_probe_"):
+            assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("fn main() {}\n")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        backend_cmds.append(list(cmd))
         assert cmd[1:3] == ["--target", "rust"]
         assert "--output" in cmd
-        output = Path(cmd[cmd.index("--output") + 1])
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text("fn main() {}\n")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
@@ -10264,6 +11653,46 @@ def test_build_cli_keeps_deploy_stdlib_profile_default(
     assert seen_profiles == ["full"]
 
 
+def test_build_scopes_pipeline_env_updates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = tmp_path / "main.py"
+    entry.write_text("print('ok')\n")
+    cleared_keys = {
+        "MOLT_AUDIT_ENABLED",
+        "MOLT_AUDIT_SINK",
+        "MOLT_AUDIT_OUTPUT",
+        "MOLT_IO_MODE",
+        "MOLT_PORTABLE",
+        "MOLT_SPLIT_RUNTIME",
+        "MOLT_TYPE_GATE",
+    }
+    for key in cleared_keys:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MOLT_STDLIB_PROFILE", "micro")
+    monkeypatch.setenv("MOLT_WASM_PROFILE", "pure")
+
+    rc = cli.build(
+        str(entry),
+        module="demo.main",
+        target="wasm",
+        portable=True,
+        split_runtime=True,
+        wasm_profile="full",
+        stdlib_profile="full",
+        audit_log="jsonl:stderr",
+        io_mode="virtual",
+        type_gate=True,
+        json_output=True,
+    )
+
+    assert rc != 0
+    assert os.environ["MOLT_STDLIB_PROFILE"] == "micro"
+    assert os.environ["MOLT_WASM_PROFILE"] == "pure"
+    assert all(key not in os.environ for key in cleared_keys)
+
+
 def test_run_uses_build_profile_flag_for_nested_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -10290,7 +11719,7 @@ def test_run_uses_build_profile_flag_for_nested_build(
     build_cmds: list[list[str]] = []
     run_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10304,7 +11733,7 @@ def test_run_uses_build_profile_flag_for_nested_build(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli, "_run_command", fake_run_command)
 
     rc = cli.run_script(
@@ -10357,7 +11786,7 @@ def test_run_script_uses_build_resolved_entry_for_package_override_file(
 
     run_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10370,7 +11799,7 @@ def test_run_script_uses_build_resolved_entry_for_package_override_file(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli, "_run_command", fake_run_command)
 
     rc = cli.run_script(
@@ -10410,7 +11839,7 @@ def test_run_script_uses_build_json_output_for_binary_path(
     build_cmds: list[list[str]] = []
     run_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10424,7 +11853,7 @@ def test_run_script_uses_build_json_output_for_binary_path(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli, "_run_command", fake_run_command)
 
     rc = cli.run_script(
@@ -10475,7 +11904,7 @@ def test_run_script_replays_build_messages_and_warnings_in_non_json_mode(
         warnings=["cache reused"],
     )
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10483,7 +11912,7 @@ def test_run_script_replays_build_messages_and_warnings_in_non_json_mode(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli, "_run_command", lambda cmd, **kwargs: 0)
 
     rc = cli.run_script(
@@ -10522,7 +11951,7 @@ def test_run_script_surfaces_nested_build_error_detail_in_non_json_mode(
         errors=["Linking failed"],
     )
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10530,7 +11959,7 @@ def test_run_script_surfaces_nested_build_error_detail_in_non_json_mode(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
 
     rc = cli.run_script(
         str(entry),
@@ -10593,14 +12022,14 @@ def test_run_wrapper_build_ignores_legacy_mtime_binary_without_manifest(
     )
     seen_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         seen_cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "runtime-a")
     monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-a")
 
@@ -10662,7 +12091,7 @@ def test_run_wrapper_build_manifest_tracks_args_and_source_hash(
     )
     seen_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10671,7 +12100,7 @@ def test_run_wrapper_build_manifest_tracks_args_and_source_hash(
         cached_bin.write_bytes(f"binary-{len(seen_cmds)}".encode("ascii"))
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     common_kwargs = {
         "file_path": str(entry),
         "module": None,
@@ -10762,7 +12191,7 @@ def test_run_wrapper_build_manifest_tracks_imported_source_hash(
     )
     seen_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10771,7 +12200,7 @@ def test_run_wrapper_build_manifest_tracks_imported_source_hash(
         cached_bin.write_bytes(f"binary-{len(seen_cmds)}".encode("ascii"))
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     common_kwargs = {
         "file_path": str(entry),
         "module": None,
@@ -10845,7 +12274,7 @@ def test_run_wrapper_build_manifest_caches_module_entries(
     )
     seen_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10854,7 +12283,7 @@ def test_run_wrapper_build_manifest_caches_module_entries(
         cached_bin.write_bytes(f"binary-{len(seen_cmds)}".encode("ascii"))
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     common_kwargs = {
         "file_path": None,
         "module": "demo",
@@ -10916,7 +12345,7 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
 
     seen_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10927,7 +12356,7 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
 
@@ -10987,7 +12416,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     )
     seen_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
@@ -10998,7 +12427,7 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     rc = cli._run_script_cross(
@@ -11055,20 +12484,18 @@ def test_deploy_roblox_respects_pythonpath_for_module_artifact_resolution(
 
     seen_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
+    ) -> subprocess.CompletedProcess[str]:
         del kwargs
         seen_cmds.append(list(cmd))
         if cmd[:4] == [sys.executable, "-m", "molt.cli", "build"]:
-            return subprocess.CompletedProcess(
-                cmd, 0, json.dumps(payload).encode(), b""
-            )
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
     monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
 
     rc = cli._deploy(
@@ -11133,16 +12560,16 @@ def test_deploy_roblox_honors_build_json_output_override(
     )
     seen_cmds: list[list[str]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
+    ) -> subprocess.CompletedProcess[str]:
         del kwargs
         seen_cmds.append(list(cmd))
-        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload).encode(), b"")
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
 
     rc = cli._deploy(
         "roblox",
@@ -11204,17 +12631,22 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
     )
     seen_calls: list[tuple[list[str], Path | None]] = []
 
-    def fake_subprocess_run(
+    def fake_run_completed_command(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
-        seen_calls.append((list(cmd), kwargs.get("cwd")))
+        seen_calls.append((list(cmd), cast(Path | None, kwargs.get("cwd"))))
         if cmd[:4] == [sys.executable, "-m", "molt.cli", "build"]:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
+    def fake_run_command(cmd: list[str], **kwargs: object) -> int:
+        seen_calls.append((list(cmd), cast(Path | None, kwargs.get("cwd"))))
+        return 0
+
     monkeypatch.setattr(cli, "_find_project_root", lambda start: project)
     monkeypatch.setattr(cli, "_find_molt_root", lambda start, cwd=None: ROOT)
-    monkeypatch.setattr(cli.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
+    monkeypatch.setattr(cli, "_run_command", fake_run_command)
     monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     rc = cli._deploy(
@@ -11359,6 +12791,8 @@ def test_native_backend_compile_routes_stdlib_object_env(
         captured_envs.append(env)
         assert env is not None
         assert "MOLT_STDLIB_OBJ" in env
+        assert "--ir-file" in cmd
+        assert kwargs.get("input") is None
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"object")
@@ -11410,8 +12844,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
         entry_module=entry_module,
-        _ensure_backend_ir_bytes=lambda: b"{}",
-        _get_backend_ir_fmt=lambda: "json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -11503,8 +12936,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
         entry_module=entry_module,
-        _ensure_backend_ir_bytes=lambda: b"{}",
-        _get_backend_ir_fmt=lambda: "json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -11595,8 +13027,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
         entry_module="pkg.app",
-        _ensure_backend_ir_bytes=lambda: b"{}",
-        _get_backend_ir_fmt=lambda: "json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -11685,8 +13116,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_bytes=lambda: b"{}",
-        _get_backend_ir_fmt=lambda: "json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -11714,7 +13144,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
     cache_path = project_root / ".molt_cache" / "cache-key.o"
     function_cache_path = project_root / ".molt_cache" / "fn-cache-key.o"
     stdlib_object_path = project_root / "build" / "main.stdlib.o"
-    request_encode_calls: list[tuple[bool, bool]] = []
+    request_encode_calls: list[tuple[bool, bool, bool]] = []
     daemon_request_bytes: list[bytes | None] = []
 
     def fake_request_bytes(**kwargs: object) -> tuple[bytes | None, str | None]:
@@ -11722,6 +13152,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
             (
                 bool(kwargs.get("probe_cache_only")),
                 kwargs.get("ir") is not None,
+                kwargs.get("ir_path") is not None,
             )
         )
         return b'{"version":1,"jobs":[{"id":"job0"}]}\n', None
@@ -11795,8 +13226,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_bytes=lambda: b"{}",
-        _get_backend_ir_fmt=lambda: "json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -11923,8 +13353,7 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_bytes=lambda: b"{}",
-        _get_backend_ir_fmt=lambda: "json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -11939,6 +13368,220 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
     assert daemon_request_bytes == [None, None]
     assert result.backend_daemon_cached is True
     assert result.backend_daemon_cache_tier == "module"
+
+
+def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    artifacts_root = tmp_path / "artifacts"
+    output_artifact = project_root / "build" / "main.o"
+    compile_attempts = 0
+    restart_calls = 0
+    one_shot_calls = 0
+
+    def fake_compile_with_backend_daemon(
+        socket_path: Path,
+        **kwargs: object,
+    ) -> cli._BackendDaemonCompileResult:
+        nonlocal compile_attempts
+        assert socket_path == tmp_path / "daemon.sock"
+        assert kwargs["ir"] == {"functions": [{"name": "heavy"}]}
+        compile_attempts += 1
+        return cli._BackendDaemonCompileResult(
+            False,
+            "backend daemon connection failed: timed out",
+            {"pid": 42},
+            None,
+            None,
+            True,
+            False,
+            True,
+        )
+
+    def fake_start_backend_daemon(*args: object, **kwargs: object) -> bool:
+        nonlocal restart_calls
+        del args, kwargs
+        restart_calls += 1
+        return True
+
+    def fake_run_subprocess_captured_to_tempfiles(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal one_shot_calls
+        del cmd, kwargs
+        one_shot_calls += 1
+        return subprocess.CompletedProcess([], 0, b"", b"")
+
+    monkeypatch.setattr(
+        cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+    )
+    monkeypatch.setattr(cli, "_start_backend_daemon", fake_start_backend_daemon)
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_run_subprocess_captured_to_tempfiles,
+    )
+
+    result, error = cli._execute_backend_compile(
+        cache=False,
+        cache_path=None,
+        function_cache_path=None,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=True,
+        daemon_socket=tmp_path / "daemon.sock",
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key=None,
+        function_cache_key=None,
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=False,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        target_triple=None,
+        backend_daemon_config_digest="digest123",
+        entry_module="pkg.app",
+        ir={"functions": [{"name": "heavy"}]},
+        json_output=True,
+        warnings=[],
+        verbose=False,
+        backend_bin=tmp_path / "backend-bin",
+        backend_env=None,
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert result is None
+    assert error == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["errors"] == [
+        "Backend daemon compile failed: backend daemon connection failed: timed out"
+    ]
+    assert compile_attempts == 1
+    assert restart_calls == 0
+    assert one_shot_calls == 0
+
+
+def test_execute_backend_compile_fails_closed_after_daemon_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    artifacts_root = tmp_path / "artifacts"
+    output_artifact = project_root / "build" / "main.o"
+    one_shot_calls = 0
+
+    def fake_compile_with_backend_daemon(
+        socket_path: Path,
+        **kwargs: object,
+    ) -> cli._BackendDaemonCompileResult:
+        assert socket_path == tmp_path / "daemon.sock"
+        return cli._BackendDaemonCompileResult(
+            False,
+            "backend daemon compile request failed: rss limit exceeded",
+            {"pid": 42},
+            None,
+            None,
+            True,
+            False,
+        )
+
+    def fake_run_subprocess_captured_to_tempfiles(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal one_shot_calls
+        del cmd, kwargs
+        one_shot_calls += 1
+        return subprocess.CompletedProcess([], 0, b"", b"")
+
+    monkeypatch.setattr(
+        cli, "_compile_with_backend_daemon", fake_compile_with_backend_daemon
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        fake_run_subprocess_captured_to_tempfiles,
+    )
+
+    result, error = cli._execute_backend_compile(
+        cache=False,
+        cache_path=None,
+        function_cache_path=None,
+        artifacts_root=artifacts_root,
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=False,
+        diagnostics_enabled=False,
+        phase_starts={},
+        daemon_ready=True,
+        daemon_socket=tmp_path / "daemon.sock",
+        project_root=project_root,
+        output_artifact=output_artifact,
+        cache_key=None,
+        function_cache_key=None,
+        cache_setup=cli._BackendCacheSetup(
+            cache_enabled=False,
+            cache_key=None,
+            function_cache_key=None,
+            cache_path=None,
+            function_cache_path=None,
+            stdlib_object_path=None,
+            stdlib_object_cache_key=None,
+            cache_candidates=(),
+            cache_hit=False,
+            cache_hit_tier=None,
+        ),
+        target_triple=None,
+        backend_daemon_config_digest="digest123",
+        entry_module="pkg.app",
+        ir={"functions": [{"name": "heavy"}]},
+        json_output=True,
+        warnings=[],
+        verbose=False,
+        backend_bin=tmp_path / "backend-bin",
+        backend_env=None,
+        backend_timeout=None,
+        molt_root=project_root,
+        backend_cargo_profile="dev-fast",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
+        cache_hit=False,
+        backend_daemon_cached=None,
+        backend_daemon_cache_tier=None,
+        backend_daemon_health=None,
+    )
+
+    assert result is None
+    assert error == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["errors"] == [
+        "Backend daemon compile failed: backend daemon compile request failed: rss limit exceeded"
+    ]
+    assert one_shot_calls == 0
 
 
 def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
@@ -12021,8 +13664,7 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_bytes=lambda: b"{}",
-        _get_backend_ir_fmt=lambda: "json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -12104,8 +13746,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
-        _ensure_backend_ir_bytes=lambda: b"{}",
-        _get_backend_ir_fmt=lambda: "json",
+        _ensure_backend_ir_file_path=lambda: project_root / "tmp" / "ir.json",
         cache_hit=False,
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
@@ -12146,6 +13787,59 @@ def test_backend_daemon_compile_request_includes_partition_env(
     env = payload["env"]
     assert env["MOLT_ENTRY_MODULE"] == "pkg.app"
     assert env["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
+
+
+def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    ir_path = tmp_path / "backend-ir.json"
+    ir_path.write_text('{"functions":[]}\n', encoding="utf-8")
+
+    request_bytes, error = cli._backend_daemon_compile_request_bytes(
+        ir=None,
+        ir_path=ir_path,
+        backend_output=backend_output,
+        is_wasm=False,
+        wasm_link=False,
+        wasm_data_base=None,
+        wasm_table_base=None,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+    )
+
+    assert error is None
+    assert request_bytes is not None
+    job = json.loads(request_bytes)["jobs"][0]
+    assert job["ir_path"] == str(ir_path)
+    assert "ir" not in job
+
+
+def test_backend_daemon_compile_request_rejects_duplicate_ir_authority(
+    tmp_path: Path,
+) -> None:
+    request_bytes, error = cli._backend_daemon_compile_request_bytes(
+        ir={"functions": []},
+        ir_path=tmp_path / "backend-ir.json",
+        backend_output=tmp_path / "output.o",
+        is_wasm=False,
+        wasm_link=False,
+        wasm_data_base=None,
+        wasm_table_base=None,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+    )
+
+    assert request_bytes is None
+    assert error == "backend daemon request must use exactly one IR custody field: ir or ir_path"
 
 
 def test_backend_daemon_compile_request_includes_batch_op_budget_env(
@@ -12405,8 +14099,13 @@ def test_backend_daemon_log_and_pid_paths_are_session_isolated(
 
     assert alpha_log != beta_log
     assert alpha_identity != beta_identity
-    assert alpha_log.parent == beta_log.parent
-    assert alpha_identity.parent == beta_identity.parent
+    assert alpha_log.parent == alpha_identity.parent
+    assert beta_log.parent == beta_identity.parent
+    assert alpha_log.parent != beta_log.parent
+    assert alpha_log.parent.name == "backend_daemon"
+    assert beta_log.parent.name == "backend_daemon"
+    assert "alpha-session" in alpha_log.parts
+    assert "beta-session" in beta_log.parts
 
 
 def test_backend_daemon_paths_allow_missing_session_id(tmp_path: Path) -> None:
@@ -12832,6 +14531,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         encoding="utf-8",
     )
     seen_payloads: list[dict[str, object]] = []
+    ir_lease_paths: list[Path] = []
     connects = 0
 
     class _FakeSocket:
@@ -12869,6 +14569,13 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
                     ],
                 }
             else:
+                job = cast(dict[str, object], payload["jobs"][0])
+                assert "ir" not in job
+                ir_path = Path(cast(str, job["ir_path"]))
+                assert json.loads(ir_path.read_text(encoding="utf-8")) == {
+                    "functions": [{"name": "heavy"}]
+                }
+                ir_lease_paths.append(ir_path)
                 backend_output.write_bytes(b"\x7fELF")
                 response = {
                     "ok": True,
@@ -12921,10 +14628,13 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     assert seen_payloads[0]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
     assert seen_payloads[0]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
     assert seen_payloads[0]["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == stdlib_manifest
-    assert seen_payloads[1]["jobs"][0]["ir"] == {"functions": [{"name": "heavy"}]}
+    second_job = cast(dict[str, object], seen_payloads[1]["jobs"][0])
+    assert "ir" not in second_job
+    assert Path(cast(str, second_job["ir_path"])) == ir_lease_paths[0]
     assert seen_payloads[1]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
     assert seen_payloads[1]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
     assert seen_payloads[1]["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == stdlib_manifest
+    assert not ir_lease_paths[0].exists()
 
 
 def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
@@ -12956,7 +14666,11 @@ def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
             seen_payloads.append(payload)
             job = payload["jobs"][0]
             assert "probe_cache_only" not in job
-            assert job["ir"] == {"functions": [{"name": "heavy"}]}
+            assert "ir" not in job
+            ir_path = Path(cast(str, job["ir_path"]))
+            assert json.loads(ir_path.read_text(encoding="utf-8")) == {
+                "functions": [{"name": "heavy"}]
+            }
             assert payload["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
             backend_output.write_bytes(b"\x7fELF")
             self._chunks = [
@@ -13008,6 +14722,8 @@ def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
 
     assert result.ok is True
     assert len(seen_payloads) == 1
+    ir_path = Path(cast(str, seen_payloads[0]["jobs"][0]["ir_path"]))
+    assert not ir_path.exists()
 
 
 def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
@@ -13023,7 +14739,10 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
         **kwargs: object,
     ) -> tuple[bytes | None, str | None]:
         calls.append(
-            (bool(kwargs.get("probe_cache_only")), kwargs.get("ir") is not None)
+            (
+                bool(kwargs.get("probe_cache_only")),
+                kwargs.get("ir") is not None,
+            )
         )
         return original(**kwargs)
 
@@ -13365,6 +15084,76 @@ def test_backend_daemon_request_bytes_rejects_whitespace_only_response(
 
     assert response is None
     assert err == "backend daemon returned empty response"
+
+
+def test_backend_daemon_request_bytes_reports_empty_response_with_identity_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    socket_path = tmp_path / "daemon.sock"
+    identity = _test_backend_daemon_identity(
+        4321,
+        socket_path=socket_path,
+        project_root=tmp_path,
+        config_digest="digest123",
+    )
+    log_path = cli._backend_daemon_log_path(
+        tmp_path,
+        "dev-fast",
+        config_digest="digest123",
+    )
+    log_path.write_text(
+        "MOLT_BACKEND(daemon): compiling stdlib batch 35/35\n"
+        "MOLT_BACKEND(daemon): compiling user function batch 8/41\n",
+        encoding="utf-8",
+    )
+
+    class _FakeSocket:
+        def __enter__(self) -> "_FakeSocket":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+            return False
+
+        def settimeout(self, timeout: float) -> None:
+            assert timeout == 0.25
+
+        def connect(self, address: str) -> None:
+            assert address == str(socket_path)
+
+        def sendall(self, data: bytes) -> None:
+            assert data == b'{"version":1}\n'
+
+        def shutdown(self, how: int) -> None:
+            assert how == cli.socket.SHUT_WR
+
+        def recv_into(self, buffer: memoryview) -> int:
+            assert len(buffer) == 65536
+            return 0
+
+    monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
+    monkeypatch.setattr(
+        cli,
+        "_backend_daemon_identity_is_verified",
+        lambda identity, **kwargs: False,
+    )
+
+    response, err = cli._backend_daemon_request_bytes(
+        socket_path,
+        b'{"version":1}\n',
+        timeout=0.25,
+        daemon_identity=identity,
+    )
+
+    assert response is None
+    assert err is not None
+    assert "backend daemon returned empty response" in err
+    assert "pid=4321" in err
+    assert "verified_live=false" in err
+    assert f"socket={socket_path}" in err
+    assert f"log={log_path}" in err
+    assert "compiling stdlib batch 35/35" in err
+    assert "compiling user function batch 8/41" in err
 
 
 def test_backend_daemon_request_bytes_ignores_redirect_file(
@@ -14836,6 +16625,64 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
     assert not output_artifact.exists()
 
 
+def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
+    tmp_path: Path,
+) -> None:
+    stdlib_object = _compile_c_object(
+        tmp_path,
+        "stdlib_shared",
+        """
+        extern void copy__copy(void);
+        void collections__UserDict_copy(void) {
+            copy__copy();
+        }
+        """,
+    )
+    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        "stdlib-key\n", encoding="utf-8"
+    )
+    stdlib_manifest = '{"cache_key":"stdlib-key"}'
+    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+        stdlib_manifest + "\n", encoding="utf-8"
+    )
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        (
+            '{"body_hash":"test","function_count":1,'
+            '"functions":["collections__UserDict_copy"],'
+            '"schema":"stdlib-partition-v1"}\n'
+        ),
+        encoding="utf-8",
+    )
+
+    assert cli._shared_stdlib_cache_matches_key_locked(
+        stdlib_object,
+        "stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
+        stdlib_module_symbols={"collections"},
+    )
+    assert not cli._shared_stdlib_cache_matches_key_locked(
+        stdlib_object,
+        "stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
+        stdlib_module_symbols={"collections", "copy"},
+    )
+
+    cli._validate_shared_stdlib_cache_contract(
+        stdlib_object,
+        tmp_path,
+        "stdlib-key",
+        expected_manifest=stdlib_manifest,
+        stdlib_module_symbols={"collections", "copy"},
+    )
+
+    assert not stdlib_object.exists()
+    assert not cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert not cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
+    assert not cli._stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object
+    ).exists()
+
+
 def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with_unresolved_user_module_chunks(
     tmp_path: Path,
 ) -> None:
@@ -15108,3 +16955,31 @@ def test_stdlib_partition_mode_changes_cache_identity():
     )
     assert "partitioned" in variant_part
     assert "partitioned" not in variant_mono
+
+
+def test_external_static_package_digest_changes_backend_cache_identity() -> None:
+    variant_a = cli._build_cache_variant(
+        profile="dev",
+        runtime_cargo="debug",
+        backend_cargo="debug",
+        emit="bin",
+        stdlib_split=False,
+        codegen_env="x",
+        linked=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        external_static_packages_digest="a" * 64,
+    )
+    variant_b = cli._build_cache_variant(
+        profile="dev",
+        runtime_cargo="debug",
+        backend_cargo="debug",
+        emit="bin",
+        stdlib_split=False,
+        codegen_env="x",
+        linked=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        external_static_packages_digest="b" * 64,
+    )
+
+    assert variant_a != variant_b
+    assert "external_static_packages=" in variant_a

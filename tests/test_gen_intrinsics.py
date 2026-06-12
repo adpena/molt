@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,3 +50,38 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
         1,
     )[0]
     assert '#[cfg(feature = "stdlib_net")]' not in ssl_block
+
+
+def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
+    module = _load_gen_intrinsics_module()
+    calls: list[dict[str, object]] = []
+    target = tmp_path / "generated.rs"
+    target.write_text("fn main(){}\n", encoding="utf-8")
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), **kwargs})
+        return SimpleNamespace(
+            returncode=0,
+            stdout="",
+            stderr="",
+            check_returncode=lambda: None,
+        )
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    module._rustfmt(target)
+
+    assert calls == [
+        {
+            "cmd": ["rustfmt", str(target)],
+            "prefix": "MOLT_GENERATOR",
+            "cwd": ROOT,
+            "capture_output": True,
+            "text": True,
+            "timeout": 60.0,
+        }
+    ]

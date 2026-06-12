@@ -139,6 +139,8 @@ ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
 IMPORTER_MODULE_NAME = "_molt_importer"
 _RUNTIME_IMPORT_PROTOCOL_MARKERS = (
+    "import ",
+    "from ",
     "__import__",
     "import_module",
     "find_spec",
@@ -260,6 +262,23 @@ _SUPPORTED_PKG_ABI_MAJOR = 0
 _SUPPORTED_PKG_ABI_MINOR = 1
 _SUPPORTED_PKG_ABI = f"{_SUPPORTED_PKG_ABI_MAJOR}.{_SUPPORTED_PKG_ABI_MINOR}"
 CapabilityInput = str | list[str] | dict[str, Any]
+
+
+@contextmanager
+def _scoped_environ_updates(updates: Mapping[str, str]) -> Iterator[None]:
+    if not updates:
+        yield
+        return
+    previous = {key: os.environ.get(key) for key in updates}
+    try:
+        os.environ.update(updates)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 @dataclass(frozen=True, slots=True)
@@ -823,10 +842,11 @@ def _wrapper_target_python(
     )
 
 
-_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 1
+_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 2
 _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
     "MOLT_CAPABILITY_TIER",
+    "MOLT_EXTERNAL_STATIC_PACKAGES",
     "MOLT_HASH_SEED",
     "MOLT_HERMETIC_MODULE_ROOTS",
     "MOLT_MODULE_ROOTS",
@@ -871,9 +891,16 @@ def _wrapper_build_dependency_fingerprints(
     )
     if admission_error is not None:
         return None
+    native_plan, native_plan_errors = _resolve_external_package_native_artifact_plan(
+        external_module_roots=resolved_build_entry.external_module_roots,
+        admitted_packages=admitted_packages,
+    )
+    if native_plan_errors or native_plan is None:
+        return None
     import_admission_policy = _ImportAdmissionPolicy(
         external_roots=resolved_build_entry.external_module_roots,
         admitted_external_packages=admitted_packages,
+        native_artifact_plan=native_plan,
     )
     try:
         graph, _explicit_imports = _discover_module_graph(
@@ -900,10 +927,35 @@ def _wrapper_build_dependency_fingerprints(
         dependencies.append(
             {
                 "module": module_name,
+                "kind": "python_source",
                 "path": os.fspath(path.resolve()),
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
                 "source_sha256": source_hash,
+            }
+        )
+    for artifact in import_admission_policy.native_artifact_plan.artifacts:
+        try:
+            artifact_stat = artifact.path.stat()
+            manifest_stat = artifact.manifest_path.stat()
+        except OSError:
+            return None
+        dependencies.append(
+            {
+                "module": artifact.module,
+                "kind": "native_extension",
+                "path": os.fspath(artifact.path),
+                "size": artifact_stat.st_size,
+                "mtime_ns": artifact_stat.st_mtime_ns,
+                "source_sha256": artifact.extension_sha256,
+                "manifest_path": os.fspath(artifact.manifest_path),
+                "manifest_size": manifest_stat.st_size,
+                "manifest_mtime_ns": manifest_stat.st_mtime_ns,
+                "manifest_sha256": artifact.manifest_sha256,
+                "capabilities": list(artifact.capabilities),
+                "abi_tag": artifact.abi_tag,
+                "target_triple": artifact.target_triple,
+                "platform_tag": artifact.platform_tag,
             }
         )
     return dependencies
@@ -1399,6 +1451,7 @@ class _BackendDaemonCompileResult(NamedTuple):
     cache_tier: str | None
     output_written: bool
     output_exists: bool
+    full_request_sent: bool = False
 
 
 class _PersistedModuleGraphState(NamedTuple):
@@ -1475,12 +1528,12 @@ class _ScopedLoweringInputView:
 
 @dataclass(frozen=True)
 class _ModuleGraphMetadata:
-    logical_source_path_by_module: dict[str, str]
-    entry_override_by_module: dict[str, str | None]
-    module_is_namespace_by_module: dict[str, bool]
-    module_is_package_by_module: dict[str, bool]
-    frontend_module_costs: dict[str, float] | None
-    stdlib_like_by_module: dict[str, bool] | None
+    logical_source_path_by_module: Mapping[str, str]
+    entry_override_by_module: Mapping[str, str | None]
+    module_is_namespace_by_module: Mapping[str, bool]
+    module_is_package_by_module: Mapping[str, bool]
+    frontend_module_costs: Mapping[str, float] | None
+    stdlib_like_by_module: Mapping[str, bool] | None
 
 
 @dataclass(frozen=True)
@@ -1497,6 +1550,112 @@ class _ModuleLoweringExecutionView:
     metadata: _ModuleLoweringMetadataView
     scoped_inputs: _ScopedLoweringInputView
     scoped_known_classes: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _ModuleSourceLease:
+    path: Path
+    inline_source: str | None = None
+    source_size: int | None = None
+    mtime_ns: int | None = None
+
+    @classmethod
+    def path_backed(
+        cls, path: Path, path_stat: os.stat_result | None = None
+    ) -> "_ModuleSourceLease":
+        if path_stat is None:
+            with contextlib.suppress(OSError):
+                path_stat = path.stat()
+        return cls(
+            path=path,
+            inline_source=None,
+            source_size=path_stat.st_size if path_stat is not None else None,
+            mtime_ns=path_stat.st_mtime_ns if path_stat is not None else None,
+        )
+
+    @classmethod
+    def inline(
+        cls,
+        path: Path,
+        source: str,
+        path_stat: os.stat_result | None = None,
+    ) -> "_ModuleSourceLease":
+        return cls(
+            path=path,
+            inline_source=source,
+            source_size=len(source),
+            mtime_ns=path_stat.st_mtime_ns if path_stat is not None else None,
+        )
+
+    @property
+    def path_backed_source(self) -> bool:
+        return self.inline_source is None
+
+    def read(self, resolution_cache: "_ModuleResolutionCache | None" = None) -> str:
+        if self.inline_source is not None:
+            return self.inline_source
+        if self.source_size is not None or self.mtime_ns is not None:
+            stat = self.path.stat()
+            if self.source_size is not None and stat.st_size != self.source_size:
+                raise OSError(
+                    f"Source lease for {self.path} changed size during compile"
+                )
+            if self.mtime_ns is not None and stat.st_mtime_ns != self.mtime_ns:
+                raise OSError(
+                    f"Source lease for {self.path} changed mtime during compile"
+                )
+        if resolution_cache is not None:
+            return resolution_cache.read_module_source(self.path, retain=False)
+        return _read_module_source(self.path)
+
+    def worker_payload(self) -> dict[str, Any]:
+        if self.inline_source is not None:
+            return {
+                "kind": "inline",
+                "path": str(self.path),
+                "source": self.inline_source,
+                "source_size": self.source_size,
+                "mtime_ns": self.mtime_ns,
+            }
+        return {
+            "kind": "path",
+            "path": str(self.path),
+            "source_size": self.source_size,
+            "mtime_ns": self.mtime_ns,
+        }
+
+
+@dataclass(frozen=True)
+class _ModuleSourceCatalog:
+    leases: Mapping[str, _ModuleSourceLease]
+
+    def lease_for(self, module_name: str, module_path: Path) -> _ModuleSourceLease:
+        lease = self.leases.get(module_name)
+        if lease is not None:
+            return lease
+        return _ModuleSourceLease.path_backed(module_path)
+
+    def source_size(self, module_name: str, module_path: Path | None = None) -> int:
+        lease = self.leases.get(module_name)
+        if lease is not None and lease.source_size is not None:
+            return lease.source_size
+        if module_path is not None:
+            with contextlib.suppress(OSError):
+                return module_path.stat().st_size
+        return 0
+
+    def read_source(
+        self,
+        module_name: str,
+        module_path: Path,
+        resolution_cache: "_ModuleResolutionCache | None" = None,
+    ) -> str:
+        return self.lease_for(module_name, module_path).read(resolution_cache)
+
+    def worker_source_lease_payload(
+        self, module_name: str, module_path: Path
+    ) -> dict[str, Any]:
+        return self.lease_for(module_name, module_path).worker_payload()
 
 
 @dataclass(frozen=True)
@@ -1583,7 +1742,7 @@ class _FrontendLayerRunResult:
 class _FrontendLayerExecutionContext:
     syntax_error_modules: Mapping[str, Any]
     module_graph: dict[str, Path]
-    module_sources: dict[str, str]
+    module_source_catalog: _ModuleSourceCatalog
     project_root: Path | None
     module_resolution_cache: "_ModuleResolutionCache"
     parse_codec: "ParseCodec"
@@ -1637,7 +1796,7 @@ class _FrontendLayerRuntimeHooks:
 class _SerialFrontendLoweringContext:
     syntax_error_modules: Mapping[str, Any]
     module_trees: Mapping[str, ast.AST]
-    module_sources: Mapping[str, str]
+    module_source_catalog: _ModuleSourceCatalog
     generated_module_source_paths: Mapping[str, str]
     module_resolution_cache: "_ModuleResolutionCache"
     project_root: Path | None
@@ -1733,6 +1892,7 @@ class _BackendCacheSetup:
     cache_hit_tier: str | None
     stdlib_object_manifest: str | None = None
     stdlib_module_symbols_json: str | None = None
+    stdlib_module_symbols: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -1807,9 +1967,101 @@ class _ModuleRootResolution:
 
 
 @dataclass(frozen=True)
+class _ExternalPackageNativeArtifact:
+    package: str
+    module: str
+    package_dir: Path
+    path: Path
+    manifest_path: Path
+    extension_sha256: str
+    manifest_sha256: str
+    capabilities: tuple[str, ...]
+    abi_tag: str
+    target_triple: str
+    platform_tag: str
+
+    def digest_payload(self) -> dict[str, Any]:
+        return {
+            "package": self.package,
+            "module": self.module,
+            "package_dir": str(self.package_dir),
+            "path": str(self.path),
+            "manifest_path": str(self.manifest_path),
+            "extension_sha256": self.extension_sha256,
+            "manifest_sha256": self.manifest_sha256,
+            "capabilities": list(self.capabilities),
+            "abi_tag": self.abi_tag,
+            "target_triple": self.target_triple,
+            "platform_tag": self.platform_tag,
+        }
+
+
+@dataclass(frozen=True)
+class _ExternalPackageNativeArtifactPlan:
+    artifacts: tuple[_ExternalPackageNativeArtifact, ...] = ()
+
+    def digest_payload(self) -> dict[str, Any]:
+        return {
+            "artifacts": [artifact.digest_payload() for artifact in self.artifacts]
+        }
+
+    def digest(self) -> str:
+        payload = json.dumps(
+            self.digest_payload(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+_EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN = _ExternalPackageNativeArtifactPlan()
+
+
+@dataclass(frozen=True)
+class _StagedExternalPackageNativeArtifact:
+    package: str
+    module: str
+    runtime_root: Path
+    source_path: Path
+    source_manifest_path: Path
+    staged_path: Path
+    staged_manifest_path: Path
+    staged_support_paths: tuple[Path, ...]
+    extension_sha256: str
+    manifest_sha256: str
+    capabilities: tuple[str, ...]
+    abi_tag: str
+    target_triple: str
+    platform_tag: str
+
+    def json_payload(self) -> dict[str, Any]:
+        return {
+            "package": self.package,
+            "module": self.module,
+            "runtime_root": str(self.runtime_root),
+            "source_path": str(self.source_path),
+            "source_manifest_path": str(self.source_manifest_path),
+            "staged_path": str(self.staged_path),
+            "staged_manifest_path": str(self.staged_manifest_path),
+            "staged_support_paths": [
+                str(path) for path in self.staged_support_paths
+            ],
+            "extension_sha256": self.extension_sha256,
+            "manifest_sha256": self.manifest_sha256,
+            "capabilities": list(self.capabilities),
+            "abi_tag": self.abi_tag,
+            "target_triple": self.target_triple,
+            "platform_tag": self.platform_tag,
+        }
+
+
+@dataclass(frozen=True)
 class _ImportAdmissionPolicy:
     external_roots: tuple[Path, ...] = ()
     admitted_external_packages: frozenset[str] = frozenset()
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan = field(
+        default_factory=_ExternalPackageNativeArtifactPlan
+    )
 
     def __post_init__(self) -> None:
         external_roots = tuple(
@@ -1865,6 +2117,7 @@ class _ImportAdmissionPolicy:
         return {
             "external_roots": [str(root) for root in self.external_roots],
             "admitted_external_packages": sorted(self.admitted_external_packages),
+            "native_artifact_plan": self.native_artifact_plan.digest_payload(),
         }
 
 
@@ -1878,6 +2131,7 @@ class _PreparedEntryModuleGraph:
     stub_parents: set[str]
     spawn_enabled: bool
     runtime_import_support_policy: _RuntimeImportSupportPolicy
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan
 
 
 @dataclass(frozen=True)
@@ -1913,6 +2167,7 @@ class _ImportPlan:
     known_modules_sorted: tuple[str, ...]
     stdlib_allowlist_sorted: tuple[str, ...]
     module_graph_metadata: _ModuleGraphMetadata
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan
 
 
 @dataclass(frozen=True)
@@ -1977,6 +2232,7 @@ class _PreparedFrontendAnalysis:
     module_graph_metadata: _ModuleGraphMetadata
     module_deps: dict[str, set[str]]
     module_sources: dict[str, str]
+    module_source_catalog: _ModuleSourceCatalog
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
     module_trees: dict[str, ast.AST]
     module_path_stats: dict[str, os.stat_result | None]
@@ -2108,6 +2364,7 @@ class _PreparedNativeLink:
     stub_path: Path
     runtime_lib: Path
     output_binary: Path
+    external_native_artifacts: tuple[_StagedExternalPackageNativeArtifact, ...]
     link_cmd: list[str]
     linker_hint: str | None
     normalized_target: str | None
@@ -3791,6 +4048,44 @@ def _resolve_module_path(module_name: str, roots: list[Path]) -> Path | None:
     return _resolve_module_path_parts(tuple(module_name.split(".")), roots)
 
 
+@functools.lru_cache(maxsize=65536)
+def _case_exact_dir_entries_cached(
+    dir_text: str, mtime_ns: int, size: int
+) -> frozenset[str]:
+    del mtime_ns, size
+    try:
+        return frozenset(entry.name for entry in os.scandir(dir_text))
+    except OSError:
+        return frozenset()
+
+
+def _case_exact_dir_entries(dir_text: str) -> frozenset[str]:
+    try:
+        stat = os.stat(dir_text)
+    except OSError:
+        return frozenset()
+    return _case_exact_dir_entries_cached(dir_text, stat.st_mtime_ns, stat.st_size)
+
+
+def _case_exact_file_under(root_text: str, rel_parts: tuple[str, ...]) -> bool:
+    if not rel_parts:
+        return False
+    current = root_text
+    for part in rel_parts:
+        if part not in _case_exact_dir_entries(current):
+            return False
+        current = os.path.join(current, part)
+    return os.path.isfile(current)
+
+
+def _case_exact_file(path: Path) -> bool:
+    if path.is_absolute():
+        anchor = path.anchor
+        rel_parts = tuple(part for part in path.parts[1:] if part)
+        return _case_exact_file_under(anchor, rel_parts)
+    return _case_exact_file_under(os.curdir, tuple(path.parts))
+
+
 def _resolve_module_path_parts(
     parts: tuple[str, ...], roots: list[Path]
 ) -> Path | None:
@@ -3800,13 +4095,15 @@ def _resolve_module_path_parts(
     for root in roots:
         root_text = os.fspath(root)
         pkg_text = os.path.join(root_text, *parts, "__init__.py")
-        if os.path.isfile(pkg_text):
+        if _case_exact_file_under(root_text, (*parts, "__init__.py")):
             return Path(pkg_text)
         if len(parts) == 1:
             mod_text = os.path.join(root_text, module_filename)
+            mod_parts = (module_filename,)
         else:
             mod_text = os.path.join(root_text, *parts[:-1], module_filename)
-        if os.path.isfile(mod_text):
+            mod_parts = (*parts[:-1], module_filename)
+        if _case_exact_file_under(root_text, mod_parts):
             return Path(mod_text)
     return None
 
@@ -3980,8 +4277,10 @@ class _ModuleResolutionCache:
             self.stdlib_path_cache[cache_key] = cached
         return cached
 
-    def read_module_source(self, path: Path) -> str:
+    def read_module_source(self, path: Path, *, retain: bool = True) -> str:
         cache_key = self.resolved_path(path)
+        if not retain:
+            return _read_module_source(path)
         source = self.source_cache.get(cache_key)
         if source is not None:
             return source
@@ -4019,8 +4318,15 @@ class _ModuleResolutionCache:
         *,
         filename: str,
         target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+        retain: bool = True,
     ) -> ast.AST:
         cache_key = (self.resolved_path(path), filename, target_python.tag)
+        if not retain:
+            return _parse_source_for_target(
+                source,
+                filename=filename,
+                target_python=target_python,
+            )
         tree = self.ast_cache.get(cache_key)
         if tree is not None:
             return tree
@@ -4679,12 +4985,15 @@ def _resolve_module_root_resolution(
 ) -> _ModuleRootResolution:
     module_roots: list[Path] = []
     external_roots: list[Path] = []
+    internal_roots: set[Path] = set()
 
     def add_root(path: Path, *, external: bool) -> None:
         resolved = path.resolve()
         module_roots.append(resolved)
-        if external:
+        if external and resolved not in internal_roots:
             external_roots.append(resolved)
+        if not external:
+            internal_roots.add(resolved)
 
     hermetic_module_roots = os.environ.get(
         "MOLT_HERMETIC_MODULE_ROOTS", ""
@@ -4736,7 +5045,11 @@ def _resolve_module_root_resolution(
         for sp in _molt_venv_site_packages(project_root):
             add_root(sp, external=True)
     roots = tuple(dict.fromkeys(module_roots))
-    external = tuple(root for root in dict.fromkeys(external_roots) if root in roots)
+    external = tuple(
+        root
+        for root in dict.fromkeys(external_roots)
+        if root in roots and root not in internal_roots
+    )
     return _ModuleRootResolution(roots=roots, external_roots=external)
 
 
@@ -4774,6 +5087,242 @@ def _parse_external_static_packages(raw: str) -> tuple[frozenset[str], str | Non
     return frozenset(packages), None
 
 
+_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES = (".so", ".pyd")
+_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS = {
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+}
+
+
+def _external_package_dir(root: Path, package: str) -> Path | None:
+    package_dir = root.joinpath(*package.split("."))
+    init_file = package_dir / "__init__.py"
+    if package_dir.is_dir() and _case_exact_file(init_file):
+        return package_dir.resolve()
+    return None
+
+
+def _is_external_package_native_artifact(path: Path) -> bool:
+    name = path.name.lower()
+    return any(name.endswith(suffix) for suffix in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES)
+
+
+def _iter_external_package_native_artifacts(package_dir: Path) -> list[Path]:
+    artifacts: list[Path] = []
+    for current_root, dirnames, filenames in os.walk(package_dir):
+        dirnames[:] = sorted(
+            dirname
+            for dirname in dirnames
+            if dirname not in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS
+            and not (Path(current_root) / dirname).is_symlink()
+        )
+        current = Path(current_root)
+        for filename in sorted(filenames):
+            path = current / filename
+            if path.is_symlink() or not _is_external_package_native_artifact(path):
+                continue
+            artifacts.append(path.resolve())
+    return artifacts
+
+
+def _external_extension_module_name(
+    *,
+    package: str,
+    package_dir: Path,
+    artifact_path: Path,
+) -> str:
+    rel = artifact_path.resolve().relative_to(package_dir.resolve())
+    parent_parts = rel.parent.parts
+    basename = rel.name
+    for suffix in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES:
+        if basename.lower().endswith(suffix):
+            basename = basename[: -len(suffix)]
+            break
+    basename = basename.split(".", 1)[0]
+    return ".".join(part for part in (package, *parent_parts, basename) if part)
+
+
+def _extension_path_matches_manifest(
+    *,
+    path: Path,
+    manifest_extension: str,
+    manifest_dir: Path,
+    package_dir: Path,
+) -> bool:
+    expected_norm = manifest_extension.replace("\\", "/").strip()
+    if not expected_norm:
+        return False
+    artifact_path = path.resolve()
+    manifest_path = Path(expected_norm)
+    if manifest_path.is_absolute():
+        return manifest_path.resolve() == artifact_path
+    return (
+        (manifest_dir / manifest_path).resolve() == artifact_path
+        or (package_dir / manifest_path).resolve() == artifact_path
+    )
+
+
+def _find_external_extension_manifest(
+    *,
+    artifact_path: Path,
+    package_dir: Path,
+) -> Path | None:
+    package_root = package_dir.resolve()
+    current = artifact_path.resolve().parent
+    for _ in range(6):
+        if not (current == package_root or current.is_relative_to(package_root)):
+            return None
+        candidate = current / "extension_manifest.json"
+        if _case_exact_file(candidate):
+            return candidate.resolve()
+        if current == package_root:
+            return None
+        current = current.parent
+    return None
+
+
+def _required_manifest_str(
+    manifest: Mapping[str, Any],
+    field_name: str,
+    errors: list[str],
+) -> str:
+    value = manifest.get(field_name)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    errors.append(f"extension_manifest.json missing non-empty {field_name!r}")
+    return ""
+
+
+def _validate_external_package_native_artifact(
+    *,
+    package: str,
+    package_dir: Path,
+    artifact_path: Path,
+) -> tuple[_ExternalPackageNativeArtifact | None, list[str]]:
+    errors: list[str] = []
+    module_name = _external_extension_module_name(
+        package=package,
+        package_dir=package_dir,
+        artifact_path=artifact_path,
+    )
+    manifest_path = _find_external_extension_manifest(
+        artifact_path=artifact_path,
+        package_dir=package_dir,
+    )
+    if manifest_path is None:
+        return None, [
+            f"{package}: native artifact {artifact_path} is missing "
+            "extension_manifest.json sidecar"
+        ]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, [f"{package}: invalid extension manifest {manifest_path}: {exc}"]
+    if not isinstance(manifest, dict):
+        return None, [f"{package}: extension manifest {manifest_path} must be an object"]
+    validation = _validate_extension_manifest(
+        manifest,
+        manifest_dir=manifest_path.parent,
+        wheel_path=None,
+        require_capabilities=True,
+        required_abi=None,
+        require_checksum=False,
+        warn_missing_checksum=False,
+    )
+    errors.extend(f"{package}: {error}" for error in validation.errors)
+    manifest_module = _required_manifest_str(manifest, "module", errors)
+    if manifest_module and manifest_module != module_name:
+        errors.append(
+            f"{package}: manifest module {manifest_module!r} does not match "
+            f"native artifact module {module_name!r}"
+        )
+    manifest_extension = _required_manifest_str(manifest, "extension", errors)
+    if manifest_extension and not _extension_path_matches_manifest(
+        path=artifact_path,
+        manifest_extension=manifest_extension,
+        manifest_dir=manifest_path.parent,
+        package_dir=package_dir,
+    ):
+        errors.append(
+            f"{package}: manifest extension {manifest_extension!r} does not "
+            f"match native artifact {artifact_path}"
+        )
+    expected_extension_sha = _required_manifest_str(
+        manifest,
+        "extension_sha256",
+        errors,
+    ).lower()
+    actual_extension_sha = _sha256_file(artifact_path).lower()
+    if expected_extension_sha and expected_extension_sha != actual_extension_sha:
+        errors.append(
+            f"{package}: extension_sha256 mismatch for {artifact_path.name}: "
+            f"expected {expected_extension_sha}, got {actual_extension_sha}"
+        )
+    target_triple = _required_manifest_str(manifest, "target_triple", errors)
+    platform_tag = _required_manifest_str(manifest, "platform_tag", errors)
+    abi_tag = _required_manifest_str(manifest, "abi_tag", errors)
+    if errors:
+        return None, errors
+    return (
+        _ExternalPackageNativeArtifact(
+            package=package,
+            module=module_name,
+            package_dir=package_dir.resolve(),
+            path=artifact_path.resolve(),
+            manifest_path=manifest_path.resolve(),
+            extension_sha256=actual_extension_sha,
+            manifest_sha256=_sha256_file(manifest_path),
+            capabilities=tuple(validation.capabilities),
+            abi_tag=abi_tag,
+            target_triple=target_triple,
+            platform_tag=platform_tag,
+        ),
+        [],
+    )
+
+
+def _resolve_external_package_native_artifact_plan(
+    *,
+    external_module_roots: Sequence[Path],
+    admitted_packages: Collection[str],
+) -> tuple[_ExternalPackageNativeArtifactPlan | None, list[str]]:
+    artifacts: list[_ExternalPackageNativeArtifact] = []
+    errors: list[str] = []
+    for package in sorted(admitted_packages):
+        for root in external_module_roots:
+            package_dir = _external_package_dir(root.resolve(), package)
+            if package_dir is None:
+                continue
+            for artifact_path in _iter_external_package_native_artifacts(package_dir):
+                artifact, artifact_errors = _validate_external_package_native_artifact(
+                    package=package,
+                    package_dir=package_dir,
+                    artifact_path=artifact_path,
+                )
+                errors.extend(artifact_errors)
+                if artifact is not None:
+                    artifacts.append(artifact)
+    if errors:
+        return None, errors
+    return (
+        _ExternalPackageNativeArtifactPlan(
+            artifacts=tuple(sorted(artifacts, key=lambda item: (item.module, str(item.path))))
+        ),
+        [],
+    )
+
+
 def _resolve_import_admission_policy(
     *,
     external_module_roots: Sequence[Path],
@@ -4784,9 +5333,22 @@ def _resolve_import_admission_policy(
     )
     if error is not None:
         return None, _fail(error, json_output, command="build")
+    native_plan, native_plan_errors = _resolve_external_package_native_artifact_plan(
+        external_module_roots=external_module_roots,
+        admitted_packages=packages,
+    )
+    if native_plan_errors:
+        return None, _fail(
+            "External static package native-artifact custody errors: "
+            + "; ".join(native_plan_errors),
+            json_output,
+            command="build",
+        )
+    assert native_plan is not None
     return _ImportAdmissionPolicy(
         external_roots=tuple(external_module_roots),
         admitted_external_packages=packages,
+        native_artifact_plan=native_plan,
     ), None
 
 
@@ -5635,7 +6197,9 @@ def _module_uses_runtime_import_protocol(
     is_package = module_path.name == "__init__.py"
     if tree is None:
         try:
-            source = module_resolution_cache.read_module_source(module_path)
+            source = module_resolution_cache.read_module_source(
+                module_path, retain=False
+            )
         except (OSError, SyntaxError, UnicodeDecodeError):
             # Keep runtime import support enabled when analysis cannot prove the
             # graph is fully static.
@@ -5647,9 +6211,29 @@ def _module_uses_runtime_import_protocol(
                 module_path,
                 source,
                 filename=str(module_path),
+                retain=False,
                 target_python=target_python,
             )
         except SyntaxError:
+            return True
+    scan_nodes = (
+        tuple(ast.walk(tree))
+        if import_scan_mode == "full"
+        else _module_init_scan_nodes(tree)
+    )
+    for node in scan_nodes:
+        if isinstance(node, ast.Import):
+            if any(alias.name != "_intrinsics" for alias in node.names):
+                return True
+            continue
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "__future__":
+                continue
+            if node.level == 0 and (
+                node.module == "_intrinsics"
+                or (node.module is not None and node.module.endswith("._intrinsics"))
+            ):
+                continue
             return True
     return module_resolution_cache.uses_runtime_import_protocol(
         module_path,
@@ -7808,13 +8392,45 @@ def _is_runtime_owned_module_path(module_path: Path) -> bool:
     )
 
 
+def _build_module_source_catalog(
+    module_graph: Mapping[str, Path],
+    *,
+    module_sources: Mapping[str, str] | None = None,
+    path_stats: Mapping[str, os.stat_result | None] | None = None,
+) -> _ModuleSourceCatalog:
+    leases: dict[str, _ModuleSourceLease] = {}
+    module_sources = module_sources or {}
+    for module_name, module_path in module_graph.items():
+        path_stat = path_stats.get(module_name) if path_stats is not None else None
+        inline_source = module_sources.get(module_name)
+        if inline_source is not None:
+            leases[module_name] = _ModuleSourceLease.inline(
+                module_path, inline_source, path_stat
+            )
+        else:
+            leases[module_name] = _ModuleSourceLease.path_backed(
+                module_path, path_stat
+            )
+    return _ModuleSourceCatalog(leases=leases)
+
+
 def _predict_frontend_module_cost(
     module_name: str,
-    module_sources: dict[str, str],
     module_deps: dict[str, set[str]],
+    *,
+    module_sources: Mapping[str, str] | None = None,
+    module_source_catalog: _ModuleSourceCatalog | None = None,
+    module_graph: Mapping[str, Path] | None = None,
 ) -> float:
-    source = module_sources.get(module_name, "")
-    source_cost = max(1.0, float(len(source)))
+    source_size = 0
+    if module_source_catalog is not None:
+        source_size = module_source_catalog.source_size(
+            module_name,
+            module_graph.get(module_name) if module_graph is not None else None,
+        )
+    elif module_sources is not None:
+        source_size = len(module_sources.get(module_name, ""))
+    source_cost = max(1.0, float(source_size))
     dep_cost = float(max(0, len(module_deps.get(module_name, set()))) * 512)
     return source_cost + dep_cost
 
@@ -7822,13 +8438,22 @@ def _predict_frontend_module_cost(
 def _build_frontend_module_costs(
     module_names: Collection[str],
     *,
-    module_sources: Mapping[str, str],
+    module_sources: Mapping[str, str] | None = None,
+    module_source_catalog: _ModuleSourceCatalog | None = None,
+    module_graph: Mapping[str, Path] | None = None,
     module_deps: Mapping[str, set[str]],
 ) -> dict[str, float]:
     module_costs: dict[str, float] = {}
     for module_name in sorted(module_names):
-        source = module_sources.get(module_name, "")
-        source_cost = max(1.0, float(len(source)))
+        source_size = 0
+        if module_source_catalog is not None:
+            source_size = module_source_catalog.source_size(
+                module_name,
+                module_graph.get(module_name) if module_graph is not None else None,
+            )
+        elif module_sources is not None:
+            source_size = len(module_sources.get(module_name, ""))
+        source_cost = max(1.0, float(source_size))
         dep_cost = float(max(0, len(module_deps.get(module_name, set()))) * 512)
         module_costs[module_name] = source_cost + dep_cost
     return module_costs
@@ -7853,6 +8478,7 @@ def _build_module_graph_metadata(
     entry_module: str,
     namespace_module_names: Collection[str],
     module_sources: Mapping[str, str] | None = None,
+    module_source_catalog: _ModuleSourceCatalog | None = None,
     module_deps: Mapping[str, set[str]] | None = None,
 ) -> _ModuleGraphMetadata:
     (
@@ -7867,10 +8493,14 @@ def _build_module_graph_metadata(
         namespace_module_names=namespace_module_names,
     )
     frontend_module_costs = None
-    if module_sources is not None and module_deps is not None:
+    if module_deps is not None and (
+        module_sources is not None or module_source_catalog is not None
+    ):
         frontend_module_costs = _build_frontend_module_costs(
             module_graph,
             module_sources=module_sources,
+            module_source_catalog=module_source_catalog,
+            module_graph=module_graph,
             module_deps=module_deps,
         )
     stdlib_like_by_module = (
@@ -7879,12 +8509,20 @@ def _build_module_graph_metadata(
         else None
     )
     return _ModuleGraphMetadata(
-        logical_source_path_by_module=logical_source_path_by_module,
-        entry_override_by_module=entry_override_by_module,
-        module_is_namespace_by_module=module_is_namespace_by_module,
-        module_is_package_by_module=module_is_package_by_module,
-        frontend_module_costs=frontend_module_costs,
-        stdlib_like_by_module=stdlib_like_by_module,
+        logical_source_path_by_module=MappingProxyType(logical_source_path_by_module),
+        entry_override_by_module=MappingProxyType(entry_override_by_module),
+        module_is_namespace_by_module=MappingProxyType(module_is_namespace_by_module),
+        module_is_package_by_module=MappingProxyType(module_is_package_by_module),
+        frontend_module_costs=(
+            MappingProxyType(frontend_module_costs)
+            if frontend_module_costs is not None
+            else None
+        ),
+        stdlib_like_by_module=(
+            MappingProxyType(stdlib_like_by_module)
+            if stdlib_like_by_module is not None
+            else None
+        ),
     )
 
 
@@ -7965,7 +8603,9 @@ def _module_lowering_execution_view(
 def _choose_frontend_parallel_layer_workers(
     *,
     candidates: list[str],
-    module_sources: dict[str, str],
+    module_sources: Mapping[str, str] | None = None,
+    module_source_catalog: _ModuleSourceCatalog | None = None,
+    module_graph: Mapping[str, Path] | None = None,
     module_deps: dict[str, set[str]],
     module_costs: Mapping[str, float] | None = None,
     stdlib_like_by_module: Mapping[str, bool] | None = None,
@@ -7990,7 +8630,11 @@ def _choose_frontend_parallel_layer_workers(
             predicted_cost_total += module_costs[name]
         else:
             predicted_cost_total += _predict_frontend_module_cost(
-                name, module_sources, module_deps
+                name,
+                module_deps,
+                module_sources=module_sources,
+                module_source_catalog=module_source_catalog,
+                module_graph=module_graph,
             )
     stdlib_candidates = sum(
         1
@@ -8070,13 +8714,56 @@ def _module_order_has_back_edges(
     return False
 
 
+def _read_worker_source_lease(raw_lease: object) -> str:
+    if not isinstance(raw_lease, Mapping):
+        raise ValueError("missing source lease")
+    kind = raw_lease.get("kind")
+    if kind == "inline":
+        source = raw_lease.get("source")
+        if not isinstance(source, str):
+            raise ValueError("inline source lease is missing source text")
+        return source
+    if kind != "path":
+        raise ValueError(f"unsupported source lease kind: {kind!r}")
+    raw_path = raw_lease.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        raise ValueError("path source lease is missing path")
+    path = Path(raw_path)
+    expected_size = raw_lease.get("source_size")
+    expected_mtime_ns = raw_lease.get("mtime_ns")
+    if expected_size is not None or expected_mtime_ns is not None:
+        stat = path.stat()
+        if isinstance(expected_size, int) and stat.st_size != expected_size:
+            raise OSError(f"Source lease for {path} changed size during compile")
+        if isinstance(expected_mtime_ns, int) and stat.st_mtime_ns != expected_mtime_ns:
+            raise OSError(f"Source lease for {path} changed mtime during compile")
+    return _read_module_source(path)
+
+
 def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     worker_started_ns = time.time_ns()
     worker_pid = os.getpid()
     module_name = str(payload["module_name"])
     module_path = str(payload["module_path"])
     logical_source_path = str(payload.get("logical_source_path") or module_path)
-    source = str(payload["source"])
+    try:
+        source = _read_worker_source_lease(payload["source_lease"])
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as exc:
+        worker_finished_ns = time.time_ns()
+        return {
+            "ok": False,
+            "error": f"Failed to read module {module_path}: {exc}",
+            "timings": {
+                "visit_s": 0.0,
+                "lower_s": 0.0,
+                "total_s": 0.0,
+            },
+            "worker": {
+                "pid": worker_pid,
+                "started_ns": worker_started_ns,
+                "finished_ns": worker_finished_ns,
+            },
+        }
     parse_codec = cast(ParseCodec, payload["parse_codec"])
     type_hint_policy = cast(TypeHintPolicy, payload["type_hint_policy"])
     fallback_policy = cast(FallbackPolicy, payload["fallback_policy"])
@@ -8341,7 +9028,7 @@ def _discover_module_graph_from_paths(
                 )
             if persisted_imports is None:
                 try:
-                    source = resolution_cache.read_module_source(path)
+                    source = resolution_cache.read_module_source(path, retain=False)
                 except (OSError, SyntaxError, UnicodeDecodeError):
                     continue
                 try:
@@ -8349,6 +9036,7 @@ def _discover_module_graph_from_paths(
                         path,
                         source,
                         filename=str(path),
+                        retain=False,
                         target_python=target_python,
                     )
                 except SyntaxError:
@@ -8495,7 +9183,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
-_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 4
+_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 6
 _IMPORT_SCAN_CACHE_SCHEMA_VERSION = 4
 _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 4
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
@@ -9002,6 +9690,7 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "stdlib_ast",
     "stdlib_unicode_names",
     "stdlib_fs_extra",
+    "sqlite",
     "molt_gpu_primitives",
 )
 
@@ -9014,6 +9703,10 @@ _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES = frozenset(
         "stdlib_net",
         "stdlib_ast",
         "stdlib_unicode_names",
+        # SQLite is backed by rusqlite/molt-db and is not capability-supported
+        # for wasm yet. Keep it out of ambient wasm runtime artifacts; explicit
+        # sqlite imports are refused by the profile-feature availability gate.
+        "sqlite",
     }
 )
 
@@ -9053,14 +9746,16 @@ def _runtime_builtin_features_for_profile(
         + list(_ALL_DOMAIN_FEATURES)
         + list(_MICRO_BASE_RUNTIME_FEATURES)
     )
-    if stdlib_profile != "micro":
-        return all_features
     if target_triple is not None and target_triple.startswith("wasm32"):
+        if stdlib_profile != "micro":
+            return list(_WASM_RUNTIME_FULL_FEATURES)
         return [
             feature
             for feature in all_features
             if feature not in _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES
         ]
+    if stdlib_profile != "micro":
+        return all_features
     return list(_ALL_BUILTIN_FEATURES) + list(_MICRO_BASE_RUNTIME_FEATURES)
 
 
@@ -9095,10 +9790,16 @@ def _wasm_runtime_feature_plan(
             )
         )
     else:
+        full_feature_order = list(_WASM_RUNTIME_FULL_FEATURES)
+        builtin_feature_set = frozenset(builtin_features)
         cargo_features = tuple(
             _dedupe_preserve_order(
                 list(runtime_features)
-                + list(_WASM_RUNTIME_FULL_FEATURES)
+                + [
+                    feature
+                    for feature in full_feature_order
+                    if feature in builtin_feature_set
+                ]
                 + (
                     ["molt_gpu_primitives"]
                     if _resolved_modules_require_gpu_primitives(
@@ -9204,6 +9905,8 @@ def _runtime_artifact_fingerprint_matches(
         return False
     if not require_artifact_digest:
         return True
+    if stored_fingerprint is None:
+        return False
     artifact_digest = stored_fingerprint.get("artifact_sha256")
     if not isinstance(artifact_digest, str) or not artifact_digest:
         return False
@@ -9759,6 +10462,88 @@ def _native_object_has_unresolved_module_chunks(
     return any(symbol not in stdlib_defined for symbol in unresolved_chunks)
 
 
+def _read_shared_stdlib_partition_functions(
+    stdlib_object_path: Path,
+) -> frozenset[str] | None:
+    try:
+        raw = _stdlib_object_partition_manifest_sidecar_path(
+            stdlib_object_path
+        ).read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema") != _SHARED_STDLIB_PARTITION_SCHEMA_VERSION:
+        return None
+    raw_functions = payload.get("functions")
+    if not isinstance(raw_functions, list) or not all(
+        isinstance(name, str) and name for name in raw_functions
+    ):
+        return None
+    function_count = payload.get("function_count")
+    if isinstance(function_count, int) and function_count != len(raw_functions):
+        return None
+    return frozenset(raw_functions)
+
+
+def _unresolved_stdlib_module_symbols(
+    undefined_symbols: Collection[str],
+    stdlib_module_symbols: Collection[str],
+) -> tuple[str, ...]:
+    module_symbols = tuple(sorted(set(stdlib_module_symbols)))
+    if not module_symbols:
+        return ()
+    unresolved: list[str] = []
+    for symbol in sorted(set(undefined_symbols)):
+        if symbol.startswith("molt_"):
+            continue
+        if any(
+            _emitted_name_matches_module_symbol(symbol, module_symbol)
+            for module_symbol in module_symbols
+        ):
+            unresolved.append(symbol)
+    return tuple(unresolved)
+
+
+def _shared_stdlib_native_symbol_closure_issue(
+    stdlib_object_path: Path,
+    *,
+    stdlib_module_symbols: Collection[str] | None,
+) -> str | None:
+    symbol_sets = _native_object_global_symbol_sets(stdlib_object_path)
+    if symbol_sets is None:
+        return None
+    defined, undefined = symbol_sets
+    issues: list[str] = []
+
+    partition_functions = _read_shared_stdlib_partition_functions(stdlib_object_path)
+    if partition_functions is None:
+        issues.append("missing or malformed partition manifest")
+    else:
+        missing_definitions = sorted(partition_functions - defined)
+        if missing_definitions:
+            preview = ", ".join(missing_definitions[:8])
+            suffix = "" if len(missing_definitions) <= 8 else ", ..."
+            issues.append(f"missing partition definitions: {preview}{suffix}")
+        unresolved_declared = sorted(partition_functions & undefined)
+        if unresolved_declared:
+            preview = ", ".join(unresolved_declared[:8])
+            suffix = "" if len(unresolved_declared) <= 8 else ", ..."
+            issues.append(f"unresolved partition references: {preview}{suffix}")
+
+    if stdlib_module_symbols is not None:
+        unresolved_stdlib = _unresolved_stdlib_module_symbols(
+            undefined, stdlib_module_symbols
+        )
+        if unresolved_stdlib:
+            preview = ", ".join(unresolved_stdlib[:8])
+            suffix = "" if len(unresolved_stdlib) <= 8 else ", ..."
+            issues.append(f"unresolved stdlib module references: {preview}{suffix}")
+
+    return "; ".join(issues) if issues else None
+
+
 def _nm_candidate_binaries() -> list[str]:
     """Ordered candidate `nm` binaries for reading the runtime staticlib.
 
@@ -9921,6 +10706,12 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if sccache is None:
         return
     env["RUSTC_WRAPPER"] = sccache
+
+
+def _cargo_build_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("CARGO_INCREMENTAL", "0")
+    return env
 
 
 def _is_sccache_wrapper_failure(result: subprocess.CompletedProcess[str]) -> bool:
@@ -14086,7 +14877,6 @@ def _try_cached_backend_candidates(
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols: Collection[str] | None = None,
 ) -> tuple[bool, str | None]:
-    del stdlib_module_symbols
     state_path = _artifact_sync_state_path(project_root, output_artifact)
     state = _read_artifact_sync_state(state_path)
     try:
@@ -14099,6 +14889,7 @@ def _try_cached_backend_candidates(
                 stdlib_object_path,
                 stdlib_object_cache_key,
                 stdlib_object_manifest=stdlib_object_manifest,
+                stdlib_module_symbols=stdlib_module_symbols,
             ):
                 if stdlib_object_path.exists():
                     warnings.append(
@@ -14107,6 +14898,7 @@ def _try_cached_backend_candidates(
                             stdlib_object_path,
                             stdlib_object_cache_key,
                             stdlib_object_manifest=stdlib_object_manifest,
+                            stdlib_module_symbols=stdlib_module_symbols,
                         )
                     )
                 # Native output.o cache hits are invalid without the matching
@@ -14163,7 +14955,6 @@ def _backend_daemon_skip_output_sync_flags(
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
 ) -> tuple[bool, bool]:
-    del stdlib_module_symbols
     is_wasm_output = output_artifact.suffix == ".wasm"
     if not is_wasm_output and _native_object_has_unresolved_module_chunks(
         output_artifact,
@@ -14174,6 +14965,7 @@ def _backend_daemon_skip_output_sync_flags(
         stdlib_object_path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
+        stdlib_module_symbols=stdlib_module_symbols,
     ):
         return False, False
     if state_path is None:
@@ -14378,6 +15170,7 @@ def _backend_daemon_request_bytes(
                 return _backend_daemon_request_on_socket(
                     sock,
                     data,
+                    socket_path=socket_path,
                     shutdown_write=True,
                     daemon_identity=daemon_identity,
                 )
@@ -14388,10 +15181,38 @@ def _backend_daemon_request_bytes(
             request_sentinel.__exit__(None, None, None)
 
 
+def _backend_daemon_empty_response_error(
+    socket_path: Path,
+    daemon_identity: _BackendDaemonIdentity | None,
+) -> str:
+    base = "backend daemon returned empty response"
+    if daemon_identity is None:
+        return base
+    verified_live = _backend_daemon_identity_is_verified(
+        daemon_identity,
+        allow_health_probe=False,
+    )
+    log_path = _backend_daemon_log_path(
+        daemon_identity.project_root,
+        daemon_identity.cargo_profile,
+        config_digest=daemon_identity.config_digest,
+    )
+    details = (
+        f"{base} (pid={daemon_identity.pid}, "
+        f"verified_live={str(verified_live).lower()}, "
+        f"socket={socket_path}, log={log_path})"
+    )
+    log_tail = _backend_daemon_log_tail(log_path)
+    if log_tail:
+        return f"{details}\nLast daemon log lines:\n{log_tail}"
+    return f"{details}\n(no daemon log output captured at {log_path})"
+
+
 def _backend_daemon_request_on_socket(
     sock: socket.socket,
     data: bytes,
     *,
+    socket_path: Path | None = None,
     shutdown_write: bool,
     daemon_identity: _BackendDaemonIdentity | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -14423,7 +15244,10 @@ def _backend_daemon_request_on_socket(
     except OSError as exc:
         return None, f"backend daemon connection failed: {exc}"
     if not raw or all(byte in b" \t\r\n" for byte in raw):
-        return None, "backend daemon returned empty response"
+        return None, _backend_daemon_empty_response_error(
+            socket_path or Path("."),
+            daemon_identity,
+        )
     try:
         response = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -14460,9 +15284,28 @@ def _backend_daemon_request_payload_bytes(
     return encoded + b"\n", None
 
 
+def _write_backend_ir_json_file(path: Path, ir: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(ir, handle, separators=(",", ":"), default=_json_ir_default)
+
+
+def _write_backend_ir_lease(project_root: Path, ir: Mapping[str, Any]) -> Path:
+    lease_dir = project_root / "tmp" / "backend-ir-leases"
+    lease_dir.mkdir(parents=True, exist_ok=True)
+    lease_path = lease_dir / f"ir-{os.getpid()}-{uuid.uuid4().hex}.json"
+    _write_backend_ir_json_file(lease_path, ir)
+    return lease_path
+
+
+def _write_backend_daemon_ir_lease(project_root: Path, ir: Mapping[str, Any]) -> Path:
+    return _write_backend_ir_lease(project_root, ir)
+
+
 def _backend_daemon_compile_request_bytes(
     *,
     ir: Mapping[str, Any] | None,
+    ir_path: Path | None = None,
     backend_output: Path,
     is_wasm: bool,
     wasm_link: bool,
@@ -14509,6 +15352,13 @@ def _backend_daemon_compile_request_bytes(
     }
     if probe_cache_only:
         job["probe_cache_only"] = True
+    elif ir is not None and ir_path is not None:
+        return (
+            None,
+            "backend daemon request must use exactly one IR custody field: ir or ir_path",
+        )
+    elif ir_path is not None:
+        job["ir_path"] = str(ir_path)
     elif ir is not None:
         job["ir"] = ir
     jobs: list[dict[str, Any]] = [job]
@@ -14716,25 +15566,12 @@ def _start_backend_daemon(
                     )
                     if ready:
                         return True
-                    message = (
-                        "Backend daemon was running but did not become ready "
-                        f"within {probe_window:.2f}s; restarting."
-                    )
-                    log_tail = _backend_daemon_log_tail(log_path)
-                    if log_tail:
-                        message = f"{message}\nLast daemon log lines:\n{log_tail}"
-                    _report_daemon_issue(message)
-                    _terminate_backend_daemon_identity(
-                        existing_identity,
-                        grace=1.0,
-                    )
-                    _remove_backend_daemon_identity(identity_path)
-                    try:
-                        if socket_path.exists():
-                            socket_path.unlink()
-                    except OSError:
-                        pass
-                    existing_identity = None
+                    # A verified daemon that misses the short startup probe may
+                    # simply be inside a long synchronous compile. Treat the
+                    # identity as authoritative and let the compile request
+                    # queue on that socket; restarting here can orphan a busy
+                    # daemon and submit the same heavy full-IR request twice.
+                    return True
                 else:
                     _terminate_backend_daemon_identity(
                         existing_identity,
@@ -14956,18 +15793,63 @@ def _compile_with_backend_daemon(
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols_json: str | None = None,
+    stdlib_module_symbols: Collection[str] | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
     daemon_identity: _BackendDaemonIdentity | None = None,
 ) -> _BackendDaemonCompileResult:
     full_request_bytes = request_bytes
     probe_request_bytes: bytes | None = None
+    ir_lease_path: Path | None = None
     cache_probe_allowed = True
+
+    def encode_full_request_bytes() -> tuple[bytes | None, str | None]:
+        nonlocal full_request_bytes, ir_lease_path
+        if full_request_bytes is not None:
+            return full_request_bytes, None
+        if ir_lease_path is None:
+            try:
+                ir_lease_path = _write_backend_daemon_ir_lease(project_root, ir)
+            except OSError as exc:
+                return None, f"backend daemon IR lease write failed: {exc}"
+        full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
+            ir=None,
+            ir_path=ir_lease_path,
+            backend_output=backend_output,
+            is_wasm=is_wasm,
+            wasm_link=wasm_link,
+            wasm_data_base=wasm_data_base,
+            wasm_table_base=wasm_table_base,
+            wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
+            target_triple=target_triple,
+            cache_key=cache_key,
+            function_cache_key=function_cache_key,
+            config_digest=config_digest,
+            skip_module_output_if_synced=skip_module_output_if_synced,
+            skip_function_output_if_synced=skip_function_output_if_synced,
+            entry_module=entry_module,
+            stdlib_object_path=stdlib_object_path,
+            stdlib_object_cache_key=stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols_json=stdlib_module_symbols_json,
+            include_health=False,
+        )
+        return full_request_bytes, encode_err
+
+    def cleanup_ir_lease() -> None:
+        nonlocal ir_lease_path
+        if ir_lease_path is None:
+            return
+        with contextlib.suppress(OSError):
+            ir_lease_path.unlink()
+        ir_lease_path = None
+
     if not is_wasm and stdlib_object_path is not None:
         cache_probe_allowed = _shared_stdlib_cache_matches_key_locked(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols=stdlib_module_symbols,
         )
     if (
         request_bytes is None
@@ -15001,33 +15883,15 @@ def _compile_with_backend_daemon(
                 False, probe_encode_err, None, None, None, True, False
             )
     elif full_request_bytes is None:
-        full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
-            ir=ir,
-            backend_output=backend_output,
-            is_wasm=is_wasm,
-            wasm_link=wasm_link,
-            wasm_data_base=wasm_data_base,
-            wasm_table_base=wasm_table_base,
-            wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
-            target_triple=target_triple,
-            cache_key=cache_key,
-            function_cache_key=function_cache_key,
-            config_digest=config_digest,
-            skip_module_output_if_synced=skip_module_output_if_synced,
-            skip_function_output_if_synced=skip_function_output_if_synced,
-            entry_module=entry_module,
-            stdlib_object_path=stdlib_object_path,
-            stdlib_object_cache_key=stdlib_object_cache_key,
-            stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols_json=stdlib_module_symbols_json,
-            include_health=False,
-        )
+        full_request_bytes, encode_err = encode_full_request_bytes()
         if encode_err is not None:
+            cleanup_ir_lease()
             return _BackendDaemonCompileResult(
                 False, encode_err, None, None, None, True, False
             )
         assert full_request_bytes is not None
     if probe_request_bytes is not None:
+        full_request_sent = False
         response, err = _backend_daemon_request_bytes(
             socket_path,
             probe_request_bytes,
@@ -15037,6 +15901,7 @@ def _compile_with_backend_daemon(
         )
     else:
         assert full_request_bytes is not None
+        full_request_sent = True
         response, err = _backend_daemon_request_bytes(
             socket_path,
             full_request_bytes,
@@ -15044,8 +15909,11 @@ def _compile_with_backend_daemon(
             daemon_identity=daemon_identity,
             project_root=project_root,
         )
+        cleanup_ir_lease()
     if err is not None:
-        return _BackendDaemonCompileResult(False, err, None, None, None, True, False)
+        return _BackendDaemonCompileResult(
+            False, err, None, None, None, True, False, full_request_sent
+        )
     if response is None:
         return _BackendDaemonCompileResult(
             False,
@@ -15055,13 +15923,14 @@ def _compile_with_backend_daemon(
             None,
             True,
             False,
+            full_request_sent,
         )
     health = _backend_daemon_health_from_response(response)
     if not bool(response.get("ok")):
         error = response.get("error")
         if isinstance(error, str) and error:
             return _BackendDaemonCompileResult(
-                False, error, health, None, None, True, False
+                False, error, health, None, None, True, False, full_request_sent
             )
         return _BackendDaemonCompileResult(
             False,
@@ -15071,6 +15940,7 @@ def _compile_with_backend_daemon(
             None,
             True,
             False,
+            full_request_sent,
         )
     response_jobs = response.get("jobs")
     if not isinstance(response_jobs, list) or not response_jobs:
@@ -15082,6 +15952,7 @@ def _compile_with_backend_daemon(
             None,
             True,
             False,
+            full_request_sent,
         )
     first = response_jobs[0]
     if not isinstance(first, dict):
@@ -15093,6 +15964,7 @@ def _compile_with_backend_daemon(
             None,
             True,
             False,
+            full_request_sent,
         )
     cached: bool | None = (
         first.get("cached") if isinstance(first.get("cached"), bool) else None
@@ -15110,28 +15982,9 @@ def _compile_with_backend_daemon(
     output_exists = not output_written
     if needs_ir and probe_request_bytes is not None:
         if full_request_bytes is None:
-            full_request_bytes, encode_err = _backend_daemon_compile_request_bytes(
-                ir=ir,
-                backend_output=backend_output,
-                is_wasm=is_wasm,
-                wasm_link=wasm_link,
-                wasm_data_base=wasm_data_base,
-                wasm_table_base=wasm_table_base,
-                wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
-                target_triple=target_triple,
-                cache_key=cache_key,
-                function_cache_key=function_cache_key,
-                config_digest=config_digest,
-                skip_module_output_if_synced=skip_module_output_if_synced,
-                skip_function_output_if_synced=skip_function_output_if_synced,
-                entry_module=entry_module,
-                stdlib_object_path=stdlib_object_path,
-                stdlib_object_cache_key=stdlib_object_cache_key,
-                stdlib_object_manifest=stdlib_object_manifest,
-                stdlib_module_symbols_json=stdlib_module_symbols_json,
-                include_health=False,
-            )
+            full_request_bytes, encode_err = encode_full_request_bytes()
             if encode_err is not None:
+                cleanup_ir_lease()
                 return _BackendDaemonCompileResult(
                     False, encode_err, health, None, None, True, False
                 )
@@ -15143,9 +15996,11 @@ def _compile_with_backend_daemon(
             daemon_identity=daemon_identity,
             project_root=project_root,
         )
+        full_request_sent = True
+        cleanup_ir_lease()
         if err is not None:
             return _BackendDaemonCompileResult(
-                False, err, health, None, None, True, False
+                False, err, health, None, None, True, False, full_request_sent
             )
         if response is None:
             return _BackendDaemonCompileResult(
@@ -15156,13 +16011,14 @@ def _compile_with_backend_daemon(
                 None,
                 True,
                 False,
+                full_request_sent,
             )
         health = _backend_daemon_health_from_response(response)
         if not bool(response.get("ok")):
             error = response.get("error")
             if isinstance(error, str) and error:
                 return _BackendDaemonCompileResult(
-                    False, error, health, None, None, True, False
+                    False, error, health, None, None, True, False, full_request_sent
                 )
             return _BackendDaemonCompileResult(
                 False,
@@ -15172,6 +16028,7 @@ def _compile_with_backend_daemon(
                 None,
                 True,
                 False,
+                full_request_sent,
             )
         response_jobs = response.get("jobs")
         if not isinstance(response_jobs, list) or not response_jobs:
@@ -15183,6 +16040,7 @@ def _compile_with_backend_daemon(
                 None,
                 True,
                 False,
+                full_request_sent,
             )
         first = response_jobs[0]
         if not isinstance(first, dict):
@@ -15194,6 +16052,7 @@ def _compile_with_backend_daemon(
                 None,
                 True,
                 False,
+                full_request_sent,
             )
         cached = first.get("cached") if isinstance(first.get("cached"), bool) else None
         raw_tier = first.get("cache_tier")
@@ -15210,7 +16069,14 @@ def _compile_with_backend_daemon(
         message = first.get("message")
         if isinstance(message, str) and message:
             return _BackendDaemonCompileResult(
-                False, message, health, cached, cache_tier, output_written, False
+                False,
+                message,
+                health,
+                cached,
+                cache_tier,
+                output_written,
+                False,
+                full_request_sent,
             )
         return _BackendDaemonCompileResult(
             False,
@@ -15220,6 +16086,7 @@ def _compile_with_backend_daemon(
             cache_tier,
             output_written,
             False,
+            full_request_sent,
         )
     if output_written and not backend_output.exists():
         return _BackendDaemonCompileResult(
@@ -15230,6 +16097,7 @@ def _compile_with_backend_daemon(
             cache_tier,
             output_written,
             False,
+            full_request_sent,
         )
     output_exists = True
     return _BackendDaemonCompileResult(
@@ -15240,6 +16108,7 @@ def _compile_with_backend_daemon(
         cache_tier,
         output_written,
         output_exists,
+        full_request_sent,
     )
 
 
@@ -15341,6 +16210,7 @@ def _stage_shared_stdlib_object_for_link(
     *,
     stdlib_object_cache_key: str | None,
     stdlib_object_manifest: str | None,
+    stdlib_module_symbols: Collection[str] | None = None,
     artifacts_root: Path,
 ) -> Path:
     staged_stdlib_obj = artifacts_root / stdlib_object_path.name
@@ -15362,6 +16232,7 @@ def _stage_shared_stdlib_object_for_link(
                 stdlib_object_path,
                 stdlib_object_cache_key,
                 stdlib_object_manifest=stdlib_object_manifest,
+                stdlib_module_symbols=stdlib_module_symbols,
             ):
                 raise OSError(
                     "Shared stdlib cache contract mismatch during staging: "
@@ -15369,6 +16240,7 @@ def _stage_shared_stdlib_object_for_link(
                         stdlib_object_path,
                         stdlib_object_cache_key,
                         stdlib_object_manifest=stdlib_object_manifest,
+                        stdlib_module_symbols=stdlib_module_symbols,
                     )
                 )
             _atomic_link_or_copy_file(stdlib_object_path, staged_stdlib_obj)
@@ -15409,6 +16281,212 @@ def _stage_shared_stdlib_object_for_link(
     return staged_stdlib_obj
 
 
+def _external_package_source_root(package_dir: Path, package: str) -> Path:
+    resolved = package_dir.resolve()
+    package_parts = tuple(part for part in package.split(".") if part)
+    if (
+        package_parts
+        and len(resolved.parts) >= len(package_parts)
+        and tuple(resolved.parts[-len(package_parts) :]) == package_parts
+    ):
+        return resolved.parents[len(package_parts) - 1]
+    return resolved.parent
+
+
+def _external_package_init_source_paths(
+    *,
+    package_dir: Path,
+    package: str,
+) -> tuple[Path, ...]:
+    package_root = _external_package_source_root(package_dir, package)
+    package_parts = tuple(part for part in package.split(".") if part)
+    return tuple(
+        package_root.joinpath(*package_parts[:index], "__init__.py")
+        for index in range(1, len(package_parts) + 1)
+    )
+
+
+def _external_native_support_source_paths(
+    artifact: _ExternalPackageNativeArtifact,
+) -> tuple[Path, ...]:
+    out: list[Path] = []
+    seen: set[Path] = set()
+
+    def add(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(path)
+
+    for init_path in _external_package_init_source_paths(
+        package_dir=artifact.package_dir,
+        package=artifact.package,
+    ):
+        add(init_path)
+
+    artifact_path = artifact.path
+    add(artifact_path.with_name(f"{artifact_path.name}.molt.py"))
+    add(artifact_path.with_name(f"{artifact_path.name}.py"))
+    stripped = artifact_path.with_suffix("")
+    if stripped != artifact_path:
+        add(stripped.with_name(f"{stripped.name}.molt.py"))
+        add(stripped.with_name(f"{stripped.name}.py"))
+        for marker in (".cpython-", ".abi", ".cp"):
+            marker_index = stripped.name.rfind(marker)
+            if marker_index > 0:
+                prefix_name = stripped.name[:marker_index]
+                add(stripped.with_name(f"{prefix_name}.molt.py"))
+                add(stripped.with_name(f"{prefix_name}.py"))
+    if artifact_path.parent.name == "__pycache__":
+        parent = artifact_path.parent.parent
+        stem = artifact_path.name.rsplit(".", 1)[0]
+        module_stem = stem.split(".", 1)[0]
+        if module_stem:
+            add(parent / f"{module_stem}.molt.py")
+            add(parent / f"{module_stem}.py")
+    local_name = artifact.module.rsplit(".", 1)[-1]
+    if local_name:
+        add(artifact_path.parent / f"{local_name}.molt.py")
+        add(artifact_path.parent / f"{local_name}.py")
+        add(artifact_path.parent / local_name / "__init__.molt.py")
+        add(artifact_path.parent / local_name / "__init__.py")
+    if artifact_path.name.startswith("__init__."):
+        add(artifact_path.parent / "__init__.molt.py")
+        add(artifact_path.parent / "__init__.py")
+    return tuple(out)
+
+
+def _external_staged_path_for_source(
+    *,
+    runtime_root: Path,
+    package_source_root: Path,
+    source_path: Path,
+) -> Path:
+    resolved_source = source_path.resolve()
+    try:
+        relative = resolved_source.relative_to(package_source_root)
+    except ValueError as exc:
+        raise OSError(
+            f"external native support path escapes admitted package root: {source_path}"
+        ) from exc
+    return runtime_root / relative
+
+
+def _remove_staged_external_candidate(path: Path) -> None:
+    with contextlib.suppress(OSError):
+        if path.exists() or path.is_symlink():
+            _remove_file_or_tree(path)
+
+
+def _stage_external_native_required_file(
+    *,
+    source_path: Path,
+    staged_path: Path,
+    expected_sha256: str,
+    label: str,
+) -> None:
+    expected = expected_sha256.lower()
+    actual = _sha256_file(source_path).lower()
+    if actual != expected:
+        raise OSError(
+            f"External native artifact {label} checksum changed before staging: "
+            f"{source_path} expected {expected}, got {actual}"
+        )
+    _atomic_copy_file(source_path, staged_path)
+    staged = _sha256_file(staged_path).lower()
+    if staged != expected:
+        _remove_staged_external_candidate(staged_path)
+        raise OSError(
+            f"External native artifact {label} changed during staging: "
+            f"{source_path} expected {expected}, staged {staged}"
+        )
+
+
+def _stage_external_native_support_files(
+    artifact: _ExternalPackageNativeArtifact,
+    *,
+    runtime_root: Path,
+    package_source_root: Path,
+) -> tuple[Path, ...]:
+    staged_paths: list[Path] = []
+    for source_path in _external_native_support_source_paths(artifact):
+        staged_path = _external_staged_path_for_source(
+            runtime_root=runtime_root,
+            package_source_root=package_source_root,
+            source_path=source_path,
+        )
+        if source_path.is_file():
+            _atomic_copy_file(source_path, staged_path)
+            staged_paths.append(staged_path)
+        else:
+            _remove_staged_external_candidate(staged_path)
+    return tuple(staged_paths)
+
+
+def _stage_external_package_native_artifacts_for_build(
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan,
+    *,
+    artifacts_root: Path,
+) -> tuple[_StagedExternalPackageNativeArtifact, ...]:
+    if not native_artifact_plan.artifacts:
+        return ()
+    runtime_root = (
+        artifacts_root / "external_static_packages" / native_artifact_plan.digest()
+    )
+    staged_artifacts: list[_StagedExternalPackageNativeArtifact] = []
+    for artifact in native_artifact_plan.artifacts:
+        package_source_root = _external_package_source_root(
+            artifact.package_dir,
+            artifact.package,
+        )
+        staged_path = _external_staged_path_for_source(
+            runtime_root=runtime_root,
+            package_source_root=package_source_root,
+            source_path=artifact.path,
+        )
+        staged_manifest_path = _external_staged_path_for_source(
+            runtime_root=runtime_root,
+            package_source_root=package_source_root,
+            source_path=artifact.manifest_path,
+        )
+        _stage_external_native_required_file(
+            source_path=artifact.path,
+            staged_path=staged_path,
+            expected_sha256=artifact.extension_sha256,
+            label="extension",
+        )
+        _stage_external_native_required_file(
+            source_path=artifact.manifest_path,
+            staged_path=staged_manifest_path,
+            expected_sha256=artifact.manifest_sha256,
+            label="manifest",
+        )
+        staged_support_paths = _stage_external_native_support_files(
+            artifact,
+            runtime_root=runtime_root,
+            package_source_root=package_source_root,
+        )
+        staged_artifacts.append(
+            _StagedExternalPackageNativeArtifact(
+                package=artifact.package,
+                module=artifact.module,
+                runtime_root=runtime_root,
+                source_path=artifact.path,
+                source_manifest_path=artifact.manifest_path,
+                staged_path=staged_path,
+                staged_manifest_path=staged_manifest_path,
+                staged_support_paths=staged_support_paths,
+                extension_sha256=artifact.extension_sha256,
+                manifest_sha256=artifact.manifest_sha256,
+                capabilities=artifact.capabilities,
+                abi_tag=artifact.abi_tag,
+                target_triple=artifact.target_triple,
+                platform_tag=artifact.platform_tag,
+            )
+        )
+    return tuple(staged_artifacts)
+
+
 def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
     with contextlib.suppress(OSError):
         stdlib_object_path.unlink()
@@ -15427,6 +16505,7 @@ def _shared_stdlib_cache_matches_key(
     stdlib_object_cache_key: str | None,
     *,
     stdlib_object_manifest: str | None,
+    stdlib_module_symbols: Collection[str] | None = None,
 ) -> bool:
     if (
         stdlib_object_path is None
@@ -15452,7 +16531,15 @@ def _shared_stdlib_cache_matches_key(
         return False
     if cached_manifest.strip() != stdlib_object_manifest:
         return False
-    return _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).exists()
+    if not _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).exists():
+        return False
+    return (
+        _shared_stdlib_native_symbol_closure_issue(
+            stdlib_object_path,
+            stdlib_module_symbols=stdlib_module_symbols,
+        )
+        is None
+    )
 
 
 def _shared_stdlib_cache_matches_key_locked(
@@ -15460,6 +16547,7 @@ def _shared_stdlib_cache_matches_key_locked(
     stdlib_object_cache_key: str | None,
     *,
     stdlib_object_manifest: str | None,
+    stdlib_module_symbols: Collection[str] | None = None,
 ) -> bool:
     if stdlib_object_path is None:
         return False
@@ -15468,6 +16556,7 @@ def _shared_stdlib_cache_matches_key_locked(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols=stdlib_module_symbols,
         )
 
 
@@ -15892,6 +16981,10 @@ def _read_persisted_module_graph(
         ):
             return None
         path = Path(path_text)
+        if not _case_exact_file(path):
+            dirty_modules.add(module_name)
+            graph[module_name] = path
+            continue
         try:
             stat = (
                 resolution_cache.path_stat(path)
@@ -15940,6 +17033,8 @@ def _write_persisted_module_graph(
 ) -> None:
     modules: list[dict[str, Any]] = []
     for module_name, path in sorted(graph.items()):
+        if not _case_exact_file(path):
+            return
         stat = path.stat()
         source_sha256 = _source_content_sha256(path, stat)
         if source_sha256 is None:
@@ -16242,6 +17337,8 @@ def _load_module_analysis(
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
     path_stat: os.stat_result | None = None,
+    retain_source: bool = True,
+    retain_tree: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[
     ast.AST | None,
@@ -16302,12 +17399,13 @@ def _load_module_analysis(
         return None, persisted_imports, persisted_defaults, None, True, False, path_stat
 
     if source is None:
-        source = resolution_cache.read_module_source(path)
+        source = resolution_cache.read_module_source(path, retain=retain_source)
 
     tree = resolution_cache.parse_module_ast(
         path,
         source,
         filename=logical_source_path,
+        retain=retain_tree,
         target_python=target_python,
     )
     imports = persisted_imports
@@ -16346,7 +17444,15 @@ def _load_module_analysis(
             and stale_defaults == func_defaults
         ):
             interface_changed = False
-    return tree, imports, func_defaults, source, False, interface_changed, path_stat
+    return (
+        tree if retain_tree else None,
+        imports,
+        func_defaults,
+        source if retain_source else None,
+        False,
+        interface_changed,
+        path_stat,
+    )
 
 
 def _module_frontend_payload(
@@ -16608,7 +17714,8 @@ def _frontend_layer_plan(
     layer: Sequence[str],
     *,
     syntax_error_modules: Mapping[str, Any],
-    module_sources: dict[str, str],
+    module_source_catalog: _ModuleSourceCatalog,
+    module_graph: Mapping[str, Path],
     module_deps: dict[str, set[str]],
     frontend_module_costs: Mapping[str, float],
     stdlib_like_by_module: Mapping[str, bool],
@@ -16618,7 +17725,8 @@ def _frontend_layer_plan(
     candidates = tuple(name for name in layer if name not in syntax_error_modules)
     policy = _choose_frontend_parallel_layer_workers(
         candidates=list(candidates),
-        module_sources=module_sources,
+        module_source_catalog=module_source_catalog,
+        module_graph=module_graph,
         module_deps=module_deps,
         module_costs=frontend_module_costs,
         stdlib_like_by_module=stdlib_like_by_module,
@@ -16827,18 +17935,16 @@ def _resolve_tree_for_serial_frontend_module(
     tree = lowering_context.module_trees.get(module_name)
     if tree is not None:
         return tree
-    source = lowering_context.module_sources.get(module_name)
-    if source is None:
-        try:
-            source = lowering_context.module_resolution_cache.read_module_source(
-                module_path
-            )
-        except (SyntaxError, UnicodeDecodeError) as exc:
-            raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
-        except OSError as exc:
-            raise _ModuleLowerError(
-                f"Failed to read module {module_path}: {exc}"
-            ) from exc
+    try:
+        source = lowering_context.module_source_catalog.read_source(
+            module_name,
+            module_path,
+            lowering_context.module_resolution_cache,
+        )
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        raise _ModuleLowerError(f"Syntax error in {module_path}: {exc}") from exc
+    except OSError as exc:
+        raise _ModuleLowerError(f"Failed to read module {module_path}: {exc}") from exc
     logical_source_path = lowering_context.generated_module_source_paths.get(
         module_name, str(module_path)
     )
@@ -16847,6 +17953,7 @@ def _resolve_tree_for_serial_frontend_module(
             module_path,
             source,
             filename=logical_source_path,
+            retain=False,
             target_python=lowering_context.target_python,
         )
     except SyntaxError as exc:
@@ -17902,6 +19009,97 @@ def _write_emitted_ir(emit_ir_path: Path | None, ir: Mapping[str, Any]) -> str |
     return None
 
 
+def _module_owned_symbol_map(module_names: Collection[str]) -> dict[str, str]:
+    module_by_symbol: dict[str, str] = {}
+    for module_name in module_names:
+        if not isinstance(module_name, str) or not module_name:
+            continue
+        module_symbol = _module_symbol_name(module_name)
+        existing = module_by_symbol.get(module_symbol)
+        if existing is None or module_name.count(".") > existing.count("."):
+            module_by_symbol[module_symbol] = module_name
+    return dict(
+        sorted(module_by_symbol.items(), key=lambda item: len(item[0]), reverse=True)
+    )
+
+
+def _module_owned_symbol_name(
+    symbol_name: str,
+    module_by_symbol: Mapping[str, str],
+) -> str | None:
+    for module_symbol, module_name in module_by_symbol.items():
+        if _emitted_name_matches_module_symbol(symbol_name, module_symbol):
+            return module_name
+    return None
+
+
+def _static_backend_ir_module_call_targets(
+    ir: Mapping[str, Any],
+    module_names: Collection[str],
+) -> tuple[tuple[str, str, str, int], ...]:
+    """Return statically known direct module-symbol calls from backend-facing IR."""
+    module_by_symbol = _module_owned_symbol_map(module_names)
+    if not module_by_symbol:
+        return ()
+    targets: list[tuple[str, str, str, int]] = []
+    functions = ir.get("functions")
+    if not isinstance(functions, list):
+        return ()
+    for func in functions:
+        if not isinstance(func, Mapping):
+            continue
+        func_name = func.get("name")
+        if not isinstance(func_name, str) or not func_name:
+            func_name = "<unknown>"
+        ops = func.get("ops")
+        if not isinstance(ops, list):
+            continue
+        for index, op in enumerate(ops):
+            if not isinstance(op, Mapping):
+                continue
+            if op.get("kind") != "call":
+                continue
+            symbol_name = op.get("s_value")
+            if not isinstance(symbol_name, str) or symbol_name.startswith("molt_"):
+                continue
+            module_name = _module_owned_symbol_name(symbol_name, module_by_symbol)
+            if module_name is not None:
+                targets.append((module_name, symbol_name, func_name, index))
+    return tuple(targets)
+
+
+def _static_backend_ir_module_call_closure_issue(
+    ir: Mapping[str, Any],
+    module_graph: Mapping[str, Path],
+    module_names: Collection[str],
+) -> str | None:
+    """Fail early when backend IR directly calls symbols from absent modules."""
+    graph_modules = set(module_graph)
+    missing: list[tuple[str, str, str, int]] = []
+    seen: set[tuple[str, str]] = set()
+    for (
+        module_name,
+        symbol_name,
+        func_name,
+        index,
+    ) in _static_backend_ir_module_call_targets(ir, module_names):
+        if module_name in graph_modules or (module_name, symbol_name) in seen:
+            continue
+        seen.add((module_name, symbol_name))
+        missing.append((module_name, symbol_name, func_name, index))
+    if not missing:
+        return None
+    preview = ", ".join(
+        f"{symbol_name} ({module_name}) at {func_name}[{index}]"
+        for module_name, symbol_name, func_name, index in missing[:8]
+    )
+    suffix = "" if len(missing) <= 8 else ", ..."
+    return (
+        "backend IR contains direct calls to module symbols outside the module graph: "
+        f"{preview}{suffix}; graph_modules={len(graph_modules)}"
+    )
+
+
 def _prepare_backend_ir(
     *,
     entry_module: str,
@@ -18097,6 +19295,13 @@ def _prepare_backend_ir(
         pgo_profile_summary=pgo_profile_summary,
         runtime_feedback_summary=runtime_feedback_summary,
     )
+    module_call_issue = _static_backend_ir_module_call_closure_issue(
+        ir,
+        module_graph,
+        set(module_graph) | set(known_modules) | set(stdlib_allowlist),
+    )
+    if module_call_issue is not None:
+        return None, fail(module_call_issue, json_output, command="build")
     emit_ir_error = _write_emitted_ir(emit_ir_path, ir)
     if emit_ir_error is not None:
         return None, _fail(emit_ir_error, json_output, command="build")
@@ -18343,13 +19548,13 @@ def _reachable_function_names_for_stdlib_cache(
     return reachable
 
 
-def _shared_stdlib_cache_payload(
+def _shared_stdlib_cache_payload_ir(
     ir: Mapping[str, Any],
     *,
     entry_module: str,
     stdlib_module_symbols: Collection[str],
     compiler_fingerprint: str | None = None,
-) -> bytes:
+) -> dict[str, Any]:
     """Build a cache payload for the stdlib shared object.
 
     The key is based on the sorted stdlib function subset and their
@@ -18387,17 +19592,13 @@ def _shared_stdlib_cache_payload(
     stdlib_functions = _sorted_ir_functions(stdlib_functions)
     if compiler_fingerprint is None:
         compiler_fingerprint = _shared_stdlib_compiler_fingerprint()
-    return json.dumps(
-        {
-            "cache_schema": _SHARED_STDLIB_CACHE_SCHEMA_VERSION,
-            "compiler_fingerprint": compiler_fingerprint,
-            "functions": stdlib_functions,
-            "profile": ir.get("profile"),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        default=_json_ir_default,
-    ).encode("utf-8")
+    return {
+        "cache_schema": _SHARED_STDLIB_CACHE_SCHEMA_VERSION,
+        "compiler_fingerprint": compiler_fingerprint,
+        "functions": stdlib_functions,
+        "profile": ir.get("profile"),
+        "stdlib_module_symbols": sorted(set(stdlib_module_symbols)),
+    }
 
 
 def _shared_stdlib_cache_key(
@@ -18409,7 +19610,7 @@ def _shared_stdlib_cache_key(
     cache_variant: str,
     compiler_fingerprint: str | None = None,
 ) -> str:
-    payload = _shared_stdlib_cache_payload(
+    payload_ir = _shared_stdlib_cache_payload_ir(
         ir,
         entry_module=entry_module,
         stdlib_module_symbols=stdlib_module_symbols,
@@ -18420,7 +19621,7 @@ def _shared_stdlib_cache_key(
         "native-stdlib",
         target_triple,
         cache_variant,
-        payload=payload,
+        payload_ir=payload_ir,
     )
 
 
@@ -18447,6 +19648,7 @@ def _shared_stdlib_cache_mismatch_detail(
     expected_key: str | None,
     *,
     stdlib_object_manifest: str | None = None,
+    stdlib_module_symbols: Collection[str] | None = None,
 ) -> str:
     actual_key = _read_stdlib_cache_key(stdlib_path)
     if not expected_key:
@@ -18462,6 +19664,12 @@ def _shared_stdlib_cache_mismatch_detail(
                 return f"{stdlib_path} (missing manifest sidecar)"
             if actual_manifest != stdlib_object_manifest:
                 return f"{stdlib_path} (manifest sidecar mismatch)"
+        issue = _shared_stdlib_native_symbol_closure_issue(
+            stdlib_path,
+            stdlib_module_symbols=stdlib_module_symbols,
+        )
+        if issue is not None:
+            return f"{stdlib_path} ({issue})"
         return str(stdlib_path)
     return f"{stdlib_path} (expected {expected_key}, found {actual_key})"
 
@@ -18485,16 +19693,22 @@ def _validate_shared_stdlib_cache_contract(
     *,
     expected_manifest: str | None = None,
     target_triple: str | None = None,
+    stdlib_module_symbols: Collection[str] | None = None,
 ) -> None:
-    """Validate a shared stdlib entry without deleting immutable exact-key artifacts."""
+    """Validate a shared stdlib entry and evict corrupt exact-key artifacts."""
     del project_root, target_triple
     if not stdlib_object_path.exists():
         return
-    _shared_stdlib_cache_matches_key_locked(
+    if _shared_stdlib_cache_matches_key_locked(
         stdlib_object_path,
         expected_key,
         stdlib_object_manifest=expected_manifest,
-    )
+        stdlib_module_symbols=stdlib_module_symbols,
+    ):
+        return
+    actual_key = _read_stdlib_cache_key(stdlib_object_path)
+    if expected_key and actual_key == expected_key:
+        _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
 
 
 def _attach_build_metadata(
@@ -18614,6 +19828,7 @@ def _build_native_link_success_data(
     stub_path: Path,
     runtime_lib: Path,
     link_skipped: bool,
+    external_native_artifacts: Sequence[_StagedExternalPackageNativeArtifact] = (),
 ) -> dict[str, Any]:
     data = _build_common_build_json_data(
         target=target,
@@ -18639,6 +19854,20 @@ def _build_native_link_success_data(
         "stub": str(stub_path),
         "runtime": str(runtime_lib),
     }
+    if external_native_artifacts:
+        data["external_native_artifacts"] = [
+            artifact.json_payload() for artifact in external_native_artifacts
+        ]
+        data["artifacts"]["external_static_packages_root"] = str(
+            external_native_artifacts[0].runtime_root
+        )
+        for index, artifact in enumerate(external_native_artifacts):
+            data["artifacts"][f"external_native_artifact_{index}"] = str(
+                artifact.staged_path
+            )
+            data["artifacts"][f"external_native_artifact_{index}_manifest"] = str(
+                artifact.staged_manifest_path
+            )
     data["link"] = {"skipped": link_skipped}
     return data
 
@@ -18670,7 +19899,7 @@ def _native_main_stub_snippets(
     *,
     trusted: bool,
     capabilities_list: Sequence[str] | None,
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str, str]:
     trusted_snippet = ""
     trusted_call = ""
     if trusted:
@@ -18698,20 +19927,123 @@ static void molt_set_capabilities() {{
 }}
 """
         capabilities_call = "    molt_set_capabilities();\n"
-    return trusted_snippet, trusted_call, capabilities_snippet, capabilities_call
+    module_roots_snippet = ""
+    module_roots_call = ""
+    return (
+        trusted_snippet,
+        trusted_call,
+        capabilities_snippet,
+        capabilities_call,
+        module_roots_snippet,
+        module_roots_call,
+    )
 
 
 def _render_native_main_stub(
     *,
     trusted: bool,
     capabilities_list: Sequence[str] | None,
+    runtime_module_roots: Sequence[Path] = (),
 ) -> str:
-    trusted_snippet, trusted_call, capabilities_snippet, capabilities_call = (
-        _native_main_stub_snippets(
-            trusted=trusted,
-            capabilities_list=capabilities_list,
-        )
+    runtime_module_roots_literals = tuple(
+        json.dumps(str(path.resolve()))
+        for path in dict.fromkeys(runtime_module_roots)
     )
+    (
+        trusted_snippet,
+        trusted_call,
+        capabilities_snippet,
+        capabilities_call,
+        module_roots_snippet,
+        module_roots_call,
+    ) = _native_main_stub_snippets(
+        trusted=trusted,
+        capabilities_list=capabilities_list,
+    )
+    if runtime_module_roots_literals:
+        roots_array = ", ".join(runtime_module_roots_literals)
+        roots_count = len(runtime_module_roots_literals)
+        module_roots_snippet = f"""
+static char* molt_join_runtime_module_roots() {{
+    const char* roots[{roots_count}] = {{{roots_array}}};
+    size_t total = 1;
+    for (size_t i = 0; i < {roots_count}; i++) {{
+        total += strlen(roots[i]);
+        if (i + 1 < {roots_count}) {{
+            total += 1;
+        }}
+    }}
+    char* joined = (char*)malloc(total);
+    if (joined == NULL) {{
+        return NULL;
+    }}
+    size_t offset = 0;
+    for (size_t i = 0; i < {roots_count}; i++) {{
+        size_t len = strlen(roots[i]);
+        memcpy(joined + offset, roots[i], len);
+        offset += len;
+        if (i + 1 < {roots_count}) {{
+#ifdef _WIN32
+            joined[offset++] = ';';
+#else
+            joined[offset++] = ':';
+#endif
+        }}
+    }}
+    joined[offset] = '\\0';
+    return joined;
+}}
+
+static void molt_set_runtime_module_roots() {{
+    char* roots = molt_join_runtime_module_roots();
+    if (roots == NULL) {{
+        fprintf(stderr, "molt: failed to allocate runtime module roots\\n");
+        _Exit(125);
+    }}
+    const char* existing = getenv("MOLT_MODULE_ROOTS");
+    if (existing == NULL || existing[0] == '\\0') {{
+#ifdef _WIN32
+        if (_putenv_s("MOLT_MODULE_ROOTS", roots) != 0) {{
+#else
+        if (setenv("MOLT_MODULE_ROOTS", roots, 1) != 0) {{
+#endif
+            free(roots);
+            fprintf(stderr, "molt: failed to set runtime module roots\\n");
+            _Exit(125);
+        }}
+        free(roots);
+        return;
+    }}
+    size_t roots_len = strlen(roots);
+    size_t existing_len = strlen(existing);
+    char* merged = (char*)malloc(roots_len + 1 + existing_len + 1);
+    if (merged == NULL) {{
+        free(roots);
+        fprintf(stderr, "molt: failed to allocate runtime module roots\\n");
+        _Exit(125);
+    }}
+    memcpy(merged, roots, roots_len);
+#ifdef _WIN32
+    merged[roots_len] = ';';
+#else
+    merged[roots_len] = ':';
+#endif
+    memcpy(merged + roots_len + 1, existing, existing_len + 1);
+#ifdef _WIN32
+    if (_putenv_s("MOLT_MODULE_ROOTS", merged) != 0) {{
+#else
+    if (setenv("MOLT_MODULE_ROOTS", merged, 1) != 0) {{
+#endif
+        free(roots);
+        free(merged);
+        fprintf(stderr, "molt: failed to merge runtime module roots\\n");
+        _Exit(125);
+    }}
+    free(roots);
+    free(merged);
+}}
+"""
+        module_roots_call = "    molt_set_runtime_module_roots();\n"
     main_c_content = """
 #include <stdio.h>
 #include <stdlib.h>
@@ -18760,6 +20092,7 @@ extern unsigned long long molt_app_resolve_intrinsic(const char* name, unsigned 
 extern unsigned long long molt_set_app_intrinsic_resolver(unsigned long long fn_ptr);
 /* MOLT_TRUSTED_SNIPPET */
 /* MOLT_CAPABILITIES_SNIPPET */
+/* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */
 
 static int molt_finish() {
     unsigned long long pending = molt_exception_pending();
@@ -18783,6 +20116,7 @@ static int molt_finish() {
 int wmain(int argc, wchar_t** argv) {
     /* MOLT_TRUSTED_CALL */
     /* MOLT_CAPABILITIES_CALL */
+    /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
     molt_set_app_intrinsic_resolver((unsigned long long)(void*)molt_app_resolve_intrinsic);
     molt_runtime_init();
     molt_runtime_ensure_gil();
@@ -18794,6 +20128,7 @@ int wmain(int argc, wchar_t** argv) {
 int main(int argc, char** argv) {
     /* MOLT_TRUSTED_CALL */
     /* MOLT_CAPABILITIES_CALL */
+    /* MOLT_RUNTIME_MODULE_ROOTS_CALL */
     molt_set_app_intrinsic_resolver((unsigned long long)(void*)molt_app_resolve_intrinsic);
     molt_runtime_init();
     molt_runtime_ensure_gil();
@@ -18809,9 +20144,15 @@ int main(int argc, char** argv) {
     main_c_content = main_c_content.replace(
         "/* MOLT_CAPABILITIES_SNIPPET */", capabilities_snippet
     )
+    main_c_content = main_c_content.replace(
+        "/* MOLT_RUNTIME_MODULE_ROOTS_SNIPPET */", module_roots_snippet
+    )
     main_c_content = main_c_content.replace("/* MOLT_TRUSTED_CALL */", trusted_call)
     main_c_content = main_c_content.replace(
         "/* MOLT_CAPABILITIES_CALL */", capabilities_call
+    )
+    main_c_content = main_c_content.replace(
+        "/* MOLT_RUNTIME_MODULE_ROOTS_CALL */", module_roots_call
     )
     return main_c_content
 
@@ -19444,6 +20785,7 @@ def _prepare_native_object_artifact(
     stdlib_obj_path: Path | None,
     stdlib_object_cache_key: str | None,
     stdlib_object_manifest: str | None,
+    stdlib_module_symbols: Collection[str] | None = None,
     json_output: bool,
     link_timeout: float | None,
     target_triple: str | None = None,
@@ -19455,6 +20797,7 @@ def _prepare_native_object_artifact(
         stdlib_obj_path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
+        stdlib_module_symbols=stdlib_module_symbols,
     ):
         return (
             None,
@@ -19619,18 +20962,16 @@ def _write_link_fingerprint_if_needed(
     link_fingerprint: dict[str, Any] | None,
     link_fingerprint_path: Path,
     json_output: bool,
-) -> None:
+) -> str | None:
+    del json_output
     if link_skipped or link_fingerprint is None:
-        return
+        return None
     try:
         link_fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
         _write_runtime_fingerprint(link_fingerprint_path, link_fingerprint)
-    except OSError:
-        if not json_output:
-            print(
-                "Warning: failed to write link fingerprint metadata.",
-                file=sys.stderr,
-            )
+    except OSError as exc:
+        return f"failed to write link fingerprint metadata: {exc}"
+    return None
 
 
 def _emit_native_link_result(
@@ -19665,6 +21006,7 @@ def _emit_native_link_result(
     output_obj: Path,
     stub_path: Path,
     runtime_lib: Path,
+    external_native_artifacts: Sequence[_StagedExternalPackageNativeArtifact],
     diagnostics_payload: dict[str, Any] | None,
     diagnostics_path: Path | None,
     pgo_profile_payload: Any | None,
@@ -19719,12 +21061,16 @@ def _emit_native_link_result(
                 verbosity=resolved_diagnostics_verbosity,
             )
             return 1
-        _write_link_fingerprint_if_needed(
+        link_fingerprint_warning = _write_link_fingerprint_if_needed(
             link_skipped=link_skipped,
             link_fingerprint=link_fingerprint,
             link_fingerprint_path=link_fingerprint_path,
             json_output=json_output,
         )
+        if link_fingerprint_warning is not None:
+            warnings.append(link_fingerprint_warning)
+            if not json_output:
+                print(f"Warning: {link_fingerprint_warning}", file=sys.stderr)
         if json_output:
             cache_info = _build_cache_info(
                 enabled=cache,
@@ -19757,6 +21103,7 @@ def _emit_native_link_result(
                 stub_path=stub_path,
                 runtime_lib=runtime_lib,
                 link_skipped=link_skipped,
+                external_native_artifacts=external_native_artifacts,
             )
             _attach_build_metadata(
                 data,
@@ -20191,6 +21538,34 @@ def _resolve_build_output_layout(
     )
 
 
+def _external_native_artifact_output_custody_error(
+    *,
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan,
+    output_layout: _BuildOutputLayout,
+    target: str,
+) -> str | None:
+    if not native_artifact_plan.artifacts:
+        return None
+    if (
+        not output_layout.is_wasm
+        and not output_layout.is_rust_transpile
+        and not output_layout.is_luau_transpile
+        and not output_layout.is_mlir_emit
+        and output_layout.emit_mode == "bin"
+    ):
+        return None
+    packages = ", ".join(
+        sorted({artifact.package for artifact in native_artifact_plan.artifacts})
+    )
+    return (
+        "External static native packages require native binary output so Molt can "
+        "stage validated package bytes and inject the staged root into runtime "
+        "import custody before startup. "
+        f"Unsupported target/emit combination: target={target}, "
+        f"emit={output_layout.emit_mode}, packages={packages}."
+    )
+
+
 def _augment_support_modules(
     *,
     module_graph: MutableMapping[str, Path],
@@ -20308,6 +21683,7 @@ def _materialize_import_plan(
         known_modules_sorted=tuple(sorted(known_modules)),
         stdlib_allowlist_sorted=tuple(sorted(stdlib_allowlist)),
         module_graph_metadata=module_graph_metadata,
+        native_artifact_plan=prepared_module_graph.native_artifact_plan,
     )
 
 
@@ -20599,6 +21975,11 @@ def _prepare_entry_module_graph(
         stub_parents=augmentation.stub_parents,
         spawn_enabled=augmentation.spawn_enabled,
         runtime_import_support_policy=runtime_import_support_policy,
+        native_artifact_plan=(
+            import_admission_policy.native_artifact_plan
+            if import_admission_policy is not None
+            else _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
+        ),
     ), None
 
 
@@ -20671,6 +22052,7 @@ def _prepare_frontend_analysis(
 ) -> tuple[_PreparedFrontendAnalysis | None, _CliFailure | None]:
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
+    module_source_leases: dict[str, _ModuleSourceLease] = {}
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
     module_trees: dict[str, ast.AST] = {}
     module_path_stats: dict[str, os.stat_result | None] = {}
@@ -20700,11 +22082,14 @@ def _prepare_frontend_analysis(
                 ],
                 resolution_cache=module_resolution_cache,
                 project_root=project_root,
+                retain_source=False,
+                retain_tree=False,
                 target_python=target_python,
             )
             module_path_stats[module_name] = path_stat
-            if source is not None:
-                module_sources[module_name] = source
+            module_source_leases[module_name] = _ModuleSourceLease.path_backed(
+                module_path, path_stat
+            )
             if not analysis_cache_hit:
                 analysis_cache_miss_modules.add(module_name)
             if interface_changed:
@@ -20722,6 +22107,9 @@ def _prepare_frontend_analysis(
             module_deps[module_name] = set()
             known_func_defaults[module_name] = {}
             module_path_stats[module_name] = None
+            module_source_leases[module_name] = _ModuleSourceLease.path_backed(
+                module_path
+            )
             continue
         except OSError as exc:
             return None, _fail(
@@ -20744,6 +22132,7 @@ def _prepare_frontend_analysis(
         module_layers,
         module_dep_closures,
     ) = _analyze_module_schedule(module_graph, module_deps)
+    module_source_catalog = _ModuleSourceCatalog(leases=module_source_leases)
     dirty_lowering_modules = set(analysis_cache_miss_modules)
     dirty_lowering_modules.update(
         _dependent_module_closure(
@@ -20757,6 +22146,7 @@ def _prepare_frontend_analysis(
         module_graph_metadata=module_graph_metadata,
         module_deps=module_deps,
         module_sources=module_sources,
+        module_source_catalog=module_source_catalog,
         known_func_defaults=known_func_defaults,
         module_trees=module_trees,
         module_path_stats=module_path_stats,
@@ -20787,7 +22177,7 @@ def _prepare_frontend_lowering_config(
     generated_module_source_paths: dict[str, str],
     entry_module: str,
     namespace_module_names: set[str],
-    module_sources: dict[str, str],
+    module_source_catalog: _ModuleSourceCatalog,
     is_wasm: bool,
     target_triple: str | None,
     frontend_parallel_details: dict[str, Any],
@@ -20847,7 +22237,7 @@ def _prepare_frontend_lowering_config(
         generated_module_source_paths=generated_module_source_paths,
         entry_module=entry_module,
         namespace_module_names=namespace_module_names,
-        module_sources=module_sources,
+        module_source_catalog=module_source_catalog,
         module_deps=module_deps,
     )
     frontend_module_costs = module_graph_metadata.frontend_module_costs
@@ -20924,7 +22314,7 @@ def _prepare_frontend_execution(
     *,
     syntax_error_modules: dict[str, "ModuleSyntaxErrorInfo"],
     module_graph: dict[str, Path],
-    module_sources: dict[str, str],
+    module_source_catalog: _ModuleSourceCatalog,
     project_root: Path,
     module_resolution_cache: "_ModuleResolutionCache",
     parse_codec: ParseCodec,
@@ -20972,7 +22362,7 @@ def _prepare_frontend_execution(
     frontend_layer_execution_context = _FrontendLayerExecutionContext(
         syntax_error_modules=syntax_error_modules,
         module_graph=module_graph,
-        module_sources=module_sources,
+        module_source_catalog=module_source_catalog,
         project_root=project_root,
         module_resolution_cache=module_resolution_cache,
         parse_codec=parse_codec,
@@ -21004,7 +22394,7 @@ def _prepare_frontend_execution(
     serial_frontend_lowering_context = _SerialFrontendLoweringContext(
         syntax_error_modules=syntax_error_modules,
         module_trees=module_trees,
-        module_sources=module_sources,
+        module_source_catalog=module_source_catalog,
         generated_module_source_paths=generated_module_source_paths,
         module_resolution_cache=module_resolution_cache,
         project_root=project_root,
@@ -21112,6 +22502,9 @@ def _prepare_backend_setup(
     module_graph_metadata: _ModuleGraphMetadata,
     target_python: TargetPythonVersion,
     stdlib_profile: str | None = "micro",
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
+        _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
+    ),
     resolved_modules: set[str] | frozenset[str] | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     runtime_state = _initialize_runtime_artifact_state(
@@ -21142,6 +22535,7 @@ def _prepare_backend_setup(
         module_graph_metadata=module_graph_metadata,
         target_python=target_python,
         stdlib_profile=stdlib_profile,
+        native_artifact_plan=native_artifact_plan,
     )
     if emit_mode != "obj":
         _maybe_start_native_runtime_lib_ready_async(
@@ -21550,8 +22944,7 @@ def _execute_backend_compile(
     backend_timeout: float | None,
     molt_root: Path,
     backend_cargo_profile: str,
-    _ensure_backend_ir_bytes: Callable[[], bytes],
-    _get_backend_ir_fmt: Callable[[], str],
+    _ensure_backend_ir_file_path: Callable[[], Path],
     cache_hit: bool,
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
@@ -21646,6 +23039,7 @@ def _execute_backend_compile(
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=cache_setup.stdlib_object_manifest,
+                stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 state_path=output_sync_state_path,
                 state=output_sync_state,
                 output_stat=output_artifact_stat,
@@ -21693,6 +23087,7 @@ def _execute_backend_compile(
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                 stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
+                stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 timeout=None,
                 request_bytes=None,
                 daemon_identity=daemon_identity,
@@ -21717,7 +23112,11 @@ def _execute_backend_compile(
             daemon_health = daemon_compile.health
             if daemon_health is not None:
                 backend_daemon_health = daemon_health
-            if not backend_compiled and _backend_daemon_retryable_error(daemon_error):
+            if (
+                not backend_compiled
+                and not daemon_compile.full_request_sent
+                and _backend_daemon_retryable_error(daemon_error)
+            ):
                 if diagnostics_enabled and "backend_daemon_restart" not in phase_starts:
                     phase_starts["backend_daemon_restart"] = time.perf_counter()
                 restart_timeout = _backend_daemon_start_timeout()
@@ -21755,6 +23154,7 @@ def _execute_backend_compile(
                         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                         stdlib_object_manifest=cache_setup.stdlib_object_manifest,
                         stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
+                        stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                         timeout=None,
                         request_bytes=None,
                         daemon_identity=(
@@ -21774,11 +23174,12 @@ def _execute_backend_compile(
                     daemon_health = daemon_compile.health
                     if daemon_health is not None:
                         backend_daemon_health = daemon_health
-            if not backend_compiled and not json_output and daemon_error:
-                print(
-                    "Backend daemon compile failed; falling back to one-shot mode: "
-                    f"{daemon_error}",
-                    file=sys.stderr,
+            if not backend_compiled:
+                detail = daemon_error or "backend daemon returned no successful compile result"
+                return None, _fail(
+                    f"Backend daemon compile failed: {detail}",
+                    json_output,
+                    command="build",
                 )
         if not backend_output_written:
             if not (skip_module_output_if_synced or skip_function_output_if_synced):
@@ -21876,55 +23277,27 @@ def _execute_backend_compile(
                     flush=True,
                     file=_sys.stderr,
                 )
-            ir_bytes = _ensure_backend_ir_bytes()
-            ir_fmt = _get_backend_ir_fmt()
-            if ir_fmt != "json":
-                cmd_with_output.extend(["--ir-format", ir_fmt])
-            ir_file_path: str | None = None
-            ir_suffix = ".msgpack" if ir_fmt == "msgpack" else ".json"
             try:
-                # For large IRs (>50MB), write to a temp file to avoid
-                # stdin pipe buffer issues with non-finite float encoding.
-                if len(ir_bytes) > 50 * 1024 * 1024:
-                    import tempfile as _tempfile
-
-                    ir_fd, ir_file_path = _tempfile.mkstemp(
-                        suffix=ir_suffix, prefix="molt_ir_"
-                    )
-                    try:
-                        os.write(ir_fd, ir_bytes)
-                    finally:
-                        os.close(ir_fd)
-                    cmd_with_output.extend(["--ir-file", ir_file_path])
-
-                    if backend_env is not None:
-                        backend_env.setdefault("MOLT_BACKEND_BATCH_SIZE", "0")
-                    backend_process = _run_subprocess_captured_to_tempfiles(
-                        cmd_with_output,
-                        env=backend_env,
-                        timeout=backend_timeout,
-                        progress_label=None if json_output else "Backend compilation",
-                    )
-                else:
-                    backend_process = _run_subprocess_captured_to_tempfiles(
-                        cmd_with_output,
-                        input=ir_bytes,
-                        env=backend_env,
-                        timeout=backend_timeout,
-                        progress_label=None if json_output else "Backend compilation",
-                    )
+                ir_file_path = _ensure_backend_ir_file_path()
+                cmd_with_output.extend(["--ir-file", str(ir_file_path)])
+                backend_process = _run_subprocess_captured_to_tempfiles(
+                    cmd_with_output,
+                    env=backend_env,
+                    timeout=backend_timeout,
+                    progress_label=None if json_output else "Backend compilation",
+                )
             except subprocess.TimeoutExpired:
                 return None, _fail(
                     "Backend compilation timed out",
                     json_output,
                     command="build",
                 )
-            finally:
-                if ir_file_path is not None:
-                    try:
-                        os.unlink(ir_file_path)
-                    except OSError:
-                        pass
+            except OSError as exc:
+                return None, _fail(
+                    f"Backend IR lease write failed: {exc}",
+                    json_output,
+                    command="build",
+                )
             # Always surface backend stderr when verbose — debug
             # env vars like MOLT_TRACE_EQ and MOLT_DEBUG_ENTRY_INIT
             # emit to stderr and are invisible without this.
@@ -22059,8 +23432,7 @@ def _prepare_backend_compile(
     ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
     artifacts_root: Path,
     ir: Mapping[str, Any],
-    _ensure_backend_ir_bytes: Callable[[], bytes],
-    _get_backend_ir_fmt: Callable[[], str],
+    _ensure_backend_ir_file_path: Callable[[], Path],
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
@@ -22101,6 +23473,7 @@ def _prepare_backend_compile(
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=cache_setup.stdlib_object_manifest,
+                stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 warnings=warnings,
             )
 
@@ -22183,8 +23556,7 @@ def _prepare_backend_compile(
                     backend_timeout=backend_timeout,
                     molt_root=molt_root,
                     backend_cargo_profile=backend_cargo_profile,
-                    _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
-                    _get_backend_ir_fmt=_get_backend_ir_fmt,
+                    _ensure_backend_ir_file_path=_ensure_backend_ir_file_path,
                     cache_hit=cache_hit,
                     backend_daemon_cached=backend_daemon_cached,
                     backend_daemon_cache_tier=backend_daemon_cache_tier,
@@ -22307,6 +23679,7 @@ def _run_backend_pipeline(
         Callable[..., None],
         Callable[[], tuple[dict[str, Any] | None, Path | None]],
         Path,
+        _ExternalPackageNativeArtifactPlan,
     ],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
@@ -22347,7 +23720,15 @@ def _run_backend_pipeline(
         record_frontend_timing,
         build_diagnostics_payload,
         artifacts_root,
+        native_artifact_plan,
     ) = prepared_frontend_pipeline_bundle
+    native_artifact_custody_error = _external_native_artifact_output_custody_error(
+        native_artifact_plan=native_artifact_plan,
+        output_layout=output_layout,
+        target=target,
+    )
+    if native_artifact_custody_error is not None:
+        return _fail(native_artifact_custody_error, json_output, command="build")
     prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
         entry_module=resolved_build_entry.entry_module,
         module_graph=module_graph,
@@ -22385,14 +23766,15 @@ def _run_backend_pipeline(
     assert prepared_backend_ir is not None
     ir = prepared_backend_ir.ir
     resolved_modules = frozenset(module_graph)
-    backend_ir_bytes: bytes | None = None
-    backend_ir_fmt: str = "json"
+    backend_ir_file_path: Path | None = None
 
-    def _ensure_backend_ir_bytes() -> bytes:
-        nonlocal backend_ir_bytes, backend_ir_fmt
-        if backend_ir_bytes is None:
-            backend_ir_fmt, backend_ir_bytes = _backend_ir_format_and_bytes(ir)
-        return backend_ir_bytes
+    def _ensure_backend_ir_file_path() -> Path:
+        nonlocal backend_ir_file_path
+        if backend_ir_file_path is None:
+            backend_ir_file_path = _write_backend_ir_lease(
+                prepared_build_roots.project_root, ir
+            )
+        return backend_ir_file_path
 
     prepared_backend_setup, prepared_backend_setup_error = _prepare_backend_setup(
         is_rust_transpile=output_layout.is_rust_transpile,
@@ -22418,6 +23800,7 @@ def _run_backend_pipeline(
         module_graph_metadata=prepared_frontend_run_ticket.frontend_layer_execution_context.module_graph_metadata,
         target_python=prepared_build_config.target_python,
         stdlib_profile=stdlib_profile,
+        native_artifact_plan=native_artifact_plan,
         resolved_modules=resolved_modules,
     )
     if prepared_backend_setup_error is not None:
@@ -22439,49 +23822,55 @@ def _run_backend_pipeline(
     if prepared_backend_runtime_error is not None:
         return prepared_backend_runtime_error
     assert prepared_backend_runtime_context is not None
-    prepared_backend_compile, prepared_backend_compile_error = _prepare_backend_compile(
-        diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
-        phase_starts=prepared_build_preamble.phase_starts,
-        cache_report=cache_report,
-        verbose=verbose,
-        json_output=json_output,
-        cache_setup=prepared_backend_runtime_context.cache_setup,
-        cache_hit=prepared_backend_runtime_context.cache_hit,
-        cache_hit_tier=prepared_backend_runtime_context.cache_hit_tier,
-        cache_key=prepared_backend_runtime_context.cache_key,
-        function_cache_key=prepared_backend_runtime_context.function_cache_key,
-        cache_path=prepared_backend_runtime_context.cache_path,
-        function_cache_path=prepared_backend_runtime_context.function_cache_path,
-        project_root=prepared_build_roots.project_root,
-        warnings=prepared_build_preamble.warnings,
-        is_rust_transpile=output_layout.is_rust_transpile,
-        is_luau_transpile=output_layout.is_luau_transpile,
-        is_wasm=output_layout.is_wasm,
-        split_runtime=output_layout.split_runtime,
-        output_artifact=output_layout.output_artifact,
-        linked=output_layout.linked,
-        deterministic=deterministic,
-        profile=profile,
-        runtime_state=prepared_backend_runtime_context.runtime_state,
-        runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
-        cargo_timeout=prepared_build_config.cargo_timeout,
-        molt_root=prepared_build_roots.molt_root,
-        target_triple=output_layout.target_triple,
-        backend_cargo_profile=prepared_build_config.backend_cargo_profile,
-        backend_timeout=prepared_build_config.backend_timeout,
-        backend_daemon_config_digest=prepared_build_preamble.backend_daemon_config_digest,
-        entry_module=resolved_build_entry.entry_module,
-        resolved_modules=resolved_modules,
-        ensure_runtime_wasm_shared=prepared_backend_runtime_context.ensure_runtime_wasm_shared,
-        ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
-        artifacts_root=artifacts_root,
-        ir=ir,
-        _ensure_backend_ir_bytes=_ensure_backend_ir_bytes,
-        _get_backend_ir_fmt=lambda: backend_ir_fmt,
-        backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
-        backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
-        backend_daemon_health=prepared_build_preamble.backend_daemon_health,
-    )
+    try:
+        prepared_backend_compile, prepared_backend_compile_error = (
+            _prepare_backend_compile(
+                diagnostics_enabled=prepared_build_preamble.diagnostics_enabled,
+                phase_starts=prepared_build_preamble.phase_starts,
+                cache_report=cache_report,
+                verbose=verbose,
+                json_output=json_output,
+                cache_setup=prepared_backend_runtime_context.cache_setup,
+                cache_hit=prepared_backend_runtime_context.cache_hit,
+                cache_hit_tier=prepared_backend_runtime_context.cache_hit_tier,
+                cache_key=prepared_backend_runtime_context.cache_key,
+                function_cache_key=prepared_backend_runtime_context.function_cache_key,
+                cache_path=prepared_backend_runtime_context.cache_path,
+                function_cache_path=prepared_backend_runtime_context.function_cache_path,
+                project_root=prepared_build_roots.project_root,
+                warnings=prepared_build_preamble.warnings,
+                is_rust_transpile=output_layout.is_rust_transpile,
+                is_luau_transpile=output_layout.is_luau_transpile,
+                is_wasm=output_layout.is_wasm,
+                split_runtime=output_layout.split_runtime,
+                output_artifact=output_layout.output_artifact,
+                linked=output_layout.linked,
+                deterministic=deterministic,
+                profile=profile,
+                runtime_state=prepared_backend_runtime_context.runtime_state,
+                runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
+                cargo_timeout=prepared_build_config.cargo_timeout,
+                molt_root=prepared_build_roots.molt_root,
+                target_triple=output_layout.target_triple,
+                backend_cargo_profile=prepared_build_config.backend_cargo_profile,
+                backend_timeout=prepared_build_config.backend_timeout,
+                backend_daemon_config_digest=prepared_build_preamble.backend_daemon_config_digest,
+                entry_module=resolved_build_entry.entry_module,
+                resolved_modules=resolved_modules,
+                ensure_runtime_wasm_shared=prepared_backend_runtime_context.ensure_runtime_wasm_shared,
+                ensure_runtime_wasm_reloc=prepared_backend_runtime_context.ensure_runtime_wasm_reloc,
+                artifacts_root=artifacts_root,
+                ir=ir,
+                _ensure_backend_ir_file_path=_ensure_backend_ir_file_path,
+                backend_daemon_cached=prepared_build_preamble.backend_daemon_cached,
+                backend_daemon_cache_tier=prepared_build_preamble.backend_daemon_cache_tier,
+                backend_daemon_health=prepared_build_preamble.backend_daemon_health,
+            )
+        )
+    finally:
+        if backend_ir_file_path is not None:
+            with contextlib.suppress(OSError):
+                backend_ir_file_path.unlink()
     if prepared_backend_compile_error is not None:
         return prepared_backend_compile_error
     assert prepared_backend_compile is not None
@@ -22533,6 +23922,7 @@ def _run_backend_pipeline(
                 molt_root=prepared_build_roots.molt_root,
                 project_root=prepared_build_roots.project_root,
                 profile=profile,
+                warnings=prepared_build_preamble.warnings,
                 precompile=precompile,
             )
         )
@@ -22600,6 +23990,7 @@ def _run_backend_pipeline(
                 stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
+                stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
                 json_output=json_output,
                 link_timeout=prepared_build_config.link_timeout,
                 target_triple=output_layout.target_triple,
@@ -22654,6 +24045,7 @@ def _run_backend_pipeline(
                 stdlib_link_obj_path,
                 stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
+                stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
                 artifacts_root=artifacts_root,
             )
         except OSError as exc:
@@ -22700,6 +24092,8 @@ def _run_backend_pipeline(
         stdlib_obj_path=stdlib_link_obj_path,
         stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
         stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
+        stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
+        native_artifact_plan=native_artifact_plan,
         stdlib_profile=stdlib_profile,
     )
     if prepared_native_link_error is not None:
@@ -22736,6 +24130,7 @@ def _run_backend_pipeline(
         output_obj=prepared_native_link.output_obj,
         stub_path=prepared_native_link.stub_path,
         runtime_lib=prepared_native_link.runtime_lib,
+        external_native_artifacts=prepared_native_link.external_native_artifacts,
         diagnostics_payload=diagnostics_payload,
         diagnostics_path=diagnostics_path,
         pgo_profile_payload=prepared_build_config.pgo_profile_payload,
@@ -22772,6 +24167,7 @@ def _prepare_non_native_build_result(
     precompile: bool = False,
     project_root: Path | None = None,
     profile: BuildProfile = "dev",
+    warnings: list[str] | None = None,
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if is_rust_transpile:
         return _PreparedNonNativeResult(
@@ -22949,12 +24345,17 @@ def _prepare_non_native_build_result(
                         with contextlib.suppress(OSError):
                             if linked_tmp_output.exists():
                                 linked_tmp_output.unlink()
-                _write_link_fingerprint_if_needed(
+                link_fingerprint_warning = _write_link_fingerprint_if_needed(
                     link_skipped=False,
                     link_fingerprint=link_fingerprint,
                     link_fingerprint_path=link_fingerprint_path,
                     json_output=json_output,
                 )
+                if link_fingerprint_warning is not None:
+                    if warnings is not None:
+                        warnings.append(link_fingerprint_warning)
+                    if not json_output:
+                        print(f"Warning: {link_fingerprint_warning}", file=sys.stderr)
             if require_linked and resolved_linked_output is not None:
                 if output_wasm != resolved_linked_output and output_wasm.exists():
                     try:
@@ -23250,6 +24651,10 @@ def _prepare_native_link(
     stdlib_obj_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
+    stdlib_module_symbols: Collection[str] | None = None,
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
+        _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
+    ),
     stdlib_profile: str | None = "micro",
 ) -> tuple[_PreparedNativeLink | None, _CliFailure | None]:
     output_obj = output_artifact
@@ -23259,6 +24664,7 @@ def _prepare_native_link(
             stdlib_obj_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
+            stdlib_module_symbols=stdlib_module_symbols,
         ):
             return None, _fail(
                 "Shared stdlib cache key mismatch before native link",
@@ -23271,6 +24677,7 @@ def _prepare_native_link(
                     stdlib_obj_path,
                     stdlib_object_cache_key=stdlib_object_cache_key,
                     stdlib_object_manifest=stdlib_object_manifest,
+                    stdlib_module_symbols=stdlib_module_symbols,
                     artifacts_root=artifacts_root,
                 )
             except OSError as exc:
@@ -23280,9 +24687,27 @@ def _prepare_native_link(
                     command="build",
                 )
             link_stdlib_obj = staged_stdlib_obj
+    try:
+        staged_external_native_artifacts = (
+            _stage_external_package_native_artifacts_for_build(
+                native_artifact_plan,
+                artifacts_root=artifacts_root,
+            )
+        )
+    except OSError as exc:
+        return None, _fail(
+            f"Failed to stage external native artifacts for native build: {exc}",
+            json_output,
+            command="build",
+        )
     main_c_content = _render_native_main_stub(
         trusted=trusted,
         capabilities_list=capabilities_list,
+        runtime_module_roots=tuple(
+            dict.fromkeys(
+                artifact.runtime_root for artifact in staged_external_native_artifacts
+            )
+        ),
     )
     stub_path = artifacts_root / "main_stub.c"
     _write_text_if_changed(stub_path, main_c_content)
@@ -23339,6 +24764,15 @@ def _prepare_native_link(
         project_root, output_binary, profile, target_triple
     )
     stored_link_fingerprint = _read_runtime_fingerprint(link_fingerprint_path)
+    external_native_fingerprint_inputs = [
+        path
+        for artifact in staged_external_native_artifacts
+        for path in (
+            artifact.staged_path,
+            artifact.staged_manifest_path,
+            *artifact.staged_support_paths,
+        )
+    ]
     link_fingerprint = _link_fingerprint(
         project_root=project_root,
         inputs=[
@@ -23350,6 +24784,7 @@ def _prepare_native_link(
                 if link_stdlib_obj is not None and link_stdlib_obj.exists()
                 else []
             ),
+            *external_native_fingerprint_inputs,
         ],
         link_cmd=link_cmd,
         stored_fingerprint=stored_link_fingerprint,
@@ -23373,7 +24808,13 @@ def _prepare_native_link(
             # be relinked because the runtime library was also rebuilt.
             backend_cargo_profile, _ = _resolve_backend_cargo_profile_name(profile)
             backend_bin = _backend_bin_path(molt_root, backend_cargo_profile)
-            deps = [resolved_runtime_lib, output_obj, stub_path, backend_bin]
+            deps = [
+                resolved_runtime_lib,
+                output_obj,
+                stub_path,
+                backend_bin,
+                *external_native_fingerprint_inputs,
+            ]
             for dep in deps:
                 if dep.exists() and dep.stat().st_mtime > binary_mtime:
                     link_skipped = False
@@ -23454,6 +24895,7 @@ def _prepare_native_link(
         stub_path=stub_path,
         runtime_lib=resolved_runtime_lib,
         output_binary=output_binary,
+        external_native_artifacts=staged_external_native_artifacts,
         link_cmd=link_cmd,
         linker_hint=linker_hint,
         normalized_target=normalized_target,
@@ -23491,6 +24933,7 @@ def _run_build_pipeline(
         Callable[..., None],
         Callable[[], tuple[dict[str, Any] | None, Path | None]],
         Path,
+        _ExternalPackageNativeArtifactPlan,
     ],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
@@ -23521,6 +24964,14 @@ def _run_build_pipeline(
     # standalone molt-backend-mlir binary. This bypasses the standard backend
     # pipeline entirely because the MLIR crate is out-of-workspace.
     output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle[5]
+    native_artifact_plan = prepared_frontend_pipeline_bundle[20]
+    native_artifact_custody_error = _external_native_artifact_output_custody_error(
+        native_artifact_plan=native_artifact_plan,
+        output_layout=output_layout,
+        target=target,
+    )
+    if native_artifact_custody_error is not None:
+        return _fail(native_artifact_custody_error, json_output, command="build")
     if output_layout.is_mlir_emit:
         (
             _frt,
@@ -23543,6 +24994,7 @@ def _run_build_pipeline(
             record_frontend_timing,
             _build_diagnostics_payload,
             artifacts_root,
+            _native_artifact_plan,
         ) = prepared_frontend_pipeline_bundle
         prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
             entry_module=resolved_build_entry.entry_module,
@@ -23884,7 +25336,7 @@ def _prepare_frontend_stage_state(
             generated_module_source_paths=import_plan.generated_module_source_paths,
             entry_module=entry_module,
             namespace_module_names=import_plan.namespace_module_names,
-            module_sources=prepared_frontend_analysis.module_sources,
+            module_source_catalog=prepared_frontend_analysis.module_source_catalog,
             is_wasm=prepared_build_outputs.output_layout.is_wasm,
             target_triple=prepared_build_outputs.output_layout.target_triple,
             frontend_parallel_details=frontend_parallel_details,
@@ -24037,7 +25489,7 @@ def _prepare_frontend_pipeline(
     ) = _prepare_frontend_execution(
         syntax_error_modules=prepared_frontend_analysis.syntax_error_modules,
         module_graph=import_plan.module_graph,
-        module_sources=prepared_frontend_analysis.module_sources,
+        module_source_catalog=prepared_frontend_analysis.module_source_catalog,
         project_root=prepared_build_roots.project_root,
         module_resolution_cache=import_plan.module_resolution_cache,
         parse_codec=parse_codec,
@@ -24137,6 +25589,7 @@ def _prepare_frontend_pipeline(
             record_frontend_timing,
             build_diagnostics_payload,
             artifacts_root,
+            import_plan.native_artifact_plan,
         ),
         None,
     )
@@ -24155,6 +25608,7 @@ def _build_cache_variant(
     stdlib_profile: str | None = "micro",
     partition_mode: bool = False,
     backend_binary_identity: str = "",
+    external_static_packages_digest: str = "",
 ) -> str:
     """Build a cache variant key from build configuration.
 
@@ -24198,6 +25652,8 @@ def _build_cache_variant(
         parts.append("partitioned=v1")
     if backend_binary_identity:
         parts.append(f"backend_bin={backend_binary_identity}")
+    if external_static_packages_digest:
+        parts.append(f"external_static_packages={external_static_packages_digest}")
     return ";".join(parts)
 
 
@@ -24221,6 +25677,9 @@ def _prepare_backend_cache_setup(
     module_graph_metadata: _ModuleGraphMetadata,
     target_python: TargetPythonVersion,
     stdlib_profile: str | None = "micro",
+    native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
+        _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
+    ),
 ) -> _BackendCacheSetup:
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
@@ -24254,6 +25713,7 @@ def _prepare_backend_cache_setup(
         target_python=target_python,
         stdlib_profile=stdlib_profile,
         backend_binary_identity=backend_binary_identity,
+        external_static_packages_digest=native_artifact_plan.digest(),
     )
     if not cache_enabled:
         # Even with cache disabled, compute stdlib_object_path so the
@@ -24292,6 +25752,7 @@ def _prepare_backend_cache_setup(
                     _nocache_stdlib_key,
                     expected_manifest=_nocache_stdlib_manifest,
                     target_triple=target_triple,
+                    stdlib_module_symbols=stdlib_module_symbols,
                 )
         return _BackendCacheSetup(
             cache_enabled=False,
@@ -24306,21 +25767,23 @@ def _prepare_backend_cache_setup(
             cache_hit=False,
             cache_hit_tier=None,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
+            stdlib_module_symbols=frozenset(stdlib_module_symbols),
         )
-    module_cache_payload, backend_cache_payload = _cache_payloads_for_ir(ir)
+    module_cache_payload_ir = _cache_ir_payload_ir(ir)
+    backend_cache_payload_ir = _cache_backend_payload_ir(ir)
     cache_key = _cache_key(
         ir,
         target,
         target_triple,
         cache_variant,
-        payload=module_cache_payload,
+        payload_ir=module_cache_payload_ir,
     )
     function_cache_key = _function_cache_key(
         ir,
         target,
         target_triple,
         cache_variant,
-        payload=backend_cache_payload,
+        payload_ir=backend_cache_payload_ir,
     )
     cache_root = _resolve_cache_root(project_root, cache_dir)
     try:
@@ -24340,6 +25803,7 @@ def _prepare_backend_cache_setup(
             cache_hit=False,
             cache_hit_tier=None,
             stdlib_module_symbols_json=stdlib_module_symbols_json,
+            stdlib_module_symbols=frozenset(stdlib_module_symbols),
         )
     ext = "wasm" if is_wasm else "o"
     cache_path = cache_root / f"{cache_key}.{ext}"
@@ -24372,6 +25836,7 @@ def _prepare_backend_cache_setup(
                 stdlib_object_cache_key,
                 expected_manifest=stdlib_object_manifest,
                 target_triple=target_triple,
+                stdlib_module_symbols=stdlib_module_symbols,
             )
     cache_candidates: list[tuple[str, Path]] = []
     if cache_path is not None:
@@ -24389,6 +25854,7 @@ def _prepare_backend_cache_setup(
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
+        stdlib_module_symbols=stdlib_module_symbols,
         warnings=warnings,
     )
     return _BackendCacheSetup(
@@ -24404,6 +25870,7 @@ def _prepare_backend_cache_setup(
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,
         stdlib_module_symbols_json=stdlib_module_symbols_json,
+        stdlib_module_symbols=frozenset(stdlib_module_symbols),
     )
 
 
@@ -24722,7 +26189,7 @@ def _run_frontend_parallel_layer_batches(
     executor: Any,
     known_classes_snapshot_source: Mapping[str, Any],
     module_graph: dict[str, Path],
-    module_sources: dict[str, str],
+    module_source_catalog: _ModuleSourceCatalog,
     project_root: Path | None,
     module_resolution_cache: _ModuleResolutionCache,
     parse_codec: ParseCodec,
@@ -24767,7 +26234,7 @@ def _run_frontend_parallel_layer_batches(
         ) = _prepare_frontend_parallel_batch(
             batch,
             module_graph=module_graph,
-            module_sources=module_sources,
+            module_source_catalog=module_source_catalog,
             project_root=project_root,
             known_classes_snapshot=known_classes_snapshot,
             module_resolution_cache=module_resolution_cache,
@@ -24897,6 +26364,13 @@ def _frontend_parallel_worker_timing_inputs(
     worker_pid_raw = (worker_timing or {}).get("worker_pid")
     worker_pid = worker_pid_raw if isinstance(worker_pid_raw, int) else None
     return queue_ms, wait_ms, exec_ms, roundtrip_ms, worker_mode, worker_pid
+
+
+def _take_frontend_parallel_layer_result(
+    layer_state: _FrontendParallelLayerState,
+    module_name: str,
+) -> dict[str, Any] | None:
+    return layer_state.results.pop(module_name, None)
 
 
 def _record_parallel_layer_module_timing(
@@ -25129,7 +26603,8 @@ def _run_frontend_layer(
     layer_plan = _frontend_layer_plan(
         layer,
         syntax_error_modules=execution_context.syntax_error_modules,
-        module_sources=execution_context.module_sources,
+        module_source_catalog=execution_context.module_source_catalog,
+        module_graph=execution_context.module_graph,
         module_deps=execution_context.module_deps,
         frontend_module_costs=execution_context.frontend_module_costs,
         stdlib_like_by_module=execution_context.stdlib_like_by_module,
@@ -25145,7 +26620,7 @@ def _run_frontend_layer(
                 executor=executor,
                 known_classes_snapshot_source=execution_context.known_classes,
                 module_graph=execution_context.module_graph,
-                module_sources=execution_context.module_sources,
+                module_source_catalog=execution_context.module_source_catalog,
                 project_root=execution_context.project_root,
                 module_resolution_cache=execution_context.module_resolution_cache,
                 parse_codec=execution_context.parse_codec,
@@ -25195,7 +26670,7 @@ def _run_frontend_layer(
 
     for module_name in layer:
         module_path = execution_context.module_graph[module_name]
-        result = layer_state.results.get(module_name)
+        result = _take_frontend_parallel_layer_result(layer_state, module_name)
         if result is not None:
             consume_error = _consume_frontend_parallel_layer_result(
                 layer_state=layer_state,
@@ -25608,7 +27083,8 @@ def _module_worker_payload(
     *,
     module_path: Path,
     logical_source_path: str,
-    source: str,
+    source_lease: _ModuleSourceLease | None = None,
+    source: str | None = None,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -25633,6 +27109,10 @@ def _module_worker_payload(
     stdlib_allowlist_payload: list[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> dict[str, Any]:
+    if source_lease is None:
+        if source is None:
+            raise ValueError("module worker payload requires a source lease")
+        source_lease = _ModuleSourceLease.inline(module_path, source)
     if scoped_inputs is None:
         scoped_inputs = _scoped_lowering_input_view(
             module_name,
@@ -25660,7 +27140,7 @@ def _module_worker_payload(
         "module_name": module_name,
         "module_path": str(module_path),
         "logical_source_path": logical_source_path,
-        "source": source,
+        "source_lease": source_lease.worker_payload(),
         "parse_codec": parse_codec,
         "type_hint_policy": type_hint_policy,
         "fallback_policy": fallback_policy,
@@ -25684,7 +27164,8 @@ def _prepare_frontend_parallel_batch(
     batch: list[str],
     *,
     module_graph: dict[str, Path],
-    module_sources: dict[str, str],
+    module_sources: dict[str, str] | None = None,
+    module_source_catalog: _ModuleSourceCatalog | None = None,
     project_root: Path | None,
     known_classes_snapshot: dict[str, Any],
     module_resolution_cache: _ModuleResolutionCache,
@@ -25722,6 +27203,12 @@ def _prepare_frontend_parallel_batch(
     context_digest_by_module: dict[str, str] = {}
     dirty_lowering = set(dirty_lowering_modules)
     stdlib_allowlist_payload = list(stdlib_allowlist_sorted)
+    if module_source_catalog is None:
+        module_source_catalog = _build_module_source_catalog(
+            module_graph,
+            module_sources=module_sources,
+            path_stats=path_stat_by_module,
+        )
     if scoped_known_classes_by_module is None:
         scoped_known_classes_by_module = _build_scoped_known_classes_snapshot(
             batch,
@@ -25830,15 +27317,7 @@ def _prepare_frontend_parallel_batch(
             if cached_result is not None:
                 cached_results[module_name] = cached_result
                 continue
-        source = module_sources.get(module_name)
-        if source is None:
-            try:
-                source = module_resolution_cache.read_module_source(module_path)
-            except (SyntaxError, UnicodeDecodeError) as exc:
-                return {}, [], {}, f"Syntax error in {module_path}: {exc}"
-            except OSError as exc:
-                return {}, [], {}, f"Failed to read module {module_path}: {exc}"
-            module_sources[module_name] = source
+        source_lease = module_source_catalog.lease_for(module_name, module_path)
         worker_payloads.append(
             (
                 module_name,
@@ -25846,7 +27325,7 @@ def _prepare_frontend_parallel_batch(
                     module_name,
                     module_path=module_path,
                     logical_source_path=logical_source_path,
-                    source=source,
+                    source_lease=source_lease,
                     parse_codec=parse_codec,
                     type_hint_policy=type_hint_policy,
                     fallback_policy=fallback_policy,
@@ -26193,7 +27672,7 @@ def _ensure_backend_binary(
         if backend_features:
             cmd.append("--no-default-features")
             cmd.extend(["--features", ",".join(backend_features)])
-        build_env = os.environ.copy()
+        build_env = _cargo_build_env()
         # Per-session build isolation: route cargo output to
         # target/sessions/<id>/ under the canonical target root
         # when MOLT_SESSION_ID is active to prevent concurrent agents from
@@ -26257,8 +27736,9 @@ def _ensure_backend_binary(
                     "Backend feature mismatch detected; cleaning and rebuilding...",
                     file=sys.stderr,
                 )
-            # Skip cargo clean — incremental rebuild handles feature changes.
-            # cargo clean holds the cargo lock, blocking concurrent sessions.
+            # Skip cargo clean: the deterministic rebuild path plus post-build
+            # feature probe is the authority, while cargo clean would hold the
+            # Cargo lock and block concurrent sessions.
             try:
                 rebuild = _run_cargo_with_sccache_retry(
                     cmd,
@@ -26477,7 +27957,7 @@ def _ensure_runtime_lib(
                 cmd.extend(["--features", ",".join(full_features)])
         if target_triple:
             cmd.extend(["--target", target_triple])
-        build_env = os.environ.copy()
+        build_env = _cargo_build_env()
         # Per-session build isolation: route cargo output to
         # target/sessions/<id>/ under the canonical target root
         # when MOLT_SESSION_ID is active to prevent concurrent agents from
@@ -26959,7 +28439,7 @@ def _ensure_runtime_wasm(
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
-    env = os.environ.copy()
+    env = _cargo_build_env()
     use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
     runtime_exports = wasm_runtime_export_link_args()
     if reloc:
@@ -27204,12 +28684,9 @@ def _ensure_runtime_wasm(
             env["RUSTFLAGS"] = rustflags
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
             _configure_wasm_cc_env(env)
-        # Enable incremental compilation for dev-fast WASM builds; disable for
-        # release (where LTO makes incremental irrelevant).
-        if cargo_profile in ("dev", "dev-fast"):
-            env.setdefault("CARGO_INCREMENTAL", "1")
-        else:
-            env["CARGO_INCREMENTAL"] = "0"
+        # Deterministic proof builds default Cargo incremental off at the env
+        # boundary; an explicit operator-provided CARGO_INCREMENTAL remains
+        # authoritative for local incremental-debug sessions.
         # Enable sccache for WASM builds by default (same as native builds).
         # Set MOLT_WASM_DISABLE_SCCACHE=1 to opt out.
         if os.environ.get("MOLT_WASM_DISABLE_SCCACHE") != "1":
@@ -28810,6 +30287,7 @@ _CACHE_KEY_SCHEMA_VERSION = "v4"
 _FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v2"
 _SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v3"
 _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION = "stdlib-manifest-v1"
+_SHARED_STDLIB_PARTITION_SCHEMA_VERSION = "stdlib-partition-v1"
 
 
 def _source_fingerprint_path_keys(paths: Sequence[Path]) -> tuple[str, ...]:
@@ -28942,14 +30420,12 @@ def _json_ir_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-def _cache_ir_payload(ir: Mapping[str, Any]) -> bytes:
+def _cache_ir_payload_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
     funcs = ir.get("functions")
     normalized: dict[str, Any] = dict(ir)
     if isinstance(funcs, list):
         normalized["functions"] = _sorted_ir_functions(funcs)
-    return json.dumps(
-        normalized, sort_keys=True, separators=(",", ":"), default=_json_ir_default
-    ).encode("utf-8")
+    return normalized
 
 
 def _sorted_ir_functions(functions: list[Any]) -> list[Any]:
@@ -28963,33 +30439,69 @@ def _sorted_ir_functions(functions: list[Any]) -> list[Any]:
     return sorted(functions, key=_func_sort_key)
 
 
-def _cache_payloads_for_ir(ir: Mapping[str, Any]) -> tuple[bytes, bytes]:
+def _cache_backend_payload_ir(ir: Mapping[str, Any]) -> dict[str, Any]:
     functions = ir.get("functions")
     sorted_funcs: list[Any] = []
     if isinstance(functions, list):
         sorted_funcs = _sorted_ir_functions(functions)
 
-    module_payload_ir: dict[str, Any] = dict(ir)
-    module_payload_ir["functions"] = sorted_funcs
-    module_payload = json.dumps(
-        module_payload_ir,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=_json_ir_default,
-    ).encode("utf-8")
-
-    backend_payload_ir: dict[str, Any] = {
+    return {
         "functions": sorted_funcs,
         "profile": ir.get("profile"),
         "top_level_extras_digest": _ir_top_level_extras_digest(ir),
     }
-    backend_payload = json.dumps(
-        backend_payload_ir,
+
+
+def _iter_cache_json_payload_bytes(payload_ir: Mapping[str, Any]) -> Iterator[bytes]:
+    encoder = json.JSONEncoder(
         sort_keys=True,
         separators=(",", ":"),
         default=_json_ir_default,
-    ).encode("utf-8")
-    return module_payload, backend_payload
+    )
+    for chunk in encoder.iterencode(payload_ir):
+        yield chunk.encode("utf-8")
+
+
+def _cache_key_for_json_payload_bytes(
+    payload_chunks: Iterable[bytes],
+    *,
+    target: str,
+    target_triple: str | None,
+    variant: str,
+    schema_version: str,
+) -> str:
+    suffix = target_triple or target
+    if variant:
+        suffix = f"{suffix}:{variant}"
+    digest = hashlib.sha256()
+    for chunk in payload_chunks:
+        digest.update(chunk)
+    digest.update(b"|")
+    digest.update(suffix.encode("utf-8"))
+    digest.update(b"|")
+    digest.update(_cache_fingerprint().encode("utf-8"))
+    digest.update(b"|")
+    digest.update(_cache_tooling_fingerprint().encode("utf-8"))
+    digest.update(b"|")
+    digest.update(schema_version.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _cache_key_for_payload_ir(
+    payload_ir: Mapping[str, Any],
+    *,
+    target: str,
+    target_triple: str | None,
+    variant: str,
+    schema_version: str,
+) -> str:
+    return _cache_key_for_json_payload_bytes(
+        _iter_cache_json_payload_bytes(payload_ir),
+        target=target,
+        target_triple=target_triple,
+        variant=variant,
+        schema_version=schema_version,
+    )
 
 
 def _cache_key(
@@ -28997,27 +30509,17 @@ def _cache_key(
     target: str,
     target_triple: str | None,
     variant: str = "",
-    payload: bytes | None = None,
+    payload_ir: Mapping[str, Any] | None = None,
 ) -> str:
-    if payload is None:
-        payload = _cache_ir_payload(ir)
-    suffix = target_triple or target
-    if variant:
-        suffix = f"{suffix}:{variant}"
-    fingerprint = _cache_fingerprint().encode("utf-8")
-    tooling_fingerprint = _cache_tooling_fingerprint().encode("utf-8")
-    digest = hashlib.sha256(
-        payload
-        + b"|"
-        + suffix.encode("utf-8")
-        + b"|"
-        + fingerprint
-        + b"|"
-        + tooling_fingerprint
-        + b"|"
-        + _CACHE_KEY_SCHEMA_VERSION.encode("utf-8")
-    ).hexdigest()
-    return digest
+    if payload_ir is None:
+        payload_ir = _cache_ir_payload_ir(ir)
+    return _cache_key_for_payload_ir(
+        payload_ir,
+        target=target,
+        target_triple=target_triple,
+        variant=variant,
+        schema_version=_CACHE_KEY_SCHEMA_VERSION,
+    )
 
 
 def _ir_top_level_extras_digest(ir: Mapping[str, Any]) -> str:
@@ -29030,16 +30532,11 @@ def _ir_top_level_extras_digest(ir: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _cache_backend_ir_payload(ir: Mapping[str, Any]) -> bytes:
-    _, backend_payload = _cache_payloads_for_ir(ir)
-    return backend_payload
-
-
-def _backend_ir_text(ir: dict[str, Any]) -> str:
+def _backend_ir_text(ir: Mapping[str, Any]) -> str:
     return json.dumps(ir, separators=(",", ":"), default=_json_ir_default)
 
 
-def _backend_ir_bytes(ir: dict[str, Any]) -> bytes:
+def _backend_ir_bytes(ir: Mapping[str, Any]) -> bytes:
     return _backend_ir_text(ir).encode("utf-8")
 
 
@@ -29098,26 +30595,17 @@ def _function_cache_key(
     target: str,
     target_triple: str | None,
     variant: str = "",
-    payload: bytes | None = None,
+    payload_ir: Mapping[str, Any] | None = None,
 ) -> str:
-    if payload is None:
-        payload = _cache_backend_ir_payload(ir)
-    suffix = target_triple or target
-    if variant:
-        suffix = f"{suffix}:{variant}"
-    fingerprint = _cache_fingerprint().encode("utf-8")
-    tooling_fingerprint = _cache_tooling_fingerprint().encode("utf-8")
-    return hashlib.sha256(
-        payload
-        + b"|"
-        + suffix.encode("utf-8")
-        + b"|"
-        + fingerprint
-        + b"|"
-        + tooling_fingerprint
-        + b"|"
-        + _FUNCTION_CACHE_KEY_SCHEMA_VERSION.encode("utf-8")
-    ).hexdigest()
+    if payload_ir is None:
+        payload_ir = _cache_backend_payload_ir(ir)
+    return _cache_key_for_payload_ir(
+        payload_ir,
+        target=target,
+        target_triple=target_triple,
+        variant=variant,
+        schema_version=_FUNCTION_CACHE_KEY_SCHEMA_VERSION,
+    )
 
 
 def _ensure_rustup_target(target_triple: str, warnings: list[str]) -> bool:
@@ -29491,121 +30979,123 @@ def build(
         profile = "release"
     if profile not in {"dev", "release"}:
         return _fail(f"Invalid build profile: {profile}", json_output, command="build")
-    # --audit-log: propagate audit config via environment variables.
-    # NOTE: build() mutates os.environ for MOLT_PORTABLE, MOLT_SPLIT_RUNTIME,
-    # and audit config. A local env dict (like _run_script_cross) would be
-    # cleaner but requires refactoring the entire build() env handling chain.
+    env_updates: dict[str, str] = {}
+    # --audit-log: propagate audit config via environment variables for the
+    # build pipeline only. Several lower layers intentionally read os.environ as
+    # the canonical build signal, so keep that custody but restore the caller's
+    # process environment when the build returns.
     if audit_log is not None:
-        os.environ.update(_parse_audit_log_flag(audit_log))
+        env_updates.update(_parse_audit_log_flag(audit_log))
     # --io-mode: propagate IO mode via environment variable.
     if io_mode is not None:
-        os.environ.update(_parse_io_mode_flag(io_mode))
+        env_updates.update(_parse_io_mode_flag(io_mode))
     # --type-gate: propagate type gate to the backend.
-    os.environ.update(_parse_type_gate_flag(type_gate))
+    env_updates.update(_parse_type_gate_flag(type_gate))
     # --portable: force baseline ISA for cross-machine reproducible codegen.
     if portable:
-        os.environ["MOLT_PORTABLE"] = "1"
+        env_updates["MOLT_PORTABLE"] = "1"
     # --split-runtime: signal to the non-native build result handler.
     if split_runtime:
-        os.environ["MOLT_SPLIT_RUNTIME"] = "1"
+        env_updates["MOLT_SPLIT_RUNTIME"] = "1"
     # --wasm-profile: pass the effective profile to the backend explicitly.
     # The backend defaults to WasmProfile::Auto when the env var is absent,
     # so omitting the "full" case silently changes semantics.
     if target in {"wasm", "wasm-freestanding"} and wasm_profile:
-        os.environ["MOLT_WASM_PROFILE"] = wasm_profile
+        env_updates["MOLT_WASM_PROFILE"] = wasm_profile
     # --stdlib-profile: propagate to module graph construction so that the
     # micro profile can exclude heavy core modules from the dependency closure.
     if stdlib_profile:
-        os.environ["MOLT_STDLIB_PROFILE"] = stdlib_profile
-    if file_path and module:
-        return _fail(
-            "Use a file path or --module, not both.", json_output, command="build"
+        env_updates["MOLT_STDLIB_PROFILE"] = stdlib_profile
+    with _scoped_environ_updates(env_updates):
+        if file_path and module:
+            return _fail(
+                "Use a file path or --module, not both.", json_output, command="build"
+            )
+        if not file_path and not module:
+            return _fail("Missing entry file or module.", json_output, command="build")
+        prepared_build_inputs, prepared_build_inputs_error = _prepare_build_inputs(
+            file_path=file_path,
+            module=module,
+            diagnostics=diagnostics,
+            diagnostics_file=diagnostics_file,
+            diagnostics_verbosity=diagnostics_verbosity,
+            json_output=json_output,
+            target=target,
+            deterministic=deterministic,
+            deterministic_warn=deterministic_warn,
+            sysroot=sysroot,
+            profile=profile,
+            pgo_profile=pgo_profile,
+            runtime_feedback=runtime_feedback,
+            capabilities=capabilities,
+            capability_manifest=capability_manifest,
+            require_signed_manifest=require_signed_manifest,
+            respect_pythonpath=respect_pythonpath,
+            lib_paths=lib_paths or [],
+            python_version=python_version,
+            build_config=build_config,
         )
-    if not file_path and not module:
-        return _fail("Missing entry file or module.", json_output, command="build")
-    prepared_build_inputs, prepared_build_inputs_error = _prepare_build_inputs(
-        file_path=file_path,
-        module=module,
-        diagnostics=diagnostics,
-        diagnostics_file=diagnostics_file,
-        diagnostics_verbosity=diagnostics_verbosity,
-        json_output=json_output,
-        target=target,
-        deterministic=deterministic,
-        deterministic_warn=deterministic_warn,
-        sysroot=sysroot,
-        profile=profile,
-        pgo_profile=pgo_profile,
-        runtime_feedback=runtime_feedback,
-        capabilities=capabilities,
-        capability_manifest=capability_manifest,
-        require_signed_manifest=require_signed_manifest,
-        respect_pythonpath=respect_pythonpath,
-        lib_paths=lib_paths or [],
-        python_version=python_version,
-        build_config=build_config,
-    )
-    if prepared_build_inputs_error is not None:
-        return prepared_build_inputs_error
-    assert prepared_build_inputs is not None
-    (
-        prepared_build_preamble,
-        prepared_build_roots,
-        prepared_build_config,
-        resolved_build_entry,
-    ) = prepared_build_inputs
-    prepared_frontend_pipeline_bundle, prepared_frontend_pipeline_error = (
-        _prepare_frontend_pipeline(
+        if prepared_build_inputs_error is not None:
+            return prepared_build_inputs_error
+        assert prepared_build_inputs is not None
+        (
+            prepared_build_preamble,
+            prepared_build_roots,
+            prepared_build_config,
+            resolved_build_entry,
+        ) = prepared_build_inputs
+        prepared_frontend_pipeline_bundle, prepared_frontend_pipeline_error = (
+            _prepare_frontend_pipeline(
+                prepared_build_preamble=prepared_build_preamble,
+                prepared_build_roots=prepared_build_roots,
+                prepared_build_config=prepared_build_config,
+                resolved_build_entry=resolved_build_entry,
+                parse_codec=parse_codec,
+                type_hint_policy=type_hint_policy,
+                fallback_policy=fallback_policy,
+                profile=profile,
+                json_output=json_output,
+                target=target,
+                verbose=verbose,
+                out_dir=out_dir,
+                trusted=trusted,
+                split_runtime=split_runtime,
+                require_linked=require_linked,
+                linked=linked,
+                linked_output=linked_output,
+                emit=emit,
+                output=output,
+                emit_ir=emit_ir,
+                type_facts_path=type_facts_path,
+            )
+        )
+        if prepared_frontend_pipeline_error is not None:
+            return prepared_frontend_pipeline_error
+        assert prepared_frontend_pipeline_bundle is not None
+        return _run_build_pipeline(
             prepared_build_preamble=prepared_build_preamble,
             prepared_build_roots=prepared_build_roots,
             prepared_build_config=prepared_build_config,
             resolved_build_entry=resolved_build_entry,
+            prepared_frontend_pipeline_bundle=prepared_frontend_pipeline_bundle,
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             fallback_policy=fallback_policy,
             profile=profile,
             json_output=json_output,
             target=target,
-            verbose=verbose,
-            out_dir=out_dir,
+            cache_dir=cache_dir,
+            cache=cache,
+            cache_report=cache_report,
+            deterministic=deterministic,
             trusted=trusted,
-            split_runtime=split_runtime,
+            verbose=verbose,
             require_linked=require_linked,
-            linked=linked,
-            linked_output=linked_output,
-            emit=emit,
-            output=output,
-            emit_ir=emit_ir,
-            type_facts_path=type_facts_path,
+            wasm_opt_level=wasm_opt_level,
+            precompile=precompile,
+            snapshot=snapshot,
+            stdlib_profile=stdlib_profile,
         )
-    )
-    if prepared_frontend_pipeline_error is not None:
-        return prepared_frontend_pipeline_error
-    assert prepared_frontend_pipeline_bundle is not None
-    return _run_build_pipeline(
-        prepared_build_preamble=prepared_build_preamble,
-        prepared_build_roots=prepared_build_roots,
-        prepared_build_config=prepared_build_config,
-        resolved_build_entry=resolved_build_entry,
-        prepared_frontend_pipeline_bundle=prepared_frontend_pipeline_bundle,
-        parse_codec=parse_codec,
-        type_hint_policy=type_hint_policy,
-        fallback_policy=fallback_policy,
-        profile=profile,
-        json_output=json_output,
-        target=target,
-        cache_dir=cache_dir,
-        cache=cache,
-        cache_report=cache_report,
-        deterministic=deterministic,
-        trusted=trusted,
-        verbose=verbose,
-        require_linked=require_linked,
-        wasm_opt_level=wasm_opt_level,
-        precompile=precompile,
-        snapshot=snapshot,
-        stdlib_profile=stdlib_profile,
-    )
 
 
 def _find_mlir_backend_binary(project_root: Path) -> Path | None:
@@ -32570,16 +34060,55 @@ def _extract_py_c_api_tokens(text: str) -> set[str]:
     return {match.group(0) for match in _PY_C_API_TOKEN_RE.finditer(sanitized)}
 
 
-def _load_supported_py_c_api_surface(
+_NUMPY_FAIL_FAST_SYMBOL_RE = re.compile(
+    r"_molt_numpy_unavailable_[A-Za-z0-9_]+\(\s*\"(?P<symbol>Py[A-Za-z0-9_]*)\""
+)
+
+
+@dataclass(frozen=True)
+class _ExtensionScanSurface:
+    runtime_backed: frozenset[str]
+    source_compile_only: frozenset[str]
+    fail_fast: frozenset[str]
+    header_path: Path
+
+    @property
+    def accepted(self) -> frozenset[str]:
+        return self.runtime_backed | self.source_compile_only
+
+    @property
+    def known(self) -> frozenset[str]:
+        return self.accepted | self.fail_fast
+
+    def status_for(self, symbol: str) -> str:
+        if symbol in self.fail_fast:
+            return "fail_fast"
+        if symbol in self.runtime_backed:
+            return "runtime_backed"
+        if symbol in self.source_compile_only:
+            return "source_compile_only"
+        return "missing"
+
+
+def _extract_numpy_fail_fast_symbols(text: str) -> set[str]:
+    return {
+        match.group("symbol")
+        for match in _NUMPY_FAIL_FAST_SYMBOL_RE.finditer(text)
+    }
+
+
+def _load_py_c_api_scan_surface(
     molt_root: Path,
-) -> tuple[set[str], Path, str | None]:
+) -> tuple[_ExtensionScanSurface | None, Path, str | None]:
     header_path = molt_root / "include" / "molt" / "Python.h"
-    supported_tokens: set[str] = set()
+    runtime_tokens: set[str] = set()
+    numpy_tokens: set[str] = set()
+    fail_fast_tokens: set[str] = set()
     try:
         header_text = header_path.read_text()
     except OSError as exc:
-        return set(), header_path, str(exc)
-    supported_tokens.update(_extract_py_c_api_tokens(header_text))
+        return None, header_path, str(exc)
+    runtime_tokens.update(_extract_py_c_api_tokens(header_text))
     datetime_header = molt_root / "include" / "datetime.h"
     if datetime_header.exists():
         try:
@@ -32587,7 +34116,7 @@ def _load_supported_py_c_api_surface(
         except OSError:
             datetime_text = ""
         if datetime_text:
-            supported_tokens.update(_extract_py_c_api_tokens(datetime_text))
+            runtime_tokens.update(_extract_py_c_api_tokens(datetime_text))
     numpy_include_root = molt_root / "include" / "numpy"
     if numpy_include_root.exists():
         for numpy_header in sorted(numpy_include_root.rglob("*.h")):
@@ -32595,8 +34124,64 @@ def _load_supported_py_c_api_surface(
                 numpy_text = numpy_header.read_text()
             except OSError:
                 continue
-            supported_tokens.update(_extract_py_c_api_tokens(numpy_text))
-    return supported_tokens, header_path, None
+            numpy_tokens.update(_extract_py_c_api_tokens(numpy_text))
+            fail_fast_tokens.update(_extract_numpy_fail_fast_symbols(numpy_text))
+    source_compile_only = numpy_tokens - runtime_tokens - fail_fast_tokens
+    surface = _ExtensionScanSurface(
+        runtime_backed=frozenset(runtime_tokens - fail_fast_tokens),
+        source_compile_only=frozenset(source_compile_only),
+        fail_fast=frozenset(fail_fast_tokens),
+        header_path=header_path,
+    )
+    return surface, header_path, None
+
+
+_EXTENSION_SCAN_SOURCE_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".pxd",
+    ".pxi",
+    ".pyx",
+}
+_EXTENSION_SCAN_EXCLUDED_DIRS = {
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+}
+
+
+def _iter_extension_scan_dir_sources(root: Path) -> list[Path]:
+    source_paths: list[Path] = []
+    for current_root, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            dirname
+            for dirname in dirnames
+            if dirname not in _EXTENSION_SCAN_EXCLUDED_DIRS
+            and not (Path(current_root) / dirname).is_symlink()
+        )
+        current = Path(current_root)
+        for filename in sorted(filenames):
+            path = current / filename
+            if path.is_symlink() or path.suffix.lower() not in _EXTENSION_SCAN_SOURCE_SUFFIXES:
+                continue
+            source_paths.append(path.resolve())
+    return source_paths
 
 
 def _resolve_extension_scan_sources(
@@ -32631,11 +34216,32 @@ def _resolve_extension_scan_sources(
         source_path = Path(entry).expanduser()
         if not source_path.is_absolute():
             source_path = (project_root / source_path).absolute()
-        if not source_path.exists() or not source_path.is_file():
-            errors.append(f"source file not found: {source_path}")
+        if not source_path.exists():
+            errors.append(f"source path not found: {source_path}")
             continue
-        source_paths.append(source_path)
-    return source_paths, errors
+        if source_path.is_dir():
+            expanded = _iter_extension_scan_dir_sources(source_path)
+            if not expanded:
+                suffixes = ", ".join(sorted(_EXTENSION_SCAN_SOURCE_SUFFIXES))
+                errors.append(
+                    f"source directory has no scannable extension sources "
+                    f"({suffixes}): {source_path}"
+                )
+            source_paths.extend(expanded)
+            continue
+        if not source_path.is_file():
+            errors.append(f"source path is not a regular file: {source_path}")
+            continue
+        if source_path.suffix.lower() not in _EXTENSION_SCAN_SOURCE_SUFFIXES:
+            suffixes = ", ".join(sorted(_EXTENSION_SCAN_SOURCE_SUFFIXES))
+            errors.append(
+                f"source file has unsupported extension (expected one of "
+                f"{suffixes}): {source_path}"
+            )
+            continue
+        source_paths.append(source_path.resolve())
+    deduped = sorted(set(source_paths), key=lambda path: path.as_posix())
+    return deduped, errors
 
 
 def extension_scan(
@@ -32669,7 +34275,7 @@ def extension_scan(
     if root_error is not None:
         return root_error
 
-    supported_surface, header_path, header_error = _load_supported_py_c_api_surface(
+    scan_surface, header_path, header_error = _load_py_c_api_scan_surface(
         molt_root
     )
     if header_error is not None:
@@ -32678,9 +34284,12 @@ def extension_scan(
             json_output,
             command="extension-scan",
         )
+    assert scan_surface is not None
 
     required_by_file: dict[str, list[str]] = {}
     missing_by_file: dict[str, list[str]] = {}
+    fail_fast_by_file: dict[str, list[str]] = {}
+    symbol_status_by_file: dict[str, dict[str, str]] = {}
     required_symbols: set[str] = set()
     for source_path in source_paths:
         try:
@@ -32695,25 +34304,61 @@ def extension_scan(
         required_by_file[str(source_path)] = file_required
         required_symbols.update(file_required)
         file_missing = sorted(
-            symbol for symbol in file_required if symbol not in supported_surface
+            symbol
+            for symbol in file_required
+            if scan_surface.status_for(symbol) == "missing"
         )
         if file_missing:
             missing_by_file[str(source_path)] = file_missing
+        file_fail_fast = sorted(
+            symbol
+            for symbol in file_required
+            if scan_surface.status_for(symbol) == "fail_fast"
+        )
+        if file_fail_fast:
+            fail_fast_by_file[str(source_path)] = file_fail_fast
+        symbol_status_by_file[str(source_path)] = {
+            symbol: scan_surface.status_for(symbol) for symbol in file_required
+        }
 
     required_sorted = sorted(required_symbols)
     missing_sorted = sorted(
-        symbol for symbol in required_sorted if symbol not in supported_surface
+        symbol
+        for symbol in required_sorted
+        if scan_surface.status_for(symbol) == "missing"
+    )
+    fail_fast_sorted = sorted(
+        symbol
+        for symbol in required_sorted
+        if scan_surface.status_for(symbol) == "fail_fast"
+    )
+    runtime_backed_used_sorted = sorted(
+        symbol
+        for symbol in required_sorted
+        if scan_surface.status_for(symbol) == "runtime_backed"
+    )
+    source_compile_only_used_sorted = sorted(
+        symbol
+        for symbol in required_sorted
+        if scan_surface.status_for(symbol) == "source_compile_only"
     )
     supported_used_sorted = sorted(
-        symbol for symbol in required_sorted if symbol in supported_surface
+        runtime_backed_used_sorted + source_compile_only_used_sorted
     )
+    symbol_status = {
+        symbol: scan_surface.status_for(symbol) for symbol in required_sorted
+    }
     warnings: list[str] = []
     if missing_sorted and not fail_on_missing:
         warnings.append(
             "Unsupported Py* C-API symbols detected (run with --fail-on-missing to gate)."
         )
+    if fail_fast_sorted and not fail_on_missing:
+        warnings.append(
+            "Fail-fast Py* C-API symbols detected (run with --fail-on-missing to gate)."
+        )
     status = "ok"
-    if fail_on_missing and missing_sorted:
+    if fail_on_missing and (missing_sorted or fail_fast_sorted):
         status = "error"
 
     if json_output:
@@ -32727,11 +34372,22 @@ def extension_scan(
                 "required_symbol_count": len(required_sorted),
                 "supported_symbol_count": len(supported_used_sorted),
                 "missing_symbol_count": len(missing_sorted),
+                "fail_fast_symbol_count": len(fail_fast_sorted),
+                "runtime_backed_symbol_count": len(runtime_backed_used_sorted),
+                "source_compile_only_symbol_count": len(
+                    source_compile_only_used_sorted
+                ),
                 "required_symbols": required_sorted,
                 "supported_symbols": supported_used_sorted,
+                "runtime_backed_symbols": runtime_backed_used_sorted,
+                "source_compile_only_symbols": source_compile_only_used_sorted,
+                "fail_fast_symbols": fail_fast_sorted,
                 "missing_symbols": missing_sorted,
+                "symbol_status": symbol_status,
                 "required_by_file": required_by_file,
                 "missing_by_file": missing_by_file,
+                "fail_fast_by_file": fail_fast_by_file,
+                "symbol_status_by_file": symbol_status_by_file,
                 "fail_on_missing": fail_on_missing,
             },
             warnings=warnings,
@@ -32743,16 +34399,36 @@ def extension_scan(
         print(f"Scanned source files: {len(source_paths)}")
         print(f"Required Py* symbols: {len(required_sorted)}")
         print(f"Supported Py* symbols used: {len(supported_used_sorted)}")
+        print(f"Runtime-backed Py* symbols used: {len(runtime_backed_used_sorted)}")
+        print(
+            "Source-compile-only Py* symbols used: "
+            f"{len(source_compile_only_used_sorted)}"
+        )
+        print(f"Fail-fast Py* symbols: {len(fail_fast_sorted)}")
         print(f"Missing Py* symbols: {len(missing_sorted)}")
+        if fail_fast_sorted:
+            limit = len(fail_fast_sorted) if verbose else min(30, len(fail_fast_sorted))
+            for symbol in fail_fast_sorted[:limit]:
+                print(f"FAIL_FAST: {symbol}")
+            if limit < len(fail_fast_sorted):
+                print(
+                    f"... {len(fail_fast_sorted) - limit} "
+                    "additional fail-fast symbols omitted"
+                )
         if missing_sorted:
             limit = len(missing_sorted) if verbose else min(30, len(missing_sorted))
             for symbol in missing_sorted[:limit]:
                 print(f"MISSING: {symbol}")
             if limit < len(missing_sorted):
                 print(f"... {len(missing_sorted) - limit} additional symbols omitted")
-        if verbose and missing_by_file:
+        if verbose:
+            for file_path in sorted(fail_fast_by_file):
+                print(
+                    f"{file_path} fail-fast: "
+                    f"{', '.join(fail_fast_by_file[file_path])}"
+                )
             for file_path in sorted(missing_by_file):
-                print(f"{file_path}: {', '.join(missing_by_file[file_path])}")
+                print(f"{file_path} missing: {', '.join(missing_by_file[file_path])}")
         for warning in warnings:
             print(f"WARN: {warning}")
 

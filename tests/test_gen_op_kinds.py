@@ -453,15 +453,14 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
         "fn opcode_borrows_source_operand"
     )[0]
     # The behavior-preserving seed (ladder #73): every opcode is `all_borrowed`
-    # EXCEPT the two interior-borrowing reads. `LoadAttr` interior-borrows its
-    # single operand; `Index` interior-borrows operand 0 (the container) and
-    # merely borrows operand 1 (the key). Any OTHER non-`all_borrowed` opcode is a
-    # drift (a real consume must add a [[consuming_kind]] per-spelling row; a new
-    # interior-borrow op must be re-verified byte-identical here).
+    # EXCEPT the two interior-borrowing reads and the explicit DecRef consume.
+    # `LoadAttr` interior-borrows its single operand; `Index` interior-borrows
+    # operand 0 (the container) and merely borrows operand 1 (the key).
     interior = {
         "LoadAttr": ["interior_borrow_keepalive"],
         "Index": ["interior_borrow_keepalive", "borrowed"],
     }
+    consumed = {"DecRef"}
     expected_arm = {
         "LoadAttr": "OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,",
         "Index": (
@@ -480,6 +479,11 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
             )
             assert expected_arm[name] in region, (
                 f"opcode_operand_ownership_table missing/incorrect {name} arm"
+            )
+        elif name in consumed:
+            assert row["operand_ownership"] == "all_consumed"
+            assert f"OpCode::{name} => OperandOwnership::Consumed," in region, (
+                f"opcode_operand_ownership_table missing/incorrect consume arm for {name}"
             )
         else:
             assert row["operand_ownership"] == "all_borrowed", (
@@ -544,6 +548,79 @@ def test_consuming_kinds_are_known_mapper_spellings() -> None:
         assert row["kind"] in spellings, (
             f"consuming_kind {row['kind']!r} is not a [[kind]] mapper spelling"
         )
+
+
+def test_result_absorption_tables_render_container_authority() -> None:
+    """Container result absorption is a generated ownership fact, split between
+    first-class Build* opcodes and Copy-preserved constructor spellings."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    opcode_region = _re_search(
+        rendered, "fn opcode_result_absorbs_operand_ownership_table"
+    ).split("fn kind_result_absorbs_operand_ownership_table")[0]
+    kind_region = _re_search(
+        rendered, "fn kind_result_absorbs_operand_ownership_table"
+    )
+
+    truthy = {
+        row["name"] for row in data["opcode"] if row["result_absorbs_operands"]
+    }
+    assert truthy == {"BuildList", "BuildDict", "BuildTuple", "BuildSet"}
+    for name in truthy:
+        assert f"OpCode::{name} => true," in opcode_region
+    for row in data["opcode"]:
+        if row["name"] not in truthy:
+            assert f"OpCode::{row['name']} => false," in opcode_region
+
+    absorbing = {row["kind"] for row in data["absorbing_kind"]}
+    assert absorbing == {"dict_new", "frozenset_new", "list_new", "set_new", "tuple_new"}
+    for kind in absorbing:
+        assert f'"{kind}"' in kind_region
+
+
+def test_absorbing_kinds_remain_copy_fresh_spellings_not_aliases() -> None:
+    """The preserved `*_new` spellings must not become [[kind]] aliases. They
+    are fresh Copy spellings with a separate generated absorption fact."""
+    gen = _gen()
+    data = gen.load_table()
+    mapper_spellings: set[str] = set()
+    for row in data["kind"]:
+        mapper_spellings.add(row["canonical"])
+        mapper_spellings.update(row.get("aliases", []))
+    fresh = set(data["classifier_fresh_value"])
+
+    for row in data["absorbing_kind"]:
+        kind = row["kind"]
+        assert kind in fresh
+        assert kind not in mapper_spellings
+
+
+def test_ownership_lattice_uses_generated_result_absorption_tables() -> None:
+    """The production lattice must delegate container absorption to generated
+    tables, not a hand-maintained `BuildList | BuildTuple | ...` match."""
+    source = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text()
+    marker = "fn op_result_absorbs_operand_ownership("
+    assert marker in source
+    start = source.index(marker)
+    brace = source.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(source)):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = source[start:end]
+    assert "opcode_result_absorbs_operand_ownership_table" in body
+    assert "kind_result_absorbs_operand_ownership_table" in body
+    for stale in ("OpCode::BuildList", "OpCode::BuildTuple", "OpCode::BuildDict", "OpCode::BuildSet"):
+        assert stale not in body
 
 
 def test_drop_insertion_delegates_consume_to_generated_table() -> None:
@@ -702,7 +779,9 @@ def test_borrows_source_operand_renders_loadattr_and_index() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    region = _re_search(rendered, "fn opcode_borrows_source_operand")
+    region = _re_search(rendered, "fn opcode_borrows_source_operand").split(
+        "fn opcode_result_absorbs_operand_ownership_table"
+    )[0]
 
     # The toml seed: exactly LoadAttr/Index carry interior_borrow_keepalive at
     # position 0 (byte-identical to op_borrow_source's LoadAttr|Index→operand-0).
@@ -804,6 +883,22 @@ def test_render_detects_operand_ownership_mutation() -> None:
     assert gen.render_rs(mutated3) != rendered, (
         "dropping LoadAttr's interior_borrow_keepalive did not change the render "
         "(would silently re-open the round-6 interior-borrow UAF)"
+    )
+
+    mutated4 = json.loads(json.dumps(data))
+    for row in mutated4["opcode"]:
+        if row["name"] == "BuildList":
+            row["result_absorbs_operands"] = False
+    assert gen.render_rs(mutated4) != rendered, (
+        "dropping BuildList's result_absorbs_operands fact did not change the render"
+    )
+
+    mutated5 = json.loads(json.dumps(data))
+    mutated5["absorbing_kind"] = [
+        row for row in mutated5["absorbing_kind"] if row["kind"] != "list_new"
+    ]
+    assert gen.render_rs(mutated5) != rendered, (
+        "dropping list_new from absorbing_kind did not change the render"
     )
 
 

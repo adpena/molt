@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,7 @@ def guarded_cli_test_popen(
     limits = harness_memory_guard.limits_from_env("MOLT_CLI_TEST", run_env)
     summary_dir = ROOT / "tmp" / "cli-test-memory-guard"
     summary_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = summary_dir / f"interactive-{os.getpid()}.json"
+    summary_path = summary_dir / f"interactive-{os.getpid()}-{uuid.uuid4().hex}.json"
     guard_argv = [
         sys.executable,
         str(ROOT / "tools" / "memory_guard.py"),

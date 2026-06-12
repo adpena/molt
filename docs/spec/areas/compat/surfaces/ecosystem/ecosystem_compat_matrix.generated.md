@@ -15,9 +15,9 @@
 | compatible | 11 |
 | compatible-via-typed-shim | 3 |
 | compatible-via-bridge | 1 |
-| partial | 7 |
+| partial | 8 |
 | incompatible-by-design | 3 |
-| **TOTAL** | **25** |
+| **TOTAL** | **26** |
 
 ## Packages
 
@@ -35,6 +35,7 @@
 | jinja2 | incompatible-by-design | D15 | D15 | - | pending |
 | markupsafe | compatible-via-bridge (policy decision pending — doc 24 OQ1) | D23 | D23 | - | pending |
 | marshmallow | compatible-via-typed-shim | D14 | D10, D14 | - | pending |
+| numpy | partial | D28 | D16, D28 | D23 | pending |
 | packaging | compatible | D2 | D10, D2 | - | pending |
 | pydantic-v2 | incompatible-by-design | D11 | D11, D23 | - | pending |
 | python-dateutil | compatible | D2 | D2 | - | pending |
@@ -80,3 +81,4 @@
 | D25 Exception __traceback__ chain object model | partial | partial | doc 24 LANE F Arc 5 (D25 traceback object model) + LANE D rank 8. |
 | D26 Regex advanced (lookahead, named groups, backrefs, flag scoping) | unsupported | incompatible-by-design | doc 24 LANE F Arc 5 (D26 regex) + LANE D rank 5 (native engine feature arc). |
 | D27 sys.modules / __path__ rewriting at runtime | unsupported | incompatible-by-design | doc 24 LANE A.5 verified-subset policy boundary — permanent exclusion. Tracked as a documented design exclusion, not a gap. |
+| D28 Source-recompiled libmolt extension package | partial | partial | NumPy off-the-shelf compile lane: finish libmolt source-recompiled package build orchestration, status-aware NumPy C-API symbol closure, all-loaded module-origin custody, and pinned bench/friends numpy_off_the_shelf no-host compile/import/runtime-load proof without host-Python fallback. |

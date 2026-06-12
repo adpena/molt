@@ -23072,10 +23072,12 @@ fn resolve_string_symbol(symbol: &str) -> Option<u64> {
 #[cold]
 fn resolve_stringprep_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        #[cfg(feature = "stdlib_stringprep")]
         "molt_stringprep_in_table" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_stringprep_in_table",
             crate::molt_stringprep_in_table as *const (),
         )),
+        #[cfg(feature = "stdlib_stringprep")]
         "molt_stringprep_map_table_b3" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_stringprep_map_table_b3",
             crate::molt_stringprep_map_table_b3 as *const (),

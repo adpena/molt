@@ -297,7 +297,8 @@ impl<'a> SsaContext<'a> {
                 {
                     // For "store_var" the var is the destination and args[0] is input.
                     // For most ops, var is read.
-                    if op.kind != "store_var" && !defs.contains(v) {
+                    if !matches!(op.kind.as_str(), "store_var" | "delete_var") && !defs.contains(v)
+                    {
                         uses.insert(v.clone());
                     }
                 }
@@ -309,8 +310,8 @@ impl<'a> SsaContext<'a> {
                     defs.insert(out.clone());
                     self.all_vars.insert(out.clone());
                 }
-                // `store_var` with `var` field is a definition of that variable.
-                if op.kind == "store_var"
+                // `store_var`/`delete_var` with `var` field defines that variable.
+                if matches!(op.kind.as_str(), "store_var" | "delete_var")
                     && let Some(v) = &op.var
                     && is_variable(v)
                 {
@@ -938,7 +939,7 @@ impl<'a> SsaContext<'a> {
     /// an `out` field in SimpleIR but should NOT produce a TIR result value.
     /// The verifier enforces StoreAttr/StoreIndex/DelAttr have 0 results.
     fn get_def_var(&self, op: &OpIR) -> Option<String> {
-        if op.kind == "store_var" {
+        if matches!(op.kind.as_str(), "store_var" | "delete_var") {
             return op.var.clone().filter(|v| is_variable(v));
         }
         // Side-effect-only ops: no result value even if `out` is set.
@@ -1101,10 +1102,10 @@ impl<'a> SsaContext<'a> {
                 }
             }
         }
-        // If `var` is an input (not store_var), resolve it too.
+        // If `var` is an input (not a local-slot mutation target), resolve it too.
         // For the two-result ops (iter_next_unboxed, checked_add) `var` is
         // the results[0] OUTPUT, not an input.
-        if op.kind != "store_var"
+        if !matches!(op.kind.as_str(), "store_var" | "delete_var")
             && op.kind != "iter_next_unboxed"
             && op.kind != "checked_add"
             && let Some(v) = &op.var
@@ -3052,6 +3053,101 @@ mod tests {
         assert!(
             !seed_values.contains(&returned),
             "load_var after the if/join must not collapse back to any seed missing/None value"
+        );
+    }
+
+    #[test]
+    fn delete_var_uses_explicit_old_operand_not_target_metadata() {
+        let ops = vec![
+            OpIR {
+                kind: "missing".to_string(),
+                out: Some("seed".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("item".to_string()),
+                args: Some(vec!["seed".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("old".to_string()),
+                out: Some("old_value".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("item".to_string()),
+                args: Some(vec!["old_value".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "load_var".to_string(),
+                var: Some("item".to_string()),
+                out: Some("old_loaded".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "missing".to_string(),
+                out: Some("gone".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "delete_var".to_string(),
+                var: Some("item".to_string()),
+                args: Some(vec!["gone".to_string(), "old_loaded".to_string()]),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let entry = &output.blocks[cfg.entry];
+        let undef = entry
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::ConstNone)
+            .and_then(|op| op.results.first().copied())
+            .expect("entry undef must exist");
+        let seed = entry
+            .ops
+            .iter()
+            .find(|op| {
+                matches!(
+                    op.attrs.get("_simple_out"),
+                    Some(AttrValue::Str(name)) if name == "seed"
+                )
+            })
+            .and_then(|op| op.results.first().copied())
+            .expect("seed missing value must exist");
+        let gone = entry
+            .ops
+            .iter()
+            .find(|op| {
+                matches!(
+                    op.attrs.get("_simple_out"),
+                    Some(AttrValue::Str(name)) if name == "gone"
+                )
+            })
+            .and_then(|op| op.results.first().copied())
+            .expect("delete missing value must exist");
+        let delete = entry
+            .ops
+            .iter()
+            .find(|op| op.opcode == OpCode::DeleteVar)
+            .expect("delete_var must lower to first-class TIR");
+
+        assert_eq!(delete.operands.len(), 2);
+        assert_eq!(delete.operands[0], gone);
+        assert_ne!(
+            delete.operands[1], undef,
+            "old-slot operand must not be the entry undef"
+        );
+        assert_ne!(
+            delete.operands[1], seed,
+            "old-slot operand must not collapse to the initial missing store"
         );
     }
 

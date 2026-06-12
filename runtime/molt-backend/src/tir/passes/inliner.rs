@@ -78,6 +78,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::super::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
+use super::super::call_facts::{InlineEligibility, InlineWhyNot};
 use super::super::call_graph::CallGraph;
 use super::super::dominators::{CfgEdgePolicy, reachable_blocks_with};
 use super::super::function::{TirFunction, TirModule};
@@ -86,7 +87,6 @@ use super::super::target_info::TargetInfo;
 use super::super::types::TirType;
 use super::super::values::{TirValue, ValueId};
 use super::ip_summary::ModuleSummaries;
-use super::super::call_facts::{InlineEligibility, InlineWhyNot};
 
 /// Statistics from one [`run_inliner`] invocation over a module.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -526,12 +526,12 @@ fn call_site_has_arg_incref(block: &TirBlock, call_op_index: usize, call_args: &
 /// * **Exception labels** are remapped to fresh caller ids. SimpleIR label ids
 ///   are per-function (`next_label()` resets per function), so the callee's
 ///   labels routinely collide numerically with the caller's. Both the cloned
-///   `CheckException`/`TryStart`/`TryEnd` `"value"` attrs (the handler-label
-///   reference read by [`dominators::exception_successors`] and `lower_to_simple`)
-///   AND the cloned blocks' `label_id_map` entries are remapped through one
-///   [`build_label_remap`] table so the merged function's exception edges resolve
-///   to the cloned exit block (not a colliding caller block) and `lower_to_simple`
-///   emits no duplicate `label N` ops.
+///   `CheckException`/`TryStart`/`TryEnd` `"value"` attrs (transfer labels for
+///   `CheckException`/`TryStart`, pairing metadata for `TryEnd`) AND the cloned
+///   blocks' `label_id_map` entries are remapped through one
+///   [`build_label_remap`] table so the merged function's exception-transfer
+///   edges resolve to the cloned exit block (not a colliding caller block) and
+///   `lower_to_simple` emits no duplicate `label N` ops.
 fn clone_function_body_with_fresh_ids(
     callee: &TirFunction,
     caller: &mut TirFunction,

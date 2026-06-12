@@ -1023,6 +1023,9 @@ class SerializationMixin(_MixinBase):
                 result_hint = op.result.type_hint
                 if result_hint and result_hint != "Any":
                     entry["type_hint"] = result_hint
+                metadata = op.metadata or {}
+                if metadata.get("defines_del") is True:
+                    entry["defines_del"] = True
                 json_ops.append(entry)
             elif op.kind == "CALL_INTERNAL":
                 target = op.args[0]
@@ -1092,6 +1095,9 @@ class SerializationMixin(_MixinBase):
                 result_hint = op.result.type_hint
                 if result_hint and result_hint != "Any":
                     entry["type_hint"] = result_hint
+                metadata = op.metadata or {}
+                if metadata.get("defines_del") is True:
+                    entry["defines_del"] = True
                 json_ops.append(entry)
             elif op.kind == "CALL_METHOD":
                 entry = {
@@ -3947,6 +3953,15 @@ class SerializationMixin(_MixinBase):
                         "kind": "store_var",
                         "var": var_name,
                         "args": [op.args[0].name],
+                    }
+                )
+            elif op.kind == "DELETE_VAR":
+                var_name = op.metadata["var"] if op.metadata else ""
+                json_ops.append(
+                    {
+                        "kind": "delete_var",
+                        "var": var_name,
+                        "args": [arg.name for arg in op.args],
                     }
                 )
             elif op.kind == "LOAD_VAR":

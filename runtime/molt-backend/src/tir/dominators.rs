@@ -36,7 +36,7 @@ pub fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
 
 /// Map each exception-handler label id to the `BlockId` that owns it.
 ///
-/// `CheckException`/`TryStart`/`TryEnd` ops encode their handler target as a
+/// `CheckException`/`TryStart` ops encode their handler target as a
 /// *label id* in the `value` attribute (not a `BlockId`), because the implicit
 /// exception edge leaves mid-block and so cannot be expressed as a terminator
 /// successor. This is the inverse of `func.label_id_map` and is the single
@@ -56,7 +56,7 @@ pub fn exception_label_to_block(func: &TirFunction) -> HashMap<i64, BlockId> {
 ///
 /// The TIR analysis passes (GVN, LICM, BCE, refcount-elim, …) reason about the
 /// *full* control-flow graph including implicit exception edges, so that a
-/// handler block reachable only via `CheckException`/`TryStart`/`TryEnd` still
+/// handler block reachable only via `CheckException`/`TryStart` still
 /// gets a sound dominator and is treated as reachable. This is the default
 /// (`Full`).
 ///
@@ -77,12 +77,19 @@ pub enum CfgEdgePolicy {
 
 /// Collect the implicit exception-edge successors of `block`.
 ///
-/// `CheckException`/`TryStart`/`TryEnd` ops branch to a handler block *mid-block*
-/// (their `value` attribute is the handler's label id), which a terminator
-/// successor list cannot express. This is the single source of truth for those
-/// edges; both the dominator/reachability analyses here and the LLVM lowering
-/// driver's block-ordering pass route through it so there is exactly one place
-/// that knows how a TIR block reaches its handler.
+/// `CheckException` branches to a handler block *mid-block* when the pending
+/// exception flag is set. `TryStart` contributes the region-level exceptional
+/// reachability edge so a handler remains alive even when the protected body has
+/// no surviving explicit poll. `TryEnd` deliberately does **not** contribute a
+/// successor: it carries the same label id for stack/lifetime pairing and
+/// round-tripping, but the normal close of a region is not a transfer into the
+/// handler. Treating it as one manufactures a false depth-zero handler entry and
+/// makes exception ownership path-dependent.
+///
+/// This is the single source of truth for exception-transfer CFG edges; both
+/// the dominator/reachability analyses here and the LLVM lowering driver's
+/// block-ordering pass route through it so there is exactly one place that knows
+/// how TIR reaches exception handlers.
 ///
 /// Public so `lowering.rs::compute_function_rpo` can include exception-reachable
 /// handler blocks in its lowering order instead of duplicating the
@@ -93,16 +100,23 @@ pub fn exception_successors(
 ) -> Vec<BlockId> {
     let mut successors = Vec::new();
     for op in &block.ops {
-        if matches!(
-            op.opcode,
-            OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
-        ) && let Some(AttrValue::Int(target_label)) = op.attrs.get("value")
+        if is_exception_transfer_edge(op.opcode)
+            && let Some(AttrValue::Int(target_label)) = op.attrs.get("value")
             && let Some(&target) = label_to_block.get(target_label)
         {
             successors.push(target);
         }
     }
     successors
+}
+
+/// Whether an op's label-valued `value` attr is an exception-transfer CFG edge.
+///
+/// `TryEnd` is intentionally excluded even though it has a label-valued `value`
+/// attr. Its label is structural metadata for pairing/lowering, not a branch to
+/// the handler.
+pub fn is_exception_transfer_edge(opcode: OpCode) -> bool {
+    matches!(opcode, OpCode::CheckException | OpCode::TryStart)
 }
 
 /// All CFG successors of `block` under the given edge policy.
@@ -643,5 +657,63 @@ mod tests {
         assert!(full_reach.contains(&handler));
         assert!(!strict_reach.contains(&handler));
         assert!(strict_reach.contains(&normal));
+    }
+
+    #[test]
+    fn try_end_label_is_not_an_exception_transfer_edge() {
+        use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+
+        let mut func = TirFunction::new("f".into(), vec![], TirType::None);
+        let normal = func.fresh_block();
+        let handler = func.fresh_block();
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(200));
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::TryEnd,
+                operands: vec![],
+                results: vec![],
+                attrs,
+                source_span: None,
+            });
+            entry.terminator = Terminator::Branch {
+                target: normal,
+                args: vec![],
+            };
+        }
+
+        func.blocks.insert(
+            normal,
+            TirBlock {
+                id: normal,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.label_id_map.insert(handler.0, 200);
+
+        let label_to_block = exception_label_to_block(&func);
+        let entry = &func.blocks[&func.entry_block];
+        assert!(exception_successors(entry, &label_to_block).is_empty());
+
+        let full_reach = executable_reachable_blocks(&func);
+        assert!(full_reach.contains(&normal));
+        assert!(
+            !full_reach.contains(&handler),
+            "TryEnd.value is pairing metadata, not a handler-transfer edge"
+        );
     }
 }

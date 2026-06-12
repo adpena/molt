@@ -77,24 +77,24 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     } else {
         rewritten_ops
     };
-    // RC drop-insertion substrate (design 20, R1 guard): the `drop_inserted`
-    // marker is a SimpleIR-transport signal (it tells the native backend's
-    // preanalysis to disable the ad-hoc loop inc/dec-ref paths, which the TIR
-    // drop pass now owns). It carries no per-op semantics into TIR, so we strip
-    // it before lifting (the leaf-analysis re-lift path would otherwise see an
-    // unmodeled op kind) — BUT we PRESERVE the signal as a TIR function-level
-    // attr. Without this, a re-lift through `lower_from_simple` (the native
-    // module path re-lifts `ir.functions` for the inliner) would silently drop
-    // the marker: the function's TIR-inserted `DecRef`s survive the round-trip
-    // (they are real `dec_ref` OpIR), but the legacy native loop inc/dec-ref
-    // guards would re-activate (`drop_inserted=false`), producing an unmatched
-    // `inc_ref(new)` per loop iteration → an O(n) refcount leak on the
-    // loop-carried accumulator. The attr makes the round-trip lossless: a
-    // subsequent `lower_to_simple_ir` re-emits the marker, so native re-reads it.
+    // RC drop-insertion substrate (design 20): function-level attrs do not live
+    // in FunctionIR, so drop facts round-trip as leading SimpleIR marker ops. The
+    // full `drop_inserted` marker tells native to disable its legacy value-tracker
+    // because TIR owns the whole function's RC. The narrower exception-region
+    // marker only protects already-inserted CreationRef/MatchRef releases across
+    // relifts and optimizer re-runs; native deliberately ignores it as an RC
+    // suppression signal. Both markers carry no per-op TIR semantics, so strip
+    // them before CFG/SSA construction and preserve them as function attrs.
     let had_drop_inserted_marker = working_ops
         .iter()
         .any(|op| op.kind == crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR);
-    working_ops.retain(|op| op.kind != crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR);
+    let had_exception_region_drops_marker = working_ops.iter().any(|op| {
+        op.kind == crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
+    });
+    working_ops.retain(|op| {
+        op.kind != crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR
+            && op.kind != crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
+    });
     // Memory SSA: rewrite cell-based locals (store_index/index on a 1-elem
     // list "cell") to store_var/load_var so SSA generates proper phi nodes
     // at loop headers for cell variables. Always-on; no env gate.
@@ -125,6 +125,12 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
     if had_drop_inserted_marker {
         tir_func.attrs.insert(
             crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR.to_string(),
+            crate::tir::ops::AttrValue::Bool(true),
+        );
+    }
+    if had_exception_region_drops_marker {
+        tir_func.attrs.insert(
+            crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR.to_string(),
             crate::tir::ops::AttrValue::Bool(true),
         );
     }
@@ -1329,6 +1335,41 @@ mod tests {
             tir.value_types.get(&entry.args[0].id),
             Some(&TirType::DynBox),
             "native ABI carrier `i64` must stay a boxed dynamic value, not semantic I64"
+        );
+    }
+
+    #[test]
+    fn exception_region_drop_marker_round_trips_without_full_drop_gate() {
+        let func_ir = FunctionIR {
+            name: "exception_marker_transport".to_string(),
+            params: vec![],
+            ops: vec![
+                op(crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
+                op("ret_void"),
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir = lower_to_tir(&func_ir);
+
+        assert!(matches!(
+            tir.attrs
+                .get(crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
+            Some(crate::tir::ops::AttrValue::Bool(true))
+        ));
+        assert!(
+            !tir.attrs
+                .contains_key(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+            "exception-only marker must not be promoted to the native full-RC gate"
+        );
+        assert!(
+            tir.blocks[&tir.entry_block]
+                .ops
+                .iter()
+                .all(|op| op.opcode != OpCode::Copy),
+            "transport marker must be stripped before TIR op assembly"
         );
     }
 

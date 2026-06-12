@@ -62,6 +62,7 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "index" => Some(OpCode::Index),
         "store_index" | "index_set" => Some(OpCode::StoreIndex),
         "del_index" => Some(OpCode::DelIndex),
+        "delete_var" => Some(OpCode::DeleteVar),
         "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind" | "call_function" | "call_guarded" | "invoke_ffi" => Some(OpCode::Call),
         // GPU offload primitives lower through the call machinery.
         "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => Some(OpCode::Call),
@@ -143,7 +144,13 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
         "dict_new" |
         "dict_values" |
         "enumerate" |
+        "exception_new" |
+        "exception_new_builtin" |
+        "exception_new_builtin_empty" |
+        "exception_new_builtin_one" |
+        "exception_new_from_class" |
         "float_from_obj" |
+        "frozenset_new" |
         "inplace_bit_and" |
         "inplace_bit_or" |
         "inplace_bit_xor" |
@@ -172,6 +179,22 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
         "string_split_field_to_int" |
         "tuple_from_list" |
         "tuple_new"
+    )
+}
+
+/// EXACT-match arm for exception CreationRef producers. These Copy-lifted
+/// kinds return the fresh exception object reference whose source ownership
+/// is released at the `raise` boundary after runtime exception state records
+/// its own references.
+#[inline]
+pub(crate) fn copy_kind_is_exception_creation_ref_table(kind: &str) -> bool {
+    matches!(
+        kind,
+        "exception_new" |
+        "exception_new_builtin" |
+        "exception_new_builtin_empty" |
+        "exception_new_builtin_one" |
+        "exception_new_from_class"
     )
 }
 
@@ -273,6 +296,7 @@ pub(crate) fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::Index => true,
         OpCode::StoreIndex => true,
         OpCode::DelIndex => true,
+        OpCode::DeleteVar => false,
         OpCode::Call => true,
         OpCode::CallMethod => true,
         OpCode::CallBuiltin => true,
@@ -387,6 +411,7 @@ pub(crate) fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::Index => false,
         OpCode::StoreIndex => true,
         OpCode::DelIndex => true,
+        OpCode::DeleteVar => true,
         OpCode::Call => true,
         OpCode::CallMethod => true,
         OpCode::CallBuiltin => true,
@@ -514,6 +539,7 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
         OpCode::Index => OpcodePurity::Impure,
         OpCode::StoreIndex => OpcodePurity::Impure,
         OpCode::DelIndex => OpcodePurity::Impure,
+        OpCode::DeleteVar => OpcodePurity::Impure,
         OpCode::Call => OpcodePurity::Impure,
         OpCode::CallMethod => OpcodePurity::Impure,
         OpCode::CallBuiltin => OpcodePurity::Impure,
@@ -745,6 +771,7 @@ pub(crate) fn opcode_operand_ownership_table(
         OpCode::Index => match operand_idx { 0 => OperandOwnership::InteriorBorrowKeepAlive, _ => OperandOwnership::Borrowed },
         OpCode::StoreIndex => OperandOwnership::Borrowed,
         OpCode::DelIndex => OperandOwnership::Borrowed,
+        OpCode::DeleteVar => OperandOwnership::Borrowed,
         OpCode::Call => OperandOwnership::Borrowed,
         OpCode::CallMethod => OperandOwnership::Borrowed,
         OpCode::CallBuiltin => OperandOwnership::Borrowed,
@@ -753,7 +780,7 @@ pub(crate) fn opcode_operand_ownership_table(
         OpCode::UnboxVal => OperandOwnership::Borrowed,
         OpCode::TypeGuard => OperandOwnership::Borrowed,
         OpCode::IncRef => OperandOwnership::Borrowed,
-        OpCode::DecRef => OperandOwnership::Borrowed,
+        OpCode::DecRef => OperandOwnership::Consumed,
         OpCode::BuildList => OperandOwnership::Borrowed,
         OpCode::BuildDict => OperandOwnership::Borrowed,
         OpCode::BuildTuple => OperandOwnership::Borrowed,
@@ -847,6 +874,140 @@ pub(crate) fn kind_consumed_operand_table(kind: &str, arity: usize) -> Option<us
         "call_indirect" => arity.checked_sub(1),
         _ => None,
     }
+}
+
+/// Result-side ownership-transfer fact: this op returns a value whose
+/// lifetime absorbs the lifetimes of its operands (container builders).
+/// This is deliberately separate from operand_ownership: operands are still
+/// borrowed at the call/drop boundary, but a finalizer-sensitive operand
+/// makes the returned container finalizer-sensitive. EXHAUSTIVE over
+/// OpCode; Copy-lifted spellings use `kind_result_absorbs_operand_ownership_table`.
+#[inline]
+pub(crate) fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
+    match opcode {
+        OpCode::Add => false,
+        OpCode::Sub => false,
+        OpCode::Mul => false,
+        OpCode::CheckedAdd => false,
+        OpCode::InplaceAdd => false,
+        OpCode::InplaceSub => false,
+        OpCode::InplaceMul => false,
+        OpCode::Div => false,
+        OpCode::FloorDiv => false,
+        OpCode::Mod => false,
+        OpCode::Pow => false,
+        OpCode::Neg => false,
+        OpCode::Pos => false,
+        OpCode::Eq => false,
+        OpCode::Ne => false,
+        OpCode::Lt => false,
+        OpCode::Le => false,
+        OpCode::Gt => false,
+        OpCode::Ge => false,
+        OpCode::Is => false,
+        OpCode::IsNot => false,
+        OpCode::In => false,
+        OpCode::NotIn => false,
+        OpCode::BitAnd => false,
+        OpCode::BitOr => false,
+        OpCode::BitXor => false,
+        OpCode::BitNot => false,
+        OpCode::Shl => false,
+        OpCode::Shr => false,
+        OpCode::And => false,
+        OpCode::Or => false,
+        OpCode::Not => false,
+        OpCode::Bool => false,
+        OpCode::Alloc => false,
+        OpCode::StackAlloc => false,
+        OpCode::ObjectNewBound => false,
+        OpCode::ObjectNewBoundStack => false,
+        OpCode::Free => false,
+        OpCode::LoadAttr => false,
+        OpCode::StoreAttr => false,
+        OpCode::DelAttr => false,
+        OpCode::Index => false,
+        OpCode::StoreIndex => false,
+        OpCode::DelIndex => false,
+        OpCode::DeleteVar => false,
+        OpCode::Call => false,
+        OpCode::CallMethod => false,
+        OpCode::CallBuiltin => false,
+        OpCode::OrdAt => false,
+        OpCode::BoxVal => false,
+        OpCode::UnboxVal => false,
+        OpCode::TypeGuard => false,
+        OpCode::IncRef => false,
+        OpCode::DecRef => false,
+        OpCode::BuildList => true,
+        OpCode::BuildDict => true,
+        OpCode::BuildTuple => true,
+        OpCode::BuildSet => true,
+        OpCode::BuildSlice => false,
+        OpCode::GetIter => false,
+        OpCode::IterNext => false,
+        OpCode::IterNextUnboxed => false,
+        OpCode::ForIter => false,
+        OpCode::AllocTask => false,
+        OpCode::StateSwitch => false,
+        OpCode::StateTransition => false,
+        OpCode::StateYield => false,
+        OpCode::ChanSendYield => false,
+        OpCode::ChanRecvYield => false,
+        OpCode::ClosureLoad => false,
+        OpCode::ClosureStore => false,
+        OpCode::Yield => false,
+        OpCode::YieldFrom => false,
+        OpCode::Raise => false,
+        OpCode::CheckException => false,
+        OpCode::ExceptionPending => false,
+        OpCode::FunctionDefaultsVersion => false,
+        OpCode::TryStart => false,
+        OpCode::TryEnd => false,
+        OpCode::StateBlockStart => false,
+        OpCode::StateBlockEnd => false,
+        OpCode::ConstInt => false,
+        OpCode::ConstBigInt => false,
+        OpCode::ConstFloat => false,
+        OpCode::ConstStr => false,
+        OpCode::ConstBool => false,
+        OpCode::ConstNone => false,
+        OpCode::ConstBytes => false,
+        OpCode::Copy => false,
+        OpCode::Import => false,
+        OpCode::ImportFrom => false,
+        OpCode::ModuleCacheGet => false,
+        OpCode::ModuleCacheSet => false,
+        OpCode::ModuleCacheDel => false,
+        OpCode::ModuleGetAttr => false,
+        OpCode::ModuleImportFrom => false,
+        OpCode::ModuleGetGlobal => false,
+        OpCode::ModuleGetName => false,
+        OpCode::ModuleSetAttr => false,
+        OpCode::ModuleDelGlobal => false,
+        OpCode::ModuleDelGlobalIfPresent => false,
+        OpCode::WarnStderr => false,
+        OpCode::ScfIf => false,
+        OpCode::ScfFor => false,
+        OpCode::ScfWhile => false,
+        OpCode::ScfYield => false,
+        OpCode::Deopt => false,
+    }
+}
+
+/// Result-side ownership-transfer fact for Copy-lifted SimpleIR spellings.
+/// These spellings intentionally remain outside `[[kind]]` so backconversion
+/// and backend dispatch preserve their public wire names while still sharing
+/// the finalizer/escape ownership fact with first-class Build* opcodes.
+#[inline]
+pub(crate) fn kind_result_absorbs_operand_ownership_table(kind: &str) -> bool {
+    matches!(kind,
+        "dict_new" |
+        "frozenset_new" |
+        "list_new" |
+        "set_new" |
+        "tuple_new"
+    )
 }
 
 /// Zero-cost discriminant of the `Terminator` enum (blocks.rs) the

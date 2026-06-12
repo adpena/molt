@@ -20,7 +20,7 @@ import operator
 import os
 import _intrinsics as _molt_intrinsics
 from builtins import float as _float
-from . import Buffer, alloc, to_device, from_device
+from . import Buffer, alloc, from_device
 
 TYPE_CHECKING = False
 if TYPE_CHECKING:
@@ -131,9 +131,11 @@ def _product(seq):
 
 
 def _dtype_cast_kind(dtype) -> str | None:
-    if dtype is float:
+    if dtype is _float:
         return "float"
     if dtype is int:
+        return "int"
+    if dtype is bool:
         return "int"
     name = getattr(dtype, "name", None)
     fmt = getattr(dtype, "fmt", None)
@@ -163,6 +165,27 @@ def _dtype_cast_kind(dtype) -> str | None:
     if fmt in {"?", "b", "h", "i", "q", "B", "H", "I", "Q"}:
         return "int"
     return None
+
+
+def _storage_for_dtype(
+    dtype,
+    *,
+    default_float_format: str = "d",
+    default_int_format: str = "q",
+) -> tuple[type, str]:
+    kind = _dtype_cast_kind(dtype)
+    fmt = getattr(dtype, "fmt", None)
+    if kind == "float":
+        if fmt in {"e", "f", "d"}:
+            return _float, fmt
+        return _float, default_float_format
+    if kind == "int":
+        if fmt in {"?", "b", "h", "i", "q", "B", "H", "I", "Q"}:
+            return int, fmt
+        if dtype is bool:
+            return int, "?"
+        return int, default_int_format
+    raise TypeError(f"unsupported dtype {dtype!r}")
 
 
 def _tinygrad_dtype_for_storage(dtype, format_char: str):
@@ -212,7 +235,7 @@ def _uint32_to_unit_float(value):
     # exactly mantissa / 2**23, which avoids a boxed struct.unpack path and
     # lowers cleanly in compiled Molt.
     mantissa = (value >> 9) & 0x7FFFFF
-    return float(mantissa) / float(1 << 23)
+    return _float(mantissa) / _float(1 << 23)
 
 
 def _tinygrad_rand_values_seeded(count, seed_value, counter_base):
@@ -306,7 +329,7 @@ def _normalize_tensor_index(shape, idx):
 def _preferred_float_format(*tensors: "Tensor") -> str:
     formats = []
     for tensor in tensors:
-        if tensor._dtype is float and tensor._buf.element_type is float:
+        if tensor._dtype is _float and tensor._buf.element_type is _float:
             formats.append(tensor._buf.format_char)
     if formats and all(fmt == "f" for fmt in formats):
         return "f"
@@ -315,31 +338,241 @@ def _preferred_float_format(*tensors: "Tensor") -> str:
 
 def _binary_result_dtype_and_format(lhs: "Tensor", rhs) -> tuple[type, str]:
     if isinstance(rhs, Tensor):
-        if lhs._dtype is float or rhs._dtype is float:
-            if lhs.size != 1 and rhs.size == 1 and lhs._dtype is float:
-                result_format = _preferred_float_format(lhs)
-            elif lhs.size == 1 and rhs.size != 1 and rhs._dtype is float:
-                result_format = _preferred_float_format(rhs)
-            else:
-                float_tensors = tuple(
-                    tensor
-                    for tensor in (lhs, rhs)
-                    if tensor._dtype is float and tensor._buf.element_type is float
-                )
-                result_format = (
-                    _preferred_float_format(*float_tensors) if float_tensors else "d"
-                )
-            return float, result_format
-        return lhs._dtype, lhs._buf.format_char
-    if isinstance(rhs, float):
-        if lhs._dtype is float:
-            return float, _preferred_float_format(lhs)
-        return float, "d"
+        return _where_result_dtype_and_format(lhs, rhs)
+    if isinstance(rhs, _float):
+        if lhs._dtype is _float:
+            return _float, _preferred_float_format(lhs)
+        return _float, "d"
     if isinstance(rhs, int):
-        if lhs._dtype is float:
-            return float, _preferred_float_format(lhs)
+        if lhs._dtype is _float:
+            return _float, _preferred_float_format(lhs)
         return lhs._dtype, lhs._buf.format_char
     raise TypeError(f"Unsupported binary operand type: {type(rhs)!r}")
+
+
+_INT_FORMAT_RANK = {
+    "?": 0,
+    "b": 1,
+    "B": 1,
+    "h": 2,
+    "H": 2,
+    "i": 3,
+    "I": 3,
+    "q": 4,
+    "Q": 4,
+}
+
+
+def _broadcast_shape_pair(lhs_shape, rhs_shape) -> tuple[int, ...]:
+    out_ndim = max(len(lhs_shape), len(rhs_shape))
+    lhs = (1,) * (out_ndim - len(lhs_shape)) + tuple(lhs_shape)
+    rhs = (1,) * (out_ndim - len(rhs_shape)) + tuple(rhs_shape)
+    out = []
+    for lhs_dim, rhs_dim in zip(lhs, rhs):
+        if lhs_dim == rhs_dim:
+            out.append(lhs_dim)
+        elif lhs_dim == 1:
+            out.append(rhs_dim)
+        elif rhs_dim == 1:
+            out.append(lhs_dim)
+        else:
+            raise ValueError(f"Cannot broadcast shapes {lhs_shape} and {rhs_shape}")
+    return tuple(out)
+
+
+def _broadcast_shape_many(*shapes) -> tuple[int, ...]:
+    out = ()
+    for shape in shapes:
+        out = _broadcast_shape_pair(out, tuple(shape))
+    return out
+
+
+def _broadcast_source_index(out_index: int, out_shape, source_shape) -> int:
+    if not source_shape:
+        return 0
+    padded = (1,) * (len(out_shape) - len(source_shape)) + tuple(source_shape)
+    source_strides = _strides(padded)
+    out_strides = _strides(tuple(out_shape))
+    rem = out_index
+    source_index = 0
+    for axis, out_stride in enumerate(out_strides):
+        coord = rem // out_stride
+        rem %= out_stride
+        if padded[axis] != 1:
+            source_index += coord * source_strides[axis]
+    return source_index
+
+
+def _flat_index_to_coords(flat_index: int, shape) -> tuple[int, ...]:
+    if not shape:
+        return ()
+    coords = []
+    rem = flat_index
+    for stride in _strides(shape):
+        coord = rem // stride
+        rem %= stride
+        coords.append(coord)
+    return tuple(coords)
+
+
+def _coords_to_flat_index(coords, strides) -> int:
+    index = 0
+    for coord, stride in zip(coords, strides):
+        index += coord * stride
+    return index
+
+
+def _movement_pair(value, op_name: str) -> tuple[int, int]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{op_name} expects pairs of two integers")
+    left = operator.index(value[0])
+    right = operator.index(value[1])
+    return left, right
+
+
+def _normalize_movement_pairs(spec, ndim: int, op_name: str) -> tuple[tuple[int, int], ...]:
+    if ndim == 0:
+        if spec in ((), [], None):
+            return ()
+        raise ValueError(f"{op_name} on a scalar expects no bounds")
+    if isinstance(spec, int):
+        value = operator.index(spec)
+        return tuple((value, value) for _ in range(ndim))
+    if not isinstance(spec, (list, tuple)):
+        raise TypeError(f"{op_name} expects an int, flat tuple, or pair tuple")
+    if len(spec) == ndim and all(isinstance(item, (list, tuple)) for item in spec):
+        return tuple(_movement_pair(item, op_name) for item in spec)
+    if len(spec) != ndim * 2:
+        raise ValueError(
+            f"{op_name} expects {ndim} pairs or {ndim * 2} flat values, got {spec!r}"
+        )
+    flat_pairs = tuple(
+        (operator.index(spec[idx]), operator.index(spec[idx + 1]))
+        for idx in range(0, len(spec), 2)
+    )
+    return tuple(reversed(flat_pairs))
+
+
+def _tensor_from_storage_values(source: "Tensor", values, shape) -> "Tensor":
+    out_buf = alloc(
+        len(values),
+        source._buf.element_type,
+        format_char=source._buf.format_char,
+    )
+    for idx, value in enumerate(values):
+        out_buf[idx] = value
+    return _tensor_from_buffer(out_buf, tuple(shape), source._dtype)
+
+
+def tensor_pad(x: "Tensor", padding, value=0.0) -> "Tensor":
+    if not isinstance(x, Tensor):
+        return NotImplemented
+    padding = _normalize_movement_pairs(padding, x.ndim, "pad")
+    for before, after in padding:
+        if before < 0 or after < 0:
+            raise ValueError(f"pad expects non-negative padding, got {padding}")
+    new_shape = tuple(size + before + after for size, (before, after) in zip(x._shape, padding))
+    out_size = _product(new_shape) if new_shape else 1
+    result = [value] * out_size
+    if x.size:
+        old_data = x._data_list()
+        new_strides = _strides(new_shape)
+        for old_index, old_value in enumerate(old_data):
+            old_coords = _flat_index_to_coords(old_index, x._shape)
+            new_coords = tuple(
+                coord + before for coord, (before, _after) in zip(old_coords, padding)
+            )
+            result[_coords_to_flat_index(new_coords, new_strides)] = old_value
+    return _tensor_from_storage_values(x, result, new_shape)
+
+
+def tensor_shrink(x: "Tensor", bounds) -> "Tensor":
+    if not isinstance(x, Tensor):
+        return NotImplemented
+    bounds = _normalize_movement_pairs(bounds, x.ndim, "shrink")
+    for dim, (start, end) in enumerate(bounds):
+        if start < 0 or end < start or end > x._shape[dim]:
+            raise ValueError(f"invalid shrink bounds {bounds} for shape {x._shape}")
+    new_shape = tuple(end - start for start, end in bounds)
+    out_size = _product(new_shape) if new_shape else 1
+    old_data = x._data_list()
+    old_strides = _strides(x._shape)
+    result = []
+    for out_index in range(out_size):
+        out_coords = _flat_index_to_coords(out_index, new_shape)
+        src_coords = tuple(coord + start for coord, (start, _end) in zip(out_coords, bounds))
+        result.append(old_data[_coords_to_flat_index(src_coords, old_strides)])
+    return _tensor_from_storage_values(x, result, new_shape)
+
+
+def _normalize_flip_axes(axis, ndim: int) -> tuple[int, ...]:
+    if isinstance(axis, (list, tuple)):
+        raw_axes = tuple(axis)
+    else:
+        raw_axes = (axis,)
+    axes = []
+    for raw_axis in raw_axes:
+        normalized = operator.index(raw_axis)
+        if normalized < 0:
+            normalized += ndim
+        if normalized < 0 or normalized >= ndim:
+            raise ValueError(f"flip axis {raw_axis} out of bounds for ndim={ndim}")
+        if normalized not in axes:
+            axes.append(normalized)
+    return tuple(axes)
+
+
+def tensor_flip(x: "Tensor", axis=0) -> "Tensor":
+    if not isinstance(x, Tensor):
+        return NotImplemented
+    axes = _normalize_flip_axes(axis, x.ndim)
+    axis_set = set(axes)
+    old_data = x._data_list()
+    old_strides = _strides(x._shape)
+    result = []
+    for out_index in range(x.size):
+        coords = _flat_index_to_coords(out_index, x._shape)
+        src_coords = tuple(
+            x._shape[dim] - 1 - coord if dim in axis_set else coord
+            for dim, coord in enumerate(coords)
+        )
+        result.append(old_data[_coords_to_flat_index(src_coords, old_strides)])
+    return _tensor_from_storage_values(x, result, x._shape)
+
+
+def tensor_contiguous(x: "Tensor") -> "Tensor":
+    if not isinstance(x, Tensor):
+        return NotImplemented
+    size_bytes = x.size * x._buf.itemsize
+    out_buf = Buffer(
+        bytearray(x._buf._data[:size_bytes]),
+        x._buf.element_type,
+        x.size,
+        format_char=x._buf.format_char,
+    )
+    return _tensor_from_buffer(out_buf, x._shape, x._dtype)
+
+
+def _where_result_dtype_and_format(lhs: "Tensor", rhs: "Tensor") -> tuple[type, str]:
+    if lhs._dtype is _float or rhs._dtype is _float:
+        float_tensors = tuple(
+            tensor
+            for tensor in (lhs, rhs)
+            if tensor._dtype is _float and tensor._buf.element_type is _float
+        )
+        return _float, _preferred_float_format(*float_tensors) if float_tensors else "d"
+
+    lhs_format = lhs._buf.format_char
+    rhs_format = rhs._buf.format_char
+    lhs_rank = _INT_FORMAT_RANK.get(lhs_format)
+    rhs_rank = _INT_FORMAT_RANK.get(rhs_format)
+    if lhs_rank is None or rhs_rank is None:
+        return lhs._dtype, lhs._buf.format_char
+    if lhs_rank == 0 and rhs_rank != 0:
+        return int, rhs_format
+    if rhs_rank == 0 and lhs_rank != 0:
+        return int, lhs_format
+    return int, lhs_format if lhs_rank >= rhs_rank else rhs_format
 
 
 def _tensor_from_parts(
@@ -398,11 +631,11 @@ def tensor_linear(x: "Tensor", weight: "Tensor") -> "Tensor":
         raise ValueError(f"Linear shape mismatch: {x_shape} with weight {weight_shape}")
 
     outer = _product(x_shape[:-1]) if len(x_shape) > 1 else 1
-    if x._dtype is float and weight._dtype is float:
+    if x._dtype is _float and weight._dtype is _float:
         result_dtype = x._dtype
         if (
-            x._buf.element_type is float
-            and weight._buf.element_type is float
+            x._buf.element_type is _float
+            and weight._buf.element_type is _float
             and x._buf.format_char == "f"
             and weight._buf.format_char == "f"
         ):
@@ -498,11 +731,11 @@ def tensor_linear_split_last_dim(
         )
 
     outer = _product(x_shape[:-1]) if len(x_shape) > 1 else 1
-    if x._dtype is float and weight._dtype is float:
+    if x._dtype is _float and weight._dtype is _float:
         result_dtype = x._dtype
         if (
-            x._buf.element_type is float
-            and weight._buf.element_type is float
+            x._buf.element_type is _float
+            and weight._buf.element_type is _float
             and x._buf.format_char == "f"
             and weight._buf.format_char == "f"
         ):
@@ -579,11 +812,11 @@ def tensor_linear_squared_relu_gate_interleaved(
     hidden = out_features // 2
     prefix_shape = x_shape[:-1]
     out_shape = prefix_shape + (hidden,)
-    if x._dtype is float and weight._dtype is float:
+    if x._dtype is _float and weight._dtype is _float:
         result_dtype = x._dtype
         if (
-            x._buf.element_type is float
-            and weight._buf.element_type is float
+            x._buf.element_type is _float
+            and weight._buf.element_type is _float
             and x._buf.format_char == "f"
             and weight._buf.format_char == "f"
         ):
@@ -627,8 +860,8 @@ def tensor_linear_squared_relu_gate_interleaved(
         in_base = row * axis_len
         out_base = row * hidden
         for i in range(hidden):
-            gate = float(data[in_base + 2 * i])
-            up = float(data[in_base + 2 * i + 1])
+            gate = _float(data[in_base + 2 * i])
+            up = _float(data[in_base + 2 * i + 1])
             relu = gate if gate > 0.0 else 0.0
             out_buf[out_base + i] = relu * relu * up
 
@@ -1057,6 +1290,51 @@ def _flatten_nested(data):
     return flat, tuple(shape)
 
 
+def _write_flat_buffer(flat, dtype, *, default_float_format: str = "d") -> Buffer:
+    element_type, format_char = _storage_for_dtype(
+        dtype,
+        default_float_format=default_float_format,
+    )
+    buf = alloc(len(flat), element_type, format_char=format_char)
+    for idx, value in enumerate(flat):
+        buf[idx] = value
+    return buf
+
+
+def _infer_literal_dtype(value):
+    from tinygrad.dtypes import dtypes
+
+    if isinstance(value, bool):
+        return dtypes.bool
+    if isinstance(value, int):
+        return dtypes.int32
+    if isinstance(value, _float):
+        return dtypes.float32
+    if isinstance(value, (list, tuple)):
+        flat, _ = _flatten_nested(value)
+        if not flat:
+            return dtypes.float32
+        if any(isinstance(item, _float) for item in flat):
+            return dtypes.float32
+        if all(isinstance(item, bool) for item in flat):
+            return dtypes.bool
+        if all(isinstance(item, (bool, int)) for item in flat):
+            return dtypes.int32
+    return dtypes.float32
+
+
+def _tensor_operand(value) -> "Tensor":
+    if isinstance(value, Tensor):
+        return value
+    if isinstance(value, (bool, int, _float)):
+        return Tensor(value, dtype=_infer_literal_dtype(value))
+    if isinstance(value, (list, tuple)):
+        return Tensor(value, dtype=_infer_literal_dtype(value))
+    raise TypeError(
+        f"where operand must be Tensor or scalar/list literal, got {type(value)!r}"
+    )
+
+
 class Tensor:
     """N-dimensional array backed by a GPU buffer.
 
@@ -1065,7 +1343,7 @@ class Tensor:
     and map to GPU kernels when compiled by Molt.
     """
 
-    def __init__(self, data, shape=None, dtype=float):
+    def __init__(self, data, shape=None, dtype=_float):
         """Create a tensor from nested list, flat list + shape, or Buffer.
 
         Args:
@@ -1083,11 +1361,11 @@ class Tensor:
                     shape = (shape,)
                 self._shape = tuple(shape)
             self._dtype = dtype
-        elif isinstance(data, (int, float)):
+        elif isinstance(data, (bool, int, _float)):
             # Scalar
-            self._buf = to_device([float(data)])
+            self._buf = _write_flat_buffer([data], dtype)
             self._shape = ()
-            self._dtype = dtype
+            self._dtype = self._buf.element_type
         elif isinstance(data, (bytes, bytearray, memoryview)):
             raw = bytes(data)
             self._buf = Buffer(raw, int, len(raw), format_char="B")
@@ -1099,14 +1377,13 @@ class Tensor:
                 if isinstance(shape, int):
                     shape = (shape,)
                 self._shape = tuple(shape)
-                flat = [float(x) for x in data]
+                flat = list(data)
             else:
                 # Nested list — infer shape
                 flat, inferred = _flatten_nested(data)
-                flat = [float(x) for x in flat]
                 self._shape = inferred
-            self._buf = to_device(flat)
-            self._dtype = dtype
+            self._buf = _write_flat_buffer(flat, dtype)
+            self._dtype = self._buf.element_type
         else:
             raise TypeError(f"Cannot create Tensor from {type(data)}")
 
@@ -1254,23 +1531,39 @@ class Tensor:
             out.append(src_data[src_index])
         return self._from_flat(out, shape)
 
+    def pad(self, padding, value=0.0) -> "Tensor":
+        return tensor_pad(self, padding, value)
+
+    def shrink(self, bounds) -> "Tensor":
+        return tensor_shrink(self, bounds)
+
+    def flip(self, axis=0) -> "Tensor":
+        return tensor_flip(self, axis)
+
+    def contiguous(self) -> "Tensor":
+        return tensor_contiguous(self)
+
     def cast(self, dtype) -> "Tensor":
         kind = _dtype_cast_kind(dtype)
         if kind == "float":
-            format_char = "f" if self._buf.format_char == "f" else "d"
-            out_buf = alloc(self.size, float, format_char=format_char)
+            element_type, format_char = _storage_for_dtype(
+                dtype,
+                default_float_format="f" if self._buf.format_char == "f" else "d",
+            )
+            out_buf = alloc(self.size, element_type, format_char=format_char)
             for idx, value in enumerate(self._data_list()):
-                out_buf[idx] = float(value)
-            return Tensor(out_buf, shape=self._shape, dtype=float)
+                out_buf[idx] = _float(value)
+            return Tensor(out_buf, shape=self._shape, dtype=element_type)
         if kind == "int":
-            out_buf = alloc(self.size, int, format_char="q")
+            element_type, format_char = _storage_for_dtype(dtype)
+            out_buf = alloc(self.size, element_type, format_char=format_char)
             for idx, value in enumerate(self._data_list()):
                 out_buf[idx] = int(value)
-            return Tensor(out_buf, shape=self._shape, dtype=int)
+            return Tensor(out_buf, shape=self._shape, dtype=element_type)
         raise TypeError(f"unsupported cast dtype {dtype!r}")
 
     def float(self) -> "Tensor":
-        return self.cast(float)
+        return self.cast(_float)
 
     def cat(self, other, dim=0) -> "Tensor":
         if not isinstance(other, Tensor):
@@ -1410,7 +1703,7 @@ class Tensor:
             while cur > stop:
                 values.append(cur)
                 cur += step
-        return Tensor(values, shape=(len(values),), dtype=float)
+        return Tensor(values, shape=(len(values),), dtype=_float)
 
     @property
     def T(self) -> "Tensor":
@@ -1435,16 +1728,16 @@ class Tensor:
                 return a / b
             except ZeroDivisionError:
                 if a > 0:
-                    return float("inf")
+                    return _float("inf")
                 if a < 0:
-                    return float("-inf")
-                return float("nan")
+                    return _float("-inf")
+                return _float("nan")
         raise ValueError(f"Unsupported binary op code {op_code!r}")
 
     def _broadcast_op(self, other, op_code: int):
         """Apply a binary op with scalar or tensor broadcasting."""
-        if isinstance(other, (int, float)):
-            scalar = float(other)
+        if isinstance(other, (int, _float)):
+            scalar = _float(other)
             result_dtype, result_format = _binary_result_dtype_and_format(self, other)
             result_buf = alloc(self.size, result_dtype, format_char=result_format)
             src_buf = self._buf
@@ -1561,6 +1854,33 @@ class Tensor:
 
         return Tensor(result_buf, shape=result_shape, dtype=result_dtype)
 
+    def where(self, x, y) -> "Tensor":
+        """Select values from x/y using this tensor as the condition."""
+        x_tensor = _tensor_operand(x)
+        y_tensor = _tensor_operand(y)
+        out_shape = _broadcast_shape_many(self._shape, x_tensor._shape, y_tensor._shape)
+        result_dtype, result_format = _where_result_dtype_and_format(
+            x_tensor,
+            y_tensor,
+        )
+        result_buf = alloc(
+            _product(out_shape) if out_shape else 1,
+            result_dtype,
+            format_char=result_format,
+        )
+
+        for out_index in range(result_buf.size):
+            cond_index = _broadcast_source_index(out_index, out_shape, self._shape)
+            x_index = _broadcast_source_index(out_index, out_shape, x_tensor._shape)
+            y_index = _broadcast_source_index(out_index, out_shape, y_tensor._shape)
+            result_buf[out_index] = (
+                x_tensor._buf[x_index]
+                if self._buf[cond_index] != 0
+                else y_tensor._buf[y_index]
+            )
+
+        return Tensor(result_buf, shape=out_shape, dtype=result_dtype)
+
     def __add__(self, other) -> "Tensor":
         return self._broadcast_op(other, _OP_ADD)
 
@@ -1571,9 +1891,9 @@ class Tensor:
         return self._broadcast_op(other, _OP_SUB)
 
     def __rsub__(self, other) -> "Tensor":
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, _float)):
             data = self._data_list()
-            return self._from_flat([float(other) - x for x in data], self._shape)
+            return self._from_flat([_float(other) - x for x in data], self._shape)
         return NotImplemented
 
     def __mul__(self, other) -> "Tensor":
@@ -1586,27 +1906,27 @@ class Tensor:
         return self._broadcast_op(other, _OP_DIV)
 
     def __rtruediv__(self, other) -> "Tensor":
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, _float)):
             data = self._data_list()
 
             def _safe_rdiv(x):
                 try:
-                    return float(other) / x
+                    return _float(other) / x
                 except ZeroDivisionError:
                     if other > 0:
-                        return float("inf")
+                        return _float("inf")
                     elif other < 0:
-                        return float("-inf")
+                        return _float("-inf")
                     else:
-                        return float("nan")
+                        return _float("nan")
 
             return self._from_flat([_safe_rdiv(x) for x in data], self._shape)
         return NotImplemented
 
     def __pow__(self, other) -> "Tensor":
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, _float)):
             data = self._data_list()
-            exp = float(other)
+            exp = _float(other)
             return self._from_flat([x**exp for x in data], self._shape)
         if isinstance(other, Tensor):
             if self.shape != other.shape:
@@ -1617,9 +1937,9 @@ class Tensor:
         return NotImplemented
 
     def __rpow__(self, other) -> "Tensor":
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, _float)):
             data = self._data_list()
-            base = float(other)
+            base = _float(other)
             return self._from_flat([base**x for x in data], self._shape)
         return NotImplemented
 
@@ -1684,7 +2004,7 @@ class Tensor:
         out_shape = out_batch_shape + (a_rows, b_cols)
         if not out_shape:
             out_shape = (a_rows, b_cols)
-        if a._dtype is float and b._dtype is float:
+        if a._dtype is _float and b._dtype is _float:
             result_format = _preferred_float_format(a, b)
         else:
             result_format = a._buf.format_char
@@ -2002,7 +2322,7 @@ class Tensor:
             if axis < 0:
                 axis = self.ndim + axis
             n = self._shape[axis]
-        return s / float(n)
+        return s / _float(n)
 
     def max(self, axis=None, keepdim: bool = False) -> "Tensor":
         """Max element, optionally along an axis."""
@@ -2147,8 +2467,8 @@ class Tensor:
             for q_idx in range(seq_q):
                 allowed_until = q_idx + offset
                 for k_idx in range(seq_k):
-                    values.append(0.0 if k_idx <= allowed_until else float("-inf"))
-            causal_mask = Tensor(values, shape=(1, 1, seq_q, seq_k), dtype=float)
+                    values.append(0.0 if k_idx <= allowed_until else _float("-inf"))
+            causal_mask = Tensor(values, shape=(1, 1, seq_q, seq_k), dtype=_float)
             mask = causal_mask if mask is None else mask + causal_mask
         return tensor_scaled_dot_product_attention(self, k, v, mask, actual_scale)
 
@@ -2159,11 +2479,11 @@ class Tensor:
         if self._shape[-1] == 0:
             raise ValueError("rms_norm last axis must be non-empty")
 
-        if self._dtype is float and self._buf.element_type is float:
+        if self._dtype is _float and self._buf.element_type is _float:
             result_dtype = self._dtype
             result_format = self._buf.format_char
         else:
-            result_dtype = float
+            result_dtype = _float
             result_format = "d"
 
         intrinsic = _resolve_optional_intrinsic(
@@ -2175,7 +2495,7 @@ class Tensor:
                 self._buf._data,
                 self._buf.format_char,
                 self._shape,
-                float(eps),
+                _float(eps),
                 result_format,
             )
             out_buf = Buffer(
@@ -2190,17 +2510,17 @@ class Tensor:
         axis_len = self._shape[-1]
         outer = self.size // axis_len
         out_buf = alloc(self.size, result_dtype, format_char=result_format)
-        axis_len_f = float(axis_len)
+        axis_len_f = _float(axis_len)
 
         for row in range(outer):
             base = row * axis_len
             sumsq = 0.0
             for i in range(axis_len):
-                value = float(data[base + i])
+                value = _float(data[base + i])
                 sumsq += value * value
-            scale = 1.0 / math.sqrt((sumsq / axis_len_f) + float(eps))
+            scale = 1.0 / math.sqrt((sumsq / axis_len_f) + _float(eps))
             for i in range(axis_len):
-                out_buf[base + i] = float(data[base + i]) * scale
+                out_buf[base + i] = _float(data[base + i]) * scale
 
         return Tensor(out_buf, shape=self._shape, dtype=result_dtype)
 
@@ -2214,11 +2534,11 @@ class Tensor:
             raise ValueError("squared_relu_gate_interleaved last axis must be even")
 
         out_shape = self._shape[:-1] + (self._shape[-1] // 2,)
-        if self._dtype is float and self._buf.element_type is float:
+        if self._dtype is _float and self._buf.element_type is _float:
             result_dtype = self._dtype
             result_format = self._buf.format_char
         else:
-            result_dtype = float
+            result_dtype = _float
             result_format = "d"
 
         intrinsic = _resolve_optional_intrinsic(
@@ -2250,8 +2570,8 @@ class Tensor:
             in_base = row * axis_len
             out_base = row * hidden
             for i in range(hidden):
-                gate = float(data[in_base + 2 * i])
-                up = float(data[in_base + 2 * i + 1])
+                gate = _float(data[in_base + 2 * i])
+                up = _float(data[in_base + 2 * i + 1])
                 relu = gate if gate > 0.0 else 0.0
                 out_buf[out_base + i] = relu * relu * up
 
@@ -2289,7 +2609,7 @@ class Tensor:
         """
         data = self._data_list()
         return self._from_flat(
-            [math.sqrt(x) if x >= 0 else float("nan") for x in data],
+            [math.sqrt(x) if x >= 0 else _float("nan") for x in data],
             self._shape,
         )
 
@@ -2300,9 +2620,9 @@ class Tensor:
             [
                 1.0 / math.sqrt(x)
                 if x > 0
-                else float("inf")
+                else _float("inf")
                 if x == 0
-                else float("nan")
+                else _float("nan")
                 for x in data
             ],
             self._shape,
@@ -2319,9 +2639,9 @@ class Tensor:
         result = []
         for x in data:
             if min_val is not None and x < min_val:
-                x = float(min_val)
+                x = _float(min_val)
             if max_val is not None and x > max_val:
-                x = float(max_val)
+                x = _float(max_val)
             result.append(x)
         return self._from_flat(result, self._shape)
 
@@ -2365,7 +2685,7 @@ class Tensor:
             for idx in range(1, len(data)):
                 if data[idx] > data[best]:
                     best = idx
-            return Tensor(float(best))
+            return Tensor(_float(best))
 
         if axis < 0:
             axis = self.ndim + axis
@@ -2386,7 +2706,7 @@ class Tensor:
                     if data[idx] > best_val:
                         best_val = data[idx]
                         best_idx = a
-                result[o * inner + inn] = float(best_idx)
+                result[o * inner + inn] = _float(best_idx)
 
         if keepdim:
             out_shape = self._shape[:axis] + (1,) + self._shape[axis + 1 :]
@@ -2397,9 +2717,9 @@ class Tensor:
         return Tensor(result, shape=out_shape)
 
     def maximum(self, other) -> "Tensor":
-        if isinstance(other, (int, float)):
+        if isinstance(other, (int, _float)):
             data = self._data_list()
-            val = float(other)
+            val = _float(other)
             return self._from_flat([x if x >= val else val for x in data], self._shape)
         if isinstance(other, Tensor):
             if self.shape != other.shape:
@@ -2545,7 +2865,7 @@ def tensor_scaled_dot_product_attention(
     return attn @ v
 
 
-def zeros(*shape, dtype=float) -> Tensor:
+def zeros(*shape, dtype=_float) -> Tensor:
     """Create a zero-filled tensor."""
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
@@ -2558,7 +2878,7 @@ def zeros(*shape, dtype=float) -> Tensor:
     return Tensor([0.0] * size, shape=shape, dtype=dtype)
 
 
-def ones(*shape, dtype=float) -> Tensor:
+def ones(*shape, dtype=_float) -> Tensor:
     """Create a tensor filled with ones."""
     if len(shape) == 1 and isinstance(shape[0], (list, tuple)):
         shape = tuple(shape[0])
@@ -2608,7 +2928,7 @@ def uniform(
         else _tinygrad_seeded_rand_values(size, seed)
     )
     values = [((high - low) * value) + low for value in base]
-    out = Tensor(values, shape=shape, dtype=dtype or float)
+    out = Tensor(values, shape=shape, dtype=dtype or _float)
     if dtype is not None:
         out = out.cast(dtype)
     return out

@@ -53,69 +53,20 @@ use super::target_info::{TargetInfo, TargetKind};
 /// mapping) AND runs no competing automatic temp-refcount mechanism that would
 /// double-release the same values.
 ///
-/// * `Llvm`, `Wasm`, `Luau` — qualify (LLVM is value-keyed; WASM has a 1:1
-///   name↔NaN-boxed-local mapping and no tracked-var auto-RC; Luau is
-///   GC-managed and lowers the ops to nothing).
-/// * `NativeCranelift` — still GATED OFF (dormant) after round-7. It owns a
-///   deeply-embedded automatic temp-RC substrate (`tracked_vars` /
-///   `drain_cleanup_tracked` / `loop_reassign_old_val`), but the design-20 §4.1
-///   `drop_inserted`-marker suppression makes that substrate inert for
-///   drop-inserted functions (the ~18 `!drop_inserted` sites in
-///   `function_compiler.rs`), so the TIR drops would be the sole RC authority on
-///   those functions — no double-free. Round-7 ALSO cleared the
-///   PIPELINE-ORDERING blocker (drop insertion ran inside the per-function
-///   pipeline, seeding `DecRef`/`IncRef` into module-global loop accumulators
-///   BEFORE `module_slot_promotion` ran, which then refused to promote them — a
-///   5× regression on the `total = inc(total)` shape; it now runs in the terminal
-///   phase, [`crate::tir::drop_phase`], after the module phase, so promotion sees
-///   the clean loop). The REMAINING activation blocker is a separate,
-///   drops-CAUSED loop-phi representation bug (round-8): see the inline comment in
-///   [`target_uses_tir_drop_insertion`] for the `bench_counter_words` evidence
-///   (it already fails the WASM lane at the round-7 base). Until that lands native
-///   stays `false`.
+/// * `Llvm`, `Wasm`, `NativeCranelift`, `Luau` — qualify. LLVM is value-keyed;
+///   WASM has a 1:1 name↔NaN-boxed-local mapping and no tracked-var auto-RC;
+///   native suppresses its automatic temp-RC substrate only on full-function
+///   `drop_inserted` functions; the narrower
+///   `exception_region_drops_inserted` fact protects pre-bail exception releases
+///   without disabling legacy native RC. Luau is GC-managed and lowers the ops to
+///   nothing. The native loop-phi raw/heap representation blocker is pinned by
+///   `reachable_heap_incoming_poisons_raw_loop_phi`, so the shared TIR drop
+///   plane is now the native RC authority as well.
 const fn target_uses_tir_drop_insertion(target: TargetKind) -> bool {
     match target {
-        TargetKind::Llvm | TargetKind::Wasm | TargetKind::Luau => true,
-        // Native/Cranelift: still GATED OFF (dormant) after round-7.
-        //
-        // Round-7 cleared the PIPELINE-ORDERING blocker — drop insertion now runs
-        // in the terminal phase, after module_slot_promotion (see
-        // [`crate::tir::drop_phase`]), so it no longer defeats promotion of
-        // module-global loop accumulators; the `bench_calls` 5× regression is gone
-        // (verified: `inc` inlines, the loop promotes 2 slots, runtime ≈ dormant).
-        //
-        // BUT flipping native on surfaced a PRE-EXISTING, drops-CAUSED correctness
-        // bug that is NOT an ordering issue: `bench_counter_words` (and shapes like
-        // it) miscompile a loop block-arg's representation. The SAME bug already
-        // FAILS on the WASM lane at the round-7 BASE commit (drops are on there
-        // too): "func N failed to validate: type mismatch: expected i64 but nothing
-        // on stack". On native it panics in Cranelift codegen: "native variable
-        // representation mismatch for _bb7_arg0: value vN has CLIF type i64; the
-        // types of variable 0 and value N are not the same". LLVM (value-keyed)
-        // tolerates the same drop IR and is correct (97360), which localizes the
-        // bug to the drop pass's loop-phi representation handling — NOT the
-        // ordering and NOT round-7. Per the activation protocol this is a separate
-        // structural arc (round-8): the drop pass must keep a dropped/retained loop
-        // block-arg's repr consistent across the back-edge so the variable-keyed
-        // backends (native, WASM) lower it without a type mismatch. Until that
-        // lands, native keeps its existing (partial-leak-but-safe) RC.
-        //
-        // ADDITIONALLY (design 20 §4.1 Finding #5, same day): Finding #4(C)'s
-        // "systemic stdlib-module-init miscompile" was 100% the STALE-STDLIB-
-        // CACHE confound — fixed by keying the stdlib_shared cache on backend
-        // BINARY identity (commit fdbb51329/aaad21122). With trustworthy builds
-        // the headline cases (import typing/re/collections/warnings) pass
-        // byte-identical, memory corpus 14/14 + compliance 46/46 green, and
-        // ZERO drop-induced regressions were found across ~180 triaged corpus
-        // files (every failure verified pre-existing vs the dormant binary).
-        // So the remaining NATIVE gates are exactly TWO: (1) the round-8
-        // loop-phi repr fix above, and (2) one clean full
-        // tests/differential/basic wired-vs-dormant sweep (per-file fresh
-        // builds, xfail-aware, SIGURG-surviving harness — scaffold in the
-        // round-5 baton). Then this is a one-line flip; the native-RC
-        // retirement (Findings #2/#3) auto-engages via the drop_inserted
-        // marker.
-        TargetKind::NativeCranelift => false,
+        TargetKind::Llvm | TargetKind::Wasm | TargetKind::NativeCranelift | TargetKind::Luau => {
+            true
+        }
     }
 }
 
@@ -133,13 +84,14 @@ pub enum Mutates {
     /// invalidated.
     ///
     /// CRITICAL INVARIANT: an `OpsOnly` pass MUST NOT add or remove an op that
-    /// carries an exception edge (`CheckException`/`TryStart`/`TryEnd`/
-    /// `StateBlockStart`/`StateBlockEnd`) — those edges are part of the
-    /// exception-augmented CFG the dominator analyses are built over. A pass
-    /// that touches them, removes a whole block, redirects an edge, or rewrites
-    /// a terminator is `Cfg`, not `OpsOnly`. The default-pipeline `OpsOnly`
-    /// passes are verified to honor this (they only remove
-    /// IncRef/DecRef/arithmetic/copy ops).
+    /// carries an exception transfer edge (`CheckException`/`TryStart`) or
+    /// mutates the exception-region stack (`TryEnd`/`StateBlockStart`/
+    /// `StateBlockEnd`). Transfer edges are part of the exception-augmented CFG
+    /// the dominator analyses are built over; stack markers are lifetime
+    /// boundaries even when they are not CFG edges. A pass that touches them,
+    /// removes a whole block, redirects an edge, or rewrites a terminator is
+    /// `Cfg`, not `OpsOnly`. The default-pipeline `OpsOnly` passes are verified
+    /// to honor this (they only remove IncRef/DecRef/arithmetic/copy ops).
     OpsOnly,
     /// Pure analysis or attribute marking — does not change executable IR at
     /// all (e.g. BCE adds a `bce_safe` attr; reuse marks metadata).
@@ -291,9 +243,21 @@ impl PassManager {
         }
 
         if let Err(errors) = super::verify::verify_function(func) {
+            if dump_tir {
+                dump_tir_artifact(func, "verify_error", &stats);
+            }
             panic!(
                 "[TIR] verification failed after optimization of '{}': {:?}",
                 func.name, errors
+            );
+        }
+        if let Err(diagnostics) = super::exception_regions::verify_exception_regions(func) {
+            if dump_tir {
+                dump_tir_artifact(func, "exception_region_error", &stats);
+            }
+            panic!(
+                "[TIR] exception-region verification failed after optimization of '{}': {:?}",
+                func.name, diagnostics
             );
         }
 
@@ -486,8 +450,10 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
 ///
 /// * `drop_insertion` emits `DecRef` at each owned value's last use and `IncRef`
 ///   before suspension points + on borrowed phi edges (design §5). It is
-///   idempotent (bails on the `drop_inserted` marker), so a function re-lifted /
-///   re-run through this phase is a no-op.
+///   idempotent (bails on the full-function `drop_inserted` marker, and uses a
+///   separate `exception_region_drops_inserted` marker for handler-safe pre-bail
+///   drops), so a function re-lifted / re-run through this phase does not
+///   double-insert drops.
 /// * `refcount_elim_post` then elides the balance-preserving subset of the ops it
 ///   placed (the deferred-RC / DecRef→Free steps are skipped post-drop — they
 ///   would delete the lone ownership-release DecRefs that close the leak).
@@ -503,10 +469,11 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
 ///     directly (lower_to_wasm.rs).
 ///   * Luau  — GC-managed; `DecRef`/`IncRef` lower to nothing (no-op).
 ///   * Native/Cranelift — `function_compiler.rs` carries a value-tracking
-///     automatic temp-RC substrate, suppressed for drop-inserted functions by
-///     the design-20 §4.1 `drop_inserted`-marker gate (the ~18 `!drop_inserted`
-///     sites in `function_compiler.rs`). Activation is the
-///     `target_uses_tir_drop_insertion` flip.
+///     automatic temp-RC substrate, suppressed only for full-function
+///     drop-inserted functions by the design-20 §4.1 `drop_inserted`-marker gate
+///     (the ~18 `!drop_inserted` sites in `function_compiler.rs`). The
+///     exception-only pre-bail marker deliberately does not feed those gates.
+///     Activation is the `target_uses_tir_drop_insertion` flip.
 ///
 /// Reusing a [`PassManager`] here (rather than calling the passes directly) keeps
 /// drop insertion under the SAME analysis-invalidation soundness contract,
@@ -600,6 +567,7 @@ fn assert_analyses_fresh(func: &TirFunction, am: &mut AnalysisManager, after_pas
             // reachable once a consumer caches the (intraprocedural-floor) table;
             // the recompute is that same floor, so cached == fresh holds.
             AnalysisId::CallFacts => check!(super::call_facts::CallFactsAnalysis),
+            AnalysisId::ExceptionRegions => check!(super::exception_regions::ExceptionRegions),
         }
     }
 }
@@ -609,8 +577,6 @@ fn assert_analyses_fresh(func: &TirFunction, am: &mut AnalysisManager, after_pas
 // ---------------------------------------------------------------------------
 
 fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
-    use super::blocks::Terminator;
-
     let sanitized: String = func
         .name
         .chars()
@@ -644,90 +610,9 @@ fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
         ));
     }
 
-    let mut bids: Vec<_> = func.blocks.keys().copied().collect();
-    bids.sort_by_key(|b| b.0);
-    for bid in &bids {
-        let block = &func.blocks[bid];
-        let arg_ids: Vec<u32> = block.args.iter().map(|a| a.id.0).collect();
-        let role = func.loop_roles.get(bid);
-        dump.push_str(&format!(
-            "\nblock {} (args={:?}, ops={}{}):\n",
-            bid.0,
-            arg_ids,
-            block.ops.len(),
-            match role {
-                Some(r) => format!(", role={r:?}"),
-                None => String::new(),
-            }
-        ));
-        for op in &block.ops {
-            let mut attr_keys: Vec<&str> = op.attrs.keys().map(|s| s.as_str()).collect();
-            attr_keys.sort_unstable();
-            dump.push_str(&format!(
-                "  {:?} operands={:?} results={:?}{}\n",
-                op.opcode,
-                op.operands,
-                op.results,
-                if attr_keys.is_empty() {
-                    String::new()
-                } else {
-                    format!(" attrs={attr_keys:?}")
-                }
-            ));
-        }
-        if phase == "pre" {
-            dump.push_str(&format!(
-                "  TERM: {:?}\n",
-                std::mem::discriminant(&block.terminator)
-            ));
-            match &block.terminator {
-                Terminator::Branch { target, args } => dump.push_str(&format!(
-                    "    → block {} args={:?}\n",
-                    target.0,
-                    args.iter().map(|v| v.0).collect::<Vec<_>>()
-                )),
-                Terminator::CondBranch {
-                    cond,
-                    then_block,
-                    then_args,
-                    else_block,
-                    else_args,
-                } => dump.push_str(&format!(
-                    "    cond={:?} then={} then_args={:?} else={} else_args={:?}\n",
-                    cond,
-                    then_block.0,
-                    then_args.iter().map(|v| v.0).collect::<Vec<_>>(),
-                    else_block.0,
-                    else_args.iter().map(|v| v.0).collect::<Vec<_>>()
-                )),
-                Terminator::Return { values } => {
-                    dump.push_str(&format!("    return {} values\n", values.len()))
-                }
-                _ => {}
-            }
-        } else {
-            match &block.terminator {
-                Terminator::Branch { target, args } => dump.push_str(&format!(
-                    "  TERM: Branch → block {} args={:?}\n",
-                    target.0, args
-                )),
-                Terminator::CondBranch {
-                    cond,
-                    then_block,
-                    then_args,
-                    else_block,
-                    else_args,
-                } => dump.push_str(&format!(
-                    "  TERM: CondBranch cond={:?} then={} args={:?} else={} args={:?}\n",
-                    cond, then_block.0, then_args, else_block.0, else_args
-                )),
-                Terminator::Return { values } => {
-                    dump.push_str(&format!("  TERM: Return {} values\n", values.len()))
-                }
-                _ => dump.push_str("  TERM: other\n"),
-            }
-        }
-    }
+    dump.push('\n');
+    dump.push_str(&super::printer::print_function(func));
+    dump.push('\n');
 
     let _ = crate::debug_artifacts::write_debug_artifact(
         format!("tir/{}_{}.txt", sanitized, phase),
@@ -928,5 +813,155 @@ mod tests {
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dstats = dp.run_inner(&mut func, true);
         assert_eq!(dstats.len(), 2);
+    }
+
+    fn exception_match_ref_without_reachable_pop_function() -> TirFunction {
+        let mut func = TirFunction::new("bad_exception_region".into(), vec![], TirType::None);
+        let handler = func.fresh_block();
+        let exc = func.fresh_value();
+        func.label_id_map.insert(handler.0, 9);
+
+        let mut try_start = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::TryStart,
+            operands: vec![],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        };
+        try_start
+            .attrs
+            .insert("value".into(), crate::tir::ops::AttrValue::Int(9));
+        func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+            Terminator::Return { values: vec![] };
+
+        let mut match_ref = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![],
+            results: vec![exc],
+            attrs: AttrDict::new(),
+            source_span: None,
+        };
+        match_ref.attrs.insert(
+            "_original_kind".into(),
+            crate::tir::ops::AttrValue::Str("exception_last_pending".into()),
+        );
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![match_ref],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func
+    }
+
+    fn ambiguous_exception_match_ref_depth_function() -> TirFunction {
+        let mut func = TirFunction::new("ambiguous_exception_region".into(), vec![], TirType::None);
+        let before_try = func.fresh_block();
+        let handler = func.fresh_block();
+        let cond = func.fresh_value();
+        let exc = func.fresh_value();
+        func.label_id_map.insert(handler.0, 7);
+
+        func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstBool,
+            operands: vec![],
+            results: vec![cond],
+            attrs: AttrDict::new(),
+            source_span: None,
+        }];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+            cond,
+            then_block: before_try,
+            then_args: vec![],
+            else_block: handler,
+            else_args: vec![],
+        };
+
+        let mut try_start = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::TryStart,
+            operands: vec![],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        };
+        try_start
+            .attrs
+            .insert("value".into(), crate::tir::ops::AttrValue::Int(7));
+        func.blocks.insert(
+            before_try,
+            TirBlock {
+                id: before_try,
+                args: vec![],
+                ops: vec![try_start],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut match_ref = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![],
+            results: vec![exc],
+            attrs: AttrDict::new(),
+            source_span: None,
+        };
+        match_ref.attrs.insert(
+            "_original_kind".into(),
+            crate::tir::ops::AttrValue::Str("exception_last_pending".into()),
+        );
+        let mut exception_pop = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        };
+        exception_pop.attrs.insert(
+            "_original_kind".into(),
+            crate::tir::ops::AttrValue::Str("exception_pop".into()),
+        );
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![match_ref, exception_pop],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func
+    }
+
+    #[test]
+    #[should_panic(expected = "exception-region verification failed")]
+    fn pass_manager_rejects_exception_match_ref_without_reachable_pop() {
+        let mut func = exception_match_ref_without_reachable_pop_function();
+        let pm = PassManager::new(Vec::new(), TargetInfo::native_release_fast());
+        let _ = pm.run_inner(&mut func, true);
+    }
+
+    #[test]
+    #[should_panic(expected = "exception-region verification failed")]
+    fn pass_manager_rejects_ambiguous_exception_match_ref_depth() {
+        let mut func = ambiguous_exception_match_ref_depth_function();
+        let pm = PassManager::new(Vec::new(), TargetInfo::native_release_fast());
+        let _ = pm.run_inner(&mut func, true);
+    }
+
+    #[test]
+    #[should_panic(expected = "exception-region verification failed")]
+    fn drop_pipeline_rejects_exception_region_diagnostics_before_codegen() {
+        let mut func = exception_match_ref_without_reachable_pop_function();
+        let pm = build_drop_pipeline(TargetInfo::native_release_fast());
+        let _ = pm.run_inner(&mut func, true);
     }
 }

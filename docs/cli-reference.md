@@ -88,12 +88,12 @@ molt build app.py --profile cloudflare   # Platform-optimized build
 
 #### `molt run`
 
-Build and execute a Python program. Supports native, WASM (via wasmtime), Luau (via lune), and MLIR targets.
+Build and execute a Python program. Supports native, WASM (via the canonical Node host shim), Luau (via lune), and MLIR targets.
 
 ```bash
 molt run app.py                          # Build and run natively
 molt run app.py --release                # Optimized build and run
-molt run app.py --target wasm            # Build and run with wasmtime
+molt run app.py --target wasm            # Build and run with the Node host shim
 molt run app.py --target luau            # Build and run with lune
 molt run app.py --target mlir            # Build and emit MLIR text
 molt run app.py -- --arg1 val            # Pass args to your script
@@ -514,7 +514,7 @@ molt_c_api_version = "0.1"
 
 | Variable | Description |
 |----------|-------------|
-| `MOLT_MEMORY_GUARD` | Set to `0` to disable the shared harness guard for a deliberate investigation. |
+| `MOLT_MEMORY_GUARD` | Legacy disable knob; ignored by mandatory harness custody. Use explicit `*_MAX_*` limits or timeouts for deliberate narrower investigations. |
 | `*_TIMEOUT_SEC` / `MOLT_TEST_PROCESS_TIMEOUT_SEC` | Guarded command wall-clock timeout. |
 | `*_KEEPALIVE_SEC` / `MOLT_SUBPROCESS_KEEPALIVE_SECS` | Interval for streamed guarded-command progress lines. |
 | `MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC` | Bounded wait after guard termination before reporting an un-settled process tree. |

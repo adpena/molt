@@ -22,11 +22,11 @@ jobs:
         uses: swatinem/rust-cache@v2
       - name: Install Kani
         run: |
-          cargo install --locked kani-verifier
-          cargo kani setup
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install --locked kani-verifier
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo kani setup
       - name: Run NaN-boxing proofs
         run: |
-          cd runtime/molt-obj-model && cargo kani --tests
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-obj-model -- cargo kani --tests
       - name: Run runtime proofs
         run: |
-          cd runtime/molt-runtime && cargo kani --tests
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd runtime/molt-runtime -- cargo kani --tests

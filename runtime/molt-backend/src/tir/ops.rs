@@ -104,6 +104,15 @@ pub enum OpCode {
     Index,
     StoreIndex,
     DelIndex,
+    /// Delete a Python local slot: store the missing sentinel into the named
+    /// local and release the previous slot occupant at this exact boundary.
+    ///
+    /// Operands: `[missing_sentinel, old_slot_value]`. Both operands are borrowed
+    /// by the op; DropInsertion releases `old_slot_value` immediately after this
+    /// op so finalizers observe the already-missing local.
+    /// Result: the new local value in SSA form (`missing_sentinel`).
+    /// Metadata: `_var` carries the Python local name through round-trips.
+    DeleteVar,
     // Call
     Call,
     CallMethod,

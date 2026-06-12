@@ -11,9 +11,9 @@ It drives `cargo` directly (NOT `molt build`) because the thing being optimised
 is the cargo build of the backend crate(s) themselves. Each scenario is run N
 times; we report min/median/max so noise from other agents is visible.
 
-This tool is intentionally dependency-free (stdlib only) and never runs a
-compiled molt binary, so it carries no OOM risk of its own; the cargo builds it
-launches are memory-bounded by the host (and by the caller running few of them).
+This tool never runs a compiled Molt binary, but every Cargo child still routes
+through the shared memory guard because build throughput work must not bypass
+process-tree custody.
 """
 
 from __future__ import annotations
@@ -23,12 +23,15 @@ import json
 import os
 import shutil
 import statistics
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tools import harness_memory_guard  # noqa: E402
 
 
 def _now() -> float:
@@ -51,17 +54,35 @@ def _touch(path: Path) -> None:
         path.write_text(text + marker)
 
 
-def _run(cmd: list[str], env: dict[str, str], cwd: Path) -> tuple[int, float, str]:
+def _output_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _run_completed(
+    cmd: list[str],
+    env: dict[str, str],
+    cwd: Path,
+) -> tuple[harness_memory_guard.GuardedCompletedProcess, float]:
     start = _now()
-    proc = subprocess.run(
+    proc = harness_memory_guard.guarded_completed_process(
         cmd,
         cwd=cwd,
         env=env,
         capture_output=True,
         text=True,
+        prefix="MOLT_DX_BUILD",
     )
-    elapsed = _now() - start
-    tail = "\n".join((proc.stderr or "").splitlines()[-8:])
+    elapsed = proc.elapsed_s if proc.elapsed_s is not None else _now() - start
+    return proc, elapsed
+
+
+def _run(cmd: list[str], env: dict[str, str], cwd: Path) -> tuple[int, float, str]:
+    proc, elapsed = _run_completed(cmd, env, cwd)
+    tail = "\n".join(_output_text(proc.stderr).splitlines()[-8:])
     return proc.returncode, elapsed, tail
 
 
@@ -185,9 +206,9 @@ def main() -> int:
             "features": args.features,
             "runs": args.runs,
             "target_dir": args.target_dir,
-            "cargo": subprocess.run(
-                ["cargo", "--version"], capture_output=True, text=True
-            ).stdout.strip(),
+            "cargo": _output_text(
+                _run_completed(["cargo", "--version"], env, REPO_ROOT)[0].stdout
+            ).strip(),
         },
         "results": results,
     }

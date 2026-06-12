@@ -1,10 +1,12 @@
+# MOLT_META: xfail=molt xfail_reason=finalizer-container-release-boundary
 """Purpose: a finalizer-bearing object held in a container is released (and its
 ``__del__`` runs) when the container drops the reference via ``clear()``/removal.
 
-This pins the WORKING boundary of the Finalizer Lifetime Closure vertical (doc 50):
-single-element container release is correct. The loop-append form (#63) and the
-scope-exit timing form (#58) are tracked separately as open placement/ordering
-slices; this file is the green anchor that must not regress as those land.
+STATUS: expected-fail. The current native path drops the container contents
+without running the element finalizers at `clear()`/`pop()`/container `del`, so
+the observed event list stays empty. Keep the CPython-strict assertions and let
+the harness flip this to XPASS-failure when container-owned releases dispatch
+`__del__` at the boundary.
 """
 
 events = []

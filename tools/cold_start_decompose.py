@@ -55,7 +55,6 @@ import os
 import re
 import shutil
 import statistics
-import subprocess
 import sys
 import tempfile
 import time
@@ -76,6 +75,7 @@ SAFE_RUN = TOOLS_ROOT / "safe_run.py"
 DOCS_COLD_START = REPO_ROOT / "docs" / "perf" / "COLD_START.md"
 
 PERFSCORE_SESSION_ID = "perfscore"
+COLD_START_GUARD_PREFIX = "MOLT_COLD_START"
 
 # The molt_runtime_init phase ladder (runtime_state.rs trace_runtime_init).
 # Order matters: each phase's delta is attributed to the named stage.
@@ -126,6 +126,24 @@ def _canonical_env() -> dict[str, str]:
     return bench._canonical_bench_env(base)
 
 
+def _guarded_text_process(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    timeout_s: float,
+    cwd: Path = REPO_ROOT,
+) -> harness_memory_guard.GuardedCompletedProcess:
+    return harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix=COLD_START_GUARD_PREFIX,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+    )
+
+
 def _safe_run_elapsed(
     cmd: list[str],
     *,
@@ -155,15 +173,12 @@ def _safe_run_elapsed(
     if extra_env:
         run_env.update(extra_env)
     try:
-        proc = subprocess.run(
+        proc = _guarded_text_process(
             full,
             env=run_env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout_s + 30.0,
+            timeout_s=timeout_s + 30.0,
         )
-    except subprocess.TimeoutExpired:
+    except OSError:
         return None, ""
     elapsed = None
     for line in reversed((proc.stderr or "").splitlines()):
@@ -305,13 +320,12 @@ def _build_noop_c() -> Path | None:
     src.write_text(NOOP_C, encoding="utf-8")
     out = tmp / "noop"
     try:
-        res = subprocess.run(
+        res = _guarded_text_process(
             [cc, "-O2", "-o", str(out), str(src)],
-            capture_output=True,
-            text=True,
-            timeout=60,
+            env=os.environ.copy(),
+            timeout_s=60,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return None
     return out if res.returncode == 0 and out.exists() else None
 
@@ -337,15 +351,12 @@ def _measure_dyld_ms(
         run_env = dict(env)
         run_env["DYLD_PRINT_STATISTICS"] = "1"
         try:
-            proc = subprocess.run(
+            proc = _guarded_text_process(
                 [str(binary)],
                 env=run_env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=timeout_s,
+                timeout_s=timeout_s,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError:
             continue
         ms = _parse_dyld_total_ms(proc.stderr or "")
         if ms is not None:
@@ -383,7 +394,7 @@ def _build_molt_probe(
     try:
         res = harness_memory_guard.guarded_completed_process(
             cmd,
-            prefix="COLD_START",
+            prefix=COLD_START_GUARD_PREFIX,
             env=env,
             capture_output=True,
             text=True,

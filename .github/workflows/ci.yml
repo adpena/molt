@@ -127,12 +127,14 @@ jobs:
 
       - name: Test capability manifest import
         run: |
-          PYTHONPATH=src uv run python3 -c \
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+            env PYTHONPATH=src uv run python3 -c \
             "from molt.capability_manifest import CapabilityManifest; m = CapabilityManifest(); assert m.to_env_vars()['MOLT_CAPABILITIES'] == ''; print('OK')"
 
       - name: Test harness report import
         run: |
-          PYTHONPATH=src uv run python3 -c \
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
+            env PYTHONPATH=src uv run python3 -c \
             "from molt.harness_report import LayerResult, LayerStatus; r = LayerResult(name='ci', status=LayerStatus.PASS, duration_s=0.1); assert r.passed; print('OK')"
 
       - name: Summarize guarded command hotspots

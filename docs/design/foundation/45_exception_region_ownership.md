@@ -27,16 +27,22 @@ Per raised-and-immediately-caught exception in a loop (diagnosed op-by-op via
   SSA last-use = the `raise`. **Value-tracking-expressible** — a #46-style
   per-iteration-temp analysis releases it (prototype: rc 2→1, preserved at
   `memory/recovery/excfix_wip/function_compiler_excregion_wip.patch`).
-- **Component B — MatchRef** (`exception_last_pending` result): **still leaks.**
-  Its SSA last-use is the re-raise in the **no-match ELSE branch that never
-  executes** on the caught path; on the matched path it is only *borrowed*. The
-  correct release point is **handler-region exit (`exception_pop`)** — CPython's
-  implicit clear of the caught exception — a **per-PATH exception-CFG liveness
-  fact** the single-global-last-use model cannot express.
+- **Component B — MatchRef** (`exception_last_pending` result): was the
+  remaining native leak class in the original diagnosis. Its SSA last-use is
+  the re-raise in the **no-match ELSE branch that never executes** on the
+  caught path; on the matched path it is only *borrowed*. The correct release
+  point is **handler-region exit (`exception_pop`)** — CPython's implicit clear
+  of the caught exception — a **per-PATH exception-CFG liveness fact** the
+  single-global-last-use model cannot express. Native Cranelift now has a
+  targeted Phase-1 slice that pairs owned handler MatchRefs from
+  `exception_last*`, `exception_active`, `exception_current`, and
+  `exceptiongroup_*` with the reachable path-depth closing `exception_pop`.
 
-Net per caught exception today: 3 inc / 2 dec → rc=2 leaked (with the Component-A
-prototype: 3 inc / 3 dec but the lone `dec` sits in the dead ELSE branch → rc=1,
-still leaked).
+Original pre-fix net per caught exception: 3 inc / 2 dec → rc=2 leaked (with the
+Component-A prototype alone: 3 inc / 3 dec but the lone `dec` sits in the dead
+ELSE branch → rc=1, still leaked). The current native slice closes that specific
+split-cleanup MatchRef pairing bug, but it is not yet the backend-neutral
+`ExceptionRegion` authority.
 
 ## 2. Falsified vs supported (binding)
 
@@ -120,6 +126,111 @@ prove the lattice can carry exactly this kind of boundary).
 
 ## 8. Minimal implementation — phased (prove the model before the edge cases)
 
+The current Phase-1 implementation slice has one shared fact authority and two
+consumption paths:
+
+- CreationRef temporaries from `exception_new*` are released at the raise
+  boundary when the creation reference is per-iteration-dead. This release is
+  path-local per `Raise` op: mutually exclusive raise edges that share one SSA
+  exception object each materialize their own post-raise `DecRef`, rather than a
+  function-global "first raise wins" release.
+- Handler MatchRef temporaries from `exception_last*`, `exception_active`,
+  `exception_current`, and `exceptiongroup_*` are selected by TIR
+  `ExceptionRegions` path-depth facts and bound to the reachable
+  handler-region `exception_pop`.
+- Shared TIR drop insertion consumes CreationRefs at the `raise` boundary and
+  MatchRefs immediately after the owning `exception_pop`, before the
+  conservative handler-CFG drop-pass bail, by materializing ordinary TIR
+  `DecRef` ops.
+- Native Cranelift is now activated on the same TIR DropInsertion path, and the
+  old native-only CreationRef lifetime carve-out plus `exception_pop`
+  side-emission path are deleted.
+- Runtime module attribute lookup preserves CPython-shaped module
+  `__getattr__` exception behavior: direct `module.attr` and two-argument
+  `getattr(module, name)` propagate a raised `AttributeError`, while
+  `getattr(module, name, default)` consumes only `AttributeError` and returns
+  the default.
+
+Backend-neutral TIR now has `ExceptionRegions` analysis + verification in
+`runtime/molt-backend/src/tir/exception_regions.rs`. It recognizes the current
+`Copy` + `_original_kind` exception carriers, computes path-depth reachable
+`exception_pop` release boundaries for handler MatchRefs, emits diagnostics for
+missing/ambiguous/too-early releases, is registered with the analysis
+manager/debug freshness check, and fails closed from the pass-manager
+verification boundary when those diagnostics are present. Depth-zero exception
+reads remain ordinary observers rather than handler-owned MatchRefs, so
+guard-style `exception_last` probes outside an open handler region stay on the
+normal value/lifetime path. Shared drop insertion materializes TIR `DecRef`s for
+CreationRefs at `Raise` and for MatchRefs after the owning `exception_pop` for
+activated TIR-drop targets, including native Cranelift. The current analyzer also accepts
+path-alternative handler exits, loop re-entry shapes where `try_end` and
+`exception_pop` are one close boundary, and shared `exception_pop` blocks with
+block-arg payloads, where the splitter now routes the moved tail through fresh
+continuation args so inserted MatchRef releases preserve SSA dominance.
+Validator fail-closed coverage now includes missing-pop, ambiguous-depth, and
+terminal drop-pipeline diagnostics. Checked backend consumption proof covers
+LLVM lowering order, WASM host-EH/native-EH import behavior plus the LIR
+`dec_ref` runtime-call lane, and Luau checked lowering of shared drop artifacts
+as GC no-ops after the Luau target-info terminal drop phase. Luau and LLVM now
+also have executed runtime artifact proof for the raise/catch leak loop. The
+prior WASM structural-validation blocker is fixed and the linked artifact
+validates. The `env::molt_process_terminate_host` host-ABI gap is now covered by
+the JS harness import map alongside the real Node/Wasmtime/browser hosts, but
+WASM runtime parity proof is still required.
+
+Evidence:
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" exception_region -- --nocapture` (23 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" lower_to_simple_emits_separate_drop_fact_markers -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --features wasm-backend import_transaction_callable_wrapper_matches_runtime_import_abi -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" compile_checked_ -- --nocapture` (14 passed).
+- `cargo test -p molt-backend --lib --features "luau-backend" validate_luau_source -- --nocapture` (6 passed).
+- `cargo test -p molt-backend --lib --features "luau-backend" test_luau_tir_roundtrip_raise_catch_closes_pcall_before_handler -- --nocapture` (1 passed).
+- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" shared_drop -- --nocapture` (3 passed).
+- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" test_luau_tir_roundtrip_raise_catch_closes_pcall_before_handler -- --nocapture` (1 passed).
+- `cargo check --manifest-path runtime/Cargo.toml -p molt-backend --features "native-backend llvm luau-backend wasm-backend" --bin molt-backend` (passed).
+- `python3 -m py_compile tests/wasm_harness.py` (passed; pre-existing invalid-escape warnings only).
+- `python3 - <<'PY' ... wasm_runner_source() ... envImports.molt_process_* ... PY` (passed; JS harness includes the process host ABI env imports, including `molt_process_terminate_host`).
+- `MOLT_DIFF_RESULTS_JSONL=tmp/wasm_diff_exception_regions_20260612_rerun.jsonl MOLT_WASM_DIFF_BUILD_TIMEOUT=1200 MOLT_WASM_DIFF_RUN_TIMEOUT=180 uv run --python 3.12 python3 tools/wasm_diff.py --build-profile release --out-root tmp/wasm_diff_exception_regions_20260612_rerun --jobs 1 tests/differential/memory/exception_raise_catch_loop_leak.py` (passed; raw/resolved status `pass` for the WASM runtime leak-loop differential).
+- `uv run python -m molt.cli build tests/differential/memory/exception_raise_catch_loop_leak.py --target luau --profile release --out-dir tmp/exception_regions_luau_proof_fixed6 --rebuild --verbose` (built `tmp/exception_regions_luau_proof_fixed6/exception_raise_catch_loop_leak.luau`).
+- `luau tmp/exception_regions_luau_proof_fixed6/exception_raise_catch_loop_leak.luau` (printed `500000`).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend" exception_region -- --nocapture` (12 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend" ambiguous_exception_match -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend" compile_checked_accepts_shared_drop_artifacts_as_gc_noops -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" lir_fast_lane_dec_ref_emits_named_runtime_call -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" lowers_exception_pop_then_dec_ref_from_shared_drop_shape -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend" tir::passes::drop_insertion::tests -- --nocapture` (24 passed).
+- `cargo test -p molt-backend tir::passes::drop_insertion::tests::exception_region_match_release_splits_shared_pop_with_block_args -- --exact` (passed).
+- `MOLT_ASSERT_NO_LEAK=1 python3 tools/safe_run.py --rss-mb 1024 --timeout 180 -- uv run python -m molt.cli run tests/differential/memory/exception_raise_catch_loop_leak.py --target native --release --rebuild` (passed; `live_objects=649` after 500,000 raises/catches).
+- `MOLT_ASSERT_NO_LEAK=1 python3 tools/memory_guard.py --timeout 1200 --max-rss-gb 18 --max-total-rss-gb 24 -- uv run python -m molt.cli run --target llvm --release --rebuild tests/differential/memory/exception_raise_catch_loop_leak.py` (passed; printed `500000`, `live_objects=649` after 500,000 raises/catches).
+- `cargo test -p molt-backend --lib --features "native-backend" representation_plan::tests::reachable_heap_incoming_poisons_raw_loop_phi -- --nocapture` (1 passed).
+- `uv run pytest tests/test_native_import_bootstrap_regressions.py::test_native_relative_from_import_direct_call_executes -q` (passed).
+
+The latest targeted 2026-06-12 hot-only `bench_exception_heavy` receipt is
+`bench/results/bench_exception_heavy_exception_regions_20260612_after_luau_parity.json`.
+
+This is not full ExceptionRegion completion. The durable end state still needs
+the wider `HandlerState` boundary and authoritative exception-heavy speed
+evidence before the RED status moves. The
+prior WASM runtime-surface blocker that pulled `molt-db`/sqlite into linked
+runtime builds is closed at the feature-plane level: wasm micro/full
+availability, Cargo command features, fingerprints, and bench-wrapper runtime
+feature construction exclude sqlite, while explicit sqlite-on-wasm still fails
+closed. The corrected end-to-end WASM proof now builds a structurally valid
+linked artifact and advances past the former `func 1233` stack-validation
+failure; the JS harness host map now includes the process host ABI imports that
+the linked runtime needs. WASM now has runtime differential evidence for
+`tests/differential/memory/exception_raise_catch_loop_leak.py`; this closes the
+raise/catch leak-loop runtime parity proof, not broader WASM `HandlerState`
+parity.
+The 2026-06-12 targeted `bench_exception_heavy` hot-only after-Luau-parity rerun was
+valid for cycle attribution (`inner_loops=40`, launch/page-in 0.0%, in-binary
+100.0%, top in-binary frames `molt_runtime::object::dec_ref_ptr` 10.2%,
+`molt_runtime::concurrency::gil::GilGuard::new` 10.1%, and
+`bench_exception_heavy__molt_user_main` 8.0%) but non-authoritative because host
+load was not quiescent (`loadavg_1m=23.81`, threshold `9.00`), so no
+performance claim moved.
+
 **Phase 1 — bare raise/catch loop** (the model proof):
 ```python
 for i in range(N):
@@ -139,8 +250,11 @@ remains usable; an unstored `e` does not retain traceback/frame/locals.
 
 **Phase 4 — finally / re-raise / nested / break-continue-return-from-handler.**
 
-The Component-A prototype is **evidence in this note, not landed behavior** — it
-lands only as part of A+B (no asymmetric half-fix that leaves the loop leaking).
+The native slice above is evidence and a production guardrail, not permission to
+preserve a backend-specific ownership side channel permanently. Native now reads
+TIR-authored release facts instead of recomputing them, and the next convergence
+step is to keep every backend consuming the backend-neutral ExceptionRegion /
+drop-pass authority directly without restoring the deleted transport lane.
 
 ## 9. Validator (Alive2-style, scaled to molt — add as soon as the event model exists; ties #TV-1)
 
@@ -165,12 +279,21 @@ bytecode/exception-table mechanics.
 
 ## 11. Classification + status
 
-`bench_exception_heavy` = **RED_STABLE + CORRECTNESS/OWNERSHIP ROOT OPEN** until
-ExceptionRegion Phase 1 lands. No benchmark-only speed fix that leaves the leak.
-Sequence: finish the op-semantics ladder (#73 → #74) to seed #58, write this note
-(done), then ExceptionRegion Phase 1 on the #58 substrate — coordinated with the
-parallel session's drop-pass / round-13 work (Component B re-enables drop-insertion
-reasoning over exception CFG), not colliding with it.
+`bench_exception_heavy` = **RED_STABLE + CORRECTNESS/OWNERSHIP ROOT PARTIAL**.
+Native Cranelift has the targeted CreationRef release slice and now consumes
+path-depth MatchRef releases through shared TIR DropInsertion rather than a
+SimpleIR carrier. TIR has shared `ExceptionRegions` facts, a pass-boundary
+fail-closed verifier, and shared drop-pass consumption that inserts `DecRef`
+after the owning `exception_pop` for activated TIR-drop paths. The remaining
+native RC deletion frontier is not another backend-local MatchRef release map:
+the staged native compiler no longer has one. The marker split is now landed:
+pre-bail exception-only drops carry `exception_region_drops_inserted`, while
+full-function `drop_inserted` remains the only native legacy-RC suppression
+signal. The remaining frontier is coverage, not transport: widen shared
+DropInsertion/HandlerState ownership until broader native value-tracking RC can
+be deleted without leaks or double-frees. No benchmark-only speed fix is
+acceptable while backend runtime parity evidence, the wider `HandlerState`
+boundary, and authoritative exception-heavy speed evidence remain open.
 
 Related: memory/project_exception_loop_leak_baton.md (the op-level map +
 preserved prototype), #58 (ownership-boundary lattice), #24

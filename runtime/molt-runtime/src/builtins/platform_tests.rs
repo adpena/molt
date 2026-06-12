@@ -1478,6 +1478,28 @@ fn importlib_stabilize_module_state_clears_internal_dunder_path_placeholder() {
     });
 }
 
+#[test]
+fn importlib_sha256_file_matches_direct_byte_hash() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = std::env::temp_dir().join(format!(
+        "molt_importlib_sha_file_{}_{}",
+        std::process::id(),
+        stamp
+    ));
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+    let path = tmp.join("payload.bin");
+    std::fs::write(&path, b"streamed-hash-payload").expect("write payload");
+    let path_text = path.to_string_lossy().into_owned();
+
+    let digest = importlib_sha256_file(&path_text).expect("hash payload");
+
+    assert_eq!(digest, importlib_sha256_hex(b"streamed-hash-payload"));
+    std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+}
+
 #[cfg(feature = "stdlib_archive")]
 #[test]
 #[cfg_attr(miri, ignore)]
@@ -1534,6 +1556,78 @@ fn importlib_find_in_path_package_context_resolves_submodule() {
     assert!(module_origin.ends_with("mod.py"));
     assert!(!module.is_package);
     assert_eq!(module.loader_kind, "source");
+
+    std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
+}
+
+#[test]
+fn importlib_find_spec_payload_package_context_prefers_module_root_projection() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = std::env::temp_dir().join(format!(
+        "molt_importlib_package_context_module_roots_{}_{}",
+        std::process::id(),
+        stamp
+    ));
+    let stale_pkg = tmp.join("stale").join("nativepkg");
+    let staged_pkg = tmp.join("staged").join("nativepkg");
+    std::fs::create_dir_all(&stale_pkg).expect("create stale package root");
+    std::fs::create_dir_all(&staged_pkg).expect("create staged package root");
+    let stale_ext = stale_pkg.join("_native.so");
+    let staged_ext = staged_pkg.join("_native.so");
+    std::fs::write(&stale_ext, b"stale-extension").expect("write stale extension");
+    std::fs::write(&staged_ext, b"staged-extension").expect("write staged extension");
+    write_valid_extension_manifest(
+        &stale_pkg.join("extension_manifest.json"),
+        "nativepkg._native",
+        "_native.so",
+        &importlib_sha256_hex(b"stale-extension"),
+    );
+    write_valid_extension_manifest(
+        &staged_pkg.join("extension_manifest.json"),
+        "nativepkg._native",
+        "_native.so",
+        &importlib_sha256_hex(b"staged-extension"),
+    );
+    let staged_root = tmp.join("staged");
+    let module_roots = staged_root.to_string_lossy().into_owned();
+    let pwd = tmp.to_string_lossy().into_owned();
+    let staged_ext_text = staged_ext.to_string_lossy().into_owned();
+    let stale_search_paths = vec![stale_pkg.to_string_lossy().into_owned()];
+
+    with_env_state(
+        &[
+            ("PYTHONPATH", ""),
+            ("MOLT_MODULE_ROOTS", &module_roots),
+            ("MOLT_DEV_TRUSTED", "1"),
+            ("PWD", &pwd),
+        ],
+        || {
+            crate::with_gil_entry_nopanic!(_py, {
+                let payload_result = importlib_find_spec_payload(
+                    _py,
+                    "nativepkg._native",
+                    &stale_search_paths,
+                    Some(bootstrap_module_file()),
+                    1,
+                    0,
+                    true,
+                );
+                let payload = match payload_result {
+                    Ok(Some(payload)) => payload,
+                    Ok(None) => panic!("expected staged extension payload"),
+                    Err(_) => panic!(
+                        "find spec payload failed: {:?}",
+                        pending_exception_kind_and_message(_py)
+                    ),
+                };
+                assert_eq!(payload.origin.as_deref(), Some(staged_ext_text.as_str()));
+                assert_eq!(payload.loader_kind, "extension");
+            });
+        },
+    );
 
     std::fs::remove_dir_all(&tmp).expect("cleanup temp dir");
 }

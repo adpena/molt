@@ -106,6 +106,116 @@ struct NativeBackendIrAnalysis {
 }
 
 #[cfg(feature = "native-backend")]
+const TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT: usize = 128;
+#[cfg(feature = "native-backend")]
+const TIR_OPTIMIZATION_BATCH_OP_BUDGET: usize = 12_000;
+
+#[cfg(feature = "native-backend")]
+#[derive(Debug, Eq, PartialEq)]
+struct TirOptimizationWorkItem {
+    index: usize,
+    content_hash: String,
+    op_count: usize,
+}
+
+#[cfg(feature = "native-backend")]
+struct TirOptimizationInput {
+    index: usize,
+    content_hash: String,
+    name: String,
+    params: Vec<String>,
+    ops: Vec<OpIR>,
+    param_types: Option<Vec<String>>,
+}
+
+#[cfg(feature = "native-backend")]
+fn partition_tir_optimization_work_items(
+    work_items: Vec<TirOptimizationWorkItem>,
+) -> Vec<Vec<TirOptimizationWorkItem>> {
+    let max_functions = TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT.max(1);
+    let max_ops = TIR_OPTIMIZATION_BATCH_OP_BUDGET.max(1);
+    let mut batches: Vec<Vec<TirOptimizationWorkItem>> = Vec::new();
+    let mut current: Vec<TirOptimizationWorkItem> = Vec::new();
+    let mut current_ops = 0usize;
+
+    for item in work_items {
+        let item_ops = item.op_count.max(1);
+        let count_full = current.len() >= max_functions;
+        let ops_full = !current.is_empty() && current_ops.saturating_add(item_ops) > max_ops;
+        if count_full || ops_full {
+            batches.push(std::mem::take(&mut current));
+            current_ops = 0;
+        }
+        current_ops = current_ops.saturating_add(item_ops);
+        current.push(item);
+    }
+
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
+#[cfg(feature = "native-backend")]
+fn optimize_tir_input(input: TirOptimizationInput) -> (usize, String, Vec<OpIR>) {
+    let idx = input.index;
+    let content_hash = input.content_hash;
+    let mut tmp_func = FunctionIR {
+        name: input.name,
+        params: input.params,
+        ops: input.ops,
+        param_types: input.param_types,
+        source_file: None,
+        is_extern: false,
+    };
+    if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
+        eprintln!("[TIR-TRACE] {}", tmp_func.name);
+    }
+    if tmp_func.ops.iter().any(|op| op.kind == "phi") {
+        rewrite_phi_to_store_load(&mut tmp_func.ops);
+    }
+    if tmp_func.ops.iter().any(|op| op.kind == "exception_push") {
+        elide_useless_try_blocks_for_function(&mut tmp_func);
+    }
+    let func_name = tmp_func.name.clone();
+    let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
+    crate::tir::type_refine::refine_types(&mut tir_func);
+    let _stats = crate::tir::passes::run_pipeline(
+        &mut tir_func,
+        &crate::tir::target_info::TargetInfo::native_from_simd_caps(
+            crate::tir::target_info::SimdCaps::detect_host(),
+        ),
+    );
+    crate::tir::type_refine::refine_types(&mut tir_func);
+    let lir_func = crate::tir::lower_to_lir::lower_function_to_lir(&tir_func, None);
+    if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir_func) {
+        panic!(
+            "[LIR] verification failed for '{}': {:?}",
+            func_name, errors
+        );
+    }
+    #[cfg(debug_assertions)]
+    {
+        let repr_violations = crate::tir::verify_lir_repr::verify_register_passable(&lir_func);
+        if !repr_violations.is_empty() {
+            eprintln!(
+                "[LIR-repr] {} register-passable violation(s) in '{}': {:?}",
+                repr_violations.len(),
+                func_name,
+                repr_violations,
+            );
+        }
+    }
+    let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
+    assert!(
+        crate::tir::lower_to_simple::validate_labels(&ops),
+        "TIR roundtrip emitted invalid labels for '{}'",
+        func_name
+    );
+    (idx, content_hash, ops)
+}
+
+#[cfg(feature = "native-backend")]
 #[derive(Clone, Default)]
 pub struct NativeBackendModuleContext {
     function_arities: BTreeMap<String, usize>,
@@ -1854,13 +1964,6 @@ fn emitted_name_matches_module_symbol(name: &str, module_symbol: &str) -> bool {
 }
 
 #[cfg(feature = "native-backend")]
-fn explicit_stdlib_module_symbols_from_env() -> Option<BTreeSet<String>> {
-    let raw = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok()?;
-    let parsed: Vec<String> = serde_json::from_str(&raw).ok()?;
-    Some(parsed.into_iter().collect())
-}
-
-#[cfg(feature = "native-backend")]
 fn is_user_owned_symbol(
     name: &str,
     entry_module: &str,
@@ -1939,7 +2042,8 @@ fn shared_stdlib_external_symbols(ir: &SimpleIR) -> BTreeSet<String> {
     if !std::path::Path::new(&stdlib_obj_path).exists() {
         return BTreeSet::new();
     }
-    let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
+    let explicit_stdlib_module_symbols =
+        crate::stdlib_module_symbols::stdlib_module_symbols_from_env_or_panic();
     ir.functions
         .iter()
         .filter(|f| {
@@ -1965,7 +2069,8 @@ fn externalize_shared_stdlib_partition(ir: &mut SimpleIR) {
     if !stdlib_path.exists() {
         return;
     }
-    let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
+    let explicit_stdlib_module_symbols =
+        crate::stdlib_module_symbols::stdlib_module_symbols_from_env_or_panic();
     let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
         ir,
         &entry_module,
@@ -2531,13 +2636,9 @@ impl SimpleBackend {
                 crate::tir::cache::CompilationCache::open(crate::tir::cache::backend_cache_dir());
 
             // Phase 1 (sequential): check cache for every function. For cache
-            // hits, apply immediately. For misses, collect the function index
-            // and content hash.
-            struct TirWorkItem {
-                index: usize,
-                content_hash: String,
-            }
-            let mut work_items: Vec<TirWorkItem> = Vec::new();
+            // hits, apply immediately. For misses, collect the function index,
+            // content hash, and op count for bounded optimization batches.
+            let mut work_items: Vec<TirOptimizationWorkItem> = Vec::new();
 
             // Debug: dump raw IR for functions matching MOLT_DUMP_FUNC_IR pattern.
             let dump_func_pattern = std::env::var("MOLT_DUMP_FUNC_IR").ok();
@@ -2605,17 +2706,26 @@ impl SimpleBackend {
                     tir_optimized_names.insert(func_ir.name.clone());
                     continue;
                 }
-                work_items.push(TirWorkItem {
+                work_items.push(TirOptimizationWorkItem {
                     index: i,
                     content_hash,
+                    op_count: func_ir.ops.len(),
                 });
             }
 
             let uncached_count = work_items.len();
             if uncached_count > 0 {
-                eprintln!(
-                    "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in parallel"
-                );
+                let work_batches = partition_tir_optimization_work_items(work_items);
+                let batch_count = work_batches.len();
+                if batch_count == 1 {
+                    eprintln!(
+                        "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in parallel"
+                    );
+                } else {
+                    eprintln!(
+                        "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in {batch_count} bounded batches"
+                    );
+                }
                 let tir_start = std::time::Instant::now();
 
                 // Phase 2 (parallel): run the TIR pipeline on every uncached
@@ -2627,29 +2737,6 @@ impl SimpleBackend {
                 // into the same Vec, even at disjoint indices, through closures.
                 // Instead we extract the ops, optimize them in parallel, and
                 // write them back.
-                struct TirInput {
-                    index: usize,
-                    content_hash: String,
-                    name: String,
-                    params: Vec<String>,
-                    ops: Vec<OpIR>,
-                    param_types: Option<Vec<String>>,
-                }
-                let inputs: Vec<TirInput> = work_items
-                    .into_iter()
-                    .map(|wi| {
-                        let func_ir = &ir.functions[wi.index];
-                        TirInput {
-                            index: wi.index,
-                            content_hash: wi.content_hash,
-                            name: func_ir.name.clone(),
-                            params: func_ir.params.clone(),
-                            ops: func_ir.ops.clone(),
-                            param_types: func_ir.param_types.clone(),
-                        }
-                    })
-                    .collect();
-
                 // Each element: (func_index, content_hash, optimized_ops)
                 // Use a custom thread pool with 16MB stacks for TIR.
                 // lower_to_simple_ir has deeply nested closures capturing
@@ -2658,97 +2745,43 @@ impl SimpleBackend {
                     .stack_size(64 * 1024 * 1024)
                     .build()
                     .expect("Failed to build TIR thread pool");
-                let results: Vec<(usize, String, Vec<OpIR>)> = tir_pool.install(|| {
-                    inputs
-                        .into_par_iter()
-                        .map(|input| {
-                            let idx = input.index;
-                            let content_hash = input.content_hash;
-                            // Build a temporary FunctionIR for the TIR pipeline.
-                            let mut tmp_func = FunctionIR {
-                                name: input.name,
-                                params: input.params,
-                                ops: input.ops,
-                                param_types: input.param_types,
-                                source_file: None,
-                                is_extern: false,
-                            };
-                            if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
-                                eprintln!("[TIR-TRACE] {}", tmp_func.name);
+                for (batch_idx, batch_items) in work_batches.into_iter().enumerate() {
+                    let batch_ops = batch_items.iter().map(|wi| wi.op_count).sum::<usize>();
+                    if batch_count > 1 {
+                        eprintln!(
+                            "MOLT_BACKEND: TIR batch {}/{} ({} functions, {} ops / budget {})",
+                            batch_idx + 1,
+                            batch_count,
+                            batch_items.len(),
+                            batch_ops,
+                            TIR_OPTIMIZATION_BATCH_OP_BUDGET
+                        );
+                    }
+                    let inputs: Vec<TirOptimizationInput> = batch_items
+                        .into_iter()
+                        .map(|wi| {
+                            let func_ir = &ir.functions[wi.index];
+                            TirOptimizationInput {
+                                index: wi.index,
+                                content_hash: wi.content_hash,
+                                name: func_ir.name.clone(),
+                                params: func_ir.params.clone(),
+                                ops: func_ir.ops.clone(),
+                                param_types: func_ir.param_types.clone(),
                             }
-                            // The TIR roundtrip linearizes structured control flow
-                            // into jump/label blocks. Rewrite phi merges only for
-                            // functions that actually enter that roundtrip so the
-                            // state-machine backend does not see residual phi ops.
-                            if tmp_func.ops.iter().any(|op| op.kind == "phi") {
-                                rewrite_phi_to_store_load(&mut tmp_func.ops);
-                            }
-                            // Elide try/except wrappers whose body provably
-                            // cannot raise — the frontend emits the wrapper
-                            // unconditionally, but a body of e.g.
-                            // `total += 1` (typed scalar arithmetic) carries it for nothing.
-                            // Done at SimpleIR level so the eliminated ops
-                            // never reach the TIR pipeline at all.
-                            if tmp_func.ops.iter().any(|op| op.kind == "exception_push") {
-                                elide_useless_try_blocks_for_function(&mut tmp_func);
-                            }
-                            let func_name = tmp_func.name.clone();
-                            let mut tir_func =
-                                crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
-                            crate::tir::type_refine::refine_types(&mut tir_func);
-                            let _stats = crate::tir::passes::run_pipeline(
-                                &mut tir_func,
-                                &crate::tir::target_info::TargetInfo::native_from_simd_caps(
-                                    crate::tir::target_info::SimdCaps::detect_host(),
-                                ),
-                            );
-                            crate::tir::type_refine::refine_types(&mut tir_func);
-                            // LIR verification path (not the native codegen
-                            // carrier, which consumes `ScalarRepresentationPlan`):
-                            // type-floor repr is correct here.
-                            let lir_func =
-                                crate::tir::lower_to_lir::lower_function_to_lir(&tir_func, None);
-                            if let Err(errors) =
-                                crate::tir::verify_lir::verify_lir_function(&lir_func)
-                            {
-                                panic!(
-                                    "[LIR] verification failed for '{}': {:?}",
-                                    func_name, errors
-                                );
-                            }
-                            #[cfg(debug_assertions)]
-                            {
-                                let repr_violations =
-                                    crate::tir::verify_lir_repr::verify_register_passable(
-                                        &lir_func,
-                                    );
-                                if !repr_violations.is_empty() {
-                                    eprintln!(
-                                        "[LIR-repr] {} register-passable violation(s) in '{}': {:?}",
-                                        repr_violations.len(),
-                                        func_name,
-                                        repr_violations,
-                                    );
-                                }
-                            }
-                            let ops =
-                                crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
-                            assert!(
-                                crate::tir::lower_to_simple::validate_labels(&ops),
-                                "TIR roundtrip emitted invalid labels for '{}'",
-                                func_name
-                            );
-                            (idx, content_hash, ops)
                         })
-                        .collect()
-                });
+                        .collect();
+                    let results: Vec<(usize, String, Vec<OpIR>)> = tir_pool
+                        .install(|| inputs.into_par_iter().map(optimize_tir_input).collect());
 
-                // Phase 3 (sequential): apply validated TIR ops and cache them.
-                for (idx, content_hash, ops) in &results {
-                    let _ = std::mem::replace(&mut ir.functions[*idx].ops, ops.clone());
-                    tir_optimized_names.insert(ir.functions[*idx].name.clone());
-                    let bytes = crate::tir::serialize::serialize_ops(ops);
-                    tir_cache.put(content_hash, &bytes, vec![]);
+                    // Phase 3 (sequential): apply validated TIR ops and cache them.
+                    for (idx, content_hash, ops) in results {
+                        let func_ir = &mut ir.functions[idx];
+                        func_ir.ops = ops;
+                        tir_optimized_names.insert(func_ir.name.clone());
+                        let bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
+                        tir_cache.put(&content_hash, &bytes, vec![]);
+                    }
                 }
 
                 let tir_elapsed = tir_start.elapsed();
@@ -4248,9 +4281,11 @@ impl SimpleBackend {
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::{
-        NativeBackendModuleContext, SimpleBackend, TrampolineKey, analyze_native_backend_ir,
-        compute_function_has_ret, drain_cleanup_entry_tracked, merge_closure_functions,
-        merge_function_arities, merge_function_has_ret, merge_leaf_functions, merge_task_kinds,
+        NativeBackendModuleContext, SimpleBackend, TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT,
+        TIR_OPTIMIZATION_BATCH_OP_BUDGET, TirOptimizationWorkItem, TrampolineKey,
+        analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_entry_tracked,
+        merge_closure_functions, merge_function_arities, merge_function_has_ret,
+        merge_leaf_functions, merge_task_kinds, partition_tir_optimization_work_items,
     };
     use crate::TrampolineKind;
     use crate::ir::{FunctionIR, OpIR, SimpleIR};
@@ -4285,6 +4320,53 @@ mod tests {
         backend_env_lock()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn tir_optimization_work_partition_respects_count_and_op_budgets() {
+        let by_count: Vec<TirOptimizationWorkItem> = (0..(TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT
+            + 1))
+            .map(|index| TirOptimizationWorkItem {
+                index,
+                content_hash: format!("hash-{index}"),
+                op_count: 1,
+            })
+            .collect();
+        let count_batches = partition_tir_optimization_work_items(by_count);
+        assert_eq!(count_batches.len(), 2);
+        assert_eq!(
+            count_batches[0].len(),
+            TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT
+        );
+        assert_eq!(count_batches[1].len(), 1);
+
+        let by_ops = vec![
+            TirOptimizationWorkItem {
+                index: 0,
+                content_hash: "a".to_string(),
+                op_count: TIR_OPTIMIZATION_BATCH_OP_BUDGET / 2,
+            },
+            TirOptimizationWorkItem {
+                index: 1,
+                content_hash: "b".to_string(),
+                op_count: TIR_OPTIMIZATION_BATCH_OP_BUDGET / 2,
+            },
+            TirOptimizationWorkItem {
+                index: 2,
+                content_hash: "c".to_string(),
+                op_count: 1,
+            },
+        ];
+        let op_batches = partition_tir_optimization_work_items(by_ops);
+        assert_eq!(op_batches.len(), 2);
+        assert_eq!(
+            op_batches[0]
+                .iter()
+                .map(|item| item.op_count)
+                .sum::<usize>(),
+            TIR_OPTIMIZATION_BATCH_OP_BUDGET
+        );
+        assert_eq!(op_batches[1][0].index, 2);
     }
 
     fn op_shapes(

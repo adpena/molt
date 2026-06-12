@@ -49,6 +49,10 @@ Molt's GPU compute subsystem implements all of deep learning with 26 compute pri
 
 - **Rust crate**: `runtime/molt-gpu/` (48 files, 15,748 LOC — 25 source, 21 test, 2 bench)
 - **Python API**: `src/molt/stdlib/tinygrad/` (21 files, 7,291 LOC)
+- **Public tinygrad shim**: `src/tinygrad/` re-exports the `molt.gpu.Tensor`
+  surface for `import tinygrad` and `from tinygrad import Tensor`; exact-case
+  import graph resolution prevents public attributes from being replaced by
+  case-mismatched child modules on case-insensitive filesystems.
 - **Tests**: `runtime/molt-gpu/tests/` (21 test files, 323 tests)
 - **Benchmarks**: `runtime/molt-gpu/benches/` (2 files)
 
@@ -370,7 +374,14 @@ little-endian bytes through `molt_gpu_prim_create_tensor_raw`, typed zeros call
 `molt_gpu_prim_read_data_raw` without routing through f32 lists. Elementwise
 unary/binary operations, ternary `where`, typed casts, explicit-axis reductions,
 and Rust-owned all-axis reductions through `molt_gpu_prim_reduce_all` now carry
-runtime handles through the same primitive stack. Movement-family view
+runtime handles through the same primitive stack. Public tinygrad dtype custody
+is covered through the `where_promotion` friend-suite adapter workload, and
+movement custody is covered through `movement_views`; both exercise the
+user-facing shim instead of private helpers. The friend-suite manifest also
+contains an upstream-owned `tinygrad` runner for `test/test_tiny.py` at the
+pinned tinygrad commit, using an isolated `typeguard` dependency environment so
+non-synthetic compatibility gates come from tinygrad itself rather than from
+expanding Molt-side adapter tests. Movement-family view
 operations (`reshape`, `expand`, `permute`, zero-fill `pad`, `shrink`, `flip`,
 and `contiguous`) now stay on runtime handles through GPU primitive intrinsics,
 with root views crossing an explicit `MaterializeCopy` boundary. `matmul`

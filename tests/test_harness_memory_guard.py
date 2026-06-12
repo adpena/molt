@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -90,6 +91,9 @@ def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
     monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_GLOBAL_RSS_LIMIT_GB", raising=False)
     monkeypatch.delenv("MOLT_MEMORY_GUARD_POLL_SEC", raising=False)
+    monkeypatch.delenv("CODEX_SHELL", raising=False)
+    monkeypatch.delenv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", raising=False)
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
 
     limits = harness_memory_guard.limits_from_env(
         "MOLT_BENCH",
@@ -110,6 +114,71 @@ def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
     assert limits.dynamic_total_rss is True
     assert limits.dynamic_global_rss is True
     assert limits.dynamic_child_rlimit is True
+
+
+def test_limits_from_env_caps_dynamic_defaults_for_codex_shell(monkeypatch) -> None:
+    monkeypatch.delenv("MOLT_BUILD_MAX_PROCESS_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_MAX_TOTAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_BUILD_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_MAX_PROCESS_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_MAX_TOTAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
+    limits = harness_memory_guard.limits_from_env(
+        "MOLT_BUILD",
+        {
+            "PATH": "/usr/bin",
+            "CODEX_SHELL": "1",
+            "CODEX_THREAD_ID": "thread",
+            "MOLT_BUILD_TOTAL_MEMORY_GB": "128",
+            "MOLT_BUILD_MEM_AVAILABLE_GB": "120",
+        },
+    )
+
+    assert limits.interactive_budget is True
+    assert limits.max_process_rss_gb == pytest.approx(
+        harness_memory_guard.CODEX_INTERACTIVE_MAX_PROCESS_RSS_GB
+    )
+    assert limits.max_total_rss_gb == pytest.approx(
+        harness_memory_guard.CODEX_INTERACTIVE_MAX_TOTAL_RSS_GB
+    )
+    assert limits.max_global_rss_gb == pytest.approx(
+        harness_memory_guard.CODEX_INTERACTIVE_MAX_GLOBAL_RSS_GB
+    )
+    assert limits.child_rlimit_gb == pytest.approx(
+        harness_memory_guard.CODEX_INTERACTIVE_MAX_PROCESS_RSS_GB
+    )
+    assert limits.dynamic_process_rss is True
+    assert limits.dynamic_total_rss is True
+    assert limits.dynamic_global_rss is True
+
+
+def test_limits_from_env_keeps_explicit_codex_rss_overrides_authoritative(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("MOLT_MAX_PROCESS_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_MAX_TOTAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
+    limits = harness_memory_guard.limits_from_env(
+        "MOLT_BUILD",
+        {
+            "PATH": "/usr/bin",
+            "CODEX_SHELL": "1",
+            "MOLT_BUILD_TOTAL_MEMORY_GB": "128",
+            "MOLT_BUILD_MEM_AVAILABLE_GB": "120",
+            "MOLT_BUILD_MAX_PROCESS_RSS_GB": "40",
+            "MOLT_BUILD_MAX_TOTAL_RSS_GB": "44",
+            "MOLT_BUILD_MAX_GLOBAL_RSS_GB": "48",
+        },
+    )
+
+    assert limits.interactive_budget is False
+    assert limits.max_process_rss_gb == pytest.approx(40)
+    assert limits.max_total_rss_gb == pytest.approx(44)
+    assert limits.max_global_rss_gb == pytest.approx(48)
+    assert limits.child_rlimit_gb == pytest.approx(40)
+    assert limits.dynamic_process_rss is False
+    assert limits.dynamic_total_rss is False
+    assert limits.dynamic_global_rss is False
 
 
 def test_limits_from_env_merges_parent_guard_controls(monkeypatch) -> None:
@@ -378,6 +447,55 @@ def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
     assert call["keepalive_interval"] is None
 
 
+def test_guarded_completed_process_preallocates_pytest_current_test_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_guarded(command, **kwargs):
+        del command
+        captured.update(kwargs)
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="ok\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
+        tmp_path,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "run_guarded",
+        fake_run_guarded,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-m", "pytest", "tests/test_one.py"],
+        prefix="MOLT_TEST",
+        env={},
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert child_env["MOLT_PYTEST_CURRENT_TEST_FILE"].startswith(str(tmp_path))
+
+
 def test_guarded_completed_process_writes_command_profile(
     monkeypatch,
     tmp_path: Path,
@@ -542,6 +660,74 @@ def test_guarded_completed_process_profiles_incident_by_default(
     assert event["repro"]["pytest"]["current_test"].startswith(
         "tests/test_harness_memory_guard.py::unit"
     )
+
+
+def test_guarded_completed_process_profiles_cargo_incremental_quarantine(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    profile_log = tmp_path / "commands.jsonl"
+    target = tmp_path / "target"
+    quarantine = target / ".molt_state" / "quarantine" / "cargo_incremental" / "q"
+    receipt = harness_memory_guard.memory_guard.CargoIncrementalQuarantine(
+        reason="signal_exit",
+        recorded_at="2026-06-12T00:00:00Z",
+        target_dir=str(target),
+        quarantine_dir=str(quarantine),
+        command=("cargo", "test"),
+        cwd=str(tmp_path),
+        moved_paths=(
+            harness_memory_guard.memory_guard.CargoIncrementalQuarantineMove(
+                original_path=str(target / "debug" / "incremental"),
+                quarantined_path=str(quarantine / "debug" / "incremental"),
+            ),
+        ),
+        receipt_path=str(quarantine / "receipt.json"),
+    )
+
+    def fake_run_guarded(command, **kwargs):
+        del command, kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=143,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="memory_guard: quarantined Cargo incremental state\n",
+            elapsed_s=0.25,
+            cargo_incremental_quarantine=receipt,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "command_profile_log_path",
+        lambda _env: profile_log,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        ["cargo", "test"],
+        prefix="MOLT_TEST",
+        limits=limits,
+    )
+
+    assert result.returncode == 143
+    assert result.cargo_incremental_quarantine is receipt
+    assert "quarantined Cargo incremental state" in result.stderr
+    event = json.loads(profile_log.read_text(encoding="utf-8"))
+    assert event["status"] == "signal_exit"
+    assert event["cargo_incremental_quarantine"]["reason"] == "signal_exit"
+    assert event["cargo_incremental_quarantine"]["target_dir"] == str(target)
+    assert len(event["cargo_incremental_quarantine"]["moved_paths"]) == 1
 
 
 def test_guarded_completed_process_rotates_command_profile(
@@ -1127,78 +1313,51 @@ def test_guarded_completed_process_defers_orphan_cleanup_to_active_sentinel(
     assert captured["cleanup_orphans"] is False
 
 
-def test_guarded_completed_process_to_tempfiles_refreshes_dynamic_limits(
+def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    budget_calls: list[int] = []
-    terminated: list[int] = []
+    profile_log = tmp_path / "commands.jsonl"
+    captured: dict[str, object] = {}
+    target = tmp_path / "target"
+    quarantine = target / ".molt_state" / "quarantine" / "cargo_incremental" / "q"
+    receipt = harness_memory_guard.memory_guard.CargoIncrementalQuarantine(
+        reason="signal_exit",
+        recorded_at="2026-06-12T00:00:00Z",
+        target_dir=str(target),
+        quarantine_dir=str(quarantine),
+        command=("cargo", "test"),
+        cwd=str(tmp_path),
+        moved_paths=(
+            harness_memory_guard.memory_guard.CargoIncrementalQuarantineMove(
+                original_path=str(target / "debug" / "incremental"),
+                quarantined_path=str(quarantine / "debug" / "incremental"),
+            ),
+        ),
+        receipt_path=str(quarantine / "receipt.json"),
+    )
 
-    class FakeProc:
-        pid = 4242
-        returncode: int | None = None
-        stdin = None
-
-        def __init__(self, command, **kwargs):  # type: ignore[no-untyped-def]
-            self.command = list(command)
-            self.stdout_file = kwargs["stdout"]
-            self.stderr_file = kwargs["stderr"]
-            self.wait_count = 0
-            self.stdout_file.write(b"partial\n")
-            self.stdout_file.flush()
-
-        def wait(self, timeout=None):  # type: ignore[no-untyped-def]
-            self.wait_count += 1
-            if self.wait_count == 1:
-                if timeout is not None:
-                    harness_memory_guard.time.sleep(timeout)
-                raise subprocess.TimeoutExpired(self.command, timeout)
-            self.returncode = 0
-            return 0
-
-        def kill(self) -> None:
-            self.returncode = -9
-
-    def fake_budget(prefix, environ=None, *, accounted_rss_kb=0):
-        del environ
-        assert prefix == "MOLT_CLI"
-        budget_calls.append(accounted_rss_kb)
-        return harness_memory_guard.memory_guard.AdaptiveMemoryBudget(
-            max_process_rss_gb=4,
-            max_total_rss_gb=5,
-            max_global_rss_gb=6,
-            reserve_gb=1,
-            physical_gb=16,
-            available_gb=12,
-            source="test",
-            accounted_rss_gb=accounted_rss_kb / (1024 * 1024),
+    def fake_run_guarded(command, **kwargs):
+        captured["command"] = list(command)
+        captured["kwargs"] = kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=143,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout=b"binary-out\n",
+            stderr=b"memory_guard: quarantined Cargo incremental state\n",
+            elapsed_s=0.2,
+            cargo_incremental_quarantine=receipt,
         )
 
-    def fake_samples():
-        return {
-            4242: harness_memory_guard.memory_guard.ProcessSample(
-                pid=4242,
-                ppid=1,
-                pgid=4242,
-                rss_kb=6 * 1024 * 1024,
-                command="molt-backend fake",
-            )
-        }
-
-    monkeypatch.setattr(harness_memory_guard.subprocess, "Popen", FakeProc)
     monkeypatch.setattr(
-        harness_memory_guard.memory_guard,
-        "adaptive_memory_budget",
-        fake_budget,
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
     )
     monkeypatch.setattr(
-        harness_memory_guard.memory_guard,
-        "sample_processes",
-        fake_samples,
-    )
-    monkeypatch.setattr(
-        harness_memory_guard.memory_guard,
-        "terminate_watched_processes",
-        lambda root_pid, **kwargs: terminated.append(root_pid),
+        harness_memory_guard,
+        "command_profile_log_path",
+        lambda _env: profile_log,
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -1214,18 +1373,35 @@ def test_guarded_completed_process_to_tempfiles_refreshes_dynamic_limits(
     )
 
     result = harness_memory_guard.guarded_completed_process_to_tempfiles(
-        ["molt-backend", "fake"],
+        ["cargo", "test"],
         prefix="MOLT_CLI",
+        input=b"ir",
+        cwd=tmp_path,
+        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log)},
+        timeout=10.0,
+        progress_label="Backend compile",
         limits=limits,
     )
 
-    assert result.returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
-    assert result.stdout == b"partial\n"
-    assert b"molt memory guard: RSS limit exceeded" in result.stderr
-    assert b"terminated the tracked process tree" in result.stderr
-    assert b"next action: inspect child logs" in result.stderr
-    assert 6 * 1024 * 1024 in budget_calls
-    assert terminated == [4242]
+    assert result.returncode == 143
+    assert result.stdout == b"binary-out\n"
+    assert result.cargo_incremental_quarantine is receipt
+    assert result.stderr.count(b"quarantined Cargo incremental state") == 1
+    assert b"memory_guard: repro context:" in result.stderr
+    assert captured["command"] == ["cargo", "test"]
+    kwargs = captured["kwargs"]
+    assert kwargs["input"] == b"ir"
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["timeout"] == 10.0
+    assert kwargs["text"] is False
+    assert kwargs["capture_output"] is True
+    assert kwargs["progress_label"] == "Backend compile"
+    assert kwargs["dynamic_process_rss"] is True
+    assert kwargs["dynamic_total_rss"] is True
+    event = json.loads(profile_log.read_text(encoding="utf-8"))
+    assert event["status"] == "signal_exit"
+    assert event["cargo_incremental_quarantine"]["reason"] == "signal_exit"
+    assert event["cargo_incremental_quarantine"]["target_dir"] == str(target)
 
 
 def test_guarded_completed_process_ignores_legacy_disable_env(monkeypatch) -> None:
@@ -1329,6 +1505,7 @@ def test_repo_process_sentinel_records_and_terminates_violation(
         artifact_root=tmp_path,
         label="unit",
         limits=limits,
+        scope_to_current_tree=False,
         on_scan=lambda groups, resolved, elapsed: scans.append(
             (len(groups), resolved.max_global_rss_gb or 0)
         ),
@@ -1358,6 +1535,386 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     assert event["repro"]["cwd"] == str(tmp_path)
     assert event["repro"]["limits"]["max_global_rss_kb"] == 4 * 1024 * 1024
     assert event["repro"]["sentinel_label"] == "unit"
+    assert event["kill_scope"] == "repo"
+    assert event["killer_label"] == "unit"
+    assert event["killer_pid"] == os.getpid()
+    assert event["victim_pgid"] == 987654
+    assert event["victim_command"] == "molt-backend --daemon"
+    assert event["owner_match_reason"] == "repo_scope"
+    assert event["scope_to_current_tree"] is False
+    assert event["claim_status"] == "claimed"
+    assert event["termination"]["attempted"] is True
+    assert event["termination"]["signal"]["name"] == "SIGTERM"
+    assert event["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert event["termination"]["grace_sec"] == 0.25
+    assert event["termination"]["rss_triggered"] is True
+
+
+def test_repo_process_sentinel_records_observer_when_claim_already_taken(
+    monkeypatch, tmp_path: Path
+) -> None:
+    harness_memory_guard._TERMINATED_PGIDS.clear()
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "process_groups",
+        lambda *args, **kwargs: [
+            harness_memory_guard.process_sentinel.ProcessGroup(
+                pgid=765432,
+                matched=True,
+                samples=(
+                    harness_memory_guard.memory_guard.ProcessSample(
+                        pid=765433,
+                        ppid=1,
+                        pgid=765432,
+                        rss_kb=5 * 1024 * 1024,
+                        command="molt-backend --daemon --claimed",
+                    ),
+                ),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: False
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=10,
+        max_total_rss_gb=10,
+        max_global_rss_gb=4,
+        poll_interval=0.01,
+    )
+
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-observer",
+        limits=limits,
+        scope_to_current_tree=False,
+    )
+    sentinel.scan_once()
+
+    assert sentinel.tripped is True
+    assert terminated == []
+    event = json.loads(sentinel.events_path.read_text(encoding="utf-8"))
+    assert "killed_at" not in event
+    assert "killer_label" not in event
+    assert "killer_pid" not in event
+    assert event["observed_at"]
+    assert event["observer_label"] == "unit-observer"
+    assert event["observer_pid"] == os.getpid()
+    assert event["claim_status"] == "already_claimed"
+    assert event["termination"]["attempted"] is False
+    assert event["termination"]["rss_triggered"] is True
+    assert "already claimed by another guard" in event["action"]
+
+
+def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    harness_memory_guard._TERMINATED_PGIDS.clear()
+    owned_pgid = 246810
+    peer_pgid = 246811
+    samples = {
+        owned_pgid: harness_memory_guard.memory_guard.ProcessSample(
+            pid=owned_pgid,
+            ppid=os.getpid(),
+            pgid=owned_pgid,
+            rss_kb=5 * 1024 * 1024,
+            command=f"{tmp_path}/target/dev-fast/molt-backend --owned",
+        ),
+        peer_pgid: harness_memory_guard.memory_guard.ProcessSample(
+            pid=peer_pgid,
+            ppid=1,
+            pgid=peer_pgid,
+            rss_kb=6 * 1024 * 1024,
+            command=f"{tmp_path}/target/dev-fast/molt-backend --peer",
+        ),
+    }
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: samples,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=10,
+        max_total_rss_gb=10,
+        max_global_rss_gb=4,
+        poll_interval=0.01,
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-tree-scope",
+        limits=limits,
+    )
+
+    sentinel.scan_once()
+
+    assert sentinel.tripped is True
+    assert terminated == [owned_pgid]
+    events = sentinel.events_path.read_text(encoding="utf-8")
+    event = json.loads(events)
+    assert event["active_pgids"] == [owned_pgid]
+    assert event["kill_scope"] == "current-tree"
+    assert event["victim_pgid"] == owned_pgid
+    assert event["victim_command"].endswith("--owned")
+    assert event["owner_match_reason"] == "current_process_tree"
+    assert event["scope_to_current_tree"] is True
+    assert event["claim_status"] == "claimed"
+    assert event["termination"]["attempted"] is True
+    assert event["termination"]["signal"]["name"] == "SIGTERM"
+    assert event["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert event["termination"]["rss_triggered"] is True
+    assert "--peer" not in events
+
+
+def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    harness_memory_guard._TERMINATED_PGIDS.clear()
+    owned_pgid = 314159
+    peer_pgid = 314160
+    sample_sets = [
+        {
+            owned_pgid: harness_memory_guard.memory_guard.ProcessSample(
+                pid=owned_pgid,
+                ppid=os.getpid(),
+                pgid=owned_pgid,
+                rss_kb=100,
+                command=f"{tmp_path}/target/dev-fast/molt-backend --warming",
+            ),
+        },
+        {
+            owned_pgid: harness_memory_guard.memory_guard.ProcessSample(
+                pid=owned_pgid,
+                ppid=1,
+                pgid=owned_pgid,
+                rss_kb=5 * 1024 * 1024,
+                command=f"{tmp_path}/target/dev-fast/molt-backend --reparented",
+            ),
+            peer_pgid: harness_memory_guard.memory_guard.ProcessSample(
+                pid=peer_pgid,
+                ppid=1,
+                pgid=peer_pgid,
+                rss_kb=6 * 1024 * 1024,
+                command=f"{tmp_path}/target/dev-fast/molt-backend --peer",
+            ),
+        },
+    ]
+    sample_index = 0
+
+    def fake_sample_processes():
+        return sample_sets[sample_index]
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        fake_sample_processes,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=10,
+        max_total_rss_gb=10,
+        max_global_rss_gb=4,
+        poll_interval=0.01,
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-reparented-tree-scope",
+        limits=limits,
+    )
+
+    sentinel.scan_once()
+    sample_index = 1
+    sentinel.scan_once()
+
+    assert sentinel.tripped is True
+    assert terminated == [owned_pgid]
+    event = json.loads(sentinel.events_path.read_text(encoding="utf-8"))
+    assert event["active_pgids"] == [owned_pgid]
+    assert event["victim_pgid"] == owned_pgid
+    assert event["victim_command"].endswith("--reparented")
+    assert event["owner_match_reason"] == "current_process_tree"
+    assert event["claim_status"] == "claimed"
+    assert event["termination"]["attempted"] is True
+
+
+def test_repo_process_sentinel_rejects_codex_parented_sibling_group(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    harness_memory_guard._TERMINATED_PGIDS.clear()
+    app_server_pid = 424200
+    ambient_pgid = 424000
+    sibling_pid = 424301
+    sibling_pgid = 424300
+    samples = {
+        os.getpid(): harness_memory_guard.memory_guard.ProcessSample(
+            pid=os.getpid(),
+            ppid=app_server_pid,
+            pgid=ambient_pgid,
+            rss_kb=100,
+            command=f"{tmp_path}/.venv/bin/python3 -m pytest tests/test_harness_memory_guard.py",
+        ),
+        app_server_pid: harness_memory_guard.memory_guard.ProcessSample(
+            pid=app_server_pid,
+            ppid=1,
+            pgid=ambient_pgid,
+            rss_kb=500_000,
+            command="/Applications/Codex.app/Contents/MacOS/Codex app-server",
+        ),
+        sibling_pid: harness_memory_guard.memory_guard.ProcessSample(
+            pid=sibling_pid,
+            ppid=app_server_pid,
+            pgid=sibling_pgid,
+            rss_kb=6 * 1024 * 1024,
+            command=(
+                f"{tmp_path}/.venv/bin/python3 -u {tmp_path}/tests/molt_diff.py "
+                "--stdlib-profile full --jobs 1 --log-file logs/importlib_9file.log"
+            ),
+        ),
+    }
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: samples,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=1,
+        max_total_rss_gb=2,
+        max_global_rss_gb=3,
+        poll_interval=0.01,
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-codex-parented-sibling",
+        limits=limits,
+    )
+
+    sentinel.scan_once()
+    drained = sentinel.drain_new_processes()
+
+    assert sentinel.tripped is False
+    assert drained == 0
+    assert terminated == []
+    if sentinel.events_path.exists():
+        events = sentinel.events_path.read_text(encoding="utf-8")
+        assert "importlib_9file" not in events
+        assert str(sibling_pgid) not in events
+
+
+def test_repo_process_sentinel_rejects_reused_current_tree_pgid_without_repo_identity(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    harness_memory_guard._TERMINATED_PGIDS.clear()
+    reused_pgid = 271828
+    sample_sets = [
+        {
+            reused_pgid: harness_memory_guard.memory_guard.ProcessSample(
+                pid=reused_pgid,
+                ppid=os.getpid(),
+                pgid=reused_pgid,
+                rss_kb=100,
+                command=f"{tmp_path}/target/dev-fast/molt-backend --warming",
+            ),
+        },
+        {
+            reused_pgid: harness_memory_guard.memory_guard.ProcessSample(
+                pid=reused_pgid,
+                ppid=1,
+                pgid=reused_pgid,
+                rss_kb=6 * 1024 * 1024,
+                command=(
+                    "/System/Library/Frameworks/CoreServices.framework/Versions/A/"
+                    "Frameworks/Metadata.framework/Versions/A/Support/"
+                    "mdworker_shared -s mdworker"
+                ),
+            ),
+        },
+    ]
+    sample_index = 0
+
+    def fake_sample_processes():
+        return sample_sets[sample_index]
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        fake_sample_processes,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=1,
+        max_total_rss_gb=2,
+        max_global_rss_gb=3,
+        poll_interval=0.01,
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-reused-pgid",
+        limits=limits,
+        drain_until_clean_sec=0,
+    )
+
+    sentinel.scan_once()
+    sample_index = 1
+    drained = sentinel.drain_new_processes()
+
+    assert sentinel.tripped is False
+    assert drained == 0
+    assert terminated == []
+    if sentinel.events_path.exists():
+        assert "mdworker_shared" not in sentinel.events_path.read_text(encoding="utf-8")
 
 
 def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
@@ -1443,6 +2000,14 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
     assert event["violation"]["process_samples"][0]["pid"] == 222
     assert event["repro"]["cwd"] == str(tmp_path)
     assert event["repro"]["sentinel_label"] == "unit-drain"
+    assert event["kill_scope"] == "current-tree"
+    assert event["owner_match_reason"] == "current_process_tree"
+    assert event["claim_status"] == "claimed"
+    assert event["termination"]["attempted"] is True
+    assert event["termination"]["signal"]["name"] == "SIGTERM"
+    assert event["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert event["termination"]["grace_sec"] == 0.25
+    assert event["termination"]["rss_triggered"] is False
 
 
 def test_repo_process_sentinel_drain_skips_protected_codex_group(
@@ -1490,6 +2055,7 @@ def test_repo_process_sentinel_drain_skips_protected_codex_group(
         limits=limits,
         drain_until_clean_sec=0,
         drain_max_runtime_sec=0.1,
+        scope_to_current_tree=False,
     )
     sentinel._baseline_pgids = set()
     sentinel._observed_pgids = {100}
@@ -1634,6 +2200,90 @@ def test_auto_repo_sentinel_prunes_stale_orphaned_groups(
     assert event["violation"]["process_samples"][0]["pid"] == 555
     assert event["repro"]["cwd"] == str(harness_memory_guard._REPO_ROOT)
     assert event["repro"]["sentinel_label"] == "molt_build_stale_preflight"
+    assert event["kill_scope"] == "repo"
+    assert event["killer_label"] == "molt_build_stale_preflight"
+    assert event["killer_pid"] == os.getpid()
+    assert event["victim_pgid"] == 555
+    assert event["victim_command"] == "molt-backend --daemon"
+    assert event["owner_match_reason"] == "stale_orphan_repo_scope"
+    assert event["scope_to_current_tree"] is False
+    assert event["claim_status"] == "claimed"
+    assert event["termination"]["attempted"] is True
+    assert event["termination"]["signal"]["name"] == "SIGTERM"
+    assert event["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert event["termination"]["grace_sec"] == 0.25
+    assert event["termination"]["rss_triggered"] is False
+
+
+def test_auto_repo_sentinel_ignores_reused_host_pgid_without_molt_identity(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    reused_pgid = 271828
+    sample = harness_memory_guard.memory_guard.ProcessSample(
+        pid=reused_pgid,
+        ppid=1,
+        pgid=reused_pgid,
+        rss_kb=8 * 1024 * 1024,
+        command=(
+            "/System/Library/Frameworks/CoreServices.framework/Versions/A/"
+            "Frameworks/Metadata.framework/Versions/A/Support/"
+            "mdworker_shared -s mdworker"
+        ),
+        elapsed_sec=4000,
+    )
+    terminated: list[int] = []
+    sentinel_calls: list[dict[str, object]] = []
+
+    @contextlib.contextmanager
+    def fake_repo_process_sentinel(**kwargs):  # type: ignore[no-untyped-def]
+        sentinel_calls.append(kwargs)
+        yield object()
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: {reused_pgid: sample},
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "repo_process_sentinel",
+        fake_repo_process_sentinel,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_artifact_root_from_env",
+        lambda env: tmp_path,
+    )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.001,
+    )
+
+    with harness_memory_guard._auto_repo_sentinel(
+        prefix="MOLT_BUILD",
+        env={
+            "MOLT_BUILD_STALE_ORPHAN_CLEANUP": "1",
+            "MOLT_BUILD_STALE_ORPHAN_SEC": "3600",
+        },
+        limits=limits,
+    ):
+        pass
+
+    assert terminated == []
+    assert sentinel_calls
+    assert not (
+        tmp_path / "memory_guard" / "molt_build_stale_preflight.jsonl"
+    ).exists()
 
 
 def test_repo_process_sentinel_remembers_observed_child_groups(
@@ -1679,6 +2329,7 @@ def test_repo_process_sentinel_remembers_observed_child_groups(
         artifact_root=tmp_path,
         label="unit-observed",
         limits=limits,
+        scope_to_current_tree=False,
     )
 
     first = sentinel._current_groups()

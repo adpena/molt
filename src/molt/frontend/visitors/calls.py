@@ -47,6 +47,71 @@ else:
     _MixinBase = object
 
 
+_BUILTINS_IMPORT_ALIAS_CALL_NAMES = frozenset(BUILTIN_FUNC_SPECS) | frozenset(
+    {
+        "BaseExceptionGroup",
+        "ExceptionGroup",
+        "abs",
+        "aiter",
+        "all",
+        "anext",
+        "any",
+        "bool",
+        "bytearray",
+        "bytes",
+        "callable",
+        "chr",
+        "classmethod",
+        "complex",
+        "delattr",
+        "dict",
+        "dir",
+        "enumerate",
+        "filter",
+        "float",
+        "frozenset",
+        "getattr",
+        "globals",
+        "hasattr",
+        "id",
+        "int",
+        "isinstance",
+        "issubclass",
+        "iter",
+        "len",
+        "list",
+        "locals",
+        "map",
+        "max",
+        "memoryview",
+        "min",
+        "next",
+        "object",
+        "open",
+        "ord",
+        "pow",
+        "print",
+        "property",
+        "range",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "setattr",
+        "slice",
+        "sorted",
+        "staticmethod",
+        "str",
+        "sum",
+        "super",
+        "tuple",
+        "type",
+        "vars",
+        "zip",
+    }
+)
+
+
 class CallVisitorMixin(_MixinBase):
     def _class_new_policy(
         self, class_name: str, class_info: ClassInfo
@@ -2583,6 +2648,10 @@ class CallVisitorMixin(_MixinBase):
                 return None
             if self.imported_modules.get(binding_name) != "importlib":
                 return None
+            if not self._imported_module_attr_is_stable(
+                "importlib", "import_module"
+            ):
+                return None
         elif isinstance(node.func, ast.Name):
             binding_name = node.func.id
             if self._local_name_shadows_import_binding(binding_name):
@@ -2599,6 +2668,10 @@ class CallVisitorMixin(_MixinBase):
                 )
             if original_attr != "import_module":
                 return None
+            if not self._imported_module_attr_is_stable(
+                "importlib", "import_module"
+            ):
+                return None
         else:
             return None
 
@@ -2614,7 +2687,7 @@ class CallVisitorMixin(_MixinBase):
         module_name = self._literal_importlib_import_module_target(node)
         if module_name is None:
             return None
-        return self._emit_module_load(module_name)
+        return self._emit_importlib_import_module_transaction(module_name)
 
     def visit_Call(self, node: ast.Call) -> Any:
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
@@ -4415,6 +4488,8 @@ class CallVisitorMixin(_MixinBase):
                 if (
                     allowlist_key in MOLT_DIRECT_CALLS
                     and func_id in MOLT_DIRECT_CALLS[allowlist_key]
+                    and self._is_linkable_module_function_symbol(allowlist_key)
+                    and self._imported_module_attr_is_stable(allowlist_key, func_id)
                 ):
                     force_bind = func_id in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
                         allowlist_key, set()
@@ -4567,6 +4642,13 @@ class CallVisitorMixin(_MixinBase):
                 is_local = True
             if is_local and imported_binding is None:
                 imported_from = None
+            if imported_from == "builtins":
+                imported_attr = self.imported_attr_names.get(func_id)
+                if (
+                    imported_attr is not None
+                    and imported_attr in _BUILTINS_IMPORT_ALIAS_CALL_NAMES
+                ):
+                    func_id = imported_attr
             if imported_from:
                 normalized = self._normalize_allowlist_module(imported_from)
                 allowlist_key = normalized or imported_from
@@ -6152,6 +6234,11 @@ class CallVisitorMixin(_MixinBase):
                 callargs = self._emit_call_args_builder(node)
                 res_hint = "Any" if new_returns_any else class_id
                 res = MoltValue(self.next_var(), type_hint=res_hint)
+                metadata = (
+                    {"defines_del": True}
+                    if not new_returns_any and self._class_defines_finalizer(class_id)
+                    else None
+                )
                 # Route user class construction through the class object so __new__,
                 # metaclass __call__, and runtime constructor policy stay coherent.
                 self.emit(
@@ -6159,6 +6246,7 @@ class CallVisitorMixin(_MixinBase):
                         kind="CALL_BIND",
                         args=[class_ref, callargs],
                         result=res,
+                        metadata=metadata,
                     )
                 )
                 return res
@@ -8217,7 +8305,11 @@ class CallVisitorMixin(_MixinBase):
                         and func_id in MOLT_DIRECT_CALLS[imported_from]
                     ):
                         target_module = imported_from
-                if target_module is not None:
+                if (
+                    target_module is not None
+                    and self._is_linkable_module_function_symbol(target_module)
+                    and self._imported_module_attr_is_stable(target_module, func_id)
+                ):
                     if needs_bind:
                         callee = self.visit(node.func)
                         if callee is None:
@@ -8306,6 +8398,9 @@ class CallVisitorMixin(_MixinBase):
                 has_known_direct_target = (
                     self._lookup_func_defaults(target_module, original_attr) is not None
                 )
+                direct_target_is_linkable = self._is_linkable_module_function_symbol(
+                    target_module
+                )
                 allow_speculative_internal_direct = (
                     not has_known_direct_target
                     and imported_from not in self.stdlib_allowlist
@@ -8319,6 +8414,10 @@ class CallVisitorMixin(_MixinBase):
                 if (
                     not needs_bind
                     and not force_bind
+                    and direct_target_is_linkable
+                    and self._imported_module_attr_is_stable(
+                        target_module, original_attr
+                    )
                     and (has_known_direct_target or allow_speculative_internal_direct)
                 ):
                     args = self._emit_direct_call_args(

@@ -1703,11 +1703,7 @@ pub extern "C" fn molt_importlib_resolve_name(name_bits: u64, package_bits: u64)
             };
         }
 
-        let package = match optional_string_arg_from_bits(_py, package_bits, "package") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(package_name) = package.filter(|value| !value.is_empty()) else {
+        if obj_from_bits(package_bits).is_none() {
             return raise_exception::<_>(
                 _py,
                 "TypeError",
@@ -1716,6 +1712,18 @@ pub extern "C" fn molt_importlib_resolve_name(name_bits: u64, package_bits: u64)
                 ),
             );
         };
+        let Some(package_name) = string_obj_to_owned(obj_from_bits(package_bits)) else {
+            return raise_exception::<_>(_py, "TypeError", "__package__ not set to a string");
+        };
+        if package_name.is_empty() {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                &format!(
+                    "the 'package' argument is required to perform a relative import for '{name}'"
+                ),
+            );
+        }
 
         let level = importlib_relative_level(&name);
         if level == 0 {
@@ -2220,6 +2228,48 @@ fn importlib_import_resolved_module(
     )
 }
 
+fn importlib_import_parent_chain(
+    _py: &PyToken<'_>,
+    resolved: &str,
+    modules_ptr: *mut u8,
+    util_bits: u64,
+    machinery_bits: u64,
+) -> Result<(), u64> {
+    let mut search_from = 0usize;
+    while let Some(offset) = resolved[search_from..].find('.') {
+        let dot = search_from + offset;
+        let parent_name = &resolved[..dot];
+        if !parent_name.is_empty() {
+            let parent_key_bits = alloc_str_bits(_py, parent_name)?;
+            let parent_bits = importlib_import_resolved_module(
+                _py,
+                parent_name,
+                parent_key_bits,
+                modules_ptr,
+                util_bits,
+                machinery_bits,
+            );
+            dec_ref_bits(_py, parent_key_bits);
+            if exception_pending(_py) {
+                if !obj_from_bits(parent_bits).is_none() {
+                    dec_ref_bits(_py, parent_bits);
+                }
+                return Err(MoltObject::none().bits());
+            }
+            if obj_from_bits(parent_bits).is_none() {
+                return Err(raise_exception::<_>(
+                    _py,
+                    "ModuleNotFoundError",
+                    &format!("No module named '{parent_name}'"),
+                ));
+            }
+            dec_ref_bits(_py, parent_bits);
+        }
+        search_from = dot + 1;
+    }
+    Ok(())
+}
+
 fn importlib_module_support_bits(
     _py: &PyToken<'_>,
     modules_ptr: *mut u8,
@@ -2408,6 +2458,89 @@ fn importlib_transaction_return_value(
     top_bits
 }
 
+fn importlib_transaction_fromlist_items(
+    _py: &PyToken<'_>,
+    fromlist_bits: u64,
+) -> Result<Vec<String>, u64> {
+    if !is_truthy(_py, obj_from_bits(fromlist_bits)) {
+        return Ok(Vec::new());
+    }
+    let iter_bits = molt_iter(fromlist_bits);
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    let mut out = Vec::new();
+    loop {
+        let pair_bits = molt_iter_next(iter_bits);
+        let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
+            return Err(MoltObject::none().bits());
+        };
+        unsafe {
+            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
+                return Err(MoltObject::none().bits());
+            }
+        }
+        let pair = unsafe { seq_vec_ref(pair_ptr) };
+        if pair.len() < 2 {
+            return Err(MoltObject::none().bits());
+        }
+        if is_truthy(_py, obj_from_bits(pair[1])) {
+            break;
+        }
+        let item_obj = obj_from_bits(pair[0]);
+        let Some(text) = string_obj_to_owned(item_obj) else {
+            let item_type = type_name(_py, item_obj);
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                &format!("Item in ``from list'' must be str, not {item_type}"),
+            ));
+        };
+        out.push(text);
+    }
+    Ok(out)
+}
+
+fn importlib_transaction_child_name(resolved: &str, item: &str) -> String {
+    if resolved == "molt.stdlib" {
+        item.to_string()
+    } else {
+        format!("{resolved}.{item}")
+    }
+}
+
+fn importlib_transaction_prepare_fromlist(
+    _py: &PyToken<'_>,
+    resolved: &str,
+    module_bits: u64,
+    fromlist_bits: u64,
+) -> Result<(), u64> {
+    for item in importlib_transaction_fromlist_items(_py, fromlist_bits)? {
+        if item == "*" {
+            continue;
+        }
+        let attr_bits = alloc_str_bits(_py, &item)?;
+        let child_name = importlib_transaction_child_name(resolved, &item);
+        let child_name_bits = match alloc_str_bits(_py, &child_name) {
+            Ok(bits) => bits,
+            Err(err) => {
+                dec_ref_bits(_py, attr_bits);
+                return Err(err);
+            }
+        };
+        let result = crate::builtins::modules::prepare_from_import_child(
+            _py,
+            module_bits,
+            attr_bits,
+            child_name_bits,
+        );
+        dec_ref_bits(_py, child_name_bits);
+        dec_ref_bits(_py, attr_bits);
+        result?;
+    }
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_import_transaction(
     name_bits: u64,
@@ -2477,6 +2610,21 @@ pub extern "C" fn molt_importlib_import_transaction(
                     return err;
                 }
             };
+        if let Err(err) =
+            importlib_import_parent_chain(_py, &resolved, modules_ptr, util_bits, machinery_bits)
+        {
+            if !obj_from_bits(util_bits).is_none() {
+                dec_ref_bits(_py, util_bits);
+            }
+            if !obj_from_bits(machinery_bits).is_none() {
+                dec_ref_bits(_py, machinery_bits);
+            }
+            dec_ref_bits(_py, resolved_key_bits);
+            if !obj_from_bits(modules_bits).is_none() {
+                dec_ref_bits(_py, modules_bits);
+            }
+            return err;
+        }
         let leaf_bits = importlib_import_resolved_module(
             _py,
             &resolved,
@@ -2500,6 +2648,17 @@ pub extern "C" fn molt_importlib_import_transaction(
                 dec_ref_bits(_py, modules_bits);
             }
             return MoltObject::none().bits();
+        }
+        if let Err(err) =
+            importlib_transaction_prepare_fromlist(_py, &resolved, leaf_bits, fromlist_bits)
+        {
+            if !obj_from_bits(leaf_bits).is_none() {
+                dec_ref_bits(_py, leaf_bits);
+            }
+            if !obj_from_bits(modules_bits).is_none() {
+                dec_ref_bits(_py, modules_bits);
+            }
+            return err;
         }
         let out = importlib_transaction_return_value(
             _py,

@@ -66,7 +66,9 @@ def test_builtin_features_from_import_graph_uses_native_micro_surface() -> None:
     )
 
     assert json_features == tkinter_features == tinygrad_features
-    assert set(json_features) == set(cli._ALL_BUILTIN_FEATURES)
+    assert set(json_features) == set(
+        cli._ALL_BUILTIN_FEATURES + cli._MICRO_BASE_RUNTIME_FEATURES
+    )
     assert "stdlib_tk" not in json_features
     assert "stdlib_net" not in json_features
     assert "stdlib_serial" not in json_features
@@ -85,6 +87,22 @@ def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
     assert "stdlib_unicode_names" not in features
     assert "stdlib_logging_ext" in features
     assert "stdlib_serial" in features
+
+
+def test_runtime_builtin_features_wasm_full_is_linked_wasm_surface() -> None:
+    features = cli._runtime_builtin_features_for_profile(
+        "full",
+        target_triple="wasm32-wasip1",
+    )
+
+    assert set(features) == set(cli._WASM_RUNTIME_FULL_FEATURES)
+    assert "sqlite" not in features
+    assert "stdlib_tk" not in features
+    assert "stdlib_net" not in features
+    assert "stdlib_ast" not in features
+    assert "stdlib_unicode_names" not in features
+    assert "stdlib_crypto" in features
+    assert "stdlib_compression" in features
 
 
 def test_runtime_cargo_features_is_cached(monkeypatch) -> None:
@@ -892,7 +910,7 @@ def test_rustc_version_is_cached(monkeypatch) -> None:
             "",
         )
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_run, raising=True)
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run, raising=True)
     first = cli._rustc_version()
     second = cli._rustc_version()
     assert first == "release: 1.0.0"

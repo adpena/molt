@@ -26,6 +26,7 @@ def _native_molt_env(
     env["MOLT_DIFF_TMPDIR"] = str(root / "tmp")
     env["UV_CACHE_DIR"] = str(root / ".uv-cache")
     env["TMPDIR"] = str(root / "tmp")
+    env["MOLT_STDLIB_PROFILE"] = "full"
     if module_roots:
         env["MOLT_MODULE_ROOTS"] = os.pathsep.join(str(path) for path in module_roots)
     if hermetic:
@@ -61,6 +62,43 @@ def test_tinygrad_import_exports_tensor_nn_and_dtypes() -> None:
     # Tensor from bytes uses uint8 backing — check via the public dtype attr
     # rather than the legacy ._buf accessor that no longer exists.
     assert t.dtype is dtypes.uint8
+
+
+def test_tinygrad_import_public_tensor_where_and_dtype_custody() -> None:
+    from tinygrad import Tensor, dtypes
+
+    int_tensor = Tensor([1, 2], dtype=dtypes.int32)
+    cast_tensor = Tensor([1.0, 2.0]).cast(dtypes.int32)
+    cond = Tensor([1, 0], shape=(2, 1), dtype=dtypes.int32)
+    promoted = cond.where(5, Tensor([1.5, 2.5, 3.5], shape=(1, 3)))
+    widened = Tensor.where(
+        cond,
+        Tensor([7], dtype=dtypes.int32),
+        Tensor([1, 2, 3], shape=(1, 3), dtype=dtypes.int64),
+    )
+
+    assert int_tensor.to_list() == [1, 2]
+    assert int_tensor.dtype is dtypes.int32
+    assert cast_tensor.to_list() == [1, 2]
+    assert cast_tensor.dtype is dtypes.int32
+    assert promoted.shape == (2, 3)
+    assert promoted.to_list() == [[5.0, 5.0, 5.0], [1.5, 2.5, 3.5]]
+    assert promoted.dtype is dtypes.float64
+    assert widened.shape == (2, 3)
+    assert widened.to_list() == [[7, 7, 7], [1, 2, 3]]
+    assert widened.dtype is dtypes.int64
+
+
+def test_tinygrad_public_movement_views_match_upstream_surface() -> None:
+    from tinygrad import Tensor, dtypes
+
+    base = Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=dtypes.float32)
+    out = base.pad((1, 0, 0, 1)).shrink(((1, 3), (1, 3))).flip(1).contiguous()
+
+    assert out.shape == (2, 2)
+    assert out.tolist() == [[5.0, 4.0], [0.0, 0.0]]
+    assert out.dtype is dtypes.float32
+    assert out._buf.format_char == "f"
 
 
 def test_tinygrad_nn_state_load_state_dict_assigns_nested_attrs() -> None:
@@ -102,9 +140,16 @@ def test_tinygrad_import_shim_compiles_in_native_molt(tmp_path: Path) -> None:
         "t = Tensor(b'\\x00\\x01\\x02')\n"
         "m = nn.RMSNorm(3)\n"
         "load_state_dict(m, {'weight': Tensor([1.0, 1.0, 1.0])}, strict=True)\n"
+        "cond = Tensor([1, 0], shape=(2, 1), dtype=dtypes.int32)\n"
+        "sel = cond.where(5, Tensor([1.5, 2.5, 3.5], shape=(1, 3)))\n"
+        "move = Tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=dtypes.float32).pad((1, 0, 0, 1)).shrink(((1, 3), (1, 3))).flip(1).contiguous()\n"
         "print(t.shape)\n"
         "print(t._buf.format_char)\n"
-        "print(dtypes.float32 is float)\n"
+        "print(dtypes.float is dtypes.float32)\n"
+        "print(sel.to_list())\n"
+        "print(sel._buf.format_char)\n"
+        "print(move.to_list())\n"
+        "print(move._buf.format_char)\n"
         "print(type(m).__name__)\n",
         encoding="utf-8",
     )
@@ -133,6 +178,10 @@ def test_tinygrad_import_shim_compiles_in_native_molt(tmp_path: Path) -> None:
         "(3,)",
         "B",
         "True",
+        "[[5.0, 5.0, 5.0], [1.5, 2.5, 3.5]]",
+        "d",
+        "[[5.0, 4.0], [0.0, 0.0]]",
+        "f",
         "RMSNorm",
     ]
 
@@ -911,7 +960,7 @@ def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -
         "print('mask', m.shape)\n"
         "a = Tensor.arange(3).float().unsqueeze(1)\n"
         "print('a', a.shape)\n"
-        "print('dtype', dtypes.float32 is float)\n",
+        "print('dtype', dtypes.float is dtypes.float32)\n",
         encoding="utf-8",
     )
     env = _native_molt_env(

@@ -33,6 +33,7 @@ use std::collections::{HashMap, HashSet};
 use super::PassStats;
 use super::effects::op_may_throw;
 use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -231,10 +232,8 @@ fn exception_target_blocks(func: &TirFunction) -> HashSet<BlockId> {
     let mut targets = HashSet::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if matches!(
-                op.opcode,
-                OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
-            ) && let Some(AttrValue::Int(label)) = op.attrs.get("value")
+            if dominators::is_exception_transfer_edge(op.opcode)
+                && let Some(AttrValue::Int(label)) = op.attrs.get("value")
                 && let Some(&target) = label_to_block.get(label)
             {
                 targets.insert(target);

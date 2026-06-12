@@ -1,0 +1,159 @@
+{
+  "dry_run": false,
+  "generated_at": "2026-06-12T20:58:50.928573+00:00",
+  "git_rev": "feb06faf27c26c29391972b97d5e7021603178d7",
+  "host": {
+    "cpu_count": 18,
+    "machine": "arm64",
+    "platform": "macOS-26.4-arm64-arm-64bit",
+    "python": "3.12.13"
+  },
+  "manifest_path": "/Users/adpena/Projects/molt/bench/friends/manifest.toml",
+  "manifest_schema_version": 1,
+  "memory_guard": {
+    "child_rlimit_gb": 10.0,
+    "dynamic_child_rlimit": true,
+    "dynamic_global_rss": true,
+    "dynamic_process_rss": false,
+    "dynamic_total_rss": false,
+    "enabled": true,
+    "interactive_budget": true,
+    "max_global_rss_gb": 36.0,
+    "max_process_rss_gb": 10.0,
+    "max_total_rss_gb": 18.0,
+    "poll_interval": 0.1
+  },
+  "options": {
+    "checkout": true,
+    "fetch": false,
+    "include_disabled": false,
+    "repeat_override": 1,
+    "repo_ref_overrides": {},
+    "runner_filter": [
+      "molt"
+    ],
+    "suite_root_overrides": {},
+    "timeout_override": 1800
+  },
+  "schema_version": 1,
+  "suites": [
+    {
+      "adapter_notes": "Compile/profile unmodified upstream tinygrad package code through tools/tinygrad_off_shelf_adapter.py; use adapter only as the public-API benchmark driver, never as a patched tinygrad fork.",
+      "display_name": "tinygrad Off-The-Shelf API Workloads",
+      "friend": "tinygrad",
+      "id": "tinygrad_off_the_shelf",
+      "metrics": {
+        "codon_median_s": null,
+        "codon_time_s": null,
+        "cpython_median_s": null,
+        "cpython_time_s": null,
+        "friend_median_s": null,
+        "friend_vs_molt_speedup": null,
+        "molt_codon_ratio": null,
+        "molt_cpython_ratio": null,
+        "molt_median_s": null,
+        "molt_nuitka_ratio": null,
+        "molt_numpy_ratio": null,
+        "molt_pyodide_ratio": null,
+        "molt_pypy_ratio": null,
+        "molt_speedup": null,
+        "molt_time_s": null,
+        "molt_tinygrad_ratio": null,
+        "molt_vs_codon_speedup": null,
+        "molt_vs_cpython_speedup": null,
+        "molt_vs_friend_speedup": null,
+        "molt_vs_nuitka_speedup": null,
+        "molt_vs_numpy_speedup": null,
+        "molt_vs_pyodide_speedup": null,
+        "molt_vs_pypy_speedup": null,
+        "molt_vs_tinygrad_speedup": null,
+        "nuitka_median_s": null,
+        "nuitka_time_s": null,
+        "nuitka_vs_molt_speedup": null,
+        "numpy_median_s": null,
+        "numpy_time_s": null,
+        "numpy_vs_molt_speedup": null,
+        "pyodide_median_s": null,
+        "pyodide_time_s": null,
+        "pyodide_vs_molt_speedup": null,
+        "pypy_median_s": null,
+        "pypy_time_s": null,
+        "tinygrad_median_s": null,
+        "tinygrad_time_s": null,
+        "tinygrad_vs_molt_speedup": null
+      },
+      "reason": "runner failures: molt",
+      "requested_ref": "a83710396c991272241e40da94489747c2393851",
+      "resolved_ref": "a83710396c991272241e40da94489747c2393851",
+      "runners": {
+        "molt": {
+          "build": null,
+          "name": "molt",
+          "reason": "run 1 failed",
+          "role": "workload",
+          "run_mean_s": null,
+          "run_median_s": null,
+          "run_samples_s": [],
+          "run_stdev_s": null,
+          "runs": [
+            {
+              "cmd": [
+                "/Users/adpena/Projects/molt/.venv/bin/python3",
+                "-m",
+                "molt.cli",
+                "run",
+                "--profile",
+                "dev",
+                "--build-arg=--stdlib-profile",
+                "--build-arg=full",
+                "/Users/adpena/Projects/molt/tools/tinygrad_off_shelf_adapter.py",
+                "--",
+                "--suite-root",
+                "/Users/adpena/Projects/molt/bench/friends/repos/tinygrad_off_the_shelf",
+                "--workload",
+                "all",
+                "--iterations",
+                "20",
+                "--json"
+              ],
+              "elapsed_s": 208.18592883300153,
+              "returncode": 2,
+              "stderr_path": "/Users/adpena/Projects/molt/bench/results/friends/20260612T205850Z/logs/tinygrad_off_the_shelf/molt.run1.stderr.log",
+              "stdout_json": null,
+              "stdout_json_error": "stdout was empty",
+              "stdout_path": "/Users/adpena/Projects/molt/bench/results/friends/20260612T205850Z/logs/tinygrad_off_the_shelf/molt.run1.stdout.log",
+              "timed_out": false
+            }
+          ],
+          "status": "failed",
+          "structured_median_s": {},
+          "structured_outputs": [],
+          "structured_samples_s": {}
+        }
+      },
+      "semantic_mode": "runs_unmodified",
+      "source": "git",
+      "source_custody": {
+        "expected_ref": "a83710396c991272241e40da94489747c2393851",
+        "git_clean": true,
+        "git_status_porcelain": "",
+        "head_ref": "a83710396c991272241e40da94489747c2393851",
+        "ref_verified": true,
+        "requested_ref": "a83710396c991272241e40da94489747c2393851",
+        "source": "git",
+        "suite_root_overridden": false,
+        "verification": "git_ref_and_clean_tree"
+      },
+      "status": "failed",
+      "suite_root": "/Users/adpena/Projects/molt/bench/friends/repos/tinygrad_off_the_shelf",
+      "suite_workdir": "/Users/adpena/Projects/molt/bench/friends/repos/tinygrad_off_the_shelf",
+      "tags": [
+        "gpu",
+        "mlir",
+        "tinygrad",
+        "compatibility",
+        "benchmark-suite"
+      ]
+    }
+  ]
+}

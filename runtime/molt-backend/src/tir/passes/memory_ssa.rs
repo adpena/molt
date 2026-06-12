@@ -568,16 +568,7 @@ fn full_cfg_successors(
     label_to_block: &HashMap<i64, BlockId>,
 ) -> Vec<BlockId> {
     let mut succs = dominators::terminator_successors(&block.terminator);
-    for op in &block.ops {
-        if matches!(
-            op.opcode,
-            OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
-        ) && let Some(AttrValue::Int(label)) = op.attrs.get("value")
-            && let Some(&target) = label_to_block.get(label)
-        {
-            succs.push(target);
-        }
-    }
+    succs.extend(dominators::exception_successors(block, label_to_block));
     succs
 }
 

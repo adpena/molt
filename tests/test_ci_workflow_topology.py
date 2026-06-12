@@ -236,6 +236,11 @@ def test_ci_memory_intensive_steps_use_memory_guard() -> None:
         "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy"
         in ci_text
     )
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \\\n"
+        "            env PYTHONPATH=src uv run python3 -c"
+    ) in ci_text
+    assert "\n          PYTHONPATH=src uv run python3 -c" not in ci_text
     assert "python3 tools/profile_hotspots.py --limit 20" in ci_text
 
 
@@ -260,6 +265,23 @@ def test_kani_workflow_has_single_cargo_cache_authority() -> None:
     assert "swatinem/rust-cache@v2" in kani_workflow
     assert "actions/cache@v4" not in kani_workflow
     assert "Cache cargo registry and target" not in kani_workflow
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "cargo install --locked kani-verifier"
+    ) in kani_workflow
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo kani setup"
+    ) in kani_workflow
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE "
+        "--cwd runtime/molt-obj-model -- cargo kani --tests"
+    ) in kani_workflow
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE "
+        "--cwd runtime/molt-runtime -- cargo kani --tests"
+    ) in kani_workflow
+    assert "cd runtime/molt-obj-model && cargo kani --tests" not in kani_workflow
+    assert "cd runtime/molt-runtime && cargo kani --tests" not in kani_workflow
 
 
 def test_formal_workflow_uses_bounded_blocking_quint_gate() -> None:
@@ -348,6 +370,21 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
         "run: uv run python3 tools/ci_gate.py --tier 3 --verbose --json"
         not in nightly_text
     )
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "quint verify formal/quint/molt_build_determinism.qnt"
+    ) in nightly_text
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "quint verify formal/quint/molt_runtime_determinism.qnt"
+    ) in nightly_text
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "quint verify formal/quint/molt_midend_pipeline.qnt"
+    ) in nightly_text
+    assert "run: cargo install cargo-deny --locked" not in nightly_text
+    assert "run: cargo deny check" not in nightly_text
+    assert "          quint verify formal/quint/" not in nightly_text
 
     assert (
         "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE --cwd formal/lean -- "
@@ -380,8 +417,18 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
         "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo audit"
         in security_text
     )
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "cargo install cargo-deny --locked"
+    ) in security_text
+    assert (
+        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+        "cargo install cargo-audit --locked"
+    ) in security_text
     assert "run: uv run pip-audit --ignore-vuln CVE-2025-69872" not in security_text
     assert "run: cargo deny check" not in security_text
+    assert "          cargo install cargo-deny --locked" not in security_text
+    assert "          cargo install cargo-audit --locked" not in security_text
 
     assert (
         '"$PYTHON_BIN" tools/guarded_exec.py --prefix MOLT_RELEASE -- '

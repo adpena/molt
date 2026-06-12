@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools import guarded_entrypoints  # noqa: E402
+from tools import check_subprocess_guard_coverage, guarded_entrypoints  # noqa: E402
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,13 @@ class SentinelTokenDrift:
 
 
 @dataclass(frozen=True, slots=True)
+class MissingDirectTestGuard:
+    path: str
+    line: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryGuardWiringAudit:
     python_contracts: int
     shell_contracts: int
@@ -52,6 +60,18 @@ class MemoryGuardWiringAudit:
     missing_tokens: tuple[MissingToken, ...]
     required_sentinel_missing: tuple[str, ...]
     sentinel_drift: tuple[SentinelTokenDrift, ...]
+    direct_test_guard_missing: tuple[MissingDirectTestGuard, ...]
+    subprocess_guard_scanned_files: int
+    subprocess_guard_raw_call_count: int
+    subprocess_guard_unexpected: tuple[
+        check_subprocess_guard_coverage.RawSubprocessCall, ...
+    ]
+    subprocess_guard_stale_allowlist: tuple[
+        check_subprocess_guard_coverage.AllowedRawSubprocessUse, ...
+    ]
+    subprocess_guard_expanded_allowlist: tuple[
+        check_subprocess_guard_coverage.ExpandedAllowedUse, ...
+    ]
 
     @property
     def ok(self) -> bool:
@@ -60,6 +80,10 @@ class MemoryGuardWiringAudit:
             and not self.missing_tokens
             and not self.required_sentinel_missing
             and not self.sentinel_drift
+            and not self.direct_test_guard_missing
+            and not self.subprocess_guard_unexpected
+            and not self.subprocess_guard_stale_allowlist
+            and not self.subprocess_guard_expanded_allowlist
         )
 
 
@@ -390,7 +414,10 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "src/molt/pytest_memory_guard_bootstrap.py",
         (
             "tools.pytest_memory_guard_bootstrap",
+            "ensure_current_file_test_script_memory_guard",
+            "ensure_repo_test_module_memory_guard",
             "pytest_load_initial_conftests",
+            "pytest_runtest_call",
         ),
         "packaged pytest plugin shim must make repo startup guard importable "
         "from console-script pytest before pytest mutates sys.path",
@@ -399,9 +426,19 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "src/molt/pytest_memory_guard_config_plugin.py",
         (
             "pytest_load_initial_conftests",
+            "pytest_runtest_call",
         ),
         "repo pytest config plugin must keep memory-guard startup active even "
         "when pytest entry-point autoload is disabled",
+    ),
+    TokenContract(
+        "src/sitecustomize.py",
+        (
+            "ensure_python_test_memory_guard",
+            "tools.pytest_memory_guard_bootstrap",
+        ),
+        "project-managed Python startup must guard uv-run direct tests without "
+        "adding harness files inside differential corpus directories",
     ),
     TokenContract(
         "sitecustomize.py",
@@ -412,16 +449,33 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "custody before test code can run outside the guard",
     ),
     TokenContract(
+        "tests/_sitecustomize.py",
+        (
+            "install_test_memory_guard_sitecustomize",
+            "ensure_repo_test_script_memory_guard",
+        ),
+        "tests/** path-local sitecustomize routers must share the same "
+        "guard bootstrap helper instead of per-file memory custody code",
+    ),
+    TokenContract(
         "tools/pytest_memory_guard_bootstrap.py",
         (
             "MOLT_MEMORY_GUARD_ACTIVE",
             "MOLT_MEMORY_GUARD_PID",
             "MOLT_PYTEST_OUTER_GUARD_REEXEC",
             "MOLT_TEST_SCRIPT_OUTER_GUARD_REEXEC",
+            "MOLT_PYTEST_CURRENT_TEST_FILE",
+            "install_pytest_current_test_file_env",
+            "ensure_current_file_test_script_memory_guard",
+            "ensure_repo_test_module_memory_guard",
+            "PYTEST_XDIST_WORKER",
             "tools/memory_guard.py",
             "MOLT_TEST_SUITE",
             "--noconftest",
             "--confcutdir",
+            "PYTEST_ADDOPTS",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+            "pyproject.toml",
             "sample_processes",
             "os.execvpe",
         ),
@@ -429,9 +483,32 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "reject pytest hook-disabling flags, and re-exec through memory_guard.py",
     ),
     TokenContract(
+        "tools/memory_guard.py",
+        (
+            "test_custody_launch_env",
+            "MOLT_PYTEST_CURRENT_TEST_FILE",
+            "PYTEST_OUTER_GUARD_SUMMARY_DIR",
+            "repro_context_payload",
+        ),
+        "memory guard must allocate test custody sidecars before child spawn "
+        "so incident repro diagnostics can name the running test",
+    ),
+    TokenContract(
+        "tools/harness_memory_guard.py",
+        (
+            "test_custody_launch_env",
+            "_guard_repro_message",
+            "guarded_completed_process",
+        ),
+        "harness wrappers must pass the same test custody env to child launch "
+        "and repro formatting",
+    ),
+    TokenContract(
         "tests/conftest.py",
         (
             "harness_memory_guard",
+            "outer_memory_guard_active",
+            "validate_pytest_guardable_env",
             "repo_process_sentinel",
             "limits_from_env",
             "MOLT_PYTEST",
@@ -526,6 +603,17 @@ REQUIRED_SENTINEL_TOKENS: tuple[str, ...] = (
     "/tests/benchmarks/bench_generator.py",
 )
 
+DIRECT_TEST_SITECUSTOMIZE_TOKEN = "install_test_memory_guard_sitecustomize"
+DIRECT_TEST_SCRIPT_EXCLUDED_PARTS = frozenset(
+    {
+        "__pycache__",
+        "benchmarks",
+        "differential",
+        "fixtures",
+        "molt_only",
+    }
+)
+
 
 def _read_contract_text(root: Path, contract: TokenContract) -> str | None:
     path = root / contract.path
@@ -561,6 +649,88 @@ def _process_sentinel_tokens(root: Path) -> tuple[str, ...]:
     return tuple(process_sentinel.GUARDED_ENTRYPOINT_TOKENS)
 
 
+def _subprocess_guard_targets(root: Path) -> tuple[Path, ...]:
+    if root.resolve() == REPO_ROOT.resolve():
+        return tuple(check_subprocess_guard_coverage.DEFAULT_TARGETS)
+    return tuple(
+        root / target.resolve().relative_to(REPO_ROOT.resolve())
+        for target in check_subprocess_guard_coverage.DEFAULT_TARGETS
+    )
+
+
+def _is_name(node: ast.AST, value: str) -> bool:
+    return isinstance(node, ast.Name) and node.id == value
+
+
+def _is_constant(node: ast.AST, value: str) -> bool:
+    return isinstance(node, ast.Constant) and node.value == value
+
+
+def _is_dunder_main_guard(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+        return False
+    if not isinstance(node.ops[0], ast.Eq) or len(node.comparators) != 1:
+        return False
+    left = node.left
+    right = node.comparators[0]
+    return (
+        _is_name(left, "__name__")
+        and _is_constant(right, "__main__")
+        or _is_constant(left, "__main__")
+        and _is_name(right, "__name__")
+    )
+
+
+def _main_guard_line(tree: ast.Module) -> int | None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and _is_dunder_main_guard(node.test):
+            return node.lineno
+    return None
+
+
+def _audit_direct_executable_test_guards(root: Path) -> tuple[MissingDirectTestGuard, ...]:
+    tests_root = root / "tests"
+    if not tests_root.exists():
+        return ()
+
+    missing: list[MissingDirectTestGuard] = []
+    for path in sorted(tests_root.rglob("*.py")):
+        relative = path.relative_to(root)
+        if any(part in DIRECT_TEST_SCRIPT_EXCLUDED_PARTS for part in relative.parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            tree = ast.parse(text, filename=str(relative))
+        except (OSError, SyntaxError) as exc:
+            missing.append(
+                MissingDirectTestGuard(
+                    str(relative),
+                    0,
+                    f"could not parse direct-executable test candidate: {exc}",
+                )
+            )
+            continue
+        line = _main_guard_line(tree)
+        if line is None:
+            continue
+        guard_path = path.parent / "sitecustomize.py"
+        try:
+            guard_text = guard_path.read_text(encoding="utf-8")
+        except OSError:
+            guard_text = ""
+        if DIRECT_TEST_SITECUSTOMIZE_TOKEN in guard_text:
+            continue
+        missing.append(
+            MissingDirectTestGuard(
+                str(relative),
+                line,
+                "direct-executable tests require a path-local sitecustomize.py "
+                "that imports the shared test memory-guard bootstrap",
+            )
+        )
+    return tuple(missing)
+
+
 def audit_repo(
     root: Path = REPO_ROOT,
     *,
@@ -569,6 +739,9 @@ def audit_repo(
     required_sentinel_tokens: Sequence[str] = REQUIRED_SENTINEL_TOKENS,
     scanner_tokens: Sequence[str] | None = None,
     sentinel_tokens: Sequence[str] | None = None,
+    subprocess_guard_audit: (
+        check_subprocess_guard_coverage.SubprocessGuardAudit | None
+    ) = None,
 ) -> MemoryGuardWiringAudit:
     root = root.resolve()
     python_missing_paths, python_missing_tokens = _audit_token_contracts(
@@ -599,6 +772,15 @@ def audit_repo(
             drift.append(SentinelTokenDrift(token, "scanner_not_in_process_sentinel"))
         for token in sorted(sentinel_set - scanned_set):
             drift.append(SentinelTokenDrift(token, "process_sentinel_not_in_scanner"))
+    subprocess_audit = (
+        subprocess_guard_audit
+        if subprocess_guard_audit is not None
+        else check_subprocess_guard_coverage.audit_paths(
+            _subprocess_guard_targets(root),
+            root=root,
+        )
+    )
+    direct_test_guard_missing = _audit_direct_executable_test_guards(root)
 
     return MemoryGuardWiringAudit(
         python_contracts=len(python_contracts),
@@ -609,6 +791,12 @@ def audit_repo(
         missing_tokens=(*python_missing_tokens, *shell_missing_tokens),
         required_sentinel_missing=required_missing,
         sentinel_drift=tuple(drift),
+        direct_test_guard_missing=direct_test_guard_missing,
+        subprocess_guard_scanned_files=subprocess_audit.scanned_files,
+        subprocess_guard_raw_call_count=len(subprocess_audit.raw_calls),
+        subprocess_guard_unexpected=subprocess_audit.unexpected,
+        subprocess_guard_stale_allowlist=subprocess_audit.stale_allowlist,
+        subprocess_guard_expanded_allowlist=subprocess_audit.expanded_allowlist,
     )
 
 
@@ -623,6 +811,31 @@ def _audit_to_dict(audit: MemoryGuardWiringAudit) -> dict[str, object]:
         "missing_tokens": [asdict(item) for item in audit.missing_tokens],
         "required_sentinel_missing": list(audit.required_sentinel_missing),
         "sentinel_drift": [asdict(item) for item in audit.sentinel_drift],
+        "direct_test_guard_missing": [
+            asdict(item) for item in audit.direct_test_guard_missing
+        ],
+        "subprocess_guard": {
+            "ok": (
+                not audit.subprocess_guard_unexpected
+                and not audit.subprocess_guard_stale_allowlist
+                and not audit.subprocess_guard_expanded_allowlist
+            ),
+            "scanned_files": audit.subprocess_guard_scanned_files,
+            "raw_call_count": audit.subprocess_guard_raw_call_count,
+            "unexpected": [
+                asdict(item) for item in audit.subprocess_guard_unexpected
+            ],
+            "stale_allowlist": [
+                asdict(item) for item in audit.subprocess_guard_stale_allowlist
+            ],
+            "expanded_allowlist": [
+                {
+                    "entry": asdict(item.entry),
+                    "actual_count": item.actual_count,
+                }
+                for item in audit.subprocess_guard_expanded_allowlist
+            ],
+        },
     }
 
 
@@ -653,6 +866,32 @@ def _format_text(audit: MemoryGuardWiringAudit) -> str:
         lines.append("Process-sentinel scanner drift:")
         for item in audit.sentinel_drift:
             lines.append(f"- {item.direction}: {item.token}")
+    if audit.direct_test_guard_missing:
+        lines.append("Direct-executable test scripts missing startup guard:")
+        for item in audit.direct_test_guard_missing:
+            lines.append(f"- {item.path}:{item.line} {item.reason}")
+    if audit.subprocess_guard_unexpected:
+        lines.append("Unexpected raw subprocess calls:")
+        for item in audit.subprocess_guard_unexpected:
+            lines.append(
+                f"- {item.path}:{item.line} {item.qualname} "
+                f"subprocess.{item.method}: {item.source}"
+            )
+    if audit.subprocess_guard_stale_allowlist:
+        lines.append("Stale subprocess guard allowlist entries:")
+        for item in audit.subprocess_guard_stale_allowlist:
+            lines.append(
+                f"- {item.path} {item.qualname} subprocess.{item.method}: "
+                f"{item.reason}"
+            )
+    if audit.subprocess_guard_expanded_allowlist:
+        lines.append("Expanded subprocess guard allowlist entries:")
+        for item in audit.subprocess_guard_expanded_allowlist:
+            entry = item.entry
+            lines.append(
+                f"- {entry.path} {entry.qualname} subprocess.{entry.method}: "
+                f"expected {entry.expected_count}, found {item.actual_count}"
+            )
     lines.append(
         "Keep benchmark, conformance, regrtest, compliance, CLI, and dev-test "
         "entrypoints routed through tools.harness_memory_guard or an approved "

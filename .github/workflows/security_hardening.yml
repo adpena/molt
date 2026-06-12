@@ -41,8 +41,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-deny and cargo-audit
         run: |
-          cargo install cargo-deny --locked
-          cargo install cargo-audit --locked
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-deny --locked
+          python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-audit --locked
       - name: cargo deny check
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo deny check
       - name: cargo audit

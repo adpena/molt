@@ -1,12 +1,25 @@
 # 48 — `__del__` exception swallow: the uncaught-exception terminator, not a native unwind
 
-Status: **LANDED (2026-06-09).** Closes #65 (finalizer exception-swallow). The fix
-is runtime-only: run `__del__` INLINE at the rc→0 point (CPython-prompt) under a
-SYNTHETIC exception-handler frame. NO deferral, NO `catch_unwind`, NO backend
-landing pad. The "FinalizerRegion / deferred-drain" design that this file
-originally proposed was built on a **misdiagnosis** and has been reverted; this
-document is rewritten to record the true root cause, the falsification of the
-deferral premise, and the landed fix. The original deferral text is preserved in
+Status: **PARTIAL RUNTIME PRIMITIVE LANDED (2026-06-09; evidence refreshed
+2026-06-12).** The runtime-only synthetic-handler authority for `__del__` exists:
+run `__del__` INLINE at the rc→0 point (CPython-prompt) under a SYNTHETIC
+exception-handler frame. NO deferral, NO `catch_unwind`, NO backend landing pad.
+The standalone raising-finalizer lane, native path-sensitive scope-exit ordering
+gate (`tests/differential/basic/finalizer_scope_exit_ordering.py`), plain
+non-finalizer object guard, object-attribute release smoke, and exit-semantics
+lane are green as of 2026-06-12 after preserving the frontend's `defines_del`
+result fact through native's TIR -> SimpleIR optimization round-trip and adding
+class/instance finalizer-sensitivity bits. The explicit local `del` /
+`gc.collect()` resurrection-once gate is also green as of 2026-06-12 after
+promoting `DeleteVar` to carry the old slot occupant as an explicit TIR operand
+and release it after storing the missing sentinel. This does **not** close every
+finalizer composition yet: container-owned release boundaries and the broader
+resurrection/leak matrix remain fail-closed xfails with raw mismatches
+preserved. The "FinalizerRegion /
+deferred-drain" design that this file originally proposed was built on a
+**misdiagnosis** and has been reverted; this document records the true root
+cause, the falsification of the deferral premise, the landed runtime primitive,
+and the remaining executable gates. The original deferral text is preserved in
 git history (commit 48418a3bf and the WIP commits on the `wt_fin` branch).
 
 ## 1. The true root cause (definitively measured)
@@ -53,17 +66,33 @@ crate::builtins::exceptions::exception_stack_pop(py);  // pop synthetic frame
 ```
 
 Now `molt_raise` sees `exception_handler_active() == true`, records the exception
-value-based, and returns; `call_callable0` returns with the exception pending; the
-swallow below runs in EVERY context (standalone, composed, gc.collect). This is
-exactly CPython's implicit "ignore exceptions during finalization" boundary, in
-runtime form, mirroring the compiled try-frame (`molt_exception_push` /
-`molt_exception_pop`). `__del__` still runs INLINE at the rc→0 point, so
-finalization stays CPython-prompt (`del x; print()` finalizes before `print`).
+value-based, and returns; `call_callable0` returns with the exception pending.
+The swallow below is the single runtime authority for finalizer unraisable
+handling. It is proven for the standalone raising-finalizer lane, but broader
+resurrection/container composition remains gated by the differential tests named
+in the status block above. This is Molt's runtime form of CPython's implicit "ignore exceptions
+during finalization" boundary, mirroring the compiled try-frame
+(`molt_exception_push` / `molt_exception_pop`). `__del__` still runs INLINE at the
+rc→0 point, so finalization stays CPython-prompt where drop placement reaches
+that boundary (`del x; print()` finalizes before `print`).
 
 The swallow itself (unchanged in shape) writes-unraisable to stderr ("Exception
 ignored while calling deallocator:" + traceback) and clears all exception channels,
 or — if a surrounding exception was active — preserves/restores it (CPython
 semantics).
+
+2026-06-12 update: finalizer *sensitivity* is now class metadata, not an
+ordinary dying-instance attribute probe. `HEADER_FLAG_CLASS_HAS_FINALIZER` is
+refreshed when a class MRO or class-level `__del__` binding changes, and
+`object_set_class_bits` copies that to `HEADER_FLAG_INSTANCE_HAS_FINALIZER` on
+fresh `TYPE_ID_OBJECT` instances. The rc→0 hot path first checks the instance
+flag; non-finalizer objects never enter `__del__` lookup, so plain objects and
+objects with only an instance attribute named `__del__` cannot emit false
+unraisable AttributeErrors. For finalizer-sensitive instances,
+`maybe_run_object_finalizer` resolves raw `__del__` through the class MRO and
+uses the shared descriptor binder before `call_callable0`, preserving the single
+synthetic-handler swallow authority while matching CPython's type-special
+finalizer lookup.
 
 ## 3. Why the deferral design was wrong (and reverted)
 The original design deferred `__del__` to a value-based drain boundary
@@ -93,17 +122,40 @@ Finalizer behavior splits into two layers; #65 is entirely in layer (2):
   swallow its exception, handle resurrection-once? This is `maybe_run_object_
   finalizer`, the single finalizer authority. #65 fixes the exception-swallow here.
 
-## 5. Verification (native, byte-identical to CPython 3.14)
-GREEN (stdout byte-identical, exit 0, unraisable to stderr): `p65_gc`, `p65_func`
-(the standalone-finalizer-raise repros — previously exit 1), `fires_once` (prompt
-timing: DEL before "after del"), `resurrect` (resurrection-once), `finalizer_
-matrix` (all 9 sections incl. `raise_in_del survived`), `stress_raise` (20000
-swallowed raises — synthetic push/pop balance holds at scale), `stress_reraise_
-active` (finalizer raises while a surrounding exception is handled — prior-exc
-preserved), `sr2_resurrect` (20000 true resurrections via the function-return drop
-path). The runtime is backend-agnostic, so the same fix applies to native / LLVM /
-WASM / Luau; LLVM is spot-checked because its drop lanes place the DecRefs that
-dormant-native's value-tracking does not (isolating layer 1 from layer 2).
+## 5. Verification and remaining gates
+GREEN for the currently proven runtime primitive and placement gates (stdout
+byte-identical where applicable, exit 0, unraisable to stderr):
+`finalizer_standalone_raise_swallow.py`, `finalizer_scope_exit_ordering.py`,
+`finalizer_plain_object_no_false_positive.py`,
+`finalizer_object_attr_release.py`, `finalizer_exit_semantics.py`, and
+`finalizer_resurrection_once.py`.
+
+FAIL-CLOSED xfail with raw mismatch preserved:
+`finalizer_container_clear.py`, `finalizer_matrix.py`,
+`resurrect_with_exception_in_del.py`, and
+`finalizer_resurrection_leak_gauge.py`. These cover container-owned release
+boundaries and broader resurrection/leak composition where Molt still observes
+empty container event lists where CPython runs nested `__del__` paths.
+
+CLOSED for the native scope-exit ordering gate:
+`finalizer_scope_exit_ordering.py` is no longer `expect_fail=molt`. The closing
+evidence is the raw one-file differential with daemon off, rebuild/no-cache
+forced, and RSS measurement enabled:
+`tmp/diff/finalizer_scope_exit_ordering_after_custody.json` reports `passed=1`,
+`failed=0`, build RSS 1457776 KB, run RSS 10272 KB.
+
+The focused resurrection-once differential
+`tests/differential/basic/finalizer_resurrection_once.py` is now a must-pass
+gate. The 2026-06-12 closing run used the daemon-off, rebuild/no-cache, guarded
+single-file differential and reported `[PASS]` with build RSS 1444208 KB and run
+RSS 16352 KB. This proves the explicit local `del` boundary stores the missing
+sentinel before the old binding's finalizer can observe the frame. The remaining
+finalizer verification split is six PASS lanes and four fail-closed XFAIL lanes.
+
+The runtime authority is backend-neutral because every backend routes rc→0
+through `dec_ref_ptr` → `maybe_run_object_finalizer`, but backend support is only
+claimable where drop placement and the relevant differential/backend evidence are
+green.
 
 KNOWN (layer-1, pre-existing, NOT #65 — each verified against the clean main
 baseline so they are NOT regressions of this change):

@@ -93,6 +93,7 @@ _TERMINATOR_VARIANTS = ("Branch", "CondBranch", "Switch", "Return", "Unreachable
 # classifier groups per-individual-kind, not per-OpCode-equivalence.
 _CLASSIFIER_SETS = (
     "classifier_fresh_value",
+    "classifier_exception_creation_ref",
     "classifier_inert_marker",
     "classifier_no_heap_move",
 )
@@ -167,6 +168,10 @@ def load_table() -> dict:
         # discipline): a new OpCode cannot render until it states whether each
         # operand is borrowed or consumed. Fail-loud — no silent borrow default.
         _validate_operand_ownership(name, row.get("operand_ownership"))
+        if not isinstance(row.get("result_absorbs_operands"), bool):
+            raise OpKindTableError(
+                f"opcode {name}: 'result_absorbs_operands' must be a bool"
+            )
 
     prefixes = data.get("classifier_fresh_value_prefixes", [])
     if not isinstance(prefixes, list) or not all(isinstance(p, str) for p in prefixes):
@@ -221,6 +226,7 @@ def load_table() -> dict:
     # structural kill for a typo'd consume override silently doing nothing — the
     # very C6 double-free this column retires).
     _validate_consuming_kinds(data, owner)
+    _validate_absorbing_kinds(data, owner)
 
     _validate_terminators(data)
 
@@ -304,6 +310,39 @@ def _validate_consuming_kinds(data: dict, valid_spellings: dict[str, str]) -> No
             raise OpKindTableError(
                 f"consuming_kind {kind}: 'consumed_operand' must be \"last\" or a "
                 f"non-negative operand index, got {sel!r}"
+            )
+
+
+def _validate_absorbing_kinds(data: dict, mapper_spellings: dict[str, str]) -> None:
+    """Structurally validate ``[[absorbing_kind]]`` rows.
+
+    These are Copy-lifted fresh constructor spellings whose RESULT owns operand
+    lifetimes. They are intentionally not first-class ``[[kind]]`` aliases:
+    aliasing would hide backend/backconversion spelling differences instead of
+    carrying the ownership fact explicitly.
+    """
+    rows = data.get("absorbing_kind", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("[[absorbing_kind]] must be an array of tables")
+    fresh_members = set(data.get("classifier_fresh_value", []))
+    seen: set[str] = set()
+    for row in rows:
+        kind = row.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise OpKindTableError(f"[[absorbing_kind]] row missing 'kind': {row}")
+        if kind in seen:
+            raise OpKindTableError(f"duplicate absorbing_kind: {kind}")
+        seen.add(kind)
+        if kind in mapper_spellings:
+            raise OpKindTableError(
+                f"absorbing_kind {kind!r} overlaps a [[kind]] mapper spelling; "
+                "record first-class opcode absorption on the opcode row instead"
+            )
+        if kind not in fresh_members:
+            raise OpKindTableError(
+                f"absorbing_kind {kind!r} must also be in classifier_fresh_value "
+                "(a result cannot absorb operand ownership unless it mints a fresh "
+                "owned container result)"
             )
 
 
@@ -566,6 +605,21 @@ def render_rs(data: dict) -> str:
     out.append(_render_matches_arm(fresh))
     out.append("    )\n}\n\n")
 
+    # -- exception CreationRef classifier exact set ---------------------------
+    exception_creation = list(data.get("classifier_exception_creation_ref", []))
+    out.append(
+        "/// EXACT-match arm for exception CreationRef producers. These Copy-lifted\n"
+        "/// kinds return the fresh exception object reference whose source ownership\n"
+        "/// is released at the `raise` boundary after runtime exception state records\n"
+        "/// its own references.\n"
+        "#[inline]\n"
+        "pub(crate) fn copy_kind_is_exception_creation_ref_table(kind: &str) -> bool {\n"
+        "    matches!(\n"
+        "        kind,\n"
+    )
+    out.append(_render_matches_arm(exception_creation))
+    out.append("    )\n}\n\n")
+
     # -- fresh-value prefix rule ---------------------------------------------
     out.append(
         "/// Prefix rules for `copy_kind_mints_fresh_owned_ref`: a kind starting\n"
@@ -654,6 +708,8 @@ def render_rs(data: dict) -> str:
 
     # -- operand ownership: per-OpCode default + per-spelling consume override --
     out.append(_render_operand_ownership(opcodes, data.get("consuming_kind", [])))
+    out.append("\n")
+    out.append(_render_result_absorption(opcodes, data.get("absorbing_kind", [])))
 
     # -- per-terminator operand ownership (the ownership-moves-out / transfer axis) --
     out.append("\n")
@@ -939,6 +995,47 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
                 out.append(f'        "{kind}" => Some({int(sel)}),\n')
     out.append("        _ => None,\n")
     out.append("    }\n}\n")
+    return "".join(out)
+
+
+def _render_result_absorption(opcodes: list[dict], absorbing: list[dict]) -> str:
+    """Render the result-absorbs-operands ownership-transfer tables.
+
+    This is a RESULT-side fact: the returned value owns the operands' lifetimes
+    even though the operands remain borrowed at the ABI/drop-insertion edge.
+    First-class opcodes use the exhaustive opcode bit; Copy-lifted SimpleIR
+    spellings use the spelling table.
+    """
+    out: list[str] = []
+    out.append(
+        "/// Result-side ownership-transfer fact: this op returns a value whose\n"
+        "/// lifetime absorbs the lifetimes of its operands (container builders).\n"
+        "/// This is deliberately separate from operand_ownership: operands are still\n"
+        "/// borrowed at the call/drop boundary, but a finalizer-sensitive operand\n"
+        "/// makes the returned container finalizer-sensitive. EXHAUSTIVE over\n"
+        "/// OpCode; Copy-lifted spellings use `kind_result_absorbs_operand_ownership_table`.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        out.append(
+            f"        OpCode::{row['name']} => {_rs_bool(row['result_absorbs_operands'])},\n"
+        )
+    out.append("    }\n}\n\n")
+
+    out.append(
+        "/// Result-side ownership-transfer fact for Copy-lifted SimpleIR spellings.\n"
+        "/// These spellings intentionally remain outside `[[kind]]` so backconversion\n"
+        "/// and backend dispatch preserve their public wire names while still sharing\n"
+        "/// the finalizer/escape ownership fact with first-class Build* opcodes.\n"
+        "#[inline]\n"
+        "pub(crate) fn kind_result_absorbs_operand_ownership_table(kind: &str) -> bool {\n"
+        "    matches!(kind,\n"
+    )
+    absorbing_kinds = sorted(row["kind"] for row in absorbing)
+    out.append(_render_matches_arm(absorbing_kinds))
+    out.append("    )\n}\n")
     return "".join(out)
 
 

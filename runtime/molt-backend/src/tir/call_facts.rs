@@ -373,8 +373,11 @@ impl CallFactsTable {
     ) -> BTreeMap<String, CallFactsTable> {
         // Function bodies by name, for the callee-side fact lookups (no_throw via
         // has-handlers, inline eligibility). O(1) per query.
-        let by_name: BTreeMap<&str, &TirFunction> =
-            module.functions.iter().map(|f| (f.name.as_str(), f)).collect();
+        let by_name: BTreeMap<&str, &TirFunction> = module
+            .functions
+            .iter()
+            .map(|f| (f.name.as_str(), f))
+            .collect();
 
         let mut out: BTreeMap<String, CallFactsTable> = BTreeMap::new();
         for func in &module.functions {
@@ -384,14 +387,8 @@ impl CallFactsTable {
                     let Some(result) = call_op_result(op) else {
                         continue;
                     };
-                    let facts = analyze_call_site_module(
-                        op,
-                        func,
-                        call_graph,
-                        summaries,
-                        tti,
-                        &by_name,
-                    );
+                    let facts =
+                        analyze_call_site_module(op, func, call_graph, summaries, tti, &by_name);
                     table.facts.insert(result.0, facts);
                 }
             }
@@ -413,7 +410,9 @@ impl CallFactsTable {
                 let Some(result) = call_op_result(op) else {
                     continue;
                 };
-                table.facts.insert(result.0, analyze_call_site_local(op, func));
+                table
+                    .facts
+                    .insert(result.0, analyze_call_site_local(op, func));
             }
         }
         table
@@ -800,9 +799,7 @@ mod tests {
         let facts = table.get(res).expect("call site recorded");
         assert_eq!(
             facts.target,
-            CallTargetFact::StaticDirect {
-                callee: "b".into()
-            }
+            CallTargetFact::StaticDirect { callee: "b".into() }
         );
         assert!(facts.target.is_static_direct());
         assert_eq!(facts.target.static_callee(), Some("b"));

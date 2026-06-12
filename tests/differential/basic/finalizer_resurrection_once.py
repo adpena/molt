@@ -1,4 +1,9 @@
-"""Purpose: differential coverage for __del__ resurrection and run-once semantics."""
+"""Purpose: differential coverage for __del__ resurrection and run-once semantics.
+
+STATUS: must-pass. Explicit local `del` stores the missing sentinel before
+releasing the old slot occupant, so `__del__` observes CPython's deleted-local
+state while preserving resurrection and run-once semantics.
+"""
 
 try:
     import gc
