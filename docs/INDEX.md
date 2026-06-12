@@ -47,7 +47,7 @@ the source of truth.
 - Integrated foundation program: [design/foundation/00_integrated_parallel_program.md](design/foundation/00_integrated_parallel_program.md)
 - RC ownership and drop insertion: [design/foundation/20_rc-ownership-drop-insertion.md](design/foundation/20_rc-ownership-drop-insertion.md)
 - Perceus-style borrow inference: [design/foundation/27_perceus_borrow_inference.md](design/foundation/27_perceus_borrow_inference.md)
-- ExceptionRegion ownership, shared TIR facts, SimpleIR release transport, and native handler MatchRef release custody: [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
+- ExceptionRegion ownership, shared TIR facts, shared drop artifacts, backend parity evidence, and HandlerState frontier: [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
 - Current module-scope control-flow binding status: [spec/STATUS.md](spec/STATUS.md)
 - Codebase decomposition program: [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md)
 - Op-kind registry and generated dispatch direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)

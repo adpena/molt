@@ -58,7 +58,7 @@ authoritative when a design claim drifts.
 - Codebase decomposition program: [docs/design/foundation/21_decomposition_program.md](../design/foundation/21_decomposition_program.md)
 - Op-kind registry: [docs/design/foundation/25_op_kind_registry.md](../design/foundation/25_op_kind_registry.md)
 - Perceus-style borrow inference: [docs/design/foundation/27_perceus_borrow_inference.md](../design/foundation/27_perceus_borrow_inference.md)
-- ExceptionRegion ownership, shared TIR facts, SimpleIR release transport, and native handler MatchRef release custody: [docs/design/foundation/45_exception_region_ownership.md](../design/foundation/45_exception_region_ownership.md)
+- ExceptionRegion ownership, shared TIR facts, shared drop artifacts, backend parity evidence, and HandlerState frontier: [docs/design/foundation/45_exception_region_ownership.md](../design/foundation/45_exception_region_ownership.md)
 
 ## Compatibility And Contracts
 - Compatibility architecture index: [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md)

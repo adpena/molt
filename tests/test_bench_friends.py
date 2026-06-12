@@ -329,6 +329,118 @@ def test_bench_friends_phase_result_preserves_memory_guard_diagnostics(
     assert payload["guard_violation"] is None
 
 
+def test_bench_friends_sentinel_violation_emergency_writes_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_tool_module()
+    manifest = tmp_path / "manifest.toml"
+    output_root = tmp_path / "sentinel_out"
+    suite_root = tmp_path / "suite"
+    suite_root.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        textwrap.dedent(
+            f"""
+            schema_version = 1
+
+            [[suite]]
+            id = "sentinel_suite"
+            enabled = true
+            friend = "local"
+            source = "local"
+            local_path = "{suite_root.as_posix()}"
+            semantic_mode = "runs_unmodified"
+            repeat = 1
+            timeout_sec = 30
+
+            [suite.runners.molt]
+            run_cmd = ["{{python}}", "-c", "print('never reaches runner')"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class DummySignalScope:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class FakeSentinel:
+        def __init__(self, **kwargs):
+            self._on_violation = kwargs["on_violation"]
+
+        def __enter__(self):
+            self._on_violation(
+                object(),
+                object(),
+                {
+                    "event": "repo_process_guard_tripped",
+                    "guard_started_at": "2026-06-12T00:00:00Z",
+                    "observed_at": "2026-06-12T00:00:01Z",
+                    "elapsed_s": 1.0,
+                    "active_pgids": [123],
+                    "kill_scope": "current-tree",
+                    "victim_pgid": 123,
+                    "victim_command": "molt-backend --daemon",
+                    "action": "terminated process group",
+                    "limits": {"max_process_rss_gb": 12.0},
+                    "violation": {
+                        "pgid": 123,
+                        "reason": "process_rss",
+                        "peak_rss_gb": 12.01,
+                    },
+                },
+            )
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def fake_run_runner(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise module.BenchInterrupted(signal.SIGTERM)
+
+    monkeypatch.setattr(module, "BenchSignalScope", DummySignalScope)
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **kwargs: FakeSentinel(**kwargs),
+    )
+    monkeypatch.setattr(module, "_run_runner", fake_run_runner)
+    monkeypatch.setattr(
+        module,
+        "_cleanup_backend_daemons",
+        lambda **kwargs: {
+            "status": "ok",
+            "reason": kwargs["reason"],
+            "terminated_count": 0,
+            "terminated": [],
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_friends.py",
+            "--manifest",
+            str(manifest),
+            "--output-root",
+            str(output_root),
+        ],
+    )
+
+    assert module.main() == 143
+
+    payload = json.loads((output_root / "results.json").read_text(encoding="utf-8"))
+    assert payload["memory_guard_incidents"][0]["violation"]["reason"] == "process_rss"
+    assert payload["memory_guard_incidents"][0]["victim_pgid"] == 123
+    summary = (output_root / "summary.md").read_text(encoding="utf-8")
+    assert "## Memory Guard Incidents" in summary
+    assert "process_rss" in summary
+
+
 def test_bench_friends_nuitka_pyodide_runners(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.toml"
     output_root = tmp_path / "out_ext"
