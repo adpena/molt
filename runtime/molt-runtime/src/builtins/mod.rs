@@ -122,8 +122,6 @@ pub(crate) mod sitebuiltins;
 pub(crate) mod sqlite3;
 pub(crate) mod ssl;
 pub(crate) mod string_ext;
-#[cfg(not(feature = "stdlib_stringprep"))]
-pub(crate) mod stringprep;
 pub(crate) mod strings;
 #[cfg(not(feature = "stdlib_serial"))]
 pub(crate) mod structs;

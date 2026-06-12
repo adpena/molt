@@ -571,21 +571,112 @@ mod tests {
     fn assert_opcode_is_listed(op: OpCode) {
         use OpCode::*;
         match op {
-            Add | CheckedAdd | Sub | Mul | InplaceAdd | InplaceSub | InplaceMul | Div | FloorDiv | Mod | Pow
-            | Neg | Pos | Eq | Ne | Lt | Le | Gt | Ge | Is | IsNot | In | NotIn | BitAnd | BitOr
-            | BitXor | BitNot | Shl | Shr | And | Or | Not | Bool | Alloc | StackAlloc
-            | ObjectNewBound | ObjectNewBoundStack | Free | LoadAttr | StoreAttr | DelAttr
-            | Index | StoreIndex | DelIndex | Call | CallMethod | CallBuiltin | OrdAt | BoxVal
-            | UnboxVal | TypeGuard | IncRef | DecRef | BuildList | BuildDict | BuildTuple
-            | BuildSet | BuildSlice | GetIter | IterNext | IterNextUnboxed | ForIter | AllocTask
-            | StateSwitch | StateTransition | StateYield | ChanSendYield | ChanRecvYield
-            | ClosureLoad | ClosureStore | Yield | YieldFrom | Raise | CheckException
-            | ExceptionPending | FunctionDefaultsVersion | TryStart | TryEnd | StateBlockStart
-            | StateBlockEnd | ConstInt
-            | ConstBigInt | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
-            | ImportFrom | ModuleCacheGet | ModuleCacheSet | ModuleCacheDel | ModuleGetAttr
-            | ModuleImportFrom | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal
-            | ModuleDelGlobalIfPresent | WarnStderr | ScfIf | ScfFor | ScfWhile | ScfYield
+            Add
+            | CheckedAdd
+            | Sub
+            | Mul
+            | InplaceAdd
+            | InplaceSub
+            | InplaceMul
+            | Div
+            | FloorDiv
+            | Mod
+            | Pow
+            | Neg
+            | Pos
+            | Eq
+            | Ne
+            | Lt
+            | Le
+            | Gt
+            | Ge
+            | Is
+            | IsNot
+            | In
+            | NotIn
+            | BitAnd
+            | BitOr
+            | BitXor
+            | BitNot
+            | Shl
+            | Shr
+            | And
+            | Or
+            | Not
+            | Bool
+            | Alloc
+            | StackAlloc
+            | ObjectNewBound
+            | ObjectNewBoundStack
+            | Free
+            | LoadAttr
+            | StoreAttr
+            | DelAttr
+            | Index
+            | StoreIndex
+            | DelIndex
+            | DeleteVar
+            | Call
+            | CallMethod
+            | CallBuiltin
+            | OrdAt
+            | BoxVal
+            | UnboxVal
+            | TypeGuard
+            | IncRef
+            | DecRef
+            | BuildList
+            | BuildDict
+            | BuildTuple
+            | BuildSet
+            | BuildSlice
+            | GetIter
+            | IterNext
+            | IterNextUnboxed
+            | ForIter
+            | AllocTask
+            | StateSwitch
+            | StateTransition
+            | StateYield
+            | ChanSendYield
+            | ChanRecvYield
+            | ClosureLoad
+            | ClosureStore
+            | Yield
+            | YieldFrom
+            | Raise
+            | CheckException
+            | ExceptionPending
+            | FunctionDefaultsVersion
+            | TryStart
+            | TryEnd
+            | StateBlockStart
+            | StateBlockEnd
+            | ConstInt
+            | ConstBigInt
+            | ConstFloat
+            | ConstStr
+            | ConstBool
+            | ConstNone
+            | ConstBytes
+            | Copy
+            | Import
+            | ImportFrom
+            | ModuleCacheGet
+            | ModuleCacheSet
+            | ModuleCacheDel
+            | ModuleGetAttr
+            | ModuleImportFrom
+            | ModuleGetGlobal
+            | ModuleGetName
+            | ModuleSetAttr
+            | ModuleDelGlobal
+            | ModuleDelGlobalIfPresent
+            | WarnStderr
+            | ScfIf
+            | ScfFor
+            | ScfWhile
+            | ScfYield
             | Deopt => {}
         }
     }
@@ -638,6 +729,7 @@ mod tests {
             Index,
             StoreIndex,
             DelIndex,
+            DeleteVar,
             Call,
             CallMethod,
             CallBuiltin,

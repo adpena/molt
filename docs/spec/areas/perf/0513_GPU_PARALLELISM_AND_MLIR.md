@@ -62,7 +62,21 @@ This crate provides:
 	  integer/unsigned constructor upload, typed zeros, handle-only raw readback,
 	  elementwise unary/binary operations, ternary `where`, typed casts,
 	  explicit-axis reductions, and Rust-owned all-axis reductions through
-	  `molt_gpu_prim_reduce_all`.
+	  `molt_gpu_prim_reduce_all`. The public `src/tinygrad/` shim exposes the same
+	  `molt.gpu.Tensor` class for both module and from-import forms, and the
+	  enabled `tinygrad_off_the_shelf` friend-suite adapter includes
+	  `where_promotion` and `movement_views` to lock dtype promotion, ternary
+	  select behavior, and pad/shrink/flip/contiguous view movement through the
+	  public API. The suite's Molt runner is executable with the full-stdlib
+	  static-package command; current evidence reaches the backend daemon, then
+	  the memory guard terminates `molt-backend --daemon` at 12.005 GB RSS after
+	  435.5s before adapter workload execution. Native TIR optimization now
+	  consumes uncached user functions in bounded op/count batches and drops each
+	  batch after applying/cache-writing optimized ops; guarded follow-up reached
+	  `2602` uncached user functions in `41` bounded batches and moved the peak
+	  single backend process to 9.77 GB. The remaining Molt-side blocker is
+	  aggregate process-tree RSS from overlapping daemon plus one-shot
+	  fallback/codegen lifetimes before adapter workload execution.
 	  Movement-family view operations (`reshape`,
 	  `expand`, `permute`,
 	  zero-fill `pad`, `shrink`, `flip`, `contiguous`) now lower through GPU

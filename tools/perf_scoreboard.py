@@ -385,16 +385,16 @@ def _safe_run_json(
         "--",
         *cmd,
     ]
-    try:
-        proc = subprocess.run(
-            full,
-            env=env,
-            stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout_s + 30.0,
-        )
-    except subprocess.TimeoutExpired:
+    proc = harness_memory_guard.guarded_completed_process(
+        full,
+        prefix="MOLT_BENCH",
+        env=env,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s + 30.0,
+    )
+    if proc.timed_out:
         return RunOutcome(False, None, None, "timeout", None)
 
     payload = _parse_safe_run_line(proc.stderr or "")
@@ -525,6 +525,32 @@ def _robust_cell_stable(molt: PhaseStats, cpy: PhaseStats) -> bool:
 # verdict it produces is EXPLORATORY, never a compiler target.
 
 
+def _metadata_probe(
+    cmd: list[str],
+    *,
+    timeout_s: float = 10.0,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run one bounded host metadata probe.
+
+    This is intentionally the only raw ``subprocess.run`` surface for
+    perf-scoreboard host metadata. Workload, build, profiling, and benchmark
+    children must use the memory guard; this helper is for tiny read-only host
+    probes such as ``sysctl``, ``ps``, ``pgrep``, and ``git``.
+    """
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd) if cwd is not None else None,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_s,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def _list_build_processes() -> list[dict]:
     """Active cargo/rustc/molt-backend/molt-build processes, EXCLUDING codex.
 
@@ -536,14 +562,8 @@ def _list_build_processes() -> list[dict]:
     self_pid = os.getpid()
     parent_pid = os.getppid()
     pattern = "|".join(_BUILD_PROC_PATTERNS)
-    try:
-        res = subprocess.run(
-            ["pgrep", "-fl", pattern],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = _metadata_probe(["pgrep", "-fl", pattern], timeout_s=15)
+    if res is None:
         # If we cannot probe, we cannot certify quiet — report a sentinel so the
         # caller downgrades authority rather than silently trusting the run.
         return [{"pid": -1, "cmd": "pgrep-unavailable", "probe_failed": True}]
@@ -571,14 +591,8 @@ def _list_build_processes() -> list[dict]:
 
 def _loadavg_1m() -> float | None:
     """1-minute load average via ``sysctl -n vm.loadavg`` (macOS)."""
-    try:
-        res = subprocess.run(
-            ["sysctl", "-n", "vm.loadavg"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = _metadata_probe(["sysctl", "-n", "vm.loadavg"])
+    if res is None:
         return None
     # Output form: "{ 3.28 3.08 3.22 }"
     parts = (res.stdout or "").replace("{", "").replace("}", "").split()
@@ -589,11 +603,8 @@ def _loadavg_1m() -> float | None:
 
 
 def _ncpu() -> int | None:
-    try:
-        res = subprocess.run(
-            ["sysctl", "-n", "hw.ncpu"], capture_output=True, text=True, timeout=10
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = _metadata_probe(["sysctl", "-n", "hw.ncpu"])
+    if res is None:
         return None
     out = (res.stdout or "").strip()
     return int(out) if out.isdigit() else None
@@ -607,11 +618,8 @@ def _runnable_thread_count() -> int | None:
     low load but already shows runnable threads. ``ps -A -o stat=`` lists every
     process's state code; a leading 'R' is runnable/running.
     """
-    try:
-        res = subprocess.run(
-            ["ps", "-A", "-o", "stat="], capture_output=True, text=True, timeout=10
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = _metadata_probe(["ps", "-A", "-o", "stat="])
+    if res is None:
         return None
     n = 0
     for line in (res.stdout or "").splitlines():
@@ -627,11 +635,8 @@ def _thermal_ok() -> tuple[bool | None, str | None]:
     'best-effort, skip if unavailable'). ok=False iff a thermal/CPU power
     *warning level* is recorded (throttling in progress would skew timings).
     """
-    try:
-        res = subprocess.run(
-            ["pmset", "-g", "therm"], capture_output=True, text=True, timeout=10
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = _metadata_probe(["pmset", "-g", "therm"])
+    if res is None:
         return None, "pmset unavailable"
     text = (res.stdout or "") + (res.stderr or "")
     if not text.strip():
@@ -816,6 +821,24 @@ def _resolve_sampler() -> str | None:
     return None
 
 
+def _profiling_popen(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
+    """Start one interactive profiling child under MOLT_BENCH process custody."""
+    limits = harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+    kwargs = harness_memory_guard.batch_process_group_kwargs(limits, env=env)
+    return subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        **kwargs,
+    )
+
+
 def capture_cycle_profile(
     cmd: list[str],
     *,
@@ -877,11 +900,9 @@ def capture_cycle_profile(
     # named target_name appears, then samples it. We launch it as a background
     # Popen, then start the workload; sample catches the workload at launch.
     try:
-        sampler_proc = subprocess.Popen(
+        sampler_proc = _profiling_popen(
             [sampler, target_name, str(sample_seconds), "-wait", "-mayDie",
-             "-f", str(out_file)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+             "-f", str(out_file)]
         )
     except OSError as exc:
         return {
@@ -890,12 +911,7 @@ def capture_cycle_profile(
             "note": f"could not start sampler in -wait mode: {exc!r}",
         }
     try:
-        proc = subprocess.Popen(
-            safe_cmd,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        proc = _profiling_popen(safe_cmd, env=env)
     except OSError as exc:
         _terminate(sampler_proc)
         return {
@@ -945,14 +961,7 @@ def _shquote(arg: str) -> str:
 
 
 def _terminate(proc: subprocess.Popen) -> None:
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except (subprocess.TimeoutExpired, OSError):
-        try:
-            proc.kill()
-        except OSError:
-            pass
+    harness_memory_guard.force_close_process_group(proc)
 
 
 def _parse_sample_heaviest(out_file: Path, *, top_n: int) -> list[dict]:
@@ -1321,9 +1330,7 @@ def capture_hot_only_profile(
     ]
     # --- (2) WARMUP: launch the workload, sleep warmup_s, THEN attach ---------
     try:
-        proc = subprocess.Popen(
-            safe_cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        proc = _profiling_popen(safe_cmd, env=env)
     except OSError as exc:
         try:
             out_file.unlink()
@@ -1342,7 +1349,7 @@ def capture_hot_only_profile(
     _time.sleep(warmup_s)  # let the first iterations warm up (excluded from window)
     # --- (3) SAMPLE: attach to the now-running steady-state process -----------
     try:
-        sampler_proc = subprocess.Popen(
+        sampler_proc = _profiling_popen(
             [
                 sampler,
                 target_name,
@@ -1350,9 +1357,7 @@ def capture_hot_only_profile(
                 "-mayDie",
                 "-f",
                 str(out_file),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            ]
         )
     except OSError as exc:
         _terminate(proc)
@@ -2750,17 +2755,24 @@ class CodonRunner:
             str(script_path),
         ]
         try:
-            res = subprocess.run(
+            res = harness_memory_guard.guarded_completed_process(
                 build_cmd,
+                prefix="MOLT_BENCH",
+                cwd=REPO_ROOT,
+                env=self._run_env(),
                 capture_output=True,
                 text=True,
                 timeout=300,
-                env=self._run_env(),
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except OSError as exc:
             cell.codon_equivalent = False
             cell.codon_note = f"codon build error: {exc!r}"
             log_lines.append(f"codon build EXCEPTION: {exc!r} — not scored")
+            return
+        if res.timed_out:
+            cell.codon_equivalent = False
+            cell.codon_note = "codon build timed out after 300s"
+            log_lines.append("codon build TIMEOUT — not scored")
             return
         if res.returncode != 0 or not out_bin.exists():
             tail = (res.stderr or res.stdout or "").strip()[-400:]
@@ -2851,16 +2863,8 @@ def _git_rev() -> str:
 
 
 def _git_output(args: list[str]) -> str | None:
-    try:
-        res = subprocess.run(
-            ["git", *args],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = _metadata_probe(["git", *args], cwd=REPO_ROOT, timeout_s=30)
+    if res is None:
         return None
     if res.returncode != 0:
         return None
@@ -4760,11 +4764,8 @@ def _resolve_codon(arg: str) -> str | None:
 def _probe_interp_version(interp_bin: str | None) -> str | None:
     if not interp_bin:
         return None
-    try:
-        res = subprocess.run(
-            [interp_bin, "--version"], capture_output=True, text=True, timeout=30
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = _metadata_probe([interp_bin, "--version"], timeout_s=30)
+    if res is None:
         return None
     out = (res.stdout or res.stderr or "").strip().splitlines()
     return out[0].replace("Python ", "") if out else None
@@ -4773,11 +4774,8 @@ def _probe_interp_version(interp_bin: str | None) -> str | None:
 def _probe_codon_version(codon_bin: str | None) -> str | None:
     if not codon_bin:
         return None
-    try:
-        res = subprocess.run(
-            [codon_bin, "--version"], capture_output=True, text=True, timeout=30
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = _metadata_probe([codon_bin, "--version"], timeout_s=30)
+    if res is None:
         return None
     out = (res.stdout or res.stderr or "").strip()
     return f"codon {out}" if out else None
@@ -4818,14 +4816,8 @@ def _resolve_system_cpython(explicit: str | None) -> str:
 
 
 def _probe_cpython_version(cpython_bin: str) -> str:
-    try:
-        res = subprocess.run(
-            [cpython_bin, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    res = _metadata_probe([cpython_bin, "--version"], timeout_s=30)
+    if res is None:
         return "unknown"
     out = (res.stdout or res.stderr or "").strip()
     return out.replace("Python ", "") or "unknown"

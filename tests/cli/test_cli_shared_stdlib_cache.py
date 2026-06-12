@@ -1,13 +1,15 @@
 import os
+import hashlib
+import json
 from pathlib import Path
 import subprocess
 import sys
-import time
+from typing import Mapping
 
 import pytest
 
 import molt.cli as cli
-from tests.cli.process_guard import close_cli_test_process_group, guarded_cli_test_popen
+from tests.cli.process_guard import run_cli_test_process
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,12 +45,55 @@ def _ir_with_stdlib(*, user_ops: list[dict], stdlib_ops: list[dict]) -> dict:
     }
 
 
+def _compile_c_object(tmp_path: Path, name: str, source: str) -> Path:
+    src = tmp_path / f"{name}.c"
+    obj = tmp_path / f"{name}.o"
+    src.write_text(source, encoding="utf-8")
+    run_cli_test_process(
+        ["clang", "-c", str(src), "-o", str(obj)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return obj
+
+
 def _manifest(cache_key: str) -> str:
     return f'{{"cache_key":"{cache_key}"}}'
 
 
 def _partition_manifest(name: str = "partition-a") -> str:
     return f'{{"body_hash":"{name}","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}}'
+
+
+def _legacy_streamed_cache_digest(
+    payload_ir: Mapping[str, object],
+    *,
+    target: str,
+    target_triple: str | None,
+    variant: str,
+    schema_version: str,
+) -> str:
+    payload = json.dumps(
+        payload_ir,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=cli._json_ir_default,
+    ).encode("utf-8")
+    suffix = target_triple or target
+    if variant:
+        suffix = f"{suffix}:{variant}"
+    return hashlib.sha256(
+        payload
+        + b"|"
+        + suffix.encode("utf-8")
+        + b"|"
+        + cli._cache_fingerprint().encode("utf-8")
+        + b"|"
+        + cli._cache_tooling_fingerprint().encode("utf-8")
+        + b"|"
+        + schema_version.encode("utf-8")
+    ).hexdigest()
 
 
 def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
@@ -79,6 +124,35 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
     )
 
     assert key_a == key_b
+
+
+def test_shared_stdlib_cache_key_streams_legacy_payload_digest() -> None:
+    variant = _cache_variant()
+    stdlib_modules = _explicit_stdlib_modules("sys")
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+    payload_ir = cli._shared_stdlib_cache_payload_ir(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=stdlib_modules,
+        compiler_fingerprint="compiler-fingerprint",
+    )
+    assert cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=stdlib_modules,
+        target_triple="aarch64-apple-darwin",
+        cache_variant=variant,
+        compiler_fingerprint="compiler-fingerprint",
+    ) == _legacy_streamed_cache_digest(
+        payload_ir,
+        target="native-stdlib",
+        target_triple="aarch64-apple-darwin",
+        variant=variant,
+        schema_version=cli._CACHE_KEY_SCHEMA_VERSION,
+    )
 
 
 def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> None:
@@ -440,6 +514,33 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
     assert key_a != key_b
 
 
+def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
+    variant = _cache_variant()
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+
+    key_a = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=_explicit_stdlib_modules("sys"),
+        target_triple=None,
+        cache_variant=variant,
+    )
+    key_b = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=_explicit_stdlib_modules(
+            "importlib", "importlib_machinery", "importlib_util", "sys"
+        ),
+        target_triple=None,
+        cache_variant=variant,
+    )
+
+    assert key_a != key_b
+
+
 def test_shared_stdlib_cache_matches_key_requires_present_matching_contract(
     tmp_path: Path,
 ) -> None:
@@ -736,9 +837,11 @@ def test_validate_shared_stdlib_cache_contract_preserves_other_keyed_siblings(
 def test_validate_shared_stdlib_cache_contract_does_not_unlink_mismatched_exact_key_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    stdlib_object = tmp_path / ".molt_cache" / "stdlib_shared_active.o"
-    stdlib_object.parent.mkdir(parents=True)
-    stdlib_object.write_bytes(b"stdlib")
+    stdlib_object = _compile_c_object(
+        tmp_path,
+        "stdlib_shared_active",
+        "void molt_init_sys(void) {}\n",
+    )
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "wrong-key\n", encoding="utf-8"
     )
@@ -759,127 +862,84 @@ def test_validate_shared_stdlib_cache_contract_does_not_unlink_mismatched_exact_
     assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
 
 
-def test_validate_shared_stdlib_cache_contract_waits_for_publish_lock(
+def test_shared_stdlib_cache_publish_lock_excludes_competing_process(
     tmp_path: Path,
 ) -> None:
-    stdlib_object = tmp_path / ".molt_cache" / "stdlib_shared_active.o"
-    stdlib_object.parent.mkdir(parents=True)
-    stdlib_object.write_bytes(b"stdlib")
-    ready_path = tmp_path / "holder.ready"
-    release_path = tmp_path / "holder.release"
+    if os.name != "posix":
+        pytest.skip("publish-lock exclusion uses POSIX flock")
+    stdlib_object = _compile_c_object(
+        tmp_path,
+        "stdlib_shared_active",
+        "void molt_init_sys(void) {}\n",
+    )
     key = "active-key"
     manifest = _manifest(key)
     partition_manifest = _partition_manifest()
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
 
-    holder_code = r"""
-from pathlib import Path
-import sys
-import time
-import molt.cli as cli
-
-stdlib_object = Path(sys.argv[1])
-ready_path = Path(sys.argv[2])
-release_path = Path(sys.argv[3])
-key = sys.argv[4]
-manifest = sys.argv[5]
-partition_manifest = sys.argv[6]
-
-with cli._shared_stdlib_cache_lock(stdlib_object):
-    ready_path.write_text("ready\n", encoding="utf-8")
-    while not release_path.exists():
-        time.sleep(0.01)
-    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
-        key + "\n", encoding="utf-8"
-    )
-    cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
-        "1\n", encoding="utf-8"
-    )
-    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
-        manifest + "\n", encoding="utf-8"
-    )
-    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
-        partition_manifest + "\n", encoding="utf-8"
-    )
-"""
-    invalidator_code = r"""
+    probe_code = r"""
+import fcntl
+import os
 from pathlib import Path
 import sys
 import molt.cli as cli
 
-cli._validate_shared_stdlib_cache_contract(
-    Path(sys.argv[1]),
-    project_root=Path(sys.argv[2]),
-    expected_key=sys.argv[3],
-    expected_manifest=sys.argv[4],
-)
-"""
-
-    holder = guarded_cli_test_popen(
-        [
-            sys.executable,
-            "-c",
-            holder_code,
-            str(stdlib_object),
-            str(ready_path),
-            str(release_path),
-            key,
-            manifest,
-            partition_manifest,
-        ],
-        cwd=str(ROOT),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    invalidator: subprocess.Popen[str] | None = None
+lock_path = cli._shared_stdlib_publish_lock_path(Path(sys.argv[1]))
+lock_path.parent.mkdir(parents=True, exist_ok=True)
+fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+try:
     try:
-        deadline = time.monotonic() + 5.0
-        while not ready_path.exists() and time.monotonic() < deadline:
-            if holder.poll() is not None:
-                stdout, stderr = holder.communicate(timeout=1)
-                pytest.fail(
-                    f"publish-lock holder exited early with {holder.returncode}: "
-                    f"stdout={stdout!r} stderr={stderr!r}"
-                )
-            time.sleep(0.02)
-        assert ready_path.exists()
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("blocked")
+        raise SystemExit(75)
+    print("acquired")
+finally:
+    os.close(fd)
+"""
 
-        invalidator = guarded_cli_test_popen(
-            [
-                sys.executable,
-                "-c",
-                invalidator_code,
-                str(stdlib_object),
-                str(tmp_path),
-                key,
-                manifest,
-            ],
+    with cli._shared_stdlib_cache_lock(stdlib_object):
+        blocked = run_cli_test_process(
+            [sys.executable, "-c", probe_code, str(stdlib_object)],
             cwd=str(ROOT),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            check=False,
+            capture_output=True,
             text=True,
         )
-        time.sleep(0.25)
-        if invalidator.poll() is not None:
-            stdout, stderr = invalidator.communicate(timeout=1)
-            pytest.fail(
-                "validator did not wait for the shared stdlib publish lock: "
-                f"stdout={stdout!r} stderr={stderr!r}"
-            )
+        assert blocked.returncode == 75, (blocked.stdout, blocked.stderr)
+        assert blocked.stdout.strip() == "blocked"
+        cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+            key + "\n", encoding="utf-8"
+        )
+        cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
+            "1\n", encoding="utf-8"
+        )
+        cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+            manifest + "\n", encoding="utf-8"
+        )
+        cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+            partition_manifest + "\n", encoding="utf-8"
+        )
 
-        release_path.write_text("release\n", encoding="utf-8")
-        holder_stdout, holder_stderr = holder.communicate(timeout=5)
-        assert holder.returncode == 0, (holder_stdout, holder_stderr)
-        invalidator_stdout, invalidator_stderr = invalidator.communicate(timeout=5)
-        assert invalidator.returncode == 0, (invalidator_stdout, invalidator_stderr)
-    finally:
-        if invalidator is not None:
-            close_cli_test_process_group(invalidator)
-        close_cli_test_process_group(holder)
+    acquired = run_cli_test_process(
+        [sys.executable, "-c", probe_code, str(stdlib_object)],
+        cwd=str(ROOT),
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert acquired.returncode == 0, (acquired.stdout, acquired.stderr)
+    assert acquired.stdout.strip() == "acquired"
+
+    cli._validate_shared_stdlib_cache_contract(
+        stdlib_object,
+        project_root=tmp_path,
+        expected_key=key,
+        expected_manifest=manifest,
+    )
 
     assert stdlib_object.exists()
     assert cli._stdlib_object_key_sidecar_path(stdlib_object).read_text(

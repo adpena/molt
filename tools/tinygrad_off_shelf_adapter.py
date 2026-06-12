@@ -86,9 +86,43 @@ def _workload_matmul_2x2(tinygrad: Any, iterations: int) -> dict[str, Any]:
     return {"elapsed_s": elapsed, "result": values}
 
 
+def _workload_where_promotion(tinygrad: Any, iterations: int) -> dict[str, Any]:
+    tensor = tinygrad.Tensor
+    cond = tensor([1, 0, 1, 0])
+    branch = tensor([1.5, 2.5, 3.5, 4.5])
+    result = None
+    start = time.perf_counter()
+    for _ in range(iterations):
+        result = _realize(cond.where(5, branch))
+    elapsed = time.perf_counter() - start
+    values = _as_nested_list(result)
+    _assert_close(values, [5.0, 2.5, 5.0, 4.5], workload="where_promotion")
+    return {"elapsed_s": elapsed, "result": values}
+
+
+def _workload_movement_views(tinygrad: Any, iterations: int) -> dict[str, Any]:
+    tensor = tinygrad.Tensor
+    base = tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    result = None
+    start = time.perf_counter()
+    for _ in range(iterations):
+        result = _realize(
+            base.pad((1, 0, 0, 1))
+            .shrink(((1, 3), (1, 3)))
+            .flip(1)
+            .contiguous()
+        )
+    elapsed = time.perf_counter() - start
+    values = _as_nested_list(result)
+    _assert_close(values, [[5.0, 4.0], [0.0, 0.0]], workload="movement_views")
+    return {"elapsed_s": elapsed, "result": values}
+
+
 WORKLOADS: dict[str, WorkloadFn] = {
     "elementwise_chain": _workload_elementwise_chain,
     "matmul_2x2": _workload_matmul_2x2,
+    "movement_views": _workload_movement_views,
+    "where_promotion": _workload_where_promotion,
 }
 
 

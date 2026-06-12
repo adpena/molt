@@ -20,7 +20,11 @@ CANONICAL_ROOT_ENV_KEYS = (
     "UV_CACHE_DIR",
     "TMPDIR",
 )
-CANONICAL_RUN_ENV_KEYS = (*CANONICAL_ROOT_ENV_KEYS, "MOLT_SESSION_ID")
+CANONICAL_RUN_ENV_KEYS = (
+    *CANONICAL_ROOT_ENV_KEYS,
+    "CARGO_INCREMENTAL",
+    "MOLT_SESSION_ID",
+)
 DEFAULT_EXTERNAL_ARTIFACT_ROOTS = (
     "/Volumes/VertigoDataTier/Molt",
     "/Volumes/APDataStore/Molt",
@@ -209,6 +213,7 @@ class RunContext:
 
         install_default("CARGO_TARGET_DIR", ext_root / "target")
         install_default("MOLT_DIFF_CARGO_TARGET_DIR", env["CARGO_TARGET_DIR"])
+        install_default("CARGO_INCREMENTAL", "0")
         install_default("MOLT_CACHE", ext_root / ".molt_cache")
         install_default("MOLT_DIFF_ROOT", ext_root / "tmp" / "diff")
         install_default("MOLT_DIFF_TMPDIR", ext_root / "tmp")

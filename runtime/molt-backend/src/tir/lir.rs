@@ -100,9 +100,10 @@ pub struct LirFunction {
     pub entry_block: BlockId,
     /// Mirror of TirFunction.label_id_map: maps a TIR block-id (u32) to
     /// the label_id (i64) it carries. Required for resolving exception
-    /// edges encoded as `CheckException`/`TryStart`/`TryEnd` op `value`
+    /// transfer edges encoded as `CheckException`/`TryStart` op `value`
     /// attrs into successor BlockIds during dominator/reachability
-    /// analysis.
+    /// analysis. `TryEnd.value` is still round-tripped as pairing metadata
+    /// but is not a transfer edge.
     pub label_id_map: HashMap<u32, i64>,
 }
 

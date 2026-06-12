@@ -24,6 +24,23 @@ def test_call_indirect_lowers_to_call_indirect_lane() -> None:
     }
 
 
+def test_call_bind_lowers_finalizer_fact() -> None:
+    op = MoltOp(
+        kind="CALL_BIND",
+        args=[MoltValue("callee"), MoltValue("callargs")],
+        result=MoltValue("out", type_hint="FinalizerClass"),
+        metadata={"defines_del": True},
+    )
+    lowered = _map_single(op)
+    assert lowered == {
+        "kind": "call_bind",
+        "args": ["callee", "callargs"],
+        "out": "out",
+        "type_hint": "FinalizerClass",
+        "defines_del": True,
+    }
+
+
 def test_invoke_ffi_lowers_to_invoke_ffi_lane() -> None:
     op = MoltOp(
         kind="INVOKE_FFI",

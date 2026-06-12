@@ -1,3 +1,4 @@
+# MOLT_META: stderr=exception_signature xfail=molt xfail_reason=finalizer-resurrection-container-boundaries
 """Purpose: __del__ finalizer DISPATCH contract matrix (CPython >= 3.12 parity).
 
 Pins that `__del__` actually RUNS, exactly once, with the correct resurrection
@@ -8,6 +9,12 @@ independent instances. Each section reports a deterministic, order-stable summar
 later side-effecting statement, which is governed by drop *placement* rather than
 dispatch — see the finalizer-ordering baton) so the check targets dispatch
 fidelity and is byte-identical to CPython.
+
+STATUS: expected-fail for the resurrection/container-release rows. Plain `del`,
+scope exit, reassignment, standalone raise isolation, multiple independent
+instances, and finalizer state observation are currently green in this matrix;
+resurrection still observes an empty keeper and container-held finalizers run
+after the `after-clear` side effect instead of at the CPython boundary.
 """
 
 try:

@@ -33,6 +33,9 @@
 #                  §2.3): the Copy-lifted `_original_kind` spellings that free an
 #                  operand internally (the CallArgs builder), finer than the
 #                  OpCode. Consumed by drop_insertion.rs's op_consumed_operand_root.
+#   - [[absorbing_kind]] — per-SPELLING result-absorption facts for Copy-lifted
+#                  constructors (`*_new`) whose result owns operand lifetimes
+#                  without becoming first-class [[kind]] aliases.
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -56,7 +59,13 @@ classifier_fresh_value = [
     "dict_new",
     "dict_values",
     "enumerate",
+    "exception_new",
+    "exception_new_builtin",
+    "exception_new_builtin_empty",
+    "exception_new_builtin_one",
+    "exception_new_from_class",
     "float_from_obj",
+    "frozenset_new",
     # The augassign in-place family. Every molt_inplace_* runtime symbol
     # returns an OWNED +1 reference regardless of object identity (a mutating
     # __iadd__-style fast path inc_refs and returns operand 0; the dunder /
@@ -95,6 +104,17 @@ classifier_fresh_value = [
     "tuple_new",
 ]
 
+# exception CreationRef producers: a fresh exception object reference whose
+# source ownership is released at the `raise` boundary after the runtime has
+# recorded the exception in handler/context state.
+classifier_exception_creation_ref = [
+    "exception_new",
+    "exception_new_builtin",
+    "exception_new_builtin_empty",
+    "exception_new_builtin_one",
+    "exception_new_from_class",
+]
+
 # ...and the prefix form (the vec_* vectorized-reduction family, each calling a
 # dedicated molt_vec_* runtime reduction returning a fresh boxed result).
 classifier_fresh_value_prefixes = [
@@ -131,6 +151,21 @@ classifier_no_heap_move = [
     "store_var",
 ]
 
+[[absorbing_kind]]
+kind = "dict_new"
+
+[[absorbing_kind]]
+kind = "frozenset_new"
+
+[[absorbing_kind]]
+kind = "list_new"
+
+[[absorbing_kind]]
+kind = "set_new"
+
+[[absorbing_kind]]
+kind = "tuple_new"
+
 # ===========================================================================
 # Per-OpCode effect classification (EXHAUSTIVE over the OpCode enum).
 #
@@ -155,6 +190,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Sub"
@@ -162,6 +198,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Mul"
@@ -169,6 +206,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckedAdd"
@@ -176,6 +214,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceAdd"
@@ -183,6 +222,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceSub"
@@ -190,6 +230,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "InplaceMul"
@@ -197,6 +238,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Div"
@@ -204,6 +246,7 @@ may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "FloorDiv"
@@ -211,6 +254,7 @@ may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Mod"
@@ -218,6 +262,7 @@ may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Pow"
@@ -228,6 +273,7 @@ may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Neg"
@@ -235,6 +281,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Pos"
@@ -242,6 +289,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Eq"
@@ -249,6 +297,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Ne"
@@ -256,6 +305,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Lt"
@@ -263,6 +313,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Le"
@@ -270,6 +321,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Gt"
@@ -277,6 +329,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Ge"
@@ -284,6 +337,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Is"
@@ -291,6 +345,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "IsNot"
@@ -298,6 +353,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "In"
@@ -305,6 +361,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "NotIn"
@@ -312,6 +369,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "BitAnd"
@@ -319,6 +377,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "BitOr"
@@ -326,6 +385,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "BitXor"
@@ -333,6 +393,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "BitNot"
@@ -340,6 +401,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Shl"
@@ -352,6 +414,7 @@ may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Shr"
@@ -360,6 +423,7 @@ may_throw = true
 side_effecting = false
 purity = "pure_may_throw"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "And"
@@ -367,6 +431,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Or"
@@ -374,6 +439,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Not"
@@ -381,6 +447,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Bool"
@@ -388,6 +455,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Alloc"
@@ -395,6 +463,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "StackAlloc"
@@ -402,6 +471,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ObjectNewBound"
@@ -409,6 +479,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ObjectNewBoundStack"
@@ -416,6 +487,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Free"
@@ -423,6 +495,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "LoadAttr"
@@ -440,6 +513,7 @@ purity = "impure"
 # frees nothing — so the consume axis (`op_consumed_operand_root`) reads it as
 # non-consuming; the keepalive is the extra liveness coupling layered on top.
 operand_ownership = ["interior_borrow_keepalive"]
+result_absorbs_operands = false
 
 [[opcode]]
 name = "StoreAttr"
@@ -447,6 +521,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "DelAttr"
@@ -454,6 +529,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Index"
@@ -469,6 +545,7 @@ purity = "impure"
 # does NOT borrow into it. Per-position so only the container carries the
 # keepalive; both operands remain non-consumed (the op frees neither).
 operand_ownership = ["interior_borrow_keepalive", "borrowed"]
+result_absorbs_operands = false
 
 [[opcode]]
 name = "StoreIndex"
@@ -476,6 +553,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "DelIndex"
@@ -483,6 +561,15 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "DeleteVar"
+may_throw = false
+side_effecting = true
+purity = "impure"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Call"
@@ -490,6 +577,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "CallMethod"
@@ -497,6 +585,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "CallBuiltin"
@@ -504,6 +593,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "OrdAt"
@@ -511,6 +601,7 @@ may_throw = true
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "BoxVal"
@@ -518,6 +609,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "UnboxVal"
@@ -525,6 +617,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "TypeGuard"
@@ -532,6 +625,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "IncRef"
@@ -539,13 +633,15 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "DecRef"
 may_throw = false
 side_effecting = true
 purity = "impure"
-operand_ownership = "all_borrowed"
+operand_ownership = "all_consumed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "BuildList"
@@ -553,6 +649,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildDict"
@@ -560,6 +657,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildTuple"
@@ -567,6 +665,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildSet"
@@ -574,6 +673,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = true
 
 [[opcode]]
 name = "BuildSlice"
@@ -581,6 +681,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "GetIter"
@@ -588,6 +689,7 @@ may_throw = true
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "IterNext"
@@ -595,6 +697,7 @@ may_throw = true
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "IterNextUnboxed"
@@ -602,6 +705,7 @@ may_throw = true
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ForIter"
@@ -609,6 +713,7 @@ may_throw = true
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "AllocTask"
@@ -616,6 +721,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "StateSwitch"
@@ -623,6 +729,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "StateTransition"
@@ -630,6 +737,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "StateYield"
@@ -637,6 +745,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ChanSendYield"
@@ -644,6 +753,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ChanRecvYield"
@@ -651,6 +761,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ClosureLoad"
@@ -658,6 +769,7 @@ may_throw = true
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ClosureStore"
@@ -665,6 +777,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Yield"
@@ -672,6 +785,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "YieldFrom"
@@ -679,6 +793,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Raise"
@@ -686,6 +801,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "CheckException"
@@ -693,6 +809,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ExceptionPending"
@@ -700,6 +817,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 # Reads a function object's `__defaults__`/`__kwdefaults__` mutation version
 # stamp (a mutable runtime slot). Like `ExceptionPending`, the value can change
@@ -714,6 +832,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "TryStart"
@@ -721,6 +840,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "TryEnd"
@@ -728,6 +848,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "StateBlockStart"
@@ -735,6 +856,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "StateBlockEnd"
@@ -742,6 +864,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstInt"
@@ -749,6 +872,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBigInt"
@@ -756,6 +880,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstFloat"
@@ -763,6 +888,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstStr"
@@ -770,6 +896,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBool"
@@ -777,6 +904,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstNone"
@@ -784,6 +912,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ConstBytes"
@@ -791,6 +920,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Copy"
@@ -798,6 +928,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Import"
@@ -805,6 +936,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ImportFrom"
@@ -812,6 +944,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleCacheGet"
@@ -819,6 +952,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleCacheSet"
@@ -826,6 +960,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleCacheDel"
@@ -833,6 +968,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleGetAttr"
@@ -840,6 +976,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleImportFrom"
@@ -847,6 +984,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleGetGlobal"
@@ -854,6 +992,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleGetName"
@@ -861,6 +1000,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleSetAttr"
@@ -868,6 +1008,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleDelGlobal"
@@ -875,6 +1016,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ModuleDelGlobalIfPresent"
@@ -882,6 +1024,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "WarnStderr"
@@ -889,6 +1032,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ScfIf"
@@ -896,6 +1040,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ScfFor"
@@ -903,6 +1048,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ScfWhile"
@@ -910,6 +1056,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "ScfYield"
@@ -917,6 +1064,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 [[opcode]]
 name = "Deopt"
@@ -924,6 +1072,7 @@ may_throw = false
 side_effecting = true
 purity = "impure"
 operand_ownership = "all_borrowed"
+result_absorbs_operands = false
 
 # ===========================================================================
 # kind_to_opcode mapper (ssa.rs). OpCode-equivalence groups: canonical = the
@@ -1155,6 +1304,11 @@ mapper_opcode = "StoreIndex"
 canonical = "del_index"
 aliases = []
 mapper_opcode = "DelIndex"
+
+[[kind]]
+canonical = "delete_var"
+aliases = []
+mapper_opcode = "DeleteVar"
 
 [[kind]]
 canonical = "call"
@@ -1978,6 +2132,10 @@ opcode = "IncRef"
 kind = "DEC_REF"
 opcode = "DecRef"
 
+[[frontend_check_exception_skip]]
+kind = "DELETE_VAR"
+opcode = "DeleteVar"
+
 # Opcode-backed, may_throw, but exceptional edge handled structurally.
 [[frontend_check_exception_skip]]
 kind = "RAISE"
@@ -2121,6 +2279,10 @@ reason = "structural: set __context__ on an exception object"
 [[frontend_check_exception_skip]]
 kind = "EXCEPTION_MATCH_BUILTIN"
 reason = "structural: except-clause type match test (pure predicate)"
+
+[[frontend_check_exception_skip]]
+kind = "CONTEXT_EXIT"
+reason = "control-flow: propagation check is owned by with cleanup after exception frame release"
 
 [[frontend_check_exception_skip]]
 kind = "CONTEXT_UNWIND_TO"

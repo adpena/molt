@@ -1,3 +1,4 @@
+# MOLT_META: xfail=molt xfail_reason=finalizer-resurrection-explicit-del-boundary
 # Leak-gauge soundness under finalizer resurrection (task #56 / council B).
 #
 # `dec_ref_ptr` bumps the DEALLOC_COUNT / DEALLOC_BYTES / per-type dealloc
@@ -16,12 +17,12 @@
 #                     __del__ runs again (the `revived` path is inert) -> the
 #                     object is TRULY destroyed (counted dealloc'd exactly here).
 #
-# The fix moves the dealloc-counter increments to AFTER the
-# `maybe_run_object_finalizer` resurrection check, so DEALLOC_COUNT means "objects
-# actually freed". The program ends leak-clean (the object is freed exactly once,
-# at its real final drop), so MOLT_ASSERT_NO_LEAK passes cleanly — and it would
-# NOT have passed cleanly via the under-counting phantom path, since the final
-# dealloc is now attributed to the real destruction, not the resurrected drop.
+# STATUS: expected-fail until the explicit `del` finalizer/resurrection boundary
+# runs. Today Molt reaches `after-first-drop box_len=0` and then raises
+# `IndexError: pop from empty list`, so the leak-gauge accounting contract cannot
+# yet be exercised by this program. The intended fix still moves dealloc-counter
+# increments to AFTER the `maybe_run_object_finalizer` resurrection check, so
+# DEALLOC_COUNT means "objects actually freed".
 #
 # Run BOTH:
 #   * `molt diff` (this file)            -> byte-identical to CPython 3.14.

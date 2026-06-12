@@ -172,8 +172,8 @@
     "D23": {
       "name": "CPython C-API extension (binary .so)",
       "status": "bridge",
-      "evidence": "runtime/molt-cpython-abi/ Track-2 dlopen bridge (~6258 lines, gated feature cext_loader, runtime-wired platform.rs:3652); OR Track-1 libmolt recompile (docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)",
-      "notes": "Used by numpy, scipy, pandas, lxml, pillow, orjson, pydantic-core. Doc 24: 'compatible-via-bridge (gated, unproven)'. POLICY DECISION PENDING: 0215 spec says 'no CPython ABI compatibility' but the bridge does exactly that (doc 24 OQ1/OQ2).",
+      "evidence": "runtime/molt-cpython-abi/ Track-2 dlopen bridge (~6258 lines, gated feature cext_loader, runtime-wired platform.rs:3652)",
+      "notes": "Used by binary-wheel bridge experiments for scipy, pandas, lxml, pillow, orjson, pydantic-core, and similar packages. Doc 24: 'compatible-via-bridge (gated, unproven)'. POLICY DECISION PENDING: 0215 spec says 'no CPython ABI compatibility' but the bridge does exactly that (doc 24 OQ1/OQ2). No-host Molt binaries must prefer the separate D28 source-recompiled libmolt extension path.",
       "tracking": "doc 24 LANE F Arc 3 (finish + prove + reconcile-policy the CPython-ABI bridge: real-wheel proof + two-track policy doc + capability gating); LANE D rank 2. Bridge is ~70% built, gated OFF, unproven against a real published wheel."
     },
     "D24": {
@@ -204,6 +204,13 @@
       "excluded_feature": "runtime import-graph mutation (sys.modules / __path__ rewriting)",
       "notes": "Used by namespace plugins doing runtime path tricks. Doc 24: 'incompatible-by-design'.",
       "tracking": "doc 24 LANE A.5 verified-subset policy boundary — permanent exclusion. Tracked as a documented design exclusion, not a gap."
+    },
+    "D28": {
+      "name": "Source-recompiled libmolt extension package",
+      "status": "partial",
+      "evidence": "include/numpy/ provides partial NumPy source-compat headers; include/molt/Python.h and docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md route the libmolt recompile path; bench/friends/manifest.toml registers pinned numpy_off_the_shelf with custody-only source audit, isolated public API workloads, explicit module.extension.exec capability in the Molt runner, all-loaded-`numpy.*` module-origin custody, and a status-aware `molt extension scan --source {suite_root}/numpy --fail-on-missing` C-API closure gauge that separates runtime_backed, source_compile_only, fail_fast, and missing symbols; tests/cli/test_cli_extension_commands.py exercises directory-source scanning, scan status classification, and small C-extension/header smoke; tests/cli/test_cli_import_collection.py exercises MOLT_EXTERNAL_STATIC_PACKAGES package-local native artifact sidecar validation, graph/wrapper/backend cache fingerprinting, deterministic native build publication under external_static_packages/<plan-digest>/, staged shim/package-init custody, generated native-binary runtime-root injection, final link fingerprinting of staged bytes, fail-closed unsupported target modes, and fail-closed drift detection after validation. No Molt no-host source-recompiled NumPy compile/import proof has passed yet.",
+      "notes": "Canonical no-host extension path for NumPy/scientific Python: rebuild extension sources against libmolt and Molt shim headers, package native modules into Molt artifacts, and fail closed when a required C-API symbol/package-loader/module-origin boundary is missing. This is intentionally separate from D23 CPython binary-wheel bridging.",
+      "tracking": "NumPy off-the-shelf compile lane: finish libmolt source-recompiled package build orchestration, status-aware NumPy C-API symbol closure, all-loaded module-origin custody, and pinned bench/friends numpy_off_the_shelf no-host compile/import/runtime-load proof without host-Python fallback."
     }
   }
 }

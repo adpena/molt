@@ -47,6 +47,15 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT / "tools") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+
+import harness_memory_guard
 
 
 @dataclass(frozen=True)
@@ -236,14 +245,27 @@ def _self_test() -> int:
     plan = analyze(ok_src, inner_loops=7)
     assert plan.ok and plan.inner_loops == 7 and "for _ in range(7):" in plan.source
     # Semantics-preserving: looped source prints the one-shot output N times.
-    import subprocess as _sp
     import tempfile as _tf
 
-    one = _sp.run(["python3", "-c", ok_src], capture_output=True, text=True).stdout
+    one = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", ok_src],
+        prefix="MOLT_BENCH",
+        capture_output=True,
+        text=True,
+        timeout=30.0,
+        cwd=REPO_ROOT,
+    ).stdout
     with _tf.NamedTemporaryFile("w", suffix=".py", delete=False) as fh:
         fh.write(plan.source)
         p = fh.name
-    looped = _sp.run(["python3", p], capture_output=True, text=True).stdout
+    looped = harness_memory_guard.guarded_completed_process(
+        [sys.executable, p],
+        prefix="MOLT_BENCH",
+        capture_output=True,
+        text=True,
+        timeout=30.0,
+        cwd=REPO_ROOT,
+    ).stdout
     import os as _os
 
     _os.unlink(p)

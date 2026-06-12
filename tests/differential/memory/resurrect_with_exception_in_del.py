@@ -9,20 +9,14 @@
 # exception SIGNATURE (type+message) since the traceback frame/address formatting
 # differs across engines.
 #
-# STATUS: the IC SIGSEGV is FIXED. The remaining divergence is a SEPARATE,
-# pre-existing finalizer exception-state defect (NOT the IC bug): an exception
-# raised in `__del__` is NOT reliably swallowed in molt — whether it is swallowed
-# is COMPOSITION-DEPENDENT (the same no-`__init__` raise-in-`__del__` class
-# swallows correctly in isolation but PROPAGATES and aborts the program when other
-# finalizer classes precede it in the same program; observed crash on the FIRST
-# raise here). CPython always swallows (prints an "Exception ignored while calling
-# deallocator" warning to stderr, continues). The likely locus is the
-# exception-baseline / pending-exception-stack interaction during finalizer
-# dispatch (object/mod.rs maybe_run_object_finalizer exception-clear, reached via
-# gc.collect() -> weakref_collect_for_gc). Marked xfail against the
-# finalizer-exception-swallow baton; auto-flips to xpass-failure when fixed.
-# stderr is compared by exception signature (frame/address formatting differs).
-# MOLT_META: stderr=exception_signature xfail=molt xfail_reason=finalizer-exception-swallow-composition-dependent-not-the-IC-fix
+# STATUS: expected-fail. The standalone finalizer-exception path is isolated, but
+# this resurrection form still misses the explicit `del`/gc boundary: `__del__`
+# has not appended the object by the time mainline observes `box`, so Molt prints
+# `after_del box_len 0` and then raises IndexError on `box[0]`. Keep this as an
+# xfail until the finalizer dispatch/resurrection boundary matches CPython; the
+# harness will turn a real fix into XPASS-failure instead of silently weakening
+# the contract.
+# MOLT_META: stderr=exception_signature xfail=molt xfail_reason=finalizer-resurrection-explicit-del-boundary
 import gc
 
 box = []

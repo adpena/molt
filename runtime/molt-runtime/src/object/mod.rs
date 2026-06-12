@@ -314,7 +314,7 @@ fn debug_alloc_object_type() -> Option<u32> {
 pub struct MoltHeader {
     pub type_id: u32,            // 4 bytes
     pub ref_count: MoltRefCount, // 4 bytes
-    pub flags: u32,              // 4 bytes (bits 0-16 used)
+    pub flags: u32,              // 4 bytes (semantic bits declared below)
     pub size_class: u16,         // 2 bytes — index into SIZE_CLASS_TABLE
     pub cold_idx: u32,           // 4 bytes — index into COLD_HEADER_SLAB (0 = none)
     pub reserved: u32,           // 4 bytes — keeps payload 8-byte aligned
@@ -463,6 +463,10 @@ pub(crate) const HEADER_FLAG_FINALIZER_RAN: u32 = 1 << 16;
 // String content is an ASCII identifier stored in the global intern pool.
 // Objects with this flag are also immortal (never freed).
 pub(crate) const HEADER_FLAG_INTERNED: u32 = 1 << 17;
+/// `TYPE_ID_OBJECT` instance whose class MRO contains `__del__`. This makes the
+/// non-finalizer rc->0 path an O(1) header test and keeps ordinary attribute
+/// lookup out of finalizer dispatch.
+pub(crate) const HEADER_FLAG_INSTANCE_HAS_FINALIZER: u32 = 1 << 18;
 /// Container (list, tuple, dict, set) has at least one element that is a heap
 /// pointer (TAG_PTR).  When this flag is clear, `dec_ref` cleanup can skip
 /// iterating over elements because they are all primitives (int/float/bool/None).
@@ -477,6 +481,10 @@ pub(crate) const HEADER_FLAG_RAW_ALLOC: u32 = 1 << 20;
 /// the arena reclaims memory in bulk when `molt_arena_free` runs at scope
 /// exit. Set by `molt_arena_alloc_object`.
 pub(crate) const HEADER_FLAG_ARENA: u32 = 1 << 21;
+
+/// `TYPE_ID_TYPE` metadata bit: instances of this class are finalizer-sensitive
+/// because the class MRO contains `__del__`.
+pub(crate) const HEADER_FLAG_CLASS_HAS_FINALIZER: u32 = 1 << 22;
 
 // ---------------------------------------------------------------------------
 // Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
@@ -1397,6 +1405,102 @@ pub(crate) unsafe fn object_is_exact_builtin_dict(_py: &PyToken<'_>, ptr: *mut u
 pub(crate) unsafe fn object_set_class_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     crate::gil_assert();
     object_set_state(ptr, bits as i64);
+    unsafe {
+        apply_instance_finalizer_flag_from_class(ptr, bits);
+    }
+}
+
+#[inline]
+unsafe fn class_header_has_finalizer(class_ptr: *mut u8) -> bool {
+    unsafe {
+        object_type_id(class_ptr) == TYPE_ID_TYPE
+            && ((*header_from_obj_ptr(class_ptr)).flags & HEADER_FLAG_CLASS_HAS_FINALIZER) != 0
+    }
+}
+
+unsafe fn apply_instance_finalizer_flag_from_class(ptr: *mut u8, class_bits: u64) {
+    unsafe {
+        let header = header_from_obj_ptr(ptr);
+        if (*header).type_id != TYPE_ID_OBJECT {
+            return;
+        }
+        let has_finalizer = obj_from_bits(class_bits)
+            .as_ptr()
+            .is_some_and(|class_ptr| class_header_has_finalizer(class_ptr));
+        if has_finalizer {
+            (*header).flags |= HEADER_FLAG_INSTANCE_HAS_FINALIZER;
+        } else {
+            (*header).flags &= !HEADER_FLAG_INSTANCE_HAS_FINALIZER;
+        }
+    }
+}
+
+unsafe fn class_lookup_raw_mro_dict_attr(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    attr_bits: u64,
+) -> Option<u64> {
+    unsafe {
+        let visit = |candidate_bits: u64| -> Option<u64> {
+            let candidate_ptr = obj_from_bits(candidate_bits).as_ptr()?;
+            if object_type_id(candidate_ptr) != TYPE_ID_TYPE {
+                return None;
+            }
+            let dict_bits = layout::class_dict_bits(candidate_ptr);
+            let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
+            if object_type_id(dict_ptr) != TYPE_ID_DICT {
+                return None;
+            }
+            crate::dict_get_in_place(_py, dict_ptr, attr_bits)
+        };
+
+        let mro_bits = layout::class_mro_bits(class_ptr);
+        if let Some(mro_ptr) = obj_from_bits(mro_bits).as_ptr()
+            && object_type_id(mro_ptr) == TYPE_ID_TUPLE
+        {
+            for class_bits in (*seq_vec_ptr(mro_ptr)).iter().copied() {
+                if let Some(bits) = visit(class_bits) {
+                    return Some(bits);
+                }
+            }
+            return None;
+        }
+        visit(MoltObject::from_ptr(class_ptr).bits())
+    }
+}
+
+pub(crate) unsafe fn class_refresh_finalizer_flag(_py: &PyToken<'_>, class_ptr: *mut u8) {
+    unsafe {
+        crate::gil_assert();
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return;
+        }
+        let Some(del_name_bits) = crate::attr_name_bits_from_bytes(_py, b"__del__") else {
+            return;
+        };
+        let has_finalizer = class_lookup_raw_mro_dict_attr(_py, class_ptr, del_name_bits).is_some();
+        dec_ref_bits(_py, del_name_bits);
+
+        let header = header_from_obj_ptr(class_ptr);
+        if has_finalizer {
+            (*header).flags |= HEADER_FLAG_CLASS_HAS_FINALIZER;
+        } else {
+            (*header).flags &= !HEADER_FLAG_CLASS_HAS_FINALIZER;
+        }
+    }
+}
+
+/// Seal a class object after bulk definition has materialized its namespace,
+/// bases/MRO, and layout metadata.
+///
+/// Dynamic class attribute mutation still refreshes its own derived facts at the
+/// mutation point. Bulk class construction can bypass those setters with raw
+/// namespace copies, so every creation path routes through this single seal
+/// before instances may be allocated from the class.
+pub(crate) unsafe fn class_finish_definition(_py: &PyToken<'_>, class_ptr: *mut u8) {
+    unsafe {
+        class_refresh_finalizer_flag(_py, class_ptr);
+    }
 }
 
 pub(crate) unsafe fn object_mark_has_ptrs(_py: &PyToken<'_>, ptr: *mut u8) {
@@ -1704,6 +1808,9 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     if unsafe { (*header_ptr).type_id } != TYPE_ID_OBJECT {
         return false;
     }
+    if (unsafe { (*header_ptr).flags } & HEADER_FLAG_INSTANCE_HAS_FINALIZER) == 0 {
+        return false;
+    }
     if (unsafe { (*header_ptr).flags } & HEADER_FLAG_FINALIZER_RAN) != 0 {
         return false;
     }
@@ -1733,6 +1840,15 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let Some(del_name_bits) = crate::attr_name_bits_from_bytes(py, b"__del__") else {
         return false;
     };
+    let raw_del_bits = obj_from_bits(class_bits)
+        .as_ptr()
+        .and_then(|class_ptr| unsafe {
+            class_lookup_raw_mro_dict_attr(py, class_ptr, del_name_bits)
+        });
+    dec_ref_bits(py, del_name_bits);
+    let Some(raw_del_bits) = raw_del_bits else {
+        return false;
+    };
     unsafe {
         (*header_ptr).flags |= HEADER_FLAG_FINALIZER_RAN;
     }
@@ -1746,35 +1862,38 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     if let Some(bits) = prior_exc_bits {
         inc_ref_bits(py, bits);
     }
-    let missing_bits = crate::missing_bits(py);
-    let del_bits = crate::molt_get_attr_name_default(self_bits, del_name_bits, missing_bits);
-    dec_ref_bits(py, del_name_bits);
-    if del_bits != missing_bits {
-        // Run `__del__` under a SYNTHETIC exception-handler frame so an uncaught
-        // raise inside it is recorded VALUE-BASED and swallowed below, instead of
-        // killing the process. ROOT CAUSE of #65 (definitively measured): when a
-        // raise reaches `molt_raise` with `exception_handler_active()` false (the
-        // `EXCEPTION_STACK` empty), molt's uncaught-exception terminator runs
-        // `std::process::exit(1)` (exceptions.rs). It is NOT a "native unwind"
-        // (that misdiagnosis drove the now-reverted deferral apparatus) — it is a
-        // hard process exit, which is why `catch_unwind` caught nothing and a
-        // baseline change did nothing (the baseline does not gate the terminator;
-        // an empty handler stack does). A finalizer runs at an empty handler stack
-        // unless a surrounding `try:` happens to leave a frame on it — that is the
-        // observed composition dependence. Pushing exactly one handler frame here
-        // makes `molt_raise` take the value-based path, `call_callable0` return,
-        // and the swallow run in EVERY context — CPython's implicit "ignore
-        // exceptions during finalization" boundary, in runtime form. This mirrors
-        // the compiled try-frame (`molt_exception_push`/`molt_exception_pop`); no
-        // `catch_unwind`, no backend landing pad, no deferral, and `__del__` still
-        // runs INLINE at the rc→0 point so finalization stays CPython-prompt.
-        crate::builtins::exceptions::exception_stack_push();
+    // Run `__del__` lookup/binding/call under a SYNTHETIC exception-handler frame
+    // so an uncaught raise inside it is recorded VALUE-BASED and swallowed below,
+    // instead of killing the process. ROOT CAUSE of #65 (definitively measured):
+    // when a raise reaches `molt_raise` with `exception_handler_active()` false
+    // (the `EXCEPTION_STACK` empty), molt's uncaught-exception terminator runs
+    // `std::process::exit(1)` (exceptions.rs). It is NOT a "native unwind" (that
+    // misdiagnosis drove the now-reverted deferral apparatus) — it is a hard
+    // process exit, which is why `catch_unwind` caught nothing and a baseline
+    // change did nothing (the baseline does not gate the terminator; an empty
+    // handler stack does). A finalizer runs at an empty handler stack unless a
+    // surrounding `try:` happens to leave a frame on it — that is the observed
+    // composition dependence. Pushing exactly one handler frame here makes
+    // `molt_raise` take the value-based path, `call_callable0` return, and the
+    // swallow run in EVERY context — CPython's implicit "ignore exceptions during
+    // finalization" boundary, in runtime form. This mirrors the compiled
+    // try-frame (`molt_exception_push`/`molt_exception_pop`); no `catch_unwind`, no
+    // backend landing pad, no deferral, and `__del__` still runs INLINE at the
+    // rc→0 point so finalization stays CPython-prompt.
+    crate::builtins::exceptions::exception_stack_push();
+    let del_bits = obj_from_bits(class_bits)
+        .as_ptr()
+        .and_then(|class_ptr| unsafe {
+            crate::builtins::attr::descriptor_bind(py, raw_del_bits, class_ptr, Some(ptr))
+        })
+        .unwrap_or(0);
+    if del_bits != 0 && !crate::exception_pending(py) {
         let result_bits = unsafe { crate::call_callable0(py, del_bits) };
-        crate::builtins::exceptions::exception_stack_pop(py);
         if !obj_from_bits(result_bits).is_none() {
             dec_ref_bits(py, result_bits);
         }
     }
+    crate::builtins::exceptions::exception_stack_pop(py);
     if !obj_from_bits(del_bits).is_none() {
         dec_ref_bits(py, del_bits);
     }

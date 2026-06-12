@@ -23,32 +23,36 @@
 //!     value's release must land at the Python boundary (scope exit / `del`), not
 //!     SSA last-use. (Computed/consumed by the NEXT commit; see below.)
 //!
-//! STATUS — INERT. This commit computes the FinalizerSensitive set (the rung the
-//! release-ordering fix consumes) and unit-tests it. NO backend yet consults it, so
-//! codegen is byte-identical. The behaviour flip — extending a FinalizerSensitive
-//! value's `last_use`/release to the function's `Terminator::Return` boundary, in the
-//! shared `liveness`/value-tracking path so BOTH the dormant-native value-tracking
-//! and `drop_insertion` honor it — is the next commit (Commit 3). Non-finalizer
-//! values KEEP SSA-last-use release (no perf loss); the gate is exactly this set.
+//! STATUS — ACTIVE. DropInsertion consumes this lattice to extend a
+//! FinalizerSensitive value's release to the Python lifetime boundary. Non-
+//! finalizer values KEEP SSA-last-use release (no perf loss); the gate is
+//! exactly this generated fact-plane set.
 
 use std::collections::HashSet;
 
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
+use crate::tir::op_kinds_generated::{
+    kind_result_absorbs_operand_ownership_table, opcode_result_absorbs_operand_ownership_table,
+};
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 use super::escape_analysis::finalizer_alloc_roots;
 
-/// A constructor whose RESULT takes ownership of its element operands — releasing
-/// the result releases the elements. So a finalizer-sensitive element makes the
-/// result finalizer-sensitive (the release of the container is what fires the
-/// element's `__del__`). Mutation absorption (`StoreAttr`/`StoreIndex`/`list.append`)
-/// is a later rung — `c_scope` is pure construction (`[A()]` = `BuildList`).
-fn is_absorbing_constructor(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::BuildList | OpCode::BuildTuple | OpCode::BuildDict | OpCode::BuildSet
-    )
+fn original_kind(op: &TirOp) -> Option<&str> {
+    match op.attrs.get("_original_kind") {
+        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
+        _ => None,
+    }
+}
+
+/// True when the result owns the operand lifetimes. This is generated fact-plane
+/// authority, split by representation: first-class TIR opcodes read the opcode
+/// table; Copy-preserved SimpleIR spellings read the `_original_kind` table.
+fn op_result_absorbs_operand_ownership(op: &TirOp) -> bool {
+    opcode_result_absorbs_operand_ownership_table(op.opcode)
+        || (op.opcode == OpCode::Copy
+            && original_kind(op).is_some_and(kind_result_absorbs_operand_ownership_table))
 }
 
 /// The minimal ownership-lattice slice for finalizer ordering (#58).
@@ -76,7 +80,7 @@ impl OwnershipLattice {
             changed = false;
             for block in func.blocks.values() {
                 for op in &block.ops {
-                    if !is_absorbing_constructor(op.opcode) {
+                    if !op_result_absorbs_operand_ownership(op) {
                         continue;
                     }
                     let absorbs_sensitive = op
@@ -113,7 +117,7 @@ impl OwnershipLattice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::blocks::{TirBlock, Terminator};
+    use crate::tir::blocks::Terminator;
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
@@ -133,6 +137,21 @@ mod tests {
     fn del_op(result: ValueId) -> TirOp {
         let mut o = op(OpCode::ObjectNewBound, vec![], vec![result]);
         o.attrs.insert("defines_del".into(), AttrValue::Bool(true));
+        o
+    }
+
+    fn del_call_bind(result: ValueId) -> TirOp {
+        let mut o = op(OpCode::Call, vec![], vec![result]);
+        o.attrs
+            .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+        o.attrs.insert("defines_del".into(), AttrValue::Bool(true));
+        o
+    }
+
+    fn original_kind_copy(kind: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+        let mut o = op(OpCode::Copy, operands, results);
+        o.attrs
+            .insert("_original_kind".into(), AttrValue::Str(kind.into()));
         o
     }
 
@@ -165,10 +184,61 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![] };
 
         let lat = OwnershipLattice::compute(&f);
-        assert!(lat.is_finalizer_sensitive(a), "the __del__ object is sensitive");
+        assert!(
+            lat.is_finalizer_sensitive(a),
+            "the __del__ object is sensitive"
+        );
         assert!(
             lat.is_finalizer_sensitive(list),
             "the list absorbing the __del__ object must be sensitive (#58 c_scope)"
+        );
+    }
+
+    #[test]
+    fn copy_list_new_absorbing_finalizer_object_is_sensitive() {
+        // Real SimpleIR lowering preserves `list_new` as Copy{_original_kind}
+        // rather than canonicalizing it to BuildList. The generated
+        // result-absorption fact must cover that spelling without aliasing it.
+        let mut f = func();
+        let a = f.fresh_value();
+        let list = f.fresh_value();
+        let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+        entry.ops.push(del_op(a));
+        entry
+            .ops
+            .push(original_kind_copy("list_new", vec![a], vec![list]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let lat = OwnershipLattice::compute(&f);
+        assert!(lat.is_finalizer_sensitive(a));
+        assert!(
+            lat.is_finalizer_sensitive(list),
+            "Copy-preserved list_new must absorb the __del__ object's lifetime"
+        );
+    }
+
+    #[test]
+    fn call_bind_defines_del_into_list_new_is_sensitive() {
+        // Finalizer classes decline OBJECT_NEW_BOUND constructor folding, so the
+        // real frontend shape is CALL_BIND(class_ref, callargs) -> list_new.
+        let mut f = func();
+        let a = f.fresh_value();
+        let list = f.fresh_value();
+        let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+        entry.ops.push(del_call_bind(a));
+        entry
+            .ops
+            .push(original_kind_copy("list_new", vec![a], vec![list]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let lat = OwnershipLattice::compute(&f);
+        assert!(
+            lat.is_finalizer_sensitive(a),
+            "defines_del call result is the owning finalizer root"
+        );
+        assert!(
+            lat.is_finalizer_sensitive(list),
+            "Copy-preserved list_new must absorb the call-created finalizer object"
         );
     }
 
@@ -197,7 +267,9 @@ mod tests {
         let entry = f.blocks.get_mut(&f.entry_block).unwrap();
         entry.ops.push(del_op(a));
         entry.ops.push(op(OpCode::BuildList, vec![a], vec![inner]));
-        entry.ops.push(op(OpCode::BuildList, vec![inner], vec![outer]));
+        entry
+            .ops
+            .push(op(OpCode::BuildList, vec![inner], vec![outer]));
         entry.terminator = Terminator::Return { values: vec![] };
 
         let lat = OwnershipLattice::compute(&f);

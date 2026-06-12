@@ -331,7 +331,53 @@ def test_extension_scan_fail_on_missing_returns_error(tmp_path: Path, capsys) ->
     assert "PyCode_NewWithPosOnlyArgs" in payload["data"]["missing_symbols"]
 
 
-def test_extension_scan_numpy_surface_symbols_supported(tmp_path: Path, capsys) -> None:
+def test_extension_scan_accepts_source_directories_deterministically(
+    tmp_path: Path, capsys
+) -> None:
+    project_root = tmp_path / "scan_dir_project"
+    src = project_root / "src"
+    nested = src / "nested"
+    ignored = src / "build"
+    nested.mkdir(parents=True)
+    ignored.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-dir'\n")
+    (src / "a.c").write_text(
+        "#include <Python.h>\nPyObject *a(void) { return PyLong_FromLong(1); }\n"
+    )
+    (nested / "b.h").write_text(
+        "#include <Python.h>\nvoid *b(void) { return (void *)PyCode_NewWithPosOnlyArgs; }\n"
+    )
+    (ignored / "ignored.c").write_text(
+        "#include <Python.h>\nvoid *ignored(void) { return (void *)PyObject_Str; }\n"
+    )
+    (src / "not_a_source.txt").write_text("PyObject_Repr should not be scanned\n")
+
+    rc = cli.extension_scan(
+        project=str(project_root),
+        sources=[str(src)],
+        fail_on_missing=False,
+        json_output=True,
+        verbose=False,
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    data = payload["data"]
+    scanned = [
+        Path(path).relative_to(project_root).as_posix()
+        for path in data["required_by_file"]
+    ]
+    assert scanned == ["src/a.c", "src/nested/b.h"]
+    assert data["source_count"] == 2
+    assert "PyLong_FromLong" in data["supported_symbols"]
+    assert data["symbol_status"]["PyLong_FromLong"] == "runtime_backed"
+    assert "PyCode_NewWithPosOnlyArgs" in data["missing_symbols"]
+    assert data["symbol_status"]["PyCode_NewWithPosOnlyArgs"] == "missing"
+
+
+def test_extension_scan_numpy_surface_reports_fail_fast_symbols(
+    tmp_path: Path, capsys
+) -> None:
     project_root = tmp_path / "numpy_scanproj"
     project_root.mkdir()
     _write_extension_numpy_project(project_root)
@@ -342,20 +388,23 @@ def test_extension_scan_numpy_surface_symbols_supported(tmp_path: Path, capsys) 
         json_output=True,
         verbose=False,
     )
-    assert rc == 0
+    assert rc == 1
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "ok"
+    assert payload["status"] == "error"
     data = payload["data"]
     assert data["missing_symbols"] == []
-    assert "PyArray_DescrFromType" in data["supported_symbols"]
-    assert "PyArray_NDIM" in data["supported_symbols"]
-    assert "PyArray_SIZE" in data["supported_symbols"]
-    assert "PyArray_TYPE" in data["supported_symbols"]
-    assert "PyTypeNum_ISINTEGER" in data["supported_symbols"]
-    assert "PyArray_CheckScalar" in data["supported_symbols"]
-    assert "PyArray_ISDATETIME" in data["supported_symbols"]
-    assert "PyArray_DescrFromScalar" in data["supported_symbols"]
-    assert "PyArray_CastScalarToCtype" in data["supported_symbols"]
+    assert "PyArray_CastScalarToCtype" in data["fail_fast_symbols"]
+    assert "PyArray_CastScalarToCtype" not in data["supported_symbols"]
+    assert data["symbol_status"]["PyArray_CastScalarToCtype"] == "fail_fast"
+    assert "PyArray_NDIM" in data["source_compile_only_symbols"]
+    assert data["symbol_status"]["PyArray_NDIM"] == "source_compile_only"
+    assert "PyArray_SIZE" in data["source_compile_only_symbols"]
+    assert "PyArray_TYPE" in data["source_compile_only_symbols"]
+    assert "PyTypeNum_ISINTEGER" in data["source_compile_only_symbols"]
+    assert "PyArray_CheckScalar" in data["source_compile_only_symbols"]
+    assert "PyArray_ISDATETIME" in data["source_compile_only_symbols"]
+    assert "PyArray_DescrFromScalar" in data["source_compile_only_symbols"]
+    assert "PyArray_DescrFromType" in data["source_compile_only_symbols"]
 
 
 def test_extension_build_emits_wheel_and_manifest(tmp_path: Path, monkeypatch) -> None:

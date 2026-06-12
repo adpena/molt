@@ -339,6 +339,9 @@ pub extern "C" fn molt_type_new(
             }
             return MoltObject::none().bits();
         }
+        unsafe {
+            crate::object::class_finish_definition(_py, class_ptr);
+        }
 
         let mut kw_pairs: Vec<(u64, u64)> = Vec::new();
         let kwargs_obj = obj_from_bits(kwargs_bits);
@@ -854,6 +857,7 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                 dec_ref_bits(_py, mro_bits);
             }
             if bases_updated || mro_updated {
+                crate::object::class_refresh_finalizer_flag(_py, class_ptr);
                 class_bump_layout_version(class_ptr);
             }
         }

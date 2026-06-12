@@ -18,6 +18,12 @@ the implementation. For forward-looking priorities, use
 ## Supported Today
 
 - Native AOT compilation is real and active.
+- Native Cranelift codegen decomposition is active at function-boundary
+  granularity: `native_backend/function_compiler/fc/` owns extracted op-family
+  handlers, and scalar builtin runtime calls for `id`, `ord`, fused `ord_at`,
+  and `chr` now dispatch through `fc::scalar_builtins` rather than inline
+  `compile_func_inner` arms. The old `len` arm remains inline intentionally
+  because it owns tuple scalarization and representation-plan specialization.
 - Standalone binary workflows are a first-class product requirement.
 - Differential testing against CPython is a core validation path.
 - Build target semantics are explicit for Python `3.12`, `3.13`, and `3.14`:
@@ -44,8 +50,46 @@ the implementation. For forward-looking priorities, use
   `PYTHONPATH`, and auto site-packages can make a package resolvable, but
   transitive external package closure is admitted only by direct entry imports
   or an explicit `MOLT_EXTERNAL_STATIC_PACKAGES` package declaration. The graph
-  cache key includes this policy, and frontend known-module checks no longer
-  treat a known top-level package as authorization for every dotted child.
+  cache key includes this policy. Explicitly admitted external packages now
+  scan package-local `.so`/`.pyd` artifacts during build admission, require a
+  nearby `extension_manifest.json` with matching module, extension path,
+  extension SHA-256, ABI, target triple, platform tag, and capabilities, and
+  fingerprint the artifact/manifest custody facts in graph, wrapper build, and
+  backend object-cache inputs. Native builds publish the validated artifact,
+  sidecar, package `__init__.py` chain, and runtime extension shim candidates
+  into a deterministic `external_static_packages/<plan-digest>/` runtime root;
+  generated native binaries inject that staged root into canonical
+  `MOLT_MODULE_ROOTS` before runtime startup, while target modes without a
+  runtime-custody consumer fail closed. The final native link fingerprint hashes
+  those staged bytes without treating runtime-loaded extensions as linker
+  inputs, and fingerprint-write failures surface as build warnings in both text
+  and JSON output. Repo-owned roots keep internal
+  custody even when duplicated by respected `PYTHONPATH` (for example
+  `PYTHONPATH=src`), so full-profile stdlib/importlib builds retain transitive
+  runtime imports such as `abc` and `copy` instead of discovering missing
+  modules at link or runtime.
+  Frontend module analysis now records path-backed `ModuleSourceLease` metadata
+  and releases source text/ASTs after dependency/default extraction; serial and
+  parallel lowering borrow source through validated leases, and worker payloads
+  carry path/stat custody rather than the full source string. This moves the
+  off-the-shelf tinygrad/static-package path away from retaining the whole
+  upstream graph through compile while still failing closed if a source file
+  changes between analysis and lowering.
+  Backend dispatch now mirrors that custody shape: daemon requests use `ir_path`
+  leases and one-shot backend compiles pass `--ir-file`, with JSON IR streamed
+  directly into `tmp/backend-ir-leases/` rather than materializing a second full
+  byte buffer for stdin.
+  Backend IR preparation now rejects direct calls to module-owned symbols whose
+  modules are missing from the materialized graph before codegen and reports the
+  originating function/op index, turning graph-closure drift into a fast
+  build-time error while preserving lazy `MODULE_IMPORT` runtime boundaries.
+  Frontend known-module checks no longer treat a known top-level package as
+  authorization for every dotted child.
+  Module path resolution is exact-case even on case-insensitive filesystems, so
+  `pkg.Tensor` cannot resolve through `pkg/tensor.py`. Frontend fromlist
+  lowering now prepares only graph-proven child modules as a runtime side effect
+  and always reads the final binding through `MODULE_IMPORT_FROM`, preserving
+  package exports over same-named child modules.
 - The `molt_async_sleep` intrinsic now owns the public two-argument sleep-future
   constructor symbol directly. The one-argument internal poll callback is
   `molt_async_sleep_poll`; the legacy `molt_async_sleep_new` name/symbol bridge
@@ -160,14 +204,25 @@ the implementation. For forward-looking priorities, use
 - The TIR RC drop-insertion substrate is implemented as a terminal drop phase
   (`runtime/molt-backend/src/tir/drop_phase.rs`) backed by
   representation-filtered liveness (`tir/passes/liveness.rs`) and
-  `tir/passes/drop_insertion.rs`. It is active for LLVM, WASM, and Luau through
-  `target_uses_tir_drop_insertion`; native Cranelift remains gated off until the
-  loop-phi representation invariant is repaired and the competing native
-  value-tracking RC path can be deleted as a second source of truth.
+  `tir/passes/drop_insertion.rs`. It is active for LLVM, WASM, Luau, and native
+  Cranelift for the proven shared-drop and ExceptionRegion slices through the
+  shared TIR authority. WASM runtime parity, broader RC/finalizer balance
+  validation, and deletion of any stale native value-tracking assumptions that
+  no longer own release placement remain the convergence work before this can be
+  treated as a global RC ownership claim.
 - Finalizer dispatch is implemented through the runtime `dec_ref_ptr` /
-  `maybe_run_object_finalizer` authority and the committed finalizer matrix, but
-  Python-visible finalizer ordering and standalone `__del__` exception-swallow
-  semantics remain open ownership-boundary defects.
+  `maybe_run_object_finalizer` authority and the committed finalizer matrix.
+  Runtime execution now records class-MRO finalizer sensitivity on class and
+  instance headers, so non-finalizer objects never perform dying-instance
+  `__del__` lookup. The standalone raising-finalizer lane, native scope-exit
+  ordering gate, plain-object false-positive guard, object-attribute release
+  smoke, exit-semantics lane, and explicit local `del` / `gc.collect()`
+  resurrection-once gate are green. `DeleteVar` carries the old slot occupant as
+  a first-class TIR operand, stores the missing sentinel before releasing that
+  old occupant, and the shared drop pass owns the delete-boundary release.
+  Container-owned release boundaries and the broader resurrection/leak matrix
+  remain fail-closed xfails with raw mismatches preserved; Molt still observes
+  empty container event lists where CPython runs nested `__del__` paths.
 - Configurable runtime memory protection is supported and opt-in. A compiled
   binary caps its own memory through a single `ResourceLimits` enforcement path:
   the human-readable `MOLT_MEMORY_LIMIT` env (e.g. `64M`, `2G`) is an alias that
@@ -190,17 +245,77 @@ the implementation. For forward-looking priorities, use
   interpreter-option and programmatic `pytest.main()` launches use pytest's
   initial hook args as the re-exec authority, forged guard markers fail closed
   unless the live ancestor chain contains this repo's memory guard, and
-  `--noconftest` / unsafe `--confcutdir` are rejected before tests can run.
+  `--noconftest`, unsafe `--confcutdir`, unsafe pytest `-c`, memory-guard
+  plugin disabling through argv or `PYTEST_ADDOPTS`, and autoload-disabled runs
+  without the explicit repo guard config plugin are rejected before tests can
+  run. Direct `tests/**.py` scripts and `python -m tests.*` module launches now
+  share the same fail-closed re-exec path through path-local `tests/*/sitecustomize.py`
+  routers plus project `src/sitecustomize.py` for `uv run`/editable project
+  interpreters, keeping differential corpus directories free of harness files.
+  Re-execed pytest and parent-side harness/standalone test commands install canonical
+  `MOLT_PYTEST_CURRENT_TEST_FILE` custody under `tmp/pytest-memory-guard/`;
+  serial pytest writes the bounded active-node JSON there, while xdist workers
+  write bounded per-worker sidecars under the aggregate file's `.d/` sibling.
+  Parent-side guard incidents reject noncanonical current-test paths, include
+  all bounded worker records, and mark a worker record when the violating pid's
+  sampled lineage proves it. Incident repro payloads also include bounded
+  Claude/Codex/app-server/renderer/node-repl control-plane PGID/process samples so a
+  parent host crash can be correlated with the guarded command without
+  unbounded artifact clutter.
   Shared harness custody is also mandatory: legacy `*_MEMORY_GUARD=0` env knobs
   are ignored rather than routing to raw `subprocess.run` or PTY execution. The
-  tempfile-backed capture helper is also always guarded, so build/probe lanes
-  that need file-backed stdout/stderr cannot bypass RSS custody. The
-  repo process sentinel excludes ancestor plus Codex app/control-plane process
-  groups from violation/drain kill sets while recording skipped protected groups
-  in bounded JSONL diagnostics. Sentinel violation, drain, and stale-preflight
-  events now include sampled process rows, external parent pids, resolved guard
-  limits, and bounded repro context with cwd, safe env, pytest identity, guard
-  process lineage, and sentinel label/argv where applicable. Cleanup JSON embeds
+  tempfile-backed capture helper is a byte-mode adapter over the same
+  `memory_guard.run_guarded` authority, so build/probe lanes that need
+  file-backed stdout/stderr carry the same RSS custody, repro diagnostics,
+  guarded-command profile payload, and Cargo incremental quarantine receipt as
+  pipe/text callers. Automatic repo process sentinels scope violation/drain kill
+  sets to the guarded current process tree, exclude ancestor plus Claude/Codex
+  app/control-plane process groups, protect external Claude/Codex-descendant
+  process groups that are not owned by the current guard, and record skipped
+  protected groups in bounded JSONL diagnostics. The raw low-level and
+  `tools/process_sentinel.py` process-group terminators now re-sample protected
+  ancestor/Claude/Codex PGIDs immediately before signaling, so stale scanner
+  state cannot turn into a Claude/Codex/control-plane kill. The out-of-band
+  sentinel's `--until-clean-sec`
+  mode performs a final clean-window scan and processes any newly observed
+  delayed launch before returning, while stale preflight ignores orphaned host
+  processes that lack Molt/repo command identity even when a numeric PGID was
+  reused. `tools/check_memory_guard_wiring.py` now consumes
+  `tools/check_subprocess_guard_coverage.py`; the subprocess audit is clean and
+  the wiring audit now fails closed on any future unexpected raw launcher,
+  stale allowlist entry, or expanded allowlist count. `tools/dx_build_timer.py` has been
+  migrated to the shared `MOLT_DX_BUILD` guard for Cargo build timing and
+  version probes. `tools/cold_start_decompose.py` routes safe-run, no-op C
+  compile, dyld timing, and Molt-probe build subprocesses through one
+  `MOLT_COLD_START` guard family. `tools/gen_intrinsics.py` routes `rustfmt`
+  through `MOLT_GENERATOR` custody. `tools/perf_inner_repeat.py` self-tests and
+  perf-scoreboard inner-repeat proof children now run through `MOLT_BENCH` /
+  `MOLT_TEST` custody instead of local raw `subprocess.run` launchers.
+  `tools/perf_scoreboard.py` now routes `safe_run.py --json` workload timing
+  children and Codon build children through `MOLT_BENCH` custody, and collapses
+  pgrep/sysctl/ps/pmset/git/version checks onto one bounded `_metadata_probe`
+  raw metadata authority. Interactive `/usr/bin/sample` profiling children now
+  enter one `_profiling_popen` helper with `MOLT_BENCH` process-group custody
+  and shared force-close cleanup instead of scattered raw `Popen` calls.
+  `tools/molt_dev.py` now routes git/interpreter probes, live manifest gates,
+  toolchain marker probes, worktree cleanup, and difftest byte captures through
+  shared guard helpers; detached daemon execution uses fork/exec/wait custody
+  instead of `subprocess.call`, publishes `cmd.json`/`sid`/`pid`/`rc` state
+  files atomically, and leaves `probe_pid` as the only allowlisted low-level
+  pid liveness primitive.
+  `.github/workflows/kani.yml` now runs Kani install/setup and both proof lanes
+  through `tools/guarded_exec.py` with `MOLT_TEST_SUITE` custody.
+  Nightly and security-hardening workflows also guard cargo-deny/cargo-audit
+  install/check commands and direct Quint proof invocations through
+  `tools/guarded_exec.py`.
+  Explicit
+  stale-preflight and `tools/process_sentinel.py` operator cleanup remain
+  repo-scoped by command. Sentinel violation, drain, and stale-preflight events
+  now include sampled process rows, external parent pids, resolved guard limits,
+  kill scope, claim status, victim attribution, truthful killer-or-observer
+  attribution, `termination.attempted`, SIGTERM/SIGKILL metadata, and bounded
+  repro context with cwd, safe env, pytest identity, guard process lineage, and
+  sentinel label/argv where applicable. Cleanup JSON embeds
   parsed `sentinel_events` instead of leaving sentinel stdout as an unstructured
   side stream.
 - Backend daemon custody is identity-based and centralized in
@@ -210,19 +325,67 @@ the implementation. For forward-looking priorities, use
   `tests/molt_diff.py`, `tools/bench.py`, `tools/bench_wasm.py`,
   `tools/bench_individual.py --isolate-daemon`, and request-timeout paths only
   signal after socket-health or process-command verification and revalidate
-  before escalation. Native and WASM benchmark pruning now canonicalizes
-  `MOLT_SESSION_ID` before cleanup and terminates only identity-verified
-  current-session daemons, preserving concurrent warm daemon/cache state.
+  before escalation. Native, WASM, and differential benchmark pruning now
+  canonicalizes `MOLT_SESSION_ID` before cleanup and terminates only
+  identity-verified current-session daemons, preserving concurrent warm
+  daemon/cache state.
   Native and WASM benchmark builds also reuse Molt build caches by default and
   expose `--no-molt-build-cache` only for deliberate cold/no-cache studies.
+  Differential runs use the persistent diff cache root as the default
+  `MOLT_CACHE` when no explicit cache is configured, while per-test output and
+  temp roots remain ephemeral; `tests/molt_diff.py --stdlib-profile` forwards
+  full/micro stdlib selection without env-only setup.
   Shared exact-key stdlib cache artifacts are non-destructive on build/link/probe
   hot paths: contract mismatches skip reuse and republish under the per-entry
   lock instead of unlinking artifacts that another session may still be reading.
+  The shared stdlib cache key includes the sorted
+  `stdlib_module_symbols` partition authority, so a changed module-symbol set
+  cannot reuse a stale shared object even when function bodies and target inputs
+  otherwise match.
+  `MOLT_STDLIB_MODULE_SYMBOLS` has one backend parser authority and malformed
+  values fail closed instead of falling back to heuristic shared-stdlib
+  partitioning.
+  TIR `ExceptionRegions` diagnostics now fail closed at the pass-manager
+  verification boundary, so missing, ambiguous, or too-early handler-match-ref
+  release facts cannot silently flow into backend lowering. Shared drop
+  insertion consumes CreationRefs at the `raise` boundary and MatchRefs after
+  the owning `exception_pop` by materializing ordinary TIR `DecRef` ops before
+  the conservative handler-CFG bail, and native Cranelift participates in that
+  same shared drop path. The old native-only CreationRef lifetime carve-out and
+  exception-pop side path are deleted. Backend consumption evidence now covers
+  LLVM lowering order, WASM host-EH/native-EH import behavior plus the LIR
+  `dec_ref` runtime-call lane, and Luau checked lowering of shared drop
+  artifacts as GC no-ops after the Luau target-info terminal drop phase. Luau
+  and LLVM now also have executed runtime proof for
+  `tests/differential/memory/exception_raise_catch_loop_leak.py`, whose
+  generated artifacts print `500000` under `luau` and `--target llvm --release`.
+  Validator fail-closed
+  coverage now includes missing-pop, ambiguous-depth, path-alternative pop, loop
+  re-entry close-boundary, shared `exception_pop` splitting with block-arg
+  payloads, malformed Luau block structure, and terminal
+  drop-pipeline diagnostics. The prior generated-WASM structural validation
+  blocker is fixed: `importlib_import_transaction` now registers the same
+  five-argument ABI consumed by its callable wrapper, and the linked artifact
+  validates. The JS harness host map now includes the process host ABI imports
+  needed by the linked runtime, including `env::molt_process_terminate_host`,
+  and the WASM leak-loop differential now passes for
+  `tests/differential/memory/exception_raise_catch_loop_leak.py`. Broader WASM
+  `HandlerState` parity and authoritative `bench_exception_heavy` speed evidence
+  still remain open.
   Backend compile cache publication uses session-independent locks under the
   resolved cache root's `locks/` directory, while Cargo/backend rebuild locks
   are keyed by the mutable build-state root: default `MOLT_SESSION_ID` runs get
   isolated lock directories and explicit shared `CARGO_TARGET_DIR`/
-  `MOLT_BUILD_STATE_DIR` runs share lock files. Persisted JSON/text/byte cache,
+  `MOLT_BUILD_STATE_DIR` runs share lock files. Canonical dev/CI/DX and CLI
+  Cargo build environments default `CARGO_INCREMENTAL=0` unless an operator
+  explicitly opts into incremental-debug work, and the memory guard quarantines
+  only Cargo `*/incremental` directories under the effective `CARGO_TARGET_DIR`
+  after guarded Cargo/rustc/rustdoc interruption, with summary JSON/stderr
+  receipts and bounded quarantine retention. Runtime stringprep is now
+  leaf-owned: the `molt-runtime` in-facade fallback module is deleted,
+  `molt_stringprep_*` resolver arms are gated by `stdlib_stringprep`, and
+  feature-on/feature-off runtime checks prove the facade no longer carries a
+  second stringprep implementation. Persisted JSON/text/byte cache,
   diagnostics, deployment, validation, package/archive, vendor file, linker
   sidecar, and final file-artifact writers use unique atomic temp siblings plus
   replace; vendored directory tree replacement now prepares a hidden temp tree
@@ -259,8 +422,29 @@ the implementation. For forward-looking priorities, use
   name are statically stable; runtime import owns target availability,
   version-gated absence, module cache custody, provenance, fromlist behavior,
   and error shape. User rebinding of `importlib.import_module` still stays
-  observable in compiled native code because the fold is disabled when the
-  module attribute is syntactically rebound through `importlib` or an alias.
+  observable in compiled native code because the frontend records module-attribute
+  mutation through `importlib` or any alias and disables both the transaction
+  fold and cross-module static direct-call lowering when that attribute is not
+  stable.
+- Ordinary source-language imports now carry explicit
+  `name`/`fromlist`/`level` payloads into the same Rust transaction for the
+  focused active paths. Graph-proven `fromlist` child auto-import/binding is
+  transaction-owned for the covered native path: existing package exports win,
+  successful child module imports bind onto the parent package, absent requested
+  children fall through to the final `IMPORT_FROM` `ImportError`, and dependency
+  import errors propagate instead of being broadly suppressed. The broader
+  CPython `fromlist` star/`__all__`, namespace-package, and package-context
+  edge matrix remains open. Current focused differential coverage for this
+  active transaction slice includes literal/helper `importlib.import_module`
+  paths and `__import__(..., fromlist=...)`; this is not a claim that the full
+  IB2 9-file matrix is green.
+- Native module attribute lookup preserves CPython-shaped module `__getattr__`
+  exception custody for the covered bootstrap path: direct `module.attr` and
+  two-argument `getattr(module, name)` propagate a raised `AttributeError`,
+  while `getattr(module, name, default)` suppresses only `AttributeError` and
+  returns the default. The runtime keeps the pending exception as runtime state
+  and returns the normal error sentinel to native code instead of transferring a
+  borrowed pending exception object through the result value.
 
 ## Intentionally Unsupported
 
@@ -276,20 +460,63 @@ the implementation. For forward-looking priorities, use
 - Native and WASM parity is still incomplete for several claimed surfaces.
 - Luau parity is incomplete and must be extended through checked-build,
   static-analysis, and CPython-vs-Luau evidence rather than silent stub emission.
-- Native RC ownership is not yet on the same TIR-drop authority as LLVM/WASM/Luau:
-  `target_uses_tir_drop_insertion(TargetKind::NativeCranelift)` is still `false`
-  because loop-carried block args can receive inconsistent raw/heap
-  representations on drop-inserted phi paths. The completion criterion is the
-  structural fix plus deletion of the legacy automatic temp-RC lane, not another
-  compatibility gate.
-- Exception handler lifetime is not yet represented as a first-class
-  `ExceptionRegion` / `HandlerState` ownership boundary. The active Phase-1
-  requirement is to release both creation refs and handler match refs at their
-  real exception-event boundaries, not through a global SSA last-use heuristic.
-- Non-escaping objects with `__del__` can still be dropped at SSA last read
-  rather than the Python `del` or scope-exit boundary, and exceptions raised
-  from a standalone inline `__del__` path must be isolated as unraisable instead
-  of propagating out of the compiled frame.
+- Native RC ownership now uses the same TIR DropInsertion activation path as
+  LLVM/WASM/Luau for the proven ExceptionRegion slice. Remaining native RC work
+  is deletion of broader automatic temp-RC/value-tracking lanes once shared
+  drop/codegen facts cover their full ownership surface. The old native-local
+  CreationRef/MatchRef maps and `exception_pop` release side path are gone; no
+  further native exception-release map was found safe to delete. The pre-bail
+  exception-only drop slice now has its own
+  `exception_region_drops_inserted` fact, while `drop_inserted` remains reserved
+  for full-function RC ownership and native legacy-RC suppression. The remaining
+  deletion blocker is wider shared drop/codegen coverage for handler/state-machine
+  lifetimes, not an exception-release side path.
+- Exception handler lifetime is not yet represented as a full backend-neutral
+  `ExceptionRegion` / `HandlerState` ownership boundary. Native Cranelift now
+  consumes shared TIR DropInsertion `DecRef`s for CreationRefs and reachable
+  handler MatchRefs; the old native-only CreationRef lifetime carve-out and
+  exception-pop side path are deleted. Checked backend consumption evidence now
+  covers LLVM lowering order, WASM host-EH/native-EH
+  import behavior plus the LIR `dec_ref` runtime-call lane, shared
+  `exception_pop` block-arg split/drop dominance, and Luau lowering of
+  shared `drop_inserted` / `exception_region_drops_inserted` / `inc_ref` /
+  `dec_ref` / `release` artifacts as GC no-ops plus executed Luau and LLVM
+  runtime proof for the raise/catch leak loop. Completion still requires WASM
+  runtime parity evidence and the wider
+  `HandlerState` boundary. The prior WASM runtime-surface blocker that pulled
+  `molt-db`/sqlite into linked runtime builds is closed at the feature-plane
+  level: wasm micro/full availability, Cargo command features, fingerprints,
+  and bench-wrapper runtime feature construction exclude sqlite, while explicit
+  sqlite-on-wasm still fails closed. The corrected end-to-end WASM proof now
+  builds a structurally valid linked artifact and advances past the former
+  `func 1233` stack-validation failure. The JS harness host map now includes the
+  process host ABI imports required by the linked runtime, including
+  `env::molt_process_terminate_host`, and the
+  `tools/wasm_diff.py` leak-loop differential now passes for
+  `tests/differential/memory/exception_raise_catch_loop_leak.py`. This closes
+  the raise/catch leak-loop runtime proof for WASM; broader WASM
+  `HandlerState` parity remains open. A
+  2026-06-12 targeted `bench_exception_heavy` hot-only after-Luau-parity rerun
+  produced valid in-binary cycle attribution (`inner_loops=40`, launch/page-in
+  0.0%, top in-binary frames `molt_runtime::object::dec_ref_ptr` 10.2%,
+  `molt_runtime::concurrency::gil::GilGuard::new` 10.1%, and
+  `bench_exception_heavy__molt_user_main` 8.0%) but was non-authoritative
+  because host load was not quiescent (`loadavg_1m=23.81`, threshold `9.00`);
+  no speedup claim moved. The targeted
+  native leak gate
+  `MOLT_ASSERT_NO_LEAK=1 python3 tools/safe_run.py --rss-mb 1024 --timeout 180 -- uv run python -m molt.cli run tests/differential/memory/exception_raise_catch_loop_leak.py --target native --release --rebuild`
+  passed with `live_objects=649` after 500,000 raises/catches.
+- Non-escaping objects with `__del__` now have a shared TIR drop-insertion
+  primitive for dominated return-boundary release instead of SSA-last-read
+  release. `DeleteVar` now carries the old slot occupant as a first-class TIR
+  operand and the shared drop pass releases that occupant at the delete boundary
+  while excluding `None`/missing sentinels from RC placement. Standalone
+  `__del__` exception isolation, scope-exit ordering, plain-object
+  no-false-positive behavior, object-attribute release smoke, and exit
+  semantics plus the explicit local `del` / `gc.collect()` resurrection-once
+  gate are green; container-owned release paths and the broader resurrection
+  leak/matrix still need closure before Molt can claim complete finalizer
+  ordering parity.
 - The runpy dynamic-lane expected failures list is currently empty because
   supported lanes moved to intrinsic support; governance for unsupported
   runpy dynamic execution remains documented rather than tracked through an
@@ -413,11 +640,46 @@ the implementation. For forward-looking priorities, use
 	  exact realized storage-byte copy APIs; the old f32 readback remains
 	  fail-closed for realized non-Float32 tensors. Metal
 	  e2e proof now covers raw non-f32 Cast/Bitcast storage against CPU bytes.
-	  Upstream tinygrad is now registered as a disabled-until-pinned friend-suite
-	  benchmark lane (`tinygrad_off_the_shelf`) with CPython and Molt runners that
-	  execute public API workloads through `tools/tinygrad_off_shelf_adapter.py`;
-	  this is the compatibility/perf case study for compiling and profiling
-	  unmodified tinygrad code. The friend-suite harness now records git source
+	  Upstream tinygrad is now registered as an enabled pinned friend-suite
+	  benchmark lane (`tinygrad_off_the_shelf`, commit
+	  `a83710396c991272241e40da94489747c2393851`). Its upstream-owned
+	  `tinygrad` runner executes `CHECK_OOB=0 DEV=CPU TYPED=1 python
+	  test/test_tiny.py` through `uv run --isolated --with typeguard` plus
+	  runner-local `PYTHONPATH={suite_root}` so the pinned checkout stays clean;
+	  the CPython runner executes public API
+	  workloads through `tools/tinygrad_off_shelf_adapter.py`. The Molt runner is
+	  executable by default and uses the full-stdlib `{python} -m molt.cli run`
+	  static-package command; current evidence reaches `molt-backend --daemon`
+	  and then trips the guarded process RSS limit at 12.005 GB after 435.5s
+	  (`tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`), proving
+	  the remaining blocker is backend-daemon compile memory before adapter
+	  workload execution. Native TIR optimization now partitions uncached
+	  user-function work by function count and op budget, runs only one bounded
+	  parallel batch at a time, and applies/cache-writes optimized ops before
+		  constructing the next batch. Follow-up guarded evidence
+		  (`tmp/memory_guard/friends_tinygrad_molt_tir_batched.json`,
+		  `bench/results/friends/20260612T184515Z/`) reached that bounded path
+		  (`2602` uncached user functions in `41` batches), moved the peak single
+		  backend process to 9.77 GB, and exposed the next bug as aggregate
+		  process-tree RSS from overlapping daemon plus hidden one-shot fallback.
+		  The CLI now fails closed after full daemon request admission instead of
+		  restarting the daemon or silently launching that second backend compile;
+		  short readiness misses from verified live daemons no longer authorize
+		  socket unlink/rebind while another compile may be running. Follow-up
+		  guarded evidence (`tmp/memory_guard/friends_tinygrad_molt_daemon_custody.json`,
+		  `bench/results/friends/20260612T203111Z/`) no longer trips the outer
+		  memory guard (`violation=null`, no orphaned groups, 4.92 GB peak
+		  process-tree RSS), but the daemon dies mid full request after stdlib batch
+		  `35/35` and user-function TIR batch `8/41`; the runner stderr is the
+		  explicit fail-closed diagnostic `Backend daemon compile failed: backend
+		  daemon died while request was in flight`. A later guarded Molt-only rerun
+		  (`bench/results/friends/20260612T205850Z/`) did not trip the memory guard
+		  and instead failed after 208.19s with `Backend daemon compile failed:
+		  backend daemon returned empty response`. The current blocker is daemon
+		  crash provenance plus daemon-side large-user-compile memory custody. This
+		  is the compatibility/perf case study for compiling and profiling
+		  unmodified tinygrad code. The
+	  friend-suite harness now records git source
 	  custody, fails dirty or wrong-ref checkouts, accepts per-suite `--suite-root`
 	  and `--repo-ref` overrides for pinned local clones, supports manifest-declared
 	  runner names without a hidden allowlist, and ingests `json_stdout` workload
@@ -430,7 +692,11 @@ the implementation. For forward-looking priorities, use
 	  unary/binary operations, ternary `where`, typed casts, explicit-axis
 	  reductions, and Rust-owned all-axis reductions via
 	  `molt_gpu_prim_reduce_all` carry runtime handles through the corresponding
-	  GPU primitive intrinsics. The
+	  GPU primitive intrinsics. Public `import tinygrad` and
+	  `from tinygrad import Tensor` now expose the same `molt.gpu.Tensor` class,
+	  carry canonical dtype objects, and cover `where` promotion plus
+	  pad/shrink/flip/contiguous view movement through the off-the-shelf adapter
+	  workloads. The
 	  tinygrad shim now keeps movement-family operations on runtime handles too:
 	  `reshape`, `expand`, `permute`, zero-fill `pad`, `shrink`, `flip`, and
 	  `contiguous` lower through GPU primitive intrinsics, and `matmul` composes
@@ -444,8 +710,10 @@ the implementation. For forward-looking priorities, use
 	  (including upstream tinygrad backend/autogen families) stay runtime/device
 	  obligations instead of compile-time graph bloat. Runtime-import support
 	  detection follows the same split, graph/import-scan caches include the
-	  scan policy and stdlib allowlist digest, and Darwin memory-guard sizing no
-	  longer shells out for advisory available-memory data. Import graph
+	  scan policy and stdlib allowlist digest, and Darwin memory-guard sizing now
+	  uses `vm_stat` free/inactive/speculative/purgeable pages as the live
+	  available-memory source instead of falling back to physical-RAM-only
+	  budgeting. Import graph
 	  materialization now has one immutable `ImportPlan`: entry planning owns the
 	  runtime-import support closure, while final materialization owns namespace
 		  stubs, generated importer modules, known-module sets, allowlist snapshots,
@@ -454,10 +722,11 @@ the implementation. For forward-looking priorities, use
 		  set as regular stdlib discovery, so `collections` keeps its required
 		  function-body `copy` import in the graph and native hello-world no longer
 		  links against a missing `copy__copy` symbol. Shared stdlib cache identity now
-		  seeds every explicit stdlib module init like backend DFE and requires a
-		  backend-written partition manifest sidecar before reuse; the newest native
-		  hello-world shared object defines `_copy__copy` / `_molt_init_copy` and has
-		  no undefined `_copy__copy`.
+		  seeds every explicit stdlib module init like backend DFE, requires a
+		  backend-written partition manifest sidecar before reuse, and backend reuse/
+		  publish rejects any partition whose SimpleIR function references are not
+		  closed inside the partition (including the historical
+		  `collections__UserDict_copy -> copy__copy` failure shape).
 			  Remaining GPU backend gaps are MIL BF16/64-bit/MXFP materialization proof,
 			  MLIR MXFP block/exponent storage plus `MaterializeCopy` lowering, MLIR
 			  MXFP quantized cast lowering, a first-class window/im2col primitive for
@@ -491,6 +760,32 @@ the implementation. For forward-looking priorities, use
 - Platform availability metadata: `66` modules with explicit availability notes; `41` WASI-blocked; `37` Emscripten-blocked in CPython docs.
 - Deep evidence: see the stdlib intrinsics audit and platform availability matrices under `docs/spec/areas/compat/surfaces/stdlib/`.
 <!-- GENERATED:compat-summary:end -->
+
+- Ecosystem compatibility is now generator-owned for `26` audited packages.
+  NumPy is an explicit top-priority row in
+  `docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md`;
+  it derives `partial` through `D28 Source-recompiled libmolt extension
+  package` with `D16` lazy module attributes supported and `D23` CPython
+  binary-wheel bridge recorded only as optional/non-canonical.
+  `numpy_off_the_shelf` is now an enabled pinned friend lane with a
+  custody-only source-tree audit runner, an isolated CPython `numpy==2.4.2`
+  public-API baseline, and a canonical
+  `molt extension scan --source {suite_root}/numpy --fail-on-missing` C-API
+  closure gauge with per-symbol `runtime_backed`, `source_compile_only`,
+  `fail_fast`, and `missing` status. The Molt runner uses
+  `MOLT_EXTERNAL_STATIC_PACKAGES=numpy`, explicit `module.extension.exec`
+  capability, and all-loaded-`numpy.*` module-origin custody. Build admission
+  now validates and fingerprints package-local native artifact sidecars for
+  explicitly admitted external packages, and native builds publish those
+  validated artifacts plus sidecars and runtime shim candidates under a
+  deterministic `external_static_packages/<plan-digest>/` root and inject that
+  staged root into generated native binaries before runtime startup. That is not
+  yet a green no-host NumPy import proof. Friend-suite metrics now exclude
+  custody/scan runners from speedup math, and git-suite custody rejects ignored
+  checkout artifacts in addition to dirty or wrong-ref trees. The Molt lane is
+  expected to fail until no-host source-recompiled extension package build,
+  NumPy C-API symbol closure, and NumPy import/runtime-load proof are complete;
+  host-Python fallback is not an allowed completion path.
 
 ## Performance Summary
 

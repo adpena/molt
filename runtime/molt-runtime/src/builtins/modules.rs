@@ -209,6 +209,26 @@ fn clear_pending_missing_import_exception(_py: &PyToken<'_>) -> bool {
     clear
 }
 
+fn clear_pending_missing_import_exception_for(_py: &PyToken<'_>, expected_name: &str) -> bool {
+    if !exception_pending(_py) {
+        return false;
+    }
+    let exc_bits = molt_exception_last();
+    let mut clear = false;
+    if !obj_from_bits(exc_bits).is_none() {
+        let kind_bits = molt_exception_kind(exc_bits);
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_default();
+        let message = format_obj_str(_py, obj_from_bits(exc_bits));
+        clear = (kind == "ImportError" || kind == "ModuleNotFoundError")
+            && message == format!("No module named '{expected_name}'");
+        dec_ref_bits(_py, exc_bits);
+    }
+    if clear {
+        clear_exception(_py);
+    }
+    clear
+}
+
 #[inline]
 fn module_bits_are_module_like(bits: u64) -> bool {
     if obj_from_bits(bits).is_none() {
@@ -4209,7 +4229,7 @@ pub extern "C" fn molt_copyreg_clear_extension_cache() -> u64 {
     })
 }
 
-fn sys_modules_dict_ptr(_py: &PyToken<'_>, sys_bits: u64) -> Option<*mut u8> {
+pub(crate) fn sys_modules_dict_bits(_py: &PyToken<'_>, sys_bits: u64) -> Option<u64> {
     let sys_obj = obj_from_bits(sys_bits);
     let sys_ptr = sys_obj.as_ptr()?;
     unsafe {
@@ -4237,10 +4257,27 @@ fn sys_modules_dict_ptr(_py: &PyToken<'_>, sys_bits: u64) -> Option<*mut u8> {
             modules_bits = Some(new_bits);
             dec_ref_bits(_py, new_bits);
         }
-        let modules_ptr = match obj_from_bits(modules_bits?).as_ptr() {
+        let modules_bits = modules_bits?;
+        match obj_from_bits(modules_bits).as_ptr() {
             Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
             _ => return raise_exception::<_>(_py, "TypeError", "sys.modules must be dict"),
         };
+        inc_ref_bits(_py, modules_bits);
+        Some(modules_bits)
+    }
+}
+
+pub(crate) fn sys_modules_dict_ptr(_py: &PyToken<'_>, sys_bits: u64) -> Option<*mut u8> {
+    let modules_bits = sys_modules_dict_bits(_py, sys_bits)?;
+    unsafe {
+        let modules_ptr = match obj_from_bits(modules_bits).as_ptr() {
+            Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
+            _ => {
+                dec_ref_bits(_py, modules_bits);
+                return None;
+            }
+        };
+        dec_ref_bits(_py, modules_bits);
         Some(modules_ptr)
     }
 }
@@ -4576,6 +4613,9 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 }
                 return val;
             }
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
                 .unwrap_or_default();
             let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
@@ -4649,6 +4689,86 @@ unsafe fn module_file_origin(_py: &PyToken<'_>, module_ptr: *mut u8) -> Option<S
         let file_bits = dict_get_in_place(_py, dict_ptr, file_key)?;
         string_obj_to_owned(obj_from_bits(file_bits))
     }
+}
+
+/// Prepare the child side effect for `from package import child` without
+/// deciding the final binding value.
+///
+/// CPython's fromlist handling lets an existing package attribute win. Only
+/// when the attribute is absent does it import `package.child`, bind that
+/// module onto the parent, and leave the later IMPORT_FROM read to choose the
+/// final value.
+pub(crate) fn prepare_from_import_child(
+    _py: &PyToken<'_>,
+    module_bits: u64,
+    attr_bits: u64,
+    child_name_bits: u64,
+) -> Result<(), u64> {
+    let module_obj = obj_from_bits(module_bits);
+    let Some(module_ptr) = module_obj.as_ptr() else {
+        if module_obj.is_none() || exception_pending(_py) {
+            return Ok(());
+        }
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "from-import expects module",
+        ));
+    };
+    unsafe {
+        if object_type_id(module_ptr) != TYPE_ID_MODULE {
+            if exception_pending(_py) {
+                return Ok(());
+            }
+            return Err(raise_exception::<_>(
+                _py,
+                "TypeError",
+                "from-import expects module",
+            ));
+        }
+        if let Some(existing_bits) = module_attr_lookup(_py, module_ptr, attr_bits) {
+            if !obj_from_bits(existing_bits).is_none() {
+                dec_ref_bits(_py, existing_bits);
+            }
+            return Ok(());
+        }
+        clear_attribute_error_if_pending(_py);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
+    }
+
+    let Some(child_name) = string_obj_to_owned(obj_from_bits(child_name_bits)) else {
+        return Err(raise_exception::<_>(
+            _py,
+            "TypeError",
+            "from-import child name must be str",
+        ));
+    };
+    let imported_bits = molt_module_import(child_name_bits);
+    if exception_pending(_py) {
+        if clear_pending_missing_import_exception_for(_py, &child_name) {
+            return Ok(());
+        }
+        if !obj_from_bits(imported_bits).is_none() {
+            dec_ref_bits(_py, imported_bits);
+        }
+        return Err(MoltObject::none().bits());
+    }
+    if obj_from_bits(imported_bits).is_none() {
+        return Ok(());
+    }
+    let out_bits = molt_module_set_attr(module_bits, attr_bits, imported_bits);
+    if !obj_from_bits(imported_bits).is_none() {
+        dec_ref_bits(_py, imported_bits);
+    }
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
+    }
+    if !obj_from_bits(out_bits).is_none() {
+        dec_ref_bits(_py, out_bits);
+    }
+    Ok(())
 }
 
 /// `from MODULE import name` attribute binding.
@@ -5535,6 +5655,58 @@ mod tests {
 
             dec_ref_bits(_py, result_bits);
             dec_ref_bits(_py, module_bits);
+        });
+    }
+
+    #[test]
+    fn prepare_from_import_child_preserves_existing_package_attribute() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let module_name_ptr = alloc_string(_py, b"pkg");
+                assert!(!module_name_ptr.is_null());
+                let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
+                let module_ptr = alloc_module_obj(_py, module_name_bits);
+                assert!(!module_ptr.is_null());
+                dec_ref_bits(_py, module_name_bits);
+                let module_bits = MoltObject::from_ptr(module_ptr).bits();
+
+                let existing_ptr = alloc_string(_py, b"class-export");
+                assert!(!existing_ptr.is_null());
+                let existing_bits = MoltObject::from_ptr(existing_ptr).bits();
+                let module_dict = module_dict_bits(module_ptr);
+                let module_dict_ptr = obj_from_bits(module_dict)
+                    .as_ptr()
+                    .expect("module dict pointer");
+                assert_eq!(object_type_id(module_dict_ptr), TYPE_ID_DICT);
+                dict_set_str_key_bits(_py, module_dict_ptr, "Tensor", existing_bits)
+                    .expect("set exported Tensor");
+
+                let attr_ptr = alloc_string(_py, b"Tensor");
+                assert!(!attr_ptr.is_null());
+                let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+                let child_ptr = alloc_string(_py, b"pkg.Tensor");
+                assert!(!child_ptr.is_null());
+                let child_bits = MoltObject::from_ptr(child_ptr).bits();
+
+                let result = prepare_from_import_child(_py, module_bits, attr_bits, child_bits);
+                assert!(
+                    !exception_pending(_py),
+                    "existing package attr prepare path must not leave an exception"
+                );
+                assert!(result.is_ok());
+
+                let found_bits =
+                    dict_get_in_place(_py, module_dict_ptr, attr_bits).expect("Tensor attr");
+                assert_eq!(found_bits, existing_bits);
+
+                dec_ref_bits(_py, child_bits);
+                dec_ref_bits(_py, attr_bits);
+                dec_ref_bits(_py, existing_bits);
+                dec_ref_bits(_py, module_bits);
+            }
         });
     }
 

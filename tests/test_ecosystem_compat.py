@@ -118,12 +118,13 @@ def test_distribution_is_deterministic(guard):
     _p2, d2 = guard.validate_triage(guard.load_triage(), features)
     assert d1 == d2
     dist = guard.verdict_distribution(d1)
-    assert sum(dist.values()) == 25
+    assert sum(dist.values()) == 26
     # Live distribution after D16 (module-level __getattr__, PEP 562) graduated
     # unsupported -> supported: rich flipped incompatible -> compatible.
     assert dist["compatible"] == 11
+    assert dist["compatible-via-bridge"] == 1
     assert dist["incompatible-by-design"] == 3
-    assert dist["partial"] == 7
+    assert dist["partial"] == 8
 
 
 def test_min_is_worst_class(guard):
@@ -300,10 +301,12 @@ def test_update_baseline_refuses_lowering_floor(sandbox, guard):
     assert guard.cmd_update_baseline() == 1  # refuses to lower the floor
 
 
-def test_update_baseline_refuses_raising_incompatible_ceiling(sandbox, guard):
+def test_update_baseline_allows_package_universe_expansion(sandbox, guard):
     sandbox.make_baseline()
-    # Add a brand-new incompatible package WITHOUT touching the compatible
-    # count, so the only change is incompatible_ceiling rising -> refused.
+    # Adding a new audited package is allowed even when its honest initial
+    # verdict is fail-closed. The down-only ratchet applies to the existing
+    # package universe; otherwise the matrix could never grow to cover harder
+    # ecosystem targets such as NumPy.
     f = sandbox.load(sandbox.FEATURES_PATH)
     t = sandbox.load(sandbox.TRIAGE_PATH)
     t["packages"]["newbad"] = {
@@ -315,7 +318,10 @@ def test_update_baseline_refuses_raising_incompatible_ceiling(sandbox, guard):
     }
     sandbox.save(sandbox.FEATURES_PATH, f)
     sandbox.save(sandbox.TRIAGE_PATH, t)
-    assert guard.cmd_update_baseline() == 1
+    assert guard.cmd_update_baseline() == 0
+    new = sandbox.load(sandbox.BASELINE_PATH)
+    assert "newbad" in new["packages"]
+    assert new["distribution"]["incompatible-by-design"] == 4
 
 
 def test_update_baseline_allows_improvement(sandbox, guard):

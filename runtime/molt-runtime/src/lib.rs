@@ -50,6 +50,7 @@ mod call;
 #[cfg(feature = "stdlib_collections")]
 mod collections_bridge;
 mod concurrency;
+mod const_data_cache;
 mod constants;
 #[cfg(feature = "stdlib_crypto")]
 mod crypto_bridge;
@@ -252,7 +253,7 @@ pub use crate::builtins::gpu_primitives::{
     molt_gpu_prim_reduce_all, molt_gpu_prim_reshape, molt_gpu_prim_shape, molt_gpu_prim_shrink,
     molt_gpu_prim_ternary, molt_gpu_prim_unary, molt_gpu_prim_zeros, molt_gpu_prim_zeros_dtype,
 };
-pub use crate::builtins::strings::molt_string_from_bytes;
+pub use crate::builtins::strings::{molt_bytes_from_bytes, molt_string_from_bytes};
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
     molt_barrier_abort, molt_barrier_broken, molt_barrier_drop, molt_barrier_n_waiting,
@@ -540,8 +541,6 @@ pub use crate::builtins::sitebuiltins::*;
 pub use crate::builtins::sqlite3::*;
 pub use crate::builtins::ssl::*;
 pub use crate::builtins::string_ext::*;
-#[cfg(not(feature = "stdlib_stringprep"))]
-pub use crate::builtins::stringprep::*;
 pub(crate) use crate::builtins::strings::{
     bytes_count_impl, bytes_find_impl, bytes_rfind_impl, bytes_strip_range, replace_bytes_impl,
     replace_bytes_impl_limit, replace_string_impl, rsplit_bytes_to_list_maxsplit,

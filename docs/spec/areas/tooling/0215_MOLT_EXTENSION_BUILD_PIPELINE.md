@@ -1,8 +1,10 @@
 # Molt Extension Build Pipeline
 **Spec ID:** 0215
 **Status:** Partial (cross-target + verify/publish policy integration +
-runtime load-time metadata enforcement + CI native/cross-host matrix lanes landed,
-including verify-policy and wasm-rejection contract checks)
+build-admission sidecar custody and deterministic build-artifact publication
+for admitted external packages, runtime load-time metadata enforcement + CI
+native/cross-host matrix lanes landed, including verify-policy and
+wasm-rejection contract checks)
 **Owner:** tooling + runtime
 **Goal:** Define the build, packaging, and validation pipeline for C-extensions
 recompiled against `libmolt`.
@@ -95,12 +97,29 @@ Optional:
   checksum integrity for extension payloads; wheel checksum is validated for
   archive-backed loads). Successful checks are cached with path+manifest
   fingerprints so replaced artifacts are revalidated on the next import/load.
+- Build-time external package admission enforces the same sidecar direction for
+  `MOLT_EXTERNAL_STATIC_PACKAGES`: package-local `.so`/`.pyd` artifacts must
+  have nearby `extension_manifest.json` metadata with matching module,
+  extension path, checksum, ABI, target, platform, and capabilities before the
+  frontend lowers that package graph. Graph, wrapper-build, and backend
+  object-cache identities include the validated artifact/manifest custody
+  facts. Native builds publish the validated artifact, sidecar, package
+  `__init__.py` chain, and runtime extension shim candidates into a
+  deterministic `external_static_packages/<plan-digest>/` runtime root, then
+  inject that staged root into generated native binaries before runtime startup
+  and include those staged bytes in final link reuse fingerprints without adding
+  runtime-loaded extensions to the linker command. Target modes without a
+  runtime-custody consumer fail closed when external native artifacts are
+  admitted.
 
 ---
 
 ## 7. Integration Points
 - `molt deps` should classify extensions as Tier B when `libmolt`-compiled.
-- `molt build` rejects extensions with missing or mismatched ABI tags.
+- `molt build` rejects explicitly admitted external package extensions with
+  missing or mismatched sidecar metadata before module graph lowering, and
+  publishes validated native artifacts plus sidecars and runtime shims into
+  deterministic build artifacts for native runtime import custody.
 - `molt verify` enforces capability allowlists for extension loads.
 - CI runs an extension publish dry-run matrix (native + cross-target) covering
   `molt extension build`, `molt extension audit --require-abi`,
@@ -112,6 +131,6 @@ Optional:
 ---
 
 ## 8. TODOs
-- TODO(tooling, owner:tooling, milestone:SL3, priority:P1, status:partial): expand cross-target extension build coverage for additional linker/sysroot variants and publish readiness checks.
+- TODO(tooling, owner:tooling, milestone:SL3, priority:P1, status:partial): expand cross-target extension build coverage for additional linker/sysroot variants and source-recompiled package publish readiness checks.
 - TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:partial): extend `molt verify` extension policy gates with signature/trust policy coupling and richer diagnostics.
 - TODO(tooling, owner:tooling, milestone:SL3, priority:P2, status:planned): define canonical wheel tags for `libmolt` extensions.

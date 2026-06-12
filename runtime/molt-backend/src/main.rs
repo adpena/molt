@@ -118,6 +118,7 @@ struct DaemonJobRequest {
     skip_function_output_if_synced: bool,
     probe_cache_only: bool,
     ir: Option<SimpleIR>,
+    ir_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -157,6 +158,14 @@ fn ensure_output_parent_dir(output_file: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg_attr(
+    not(any(
+        feature = "luau-backend",
+        feature = "rust-backend",
+        feature = "wasm-backend"
+    )),
+    allow(dead_code)
+)]
 fn create_backend_output_file(output_file: &str) -> io::Result<File> {
     ensure_output_parent_dir(output_file)?;
     match File::create(output_file) {
@@ -253,6 +262,27 @@ fn resolved_batch_size_limit(default: usize) -> usize {
     if raw == 0 { usize::MAX } else { raw }
 }
 
+#[cfg(feature = "native-backend")]
+struct NativeApplicationObjectOptions<'a> {
+    target_triple: Option<&'a str>,
+    stdlib_split_enabled: bool,
+    app_intrinsic_manifest: Option<std::collections::BTreeSet<String>>,
+    log_prefix: &'a str,
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeApplicationObjectResult {
+    function_count: usize,
+    batch_count: usize,
+}
+
+#[cfg(feature = "native-backend")]
+fn deduplicate_functions_by_name(functions: &mut Vec<molt_backend::FunctionIR>) {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    functions.retain(|f| seen.insert(f.name.clone()));
+}
+
 fn relocatable_linker_binary(linker_override: Option<&str>) -> String {
     linker_override
         .filter(|value| !value.trim().is_empty())
@@ -324,6 +354,123 @@ fn merge_relocatable_objects(
         "relocatable link failed via '{ld_bin}' for '{}': {detail}",
         output_path.display()
     )))
+}
+
+#[cfg(feature = "native-backend")]
+fn compile_native_application_object_to_path(
+    mut ir: SimpleIR,
+    output_path: &Path,
+    mut options: NativeApplicationObjectOptions<'_>,
+) -> io::Result<NativeApplicationObjectResult> {
+    if options.stdlib_split_enabled && options.app_intrinsic_manifest.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stdlib-split native application object requires a full-set app intrinsic manifest",
+        ));
+    }
+
+    // Preserve the one-shot native application-object sequence as the single
+    // authority for both direct backend runs and daemon requests.
+    molt_backend::inject_runtime_exit(&mut ir);
+    if !options.stdlib_split_enabled {
+        molt_backend::eliminate_dead_functions(&mut ir);
+        molt_backend::eliminate_dead_imports(&mut ir);
+        molt_backend::eliminate_dead_ops(&mut ir);
+    }
+    deduplicate_functions_by_name(&mut ir.functions);
+
+    let function_count = ir.functions.len();
+    let batch_size = resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE);
+    if function_count <= batch_size {
+        let mut backend = SimpleBackend::new_with_target(options.target_triple);
+        if options.stdlib_split_enabled {
+            backend.skip_shared_stdlib_partition = true;
+        }
+        backend.app_intrinsic_manifest = options.app_intrinsic_manifest.take();
+        let obj_output = backend.compile(ir);
+        write_output_path(output_path, &obj_output.bytes)?;
+        eprintln!(
+            "Successfully compiled to {} ({} functions)",
+            output_path.display(),
+            function_count
+        );
+        return Ok(NativeApplicationObjectResult {
+            function_count,
+            batch_count: 1,
+        });
+    }
+
+    let profile = ir.profile;
+    let all_functions: Vec<_> = ir.functions.into_iter().collect();
+    let all_func_names: std::collections::BTreeSet<String> =
+        all_functions.iter().map(|f| f.name.clone()).collect();
+    let module_context = SimpleBackend::build_module_context(&all_functions);
+    if options.app_intrinsic_manifest.is_none() {
+        options.app_intrinsic_manifest = Some(molt_backend::compute_intrinsic_manifest_checked(
+            &all_functions,
+        ));
+    }
+    let batches = partition_functions_for_batches(all_functions, batch_size, usize::MAX);
+    let total_batches = batches.len();
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "molt_batch_{}_{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&tmp_dir)?;
+    let mut batch_paths: Vec<std::path::PathBuf> = Vec::new();
+    let compile_result = (|| -> io::Result<()> {
+        for (batch_idx, batch_funcs) in batches.into_iter().enumerate() {
+            eprintln!(
+                "{}: batch {}/{total_batches} ({} functions)",
+                options.log_prefix,
+                batch_idx + 1,
+                batch_funcs.len()
+            );
+            let batch_ir = SimpleIR {
+                functions: batch_funcs,
+                profile: profile.clone(),
+            };
+            let mut backend = SimpleBackend::new_with_target(options.target_triple);
+            backend.skip_ir_passes = true;
+            backend.skip_shared_stdlib_partition = true;
+            if batch_idx == 0 {
+                backend.app_intrinsic_manifest = options.app_intrinsic_manifest.take();
+            } else {
+                backend.emit_app_intrinsic_resolver = false;
+            }
+            backend.external_function_names =
+                batch_external_function_names(&all_func_names, &batch_ir.functions);
+            backend.set_module_context(module_context.clone());
+            let obj_output = backend.compile(batch_ir);
+
+            let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
+            std::fs::write(&batch_path, &obj_output.bytes)?;
+            batch_paths.push(batch_path);
+        }
+
+        merge_relocatable_objects(output_path, &batch_paths, None)
+    })();
+
+    for batch_path in &batch_paths {
+        let _ = std::fs::remove_file(batch_path);
+    }
+    let _ = std::fs::remove_dir(&tmp_dir);
+    compile_result?;
+
+    eprintln!(
+        "Successfully compiled to {} ({} functions, {} batches)",
+        output_path.display(),
+        function_count,
+        total_batches
+    );
+    Ok(NativeApplicationObjectResult {
+        function_count,
+        batch_count: total_batches,
+    })
 }
 
 #[cfg(feature = "native-backend")]
@@ -430,13 +577,6 @@ fn emitted_name_matches_module_symbol(name: &str, module_symbol: &str) -> bool {
         return rest == module_symbol;
     }
     name.starts_with(&format!("{module_symbol}__"))
-}
-
-#[cfg(feature = "native-backend")]
-fn explicit_stdlib_module_symbols_from_env() -> Option<std::collections::BTreeSet<String>> {
-    let raw = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok()?;
-    let parsed: Vec<String> = serde_json::from_str(&raw).ok()?;
-    Some(parsed.into_iter().collect())
 }
 
 #[cfg(feature = "native-backend")]
@@ -559,6 +699,102 @@ fn shared_stdlib_partition_manifest(
         "body_hash": format!("{body_hash:016x}"),
     }))
     .map_err(io::Error::other)
+}
+
+#[cfg(feature = "native-backend")]
+fn stdlib_partition_reference_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "call"
+            | "call_internal"
+            | "func_new"
+            | "func_new_closure"
+            | "func_new_builtin"
+            | "code_new"
+            | "call_guarded"
+            | "call_indirect"
+            | "alloc_task"
+            | "generator_create"
+            | "coro_create"
+            | "fn_ptr_code_set"
+            | "asyncgen_locals_register"
+            | "gen_locals_register"
+            | "task_new"
+            | "generator_send"
+            | "spawn"
+            | "call_func"
+            | "call_method"
+            | "import_from"
+            | "import_name"
+            | "class_def"
+            | "decorator"
+            | "super_call"
+            | "yield_from"
+            | "await"
+    )
+}
+
+#[cfg(feature = "native-backend")]
+fn shared_stdlib_partition_closure_issue(
+    stdlib_funcs: &[molt_backend::FunctionIR],
+    all_function_names: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let partition_names: std::collections::BTreeSet<&str> =
+        stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
+    let mut missing: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for func in stdlib_funcs {
+        for op in &func.ops {
+            if !stdlib_partition_reference_kind(op.kind.as_str()) {
+                continue;
+            }
+            let Some(target) = op.s_value.as_deref() else {
+                continue;
+            };
+            if !all_function_names.contains(target) {
+                continue;
+            }
+            if !partition_names.contains(target) {
+                missing.insert(format!("{} -> {}", func.name, target));
+            }
+        }
+    }
+    if missing.is_empty() {
+        return None;
+    }
+    let preview: Vec<_> = missing.iter().take(8).cloned().collect();
+    let suffix = if missing.len() > preview.len() {
+        ", ..."
+    } else {
+        ""
+    };
+    Some(format!(
+        "shared stdlib partition has unresolved SimpleIR function references: {}{}",
+        preview.join(", "),
+        suffix
+    ))
+}
+
+#[cfg(feature = "native-backend")]
+fn validate_shared_stdlib_partition(
+    stdlib_funcs: &[molt_backend::FunctionIR],
+    all_function_names: &std::collections::BTreeSet<String>,
+) -> io::Result<()> {
+    if let Some(issue) = shared_stdlib_partition_closure_issue(stdlib_funcs, all_function_names) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, issue));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-backend")]
+fn shared_stdlib_split_function_names(
+    user_funcs: &[molt_backend::FunctionIR],
+    stdlib_funcs: &[molt_backend::FunctionIR],
+) -> std::collections::BTreeSet<String> {
+    user_funcs
+        .iter()
+        .chain(stdlib_funcs.iter())
+        .map(|func| func.name.clone())
+        .collect()
 }
 
 #[cfg(feature = "native-backend")]
@@ -830,6 +1066,12 @@ impl DaemonJobRequest {
         let is_wasm = required_field(obj, "is_wasm", ctx)?
             .as_bool()
             .ok_or_else(|| format!("{ctx}.is_wasm must be a bool"))?;
+        let ir_path = optional_string(obj, "ir_path", ctx)?;
+        if obj.get("ir").is_some_and(|value| !value.is_null()) && ir_path.is_some() {
+            return Err(format!(
+                "{ctx} must use exactly one IR custody field: ir or ir_path"
+            ));
+        }
         let ir = match obj.get("ir") {
             None | Some(JsonValue::Null) => None,
             Some(ir_value) => Some(SimpleIR::from_json_value(ir_value)?),
@@ -859,8 +1101,15 @@ impl DaemonJobRequest {
             .unwrap_or(false),
             probe_cache_only: optional_bool(obj, "probe_cache_only", ctx)?.unwrap_or(false),
             ir,
+            ir_path,
         })
     }
+}
+
+fn simple_ir_from_json_path(path: &str) -> Result<SimpleIR, String> {
+    let file = File::open(path).map_err(|err| format!("failed to open ir_path {path:?}: {err}"))?;
+    serde_json::from_reader(io::BufReader::new(file))
+        .map_err(|err| format!("failed to parse ir_path {path:?}: {err}"))
 }
 
 impl DaemonRequest {
@@ -907,9 +1156,17 @@ impl DaemonRequest {
         if let Some(JsonValue::Object(env_map)) = obj.get("env") {
             for (key, val) in env_map {
                 if let Some(s) = val.as_str() {
+                    if key == molt_backend::STDLIB_MODULE_SYMBOLS_ENV {
+                        molt_backend::parse_stdlib_module_symbols(s)?;
+                    }
                     unsafe {
                         std::env::set_var(key, s);
                     }
+                } else if key == molt_backend::STDLIB_MODULE_SYMBOLS_ENV {
+                    return Err(format!(
+                        "{} must be a string containing a JSON array of emitted module symbols",
+                        molt_backend::STDLIB_MODULE_SYMBOLS_ENV
+                    ));
                 }
             }
         }
@@ -1264,6 +1521,87 @@ fn daemon_health(
     }
 }
 
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+enum DaemonCompiledOutput {
+    #[cfg(feature = "wasm-backend")]
+    Bytes(Arc<[u8]>),
+    WrittenToPath,
+}
+
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+fn insert_daemon_cache_entries(
+    cache: &mut DaemonCache,
+    cache_key: &str,
+    function_cache_key: &str,
+    output_bytes: Arc<[u8]>,
+) {
+    if !cache_key.is_empty() && !function_cache_key.is_empty() && function_cache_key != cache_key {
+        cache.insert(cache_key.to_string(), Arc::clone(&output_bytes));
+        cache.insert(function_cache_key.to_string(), output_bytes);
+    } else if !cache_key.is_empty() {
+        cache.insert(cache_key.to_string(), output_bytes);
+    } else if !function_cache_key.is_empty() {
+        cache.insert(function_cache_key.to_string(), output_bytes);
+    }
+}
+
+#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+fn maybe_cache_output_file(
+    cache: &mut DaemonCache,
+    output_path: &Path,
+    cache_key: &str,
+    function_cache_key: &str,
+    warnings: &mut Vec<String>,
+) {
+    if cache_key.is_empty() && function_cache_key.is_empty() {
+        return;
+    }
+    let metadata = match std::fs::metadata(output_path) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            let warning = format!(
+                "skipped daemon memory cache for '{}': metadata failed: {err}",
+                output_path.display()
+            );
+            eprintln!("MOLT_BACKEND(daemon): warning: {warning}");
+            warnings.push(warning);
+            return;
+        }
+    };
+    let output_len = metadata.len();
+    if cache
+        .max_bytes
+        .is_some_and(|max_bytes| output_len > max_bytes as u64)
+    {
+        let warning = format!(
+            "skipped daemon memory cache for '{}' ({} bytes exceeds cache budget)",
+            output_path.display(),
+            output_len
+        );
+        eprintln!("MOLT_BACKEND(daemon): warning: {warning}");
+        warnings.push(warning);
+        return;
+    }
+    let bytes = match std::fs::read(output_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let warning = format!(
+                "skipped daemon memory cache for '{}': read failed: {err}",
+                output_path.display()
+            );
+            eprintln!("MOLT_BACKEND(daemon): warning: {warning}");
+            warnings.push(warning);
+            return;
+        }
+    };
+    insert_daemon_cache_entries(
+        cache,
+        cache_key,
+        function_cache_key,
+        Arc::from(bytes.into_boxed_slice()),
+    );
+}
+
 fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> DaemonJobResponse {
     #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
     {
@@ -1370,7 +1708,25 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             };
         }
 
-        let Some(mut ir) = job.ir else {
+        let mut ir = if let Some(ir) = job.ir {
+            ir
+        } else if let Some(ir_path) = job.ir_path.as_deref() {
+            match simple_ir_from_json_path(ir_path) {
+                Ok(ir) => ir,
+                Err(err) => {
+                    return DaemonJobResponse {
+                        id: job.id,
+                        ok: false,
+                        cached: false,
+                        cache_tier: None,
+                        output_written: false,
+                        needs_ir: false,
+                        message: Some(err),
+                        warnings: Vec::new(),
+                    };
+                }
+            }
+        } else {
             return DaemonJobResponse {
                 id: job.id,
                 ok: false,
@@ -1383,7 +1739,8 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             };
         };
 
-        let output_bytes: Arc<[u8]> = if job.is_wasm {
+        let mut warnings = Vec::new();
+        let compiled_output = if job.is_wasm {
             #[cfg(feature = "wasm-backend")]
             {
                 let mut options = WasmCompileOptions {
@@ -1402,7 +1759,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                     options.split_runtime_runtime_table_min = Some(split_runtime_runtime_table_min);
                 }
                 let backend = WasmBackend::with_options(options);
-                Arc::from(backend.compile(ir))
+                DaemonCompiledOutput::Bytes(Arc::from(backend.compile(ir)))
             }
             #[cfg(not(feature = "wasm-backend"))]
             {
@@ -1435,7 +1792,22 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                 let entry_module =
                     std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
                 let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
-                let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
+                let explicit_stdlib_module_symbols =
+                    match molt_backend::stdlib_module_symbols_from_env() {
+                        Ok(symbols) => symbols,
+                        Err(err) => {
+                            return DaemonJobResponse {
+                                id: job.id,
+                                ok: false,
+                                cached: false,
+                                cache_tier: None,
+                                output_written: false,
+                                needs_ir: false,
+                                message: Some(err),
+                                warnings: Vec::new(),
+                            };
+                        }
+                    };
 
                 // When the program is split into a separate stdlib cache object,
                 // compute the per-app intrinsic manifest over the FULL function
@@ -1484,6 +1856,23 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                 };
                             }
                         };
+                    let split_function_names =
+                        shared_stdlib_split_function_names(&user_remaining, &stdlib_funcs);
+                    if let Err(err) =
+                        validate_shared_stdlib_partition(&stdlib_funcs, &split_function_names)
+                    {
+                        remove_shared_stdlib_cache_artifacts(stdlib_path);
+                        return DaemonJobResponse {
+                            id: job.id,
+                            ok: false,
+                            cached: false,
+                            cache_tier: None,
+                            output_written: false,
+                            needs_ir: false,
+                            message: Some(format!("invalid shared stdlib partition: {err}")),
+                            warnings: Vec::new(),
+                        };
+                    }
 
                     if have_entry_module && stdlib_path.exists() {
                         if !shared_stdlib_cache_matches(
@@ -1601,16 +1990,30 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                     }
                 }
 
-                let mut backend = SimpleBackend::new_with_target(target_triple);
-                if stdlib_obj_path.is_some() {
-                    backend.skip_shared_stdlib_partition = true;
+                if let Err(err) = compile_native_application_object_to_path(
+                    ir,
+                    Path::new(&job.output),
+                    NativeApplicationObjectOptions {
+                        target_triple,
+                        stdlib_split_enabled: stdlib_obj_path.is_some(),
+                        app_intrinsic_manifest,
+                        log_prefix: "MOLT_BACKEND(daemon)",
+                    },
+                ) {
+                    return DaemonJobResponse {
+                        id: job.id,
+                        ok: false,
+                        cached: false,
+                        cache_tier: None,
+                        output_written: false,
+                        needs_ir: false,
+                        message: Some(format!(
+                            "failed to compile native application object: {err}"
+                        )),
+                        warnings: Vec::new(),
+                    };
                 }
-                // This is the main application object — it emits the per-app
-                // resolver (default `emit_app_intrinsic_resolver = true`). When the
-                // program was split, hand it the full-set manifest computed above.
-                backend.app_intrinsic_manifest = app_intrinsic_manifest;
-                let output = backend.compile(ir);
-                Arc::from(output.bytes)
+                DaemonCompiledOutput::WrittenToPath
             }
             #[cfg(not(feature = "native-backend"))]
             {
@@ -1629,29 +2032,34 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             }
         };
 
-        if let Err(err) = write_output(&job.output, output_bytes.as_ref()) {
-            return DaemonJobResponse {
-                id: job.id,
-                ok: false,
-                cached: false,
-                cache_tier: None,
-                output_written: false,
-                needs_ir: false,
-                message: Some(format!("failed to write compiled output: {err}")),
-                warnings: Vec::new(),
-            };
-        }
-
-        if !cache_key.is_empty()
-            && !function_cache_key.is_empty()
-            && function_cache_key != cache_key
-        {
-            _cache.insert(cache_key.to_string(), Arc::clone(&output_bytes));
-            _cache.insert(function_cache_key.to_string(), output_bytes);
-        } else if !cache_key.is_empty() {
-            _cache.insert(cache_key.to_string(), output_bytes);
-        } else if !function_cache_key.is_empty() {
-            _cache.insert(function_cache_key.to_string(), output_bytes);
+        match compiled_output {
+            #[cfg(feature = "wasm-backend")]
+            DaemonCompiledOutput::Bytes(output_bytes) => {
+                if let Err(err) = write_output(&job.output, output_bytes.as_ref()) {
+                    return DaemonJobResponse {
+                        id: job.id,
+                        ok: false,
+                        cached: false,
+                        cache_tier: None,
+                        output_written: false,
+                        needs_ir: false,
+                        message: Some(format!("failed to write compiled output: {err}")),
+                        warnings: Vec::new(),
+                    };
+                }
+                insert_daemon_cache_entries(_cache, cache_key, function_cache_key, output_bytes);
+            }
+            DaemonCompiledOutput::WrittenToPath => {
+                if daemon_memory_cache_allowed {
+                    maybe_cache_output_file(
+                        _cache,
+                        Path::new(&job.output),
+                        cache_key,
+                        function_cache_key,
+                        &mut warnings,
+                    );
+                }
+            }
         }
 
         DaemonJobResponse {
@@ -1662,7 +2070,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
             output_written: true,
             needs_ir: false,
             message: None,
-            warnings: Vec::new(),
+            warnings,
         }
     }
 }
@@ -1684,7 +2092,14 @@ fn write_cached_output(path: &str, bytes: &[u8], skip_if_synced: bool) -> io::Re
     allow(dead_code)
 )]
 fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
-    let output_path = Path::new(path);
+    write_output_path(Path::new(path), bytes)
+}
+
+#[cfg_attr(
+    not(any(feature = "native-backend", feature = "wasm-backend")),
+    allow(dead_code)
+)]
+fn write_output_path(output_path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = output_path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -2322,12 +2737,11 @@ fn main() -> io::Result<()> {
             }
             let mut tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(func);
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
-            let _stats = molt_backend::tir::passes::run_pipeline(
-                &mut tir_func,
-                &molt_backend::tir::target_info::TargetInfo::native_from_simd_caps(
-                    molt_backend::tir::target_info::SimdCaps::detect_host(),
-                ),
-            );
+            let target_info = molt_backend::tir::target_info::TargetInfo::luau_release_fast();
+            let _stats = molt_backend::tir::passes::run_pipeline(&mut tir_func, &target_info);
+            molt_backend::tir::type_refine::refine_types(&mut tir_func);
+            let _drop_stats =
+                molt_backend::tir::passes::run_drop_phase(&mut tir_func, &target_info);
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
             let ops = molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
             if molt_backend::tir::lower_to_simple::validate_labels(&ops) {
@@ -2462,7 +2876,8 @@ fn main() -> io::Result<()> {
             let have_entry_module = std::env::var("MOLT_ENTRY_MODULE").is_ok();
             let entry_module =
                 std::env::var("MOLT_ENTRY_MODULE").unwrap_or_else(|_| "__main__".to_string());
-            let explicit_stdlib_module_symbols = explicit_stdlib_module_symbols_from_env();
+            let explicit_stdlib_module_symbols = molt_backend::stdlib_module_symbols_from_env()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
             // Per-app intrinsic manifest over the FULL function set, computed
             // before partitioning splits the stdlib bodies into the cache object
@@ -2472,7 +2887,7 @@ fn main() -> io::Result<()> {
             // filters against the REQUIRED staticlib symbol set (fail-closed)
             // whenever any `molt_`-prefixed const_str exists, and yields the empty
             // manifest (zero-entry resolver, no relocations) otherwise.
-            let mut app_intrinsic_manifest = stdlib_obj_path
+            let app_intrinsic_manifest = stdlib_obj_path
                 .as_ref()
                 .map(|_| molt_backend::compute_intrinsic_manifest_checked(&ir.functions));
 
@@ -2489,6 +2904,9 @@ fn main() -> io::Result<()> {
                     eprintln!("MOLT_BACKEND: warning: failed to create stdlib parent: {e}");
                 });
                 let current_partition_manifest = shared_stdlib_partition_manifest(&stdlib_funcs)?;
+                let split_function_names =
+                    shared_stdlib_split_function_names(&user_remaining, &stdlib_funcs);
+                validate_shared_stdlib_partition(&stdlib_funcs, &split_function_names)?;
                 if have_entry_module && stdlib_path.exists() {
                     // Cached stdlib exists — only reuse it when the CLI and
                     // backend agree on the exact stdlib IR identity.
@@ -2581,127 +2999,16 @@ fn main() -> io::Result<()> {
                 }
             }
 
-            // Inject _exit(0) call at end of molt_main — ALWAYS, regardless
-            // of stdlib cache status. Prevents intermittent SIGSEGV on exit.
-            molt_backend::inject_runtime_exit(&mut ir);
-            if stdlib_obj_path.is_none() {
-                molt_backend::eliminate_dead_functions(&mut ir);
-                molt_backend::eliminate_dead_imports(&mut ir);
-                molt_backend::eliminate_dead_ops(&mut ir);
-            }
-
-            // Deduplicate functions by name — the compiler can emit the same
-            // function name multiple times (e.g. stdlib re-imports).  Keep the
-            // first (largest) definition; duplicates cause "duplicate symbol"
-            // errors during ld -r batched compilation.
-            {
-                let mut seen: std::collections::BTreeSet<String> =
-                    std::collections::BTreeSet::new();
-                ir.functions.retain(|f| seen.insert(f.name.clone()));
-            }
-
-            let func_count = ir.functions.len();
-            let batch_size = resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE);
-
-            if func_count <= batch_size {
-                // Small IR (or user-only mode): compile in one shot. This single
-                // object is the main application object — it emits the per-app
-                // resolver. When the program was split, hand it the full-set
-                // manifest; otherwise it derives the manifest from its full IR.
-                let mut backend = SimpleBackend::new_with_target(target_triple);
-                if stdlib_obj_path.is_some() {
-                    backend.skip_shared_stdlib_partition = true;
-                }
-                backend.app_intrinsic_manifest = app_intrinsic_manifest.take();
-                let obj_output = backend.compile(ir);
-                let mut file = create_backend_output_file(output_file).map_err(|err| {
-                    io::Error::new(
-                        err.kind(),
-                        format!("failed to create backend output '{}': {}", output_file, err),
-                    )
-                })?;
-                file.write_all(&obj_output.bytes)?;
-                eprintln!("Successfully compiled to {output_file} ({func_count} functions)");
-            } else {
-                // Large IR: split into batches, compile each independently,
-                // then merge with ld -r (partial link).  This prevents OOM
-                // when compiling 1000+ stdlib functions into one ObjectModule.
-                let mut all_functions: Vec<_> = ir.functions.into_iter().collect();
-                let profile = ir.profile;
-                let total_batches = all_functions.len().div_ceil(batch_size);
-                let mut batch_paths: Vec<std::path::PathBuf> = Vec::new();
-                let tmp_dir =
-                    std::env::temp_dir().join(format!("molt_batch_{}", std::process::id()));
-                let _ = std::fs::create_dir_all(&tmp_dir);
-
-                let mut batch_idx = 0usize;
-                // Pre-collect all function names for cross-batch import resolution.
-                let all_func_names: std::collections::BTreeSet<String> =
-                    all_functions.iter().map(|f| f.name.clone()).collect();
-                let module_context = SimpleBackend::build_module_context(&all_functions);
-                // Ensure the manifest emitted into batch 0 covers the WHOLE
-                // program. In split builds it was already computed over the full
-                // set before partitioning; in non-split builds `all_functions` is
-                // itself the full set, so derive it here. Either way batch 0's
-                // resolver sees every name-resolved intrinsic across all batches.
-                if app_intrinsic_manifest.is_none() {
-                    app_intrinsic_manifest = Some(
-                        molt_backend::compute_intrinsic_manifest_checked(&all_functions),
-                    );
-                }
-
-                while !all_functions.is_empty() {
-                    let remaining = all_functions.len();
-                    let take = remaining.min(batch_size);
-                    // drain from the front to keep order
-                    let batch_funcs: Vec<_> = all_functions.drain(..take).collect();
-                    eprintln!(
-                        "MOLT_BACKEND: batch {}/{total_batches} ({} functions)",
-                        batch_idx + 1,
-                        batch_funcs.len()
-                    );
-                    let batch_ir = SimpleIR {
-                        functions: batch_funcs,
-                        profile: profile.clone(),
-                    };
-                    let mut backend = SimpleBackend::new_with_target(target_triple);
-                    // CRITICAL: skip IR-level passes (inline, dead func elim)
-                    // for batched compilation — those were already run on the
-                    // full IR above. Each batch only does Cranelift codegen.
-                    backend.skip_ir_passes = true;
-                    backend.skip_shared_stdlib_partition = true;
-                    // The program is split across peer batches merged with ld -r.
-                    // Emit the single per-app resolver into batch 0 only (with the
-                    // full-set manifest); the rest must not, to avoid a duplicate
-                    // `_molt_app_resolve_intrinsic` symbol.
-                    if batch_idx == 0 {
-                        backend.app_intrinsic_manifest = app_intrinsic_manifest.take();
-                    } else {
-                        backend.emit_app_intrinsic_resolver = false;
-                    }
-                    backend.external_function_names =
-                        batch_external_function_names(&all_func_names, &batch_ir.functions);
-                    backend.set_module_context(module_context.clone());
-                    let obj_output = backend.compile(batch_ir);
-
-                    let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
-                    std::fs::write(&batch_path, &obj_output.bytes)?;
-                    batch_paths.push(batch_path);
-                    batch_idx += 1;
-                }
-
-                // Merge batch objects with ld -r (relocatable partial link)
-                merge_relocatable_objects(Path::new(output_file), &batch_paths, None)?;
-
-                // Cleanup
-                for p in &batch_paths {
-                    let _ = std::fs::remove_file(p);
-                }
-                let _ = std::fs::remove_dir(&tmp_dir);
-                eprintln!(
-                    "Successfully compiled to {output_file} ({func_count} functions, {total_batches} batches)"
-                );
-            }
+            compile_native_application_object_to_path(
+                ir,
+                Path::new(output_file),
+                NativeApplicationObjectOptions {
+                    target_triple,
+                    stdlib_split_enabled: stdlib_obj_path.is_some(),
+                    app_intrinsic_manifest,
+                    log_prefix: "MOLT_BACKEND",
+                },
+            )?;
         }
         #[cfg(not(feature = "native-backend"))]
         {
@@ -2722,14 +3029,16 @@ mod tests {
     use super::{
         BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE,
         DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse,
-        GIB, MIB, RequestBoundedRead, compile_single_job, create_backend_output_file,
+        GIB, MIB, NativeApplicationObjectOptions, RequestBoundedRead,
+        compile_native_application_object_to_path, compile_single_job, create_backend_output_file,
         daemon_response_payload, default_backend_max_rss_gb_from_physical_mem_bytes,
         default_backend_output_path, default_daemon_cache_bytes_from_physical_mem_bytes,
         ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
         partition_functions_for_batches, prune_and_partition_native_stdlib,
         read_bounded_request_bytes, read_daemon_request_bytes, relocatable_linker_binary,
         resolve_backend_output_path, resolved_batch_size_limit, shared_stdlib_cache_matches,
-        shared_stdlib_partition_manifest, stdlib_cache_partition_manifest_sidecar_path,
+        shared_stdlib_partition_closure_issue, shared_stdlib_partition_manifest,
+        stdlib_cache_partition_manifest_sidecar_path, validate_shared_stdlib_partition,
         write_cached_output, write_shared_stdlib_cache_sidecars,
     };
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
@@ -2762,6 +3071,125 @@ mod tests {
         let module = cache.entries.get("module").expect("module entry");
         let function = cache.entries.get("function").expect("function entry");
         assert!(Arc::ptr_eq(&module.bytes, &function.bytes));
+    }
+
+    #[test]
+    fn daemon_native_path_written_output_skips_oversized_memory_cache() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tracked_env = [
+            "MOLT_BACKEND_BATCH_SIZE",
+            "MOLT_LINKER",
+            "MOLT_STDLIB_OBJ",
+            "MOLT_STDLIB_CACHE_KEY",
+            "MOLT_STDLIB_CACHE_MANIFEST",
+            "MOLT_STDLIB_MODULE_SYMBOLS",
+            "MOLT_RUNTIME_INTRINSIC_SYMBOLS",
+            "MOLT_ENTRY_MODULE",
+        ];
+        let prior_env: Vec<_> = tracked_env
+            .iter()
+            .map(|name| (*name, std::env::var(name).ok()))
+            .collect();
+        unsafe {
+            std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1");
+            std::env::set_var("MOLT_LINKER", "ld");
+            std::env::remove_var("MOLT_STDLIB_OBJ");
+            std::env::remove_var("MOLT_STDLIB_CACHE_KEY");
+            std::env::remove_var("MOLT_STDLIB_CACHE_MANIFEST");
+            std::env::remove_var("MOLT_STDLIB_MODULE_SYMBOLS");
+            std::env::remove_var("MOLT_RUNTIME_INTRINSIC_SYMBOLS");
+            std::env::remove_var("MOLT_ENTRY_MODULE");
+        }
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-daemon-native-cache-budget-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let output = tmp_dir.join("out.o");
+        let job = DaemonJobRequest {
+            id: "job0".to_string(),
+            is_wasm: false,
+            target_triple: None,
+            wasm_link: false,
+            wasm_data_base: None,
+            wasm_table_base: None,
+            wasm_split_runtime_runtime_table_min: None,
+            output: output.to_string_lossy().to_string(),
+            cache_key: "module-cache".to_string(),
+            function_cache_key: Some("function-cache".to_string()),
+            skip_module_output_if_synced: false,
+            skip_function_output_if_synced: false,
+            probe_cache_only: false,
+            ir: Some(SimpleIR {
+                functions: vec![
+                    FunctionIR {
+                        name: "molt_main".to_string(),
+                        params: vec![],
+                        ops: vec![
+                            OpIR {
+                                kind: "call".to_string(),
+                                s_value: Some("helper".to_string()),
+                                value: Some(0),
+                                ..OpIR::default()
+                            },
+                            OpIR {
+                                kind: "ret_void".to_string(),
+                                ..OpIR::default()
+                            },
+                        ],
+                        param_types: None,
+                        source_file: None,
+                        is_extern: false,
+                    },
+                    FunctionIR {
+                        name: "helper".to_string(),
+                        params: vec![],
+                        ops: vec![OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        }],
+                        param_types: None,
+                        source_file: None,
+                        is_extern: false,
+                    },
+                ],
+                profile: None,
+            }),
+            ir_path: None,
+        };
+        let mut cache = DaemonCache::new(Some(1));
+
+        let result = compile_single_job(job, &mut cache);
+
+        assert!(result.ok, "daemon compile failed: {:?}", result.message);
+        assert!(output.exists(), "path-written daemon output missing");
+        assert!(
+            cache.entries.is_empty(),
+            "oversized object must not enter daemon memory cache"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("skipped daemon memory cache")),
+            "missing cache-budget warning: {:?}",
+            result.warnings
+        );
+
+        for (name, value) in prior_env {
+            match value {
+                Some(value) => unsafe { std::env::set_var(name, value) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
@@ -2860,6 +3288,60 @@ mod tests {
         assert!(!job.skip_function_output_if_synced);
         assert!(!job.probe_cache_only);
         assert!(job.ir.is_none());
+        assert!(job.ir_path.is_none());
+    }
+
+    #[test]
+    fn daemon_request_parse_accepts_path_backed_ir_lease() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let request = DaemonRequest::from_json_bytes(
+            br#"{
+                "version": 1,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "is_wasm": false,
+                        "output": "/tmp/out.o",
+                        "cache_key": "module",
+                        "ir_path": "/tmp/molt-ir.json"
+                    }
+                ]
+            }"#,
+        )
+        .expect("request parse");
+
+        let job = request.jobs.expect("job list").pop().expect("job");
+        assert!(job.ir.is_none());
+        assert_eq!(job.ir_path.as_deref(), Some("/tmp/molt-ir.json"));
+    }
+
+    #[test]
+    fn daemon_request_parse_rejects_duplicate_ir_authority() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let err = DaemonRequest::from_json_bytes(
+            br#"{
+                "version": 1,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "is_wasm": false,
+                        "output": "/tmp/out.o",
+                        "cache_key": "module",
+                        "ir_path": "/tmp/molt-ir.json",
+                        "ir": {"functions": []}
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("duplicate IR sources");
+
+        assert!(
+            err.contains("request.jobs[0] must use exactly one IR custody field: ir or ir_path")
+        );
     }
 
     #[test]
@@ -3087,6 +3569,7 @@ mod tests {
                 skip_function_output_if_synced: false,
                 probe_cache_only: true,
                 ir: None,
+                ir_path: None,
             },
             &mut cache,
         );
@@ -3123,6 +3606,7 @@ mod tests {
                 skip_function_output_if_synced: false,
                 probe_cache_only: true,
                 ir: None,
+                ir_path: None,
             },
             &mut cache,
         );
@@ -3175,6 +3659,7 @@ mod tests {
                 skip_function_output_if_synced: false,
                 probe_cache_only: true,
                 ir: None,
+                ir_path: None,
             },
             &mut cache,
         );
@@ -3403,6 +3888,86 @@ mod tests {
     }
 
     #[test]
+    fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
+        let userdict_copy = FunctionIR {
+            name: "collections__UserDict_copy".to_string(),
+            params: vec!["self".to_string()],
+            ops: vec![OpIR {
+                kind: "call".to_string(),
+                s_value: Some("copy__copy".to_string()),
+                args: Some(vec!["self".to_string()]),
+                out: Some("v0".to_string()),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let copy_init = FunctionIR {
+            name: "molt_init_copy".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "call".to_string(),
+                s_value: Some("copy__molt_module_chunk_1".to_string()),
+                out: Some("v0".to_string()),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let copy_chunk = FunctionIR {
+            name: "copy__molt_module_chunk_1".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let copy_copy = FunctionIR {
+            name: "copy__copy".to_string(),
+            params: vec!["obj".to_string()],
+            ops: vec![OpIR {
+                kind: "ret".to_string(),
+                args: Some(vec!["obj".to_string()]),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let valid_partition = vec![
+            userdict_copy.clone(),
+            copy_init,
+            copy_chunk,
+            copy_copy.clone(),
+        ];
+        let valid_function_names: std::collections::BTreeSet<String> = valid_partition
+            .iter()
+            .map(|func| func.name.clone())
+            .collect();
+        validate_shared_stdlib_partition(&valid_partition, &valid_function_names)
+            .expect("closed partition");
+
+        let invalid_partition = vec![userdict_copy];
+        let invalid_function_names: std::collections::BTreeSet<String> =
+            ["collections__UserDict_copy", "copy__copy"]
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+        let issue =
+            shared_stdlib_partition_closure_issue(&invalid_partition, &invalid_function_names)
+                .expect("missing copy reference");
+        assert!(issue.contains("collections__UserDict_copy -> copy__copy"));
+        assert!(
+            validate_shared_stdlib_partition(&invalid_partition, &invalid_function_names).is_err()
+        );
+    }
+
+    #[test]
     fn shared_stdlib_cache_sidecar_write_failures_propagate() {
         let tmp_dir = std::env::temp_dir().join(format!(
             "molt-stdlib-cache-key-error-test-{}-{}",
@@ -3584,6 +4149,109 @@ mod tests {
         assert!(message.contains("relocatable link failed"), "{message}");
         assert!(!output.exists());
 
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn native_application_object_batches_cleanup_temp_dir_after_merge_failure() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prior_batch_size = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
+        let prior_linker = std::env::var("MOLT_LINKER").ok();
+        unsafe {
+            std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1");
+            std::env::set_var("MOLT_LINKER", "false");
+        }
+
+        let temp_root = std::env::temp_dir();
+        let batch_prefix = format!("molt_batch_{}_", std::process::id());
+        let before: std::collections::BTreeSet<_> = std::fs::read_dir(&temp_root)
+            .expect("read temp root before")
+            .flatten()
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().starts_with(&batch_prefix))
+            .collect();
+        let tmp_dir = temp_root.join(format!(
+            "molt-native-app-merge-fail-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let output = tmp_dir.join("output.o");
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![
+                        OpIR {
+                            kind: "call".to_string(),
+                            s_value: Some("helper".to_string()),
+                            value: Some(0),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "helper".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        let err = compile_native_application_object_to_path(
+            ir,
+            &output,
+            NativeApplicationObjectOptions {
+                target_triple: None,
+                stdlib_split_enabled: false,
+                app_intrinsic_manifest: None,
+                log_prefix: "MOLT_BACKEND(test)",
+            },
+        )
+        .expect_err("forced linker failure should propagate");
+        let message = err.to_string();
+        assert!(message.contains("relocatable link failed"), "{message}");
+        assert!(!output.exists(), "failed merge must not publish output");
+
+        let after: std::collections::BTreeSet<_> = std::fs::read_dir(&temp_root)
+            .expect("read temp root after")
+            .flatten()
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().starts_with(&batch_prefix))
+            .collect();
+        assert_eq!(
+            after, before,
+            "batch temp dirs must be cleaned after failure"
+        );
+
+        match prior_batch_size {
+            Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", value) },
+            None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_SIZE") },
+        }
+        match prior_linker {
+            Some(value) => unsafe { std::env::set_var("MOLT_LINKER", value) },
+            None => unsafe { std::env::remove_var("MOLT_LINKER") },
+        }
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
@@ -4125,6 +4793,36 @@ mod tests {
         assert_eq!(
             std::env::var("MOLT_ENTRY_MODULE").ok().as_deref(),
             Some("demo")
+        );
+        assert!(std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").is_err());
+    }
+
+    #[test]
+    fn daemon_request_env_rejects_malformed_stdlib_module_symbols() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe {
+            std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"stale\"]");
+        }
+        let request = serde_json::json!({
+            "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+            "config_digest": "daemon-bad-stdlib-symbols-test",
+            "env": {
+                "MOLT_STDLIB_MODULE_SYMBOLS": "not-json",
+            },
+            "jobs": [],
+        });
+
+        let err = DaemonRequest::from_json_bytes(
+            serde_json::to_string(&request)
+                .expect("serialize request")
+                .as_bytes(),
+        )
+        .expect_err("malformed stdlib symbol authority must fail closed");
+        assert!(
+            err.contains("MOLT_STDLIB_MODULE_SYMBOLS must be a JSON array of strings"),
+            "unexpected error message: {err}"
         );
         assert!(std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").is_err());
     }

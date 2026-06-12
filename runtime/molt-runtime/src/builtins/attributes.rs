@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bits};
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::{
-    awaitable_await_func_bits, class_slots_info, clear_attribute_error_if_pending,
-    exception_is_attribute_error, object_attr_lookup_raw,
+    attr_lookup_ptr_allow_missing, awaitable_await_func_bits, class_slots_info,
+    clear_attribute_error_if_pending, exception_is_attribute_error, object_attr_lookup_raw,
 };
 use crate::builtins::containers::tuple_method_bits;
 use crate::builtins::methods::{
@@ -3251,6 +3251,9 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     && object_type_id(dict_ptr) == TYPE_ID_DICT
                 {
                     dict_set_in_place(_py, dict_ptr, attr_bits, val_bits);
+                    if attr_name == "__del__" {
+                        crate::object::class_refresh_finalizer_flag(_py, obj_ptr);
+                    }
                     class_bump_layout_version(obj_ptr);
                     dec_ref_bits(_py, attr_bits);
                     return MoltObject::none().bits() as i64;
@@ -4026,6 +4029,9 @@ pub(crate) unsafe fn del_attr_ptr(
                 && object_type_id(dict_ptr) == TYPE_ID_DICT
                 && dict_del_in_place(_py, dict_ptr, attr_bits)
             {
+                if attr_name == "__del__" {
+                    crate::object::class_refresh_finalizer_flag(_py, obj_ptr);
+                }
                 class_bump_layout_version(obj_ptr);
                 return MoltObject::none().bits() as i64;
             }
@@ -5334,11 +5340,6 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                     return val;
                 }
                 if exception_pending(_py) {
-                    let exc_bits =
-                        exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
-                    molt_exception_clear();
-                    let _ = molt_raise(exc_bits);
-                    dec_ref_bits(_py, exc_bits);
                     return MoltObject::none().bits();
                 }
                 let type_id = object_type_id(obj_ptr);
@@ -5434,17 +5435,6 @@ pub extern "C" fn molt_get_attr_name_default(
             return raise_attr_name_type_error(_py, name_bits);
         };
         if exception_pending(_py) {
-            let exc_bits =
-                exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
-            if exception_is_attribute_error(_py, exc_bits) {
-                clear_exception(_py);
-                dec_ref_bits(_py, exc_bits);
-                inc_ref_bits(_py, default_bits);
-                return default_bits;
-            }
-            clear_exception(_py);
-            let _ = molt_raise(exc_bits);
-            dec_ref_bits(_py, exc_bits);
             return MoltObject::none().bits();
         }
         unsafe {
@@ -5454,7 +5444,7 @@ pub extern "C" fn molt_get_attr_name_default(
             let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
                 .unwrap_or_else(|| "<attr>".to_string());
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
-                if let Some(val) = attr_lookup_ptr(_py, obj_ptr, name_bits) {
+                if let Some(val) = attr_lookup_ptr_allow_missing(_py, obj_ptr, name_bits) {
                     if matches!(
                         std::env::var("MOLT_TRACE_INIT_SUBCLASS").ok().as_deref(),
                         Some("1")
@@ -5472,17 +5462,10 @@ pub extern "C" fn molt_get_attr_name_default(
                     return val;
                 }
                 if exception_pending(_py) {
-                    let exc_bits =
-                        exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
-                    if exception_is_attribute_error(_py, exc_bits) {
-                        clear_exception(_py);
-                        dec_ref_bits(_py, exc_bits);
+                    if clear_attribute_error_if_pending(_py) {
                         inc_ref_bits(_py, default_bits);
                         return default_bits;
                     }
-                    clear_exception(_py);
-                    let _ = molt_raise(exc_bits);
-                    dec_ref_bits(_py, exc_bits);
                     return MoltObject::none().bits();
                 }
                 if matches!(

@@ -21,11 +21,11 @@ use crate::builtins::platform::platform_clear_runtime_state;
 #[cfg(not(feature = "stdlib_math"))]
 use crate::builtins::random_mod::random_clear_state;
 use crate::builtins::signal_ext::signal_clear_state;
-use crate::builtins::strings::clear_const_str_cache;
 use crate::builtins::sys_ext::sys_ext_clear_state;
 use crate::builtins::types::types_clear_runtime_state;
 use crate::c_api::c_api_module_clear_state;
 use crate::call::bind::{clear_call_bind_ic_cache, clear_method_ic_cache, clear_super_ic_cache};
+use crate::const_data_cache::clear_const_data_literal_caches;
 use crate::object::builders::clear_builder_singletons;
 use crate::object::dec_ref_ptr;
 use crate::object::utf8_cache::{
@@ -506,7 +506,7 @@ fn clear_thread_local_state(_py: &PyToken<'_>) {
     let _ = CURRENT_TOKEN.try_with(|cell| cell.set(1));
     let _ = PARSE_ARENA.try_with(|arena| arena.borrow_mut().clear());
     clear_attr_tls_caches(_py);
-    clear_const_str_cache(_py);
+    clear_const_data_literal_caches(_py);
     clear_utf8_count_tls();
     let _ = GIL_DEPTH.try_with(|depth| depth.set(0));
 }

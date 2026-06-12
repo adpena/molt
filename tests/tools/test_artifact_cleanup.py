@@ -63,6 +63,22 @@ def test_default_pathspecs_cover_canonical_local_artifact_roots() -> None:
     }.issubset(set(module.default_pathspecs()))
 
 
+def test_default_cleanup_intentionally_covers_cargo_quarantine_receipts() -> None:
+    module = _load_artifact_cleanup()
+    defaults = set(module.default_pathspecs())
+    stateful = set(module.stateful_pathspecs())
+
+    quarantine_receipt = "target/.molt_state/quarantine/cargo_incremental/q/receipt.json"
+    assert quarantine_receipt.startswith("target/")
+    assert "target/" in defaults
+    assert "target/" not in stateful
+    assert "target/.molt_state/quarantine/cargo_incremental/" not in stateful
+    assert "target/" in module.build_git_clean_command(
+        apply=True,
+        pathspecs=module.default_pathspecs(),
+    )
+
+
 def test_extra_pathspecs_reject_stateful_roots() -> None:
     module = _load_artifact_cleanup()
 

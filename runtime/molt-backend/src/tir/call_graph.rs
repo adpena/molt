@@ -335,7 +335,9 @@ impl CallGraph {
     /// the graph was built from, rather than re-deriving a `defined` set. O(log n)
     /// over the sorted [`Self::functions`] list.
     pub fn is_defined(&self, name: &str) -> bool {
-        self.functions.binary_search_by(|f| f.as_str().cmp(name)).is_ok()
+        self.functions
+            .binary_search_by(|f| f.as_str().cmp(name))
+            .is_ok()
     }
 
     /// The static-direct callees of `name` (module-internal targets only),

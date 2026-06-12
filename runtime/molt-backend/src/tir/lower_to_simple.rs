@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ir::OpIR;
 
 use super::blocks::{BlockId, LoopBreakKind, Terminator, TirBlock};
+use super::dominators;
 use super::function::TirFunction;
 use super::ops::{AttrValue, OpCode, TirOp};
 use super::values::ValueId;
@@ -251,14 +252,14 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
 
     let mut out = Vec::new();
 
-    // RC drop-insertion substrate (design 20, R1 guard): function-level attrs do
-    // NOT round-trip through `FunctionIR` (it has no attr field), so the
-    // `drop_inserted` marker is carried as a leading no-op `OpIR`. The native
-    // backend's preanalysis reads it to DISABLE the ad-hoc `loop_reassign_old_val`
-    // dec-ref path (which would otherwise double-drop the same loop-carried value
-    // the TIR drop pass already releases). Codegen's op-kind match ignores the
-    // marker (`_ => {}` default arm). Emitted first so the preanalysis sees it
-    // before scanning the body.
+    // RC drop-insertion substrate (design 20): function-level attrs do NOT
+    // round-trip through `FunctionIR`, so drop facts are carried as leading no-op
+    // marker `OpIR`s. `drop_inserted` is the full-function RC authority marker
+    // native preanalysis consumes to suppress legacy value tracking. The
+    // exception-region marker is narrower: it preserves handler-safe
+    // CreationRef/MatchRef releases for idempotent relifts and `refcount_elim`
+    // protection, but native must ignore it as a full RC suppression signal.
+    // Emitted before the body so every SimpleIR consumer sees the facts first.
     if matches!(
         func.attrs
             .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
@@ -266,6 +267,17 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     ) {
         out.push(OpIR {
             kind: crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR.to_string(),
+            ..OpIR::default()
+        });
+    }
+    if matches!(
+        func.attrs
+            .get(crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
+        Some(AttrValue::Bool(true))
+    ) {
+        out.push(OpIR {
+            kind: crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
+                .to_string(),
             ..OpIR::default()
         });
     }
@@ -327,19 +339,17 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         }
         map
     };
-
     let original_label_to_block: HashMap<i64, BlockId> = func
         .label_id_map
         .iter()
         .map(|(&bid_u32, &label_id)| (label_id, BlockId(bid_u32)))
         .collect();
-
     let exception_handler_blocks: HashSet<BlockId> = func
         .blocks
         .values()
         .flat_map(|block| block.ops.iter())
         .filter_map(|op| match op.opcode {
-            OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd => {
+            opcode if dominators::is_exception_transfer_edge(opcode) => {
                 attr_int(&op.attrs, "value")
                     .and_then(|label_id| original_label_to_block.get(&label_id).copied())
             }
@@ -373,7 +383,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     let mut loop_consumed: HashSet<BlockId> = HashSet::new();
 
     // Full predecessor map covering BOTH normal terminator edges AND implicit
-    // exception edges (CheckException / TryStart / TryEnd handler-label edges).
+    // exception edges (CheckException / TryStart handler-label edges).
     // Used by the structured-loop external-reentry guard below: a loop region
     // can only be reconstructed (which merges away the labels of its inline
     // header/cond/guard blocks) when those consumed blocks have no predecessor
@@ -387,10 +397,8 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 preds.entry(succ).or_default().push(*pred_bid);
             }
             for op in &block.ops {
-                if matches!(
-                    op.opcode,
-                    OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
-                ) && let Some(label_id) = attr_int(&op.attrs, "value")
+                if dominators::is_exception_transfer_edge(op.opcode)
+                    && let Some(label_id) = attr_int(&op.attrs, "value")
                     && let Some(&target) = original_label_to_block.get(&label_id)
                 {
                     preds.entry(target).or_default().push(*pred_bid);
@@ -592,10 +600,8 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         // through in-loop blocks; the EXIT is the successor that leaves the loop.
         // Derive that here and emit a polarity consistent with it, so the
         // reconstruction is correct regardless of `break_kind` staleness.
-        let then_reaches_header =
-            successor_reaches_header(func, *then_block, *bid, cond_bid);
-        let else_reaches_header =
-            successor_reaches_header(func, *else_block, *bid, cond_bid);
+        let then_reaches_header = successor_reaches_header(func, *then_block, *bid, cond_bid);
+        let else_reaches_header = successor_reaches_header(func, *else_block, *bid, cond_bid);
         // Fall back to the recorded hint only when the CFG is ambiguous (both or
         // neither successor reaches the header — e.g. an infinite loop with no
         // exit, or an exit that re-enters). A reducible loop with a normal exit
@@ -670,15 +676,19 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             }
         }
         // Exclude LoopEnd structural markers — they are not real body blocks.
+        //
+        // Exception handler blocks are deliberately kept when the natural loop
+        // reaches them.  They are semantically owned by the protected loop body;
+        // removing them here makes their cleanup/continuation successors look
+        // like external re-entry and forces a generic fallback that cannot emit
+        // a matched loop_start/loop_end region.
         body_set.retain(|b| {
             func.loop_roles
                 .get(b)
                 .cloned()
                 .unwrap_or(super::blocks::LoopRole::None)
                 != super::blocks::LoopRole::LoopEnd
-                && !exception_handler_blocks.contains(b)
         });
-        guard_raise_blocks.retain(|b| !exception_handler_blocks.contains(b));
 
         // ── Single-entry-region guard (structured-reconstruction soundness) ──
         // Structured loop reconstruction merges the region's interior blocks
@@ -1014,26 +1024,15 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         };
 
         // Emit block header: label for non-entry blocks.
-        // LoopHeaders with regions are handled above; remaining LoopHeaders
-        // (no CondBranch terminator) fall through to emit loop_start + label.
+        // LoopHeaders with proven regions are handled above.  Remaining loop
+        // headers stay in the generic label/jump form: emitting only loop_start
+        // here creates a half-structured loop with no matching loop_end.
         if *bid != func.entry_block {
-            if loop_role == super::blocks::LoopRole::LoopHeader {
-                out.push(OpIR {
-                    kind: "label".to_string(),
-                    value: Some(block_label_id(bid)),
-                    ..OpIR::default()
-                });
-                out.push(OpIR {
-                    kind: "loop_start".to_string(),
-                    ..OpIR::default()
-                });
-            } else {
-                out.push(OpIR {
-                    kind: "label".to_string(),
-                    value: Some(block_label_id(bid)),
-                    ..OpIR::default()
-                });
-            }
+            out.push(OpIR {
+                kind: "label".to_string(),
+                value: Some(block_label_id(bid)),
+                ..OpIR::default()
+            });
 
             // Load block argument variables into SSA-named vars.
             if let Some(param_vars) = block_param_vars.get(bid) {
@@ -1133,15 +1132,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             // Emit then-block ops inline.
             for op in &then_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
-                    annotate_type_flags(&mut opir, op);
-                    if matches!(
-                        opir.kind.as_str(),
-                        "check_exception" | "try_start" | "try_end"
-                    ) && let Some(orig_id) = opir.value
-                        && let Some(&new_id) = original_to_new_label.get(&orig_id)
-                    {
-                        opir.value = Some(new_id);
-                    }
+                    annotate_lowered_op(&mut opir, op, &original_to_new_label);
                     out.push(opir);
                 }
             }
@@ -1168,15 +1159,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             // Emit else-block ops inline.
             for op in &else_blk.ops {
                 if let Some(mut opir) = lower_op(op) {
-                    annotate_type_flags(&mut opir, op);
-                    if matches!(
-                        opir.kind.as_str(),
-                        "check_exception" | "try_start" | "try_end"
-                    ) && let Some(orig_id) = opir.value
-                        && let Some(&new_id) = original_to_new_label.get(&orig_id)
-                    {
-                        opir.value = Some(new_id);
-                    }
+                    annotate_lowered_op(&mut opir, op, &original_to_new_label);
                     out.push(opir);
                 }
             }
@@ -1212,10 +1195,8 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                 &block_param_vars,
                 &block_label_id,
                 &if_inlined_blocks,
-                &func.loop_roles,
                 &mut out,
                 original_has_ret,
-                loop_role,
                 &func.loop_break_kinds,
             );
         }
@@ -1227,6 +1208,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         eprintln!("LOWER_DEBUG_PRE_ELIM: {out:#?}");
     }
     eliminate_dead_labels(&mut out);
+    close_try_regions_before_handler_labels(&mut out);
     if let Err(detail) = validate_structured_if_markers(&out) {
         panic!(
             "[TIR] invalid structured if lowering for {}: {}",
@@ -1299,7 +1281,7 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
         let mut branch_targets: HashSet<i64> = HashSet::new();
         for op in ops.iter() {
             match op.kind.as_str() {
-                "jump" | "br_if" | "check_exception" | "loop_continue" => {
+                "jump" | "br_if" | "check_exception" | "try_start" | "loop_continue" => {
                     if let Some(id) = op.value {
                         branch_targets.insert(id);
                     }
@@ -1371,6 +1353,17 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                     filled_state = FilledState::Open;
                     current_block_started_at_live_label = false;
                 }
+                "try_start" | "try_end" => {
+                    // Try markers are codegen-region boundaries, not executable
+                    // straight-line work.  A protected body may end in a raise
+                    // followed by the explicit handler jump, but the following
+                    // try_end is still the shared fact that closes the protected
+                    // body for text backends such as Luau.  Keeping try_end live
+                    // also re-opens the synthetic post-pcall dispatch path so the
+                    // success jump is not discarded as unreachable text.
+                    filled_state = FilledState::Open;
+                    current_block_started_at_live_label = false;
+                }
                 // loop_start, loop_break_if_false/true/exception do not fill:
                 // each has a fall-through path (the non-break edge continues the
                 // loop body), so they are control-flow markers, not block-fillers.
@@ -1418,6 +1411,55 @@ fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
         if ops.len() == old_len {
             break;
         }
+    }
+}
+
+fn close_try_regions_before_handler_labels(ops: &mut Vec<OpIR>) {
+    let mut active_handlers: Vec<i64> = Vec::new();
+    let mut result = Vec::with_capacity(ops.len());
+    let mut changed = false;
+
+    for op in ops.iter() {
+        if matches!(op.kind.as_str(), "label" | "state_label")
+            && let Some(label) = op.value
+            && let Some(pos) = active_handlers
+                .iter()
+                .rposition(|&handler| handler == label)
+        {
+            let drained: Vec<i64> = active_handlers.drain(pos..).collect();
+            for handler in drained.into_iter().rev() {
+                result.push(OpIR {
+                    kind: "try_end".to_string(),
+                    value: Some(handler),
+                    ..OpIR::default()
+                });
+                changed = true;
+            }
+        }
+
+        match op.kind.as_str() {
+            "try_start" => {
+                if let Some(handler) = op.value {
+                    active_handlers.push(handler);
+                }
+            }
+            "try_end" => {
+                if let Some(handler) = op.value
+                    && let Some(pos) = active_handlers
+                        .iter()
+                        .rposition(|&active| active == handler)
+                {
+                    active_handlers.drain(pos..);
+                }
+            }
+            _ => {}
+        }
+
+        result.push(op.clone());
+    }
+
+    if changed {
+        *ops = result;
     }
 }
 
@@ -1675,6 +1717,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 ..OpIR::default()
             })
         }
+        OpCode::DeleteVar => Some(OpIR {
+            kind: "delete_var".to_string(),
+            args: Some(operand_args(op)),
+            var: attr_str(&op.attrs, "_var").or_else(|| op.results.first().map(|v| value_var(*v))),
+            ..OpIR::default()
+        }),
 
         // Call — s_value holds the target function name, value holds the code_id.
         // Recover the original SimpleIR kind (call_func, call_indirect, etc.)
@@ -2100,10 +2148,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // stack arm (rewritten by escape analysis) uses it to size
             // the Cranelift StackSlot.
             value: attr_int(&op.attrs, "value"),
-            // Preserve the finalizer fact across the round-trip so a
-            // re-lowering still sees that this instance's class defines
-            // `__del__` and must not be stack-promoted / RC-stripped.
-            defines_del: attr_bool(&op.attrs, "defines_del"),
             ..OpIR::default()
         }),
         OpCode::ObjectNewBoundStack => Some(OpIR {
@@ -2657,10 +2701,8 @@ fn emit_structured_loop_region(
                     block_param_vars,
                     block_label_id,
                     &loop_inline_blocks,
-                    &func.loop_roles,
                     out,
                     original_has_ret,
-                    body_role,
                     &func.loop_break_kinds,
                 );
             }
@@ -2752,10 +2794,8 @@ fn emit_structured_loop_region(
             block_param_vars,
             block_label_id,
             if_inlined_blocks,
-            &func.loop_roles,
             out,
             original_has_ret,
-            super::blocks::LoopRole::None,
             &func.loop_break_kinds,
         );
     }
@@ -2837,10 +2877,8 @@ fn emit_guard_raise_path(
                     block_param_vars,
                     block_label_id,
                     if_inlined_blocks,
-                    &func.loop_roles,
                     out,
                     original_has_ret,
-                    super::blocks::LoopRole::None,
                     &func.loop_break_kinds,
                 );
                 cur = *target;
@@ -2851,10 +2889,8 @@ fn emit_guard_raise_path(
                     block_param_vars,
                     block_label_id,
                     if_inlined_blocks,
-                    &func.loop_roles,
                     out,
                     original_has_ret,
-                    super::blocks::LoopRole::None,
                     &func.loop_break_kinds,
                 );
                 break;
@@ -2870,10 +2906,8 @@ fn emit_guard_raise_path(
                     block_param_vars,
                     block_label_id,
                     if_inlined_blocks,
-                    &func.loop_roles,
                     out,
                     original_has_ret,
-                    super::blocks::LoopRole::None,
                     &func.loop_break_kinds,
                 );
                 break;
@@ -2899,15 +2933,7 @@ fn emit_block_ops_inner(
             emit_block_arg_stores(handler_block, &op.operands, block_param_vars, out);
         }
         if let Some(mut opir) = lower_op(op) {
-            annotate_type_flags(&mut opir, op);
-            if matches!(
-                opir.kind.as_str(),
-                "check_exception" | "try_start" | "try_end"
-            ) && let Some(orig_id) = opir.value
-                && let Some(&new_id) = original_to_new_label.get(&orig_id)
-            {
-                opir.value = Some(new_id);
-            }
+            annotate_lowered_op(&mut opir, op, original_to_new_label);
             out.push(opir);
         }
     }
@@ -2954,10 +2980,8 @@ fn emit_terminator(
     block_param_vars: &HashMap<BlockId, Vec<String>>,
     block_label_id: &dyn Fn(&BlockId) -> i64,
     if_inlined_blocks: &HashSet<BlockId>,
-    loop_roles: &HashMap<BlockId, super::blocks::LoopRole>,
     out: &mut Vec<OpIR>,
     original_has_ret: bool,
-    loop_role: super::blocks::LoopRole,
     _loop_break_kinds: &HashMap<BlockId, LoopBreakKind>,
 ) {
     match &block.terminator {
@@ -2997,19 +3021,7 @@ fn emit_terminator(
         Terminator::Branch { target, args } => {
             emit_block_arg_stores(*target, args, block_param_vars, out);
 
-            // If target is a LoopHeader, this is a back-edge → loop_continue.
-            let target_role = loop_roles
-                .get(target)
-                .cloned()
-                .unwrap_or(super::blocks::LoopRole::None);
-            if loop_role == super::blocks::LoopRole::LoopEnd
-                && target_role == super::blocks::LoopRole::LoopHeader
-            {
-                out.push(OpIR {
-                    kind: "loop_continue".to_string(),
-                    ..OpIR::default()
-                });
-            } else if if_inlined_blocks.contains(target) {
+            if if_inlined_blocks.contains(target) {
                 // The target block is emitted inline without its own label, so
                 // the normal edge is a real fallthrough. Emitting a jump here
                 // would reference an unlabeled block and break TIR roundtrip
@@ -3285,6 +3297,28 @@ fn annotate_type_flags(opir: &mut OpIR, tir_op: &TirOp) {
     }
 }
 
+fn annotate_lowered_op(opir: &mut OpIR, tir_op: &TirOp, original_to_new_label: &HashMap<i64, i64>) {
+    annotate_type_flags(opir, tir_op);
+    // Result-lifetime facts are TIR attrs, not opcode-local syntax. Preserve
+    // them through every TIR -> SimpleIR custody boundary so native's
+    // optimize-roundtrip -> terminal-drop relift sees the same finalizer facts
+    // the frontend/SSA path proved. This covers object_new_bound, call_bind, and
+    // any future result producer whose runtime class is proven to define __del__.
+    if !tir_op.results.is_empty()
+        && matches!(tir_op.attrs.get("defines_del"), Some(AttrValue::Bool(true)))
+    {
+        opir.defines_del = Some(true);
+    }
+    if matches!(
+        opir.kind.as_str(),
+        "check_exception" | "try_start" | "try_end"
+    ) && let Some(orig_id) = opir.value
+        && let Some(&new_id) = original_to_new_label.get(&orig_id)
+    {
+        opir.value = Some(new_id);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helper utilities
 // ---------------------------------------------------------------------------
@@ -3401,6 +3435,35 @@ mod tests {
         let ops = lower_to_simple_ir(&func);
         let has_ret = ops.iter().any(|o| o.kind == "ret" || o.kind == "ret_void");
         assert!(has_ret, "expected a return op, got: {:?}", ops);
+    }
+
+    #[test]
+    fn lower_to_simple_emits_separate_drop_fact_markers() {
+        let mut func = TirFunction::new("drop_fact_markers".into(), vec![], TirType::None);
+        func.attrs.insert(
+            crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR.to_string(),
+            AttrValue::Bool(true),
+        );
+        func.attrs.insert(
+            crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR.to_string(),
+            AttrValue::Bool(true),
+        );
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+            Terminator::Return { values: vec![] };
+
+        let ops = lower_to_simple_ir(&func);
+
+        assert_eq!(
+            ops.iter()
+                .take(2)
+                .map(|op| op.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR,
+                crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR,
+            ],
+            "full drop ownership and exception-only drop facts must remain distinct on SimpleIR transport"
+        );
     }
 
     #[test]
@@ -4572,75 +4635,20 @@ mod tests {
         let mut ops = vec![
             OpIR {
                 kind: "ret".into(),
-                out: None,
                 var: Some("_ret0".into()),
                 args: Some(vec!["_ret0".into()]),
-                value: None,
-                f_value: None,
-                s_value: None,
-                bytes: None,
-                fast_int: None,
-                fast_float: None,
-                stack_eligible: None,
-                task_kind: None,
-                container_type: None,
-                type_hint: None,
-                ic_index: None,
-                col_offset: None,
-                end_col_offset: None,
-                bce_safe: None,
-                arena_eligible: None,
-                effect_proof: None,
-                class_name: None,
-                defines_del: None,
+                ..OpIR::default()
             },
             OpIR {
                 kind: "loop_end".into(),
-                out: None,
-                var: None,
                 args: Some(vec![]),
-                value: None,
-                f_value: None,
-                s_value: None,
-                bytes: None,
-                fast_int: None,
-                fast_float: None,
-                stack_eligible: None,
-                task_kind: None,
-                container_type: None,
-                type_hint: None,
-                ic_index: None,
-                col_offset: None,
-                end_col_offset: None,
-                bce_safe: None,
-                arena_eligible: None,
-                effect_proof: None,
-                class_name: None,
-                defines_del: None,
+                ..OpIR::default()
             },
             OpIR {
                 kind: "label".into(),
-                out: None,
-                var: None,
                 args: Some(vec![]),
                 value: Some(42),
-                f_value: None,
-                s_value: None,
-                bytes: None,
-                fast_int: None,
-                fast_float: None,
-                stack_eligible: None,
-                task_kind: None,
-                container_type: None,
-                type_hint: None,
-                ic_index: None,
-                col_offset: None,
-                end_col_offset: None,
-                bce_safe: None,
-                arena_eligible: None,
-                effect_proof: None,
-                class_name: None,
-                defines_del: None,
+                ..OpIR::default()
             },
         ];
 
@@ -4657,75 +4665,20 @@ mod tests {
         let mut ops = vec![
             OpIR {
                 kind: "ret".into(),
-                out: None,
                 var: Some("_ret0".into()),
                 args: Some(vec!["_ret0".into()]),
-                value: None,
-                f_value: None,
-                s_value: None,
-                bytes: None,
-                fast_int: None,
-                fast_float: None,
-                stack_eligible: None,
-                task_kind: None,
-                container_type: None,
-                type_hint: None,
-                ic_index: None,
-                col_offset: None,
-                end_col_offset: None,
-                bce_safe: None,
-                arena_eligible: None,
-                effect_proof: None,
-                class_name: None,
-                defines_del: None,
+                ..OpIR::default()
             },
             OpIR {
                 kind: "jump".into(),
-                out: None,
-                var: None,
-                args: None,
                 value: Some(42),
-                f_value: None,
-                s_value: None,
-                bytes: None,
-                fast_int: None,
-                fast_float: None,
-                stack_eligible: None,
-                task_kind: None,
-                container_type: None,
-                type_hint: None,
-                ic_index: None,
-                col_offset: None,
-                end_col_offset: None,
-                bce_safe: None,
-                arena_eligible: None,
-                effect_proof: None,
-                class_name: None,
-                defines_del: None,
+                ..OpIR::default()
             },
             OpIR {
                 kind: "label".into(),
-                out: None,
-                var: None,
                 args: Some(vec![]),
                 value: Some(42),
-                f_value: None,
-                s_value: None,
-                bytes: None,
-                fast_int: None,
-                fast_float: None,
-                stack_eligible: None,
-                task_kind: None,
-                container_type: None,
-                type_hint: None,
-                ic_index: None,
-                col_offset: None,
-                end_col_offset: None,
-                bce_safe: None,
-                arena_eligible: None,
-                effect_proof: None,
-                class_name: None,
-                defines_del: None,
+                ..OpIR::default()
             },
         ];
 
@@ -7122,10 +7075,9 @@ mod tests {
         // The latch's label (62) must survive: the generic fallback emits it so
         // the entry `jump 62` resolves instead of dangling.
         assert!(
-            ops.iter().any(|op| matches!(
-                op.kind.as_str(),
-                "label" | "state_label"
-            ) && op.value == Some(62)),
+            ops.iter()
+                .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
+                    && op.value == Some(62)),
             "shared pre-header/latch label (62) must remain materialized when \
              entered from outside the loop region: {ops:?}"
         );

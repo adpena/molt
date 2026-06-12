@@ -662,7 +662,12 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         OpCode::FloorDiv => emit_lir_binary_arith(ctx, op, ArithOp::FloorDiv),
         OpCode::Mod => emit_lir_binary_arith(ctx, op, ArithOp::Mod),
         OpCode::Neg => emit_lir_unary_arith(ctx, op, UnaryOp::Neg),
-        OpCode::Pos | OpCode::Copy | OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard => {
+        OpCode::Pos
+        | OpCode::Copy
+        | OpCode::DeleteVar
+        | OpCode::BoxVal
+        | OpCode::UnboxVal
+        | OpCode::TypeGuard => {
             if let (Some(&src), Some(result)) = (tir_op.operands.first(), op.result_values.first())
             {
                 ctx.emit_get(src);
@@ -1618,6 +1623,47 @@ mod tests {
 
         // Should end with `end`.
         assert!(matches!(output.instructions.last(), Some(Instruction::End)));
+    }
+
+    #[test]
+    fn lir_fast_lane_dec_ref_emits_named_runtime_call() {
+        let mut func = TirFunction::new("drop_ref".into(), vec![], TirType::None);
+        let owned = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstNone,
+            operands: vec![],
+            results: vec![owned],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::DecRef,
+            operands: vec![owned],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let output = lower_tir_to_wasm(&func);
+        assert!(
+            output.runtime_calls.contains(&"dec_ref_obj"),
+            "WASM LIR fast lane must consume shared DecRef through dec_ref_obj; got {:?}",
+            output.runtime_calls
+        );
+        let placeholders = output
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER)))
+            .count();
+        assert_eq!(
+            placeholders,
+            output.runtime_calls.len(),
+            "named-call placeholders must pair 1:1 with runtime_calls entries"
+        );
     }
 
     #[test]

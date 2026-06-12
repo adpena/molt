@@ -15015,6 +15015,14 @@ if (memory) envImports.memory = memory;
 if (table) envImports.__indirect_function_table = table;
 envImports.molt_getpid_host = () =>
   BigInt(typeof process !== 'undefined' && process.pid ? process.pid : 0);
+envImports.molt_process_spawn_host = () => -1;
+envImports.molt_process_wait_host = () => -1;
+envImports.molt_process_kill_host = () => -1;
+envImports.molt_process_terminate_host = () => -1;
+envImports.molt_process_write_host = () => -1;
+envImports.molt_process_close_stdin_host = () => -1;
+envImports.molt_process_stdio_host = () => -1;
+envImports.molt_process_host_poll = () => 0;
 envImports.molt_ws_poll_host = () => 0;
 """
 

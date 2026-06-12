@@ -1507,6 +1507,59 @@ value = Point(3)
     assert alloc.get("type_hint") == "Point"
 
 
+def test_return_unwind_deactivates_popped_try_handler_label() -> None:
+    source = """
+def f(xs):
+    try:
+        return next(xs)
+    except StopIteration:
+        return 0
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
+
+    try_label = next(op["value"] for op in ops if op.get("kind") == "try_start")
+    first_pop_idx = next(
+        idx
+        for idx, op in enumerate(ops)
+        if idx > 0 and op.get("kind") == "exception_pop"
+    )
+    first_ret_idx = next(
+        idx
+        for idx, op in enumerate(ops[first_pop_idx + 1 :], first_pop_idx + 1)
+        if op.get("kind") == "ret"
+    )
+
+    cleanup_checks = [
+        op for op in ops[first_pop_idx + 1 : first_ret_idx] if op.get("kind") == "check_exception"
+    ]
+    assert cleanup_checks
+    assert all(op.get("value") != try_label for op in cleanup_checks)
+
+
+def test_with_context_exit_checks_after_exception_frame_release() -> None:
+    source = """
+def f(cm):
+    with cm:
+        x = 1
+    return x
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
+
+    context_exit_indices = [
+        idx for idx, op in enumerate(ops) if op.get("kind") == "context_exit"
+    ]
+    assert context_exit_indices
+    for idx in context_exit_indices:
+        next_kinds = [op.get("kind") for op in ops[idx + 1 : idx + 3]]
+        assert next_kinds == ["exception_pop", "check_exception"]
+
+
 def test_rebound_same_module_class_call_keeps_runtime_lookup() -> None:
     source = """
 class Point:

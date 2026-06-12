@@ -26,9 +26,6 @@ pub struct LuauBackend {
     /// these is returned we emit `return table.unpack(v)` so the caller
     /// receives multiple values instead of a single table.
     tuple_vars: BTreeSet<String>,
-    /// Legacy Luau-local annotation/copied-shape hints.
-    /// Scalar and container specialization decisions come from `scalar_plan`.
-    var_type_hints: BTreeMap<String, String>,
     /// Backend-neutral scalar representation facts for the function currently
     /// being emitted.
     scalar_plan: ScalarRepresentationPlan,
@@ -70,7 +67,6 @@ impl LuauBackend {
             uses_forward_decls: false,
             hoisted_vars: BTreeSet::new(),
             tuple_vars: BTreeSet::new(),
-            var_type_hints: BTreeMap::new(),
             scalar_plan: ScalarRepresentationPlan::default(),
             try_depth_counter: Vec::new(),
             pcall_counter: 0,
@@ -242,6 +238,8 @@ impl LuauBackend {
         propagate_single_use_copies(&mut func_body);
         sink_single_use_locals(&mut func_body);
         rehoist_escaped_locals(&mut func_body);
+        structure_pcall_failure_blocks(&mut func_body);
+        structure_forward_if_else_blocks(&mut func_body);
 
         // Phase 2d: Convert goto/label pairs to structured control flow.
         // Standard Luau does NOT support goto or ::label:: syntax.
@@ -407,6 +405,50 @@ impl LuauBackend {
         // For non-function names (modules, variables), use plain contains.
         let used = |name: &str| func_body.contains(name);
 
+        if used_call("molt_module_get_global")
+            || used_call("molt_module_get_name")
+            || used_call("molt_module_del_global")
+        {
+            self.output.push_str(concat!(
+                "local function molt_module_type_error(action: string): any\n",
+                "\terror({__type = \"TypeError\", __msg = \"module \" .. action .. \" expects module\"})\n",
+                "end\n\n",
+                "local function molt_module_name_error(name: any): any\n",
+                "\tlocal name_s = tostring(name)\n",
+                "\tif name_s == \"exec\" or name_s == \"eval\" then\n",
+                "\t\terror({__type = \"RuntimeError\", __msg = \"MOLT_COMPAT_ERROR: \" .. name_s .. \"() is unsupported in compiled Molt binaries; dynamic code execution is outside the verified subset. Use static modules or pre-generated code paths instead.\"})\n",
+                "\tend\n",
+                "\terror({__type = \"NameError\", __msg = \"name '\" .. name_s .. \"' is not defined\"})\n",
+                "end\n\n",
+                "local function molt_module_get_global(module: any, name: any): any\n",
+                "\tif type(module) ~= \"table\" then return molt_module_type_error(\"get_global\") end\n",
+                "\tlocal value = module[name]\n",
+                "\tif value ~= nil then return value end\n",
+                "\tlocal builtins = molt_module_cache[\"builtins\"]\n",
+                "\tif type(builtins) == \"table\" then\n",
+                "\t\tlocal builtin_value = builtins[name]\n",
+                "\t\tif builtin_value ~= nil then return builtin_value end\n",
+                "\tend\n",
+                "\treturn molt_module_name_error(name)\n",
+                "end\n\n",
+                "local function molt_module_get_name(module: any, name: any): any\n",
+                "\tif type(module) ~= \"table\" then return molt_module_type_error(\"get_name\") end\n",
+                "\tlocal value = module[name]\n",
+                "\tif value ~= nil then return value end\n",
+                "\terror({__type = \"AttributeError\", __msg = \"module has no attribute '\" .. tostring(name) .. \"'\"})\n",
+                "end\n\n",
+                "local function molt_module_del_global(module: any, name: any, missing_ok: boolean): any\n",
+                "\tif type(module) ~= \"table\" then return molt_module_type_error(\"del_global\") end\n",
+                "\tif module[name] ~= nil then\n",
+                "\t\tmodule[name] = nil\n",
+                "\t\treturn nil\n",
+                "\tend\n",
+                "\tif missing_ok then return nil end\n",
+                "\treturn molt_module_name_error(name)\n",
+                "end\n\n",
+            ));
+        }
+
         // Conditional runtime helpers — only emit if referenced by call.
         // Each helper is a (name, source) pair.
         let helpers: &[(&str, &str)] = &[
@@ -433,6 +475,14 @@ impl LuauBackend {
             (
                 "molt_bool",
                 "local function molt_bool(x: any): boolean\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" and next(x) == nil then return false end\n\treturn true\nend\n",
+            ),
+            (
+                "molt_type_of",
+                "local function molt_type_of(x: any): {[string]: any}\n\tif type(x) == \"table\" and x.__type then return {__name__ = x.__type} end\n\tlocal t = type(x)\n\tif t == \"nil\" then return {__name__ = \"NoneType\"} end\n\tif t == \"number\" then return {__name__ = \"int\"} end\n\tif t == \"string\" then return {__name__ = \"str\"} end\n\tif t == \"boolean\" then return {__name__ = \"bool\"} end\n\tif t == \"function\" then return {__name__ = \"function\"} end\n\treturn {__name__ = t}\nend\n",
+            ),
+            (
+                "molt_guard_type",
+                "local function molt_guard_type(val: any, expected: any): any\n\tif type(expected) ~= \"number\" then error({__type=\"TypeError\", __msg=\"guard type tag must be int\"}) end\n\treturn val\nend\n",
             ),
             (
                 "molt_repr",
@@ -754,6 +804,7 @@ impl LuauBackend {
         let ops = lower_early_returns(&func.ops);
         let ops = strip_dead_after_return(&ops);
         let ops = lower_iter_to_for(&ops);
+        let ops = hoist_exception_edge_block_arg_stores(&ops);
         let (ops, pcall_escaped_vars) = lower_try_to_pcall(&ops);
         let scalar_func = FunctionIR {
             name: func.name.clone(),
@@ -806,7 +857,6 @@ impl LuauBackend {
         // Reset per-function state.
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
-        self.var_type_hints.clear();
         self.try_depth_counter.clear();
         self.pcall_counter = 0;
         self.inside_pcall_body = false;
@@ -821,26 +871,6 @@ impl LuauBackend {
             .filter(|op| op.out.is_some() && op.out.as_deref() != Some("none"))
             .count();
         self.needs_local_spill = local_producing_ops > 190;
-
-        // Seed legacy hints from param_types for Luau annotations and copied
-        // shape metadata. Dispatch authority stays in `scalar_plan`.
-        if let Some(ref pts) = func.param_types {
-            for (i, py_type) in pts.iter().enumerate() {
-                if let Some(param_name) = func.params.get(i) {
-                    let hint = match py_type.as_str() {
-                        s if s.starts_with("list") || s.starts_with("List") => "list",
-                        s if s.starts_with("dict") || s.starts_with("Dict") => "dict",
-                        "int" | "Int" => "int",
-                        "float" | "Float" => "float",
-                        "bool" | "Bool" | "boolean" => "bool",
-                        "str" | "Str" | "string" => "str",
-                        _ => continue,
-                    };
-                    self.var_type_hints
-                        .insert(param_name.clone(), hint.to_string());
-                }
-            }
-        }
 
         // Pre-declare loop index variables so they persist across iterations.
         let mut loop_idx_vars = Vec::new();
@@ -1226,14 +1256,8 @@ impl LuauBackend {
             "const" => {
                 let out = self.out_var(op);
                 if let Some(v) = op.value {
-                    if let Some(ref n) = op.out {
-                        self.var_type_hints.insert(n.clone(), "int".to_string());
-                    }
                     self.emit_line(&format!("local {out}: number = {v}"));
                 } else if let Some(f) = op.f_value {
-                    if let Some(ref n) = op.out {
-                        self.var_type_hints.insert(n.clone(), "float".to_string());
-                    }
                     self.emit_line(&format!("local {out}: number = {f}"));
                 } else if let Some(ref s) = op.s_value {
                     let escaped = escape_luau_string(s);
@@ -1245,17 +1269,11 @@ impl LuauBackend {
             "const_float" => {
                 let out = self.out_var(op);
                 let val = op.f_value.unwrap_or(0.0);
-                if let Some(ref n) = op.out {
-                    self.var_type_hints.insert(n.clone(), "float".to_string());
-                }
                 self.emit_line(&format!("local {out}: number = {val}"));
             }
             "const_int" => {
                 let out = self.out_var(op);
                 let val = op.value.unwrap_or(0);
-                if let Some(ref n) = op.out {
-                    self.var_type_hints.insert(n.clone(), "int".to_string());
-                }
                 self.emit_line(&format!("local {out}: number = {val}"));
             }
             "const_str" => {
@@ -1263,11 +1281,6 @@ impl LuauBackend {
                 let s = op.s_value.as_deref().unwrap_or("");
                 let escaped = escape_luau_string(s);
                 self.emit_line(&format!("local {out}: string = \"{escaped}\""));
-                // Track string type for downstream string indexing.
-                if let Some(ref out_name) = op.out {
-                    self.var_type_hints
-                        .insert(out_name.clone(), "str".to_string());
-                }
             }
             "const_bytes" => {
                 let out = self.out_var(op);
@@ -1287,9 +1300,6 @@ impl LuauBackend {
                 } else {
                     "false"
                 };
-                if let Some(ref n) = op.out {
-                    self.var_type_hints.insert(n.clone(), "bool".to_string());
-                }
                 self.emit_line(&format!("local {out}: boolean = {val}"));
             }
             "const_none" | "none_const" => {
@@ -1301,11 +1311,6 @@ impl LuauBackend {
                 let s = op.s_value.as_deref().unwrap_or("");
                 let escaped = escape_luau_string(s);
                 self.emit_line(&format!("local {out}: string = \"{escaped}\""));
-                // Track string type for downstream string indexing.
-                if let Some(ref out_name) = op.out {
-                    self.var_type_hints
-                        .insert(out_name.clone(), "str".to_string());
-                }
             }
             "const_bigint" => {
                 let out = self.out_var(op);
@@ -1337,11 +1342,6 @@ impl LuauBackend {
                     })
                     .map(sanitize_ident)
                     .unwrap_or_else(|| "_".to_string());
-                if let Some(hint) = self.var_type_hints.get(&var).cloned()
-                    && let Some(ref out_name) = op.out
-                {
-                    self.var_type_hints.insert(out_name.clone(), hint);
-                }
                 self.emit_line(&format!("local {out} = {var}"));
             }
             "load" | "guarded_load" => {
@@ -1354,6 +1354,23 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = {obj}[{slot}]"));
                 } else {
                     self.emit_line(&format!("local {out} = nil"));
+                }
+            }
+            "guard_type" | "guard_tag" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let value = sanitize_ident(&args[0]);
+                    let expected = sanitize_ident(&args[1]);
+                    if let Some(ref out_name) = op.out
+                        && out_name != "none"
+                    {
+                        let out = sanitize_ident(out_name);
+                        self.emit_line(&format!(
+                            "local {out} = molt_guard_type({value}, {expected})"
+                        ));
+                    } else {
+                        self.emit_line(&format!("molt_guard_type({value}, {expected})"));
+                    }
                 }
             }
             "closure_load" => {
@@ -1381,12 +1398,6 @@ impl LuauBackend {
                     {
                         self.tuple_vars.insert(var_name.clone());
                     }
-                    // Propagate type hints through copies.
-                    if let Some(hint) = self.var_type_hints.get(src).cloned()
-                        && let Some(ref var_name) = op.var
-                    {
-                        self.var_type_hints.insert(var_name.clone(), hint);
-                    }
                     self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
                 }
             }
@@ -1404,11 +1415,6 @@ impl LuauBackend {
                         && let Some(ref var_name) = op.var
                     {
                         self.tuple_vars.insert(var_name.clone());
-                    }
-                    if let Some(hint) = self.var_type_hints.get(src).cloned()
-                        && let Some(ref var_name) = op.var
-                    {
-                        self.var_type_hints.insert(var_name.clone(), hint);
                     }
                     self.emit_line(&format!("{var} = {}", sanitize_ident(src)));
                 }
@@ -1438,16 +1444,11 @@ impl LuauBackend {
                 if let Some(ref args) = op.args
                     && let Some(src) = args.first()
                 {
-                    // Propagate tuple and type-hint tracking through aliases.
+                    // Propagate tuple tracking through aliases.
                     if self.tuple_vars.contains(src)
                         && let Some(ref out_name) = op.out
                     {
                         self.tuple_vars.insert(out_name.clone());
-                    }
-                    if let Some(hint) = self.var_type_hints.get(src).cloned()
-                        && let Some(ref out_name) = op.out
-                    {
-                        self.var_type_hints.insert(out_name.clone(), hint);
                     }
                     self.emit_line(&format!("local {out} = {}", sanitize_ident(src)));
                 }
@@ -1470,9 +1471,6 @@ impl LuauBackend {
                     let is_numeric = self.scalar_plan.op_prefers_integer_runtime_lane(op)
                         || matches!(self.scalar_plan.op_scalar_lane(op), Some(ScalarKind::Float));
                     if is_numeric {
-                        if let Some(ref n) = op.out {
-                            self.var_type_hints.insert(n.clone(), "int".to_string());
-                        }
                         self.emit_line(&format!("local {out}: number = {lhs_num} + {rhs_num}"));
                     } else {
                         self.emit_line(&format!(
@@ -1607,10 +1605,6 @@ impl LuauBackend {
                         let truthy = self.guard_truthiness(val);
                         self.emit_line(&format!("local {out}: boolean = not {truthy}"));
                     }
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "bool".to_string());
-                    }
                 }
             }
             "invert" => {
@@ -1645,11 +1639,6 @@ impl LuauBackend {
                     _ => unreachable!(),
                 };
                 self.emit_binary_op(op, operator);
-                // Mark output as boolean so `if` conditions can skip molt_bool().
-                if let Some(ref out_name) = op.out {
-                    self.var_type_hints
-                        .insert(out_name.clone(), "bool".to_string());
-                }
             }
             "is" => {
                 // Python `is` checks identity, not equality.  For `x is None`
@@ -1663,10 +1652,6 @@ impl LuauBackend {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
                     self.emit_line(&format!("local {out}: boolean = ({lhs} == {rhs})"));
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "bool".to_string());
-                    }
                 }
             }
 
@@ -1782,6 +1767,19 @@ impl LuauBackend {
                 } else if let Some(ref target) = op.s_value {
                     let target = sanitize_label(target);
                     self.emit_line(&format!("goto {target}"));
+                }
+            }
+            "pcall_failure_jump" => {
+                let pcall_id = op
+                    .s_value
+                    .as_deref()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
+                if let Some(id) = op.value {
+                    self.emit_line(&format!("if not __ok_{pcall_id} then goto label_{id} end"));
+                } else if let Some(ref target) = op.s_value {
+                    let target = sanitize_label(target);
+                    self.emit_line(&format!("if not __ok_{pcall_id} then goto {target} end"));
                 }
             }
             "br_if" => {
@@ -2161,8 +2159,6 @@ impl LuauBackend {
                                 if let Some(ref out_name) = op.out {
                                     let out = sanitize_ident(out_name);
                                     self.emit_line(&format!("local {out} = table.clone({obj})"));
-                                    self.var_type_hints
-                                        .insert(out_name.clone(), "list".to_string());
                                 }
                             }
                             "extend" => {
@@ -2256,10 +2252,6 @@ impl LuauBackend {
             // ================================================================
             "build_list" | "list_new" | "callargs_new" => {
                 let out = self.out_var(op);
-                if let Some(ref out_name) = op.out {
-                    self.var_type_hints
-                        .insert(out_name.clone(), "list".to_string());
-                }
                 let items = op
                     .args
                     .as_deref()
@@ -2272,10 +2264,6 @@ impl LuauBackend {
             }
             "list_fill_new" => {
                 let out = self.out_var(op);
-                if let Some(ref out_name) = op.out {
-                    self.var_type_hints
-                        .insert(out_name.clone(), "list".to_string());
-                }
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let count = args
                     .first()
@@ -2762,28 +2750,13 @@ impl LuauBackend {
                         self.emit_line(&format!(
                             "local {out} = string.sub({container}, {byte_idx_var}, if {next_byte_idx_var} == nil then #{container} else {next_byte_idx_var} - 1)"
                         ));
-                        // Propagate str type to output.
-                        if let Some(ref out_name) = op.out {
-                            self.var_type_hints
-                                .insert(out_name.clone(), "str".to_string());
-                        }
                     } else {
-                        // Propagate type hints: if the container is a known list,
-                        // the key is integer-indexed and the result may also be a
-                        // list (nested lists).  We also infer integer keys when the
-                        // container is a known list.
+                        // If the container is a known list, the key is
+                        // integer-indexed. Nested-list output identity must come
+                        // from `ScalarRepresentationPlan`, not copied transport
+                        // hints.
                         let container_is_list = matches!(container_kind, Some(ContainerKind::List));
                         let key_is_int = key_is_scalar_int || container_is_list;
-                        if container_is_list
-                            && let Some(ref out_name) = op.out
-                            && matches!(
-                                self.scalar_plan.name_container_kind(out_name),
-                                Some(ContainerKind::List)
-                            )
-                        {
-                            self.var_type_hints
-                                .insert(out_name.clone(), "list".to_string());
-                        }
                         if container_is_list {
                             let idx_var = format!("__idx_{out}");
                             if key_known_nonneg {
@@ -3151,7 +3124,10 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(obj) = args.first() {
-                    self.emit_line(&format!("local {out} = type({})", sanitize_ident(obj)));
+                    self.emit_line(&format!(
+                        "local {out} = molt_type_of({})",
+                        sanitize_ident(obj)
+                    ));
                 }
             }
             "isinstance" | "issubclass" => {
@@ -3490,10 +3466,35 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = nil"));
                 }
             }
-            "module_get_attr" | "module_import_from" | "module_get_global" | "module_get_name" => {
+            "module_get_global" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
-                let is_global = matches!(op.kind.as_str(), "module_get_global" | "module_get_name");
+                if args.len() >= 2 {
+                    let module = sanitize_ident(&args[0]);
+                    let name_var = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_module_get_global({module}, {name_var})"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = nil"));
+                }
+            }
+            "module_get_name" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let module = sanitize_ident(&args[0]);
+                    let name_var = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_module_get_name({module}, {name_var})"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out} = nil"));
+                }
+            }
+            "module_get_attr" | "module_import_from" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
                 if let Some(attr_str) = op.s_value.as_deref().filter(|s| !s.is_empty()) {
                     // Static attribute name — use dot access.
                     let attr = sanitize_ident(attr_str);
@@ -3502,21 +3503,13 @@ impl LuauBackend {
                         self.emit_line(&format!("local {out} = {module}.{attr}"));
                     }
                 } else if args.len() >= 2 {
-                    if is_global {
-                        // module_get_global: args[0] = source module (often __main__),
-                        // args[1] = name var holding target module name.
-                        // Look up in module cache to resolve `import math` etc.
-                        let name_var = sanitize_ident(&args[1]);
-                        self.emit_line(&format!("local {out} = molt_module_cache[{name_var}]"));
-                    } else {
-                        // module_get_attr: args[0] = module table, args[1] = attr name var.
-                        // Look up attribute directly on the module.
-                        let module = sanitize_ident(&args[0]);
-                        let attr_var = sanitize_ident(&args[1]);
-                        self.emit_line(&format!(
-                            "local {out} = if type({module}) == \"table\" then {module}[{attr_var}] else nil"
-                        ));
-                    }
+                    // module_get_attr: args[0] = module table, args[1] = attr name var.
+                    // Look up attribute directly on the module.
+                    let module = sanitize_ident(&args[0]);
+                    let attr_var = sanitize_ident(&args[1]);
+                    self.emit_line(&format!(
+                        "local {out} = if type({module}) == \"table\" then {module}[{attr_var}] else nil"
+                    ));
                 } else if let Some(module) = args.first() {
                     let module = sanitize_ident(module);
                     self.emit_line(&format!("local {out} = {module}"));
@@ -3538,7 +3531,24 @@ impl LuauBackend {
                 }
             }
             "module_del_global" | "module_del_global_if_present" => {
-                // Module dict deletion is a no-op in Luau.
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let module = sanitize_ident(&args[0]);
+                    let name = sanitize_ident(&args[1]);
+                    let missing_ok = op.kind == "module_del_global_if_present";
+                    if let Some(ref out_name) = op.out
+                        && out_name != "none"
+                    {
+                        let out = sanitize_ident(out_name);
+                        self.emit_line(&format!(
+                            "local {out} = molt_module_del_global({module}, {name}, {missing_ok})"
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "molt_module_del_global({module}, {name}, {missing_ok})"
+                        ));
+                    }
+                }
             }
 
             // ================================================================
@@ -3638,11 +3648,23 @@ impl LuauBackend {
             }
             "exception_clear" => {
                 // Clear the pcall error so subsequent exception_last returns nil.
-                if !self.inside_pcall_body
-                    && let Some(&n) = self.try_depth_counter.last()
-                {
+                let explicit_pcall = op.value.and_then(|n| u32::try_from(n).ok());
+                if let Some(n) = explicit_pcall.or_else(|| {
+                    (!self.inside_pcall_body)
+                        .then(|| self.try_depth_counter.last().copied())
+                        .flatten()
+                }) {
                     self.emit_line(&format!("__err_{n} = nil"));
                 }
+            }
+            "drop_inserted"
+            | "exception_region_drops_inserted"
+            | "inc_ref"
+            | "dec_ref"
+            | "release" => {
+                // Shared TIR DropInsertion artifacts are consumed explicitly.
+                // Luau is GC-managed, so RC barriers and drop-fact markers are
+                // semantic no-ops here rather than unsupported transport.
             }
             "exception_new" | "exception_new_builtin" | "exception_new_from_class" => {
                 let out = self.out_var(op);
@@ -3688,7 +3710,9 @@ impl LuauBackend {
             }
             "exception_last" | "exception_last_pending" => {
                 let out = self.out_var(op);
-                if !self.inside_pcall_body {
+                if let Some(n) = op.value.and_then(|n| u32::try_from(n).ok()) {
+                    self.emit_line(&format!("local {out} = __err_{n}"));
+                } else if !self.inside_pcall_body {
                     if let Some(&n) = self.try_depth_counter.last() {
                         // After pcall — read the captured error.
                         self.emit_line(&format!("local {out} = __err_{n}"));
@@ -3976,10 +4000,6 @@ impl LuauBackend {
                     let sep = sanitize_ident(&args[0]);
                     let list = sanitize_ident(&args[1]);
                     self.emit_line(&format!("local {out} = table.concat({list}, {sep})"));
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "str".to_string());
-                    }
                 }
             }
             "string_format" => {
@@ -3999,10 +4019,6 @@ impl LuauBackend {
                             "local {out} = string.format({fmt_str}, {fmt_args})"
                         ));
                     }
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "str".to_string());
-                    }
                 }
             }
             "string_strip" => {
@@ -4011,10 +4027,6 @@ impl LuauBackend {
                 if let Some(s) = args.first() {
                     let s = sanitize_ident(s);
                     self.emit_line(&format!("local {out} = ({s}:match(\"^%s*(.-)%s*$\"))"));
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "str".to_string());
-                    }
                 }
             }
             "string_lstrip" => {
@@ -4023,10 +4035,6 @@ impl LuauBackend {
                 if let Some(s) = args.first() {
                     let s = sanitize_ident(s);
                     self.emit_line(&format!("local {out} = ({s}:match(\"^%s*(.+)\") or \"\")"));
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "str".to_string());
-                    }
                 }
             }
             "string_rstrip" => {
@@ -4035,10 +4043,6 @@ impl LuauBackend {
                 if let Some(s) = args.first() {
                     let s = sanitize_ident(s);
                     self.emit_line(&format!("local {out} = ({s}:match(\"^(.-)%s*$\"))"));
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "str".to_string());
-                    }
                 }
             }
             "string_upper" => {
@@ -4049,10 +4053,6 @@ impl LuauBackend {
                         "local {out} = string.upper({})",
                         sanitize_ident(s)
                     ));
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "str".to_string());
-                    }
                 }
             }
             "string_lower" => {
@@ -4063,10 +4063,6 @@ impl LuauBackend {
                         "local {out} = string.lower({})",
                         sanitize_ident(s)
                     ));
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "str".to_string());
-                    }
                 }
             }
             "string_startswith" | "string_startswith_slice" => {
@@ -4150,10 +4146,6 @@ impl LuauBackend {
                              {old}:gsub(\"[%(%)%.%%%+%-%*%?%[%]%^%$]\", \"%%%0\"), \
                              ({new_val}):gsub(\"%%\", \"%%%%\")))"
                         ));
-                    }
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "str".to_string());
                     }
                 }
             }
@@ -4348,10 +4340,6 @@ impl LuauBackend {
                     let a = sanitize_ident(&args[0]);
                     let b = sanitize_ident(&args[1]);
                     self.emit_line(&format!("local {out} = {a} .. {b}"));
-                    if let Some(ref out_name) = op.out {
-                        self.var_type_hints
-                            .insert(out_name.clone(), "str".to_string());
-                    }
                 }
             }
             "string_repeat" => {
@@ -4538,7 +4526,6 @@ impl LuauBackend {
                 // after pcall_wrap_end needs to reference __err_N via
                 // exception_last.
             }
-
             // ================================================================
             // Slice
             // ================================================================
@@ -4875,10 +4862,180 @@ fn collect_luau_preview_blockers(source: &str) -> Vec<String> {
         .collect()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LuauBlockKind {
+    Function,
+    If,
+    Loop,
+    Do,
+    Repeat,
+}
+
+fn luau_block_kind_name(kind: LuauBlockKind) -> &'static str {
+    match kind {
+        LuauBlockKind::Function => "function",
+        LuauBlockKind::If => "if",
+        LuauBlockKind::Loop => "loop",
+        LuauBlockKind::Do => "do",
+        LuauBlockKind::Repeat => "repeat",
+    }
+}
+
+fn strip_luau_line_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (idx, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if let Some(active_quote) = quote {
+            if ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+            continue;
+        }
+        if ch == '-' && line[idx..].starts_with("--") {
+            return &line[..idx];
+        }
+    }
+    line
+}
+
+fn opens_luau_function_block(trimmed: &str) -> bool {
+    (trimmed.starts_with("local function ")
+        || trimmed.starts_with("function ")
+        || trimmed.contains("= function(")
+        || trimmed.contains("pcall(function(")
+        || trimmed.contains("xpcall(function(")
+        || trimmed.starts_with("return function("))
+        && !trimmed.contains(" end")
+}
+
+fn opens_luau_if_block(trimmed: &str) -> bool {
+    trimmed.starts_with("if ") && trimmed.ends_with(" then")
+}
+
+fn opens_luau_loop_block(trimmed: &str) -> bool {
+    (trimmed.starts_with("for ") || trimmed.starts_with("while ")) && trimmed.ends_with(" do")
+}
+
+fn is_luau_end_line(trimmed: &str) -> bool {
+    trimmed == "end" || trimmed.starts_with("end)") || trimmed.starts_with("end,")
+}
+
+fn validate_luau_block_structure(source: &str) -> Result<(), String> {
+    let mut stack: Vec<(LuauBlockKind, usize)> = Vec::new();
+
+    for (line_index, raw_line) in source.lines().enumerate() {
+        let line_number = line_index + 1;
+        let trimmed = strip_luau_line_comment(raw_line).trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed == "else" || (trimmed.starts_with("elseif ") && trimmed.ends_with(" then")) {
+            match stack.last() {
+                Some((LuauBlockKind::If, _)) => {}
+                Some((kind, opened_line)) => {
+                    return Err(format!(
+                        "luau block structure error at line {line_number}: `{trimmed}` belongs to if block, but top block is {} opened at line {opened_line}",
+                        luau_block_kind_name(*kind)
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "luau block structure error at line {line_number}: orphan `{trimmed}`"
+                    ));
+                }
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("until ") {
+            match stack.pop() {
+                Some((LuauBlockKind::Repeat, _)) => {}
+                Some((kind, opened_line)) => {
+                    return Err(format!(
+                        "luau block structure error at line {line_number}: `until` closes repeat block, but top block is {} opened at line {opened_line}",
+                        luau_block_kind_name(kind)
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "luau block structure error at line {line_number}: orphan `until`"
+                    ));
+                }
+            }
+            continue;
+        }
+
+        if is_luau_end_line(trimmed) {
+            let closing_pcall_function = trimmed.starts_with("end)");
+            match stack.pop() {
+                Some((LuauBlockKind::Function, _)) if closing_pcall_function => {}
+                Some((LuauBlockKind::Function, opened_line)) if trimmed != "end" => {
+                    return Err(format!(
+                        "luau block structure error at line {line_number}: function block opened at line {opened_line} was closed by unsupported terminator `{trimmed}`"
+                    ));
+                }
+                Some((_kind, _opened_line)) if !closing_pcall_function => {}
+                Some((kind, opened_line)) => {
+                    return Err(format!(
+                        "luau block structure error at line {line_number}: `end)` closes pcall function, but top block is {} opened at line {opened_line}",
+                        luau_block_kind_name(kind)
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "luau block structure error at line {line_number}: orphan `end`"
+                    ));
+                }
+            }
+            continue;
+        }
+
+        if opens_luau_function_block(trimmed) {
+            stack.push((LuauBlockKind::Function, line_number));
+            continue;
+        }
+        if opens_luau_if_block(trimmed) {
+            stack.push((LuauBlockKind::If, line_number));
+            continue;
+        }
+        if opens_luau_loop_block(trimmed) {
+            stack.push((LuauBlockKind::Loop, line_number));
+            continue;
+        }
+        if trimmed == "do" {
+            stack.push((LuauBlockKind::Do, line_number));
+            continue;
+        }
+        if trimmed == "repeat" {
+            stack.push((LuauBlockKind::Repeat, line_number));
+        }
+    }
+
+    if let Some((kind, opened_line)) = stack.last() {
+        return Err(format!(
+            "luau block structure error: unterminated {} block opened at line {opened_line}",
+            luau_block_kind_name(*kind)
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn validate_luau_source(source: &str) -> Result<(), String> {
     let blockers = collect_luau_preview_blockers(source);
     if blockers.is_empty() {
-        return Ok(());
+        return validate_luau_block_structure(source);
     }
     let mut message = format!(
         "luau preview backend rejected lowered output with {} unsupported marker{}:",
@@ -5073,137 +5230,145 @@ fn sanitize_label(label: &str) -> String {
 /// Lower `try_start`/`try_end` pairs into `pcall_wrap_begin`/`pcall_wrap_end`.
 ///
 /// Returns rewritten ops plus variables that escape pcall scope.
+fn infer_pcall_handler_label(
+    ops: &[OpIR],
+    try_start_idx: usize,
+    fallback: Option<i64>,
+) -> Option<i64> {
+    let mut nested_try_depth = 0i32;
+    let mut explicit_raise_target = None;
+    let mut previous_was_raise = false;
+
+    for op in ops.iter().skip(try_start_idx + 1) {
+        match op.kind.as_str() {
+            "try_start" => {
+                nested_try_depth += 1;
+                previous_was_raise = false;
+                continue;
+            }
+            "try_end" if nested_try_depth > 0 => {
+                nested_try_depth -= 1;
+                previous_was_raise = false;
+                continue;
+            }
+            "try_end" => break,
+            _ if nested_try_depth > 0 => {
+                previous_was_raise = op.kind == "raise";
+                continue;
+            }
+            _ => {}
+        }
+
+        if op.kind == "check_exception"
+            && let Some(label) = op.value
+        {
+            return Some(label);
+        }
+        if previous_was_raise
+            && op.kind == "jump"
+            && let Some(label) = op.value
+        {
+            explicit_raise_target.get_or_insert(label);
+        }
+        previous_was_raise = op.kind == "raise";
+    }
+
+    explicit_raise_target.or(fallback)
+}
+
 fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
     if !ops.iter().any(|op| op.kind == "try_start") {
         return (ops.to_vec(), BTreeSet::new());
     }
 
-    // Pre-scan: identify try/finally-only blocks.  For each try_start,
-    // count how many try_end ops belong to it.  The first try_end at
-    // matching depth closes the body; any subsequent try_end at that
-    // same (restored) depth closes the handler.  If exactly one try_end
-    // matches a given try_start, it is a try/finally-only block that
-    // can skip pcall wrapping.
-    let finally_only: BTreeSet<u32> = {
-        let mut set = BTreeSet::new();
-        let mut pre_counter: u32 = 0;
-        let mut pre_stack: Vec<(u32, i32)> = Vec::new();
-        let mut pre_depth: i32 = 0;
-        // Map from try-id to number of try_end ops attributed to it.
-        let mut end_counts: BTreeMap<u32, u32> = BTreeMap::new();
-        // Track IDs that were recently popped (body-closed) so the
-        // handler-closing try_end can be attributed correctly.
-        let mut recently_popped: Vec<u32> = Vec::new();
-        for op in ops {
-            match op.kind.as_str() {
-                "try_start" => {
-                    let n = pre_counter;
-                    pre_counter += 1;
-                    end_counts.insert(n, 0);
-                    pre_stack.push((n, pre_depth));
-                    pre_depth += 1;
-                }
-                "try_end" => {
-                    if let Some(&(n, pd)) = pre_stack.last() {
-                        if pre_depth == pd + 1 {
-                            // Body-closing try_end.
-                            pre_depth -= 1;
-                            pre_stack.pop();
-                            *end_counts.entry(n).or_insert(0) += 1;
-                            recently_popped.push(n);
-                        } else {
-                            // Handler-closing try_end — attribute to the
-                            // most recently popped try_start at this level.
-                            if let Some(popped_n) = recently_popped.pop() {
-                                *end_counts.entry(popped_n).or_insert(0) += 1;
-                            }
-                        }
-                    } else {
-                        // No stack — attribute to most recently popped.
-                        if let Some(popped_n) = recently_popped.pop() {
-                            *end_counts.entry(popped_n).or_insert(0) += 1;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        for (id, count) in &end_counts {
-            if *count == 1 {
-                set.insert(*id);
-            }
-        }
-        set
-    };
-
     let mut result: Vec<OpIR> = Vec::with_capacity(ops.len());
     let mut counter: u32 = 0;
-    let mut try_stack: Vec<(u32, i32)> = Vec::new();
+    let mut try_stack: Vec<(u32, i32, Option<i64>)> = Vec::new();
     let mut depth: i32 = 0;
     let mut pcall_ranges: Vec<(usize, usize, u32)> = Vec::new();
+    let mut active_pcalls: Vec<u32> = Vec::new();
+    let mut handler_entry_labels: BTreeMap<i64, Vec<u32>> = BTreeMap::new();
+    let mut cleanup_end_labels: BTreeMap<i64, Vec<u32>> = BTreeMap::new();
+    let mut previous_protected_raise_target: Option<i64> = None;
     // Track recently popped try IDs so handler-closing try_end ops
     // (which arrive when try_stack is already empty) can correctly
     // emit pcall_handler_end instead of being dropped as unmatched.
     let mut recently_popped_main: Vec<u32> = Vec::new();
-    // After pcall_wrap_end, suppress jump ops until the next label.
-    // These jumps target exception handler labels that pcall absorbs.
-    let mut suppress_jumps = false;
-    for op in ops {
-        if suppress_jumps {
-            if op.kind == "jump" {
-                continue;
-            }
-            if op.kind == "label" {
-                suppress_jumps = false;
-            }
-        }
-        match op.kind.as_str() {
-            "try_start" => {
-                let n = counter;
-                counter += 1;
-                try_stack.push((n, depth));
-                depth += 1;
-                if finally_only.contains(&n) {
-                    // try/finally fast-path: no pcall closure needed.
-                    result.push(OpIR {
-                        kind: "nop".to_string(),
-                        s_value: Some(format!("try/finally fast-path begin (n={n})")),
-                        ..OpIR::default()
-                    });
-                } else {
-                    let start_idx = result.len();
-                    result.push(OpIR {
-                        kind: "pcall_wrap_begin".to_string(),
-                        value: Some(n as i64),
-                        ..OpIR::default()
-                    });
-                    pcall_ranges.push((start_idx, 0, n));
+
+    for (idx, op) in ops.iter().enumerate() {
+        let kind = op.kind.as_str();
+
+        if kind == "label" {
+            if let Some(label) = op.value {
+                if let Some(ids) = cleanup_end_labels.remove(&label) {
+                    for id in ids {
+                        if active_pcalls.last().copied() == Some(id) {
+                            active_pcalls.pop();
+                        } else if let Some(pos) =
+                            active_pcalls.iter().rposition(|&active| active == id)
+                        {
+                            active_pcalls.remove(pos);
+                        }
+                    }
+                }
+                if let Some(ids) = handler_entry_labels.get(&label) {
+                    for id in ids {
+                        if !active_pcalls.contains(id) {
+                            active_pcalls.push(*id);
+                        }
+                    }
                 }
             }
+        }
+
+        if kind == "jump"
+            && previous_protected_raise_target.is_some_and(|target| op.value == Some(target))
+        {
+            previous_protected_raise_target = None;
+            continue;
+        }
+
+        match kind {
+            "try_start" => {
+                previous_protected_raise_target = None;
+                let n = counter;
+                counter += 1;
+                let handler_label = infer_pcall_handler_label(ops, idx, op.value);
+                try_stack.push((n, depth, handler_label));
+                depth += 1;
+                let start_idx = result.len();
+                result.push(OpIR {
+                    kind: "pcall_wrap_begin".to_string(),
+                    value: Some(n as i64),
+                    ..OpIR::default()
+                });
+                pcall_ranges.push((start_idx, 0, n));
+            }
             "try_end" => {
-                if let Some(&(n, pre_depth)) = try_stack.last() {
+                previous_protected_raise_target = None;
+                if let Some(&(n, pre_depth, handler_label)) = try_stack.last() {
                     if depth == pre_depth + 1 {
                         depth -= 1;
                         try_stack.pop();
                         recently_popped_main.push(n);
-                        if finally_only.contains(&n) {
-                            // try/finally fast-path: no pcall closure to close.
+                        let end_idx = result.len();
+                        result.push(OpIR {
+                            kind: "pcall_wrap_end".to_string(),
+                            value: Some(n as i64),
+                            ..OpIR::default()
+                        });
+                        active_pcalls.push(n);
+                        if let Some(label) = handler_label {
+                            handler_entry_labels.entry(label).or_default().push(n);
                             result.push(OpIR {
-                                kind: "nop".to_string(),
-                                s_value: Some(format!("try/finally fast-path end (n={n})")),
+                                kind: "pcall_failure_jump".to_string(),
+                                value: Some(label),
+                                s_value: Some(n.to_string()),
                                 ..OpIR::default()
                             });
-                        } else {
-                            let end_idx = result.len();
-                            result.push(OpIR {
-                                kind: "pcall_wrap_end".to_string(),
-                                value: Some(n as i64),
-                                ..OpIR::default()
-                            });
-                            suppress_jumps = true;
-                            if let Some(range) = pcall_ranges.iter_mut().rev().find(|r| r.2 == n) {
-                                range.1 = end_idx;
-                            }
+                        }
+                        if let Some(range) = pcall_ranges.iter_mut().rev().find(|r| r.2 == n) {
+                            range.1 = end_idx;
                         }
                     } else {
                         result.push(OpIR {
@@ -5227,8 +5392,51 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                     });
                 }
             }
+            "exception_last" | "exception_last_pending" | "exception_clear" => {
+                previous_protected_raise_target = None;
+                let mut rewritten = op.clone();
+                if let Some(n) = active_pcalls.last() {
+                    rewritten.value = Some(*n as i64);
+                }
+                result.push(rewritten);
+            }
+            "exception_pop" => {
+                previous_protected_raise_target = None;
+                let mut rewritten = op.clone();
+                if let Some(n) = active_pcalls.last().copied() {
+                    rewritten.value = Some(n as i64);
+                    let cleanup_jump = ops
+                        .iter()
+                        .skip(idx + 1)
+                        .find(|next| !matches!(next.kind.as_str(), "line" | "nop"));
+                    if let Some(next) = cleanup_jump {
+                        if next.kind == "jump" {
+                            if let Some(label) = next.value {
+                                let labels = cleanup_end_labels.entry(label).or_default();
+                                if !labels.contains(&n) {
+                                    labels.push(n);
+                                }
+                            } else {
+                                active_pcalls.pop();
+                            }
+                        } else {
+                            active_pcalls.pop();
+                        }
+                    } else {
+                        active_pcalls.pop();
+                    }
+                }
+                result.push(rewritten);
+            }
             _ => {
                 result.push(op.clone());
+                previous_protected_raise_target = if kind == "raise" {
+                    try_stack
+                        .last()
+                        .and_then(|(_, _, handler_label)| *handler_label)
+                } else {
+                    None
+                };
             }
         }
     }
@@ -5272,6 +5480,73 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
         }
     }
     (result, escaped)
+}
+
+fn is_exception_edge_block_arg_store(op: &OpIR) -> bool {
+    if op.kind != "store_var" {
+        return false;
+    }
+    op.var
+        .as_deref()
+        .or(op.out.as_deref())
+        .is_some_and(|name| name.starts_with("_bb") && name.contains("_arg"))
+}
+
+fn store_reads_value(store: &OpIR, value: &str) -> bool {
+    store
+        .args
+        .as_deref()
+        .is_some_and(|args| args.iter().any(|arg| arg == value))
+        || store.var.as_deref() == Some(value)
+        || store.out.as_deref() == Some(value)
+}
+
+fn hoist_exception_edge_block_arg_stores(ops: &[OpIR]) -> Vec<OpIR> {
+    let mut result = Vec::with_capacity(ops.len());
+    let mut i = 0usize;
+
+    while i < ops.len() {
+        let op = &ops[i];
+        if op.kind == "raise" && i + 2 < ops.len() {
+            let mut stores_end = i + 1;
+            while stores_end < ops.len() && is_exception_edge_block_arg_store(&ops[stores_end]) {
+                stores_end += 1;
+            }
+            if stores_end > i + 1 && stores_end < ops.len() && ops[stores_end].kind == "jump" {
+                result.extend(ops[(i + 1)..stores_end].iter().cloned());
+                result.push(op.clone());
+                i = stores_end;
+                continue;
+            }
+        }
+        if i + 2 < ops.len() && !is_exception_edge_block_arg_store(op) {
+            let mut stores_end = i + 1;
+            while stores_end < ops.len() && is_exception_edge_block_arg_store(&ops[stores_end]) {
+                stores_end += 1;
+            }
+            if stores_end > i + 1
+                && stores_end < ops.len()
+                && ops[stores_end].kind == "check_exception"
+            {
+                let depends_on_previous_result = op.out.as_deref().is_some_and(|out| {
+                    ops[(i + 1)..stores_end]
+                        .iter()
+                        .any(|store| store_reads_value(store, out))
+                });
+                if !depends_on_previous_result {
+                    result.extend(ops[(i + 1)..stores_end].iter().cloned());
+                    result.push(op.clone());
+                    i = stores_end;
+                    continue;
+                }
+            }
+        }
+
+        result.push(op.clone());
+        i += 1;
+    }
+
+    result
 }
 
 fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
@@ -5857,6 +6132,27 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
     let mut result = Vec::with_capacity(ops.len());
     let mut depth: i32 = 0;
     let mut dead_at_depth: Option<i32> = None; // depth at which we became dead
+    let referenced_labels: BTreeSet<i64> = ops
+        .iter()
+        .filter_map(|op| {
+            matches!(
+                op.kind.as_str(),
+                "jump"
+                    | "goto"
+                    | "br_if"
+                    | "branch"
+                    | "branch_false"
+                    | "check_exception"
+                    | "try_start"
+                    | "state_block_start"
+                    | "loop_break_if_true"
+                    | "loop_break_if_false"
+                    | "loop_break_if_exception"
+            )
+            .then_some(op.value)
+            .flatten()
+        })
+        .collect();
 
     for op in ops {
         let kind = op.kind.as_str();
@@ -5901,6 +6197,19 @@ fn strip_dead_after_return(ops: &[OpIR]) -> Vec<OpIR> {
         // try_start/try_end are structural markers that must always be
         // preserved for pcall lowering, even in dead-code regions.
         if matches!(kind, "try_start" | "try_end") {
+            result.push(op.clone());
+            continue;
+        }
+
+        // Out-of-line exception handlers and branch targets can legally appear
+        // after a return in the linearized stream. A live label starts a new
+        // reachable block even when the preceding block is closed.
+        if matches!(kind, "label" | "state_label")
+            && op
+                .value
+                .is_some_and(|label| referenced_labels.contains(&label))
+        {
+            dead_at_depth = None;
             result.push(op.clone());
             continue;
         }
@@ -8024,19 +8333,12 @@ fn strip_exception_cleanup_blocks(source: &mut String) {
                         goto_label = target.to_string();
                     } else if tj == "end" {
                         if has_error && has_goto {
-                            // Found the pattern. Remove from i to j inclusive.
-                            for k in i..=j {
-                                remove.insert(k);
-                            }
-                            // Also remove the matching label if it follows.
-                            if j + 1 < lines.len() {
-                                let label_line = lines[j + 1].trim().to_string();
-                                if label_line == format!("::{goto_label}::") {
-                                    remove.insert(j + 1);
-                                }
-                            }
-                            // Also remove the comparison setup lines before the if
-                            // (local vP = vN == vM; local vQ = not vP)
+                            // Only strip the proven-dead cleanup shape rooted
+                            // in `exception_last = nil`.  Real pcall-backed
+                            // handler dispatch can also contain error+goto in
+                            // an unmatched branch and must remain executable.
+                            let mut setup_remove: Vec<usize> = Vec::new();
+                            let mut saw_dead_exception_last = false;
                             let mut k = i;
                             while k > 0 {
                                 k -= 1;
@@ -8044,7 +8346,7 @@ fn strip_exception_cleanup_blocks(source: &mut String) {
                                 if tk.starts_with("local ")
                                     && (tk.contains(" == ") || tk.contains("not "))
                                 {
-                                    remove.insert(k);
+                                    setup_remove.push(k);
                                 } else if (tk.ends_with("= nil")
                                     || tk.ends_with("= nil -- [exception_last]"))
                                     && !tk.contains("--[")
@@ -8052,11 +8354,31 @@ fn strip_exception_cleanup_blocks(source: &mut String) {
                                     // Only remove lines where the ENTIRE RHS is nil
                                     // (exception cleanup vars), not lines that happen
                                     // to contain "= nil" as part of a larger expression.
-                                    remove.insert(k);
+                                    if tk.contains("-- [exception_last]") {
+                                        saw_dead_exception_last = true;
+                                    }
+                                    setup_remove.push(k);
                                 } else if tk.contains("-- [exception_last]") {
-                                    remove.insert(k);
+                                    saw_dead_exception_last = true;
+                                    setup_remove.push(k);
                                 } else {
                                     break;
+                                }
+                            }
+                            if saw_dead_exception_last {
+                                // Found the pattern. Remove from i to j inclusive.
+                                for k in i..=j {
+                                    remove.insert(k);
+                                }
+                                // Also remove the matching label if it follows.
+                                if j + 1 < lines.len() {
+                                    let label_line = lines[j + 1].trim().to_string();
+                                    if label_line == format!("::{goto_label}::") {
+                                        remove.insert(j + 1);
+                                    }
+                                }
+                                for k in setup_remove {
+                                    remove.insert(k);
                                 }
                             }
                         }
@@ -8424,6 +8746,307 @@ fn strip_dead_gotos_and_labels(source: &mut String) {
     eprintln!("[molt-luau] Stripped {} dead gotos/labels", remove.len());
 }
 
+fn label_name_from_line(line: &str) -> Option<String> {
+    let t = line.trim();
+    if t.starts_with("::") && t.ends_with("::") && t.len() > 4 {
+        Some(t[2..t.len() - 2].to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_pcall_failure_goto(line: &str) -> Option<(String, String)> {
+    let t = line.trim();
+    if !t.starts_with("if not __ok_") || !t.ends_with(" end") {
+        return None;
+    }
+    let (condition, after_condition) = t.split_once(" then goto ")?;
+    let target = after_condition.strip_suffix(" end")?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some((condition.to_string(), target.to_string()))
+}
+
+fn parse_inline_conditional_goto(line: &str) -> Option<(String, String)> {
+    let t = line.trim();
+    if !t.starts_with("if ") || !t.ends_with(" end") {
+        return None;
+    }
+    let (condition, after_condition) = t.split_once(" then goto ")?;
+    let target = after_condition.strip_suffix(" end")?.trim();
+    if target.is_empty() || target.contains(' ') {
+        return None;
+    }
+    Some((condition.to_string(), target.to_string()))
+}
+
+fn standalone_goto_target(line: &str) -> Option<String> {
+    line.trim()
+        .strip_prefix("goto ")
+        .map(str::trim)
+        .and_then(|target| {
+            (!target.is_empty() && !target.contains(' ')).then(|| target.to_string())
+        })
+}
+
+fn push_reindented_line(
+    out: &mut Vec<String>,
+    line: &str,
+    base_indent: &str,
+    child_indent: &str,
+    drop_labels: bool,
+) {
+    if drop_labels && label_name_from_line(line).is_some() {
+        return;
+    }
+    if line.trim().is_empty() {
+        out.push(String::new());
+        return;
+    }
+    let rest = line.strip_prefix(base_indent).unwrap_or(line);
+    out.push(format!("{child_indent}{rest}"));
+}
+
+/// Convert canonical pcall failure-edge regions to structured Luau.
+///
+/// TIR lays out exception regions as:
+///
+/// ```text
+/// if not __ok_N then goto handler end
+/// success-prefix
+/// ::shared_continuation::
+/// common-continuation
+/// ::handler::
+/// handler-body
+/// goto shared_continuation
+/// ```
+///
+/// The final handler jump is often backward because the common continuation is
+/// already laid out in the success path. Generic goto elimination cannot express
+/// that without duplicating control flow, so normalize it first:
+///
+/// ```text
+/// if not __ok_N then
+///   handler-body
+/// else
+///   success-prefix
+/// end
+/// common-continuation
+/// ```
+fn structure_pcall_failure_blocks(source: &mut String) {
+    let mut lines: Vec<String> = source.lines().map(str::to_string).collect();
+    let mut changed = false;
+
+    'restart: loop {
+        let mut i = 0usize;
+        while i < lines.len() {
+            let Some((condition, handler_label)) = parse_pcall_failure_goto(&lines[i]) else {
+                i += 1;
+                continue;
+            };
+
+            let Some(handler_line) = ((i + 1)..lines.len()).find(|&idx| {
+                label_name_from_line(&lines[idx]).as_deref() == Some(handler_label.as_str())
+            }) else {
+                i += 1;
+                continue;
+            };
+
+            let mut handler_jump_line = None;
+            let mut continuation_label = None;
+            let base_indent_len = lines[i].len() - lines[i].trim_start().len();
+            let base_indent = lines[i][..base_indent_len].to_string();
+            for (idx, line) in lines.iter().enumerate().skip(handler_line + 1) {
+                if line.len() - line.trim_start().len() != base_indent_len {
+                    continue;
+                }
+                if let Some(target) = standalone_goto_target(line) {
+                    let target_line = ((i + 1)..handler_line).find(|&candidate| {
+                        label_name_from_line(&lines[candidate]).as_deref() == Some(target.as_str())
+                    });
+                    if target_line.is_some() {
+                        handler_jump_line = Some(idx);
+                        continuation_label = Some((target, target_line.unwrap()));
+                        break;
+                    }
+                }
+                if idx > handler_line && parse_pcall_failure_goto(line).is_some() {
+                    break;
+                }
+            }
+
+            let Some(handler_jump_line) = handler_jump_line else {
+                i += 1;
+                continue;
+            };
+            let Some((_continuation_label, continuation_line)) = continuation_label else {
+                i += 1;
+                continue;
+            };
+
+            let child_indent = format!("{base_indent}\t");
+            let success_prefix = &lines[(i + 1)..continuation_line];
+            let common = &lines[(continuation_line + 1)..handler_line];
+            let handler = &lines[(handler_line + 1)..handler_jump_line];
+
+            let mut replacement: Vec<String> = Vec::new();
+            replacement.push(format!("{base_indent}{condition} then"));
+            for line in handler {
+                push_reindented_line(&mut replacement, line, &base_indent, &child_indent, true);
+            }
+            if success_prefix
+                .iter()
+                .any(|line| !line.trim().is_empty() && label_name_from_line(line).is_none())
+            {
+                replacement.push(format!("{base_indent}else"));
+                for line in success_prefix {
+                    push_reindented_line(&mut replacement, line, &base_indent, &child_indent, true);
+                }
+            }
+            replacement.push(format!("{base_indent}end"));
+            replacement.extend(common.iter().cloned());
+
+            lines.splice(i..=handler_jump_line, replacement);
+            changed = true;
+            continue 'restart;
+        }
+        break;
+    }
+
+    if changed {
+        *source = lines.join("\n");
+        source.push('\n');
+    }
+}
+
+/// Convert canonical forward-goto diamonds to structured Luau if/else blocks.
+///
+/// TIR's generic CFG form often lowers an if/else as:
+///
+/// ```text
+/// if cond then goto true_label end
+/// false-arm
+/// goto join_label
+/// ::true_label::
+/// true-arm
+/// ::join_label::
+/// join
+/// ```
+///
+/// Generic skip-flag goto elimination can express this but leaves fragile nested
+/// empty blocks after earlier dead-goto cleanup.  This pass consumes the whole
+/// diamond as one fact and emits the native Luau control structure.
+fn structure_forward_if_else_blocks(source: &mut String) {
+    let mut lines: Vec<String> = source.lines().map(str::to_string).collect();
+    let mut changed = false;
+
+    'restart: loop {
+        let mut i = 0usize;
+        while i < lines.len() {
+            let Some((condition, true_label)) = parse_inline_conditional_goto(&lines[i]) else {
+                i += 1;
+                continue;
+            };
+
+            let Some(true_label_line) = ((i + 1)..lines.len()).find(|&idx| {
+                label_name_from_line(&lines[idx]).as_deref() == Some(true_label.as_str())
+            }) else {
+                i += 1;
+                continue;
+            };
+
+            let base_indent_len = lines[i].len() - lines[i].trim_start().len();
+            let base_indent = lines[i][..base_indent_len].to_string();
+            let mut false_goto_line = None;
+            let mut join_label = None;
+            let mut join_label_line = None;
+
+            for idx in (i + 1)..true_label_line {
+                if lines[idx].len() - lines[idx].trim_start().len() != base_indent_len {
+                    continue;
+                }
+                let Some(target) = standalone_goto_target(&lines[idx]) else {
+                    continue;
+                };
+                let Some(target_line) = ((true_label_line + 1)..lines.len()).find(|&candidate| {
+                    label_name_from_line(&lines[candidate]).as_deref() == Some(target.as_str())
+                }) else {
+                    continue;
+                };
+                false_goto_line = Some(idx);
+                join_label = Some(target);
+                join_label_line = Some(target_line);
+                break;
+            }
+
+            let (Some(false_goto_line), Some(join_label), Some(join_label_line)) =
+                (false_goto_line, join_label, join_label_line)
+            else {
+                i += 1;
+                continue;
+            };
+
+            let false_arm = &lines[(i + 1)..false_goto_line];
+            let true_arm_start = true_label_line + 1;
+            let mut true_arm_end = join_label_line;
+            while true_arm_end > true_arm_start {
+                let prev = true_arm_end - 1;
+                if lines[prev].trim().is_empty() {
+                    true_arm_end = prev;
+                    continue;
+                }
+                if standalone_goto_target(&lines[prev]).as_deref() == Some(join_label.as_str()) {
+                    true_arm_end = prev;
+                }
+                break;
+            }
+            let true_arm = &lines[true_arm_start..true_arm_end];
+
+            if false_arm
+                .iter()
+                .any(|line| label_name_from_line(line).is_some())
+                || true_arm
+                    .iter()
+                    .any(|line| label_name_from_line(line).is_some())
+            {
+                i += 1;
+                continue;
+            }
+
+            let child_indent = format!("{base_indent}\t");
+            let mut replacement: Vec<String> = Vec::new();
+            replacement.push(format!("{base_indent}{condition} then"));
+            for line in true_arm {
+                push_reindented_line(&mut replacement, line, &base_indent, &child_indent, false);
+            }
+            if false_arm.iter().any(|line| !line.trim().is_empty()) {
+                replacement.push(format!("{base_indent}else"));
+                for line in false_arm {
+                    push_reindented_line(
+                        &mut replacement,
+                        line,
+                        &base_indent,
+                        &child_indent,
+                        false,
+                    );
+                }
+            }
+            replacement.push(format!("{base_indent}end"));
+
+            lines.splice(i..=join_label_line, replacement);
+            changed = true;
+            continue 'restart;
+        }
+        break;
+    }
+
+    if changed {
+        *source = lines.join("\n");
+        source.push('\n');
+    }
+}
+
 /// Eliminate goto/label pairs from emitted Luau.
 ///
 /// Standard Luau does NOT support `goto` or `::label::` syntax (unlike Lua 5.2+).
@@ -8736,13 +9359,14 @@ fn strip_dead_code_after_terminators(source: &mut String) {
             let j_indent = lines[j].len() - lines[j].trim_start().len();
             if j_indent <= term_indent
                 && (tj == "end"
+                    || tj == "end)"
                     || tj == "else"
                     || tj.starts_with("elseif ")
                     || tj.starts_with("until "))
             {
                 break;
             }
-            if j_indent <= term_indent && !tj.starts_with("local ") && !tj.contains(" = ") {
+            if j_indent < term_indent {
                 break;
             }
             remove.insert(j);
@@ -9601,6 +10225,42 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_luau_source_accepts_pcall_function_block() {
+        let source = [
+            "--!strict",
+            "function molt_main()",
+            "\tlocal __ok_0, __err_0 = pcall(function()",
+            "\t\tif flag then",
+            "\t\t\tprint(1)",
+            "\t\telse",
+            "\t\t\tprint(2)",
+            "\t\tend",
+            "\tend)",
+            "\tif not __ok_0 then",
+            "\t\terror(__err_0)",
+            "\tend",
+            "end",
+            "",
+        ]
+        .join("\n");
+        assert!(validate_luau_source(&source).is_ok());
+    }
+
+    #[test]
+    fn test_validate_luau_source_rejects_orphan_end() {
+        let err = validate_luau_source("--!strict\nfunction molt_main()\nend\nend\n")
+            .expect_err("extra end should be rejected");
+        assert!(err.contains("orphan `end`"));
+    }
+
+    #[test]
+    fn test_validate_luau_source_rejects_unterminated_block() {
+        let err = validate_luau_source("--!strict\nfunction molt_main()\n\tif flag then\nend\n")
+            .expect_err("unterminated function should be rejected");
+        assert!(err.contains("unterminated function block"));
+    }
+
+    #[test]
     fn test_validate_luau_source_rejects_semantic_stub_comments() {
         let markers = [
             "local v0 = nil -- [async: spawn]",
@@ -9817,6 +10477,111 @@ mod tests {
         assert!(source.contains("return slot") || source.contains("local v1 = slot"));
         assert!(!source.contains("[unsupported op: store_var]"));
         assert!(!source.contains("[unsupported op: load_var]"));
+    }
+
+    #[test]
+    fn test_compile_checked_accepts_shared_drop_artifacts_as_gc_noops() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "drop_artifact_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "drop_inserted".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_region_drops_inserted".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("v0".to_string()),
+                        s_value: Some("owned".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "inc_ref".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "dec_ref".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "release".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["v0".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("shared drop artifacts should be explicit Luau GC no-ops");
+        assert!(!source.contains("[unsupported op: drop_inserted]"));
+        assert!(!source.contains("[unsupported op: exception_region_drops_inserted]"));
+        assert!(!source.contains("[unsupported op: inc_ref]"));
+        assert!(!source.contains("[unsupported op: dec_ref]"));
+        assert!(!source.contains("[unsupported op: release]"));
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_shared_guard_tag_fact() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "guard_tag_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        value: Some(7),
+                        out: Some("value".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        value: Some(1),
+                        out: Some("int_tag".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "guard_tag".to_string(),
+                        args: Some(vec!["value".to_string(), "int_tag".to_string()]),
+                        out: Some("none".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["value".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("guard_tag should lower to the shared Luau guard helper");
+        assert!(source.contains("local function molt_guard_type"));
+        assert!(source.contains("molt_guard_type(value, int_tag)"));
+        assert!(!source.contains("[unsupported op: guard_tag]"));
     }
 
     #[test]
@@ -10162,31 +10927,6 @@ mod tests {
         assert!(
             !output.contains("xs:append"),
             "Must NOT emit method call for list.append(), got:\n{output}"
-        );
-    }
-
-    #[test]
-    fn test_luau_repr_authority_legacy_list_hint_does_not_authorize_list_method_dispatch() {
-        let mut backend = LuauBackend::new();
-        backend
-            .var_type_hints
-            .insert("xs".to_string(), "list".to_string());
-
-        backend.emit_op(&OpIR {
-            kind: "call_method".to_string(),
-            s_value: Some("append".to_string()),
-            args: Some(vec!["xs".to_string(), "v".to_string()]),
-            ..OpIR::default()
-        });
-        let output = backend.output;
-
-        assert!(
-            output.contains("xs:append(v)"),
-            "legacy list hints must leave unknown receivers on generic method dispatch, got:\n{output}"
-        );
-        assert!(
-            !output.contains("xs[#xs + 1] = v"),
-            "legacy list hints must not authorize table-specialized append, got:\n{output}"
         );
     }
 
@@ -10584,28 +11324,6 @@ mod tests {
         assert!(
             !output.contains("local n = molt_len(xs)"),
             "typed list len should not call runtime len, got:\n{output}"
-        );
-    }
-
-    #[test]
-    fn test_legacy_container_hints_do_not_authorize_luau_truthiness() {
-        let mut backend = LuauBackend::new();
-        backend
-            .var_type_hints
-            .insert("xs".to_string(), "list".to_string());
-        backend
-            .var_type_hints
-            .insert("d".to_string(), "dict".to_string());
-
-        assert_eq!(
-            backend.guard_truthiness("xs"),
-            "molt_bool(xs)",
-            "legacy list hints must not select raw Luau length truthiness"
-        );
-        assert_eq!(
-            backend.guard_truthiness("d"),
-            "molt_bool(d)",
-            "legacy dict hints must not select raw Luau next() truthiness"
         );
     }
 
@@ -11667,32 +12385,6 @@ mod tests {
     }
 
     #[test]
-    fn test_luau_repr_authority_legacy_string_hint_does_not_authorize_string_attr_dispatch() {
-        let mut backend = LuauBackend::new();
-        backend
-            .var_type_hints
-            .insert("s".to_string(), "str".to_string());
-
-        backend.emit_op(&OpIR {
-            kind: "get_attr_generic_obj".to_string(),
-            args: Some(vec!["s".to_string()]),
-            s_value: Some("removeprefix".to_string()),
-            out: Some("method".to_string()),
-            ..OpIR::default()
-        });
-        let output = backend.output;
-
-        assert!(
-            output.contains("local method = s.removeprefix"),
-            "legacy string hints must leave unknown receivers on generic attr dispatch, got:\n{output}"
-        );
-        assert!(
-            !output.contains("function(__args)") && !output.contains("string.sub(s"),
-            "legacy string hints must not authorize string-method closures, got:\n{output}"
-        );
-    }
-
-    #[test]
     fn test_string_ascii_predicate_get_attr_indirect_path() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -12060,6 +12752,270 @@ mod tests {
     }
 
     #[test]
+    fn test_lower_try_to_pcall_targets_protected_exception_handler() {
+        let ops = vec![
+            OpIR {
+                kind: "try_start".into(),
+                value: Some(5),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_new_builtin_one".into(),
+                args: Some(vec!["arg".into()]),
+                out: Some("exc".into()),
+                s_value: Some("ValueError".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "raise".into(),
+                args: Some(vec!["exc".into()]),
+                out: Some("none".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".into(),
+                value: Some(2),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_end".into(),
+                value: Some(5),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".into(),
+                value: Some(3),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "label".into(),
+                value: Some(2),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "exception_last_pending".into(),
+                out: Some("caught".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "try_end".into(),
+                ..OpIR::default()
+            },
+        ];
+        let (lowered, _) = lower_try_to_pcall(&ops);
+        let failure = lowered
+            .iter()
+            .find(|op| op.kind == "pcall_failure_jump")
+            .expect("pcall lowering should emit a failure jump");
+        assert_eq!(failure.value, Some(2));
+        let handler_last = lowered
+            .iter()
+            .find(|op| op.kind == "exception_last_pending")
+            .expect("handler should keep exception_last_pending");
+        assert_eq!(handler_last.value, Some(0));
+        let begin_idx = lowered
+            .iter()
+            .position(|op| op.kind == "pcall_wrap_begin")
+            .expect("pcall begin should be emitted");
+        let end_idx = lowered
+            .iter()
+            .position(|op| op.kind == "pcall_wrap_end")
+            .expect("pcall end should be emitted");
+        assert!(
+            !lowered[begin_idx..end_idx]
+                .iter()
+                .any(|op| op.kind == "jump" && op.value == Some(2)),
+            "raise's static handler jump must be consumed by pcall_failure_jump: {lowered:?}"
+        );
+    }
+
+    fn luau_tir_roundtrip_function(mut func: FunctionIR) -> FunctionIR {
+        if func.ops.iter().any(|op| op.kind == "phi") {
+            crate::rewrite_phi_to_store_load(&mut func.ops);
+        }
+        let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&func);
+        crate::tir::type_refine::refine_types(&mut tir_func);
+        let target_info = crate::tir::target_info::TargetInfo::luau_release_fast();
+        let _stats = crate::tir::passes::run_pipeline(&mut tir_func, &target_info);
+        let _drop_stats = crate::tir::passes::run_drop_phase(&mut tir_func, &target_info);
+        crate::tir::type_refine::refine_types(&mut tir_func);
+        func.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
+        func
+    }
+
+    #[test]
+    fn test_luau_tir_roundtrip_raise_catch_closes_pcall_before_handler() {
+        let func: FunctionIR = serde_json::from_str(
+            r#"{"name":"__main____raise_catch","ops":[{"kind":"trace_enter_slot","value":1},{"kind":"exception_stack_enter","out":"v107"},{"kind":"exception_stack_depth","out":"v108"},{"kind":"missing","out":"v109"},{"args":["v109"],"kind":"store_var","var":"caught"},{"kind":"check_exception","value":3},{"kind":"missing","out":"v110"},{"args":["v110"],"kind":"store_var","var":"i"},{"kind":"check_exception","value":3},{"args":["n"],"col_offset":4,"end_col_offset":14,"kind":"store_var","var":"n"},{"col_offset":4,"end_col_offset":14,"kind":"line","value":36},{"kind":"check_exception","value":3},{"kind":"const","out":"v111","value":0},{"args":["v111"],"col_offset":4,"end_col_offset":23,"kind":"store_var","var":"caught"},{"col_offset":4,"end_col_offset":23,"kind":"line","value":37},{"kind":"check_exception","value":3},{"kind":"const","out":"v112","value":0},{"kind":"const","out":"v113","value":1},{"args":["v112","n","v113"],"kind":"range_new","out":"v114"},{"kind":"check_exception","value":3},{"kind":"const","out":"v115","value":0},{"kind":"const","out":"v116","value":1},{"args":["v114"],"kind":"len","out":"v117"},{"kind":"check_exception","value":3},{"kind":"loop_start"},{"args":["v115"],"kind":"loop_index_start","out":"v118"},{"args":["v118","v117"],"fast_int":true,"kind":"lt","out":"v119"},{"kind":"check_exception","value":3},{"args":["v119"],"kind":"loop_break_if_false","type_hint":"bool"},{"args":["v114","v118"],"kind":"index","out":"v120"},{"kind":"check_exception","value":3},{"args":["v120"],"col_offset":8,"end_col_offset":23,"kind":"store_var","var":"i"},{"col_offset":8,"end_col_offset":23,"kind":"line","value":38},{"kind":"check_exception","value":3},{"kind":"exception_push","out":"none"},{"col_offset":12,"end_col_offset":31,"kind":"try_start","value":4},{"col_offset":12,"end_col_offset":31,"kind":"line","value":39},{"kind":"load_var","out":"v121","var":"i"},{"kind":"check_exception","value":4},{"args":["v121"],"kind":"exception_new_builtin_one","out":"v122","s_value":"ValueError","value":5},{"args":["v122"],"kind":"raise","out":"none"},{"kind":"jump","value":4},{"kind":"try_end","value":4},{"kind":"jump","value":6},{"kind":"label","value":4},{"kind":"exception_last_pending","out":"v123"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"kind":"exception_match_builtin","out":"v124","s_value":"ValueError","value":5},{"args":["v124"],"kind":"if","type_hint":"bool"},{"kind":"exception_clear","out":"none"},{"args":["v123"],"col_offset":12,"end_col_offset":23,"kind":"exception_context_set","out":"none"},{"col_offset":12,"end_col_offset":23,"kind":"line","value":41},{"kind":"load_var","out":"v125","var":"caught"},{"kind":"const","out":"v126","value":1},{"args":["v125","v126"],"fast_int":true,"kind":"inplace_add","out":"v127"},{"args":["v127"],"kind":"store_var","var":"caught"},{"kind":"const_none","out":"v128"},{"args":["v128"],"kind":"exception_context_set","out":"none"},{"kind":"else"},{"args":["v123"],"kind":"raise","out":"none"},{"kind":"end_if"},{"kind":"jump","value":7},{"kind":"label","value":6},{"kind":"exception_pop","out":"none"},{"kind":"jump","value":8},{"kind":"label","value":7},{"kind":"exception_pop","out":"none"},{"kind":"check_exception","value":3},{"kind":"label","value":8},{"kind":"check_exception","value":3},{"args":["v118","v116"],"fast_int":true,"kind":"add","out":"v129"},{"kind":"check_exception","value":3},{"args":["v129"],"kind":"loop_index_next","out":"v118"},{"kind":"loop_continue"},{"col_offset":4,"end_col_offset":17,"kind":"loop_end"},{"col_offset":4,"end_col_offset":17,"kind":"line","value":42},{"kind":"load_var","out":"v130","var":"caught"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"kind":"check_exception","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret","var":"v130"},{"kind":"label","value":3},{"args":["v108"],"kind":"exception_stack_set_depth","out":"none"},{"args":["v107"],"kind":"exception_stack_exit","out":"none"},{"kind":"trace_exit"},{"kind":"trace_exit"},{"kind":"ret_void"}],"param_types":["i64"],"params":["n"]}"#,
+        )
+        .expect("raise_catch frontend fixture should deserialize");
+        let func = luau_tir_roundtrip_function(func);
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&SimpleIR {
+                functions: vec![func],
+                profile: None,
+            })
+            .expect("TIR-roundtripped raise/catch should lower to Luau");
+        let pcall_start = source
+            .find("pcall(function()")
+            .expect("pcall wrapper should be emitted");
+        let after_pcall = &source[pcall_start..];
+        let pcall_end = after_pcall.find("end)").unwrap_or_else(|| {
+            panic!("pcall wrapper must close before handler dispatch:\n{source}")
+        });
+        let failure_dispatch = after_pcall
+            .find("__err_0")
+            .expect("handler dispatch should consume the pcall error value");
+        assert!(
+            pcall_end < failure_dispatch,
+            "handler dispatch must remain outside the protected pcall body:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_structures_raise_catch_pcall_boundary() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "raise_catch_boundary_test".into(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "exception_push".into(),
+                        out: Some("none".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "try_start".into(),
+                        value: Some(5),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_new_builtin_one".into(),
+                        args: Some(vec!["arg".into()]),
+                        out: Some("exc".into()),
+                        s_value: Some("ValueError".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "raise".into(),
+                        args: Some(vec!["exc".into()]),
+                        out: Some("none".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "jump".into(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "try_end".into(),
+                        value: Some(5),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "jump".into(),
+                        value: Some(3),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "label".into(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_last_pending".into(),
+                        out: Some("caught".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_clear".into(),
+                        out: Some("none".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_match_builtin".into(),
+                        args: Some(vec!["caught".into()]),
+                        out: Some("matched".into()),
+                        s_value: Some("ValueError".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "if".into(),
+                        args: Some(vec!["matched".into()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".into(),
+                        value: Some(1),
+                        out: Some("handled".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "else".into(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "raise".into(),
+                        args: Some(vec!["caught".into()]),
+                        out: Some("none".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "end_if".into(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "try_end".into(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".into(),
+                        var: Some("handled".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "label".into(),
+                        value: Some(3),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "exception_pop".into(),
+                        out: Some("none".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("raise/catch pcall boundary should lower to valid Luau");
+        let pcall_start = source
+            .find("pcall(function()")
+            .expect("pcall wrapper should be emitted");
+        let pcall_end = source[pcall_start..]
+            .find("end)")
+            .map(|offset| pcall_start + offset)
+            .expect("pcall wrapper should be closed before handler dispatch");
+        let handler_read = source
+            .find("caught = __err_0")
+            .expect("handler should read the pcall error value");
+        assert!(
+            pcall_start < pcall_end && pcall_end < handler_read,
+            "handler must be outside pcall body, got:\n{source}"
+        );
+    }
+
+    #[test]
     fn test_lower_try_to_pcall_escape_detection() {
         let ops = vec![
             OpIR {
@@ -12091,6 +13047,286 @@ mod tests {
             escaped.contains("v0"),
             "v0 should escape pcall scope: {:?}",
             escaped
+        );
+    }
+
+    #[test]
+    fn test_luau_exception_region_pcall_failure_blocks_structure_backward_continuation() {
+        let mut source = [
+            "demo = function()",
+            "\tif not __ok_0 then goto label_5 end",
+            "\t::label_7::",
+            "\t_bb8_arg0 = module_obj",
+            "\t::label_9::",
+            "\tmolt_print(\"after-exc\")",
+            "\t::label_5::",
+            "\tlocal _v23 = _bb1_arg0",
+            "\t_bb8_arg0 = _v23",
+            "\tgoto label_9",
+            "end",
+        ]
+        .join("\n");
+
+        structure_pcall_failure_blocks(&mut source);
+
+        assert!(
+            source.contains(
+                "if not __ok_0 then\n\t\tlocal _v23 = _bb1_arg0\n\t\t_bb8_arg0 = _v23\n\telse\n\t\t_bb8_arg0 = module_obj\n\tend\n\tmolt_print(\"after-exc\")"
+            ),
+            "pcall failure handler must be structured before the shared continuation:\n{source}"
+        );
+        assert!(
+            !source.contains("goto label_9") && !source.contains("::label_5::"),
+            "structured pcall block must consume the handler goto/label:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_luau_exception_region_block_args_hoist_before_protected_op() {
+        let ops = vec![
+            OpIR {
+                kind: "call".into(),
+                out: Some("v_call".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("_bb1_arg0".into()),
+                args: Some(vec!["module_obj".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".into(),
+                value: Some(5),
+                ..OpIR::default()
+            },
+        ];
+
+        let hoisted = hoist_exception_edge_block_arg_stores(&ops);
+
+        assert_eq!(hoisted[0].kind, "store_var");
+        assert_eq!(hoisted[1].kind, "call");
+        assert_eq!(hoisted[2].kind, "check_exception");
+    }
+
+    #[test]
+    fn test_luau_exception_region_block_args_hoist_before_raise_edge() {
+        let ops = vec![
+            OpIR {
+                kind: "raise".into(),
+                args: Some(vec!["exc".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("_bb5_arg0".into()),
+                args: Some(vec!["caught".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("_bb5_arg1".into()),
+                args: Some(vec!["limit".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "jump".into(),
+                value: Some(5),
+                ..OpIR::default()
+            },
+        ];
+
+        let hoisted = hoist_exception_edge_block_arg_stores(&ops);
+
+        assert_eq!(hoisted[0].kind, "store_var");
+        assert_eq!(hoisted[0].var.as_deref(), Some("_bb5_arg0"));
+        assert_eq!(hoisted[1].kind, "store_var");
+        assert_eq!(hoisted[1].var.as_deref(), Some("_bb5_arg1"));
+        assert_eq!(hoisted[2].kind, "raise");
+        assert_eq!(hoisted[3].kind, "jump");
+    }
+
+    #[test]
+    fn test_luau_exception_region_block_args_do_not_hoist_dependent_result() {
+        let ops = vec![
+            OpIR {
+                kind: "call".into(),
+                out: Some("v_call".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".into(),
+                var: Some("_bb1_arg0".into()),
+                args: Some(vec!["v_call".into()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "check_exception".into(),
+                value: Some(5),
+                ..OpIR::default()
+            },
+        ];
+
+        let hoisted = hoist_exception_edge_block_arg_stores(&ops);
+
+        assert_eq!(hoisted[0].kind, "call");
+        assert_eq!(hoisted[1].kind, "store_var");
+        assert_eq!(hoisted[2].kind, "check_exception");
+    }
+
+    #[test]
+    fn test_luau_exception_region_strip_dead_code_after_terminators_removes_duplicate_return() {
+        let mut source = [
+            "demo = function()",
+            "\tlocal v0 = 1",
+            "\treturn v0",
+            "\treturn _ret_none_18",
+            "end",
+        ]
+        .join("\n");
+
+        strip_dead_code_after_terminators(&mut source);
+
+        assert!(
+            !source.contains("_ret_none_18"),
+            "same-block return after return must be removed:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_luau_exception_region_dead_code_strip_preserves_pcall_close() {
+        let mut source = [
+            "demo = function()",
+            "\tlocal __ok_0, __err_0",
+            "\t__ok_0, __err_0 = pcall(function()",
+            "\t\terror({__type = \"ValueError\", __msg = \"boom\"})",
+            "\tend)",
+            "\tif not __ok_0 then goto label_2 end",
+            "\t::label_2::",
+            "\tlocal caught = __err_0",
+            "\tif caught then",
+            "\t\treturn 1",
+            "\telse",
+            "\t\terror(caught)",
+            "\tend",
+            "end",
+        ]
+        .join("\n");
+
+        strip_dead_code_after_terminators(&mut source);
+
+        assert!(
+            source.contains("\tend)\n\tif not __ok_0 then goto label_2 end"),
+            "pcall close and failure edge must survive error() inside protected body:\n{source}"
+        );
+        assert!(
+            source.contains("\tif caught then\n\t\treturn 1\n\telse"),
+            "handler match branch must remain balanced after pcall close:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_luau_exception_region_module_global_ops_use_module_dict_helpers() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "module_global_test".into(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".into(),
+                        out: Some("name".into()),
+                        s_value: Some("exc".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "dict_new".into(),
+                        out: Some("module".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_get_global".into(),
+                        args: Some(vec!["module".into(), "name".into()]),
+                        out: Some("value".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "module_del_global_if_present".into(),
+                        args: Some(vec!["module".into(), "name".into()]),
+                        out: Some("none".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+
+        assert!(
+            output.contains("molt_module_get_global(module, name)"),
+            "module_get_global must read the supplied module dict:\n{output}"
+        );
+        assert!(
+            output.contains("molt_module_del_global(module, name, true)"),
+            "module_del_global_if_present must delete from the supplied module dict:\n{output}"
+        );
+        assert!(
+            !output.contains("local value = molt_module_cache[name]"),
+            "module_get_global must not read import cache directly:\n{output}"
+        );
+    }
+
+    #[test]
+    fn test_luau_exception_region_type_of_uses_python_descriptor_helper() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "type_descriptor_test".into(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "exception_new_builtin_empty".into(),
+                        out: Some("exc".into()),
+                        s_value: Some("NameError".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "type_of".into(),
+                        args: Some(vec!["exc".into()]),
+                        out: Some("typ".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "get_attr_generic_obj".into(),
+                        args: Some(vec!["typ".into()]),
+                        out: Some("name".into()),
+                        s_value: Some("__name__".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let output = backend.compile(&ir);
+
+        assert!(
+            output.contains("local typ = molt_type_of(exc)")
+                && output.contains("if type(x) == \"table\" and x.__type then"),
+            "type_of must preserve Python exception class identity:\n{output}"
         );
     }
 

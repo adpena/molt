@@ -22,15 +22,15 @@ def _load_audit_tool():
     return module
 
 
-def test_current_repo_subprocess_guard_coverage_is_green() -> None:
+def test_current_repo_subprocess_guard_coverage_is_clean() -> None:
     module = _load_audit_tool()
 
     audit = module.audit_paths()
 
-    assert audit.ok, module._format_text(audit)
-    assert len(audit.raw_calls) == sum(
-        entry.expected_count for entry in module.ALLOWLIST
-    )
+    assert audit.ok
+    assert audit.unexpected == ()
+    assert audit.stale_allowlist == ()
+    assert audit.expanded_allowlist == ()
     assert REPO_ROOT / "src" / "molt" / "repl.py" in module.DEFAULT_TARGETS
 
 

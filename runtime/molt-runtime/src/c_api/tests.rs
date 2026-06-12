@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::builtins::exceptions::molt_exception_class;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct CApiTestGuard {
     _guard: std::sync::MutexGuard<'static, ()>,
@@ -231,6 +232,18 @@ extern "C" fn c_api_test_bound_identity(self_bits: u64, arg_bits: u64) -> u64 {
     })
 }
 
+static FINALIZER_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__del__ self missing");
+        }
+        FINALIZER_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        none_bits()
+    })
+}
+
 fn create_test_heap_class(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u64 {
     let builtins = crate::builtins::classes::builtin_classes(_py);
     let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
@@ -257,6 +270,88 @@ fn create_test_heap_class(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]
     dec_ref_bits(_py, namespace_bits);
     dec_ref_bits(_py, name_bits);
     class_bits
+}
+
+fn create_guarded_test_class(
+    _py: &PyToken<'_>,
+    name: &[u8],
+    attrs: &[(&[u8], u64)],
+) -> (u64, Vec<u64>) {
+    let builtins = crate::builtins::classes::builtin_classes(_py);
+    let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
+    assert!(!obj_from_bits(name_bits).is_none());
+    let mut attr_storage = Vec::with_capacity(attrs.len() * 2);
+    for &(attr_name, value_bits) in attrs {
+        let attr_bits = unsafe { molt_string_from(attr_name.as_ptr(), attr_name.len() as u64) };
+        assert!(!obj_from_bits(attr_bits).is_none());
+        attr_storage.push(attr_bits);
+        attr_storage.push(value_bits);
+    }
+    let bases = [builtins.object];
+    let class_bits = unsafe {
+        crate::object::ops::molt_guarded_class_def(
+            name_bits,
+            bases.as_ptr(),
+            bases.len() as u64,
+            attr_storage.as_ptr(),
+            attrs.len() as u64,
+            std::mem::size_of::<u64>() as i64,
+            1,
+            0,
+        )
+    };
+    assert!(!obj_from_bits(class_bits).is_none());
+    dec_ref_bits(_py, name_bits);
+    (class_bits, attr_storage)
+}
+
+#[test]
+fn guarded_class_def_arms_and_runs_instance_finalizer() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        FINALIZER_CALL_COUNT.store(0, Ordering::SeqCst);
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_finalizer_records",
+                c_api_test_finalizer_records as *const (),
+            ),
+            1,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+        let (class_bits, attr_storage) =
+            create_guarded_test_class(_py, b"FinalizerA", &[(b"__del__", func_bits)]);
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+        let class_flags = unsafe { (*crate::object::header_from_obj_ptr(class_ptr)).flags };
+        assert_ne!(
+            class_flags & crate::object::HEADER_FLAG_CLASS_HAS_FINALIZER,
+            0,
+            "sealed class must carry the finalizer fact before allocation"
+        );
+
+        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
+        let inst_flags = unsafe { (*crate::object::header_from_obj_ptr(inst_ptr)).flags };
+        assert_ne!(
+            inst_flags & crate::object::HEADER_FLAG_INSTANCE_HAS_FINALIZER,
+            0,
+            "instance allocation must stamp the class finalizer fact"
+        );
+
+        dec_ref_bits(_py, inst_bits);
+        assert_eq!(
+            FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "last drop must run __del__ exactly once"
+        );
+
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, func_bits);
+    });
 }
 
 #[test]

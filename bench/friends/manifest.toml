@@ -100,7 +100,7 @@ skip_reason = "Configure pyodide run_cmd (and optional prepare_cmds) before enab
 
 [[suite]]
 id = "tinygrad_off_the_shelf"
-enabled = false
+enabled = true
 friend = "tinygrad"
 display_name = "tinygrad Off-The-Shelf API Workloads"
 source = "git"
@@ -112,20 +112,54 @@ tags = ["gpu", "mlir", "tinygrad", "compatibility", "benchmark-suite"]
 repeat = 5
 timeout_sec = 1800
 
-[suite.env]
-PYTHONPATH = "{suite_root}"
-
 [suite.runners.cpython]
 json_stdout = true
-run_cmd = ["{python}", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
+env = { PYTHONDONTWRITEBYTECODE = "1" }
+run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "typeguard", "python", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
 
 [suite.runners.molt]
 json_stdout = true
-env = { MOLT_MODULE_ROOTS = "{suite_root}", MOLT_EXTERNAL_STATIC_PACKAGES = "tinygrad", PYTHONPATH = "{suite_root}" }
-run_cmd = ["molt", "run", "--profile", "dev", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
+env = { MOLT_MODULE_ROOTS = "{suite_root}", MOLT_EXTERNAL_STATIC_PACKAGES = "tinygrad", PYTHONDONTWRITEBYTECODE = "1", PYTHONPATH = "{repo_root}/src:{suite_root}" }
+run_cmd = ["{python}", "-m", "molt.cli", "run", "--profile", "dev", "--build-arg=--stdlib-profile", "--build-arg=full", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
 
-[suite.runners.friend]
-skip_reason = "Select and pin the upstream tinygrad official benchmark/test command after repo_ref is immutable; CPython/Molt lanes already run unmodified package code through the public API adapter."
+[suite.runners.tinygrad]
+env = { CHECK_OOB = "0", DEV = "CPU", PYTHONDONTWRITEBYTECODE = "1", TYPED = "1", PYTHONPATH = "{suite_root}" }
+run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "typeguard", "python", "test/test_tiny.py"]
+
+[[suite]]
+id = "numpy_off_the_shelf"
+enabled = true
+friend = "numpy"
+display_name = "NumPy Off-The-Shelf Source And API Probe"
+source = "git"
+repo_url = "https://github.com/numpy/numpy.git"
+repo_ref = "c81c49f77451340651a751e76bca607d85e4fd55"
+semantic_mode = "runs_unmodified"
+adapter_notes = "Canonical NumPy compile/probe lane. The source runner verifies the pinned checkout; the CPython runner executes a pinned isolated NumPy baseline through tools/numpy_off_shelf_adapter.py; the Molt runner attempts the same public workloads through MOLT_EXTERNAL_STATIC_PACKAGES=numpy, which now fail-closed validates package-local native artifact sidecars before graph/lowering and must stay red until the libmolt source-recompiled package build/staging/runtime path is complete. No host-Python fallback or patched NumPy sources are allowed."
+tags = ["ecosystem", "numpy", "c-api", "scientific-python", "compile-time"]
+repeat = 1
+timeout_sec = 1800
+
+[suite.runners.cpython]
+role = "workload"
+json_stdout = true
+run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "numpy==2.4.2", "python", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--workload", "all", "--iterations", "5", "--json", "--require-version", "2.4.2"]
+
+[suite.runners.molt]
+role = "workload"
+json_stdout = true
+env = { MOLT_MODULE_ROOTS = "{suite_root}", MOLT_EXTERNAL_STATIC_PACKAGES = "numpy", PYTHONPATH = "{repo_root}/src:{suite_root}" }
+run_cmd = ["{python}", "-m", "molt.cli", "run", "--profile", "dev", "--build-arg=--stdlib-profile", "--build-arg=full", "--capabilities", "module.extension.exec", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "5", "--json", "--require-module-under", "{suite_root}"]
+
+[suite.runners.c_api_scan]
+role = "c_api_scan"
+json_stdout = true
+run_cmd = ["{python}", "-m", "molt.cli", "extension", "scan", "--project", "{suite_root}", "--source", "{suite_root}/numpy", "--fail-on-missing", "--json"]
+
+[suite.runners.source_audit]
+role = "custody_audit"
+json_stdout = true
+run_cmd = ["{python}", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--suite-root", "{suite_root}", "--source-tree-audit", "--workload", "none", "--json"]
 
 [[suite]]
 id = "pyperformance_benchmarks"
