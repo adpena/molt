@@ -79,7 +79,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::super::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
 use super::super::call_graph::CallGraph;
-use super::super::dominators::{reachable_blocks_with, CfgEdgePolicy};
+use super::super::dominators::{CfgEdgePolicy, reachable_blocks_with};
 use super::super::function::{TirFunction, TirModule};
 use super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::target_info::TargetInfo;
@@ -468,7 +468,10 @@ fn clone_function_body_with_fresh_ids(
     // Mint fresh value ids for every non-parameter callee result and every
     // non-entry block argument, in a deterministic walk (blocks sorted; within a
     // block, args then ops in order).
-    let fresh_for = |old: ValueId, value_map: &mut HashMap<ValueId, ValueId>, caller: &mut TirFunction| -> ValueId {
+    let fresh_for = |old: ValueId,
+                     value_map: &mut HashMap<ValueId, ValueId>,
+                     caller: &mut TirFunction|
+     -> ValueId {
         if let Some(&existing) = value_map.get(&old) {
             return existing;
         }
@@ -718,7 +721,10 @@ fn transfer_loop_metadata(
         if let (Some(new_header), Some(new_cond)) =
             (block_map.get(old_header), block_map.get(old_cond))
         {
-            caller.loop_cond_blocks.entry(*new_header).or_insert(*new_cond);
+            caller
+                .loop_cond_blocks
+                .entry(*new_header)
+                .or_insert(*new_cond);
         }
     }
 }
@@ -803,7 +809,11 @@ fn build_label_remap(callee: &TirFunction, caller: &TirFunction) -> HashMap<i64,
 /// untouched (a missing remap entry can only happen for a label the callee did
 /// not actually declare, which `function_label_ids` already folds in, so in
 /// practice every cloned exception label is remapped).
-fn remap_exception_label_attr(opcode: OpCode, attrs: &mut AttrDict, label_remap: &HashMap<i64, i64>) {
+fn remap_exception_label_attr(
+    opcode: OpCode,
+    attrs: &mut AttrDict,
+    label_remap: &HashMap<i64, i64>,
+) {
     if !is_exception_label_op(opcode) {
         return;
     }
@@ -994,14 +1004,18 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
     //    the normal or exception path, is discarded — the call discarded it too).
     let cont_arity = cont_args.len();
     let cont_ty: Option<TirType> = cont_args.first().map(|a| a.ty.clone());
-    debug_assert!(cont_arity <= 1, "continuation arity is 0 (void) or 1 (value)");
+    debug_assert!(
+        cont_arity <= 1,
+        "continuation arity is 0 (void) or 1 (value)"
+    );
     for &cloned_bid in &cloned.cloned_blocks {
-        let return_values: Option<Vec<ValueId>> =
-            match &caller.blocks[&cloned_bid].terminator {
-                Terminator::Return { values } => Some(values.clone()),
-                _ => None,
-            };
-        let Some(values) = return_values else { continue };
+        let return_values: Option<Vec<ValueId>> = match &caller.blocks[&cloned_bid].terminator {
+            Terminator::Return { values } => Some(values.clone()),
+            _ => None,
+        };
+        let Some(values) = return_values else {
+            continue;
+        };
 
         let branch_args: Vec<ValueId> = match (cont_arity, values.first()) {
             (0, _) => Vec::new(),
@@ -1281,7 +1295,11 @@ mod tests {
     /// A callee `fn f(a, b) -> a + b` (single block, two params, one add,
     /// returns the sum).
     fn add_callee() -> TirFunction {
-        let mut f = TirFunction::new("addfn".into(), vec![TirType::I64, TirType::I64], TirType::I64);
+        let mut f = TirFunction::new(
+            "addfn".into(),
+            vec![TirType::I64, TirType::I64],
+            TirType::I64,
+        );
         let p0 = ValueId(0);
         let p1 = ValueId(1);
         let sum = f.fresh_value();
@@ -1588,7 +1606,10 @@ mod tests {
         assert!(caller.next_block > before_next_block, "block ids advanced");
         // The cloned entry block exists and has NO args (params bound to a, b).
         let entry = &caller.blocks[&cloned.entry];
-        assert!(entry.args.is_empty(), "cloned entry has no args (params bound)");
+        assert!(
+            entry.args.is_empty(),
+            "cloned entry has no args (params bound)"
+        );
         // The cloned Add uses the caller's arg values directly (a, b).
         let add = &entry.ops[0];
         assert_eq!(add.opcode, OpCode::Add);
@@ -1628,13 +1649,17 @@ mod tests {
             );
         }
         let entry = callee.entry_block;
-        callee.blocks.get_mut(&entry).unwrap().terminator =
-            Terminator::Branch { target: header, args: vec![] };
+        callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+            target: header,
+            args: vec![],
+        };
         // Now wire all four loop maps + a label.
         callee.loop_roles.insert(header, LoopRole::LoopHeader);
         callee.loop_roles.insert(end, LoopRole::LoopEnd);
         callee.loop_pairs.insert(header, end);
-        callee.loop_break_kinds.insert(header, LoopBreakKind::BreakIfTrue);
+        callee
+            .loop_break_kinds
+            .insert(header, LoopBreakKind::BreakIfTrue);
         callee.loop_cond_blocks.insert(header, cond);
         callee.label_id_map.insert(header.0, 7);
 
@@ -1644,8 +1669,16 @@ mod tests {
         // All four maps + label_id_map must have one remapped entry each.
         assert_eq!(caller.loop_roles.len(), 2, "loop_roles transferred");
         assert_eq!(caller.loop_pairs.len(), 1, "loop_pairs transferred");
-        assert_eq!(caller.loop_break_kinds.len(), 1, "loop_break_kinds transferred");
-        assert_eq!(caller.loop_cond_blocks.len(), 1, "loop_cond_blocks transferred");
+        assert_eq!(
+            caller.loop_break_kinds.len(),
+            1,
+            "loop_break_kinds transferred"
+        );
+        assert_eq!(
+            caller.loop_cond_blocks.len(),
+            1,
+            "loop_cond_blocks transferred"
+        );
         assert_eq!(caller.label_id_map.len(), 1, "label_id_map transferred");
         // None of the transferred keys are the callee's original ids — they were
         // remapped to fresh caller block ids.
@@ -1683,8 +1716,7 @@ mod tests {
         // Callee returns nothing; caller calls it for effect.
         let mut callee = TirFunction::new("eff".into(), vec![], TirType::None);
         let entry = callee.entry_block;
-        callee.blocks.get_mut(&entry).unwrap().terminator =
-            Terminator::Return { values: vec![] };
+        callee.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
 
         let mut caller = TirFunction::new("g".into(), vec![], TirType::None);
         let mut call_attrs = AttrDict::new();
@@ -1718,11 +1750,9 @@ mod tests {
     #[test]
     fn refcount_guard_refuses_arg_incref() {
         // Caller: IncRef(arg); call f(arg). The guard must refuse the splice.
-        let mut callee =
-            TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
+        let mut callee = TirFunction::new("f".into(), vec![TirType::DynBox], TirType::None);
         let centry = callee.entry_block;
-        callee.blocks.get_mut(&centry).unwrap().terminator =
-            Terminator::Return { values: vec![] };
+        callee.blocks.get_mut(&centry).unwrap().terminator = Terminator::Return { values: vec![] };
 
         let mut caller = TirFunction::new("g".into(), vec![TirType::DynBox], TirType::None);
         let arg = ValueId(0); // the caller's param
@@ -1811,7 +1841,9 @@ mod tests {
                 source_span: None,
             });
         }
-        block.terminator = Terminator::Return { values: vec![vals[0]] };
+        block.terminator = Terminator::Return {
+            values: vec![vals[0]],
+        };
         let m = module(vec![f]);
         let (cg, sm) = analysis(&m);
         assert!(
@@ -1853,12 +1885,17 @@ mod tests {
                 args: vec![],
                 ops: vec![],
                 // body branches BACK to the entry → entry has a predecessor.
-                terminator: Terminator::Branch { target: f.entry_block, args: vec![] },
+                terminator: Terminator::Branch {
+                    target: f.entry_block,
+                    args: vec![],
+                },
             },
         );
         let entry = f.entry_block;
-        f.blocks.get_mut(&entry).unwrap().terminator =
-            Terminator::Branch { target: body, args: vec![] };
+        f.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+            target: body,
+            args: vec![],
+        };
         let m = module(vec![f]);
         let (cg, sm) = analysis(&m);
         let tti = TargetInfo::native_release_fast();
@@ -2232,14 +2269,13 @@ mod tests {
             .filter(|op| op.opcode == OpCode::Call)
             .count();
         assert_eq!(calls, 0, "addfn call eliminated");
-        crate::tir::verify::verify_function(g)
-            .unwrap_or_else(|e| panic!("g invalid: {e:?}"));
+        crate::tir::verify::verify_function(g).unwrap_or_else(|e| panic!("g invalid: {e:?}"));
         // The inlined body's Add (a+b with a=p, b=q) is present and uses the
         // caller's params directly.
         let add_uses_params = g.blocks.values().any(|b| {
-            b.ops.iter().any(|op| {
-                op.opcode == OpCode::Add && op.operands == vec![p, q]
-            })
+            b.ops
+                .iter()
+                .any(|op| op.opcode == OpCode::Add && op.operands == vec![p, q])
         });
         assert!(add_uses_params, "inlined add uses caller params directly");
     }
@@ -2306,7 +2342,10 @@ mod tests {
                     && matches!(op.attrs.get("value"), Some(AttrValue::Int(42)))
             })
             .count();
-        assert_eq!(const_42_count, 2, "each inlined site contributes a const 42");
+        assert_eq!(
+            const_42_count, 2,
+            "each inlined site contributes a const 42"
+        );
     }
 
     // -- (c) exception-observation inlining ----------------------------------

@@ -5,11 +5,8 @@ import json
 import math
 import os
 import platform
-import re
 import shlex
 import shutil
-import signal
-import socket
 import statistics
 import subprocess
 import sys
@@ -28,7 +25,12 @@ if str(SRC_ROOT) not in sys.path:
 
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
+from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt._wasm_runtime_exports import wasm_runtime_export_link_args  # noqa: E402
+from molt.harness_conformance import (  # noqa: E402
+    build_molt_conformance_env,
+    ensure_molt_conformance_dirs,
+)
 
 SUPER_SAMPLES = 10
 
@@ -39,102 +41,17 @@ MOLT_ARGS_BY_BENCH = bench_suites.MOLT_ARGS_BY_BENCH
 molt_args_for_benchmark = bench_suites.molt_args_for_benchmark
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _kill_pid(pid: int, *, grace: float = 0.75) -> None:
-    if pid <= 0:
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return
-    deadline = time.monotonic() + max(0.05, grace)
-    while time.monotonic() < deadline:
-        if not _pid_alive(pid):
-            return
-        time.sleep(0.05)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        return
-
-
-def _daemon_ping(socket_path: Path, *, timeout: float = 0.75) -> bool:
-    if os.name != "posix" or not socket_path.exists():
-        return False
-    payload = {"version": 1, "ping": True}
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            sock.connect(str(socket_path))
-            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-            sock.shutdown(socket.SHUT_WR)
-            chunks: list[bytes] = []
-            while True:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-    except OSError:
-        return False
-    try:
-        response = json.loads(b"".join(chunks).decode("utf-8", "replace").strip())
-    except json.JSONDecodeError:
-        return False
-    return bool(response.get("ok")) and bool(response.get("pong"))
-
-
-def _prune_backend_daemons() -> None:
+def _prune_backend_daemons(env: dict[str, str] | None = None) -> int:
     if os.name != "posix":
-        return
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", "pid=,command="],
-            capture_output=True,
-            text=True,
-            check=False,
+        return 0
+    prune_env = env if env is not None else _base_env()
+    return len(
+        daemon_custody.terminate_backend_daemons_for_session(
+            prune_env,
+            project_root=_repo_root(),
+            grace=0.75,
         )
-    except OSError:
-        return
-    pattern = re.compile(r"^\s*(\d+)\s+(.*)$")
-    socket_pat = re.compile(r"--socket\s+(\S+)")
-    groups: dict[Path, list[int]] = {}
-    for line in result.stdout.splitlines():
-        match = pattern.match(line)
-        if match is None:
-            continue
-        pid = int(match.group(1))
-        cmd = match.group(2)
-        if "molt-backend" not in cmd or "--daemon" not in cmd:
-            continue
-        socket_match = socket_pat.search(cmd)
-        if socket_match is None:
-            continue
-        socket_path = Path(socket_match.group(1)).expanduser()
-        groups.setdefault(socket_path, []).append(pid)
-    for socket_path, pids in groups.items():
-        live = sorted({pid for pid in pids if _pid_alive(pid)})
-        if not live:
-            continue
-        if not socket_path.exists():
-            for pid in live:
-                _kill_pid(pid)
-            continue
-        if len(live) > 1:
-            for pid in live[:-1]:
-                _kill_pid(pid)
-            live = live[-1:]
-        _daemon_ping(socket_path)
+    )
 
 
 def _wasm_runtime_root() -> Path:
@@ -663,9 +580,17 @@ def _git_rev() -> str | None:
     return res.stdout.strip() or None
 
 
+def _wasm_session_id(env: dict[str, str] | None = None) -> str:
+    source = env if env is not None else os.environ
+    explicit = source.get("MOLT_SESSION_ID", "").strip()
+    return explicit or f"bench-wasm-{os.getpid()}"
+
+
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["PYTHONPATH"] = "src"
+    env.update(build_molt_conformance_env(_repo_root(), _wasm_session_id(env)))
+    ensure_molt_conformance_dirs(env)
+    env["PYTHONPATH"] = str(_repo_root() / "src")
     env.setdefault("PYTHONHASHSEED", "0")
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("MOLT_MACOSX_DEPLOYMENT_TARGET", "26.2")
@@ -1049,6 +974,7 @@ def _build_wasm_output(
     tty: bool,
     log: TextIO | None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+    use_molt_build_cache: bool = True,
 ) -> float | None:
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
@@ -1059,7 +985,7 @@ def _build_wasm_output(
         "-m",
         "molt.cli",
         "build",
-        "--no-cache",
+        "--cache" if use_molt_build_cache else "--no-cache",
         "--target",
         "wasm",
         "--out-dir",
@@ -1237,8 +1163,8 @@ def prepare_wasm_binary(
     log: TextIO | None,
     keep_temp: bool,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+    use_molt_build_cache: bool = True,
 ) -> WasmBinary | None:
-    _prune_backend_daemons()
     global _LAST_BUILD_FAILURE_DETAIL
     _LAST_BUILD_FAILURE_DETAIL = None
     temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-bench-")
@@ -1250,6 +1176,7 @@ def prepare_wasm_binary(
             pass
     output_path = Path(temp_dir.name) / "output.wasm"
     base_env = _base_env()
+    _prune_backend_daemons(base_env)
     base_env["MOLT_WASM_PATH"] = str(output_path)
     resolved_limits = limits or harness_memory_guard.limits_from_env(
         "MOLT_BENCH", base_env
@@ -1279,13 +1206,14 @@ def prepare_wasm_binary(
         tty=tty,
         log=log,
         limits=resolved_limits,
+        use_molt_build_cache=use_molt_build_cache,
     )
     if build_s is None:
         print(
             "Backend build failed; pruning stale daemons and retrying...",
             file=sys.stderr,
         )
-        _prune_backend_daemons()
+        _prune_backend_daemons(base_env)
         time.sleep(1)
         build_s = _build_wasm_output(
             python_cmd,
@@ -1295,6 +1223,7 @@ def prepare_wasm_binary(
             tty=tty,
             log=log,
             limits=resolved_limits,
+            use_molt_build_cache=use_molt_build_cache,
         )
     if build_s is None:
         if _LAST_BUILD_FAILURE_DETAIL is None:
@@ -1340,6 +1269,7 @@ def prepare_wasm_binary(
             tty=tty,
             log=log,
             limits=resolved_limits,
+            use_molt_build_cache=use_molt_build_cache,
         )
         if build_s is None:
             if _LAST_BUILD_FAILURE_DETAIL is None:
@@ -1779,6 +1709,7 @@ def bench_results(
     tty: bool,
     log: TextIO | None,
     keep_temp: bool,
+    use_molt_build_cache: bool = True,
 ) -> dict[str, dict]:
     data: dict[str, dict] = {}
     print(f"{'Benchmark':<30} | {'WASM (s)':<12} | {'WASM size':<10}")
@@ -1808,6 +1739,7 @@ def bench_results(
                     log=log,
                     keep_temp=keep_temp,
                     limits=limits,
+                    use_molt_build_cache=use_molt_build_cache,
                 )
             except RuntimeError as exc:
                 print(
@@ -2000,6 +1932,14 @@ def main() -> None:
         "--keep-artifacts",
         action="store_true",
         help="Keep per-benchmark wasm temp dirs (also honors MOLT_WASM_KEEP=1).",
+    )
+    parser.add_argument(
+        "--no-molt-build-cache",
+        action="store_true",
+        help=(
+            "Disable Molt build-cache reads for a deliberate cold wasm rebuild "
+            "investigation. WASM benchmark builds reuse cache by default."
+        ),
     )
     args = parser.parse_args()
     env_node_max_old_space_mb = _parse_env_int("MOLT_WASM_NODE_MAX_OLD_SPACE_MB")
@@ -2208,6 +2148,7 @@ def main() -> None:
             tty=use_tty,
             log=log_file,
             keep_temp=keep_temp,
+            use_molt_build_cache=not args.no_molt_build_cache,
         )
     except RuntimeError as exc:
         print(f"WASM bench aborted: {exc}", file=sys.stderr)

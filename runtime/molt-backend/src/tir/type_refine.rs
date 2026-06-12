@@ -1326,8 +1326,9 @@ fn infer_single_result_type_with_attrs(
 fn fresh_value_kind_result_type(kind: &str) -> TirType {
     match kind {
         "float_from_obj" => TirType::F64,
-        "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "string_format"
-        | "string_join" => TirType::Str,
+        "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "string_format" | "string_join" => {
+            TirType::Str
+        }
         _ => TirType::DynBox,
     }
 }
@@ -2230,7 +2231,12 @@ mod tests {
         };
         let ops = vec![
             // t = <float> (a const float stands in for the float parameter).
-            make_op(OpCode::ConstFloat, vec![], vec![ValueId(0)], AttrDict::new()),
+            make_op(
+                OpCode::ConstFloat,
+                vec![],
+                vec![ValueId(0)],
+                AttrDict::new(),
+            ),
             // sec = int(t)  →  Copy[int_from_obj](t). MUST type to I64, not F64.
             make_op(
                 OpCode::Copy,

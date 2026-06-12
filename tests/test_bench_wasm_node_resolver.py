@@ -86,7 +86,14 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     monkeypatch.setattr(bench_wasm, "RUNTIME_WASM_RELOC", reloc_runtime)
     monkeypatch.setattr(bench_wasm, "RUNTIME_WASM", tmp_path / "molt_runtime.wasm")
     monkeypatch.setattr(bench_wasm, "_want_linked", lambda: True)
-    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {})
+    base_env = {"MOLT_SESSION_ID": "wasm-unit", "CARGO_TARGET_DIR": str(tmp_path)}
+    pruned_envs: list[dict[str, str]] = []
+    monkeypatch.setattr(bench_wasm, "_base_env", lambda: base_env.copy())
+    monkeypatch.setattr(
+        bench_wasm,
+        "_prune_backend_daemons",
+        lambda env=None: pruned_envs.append(dict(env or {})),
+    )
     monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["python3"])
     monkeypatch.setattr(bench_wasm, "_read_wasm_table_min", lambda _path: 2354)
     captured_env: dict[str, str] = {}
@@ -99,8 +106,10 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         *,
         tty: bool,
         log,
+        limits=None,
+        use_molt_build_cache=True,
     ) -> float:
-        del tty, log
+        del tty, log, limits, use_molt_build_cache
         captured_env.update(env)
         output_path.write_bytes(b"\x00asm")
         return 0.01
@@ -111,8 +120,9 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         *,
         require_linked: bool,
         log,
+        limits=None,
     ) -> Path:
-        del require_linked, log
+        del require_linked, log, limits
         linked = input_path.with_name("output_linked.wasm")
         linked.write_bytes(b"\x00asm")
         return linked
@@ -128,8 +138,74 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         keep_temp=False,
     )
     assert wasm is not None
+    assert pruned_envs == [base_env]
     assert captured_env.get("MOLT_WASM_LINK") == "1"
     assert captured_env.get("MOLT_WASM_TABLE_BASE") == "2354"
+
+
+def test_build_wasm_output_reuses_molt_build_cache_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "output.wasm"
+    commands: list[list[str]] = []
+    monkeypatch.setattr(bench_wasm, "molt_args_for_benchmark", lambda _script: [])
+
+    def fake_run_cmd(command, *, env, capture, tty, log, timeout_s=None, limits=None):
+        del env, capture, tty, log, timeout_s, limits
+        commands.append(list(command))
+        output_path.write_bytes(b"\x00asm")
+        return bench_wasm._RunResult(returncode=0)
+
+    monkeypatch.setattr(bench_wasm, "_run_cmd", fake_run_cmd)
+
+    assert (
+        bench_wasm._build_wasm_output(
+            ["python3"],
+            {},
+            output_path,
+            "tests/benchmarks/bench_sum.py",
+            tty=False,
+            log=None,
+        )
+        is not None
+    )
+
+    assert "--cache" in commands[0]
+    assert "--no-cache" not in commands[0]
+
+
+def test_build_wasm_output_can_disable_molt_build_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "output.wasm"
+    commands: list[list[str]] = []
+    monkeypatch.setattr(bench_wasm, "molt_args_for_benchmark", lambda _script: [])
+
+    def fake_run_cmd(command, *, env, capture, tty, log, timeout_s=None, limits=None):
+        del env, capture, tty, log, timeout_s, limits
+        commands.append(list(command))
+        output_path.write_bytes(b"\x00asm")
+        return bench_wasm._RunResult(returncode=0)
+
+    monkeypatch.setattr(bench_wasm, "_run_cmd", fake_run_cmd)
+
+    assert (
+        bench_wasm._build_wasm_output(
+            ["python3"],
+            {},
+            output_path,
+            "tests/benchmarks/bench_sum.py",
+            tty=False,
+            log=None,
+            use_molt_build_cache=False,
+        )
+        is not None
+    )
+
+    assert "--no-cache" in commands[0]
+    assert "--cache" not in commands[0]
 
 
 def test_run_wasm_resolves_explicit_sibling_before_canonical_dist(

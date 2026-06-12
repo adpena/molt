@@ -428,7 +428,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_block_on` | 1 | Low | |
 | `molt_future_poll` | 1 | Moderate | |
 | `molt_sleep_register` | 1 | Low | |
-| `molt_async_sleep_new` | 1 | Low | |
+| `molt_async_sleep` | 1 | Low | |
 | `molt_chan_new` | 1 | Low | |
 | `molt_chan_send` | 1 | Low | |
 | `molt_chan_recv` | 1 | Low | |

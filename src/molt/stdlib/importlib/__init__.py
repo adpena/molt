@@ -5,7 +5,6 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 
-import builtins as _builtins
 import os as _os
 import sys as _sys
 
@@ -22,8 +21,9 @@ _MOLT_IMPORTLIB_INVALIDATE_CACHES = _require_intrinsic(
     "molt_importlib_invalidate_caches"
 )
 _MOLT_IMPORTLIB_RELOAD = _require_intrinsic("molt_importlib_reload")
-_MOLT_IMPORTLIB_IMPORT_MODULE = _require_intrinsic("molt_importlib_import_module")
-_MODULE_ALIASES: dict[str, str] = {}
+_MOLT_IMPORTLIB_IMPORT_TRANSACTION = _require_intrinsic(
+    "molt_importlib_import_transaction"
+)
 
 
 __all__ = [
@@ -93,27 +93,8 @@ def import_module(name: str, package: str | None = None):
     missing_name = _MOLT_IMPORTLIB_KNOWN_ABSENT_MISSING_NAME(resolved)
     if missing_name is not None:
         raise ModuleNotFoundError(f"No module named '{missing_name}'")
-    alias = _MODULE_ALIASES.get(resolved)
-    if alias is not None:
-        target = import_module(alias)
-        modules = _runtime_modules()
-        modules[resolved] = target
-        return target
-
+    mod = _MOLT_IMPORTLIB_IMPORT_TRANSACTION(resolved, globals(), locals(), ("*",), 0)
     modules = _runtime_modules()
-    if not name.startswith(".") and resolved in modules:
-        return _MOLT_IMPORTLIB_IMPORT_MODULE(resolved, util, machinery)
-
-    try:
-        mod = _builtins.__import__(resolved, globals(), locals(), ("*",), 0)
-    except BaseException as exc:
-        text = str(exc)
-        kind = type(exc).__name__
-        if kind == "ModuleNotFoundError" or text.startswith("No module named "):
-            raise ModuleNotFoundError(text)
-        if kind == "ImportError":
-            raise ImportError(text)
-        raise
     if resolved in modules:
         return modules[resolved]
     if mod is not None:

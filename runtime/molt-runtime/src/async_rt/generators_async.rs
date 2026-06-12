@@ -1875,7 +1875,7 @@ pub unsafe extern "C" fn molt_promise_set_exception(future_bits: u64, exc_bits: 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_async_sleep_new(delay_bits: u64, result_bits: u64) -> u64 {
+pub extern "C" fn molt_async_sleep(delay_bits: u64, result_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj_bits = molt_future_new(
             async_sleep_poll_fn_addr(),
@@ -1898,7 +1898,7 @@ pub extern "C" fn molt_async_sleep_new(delay_bits: u64, result_bits: u64) -> u64
 /// # Safety
 /// - `obj_bits` must be a valid pointer if the runtime associates a future with it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_async_sleep(obj_bits: u64) -> i64 {
+pub unsafe extern "C" fn molt_async_sleep_poll(obj_bits: u64) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let _obj_ptr = ptr_from_bits(obj_bits);
@@ -2545,7 +2545,7 @@ unsafe fn asyncio_pending_with_wait(
             // Raw bit reinterpretation can misread tagged sentinels (e.g. None) as fds.
             let fd = to_i64(obj_from_bits(fd_bits)).unwrap_or(-1);
             waiter_bits = if fd < 0 {
-                molt_async_sleep_new(
+                molt_async_sleep(
                     MoltObject::from_float(0.0).bits(),
                     MoltObject::none().bits(),
                 )
@@ -4061,7 +4061,7 @@ pub unsafe extern "C" fn molt_asyncio_timer_handle_poll(obj_bits: u64) -> i64 {
                 }
                 let delay = delay_obj.as_float().unwrap_or(0.0);
                 if delay.is_finite() && delay > 0.0 {
-                    let waiter_bits = molt_async_sleep_new(
+                    let waiter_bits = molt_async_sleep(
                         MoltObject::from_float(delay).bits(),
                         MoltObject::none().bits(),
                     );
@@ -4391,7 +4391,7 @@ pub unsafe extern "C" fn molt_asyncio_fd_watcher_poll(obj_bits: u64) -> i64 {
                         return MoltObject::none().bits() as i64;
                     };
                     if !ready_now {
-                        waiter_bits = molt_async_sleep_new(
+                        waiter_bits = molt_async_sleep(
                             MoltObject::from_float(0.001).bits(),
                             MoltObject::none().bits(),
                         );
@@ -4799,7 +4799,7 @@ pub unsafe extern "C" fn molt_asyncio_ready_runner_poll(obj_bits: u64) -> i64 {
 
             let mut waiter_bits = *payload_ptr.add(ASYNCIO_READY_RUNNER_SLOT_WAIT);
             if obj_from_bits(waiter_bits).is_none() {
-                waiter_bits = molt_async_sleep_new(
+                waiter_bits = molt_async_sleep(
                     MoltObject::from_float(0.0).bits(),
                     MoltObject::none().bits(),
                 );
@@ -4875,7 +4875,7 @@ pub extern "C" fn molt_asyncio_wait_new(
             }
             let timeout = timeout_obj.as_float().unwrap_or(0.0);
             if timeout.is_finite() && timeout > 0.0 {
-                timer_bits = molt_async_sleep_new(
+                timer_bits = molt_async_sleep(
                     MoltObject::from_float(timeout).bits(),
                     MoltObject::none().bits(),
                 );
@@ -5690,7 +5690,7 @@ pub unsafe extern "C" fn molt_asyncio_wait_for_poll(obj_bits: u64) -> i64 {
                             return target_res;
                         }
                     } else {
-                        let timer_bits = molt_async_sleep_new(
+                        let timer_bits = molt_async_sleep(
                             MoltObject::from_float(timeout).bits(),
                             MoltObject::none().bits(),
                         );

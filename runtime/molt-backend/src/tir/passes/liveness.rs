@@ -119,9 +119,7 @@ fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch {
-            cases, default, ..
-        } => {
+        Terminator::Switch { cases, default, .. } => {
             let mut out: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
             out.push(*default);
             out
@@ -442,8 +440,11 @@ pub fn compute_liveness(func: &TirFunction) -> TirLivenessResult {
             // LiveIn = (LiveOut \ Kill) ∪ Use
             let kill = &kill_set[&bid];
             let uses = &use_set[&bid];
-            let mut new_in: HashSet<ValueId> =
-                new_out.iter().copied().filter(|v| !kill.contains(v)).collect();
+            let mut new_in: HashSet<ValueId> = new_out
+                .iter()
+                .copied()
+                .filter(|v| !kill.contains(v))
+                .collect();
             new_in.extend(uses.iter().copied());
 
             if new_out != live_out[&bid] {
@@ -557,18 +558,24 @@ mod tests {
                 else_args: vec![],
             };
         }
-        func.blocks.insert(then_b, TirBlock {
-            id: then_b,
-            args: vec![],
-            ops: vec![op(OpCode::Call, vec![x], vec![r1])],
-            terminator: Terminator::Return { values: vec![r1] },
-        });
-        func.blocks.insert(else_b, TirBlock {
-            id: else_b,
-            args: vec![],
-            ops: vec![op(OpCode::Call, vec![x], vec![r2])],
-            terminator: Terminator::Return { values: vec![r2] },
-        });
+        func.blocks.insert(
+            then_b,
+            TirBlock {
+                id: then_b,
+                args: vec![],
+                ops: vec![op(OpCode::Call, vec![x], vec![r1])],
+                terminator: Terminator::Return { values: vec![r1] },
+            },
+        );
+        func.blocks.insert(
+            else_b,
+            TirBlock {
+                id: else_b,
+                args: vec![],
+                ops: vec![op(OpCode::Call, vec![x], vec![r2])],
+                terminator: Terminator::Return { values: vec![r2] },
+            },
+        );
         let res = compute_liveness(&func);
         // x is used in both successors → live-out of entry.
         assert!(res.is_live_out(entry, x));
@@ -596,32 +603,52 @@ mod tests {
         {
             let b = func.blocks.get_mut(&entry).unwrap();
             b.ops.push(const_str(acc0));
-            b.terminator = Terminator::Branch { target: header, args: vec![acc0] };
+            b.terminator = Terminator::Branch {
+                target: header,
+                args: vec![acc0],
+            };
         }
-        func.blocks.insert(header, TirBlock {
-            id: header,
-            args: vec![TirValue { id: acc_phi, ty: TirType::Str }],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
-            terminator: Terminator::CondBranch {
-                cond,
-                then_block: body,
-                then_args: vec![],
-                else_block: exit,
-                else_args: vec![],
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: acc_phi,
+                    ty: TirType::Str,
+                }],
+                ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
             },
-        });
-        func.blocks.insert(body, TirBlock {
-            id: body,
-            args: vec![],
-            ops: vec![op(OpCode::Call, vec![acc_phi], vec![acc_next])],
-            terminator: Terminator::Branch { target: header, args: vec![acc_next] },
-        });
-        func.blocks.insert(exit, TirBlock {
-            id: exit,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::Return { values: vec![acc_phi] },
-        });
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![op(OpCode::Call, vec![acc_phi], vec![acc_next])],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![acc_next],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![acc_phi],
+                },
+            },
+        );
         func.loop_roles.insert(header, LoopRole::LoopHeader);
         let res = compute_liveness(&func);
         // acc_phi is a block ARG of the header → defined (killed) at header

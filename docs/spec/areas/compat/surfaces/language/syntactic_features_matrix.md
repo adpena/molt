@@ -45,12 +45,15 @@ Differential coverage: 24 test files (~565 lines) in `tests/differential/basic/p
 - [x] `await` inside comprehensions (see 1.2)
 
 ### 1.4 F-Strings
-**Status:** Partial (Milestone 1)
+**Status:** Supported for core PEP 498 / PEP 701 lowering (Milestone 1)
 - [x] Basic interpolation (`f"{x}"`)
-- [ ] Expressions (`f"{x+1}"`)
-- [ ] Format specifiers (`f"{x:.2f}"`)
-- [ ] Debug specifier (`f"{x=}"`)
-- [ ] Date formatting (needs datetime)
+- [x] Expressions (`f"{x+1}"`)
+- [x] Format specifiers (`f"{x:.2f}"`)
+- [x] Debug specifier (`f"{x=}"`)
+- [x] PEP 701 full-grammar coverage (nested f-strings, comments/backslashes)
+- [x] Date formatting where the intrinsic-backed `datetime` subset supports the
+      underlying format behavior; broader datetime parity is tracked in the
+      stdlib matrix.
 
 ### 1.5 Type Hinting Syntax
 **Status:** Partial (PEP 695 syntax partially lowered)

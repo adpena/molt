@@ -1,6 +1,6 @@
 use super::super::*;
-use super::var_get_boxed_overflow_safe_fn;
 use super::OpFlow;
+use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for `dict` ops: construction (`dict_new`/`dict_from_obj`), access/mutation (`get`/`pop`/`setdefault`/`update`/`clear`/`copy`/`popitem`), counting builders (`dict_inc`/`dict_str_int_inc`/`string_split_*_dict_inc`/`taq_ingest_line`), and views (`keys`/`values`/`items`).
 ///
@@ -31,35 +31,37 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
-    let var_get_boxed_overflow_safe =
-        |module: &mut ObjectModule,
-         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-         builder: &mut FunctionBuilder<'_>,
-         import_refs: &mut BTreeMap<&'static str, FuncRef>,
-         sealed_blocks: &mut BTreeSet<Block>,
-         vars: &BTreeMap<String, Variable>,
-         name: &str,
-         int_primary_vars: &BTreeSet<String>,
-         float_primary_vars: &BTreeSet<String>,
-         box_int_mask_var: Variable,
-         box_int_tag_var: Variable|
-         -> Option<crate::VarValue> {
-            var_get_boxed_overflow_safe_fn(
-                module,
-                import_ids,
-                builder,
-                import_refs,
-                sealed_blocks,
-                vars,
-                name,
-                int_primary_vars,
-                float_primary_vars,
-                bool_primary_vars,
-                nbc,
-                box_int_mask_var,
-                box_int_tag_var,
-            )
-        };
+    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+                                       import_ids: &mut BTreeMap<
+        &'static str,
+        (cranelift_module::FuncId, ImportSignatureShape),
+    >,
+                                       builder: &mut FunctionBuilder<'_>,
+                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       sealed_blocks: &mut BTreeSet<Block>,
+                                       vars: &BTreeMap<String, Variable>,
+                                       name: &str,
+                                       int_primary_vars: &BTreeSet<String>,
+                                       float_primary_vars: &BTreeSet<String>,
+                                       box_int_mask_var: Variable,
+                                       box_int_tag_var: Variable|
+     -> Option<crate::VarValue> {
+        var_get_boxed_overflow_safe_fn(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            name,
+            int_primary_vars,
+            float_primary_vars,
+            bool_primary_vars,
+            nbc,
+            box_int_mask_var,
+            box_int_tag_var,
+        )
+    };
     match op.kind.as_str() {
         "dict_new" => {
             let empty_args: Vec<String> = Vec::new();

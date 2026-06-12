@@ -49,6 +49,13 @@ cold daemon startup or investigating daemon crash isolation. Isolated cleanup is
 scoped to the current `MOLT_SESSION_ID` or explicit backend socket, preserves
 foreign-session daemons, and records daemon custody events in
 `tmp/bench/daemon_custody.jsonl`.
+`tools/bench.py` and `tools/bench_wasm.py` also prune backend daemons only
+through `src/molt/backend_daemon_custody.py` after canonicalizing their session
+environment, so concurrent benchmark agents keep their own warm daemon/cache
+state instead of matching loose sockets or PIDs.
+Both runners reuse Molt build caches by default. Pass
+`--no-molt-build-cache` only for an intentional cold/no-cache rebuild study; it
+is not the default throughput mode.
 For performance parity work, prefer linked WASM artifacts (`tools/bench_wasm.py --linked`)
 and use the linked runner path by default.
 If you build standalone WASM artifacts for perf validation, use
@@ -274,6 +281,43 @@ uv run --python 3.12 python3 tools/bench_friends.py \
   --fetch
 ```
 
+Upstream tinygrad lane:
+
+```bash
+uv run --python 3.12 python3 tools/bench_friends.py \
+  --manifest bench/friends/manifest.toml \
+  --suite tinygrad_off_the_shelf \
+  --include-disabled \
+  --dry-run
+```
+
+To run against an already-pinned local checkout without editing the manifest,
+override both the suite root and the expected ref:
+
+```bash
+uv run --python 3.12 python3 tools/bench_friends.py \
+  --manifest bench/friends/manifest.toml \
+  --suite tinygrad_off_the_shelf \
+  --include-disabled \
+  --suite-root tinygrad_off_the_shelf=/path/to/tinygrad \
+  --repo-ref tinygrad_off_the_shelf=<commit-sha> \
+  --no-checkout
+```
+
+Before enabling it, replace `PINNED_COMMIT_REQUIRED` with an immutable tinygrad
+commit. The CPython runner and Molt runner both execute
+`tools/tinygrad_off_shelf_adapter.py` against the checked-out upstream package;
+the adapter is only a public-API workload driver. Do not patch, vendor, or
+translate tinygrad sources for this lane. Its output is intended to drive GPU
+primitive, typed runtime upload/readback, MLIR/MIL lowering, and profiler work.
+For `source = "git"` suites, `tools/bench_friends.py` now records source
+custody in `results.json`: requested ref, resolved commit, checked-out `HEAD`,
+ref verification, clean-tree status, and whether `--suite-root` overrode the
+manifest checkout path. A mismatch or dirty checkout is a hard failure. Runners
+that declare `json_stdout = true` must emit valid JSON; the harness preserves
+the raw payloads and folds per-workload `elapsed_s` values into runner
+`structured_median_s` fields plus flattened suite metrics.
+
 Artifacts:
 - machine-readable: `results.json`
 - human summary: `summary.md`
@@ -283,8 +327,9 @@ Rules:
 - Pin friend repos to immutable `repo_ref` values before enabling suites.
 - Record compile and run phases separately when friends compile ahead of run.
 - Classify cases as `runs_unmodified`, `requires_adapter`, or `unsupported_by_molt`.
-- Use explicit runner lanes: `pypy`, `codon`, `nuitka`, and `pyodide`
-  (`friend` is kept only as a legacy generic lane).
+- Use explicit runner lanes (`pypy`, `codon`, `nuitka`, `pyodide`, `tinygrad`,
+  or another manifest-declared runner name); invalid runner names are rejected
+  rather than silently ignored. `friend` is kept only as a legacy generic lane.
 
 ## Binary Size & Cold-Start (Optional)
 
@@ -382,6 +427,11 @@ gate bundle (no exceptions):
 - correctness evidence:
   - differential parity run with `MOLT_DIFF_MEASURE_RSS=1`
   - default adaptive process/tree/global RSS guard plus adaptive child rlimit
+  - memory-guard teardown must stay scoped to the guarded root process group
+    plus exact tracked escaped PIDs; never widen a violation into killpg of
+    child-reported process groups
+  - guard-trip diagnostics must include incident-only repro context without
+    writing success artifacts by default
 - lowering evidence:
   - `python3 tools/check_stdlib_intrinsics.py`
   - `python3 tools/check_core_lane_lowering.py`
@@ -460,6 +510,21 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
   - `MOLT_USE_SCCACHE=1` (or leave default `auto` when `sccache` is installed)
   - `sccache -s` to inspect hit rates
 - Keep backend daemon enabled for native compile loops (`MOLT_BACKEND_DAEMON=1`; default) so Cranelift initialization is amortized across builds.
+- `tools/bench.py` and `tools/bench_wasm.py` pass cache-enabled Molt builds by
+  default so benchmark sweeps reuse validated frontend/backend/runtime cache
+  entries across concurrent agents. Use `--no-molt-build-cache` only when the
+  measurement explicitly requires a no-cache compile.
+- Shared cache entries are key-addressed and immutable on benchmark hot paths:
+  backend rebuilds select new keys instead of deleting old shared stdlib/module
+  objects, same-key compile publication is serialized by the resolved cache
+  root's `locks/` directory, Cargo/runtime rebuild locks are shared by resolved
+  build-state root, and persisted JSON/text/byte/file/archive cache, state,
+  diagnostics, deployment, and package sidecars publish through unique atomic
+  temp siblings. WASM runtime rebuilds use Cargo-reported artifact provenance
+  plus exact `artifact_sha256` sidecars before hydrating candidate `.wasm`/`.a`
+  bytes, so concurrent warm target roots keep old candidates unless Cargo
+  reports them as the artifact for the current invocation or a byte-digest
+  sidecar proves reuse.
 - In multi-agent runs, share cache/target roots under one artifact root to improve reuse:
   - `MOLT_EXT_ROOT=/path/to/artifacts`
   - `MOLT_CACHE=$MOLT_EXT_ROOT/.molt_cache`
@@ -540,9 +605,9 @@ payloads automatically.
   - `--cases release_fast_cold release_fast_warm release_fast_nocache_warm`
 - Contention controls (recommended on busy hosts):
   - `--max-retries 2 --retry-backoff-sec 2 --build-lock-timeout-sec 60`
-  - timed-out attempts now perform run-scoped compiler cleanup before retrying
-    (kills stale `cargo`/`rustc`/`sccache` children and run-scoped backend
-    daemons)
+  - timed-out attempts perform marker-scoped compiler cleanup before retrying
+    (`cargo`/`rustc`/`sccache` children only); backend daemons remain under
+    identity custody so retry policy does not destroy warm concurrent state
   - `SIGTERM` exits (`rc=143`/`rc=-15`) are classified as retryable
   - add `--resume` for persistent-shell reruns so interrupted sweeps continue
     from already completed cases

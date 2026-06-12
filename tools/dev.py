@@ -10,6 +10,7 @@ import sys
 import time
 import importlib.util
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -40,45 +41,6 @@ DX = DxProject(ROOT)
 def _log(msg: str) -> None:
     stamp = datetime.now().isoformat(timespec="seconds")
     print(f"[dev.py {stamp}] {msg}")
-
-
-def _run_with_pty(cmd: list[str], env: dict[str, str]) -> None:
-    import os
-    import pty
-
-    master_fd, slave_fd = pty.openpty()
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=ROOT,
-            env=env,
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-        )
-    finally:
-        os.close(slave_fd)
-
-    try:
-        while True:
-            data = os.read(master_fd, 1024)
-            if not data:
-                break
-            if hasattr(sys.stdout, "buffer"):
-                sys.stdout.buffer.write(data)
-                sys.stdout.buffer.flush()
-            else:
-                sys.stdout.write(data.decode(errors="replace"))
-                sys.stdout.flush()
-    except KeyboardInterrupt:
-        proc.terminate()
-        raise
-    finally:
-        os.close(master_fd)
-
-    rc = proc.wait()
-    if rc != 0:
-        raise subprocess.CalledProcessError(rc, cmd)
 
 
 def _check_call_guarded(
@@ -123,7 +85,7 @@ def _uv_project_env_matches_python(
         return False
     if not requested:
         return True
-    guard_env = DX.canonical_env(env or os.environ)
+    guard_env = _canonical_harness_env(env or os.environ)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", guard_env)
     try:
         result = harness_memory_guard.guarded_completed_process(
@@ -181,13 +143,10 @@ def run_uv(
                     "or remove 3.14 from the test matrix."
                 )
     cmd.extend(args)
-    base_env = DX.canonical_env(env or os.environ)
+    base_env = _canonical_harness_env(env or os.environ)
     run_env = _normalized_uv_run_env(base_env, python=python)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
-    if tty and os.name == "posix" and not limits.enabled:
-        _run_with_pty(cmd, run_env)
-    else:
-        _check_call_guarded(cmd, run_env, limits=limits)
+    _check_call_guarded(cmd, run_env, limits=limits)
 
 
 def _apply_dev_trusted(env: dict[str, str]) -> None:
@@ -224,8 +183,17 @@ def _load_dx_config() -> dict[str, object]:
     return DX.load_config()
 
 
+def _canonical_harness_env(
+    env: Mapping[str, str] | None = None,
+    *,
+    create_dirs: bool = True,
+) -> dict[str, str]:
+    dx_env = DX.canonical_env(env, create_dirs=create_dirs)
+    return harness_memory_guard.canonical_harness_env(dx_env, repo_root=ROOT)
+
+
 def _canonical_env(*, create_dirs: bool = True) -> dict[str, str]:
-    return DX.canonical_env(create_dirs=create_dirs)
+    return _canonical_harness_env(create_dirs=create_dirs)
 
 
 def _dx_commands() -> dict[str, object]:
@@ -258,10 +226,7 @@ def _split_command_sequence(
 def _run_repo_cmd(cmd: list[str], env: dict[str, str], *, tty: bool) -> None:
     _log("$ " + " ".join(shlex.quote(part) for part in cmd))
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
-    if tty and os.name == "posix" and not limits.enabled:
-        _run_with_pty(cmd, env)
-    else:
-        _check_call_guarded(cmd, env, limits=limits)
+    _check_call_guarded(cmd, env, limits=limits)
 
 
 def _run_dx_command(name: str, env: dict[str, str], *, tty: bool) -> None:

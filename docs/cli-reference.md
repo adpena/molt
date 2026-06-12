@@ -439,6 +439,7 @@ molt_c_api_version = "0.1"
 | `MOLT_HASH_SEED` | Override the hash seed for deterministic builds. |
 | `MOLT_STDLIB_PROFILE` | Default stdlib profile (`full` or `micro`). |
 | `MOLT_MODULE_ROOTS` | Colon-separated additional module search roots. |
+| `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names whose transitive closure may be admitted from external roots. Direct entry imports from external roots remain bounded when unset. |
 | `MOLT_PORTABLE` | Set to `1` for baseline ISA codegen. |
 | `MOLT_SPLIT_RUNTIME` | Set to `1` to enable split-runtime WASM by default. |
 | `MOLT_DEAD_MODULE_ELIMINATION` | Set to `1` to enable dead module elimination. |

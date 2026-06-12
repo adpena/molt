@@ -1,7 +1,6 @@
 use super::super::*;
 use super::var_get_boxed_overflow_safe_fn;
 
-
 /// Cranelift codegen handlers for module ops: creation/import (`module_new`/`module_import`/`module_import_star`), cache (`cache_get`/`cache_set`/`cache_del`), attribute/global access (`get_attr`/`import_from`/`get_global`/`del_global`/`set_attr`/`get_name`).
 ///
 /// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
@@ -34,35 +33,37 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
-    let var_get_boxed_overflow_safe =
-        |module: &mut ObjectModule,
-         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-         builder: &mut FunctionBuilder<'_>,
-         import_refs: &mut BTreeMap<&'static str, FuncRef>,
-         sealed_blocks: &mut BTreeSet<Block>,
-         vars: &BTreeMap<String, Variable>,
-         name: &str,
-         int_primary_vars: &BTreeSet<String>,
-         float_primary_vars: &BTreeSet<String>,
-         box_int_mask_var: Variable,
-         box_int_tag_var: Variable|
-         -> Option<crate::VarValue> {
-            var_get_boxed_overflow_safe_fn(
-                module,
-                import_ids,
-                builder,
-                import_refs,
-                sealed_blocks,
-                vars,
-                name,
-                int_primary_vars,
-                float_primary_vars,
-                bool_primary_vars,
-                nbc,
-                box_int_mask_var,
-                box_int_tag_var,
-            )
-        };
+    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+                                       import_ids: &mut BTreeMap<
+        &'static str,
+        (cranelift_module::FuncId, ImportSignatureShape),
+    >,
+                                       builder: &mut FunctionBuilder<'_>,
+                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       sealed_blocks: &mut BTreeSet<Block>,
+                                       vars: &BTreeMap<String, Variable>,
+                                       name: &str,
+                                       int_primary_vars: &BTreeSet<String>,
+                                       float_primary_vars: &BTreeSet<String>,
+                                       box_int_mask_var: Variable,
+                                       box_int_tag_var: Variable|
+     -> Option<crate::VarValue> {
+        var_get_boxed_overflow_safe_fn(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            name,
+            int_primary_vars,
+            float_primary_vars,
+            bool_primary_vars,
+            nbc,
+            box_int_mask_var,
+            box_int_tag_var,
+        )
+    };
     match op.kind.as_str() {
         "module_new" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -553,4 +554,5 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             builder.ins().call(local_callee, &[*src_bits, *dst_bits]);
         }
         _ => unreachable!("handler invoked with non-matching op.kind"),
-    }}
+    }
+}

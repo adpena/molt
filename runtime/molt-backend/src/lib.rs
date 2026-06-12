@@ -6,8 +6,9 @@ use std::fmt::Write as _;
 
 pub mod debug_artifacts;
 mod intrinsic_symbols;
-pub use crate::intrinsic_symbols::{runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required};
-mod intrinsic_symbol_overrides;
+pub use crate::intrinsic_symbols::{
+    runtime_intrinsic_symbols_from_env, runtime_intrinsic_symbols_required,
+};
 mod ir;
 mod ir_rewrites;
 pub use crate::ir_rewrites::{
@@ -46,11 +47,11 @@ pub use crate::ir::{FunctionIR, OpIR, PgoProfileIR, SimpleIR, validate_simple_ir
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, canonicalize_direct_raise_edges,
     compute_intrinsic_manifest, compute_intrinsic_manifest_checked, elide_dead_struct_allocs,
-    elide_safe_exception_checks,
-    eliminate_dead_functions, eliminate_dead_imports, eliminate_dead_ops,
-    eliminate_redundant_guard_tags, eliminate_unbound_local_checks, escape_analysis, fold_constants,
-    fold_constants_cross_block, fuse_method_dispatch, hoist_loop_invariants, inject_runtime_exit,
-    rc_coalescing, rewrite_stateful_loops, split_megafunctions,
+    elide_safe_exception_checks, eliminate_dead_functions, eliminate_dead_imports,
+    eliminate_dead_ops, eliminate_redundant_guard_tags, eliminate_unbound_local_checks,
+    escape_analysis, fold_constants, fold_constants_cross_block, fuse_method_dispatch,
+    hoist_loop_invariants, inject_runtime_exit, rc_coalescing, rewrite_stateful_loops,
+    split_megafunctions,
 };
 
 #[cfg(feature = "luau-backend")]

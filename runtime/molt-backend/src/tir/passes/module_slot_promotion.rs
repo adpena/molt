@@ -125,7 +125,6 @@ fn module_has_concurrency_markers(module: &TirModule) -> bool {
     false
 }
 
-
 /// A `Copy` passthrough of a structural / debug-marker SimpleIR kind (`line`
 /// numbers, `nop`, labels…) — position metadata with no memory semantics.
 /// `is_plain_value_copy` deliberately rejects passthroughs (they are not value
@@ -212,9 +211,9 @@ fn is_wildcard_module_op(op: &TirOp, names: &HashMap<ValueId, String>) -> bool {
             // Const-named accesses are precise; a non-const name is wildcard.
             op.operands.get(1).is_none_or(|n| !names.contains_key(n))
         }
-        OpCode::ModuleGetGlobal
-        | OpCode::ModuleDelGlobal
-        | OpCode::ModuleDelGlobalIfPresent => true,
+        OpCode::ModuleGetGlobal | OpCode::ModuleDelGlobal | OpCode::ModuleDelGlobalIfPresent => {
+            true
+        }
         _ => false,
     }
 }
@@ -405,8 +404,7 @@ struct DebugLog {
 impl DebugLog {
     fn from_env() -> Self {
         Self {
-            lines: (std::env::var("MOLT_PROMOTE_DEBUG").as_deref() == Ok("1"))
-                .then(Vec::new),
+            lines: (std::env::var("MOLT_PROMOTE_DEBUG").as_deref() == Ok("1")).then(Vec::new),
         }
     }
     fn note(&mut self, msg: impl Into<String>) {
@@ -418,7 +416,13 @@ impl DebugLog {
         if let Some(lines) = &self.lines {
             let sanitized: String = module_name
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             let _ = crate::debug_artifacts::write_debug_artifact(
                 format!("promotion/{sanitized}.txt"),
@@ -453,9 +457,11 @@ fn promote_function(
 
     let names = const_str_defs(func);
     // Wildcard module access anywhere → skip the function.
-    if let Some(op) = func.blocks.values().find_map(|b| {
-        b.ops.iter().find(|op| is_wildcard_module_op(op, &names))
-    }) {
+    if let Some(op) = func
+        .blocks
+        .values()
+        .find_map(|b| b.ops.iter().find(|op| is_wildcard_module_op(op, &names)))
+    {
         dbg.note(format!(
             "{}: skip (wildcard module op {:?})",
             func.name, op.opcode
@@ -465,7 +471,10 @@ fn promote_function(
 
     let alias = AliasAnalysisResult::compute(func);
     let Some(module_root) = single_module_root(func, &alias) else {
-        dbg.note(format!("{}: skip (no single entry-arg module root)", func.name));
+        dbg.note(format!(
+            "{}: skip (no single entry-arg module root)",
+            func.name
+        ));
         return false;
     };
 
@@ -551,10 +560,7 @@ fn promote_loop(
                     {
                         continue;
                     }
-                    if alias
-                        .region_of(op)
-                        .may_alias(&MemRegion::ModuleDict)
-                    {
+                    if alias.region_of(op).may_alias(&MemRegion::ModuleDict) {
                         let orig = match op.attrs.get("_original_kind") {
                             Some(AttrValue::Str(k)) => format!(" (_original_kind={k})"),
                             _ => String::new(),
@@ -638,8 +644,7 @@ fn promote_loop(
             match op.opcode {
                 OpCode::ModuleGetAttr | OpCode::ModuleSetAttr => {
                     if alias.root(op.operands[0]) == module_root
-                        && names.get(&op.operands[1]).map(String::as_str)
-                            == Some(slot.as_str())
+                        && names.get(&op.operands[1]).map(String::as_str) == Some(slot.as_str())
                     {
                         found = Some(if op.opcode == OpCode::ModuleSetAttr {
                             op.operands[2]
@@ -691,8 +696,8 @@ fn promote_loop(
                 for &b in &lp.linear_order {
                     guaranteed.insert(b);
                     let succs = terminator_successors(&func.blocks[&b].terminator);
-                    let conditional = succs.len() > 1
-                        || succs.iter().any(|s| !lp.blocks.contains(s));
+                    let conditional =
+                        succs.len() > 1 || succs.iter().any(|s| !lp.blocks.contains(s));
                     if conditional {
                         break;
                     }
@@ -725,10 +730,7 @@ fn promote_loop(
     }
 
     let plan = LoopPlan {
-        accesses: slots
-            .iter()
-            .map(|s| accesses_by_slot[s].clone())
-            .collect(),
+        accesses: slots.iter().map(|s| accesses_by_slot[s].clone()).collect(),
         slots,
         entry_values,
         hoisted_loads,
@@ -994,9 +996,7 @@ fn apply_promotion(
         .linear_order
         .iter()
         .copied()
-        .filter(|b| {
-            terminator_successors(&func.blocks[b].terminator).contains(&lp.header)
-        })
+        .filter(|b| terminator_successors(&func.blocks[b].terminator).contains(&lp.header))
         .collect();
     for pred in &in_loop_header_preds {
         let vals = values_at_block_end[pred].clone();
@@ -1019,8 +1019,7 @@ fn apply_promotion(
         .blocks
         .iter()
         .filter(|(bid, b)| {
-            !updated.contains(bid)
-                && terminator_successors(&b.terminator).contains(&lp.header)
+            !updated.contains(bid) && terminator_successors(&b.terminator).contains(&lp.header)
         })
         .map(|(bid, _)| *bid)
         .collect();
@@ -1314,11 +1313,7 @@ mod tests {
     /// a jump-shaped while loop reads/writes them per iteration with a
     /// CheckException (handler label 7 → block 4), exit reads total.
     fn module_loop_func() -> TirFunction {
-        let mut f = TirFunction::new(
-            "chunk".into(),
-            vec![TirType::DynBox],
-            TirType::DynBox,
-        );
+        let mut f = TirFunction::new("chunk".into(), vec![TirType::DynBox], TirType::DynBox);
         let m = ValueId(0);
         let header = f.fresh_block();
         let body = f.fresh_block();
@@ -1344,7 +1339,10 @@ mod tests {
                 n_op,
                 op(OpCode::ModuleSetAttr, vec![m, cn0v, nval], vec![]),
             ];
-            entry.terminator = Terminator::Branch { target: header, args: vec![] };
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![],
+            };
         }
 
         // Header: vi = get i; vn = get N; cond = Lt(vi, vn); CondBranch.
@@ -1403,7 +1401,10 @@ mod tests {
                     ci2,
                     op(OpCode::ModuleSetAttr, vec![m, ci2v, ni], vec![]),
                 ],
-                terminator: Terminator::Branch { target: header, args: vec![] },
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
             },
         );
 
@@ -1441,12 +1442,7 @@ mod tests {
                 func.blocks[b]
                     .ops
                     .iter()
-                    .filter(|o| {
-                        matches!(
-                            o.opcode,
-                            OpCode::ModuleGetAttr | OpCode::ModuleSetAttr
-                        )
-                    })
+                    .filter(|o| matches!(o.opcode, OpCode::ModuleGetAttr | OpCode::ModuleSetAttr))
                     .count()
             })
             .sum()
@@ -1457,7 +1453,10 @@ mod tests {
         let f = module_loop_func();
         let header = BlockId(1);
         let body = BlockId(2);
-        let mut module = TirModule { name: "m".into(), functions: vec![f] };
+        let mut module = TirModule {
+            name: "m".into(),
+            functions: vec![f],
+        };
         let (stats, changed) = run_module_slot_promotion(&mut module);
 
         assert_eq!(changed, vec!["chunk".to_string()], "function promoted");
@@ -1515,9 +1514,15 @@ mod tests {
             entry.ops = vec![imp];
             entry.terminator = Terminator::Return { values: vec![] };
         }
-        let mut module = TirModule { name: "m".into(), functions: vec![f, g] };
+        let mut module = TirModule {
+            name: "m".into(),
+            functions: vec![f, g],
+        };
         let (stats, changed) = run_module_slot_promotion(&mut module);
-        assert!(changed.is_empty(), "threading import => module-wide refusal");
+        assert!(
+            changed.is_empty(),
+            "threading import => module-wide refusal"
+        );
         assert_eq!(stats.slots_promoted, 0);
     }
 
@@ -1537,7 +1542,10 @@ mod tests {
             entry.ops = vec![marker];
             entry.terminator = Terminator::Return { values: vec![] };
         }
-        let mut module = TirModule { name: "m".into(), functions: vec![f, g] };
+        let mut module = TirModule {
+            name: "m".into(),
+            functions: vec![f, g],
+        };
         let (stats, changed) = run_module_slot_promotion(&mut module);
         assert_eq!(changed, vec!["chunk".to_string()], "string alone is benign");
         assert_eq!(stats.slots_promoted, 3);
@@ -1553,7 +1561,10 @@ mod tests {
         call.attrs
             .insert("s_value".into(), AttrValue::Str("opaque".into()));
         f.blocks.get_mut(&body).unwrap().ops.insert(0, call);
-        let mut module = TirModule { name: "m".into(), functions: vec![f] };
+        let mut module = TirModule {
+            name: "m".into(),
+            functions: vec![f],
+        };
         let (stats, changed) = run_module_slot_promotion(&mut module);
         assert!(changed.is_empty(), "opaque call in loop => refusal");
         assert_eq!(stats.slots_promoted, 0);
@@ -1575,18 +1586,19 @@ mod tests {
         // oracle only reads operand[0]=obj, offset (`value`), class (`_class`).
         let cbits = f.fresh_value();
         let ver = f.fresh_value();
-        let mut fset = op(
-            OpCode::StoreAttr,
-            vec![inst, cbits, ver, val],
-            vec![],
+        let mut fset = op(OpCode::StoreAttr, vec![inst, cbits, ver, val], vec![]);
+        fset.attrs.insert(
+            "_original_kind".into(),
+            AttrValue::Str("guarded_field_set".into()),
         );
-        fset.attrs
-            .insert("_original_kind".into(), AttrValue::Str("guarded_field_set".into()));
         fset.attrs.insert("value".into(), AttrValue::Int(0));
         fset.attrs
             .insert("_class".into(), AttrValue::Str("Counter".into()));
         f.blocks.get_mut(&body).unwrap().ops.insert(0, fset);
-        let mut module = TirModule { name: "m".into(), functions: vec![f] };
+        let mut module = TirModule {
+            name: "m".into(),
+            functions: vec![f],
+        };
         let (stats, changed) = run_module_slot_promotion(&mut module);
         assert_eq!(
             changed,

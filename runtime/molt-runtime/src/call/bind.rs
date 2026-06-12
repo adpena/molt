@@ -2293,7 +2293,11 @@ unsafe fn function_requires_full_binding(_py: &PyToken<'_>, func_ptr: *mut u8) -
 ///
 /// # Safety
 /// `func_ptr` must be a live function object; the GIL must be held.
-unsafe fn function_binding_meta(_py: &PyToken<'_>, func_ptr: *mut u8, name_bytes: &'static [u8]) -> u64 {
+unsafe fn function_binding_meta(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    name_bytes: &'static [u8],
+) -> u64 {
     unsafe {
         function_attr_bits(
             _py,
@@ -2901,40 +2905,38 @@ unsafe fn call_method_ic_dispatch(
             // `len(__defaults__)`. Caller guarantees (via `direct_ok`)
             // `fixed_arity - n_pos_defaults <= args.len() + 1 <= fixed_arity`
             // and `fixed_arity <= DIRECT_ARGV_MAX`.
-            let call_direct =
-                |_py: &PyToken<'_>, func_bits: u64, fixed_arity: u8| -> Option<u64> {
-                    let fixed_arity = fixed_arity as usize;
-                    let supplied = args.len() + 1; // including self
-                    let mut argv = [0u64; DIRECT_ARGV_MAX];
-                    argv[0] = recv_bits;
-                    for (idx, a) in args.iter().copied().enumerate() {
-                        argv[idx + 1] = a;
+            let call_direct = |_py: &PyToken<'_>, func_bits: u64, fixed_arity: u8| -> Option<u64> {
+                let fixed_arity = fixed_arity as usize;
+                let supplied = args.len() + 1; // including self
+                let mut argv = [0u64; DIRECT_ARGV_MAX];
+                argv[0] = recv_bits;
+                for (idx, a) in args.iter().copied().enumerate() {
+                    argv[idx + 1] = a;
+                }
+                if supplied < fixed_arity {
+                    // Pad the trailing positionals from the LIVE __defaults__.
+                    let func_ptr = obj_from_bits(func_bits).as_ptr()?;
+                    let defaults_bits = function_binding_meta(_py, func_ptr, b"__defaults__");
+                    let def_ptr = obj_from_bits(defaults_bits).as_ptr()?;
+                    if object_type_id(def_ptr) != TYPE_ID_TUPLE {
+                        return None;
                     }
-                    if supplied < fixed_arity {
-                        // Pad the trailing positionals from the LIVE __defaults__.
-                        let func_ptr = obj_from_bits(func_bits).as_ptr()?;
-                        let defaults_bits =
-                            function_binding_meta(_py, func_ptr, b"__defaults__");
-                        let def_ptr = obj_from_bits(defaults_bits).as_ptr()?;
-                        if object_type_id(def_ptr) != TYPE_ID_TUPLE {
-                            return None;
-                        }
-                        let def_elems = seq_vec_ref(def_ptr);
-                        let missing = fixed_arity - supplied;
-                        if missing > def_elems.len() {
-                            // Live defaults cannot cover the gap (e.g. a shrunk
-                            // __defaults__ after the gate was cached) — defer.
-                            return None;
-                        }
-                        // The defaults align to the END of the parameter list, so
-                        // the missing trailing params take the LAST `missing`
-                        // default values.
-                        let start = def_elems.len() - missing;
-                        argv[supplied..supplied + missing]
-                            .copy_from_slice(&def_elems[start..start + missing]);
+                    let def_elems = seq_vec_ref(def_ptr);
+                    let missing = fixed_arity - supplied;
+                    if missing > def_elems.len() {
+                        // Live defaults cannot cover the gap (e.g. a shrunk
+                        // __defaults__ after the gate was cached) — defer.
+                        return None;
                     }
-                    Some(call_function_obj_vec(_py, func_bits, &argv[..fixed_arity]))
-                };
+                    // The defaults align to the END of the parameter list, so
+                    // the missing trailing params take the LAST `missing`
+                    // default values.
+                    let start = def_elems.len() - missing;
+                    argv[supplied..supplied + missing]
+                        .copy_from_slice(&def_elems[start..start + missing]);
+                }
+                Some(call_function_obj_vec(_py, func_bits, &argv[..fixed_arity]))
+            };
 
             // The direct path is sound iff the method needs no full binder (no
             // kw-only params/defaults, `*args`, `**kwargs`, or builtin bind-kind)
@@ -3039,7 +3041,8 @@ unsafe fn call_method_ic_dispatch(
             // IC miss: resolve the method class-side, install the IC, dispatch.
             let slice = std::slice::from_raw_parts(name_ptr, name_len);
             if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
-                let info = crate::builtins::attr::object_method_ic_resolve(_py, recv_ptr, attr_bits);
+                let info =
+                    crate::builtins::attr::object_method_ic_resolve(_py, recv_ptr, attr_bits);
                 if let Some(info) = info {
                     let shadowed = info.can_shadow
                         && crate::builtins::attr::object_instance_shadows(
@@ -3058,13 +3061,12 @@ unsafe fn call_method_ic_dispatch(
                         // hits take the `cached_bind` path (binder, but no
                         // re-resolve); positional-default methods stay on the
                         // direct path.
-                        let plan = method_ic_call_plan(_py, info.func_bits).unwrap_or(
-                            MethodIcCallPlan {
+                        let plan =
+                            method_ic_call_plan(_py, info.func_bits).unwrap_or(MethodIcCallPlan {
                                 fixed_arity: 0,
                                 n_pos_defaults: 0,
                                 needs_binder: true,
-                            },
-                        );
+                            });
                         if let Some(site_id) = ic_site_from_bits(site_bits) {
                             // Transfer the owned `attr_bits` ref into the IC; it
                             // is released by `method_ic_insert`/`clear` on reuse.
@@ -3164,7 +3166,14 @@ pub extern "C" fn molt_call_method_ic0(
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            call_method_ic_dispatch(_py, site_bits, recv_bits, name_ptr, name_len_bits as usize, &[])
+            call_method_ic_dispatch(
+                _py,
+                site_bits,
+                recv_bits,
+                name_ptr,
+                name_len_bits as usize,
+                &[],
+            )
         }
     })
 }
@@ -3366,7 +3375,9 @@ unsafe fn call_super_method_ic_dispatch(
         if super_bits == 0 || exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let super_ptr = obj_from_bits(super_bits).as_ptr().unwrap_or(std::ptr::null_mut());
+        let super_ptr = obj_from_bits(super_bits)
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut());
         let method_bits = crate::molt_get_attr_generic(super_ptr, name_ptr, name_len as u64) as u64;
         if exception_pending(_py) {
             dec_ref_bits(_py, super_bits);
@@ -6335,9 +6346,16 @@ mod tests {
             // Simulate `__init__` having raised: set a pending exception, then
             // resolve. The helper must drop the instance's owning reference and
             // surface the raise via a `none` result.
-            let _: u64 =
-                crate::builtins::exceptions::raise_exception(_py, "ValueError", "task60 init raise");
-            assert_eq!(crate::molt_exception_pending(), 1, "exception must be pending");
+            let _: u64 = crate::builtins::exceptions::raise_exception(
+                _py,
+                "ValueError",
+                "task60 init raise",
+            );
+            assert_eq!(
+                crate::molt_exception_pending(),
+                1,
+                "exception must be pending"
+            );
 
             let out =
                 unsafe { crate::call::class_init::resolve_construct_after_init(_py, inst_bits) };
@@ -6479,7 +6497,9 @@ mod tests {
         assert!(!func_ptr.is_null());
         for (name, val_bits) in meta.iter().copied() {
             let attr_bits = intern_metadata_name(_py, name);
-            unsafe { crate::call::class_init::function_set_attr_bits(_py, func_ptr, attr_bits, val_bits) };
+            unsafe {
+                crate::call::class_init::function_set_attr_bits(_py, func_ptr, attr_bits, val_bits)
+            };
         }
         MoltObject::from_ptr(func_ptr).bits()
     }
@@ -6580,7 +6600,12 @@ mod tests {
             for supplied_pos in 2..=4usize {
                 // supplied incl self = 3,4,5 -> all direct.
                 assert!(
-                    direct_ok_gate(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder, supplied_pos),
+                    direct_ok_gate(
+                        plan.fixed_arity,
+                        plan.n_pos_defaults,
+                        plan.needs_binder,
+                        supplied_pos
+                    ),
                     "supplied_pos={} should be direct",
                     supplied_pos
                 );
@@ -6608,13 +6633,17 @@ mod tests {
             let kwonly_bits = MoltObject::from_ptr(kwonly_ptr).bits();
             // kwdefaults present too (ctx=None), but the kwonly NAME alone forces
             // the binder.
-            let func_bits = unsafe {
-                make_test_function(_py, 2, &[(b"__molt_kwonly_names__", kwonly_bits)])
-            };
+            let func_bits =
+                unsafe { make_test_function(_py, 2, &[(b"__molt_kwonly_names__", kwonly_bits)]) };
             let plan = unsafe { super::method_ic_call_plan(_py, func_bits) }
                 .expect("plain function must classify");
             assert!(plan.needs_binder, "kw-only param => binder");
-            assert!(!direct_ok_gate(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder, 1));
+            assert!(!direct_ok_gate(
+                plan.fixed_arity,
+                plan.n_pos_defaults,
+                plan.needs_binder,
+                1
+            ));
             crate::dec_ref_bits(_py, func_bits);
             crate::dec_ref_bits(_py, kwonly_bits);
             crate::dec_ref_bits(_py, name_bits);
@@ -6630,9 +6659,8 @@ mod tests {
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let kwonly_ptr = crate::object::builders::alloc_tuple(_py, &[name_bits]);
             let kwonly_bits = MoltObject::from_ptr(kwonly_ptr).bits();
-            let func_bits = unsafe {
-                make_test_function(_py, 2, &[(b"__molt_kwonly_names__", kwonly_bits)])
-            };
+            let func_bits =
+                unsafe { make_test_function(_py, 2, &[(b"__molt_kwonly_names__", kwonly_bits)]) };
             let plan = unsafe { super::method_ic_call_plan(_py, func_bits) }
                 .expect("plain function must classify");
             assert!(plan.needs_binder, "kw-only param (no default) => binder");
@@ -6675,7 +6703,12 @@ mod tests {
             let plan = unsafe { super::method_ic_call_plan(_py, func_bits) }
                 .expect("plain function must classify");
             assert!(plan.needs_binder, "*args => binder");
-            assert!(!direct_ok_gate(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder, 3));
+            assert!(!direct_ok_gate(
+                plan.fixed_arity,
+                plan.n_pos_defaults,
+                plan.needs_binder,
+                3
+            ));
             crate::dec_ref_bits(_py, func_bits);
             crate::dec_ref_bits(_py, star_bits);
         });
@@ -6687,8 +6720,7 @@ mod tests {
             // def m(self, **kwargs): ...  -> binder (**kwargs present).
             let kw_ptr = crate::object::builders::alloc_string(_py, b"kwargs");
             let kw_bits = MoltObject::from_ptr(kw_ptr).bits();
-            let func_bits =
-                unsafe { make_test_function(_py, 1, &[(b"__molt_varkw__", kw_bits)]) };
+            let func_bits = unsafe { make_test_function(_py, 1, &[(b"__molt_varkw__", kw_bits)]) };
             let plan = unsafe { super::method_ic_call_plan(_py, func_bits) }
                 .expect("plain function must classify");
             assert!(plan.needs_binder, "**kwargs => binder");
@@ -6708,9 +6740,18 @@ mod tests {
             assert_eq!(plan.n_pos_defaults, 0);
             assert!(!plan.needs_binder);
             // No defaults => min == max == arity 3 (incl self).
-            assert!(direct_ok_gate(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder, 2), "2 supplied + self == 3 OK");
-            assert!(!direct_ok_gate(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder, 1), "1 supplied + self < 3 -> binder");
-            assert!(!direct_ok_gate(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder, 3), "3 supplied + self > 3 -> binder");
+            assert!(
+                direct_ok_gate(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder, 2),
+                "2 supplied + self == 3 OK"
+            );
+            assert!(
+                !direct_ok_gate(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder, 1),
+                "1 supplied + self < 3 -> binder"
+            );
+            assert!(
+                !direct_ok_gate(plan.fixed_arity, plan.n_pos_defaults, plan.needs_binder, 3),
+                "3 supplied + self > 3 -> binder"
+            );
             crate::dec_ref_bits(_py, func_bits);
         });
     }

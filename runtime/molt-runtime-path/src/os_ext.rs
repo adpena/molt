@@ -2215,8 +2215,9 @@ fn at_timespec_pair(
     mtime_nsec_bits: u64,
 ) -> Result<[libc::timespec; 2], u64> {
     let one = |bits: u64| -> Result<i64, u64> {
-        to_i64(obj_from_bits(bits))
-            .ok_or_else(|| raise_exception::<u64>(_py, "TypeError", "utime: times must be integers"))
+        to_i64(obj_from_bits(bits)).ok_or_else(|| {
+            raise_exception::<u64>(_py, "TypeError", "utime: times must be integers")
+        })
     };
     let mk = |sec: i64, nsec: i64| -> libc::timespec {
         if nsec == -1 {

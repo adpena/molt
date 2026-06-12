@@ -16,7 +16,10 @@ use std::fmt::Write;
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
-use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, Renderer};
+use crate::render::indexing::{
+    render_reduction_input_index, render_shapetracker_index, zero_literal_for_dtype, IndexDialect,
+};
+use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer};
 
 /// Configuration for the WGSL renderer.
 #[derive(Debug, Clone, Default)]
@@ -85,72 +88,41 @@ impl WgslRenderer {
     }
 
     /// Render a buffer read expression at the given index.
-    fn render_buf_read(binding: &crate::render::BufferBinding, idx_var: &str) -> String {
-        let st = &binding.st;
-        let view = st.view();
-
-        let ndim = view.shape.len();
-        if ndim == 0 {
-            return format!("buf{}[0]", binding.buf_id);
-        }
-
-        if view.is_contiguous() && view.mask.is_none() {
-            return format!("buf{}[{}]", binding.buf_id, idx_var);
-        }
-
-        // General case: decompose linear index, apply strides
-        let mut parts = Vec::new();
-        for dim in 0..ndim {
-            let stride = view.strides[dim];
-            if stride == 0 {
-                continue;
-            }
-            let size = view.shape[dim];
-            let idx_expr = if dim == ndim - 1 {
-                format!("({} % {}u)", idx_var, size)
-            } else {
-                let divisor: usize = view.shape[dim + 1..].iter().product();
-                format!("({} / {}u % {}u)", idx_var, divisor, size)
-            };
-            if stride == 1 {
-                parts.push(idx_expr);
-            } else if stride == -1 {
-                parts.push(format!("({}u - {})", size - 1, idx_expr));
-            } else if stride > 0 {
-                parts.push(format!("{} * {}u", idx_expr, stride));
-            } else {
-                parts.push(format!("({}u - {}) * {}u", size - 1, idx_expr, -stride));
-            }
-        }
-
-        let offset = if view.offset != 0 {
-            format!("{}u + ", view.offset)
+    fn render_buf_read(
+        binding_idx: usize,
+        binding: &crate::render::BufferBinding,
+        idx_var: &str,
+    ) -> String {
+        let idx = render_shapetracker_index(&binding.st, idx_var, IndexDialect::Wgsl);
+        if let Some(valid) = idx.valid {
+            let safe_idx = format!("select(0i, {}, {})", idx.index, valid);
+            let read = format!("buf{}[u32({})]", binding_idx, safe_idx);
+            let zero = zero_literal_for_dtype(binding.dtype.narrow_webgpu(), "false");
+            format!("select({}, {}, {})", zero, read, valid)
+        } else if idx.index == idx_var {
+            format!("buf{}[{}]", binding_idx, idx.index)
         } else {
-            String::new()
-        };
+            format!("buf{}[u32({})]", binding_idx, idx.index)
+        }
+    }
 
-        let idx_sum = if parts.is_empty() {
-            "0u".to_string()
-        } else {
-            parts.join(" + ")
-        };
-
-        format!("buf{}[{}{}]", binding.buf_id, offset, idx_sum)
+    fn render_src(src: &FusedSrc, kernel: &FusedKernel, idx_var: &str) -> String {
+        match src {
+            FusedSrc::Buf(buf_idx) => {
+                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
+            }
+            FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
+            FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
+        }
     }
 
     /// Render a single op expression.
     fn render_op(op: &FusedOp, _op_idx: usize, kernel: &FusedKernel, idx_var: &str) -> String {
-        let src = |i: usize| -> String {
-            match &op.srcs[i] {
-                FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var),
-                FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
-                FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-            }
-        };
+        let src = |i: usize| -> String { Self::render_src(&op.srcs()[i], kernel, idx_var) };
 
-        let dst_type = op.dst_dtype.narrow_webgpu().wgsl_type();
+        let dst_type = op.dst_dtype().narrow_webgpu().wgsl_type();
 
-        match op.op {
+        match op.op() {
             // Arithmetic
             PrimitiveOp::Add => format!("({} + {})", src(0), src(1)),
             PrimitiveOp::Sub => format!("({} - {})", src(0), src(1)),
@@ -198,36 +170,37 @@ impl WgslRenderer {
         op: &FusedOp,
         op_idx: usize,
         kernel: &FusedKernel,
+        idx_var: &str,
     ) -> Option<(String, String, String)> {
-        if op.op != PrimitiveOp::Add {
+        if op.op() != PrimitiveOp::Add {
             return None;
         }
-        if !op.dst_dtype.narrow_webgpu().is_float() {
+        if !op.dst_dtype().narrow_webgpu().is_float() {
             return None;
         }
 
         for (mul_src_pos, add_src_pos) in [(0, 1), (1, 0)] {
-            if let FusedSrc::Op(prior_idx) = &op.srcs[mul_src_pos] {
+            if let FusedSrc::Op(prior_idx) = &op.srcs()[mul_src_pos] {
                 if *prior_idx < op_idx {
                     let prior_op = &kernel.ops[*prior_idx];
-                    if prior_op.op == PrimitiveOp::Mul {
-                        let a = match &prior_op.srcs[0] {
+                    if prior_op.op() == PrimitiveOp::Mul {
+                        let a = match &prior_op.srcs()[0] {
                             FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
                             }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
-                        let b = match &prior_op.srcs[1] {
+                        let b = match &prior_op.srcs()[1] {
                             FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
                             }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
-                        let c = match &op.srcs[add_src_pos] {
+                        let c = match &op.srcs()[add_src_pos] {
                             FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
                             }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
@@ -267,7 +240,7 @@ impl Renderer for WgslRenderer {
             writeln!(
                 out,
                 "@group(0) @binding({}) var<storage, {}> buf{}: array<{}>;",
-                i, access, binding.buf_id, dtype_str
+                i, access, i, dtype_str
             )
             .unwrap();
         }
@@ -297,11 +270,26 @@ impl Renderer for WgslRenderer {
             writeln!(out, "    if (gid >= {}u) {{ return; }}", output_numel).unwrap();
         }
 
+        if kernel.body == KernelBody::MaterializeCopy {
+            let (_, src_binding, copy_numel) = kernel.materialize_copy_contract();
+            assert_eq!(copy_numel, output_numel);
+            assert_eq!(
+                src_binding.dtype,
+                src_binding.dtype.narrow_webgpu(),
+                "WGSL MaterializeCopy requires a non-narrowed dtype"
+            );
+            let src = Self::render_buf_read(1, src_binding, "gid");
+            writeln!(out, "    buf0[gid] = {};", src).unwrap();
+            writeln!(out, "}}").unwrap();
+            return out;
+        }
+        kernel.compute_body_contract();
+
         // Check for reduce ops
         let has_reduce = kernel
             .ops
             .iter()
-            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+            .any(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
 
         if kernel.vectorize_width == 4 && !has_reduce {
             // Vectorized 4-wide: each thread processes 4 contiguous elements
@@ -320,8 +308,8 @@ impl Renderer for WgslRenderer {
             writeln!(out, "        let eidx = base + lane;").unwrap();
 
             for (i, op) in kernel.ops.iter().enumerate() {
-                let dtype_str = op.dst_dtype.narrow_webgpu().wgsl_type();
-                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel) {
+                let dtype_str = op.dst_dtype().narrow_webgpu().wgsl_type();
+                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel, "eidx") {
                     format!("fma({}, {}, {})", a, b, c)
                 } else {
                     Self::render_op(op, i, kernel, "eidx")
@@ -329,17 +317,12 @@ impl Renderer for WgslRenderer {
                 writeln!(out, "        var v{}: {} = {};", i, dtype_str, expr).unwrap();
             }
             let last_op = kernel.ops.len() - 1;
-            writeln!(
-                out,
-                "        buf{}[eidx] = v{};",
-                kernel.bufs[0].buf_id, last_op
-            )
-            .unwrap();
+            writeln!(out, "        buf0[eidx] = v{};", last_op).unwrap();
             writeln!(out, "    }}").unwrap();
         } else if !has_reduce {
             for (i, op) in kernel.ops.iter().enumerate() {
-                let dtype_str = op.dst_dtype.narrow_webgpu().wgsl_type();
-                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel) {
+                let dtype_str = op.dst_dtype().narrow_webgpu().wgsl_type();
+                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel, "gid") {
                     format!("fma({}, {}, {})", a, b, c)
                 } else {
                     Self::render_op(op, i, kernel, "gid")
@@ -347,26 +330,28 @@ impl Renderer for WgslRenderer {
                 writeln!(out, "    var v{}: {} = {};", i, dtype_str, expr).unwrap();
             }
             let last_op = kernel.ops.len() - 1;
-            writeln!(out, "    buf{}[gid] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(out, "    buf0[gid] = v{};", last_op).unwrap();
         } else {
             let reduce_idx = kernel
                 .ops
                 .iter()
-                .position(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+                .position(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
                 .expect("has_reduce but no reduce op found");
 
             let reduce_op = &kernel.ops[reduce_idx];
-            let reduce_src = &reduce_op.srcs[0];
-            let reduce_dtype = reduce_op.dst_dtype.narrow_webgpu();
+            let reduce_src = &reduce_op.srcs()[0];
+            let reduce_dtype = reduce_op.dst_dtype().narrow_webgpu();
+            let domain = reduce_op.require_reduction_domain();
+            assert_eq!(
+                domain.output_numel(),
+                output_numel,
+                "WGSL reduction domain output shape must match kernel output"
+            );
+            let reduce_size = domain.reduce_size;
+            let reduce_index =
+                render_reduction_input_index(domain, "gid", "rid", IndexDialect::Wgsl);
 
-            let input_buf = match reduce_src {
-                FusedSrc::Buf(idx) => &kernel.bufs[*idx],
-                FusedSrc::Op(_) => &kernel.bufs[1],
-                FusedSrc::Const { .. } => unreachable!("reduce on constant"),
-            };
-            let reduce_size = input_buf.st.numel() / output_numel;
-
-            let init_val = match reduce_op.op {
+            let init_val = match reduce_op.op() {
                 PrimitiveOp::ReduceSum => format!("{}(0)", reduce_dtype.wgsl_type()),
                 PrimitiveOp::ReduceMax => "bitcast<f32>(0xff800000u)".to_string(),
                 _ => unreachable!(),
@@ -391,22 +376,22 @@ impl Renderer for WgslRenderer {
                     reduce_size
                 )
                 .unwrap();
-                writeln!(out, "        let eidx = gid * {}u + rid;", reduce_size).unwrap();
+                writeln!(out, "        let eidx = {};", reduce_index).unwrap();
 
                 for i in 0..reduce_idx {
                     let op = &kernel.ops[i];
-                    let dtype_str = op.dst_dtype.narrow_webgpu().wgsl_type();
+                    let dtype_str = op.dst_dtype().narrow_webgpu().wgsl_type();
                     let expr = Self::render_op(op, i, kernel, "eidx");
                     writeln!(out, "        var v{}: {} = {};", i, dtype_str, expr).unwrap();
                 }
 
-                let src_var = format!("v{}", reduce_idx - 1);
-                match reduce_op.op {
+                let src_expr = Self::render_src(reduce_src, kernel, "eidx");
+                match reduce_op.op() {
                     PrimitiveOp::ReduceSum => {
-                        writeln!(out, "        acc = acc + {};", src_var).unwrap()
+                        writeln!(out, "        acc = acc + {};", src_expr).unwrap()
                     }
                     PrimitiveOp::ReduceMax => {
-                        writeln!(out, "        acc = max(acc, {});", src_var).unwrap()
+                        writeln!(out, "        acc = max(acc, {});", src_expr).unwrap()
                     }
                     _ => unreachable!(),
                 }
@@ -418,12 +403,9 @@ impl Renderer for WgslRenderer {
                     reduce_size
                 )
                 .unwrap();
-                writeln!(out, "        let eidx = gid * {}u + rid;", reduce_size).unwrap();
-                let src_expr = match reduce_src {
-                    FusedSrc::Buf(idx) => Self::render_buf_read(&kernel.bufs[*idx], "eidx"),
-                    _ => unreachable!(),
-                };
-                match reduce_op.op {
+                writeln!(out, "        let eidx = {};", reduce_index).unwrap();
+                let src_expr = Self::render_src(reduce_src, kernel, "eidx");
+                match reduce_op.op() {
                     PrimitiveOp::ReduceSum => {
                         writeln!(out, "        acc = acc + {};", src_expr).unwrap()
                     }
@@ -437,7 +419,7 @@ impl Renderer for WgslRenderer {
 
             // Apply subgroup reduction when enabled.
             if self.config.use_subgroups {
-                match reduce_op.op {
+                match reduce_op.op() {
                     PrimitiveOp::ReduceSum => {
                         writeln!(out, "    // WebGPU subgroup reduction").unwrap();
                         writeln!(out, "    acc = subgroupAdd(acc);").unwrap();
@@ -460,13 +442,13 @@ impl Renderer for WgslRenderer {
 
             for i in (reduce_idx + 1)..kernel.ops.len() {
                 let op = &kernel.ops[i];
-                let dtype_str = op.dst_dtype.narrow_webgpu().wgsl_type();
+                let dtype_str = op.dst_dtype().narrow_webgpu().wgsl_type();
                 let expr = Self::render_op(op, i, kernel, "gid");
                 writeln!(out, "    var v{}: {} = {};", i, dtype_str, expr).unwrap();
             }
 
             let last_op = kernel.ops.len() - 1;
-            writeln!(out, "    buf{}[gid] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(out, "    buf0[gid] = v{};", last_op).unwrap();
         }
 
         writeln!(out, "}}").unwrap();

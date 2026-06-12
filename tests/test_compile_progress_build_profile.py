@@ -66,7 +66,7 @@ def test_compile_progress_run_case_uses_memory_guard(monkeypatch, tmp_path: Path
     monkeypatch.setattr(
         module,
         "_kill_run_scoped_processes",
-        lambda marker, *, include_daemon: [],
+        lambda marker: [],
     )
     logs_root = tmp_path / "logs"
     logs_root.mkdir()
@@ -106,7 +106,7 @@ def test_compile_progress_timeout_uses_guard_cleanup(
         cache_mode="cache-report",
         daemon=True,
     )
-    cleanup_calls: list[tuple[str, bool]] = []
+    cleanup_calls: list[str] = []
 
     def fake_guarded_completed_process(cmd, **kwargs):
         return subprocess.CompletedProcess(
@@ -116,9 +116,9 @@ def test_compile_progress_timeout_uses_guard_cleanup(
             stderr="timed out",
         )
 
-    def fake_kill(marker, *, include_daemon):
-        cleanup_calls.append((marker, include_daemon))
-        return [101] if not include_daemon else []
+    def fake_kill(marker):
+        cleanup_calls.append(marker)
+        return [101]
 
     monkeypatch.setattr(
         module.harness_memory_guard,
@@ -149,7 +149,39 @@ def test_compile_progress_timeout_uses_guard_cleanup(
         result.returncode
         == module.harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
     )
-    assert cleanup_calls == [("target-marker", False), ("target-marker", True)]
+    assert cleanup_calls == ["target-marker"]
     assert "kill-guarded" in (
         logs_root / "dev_cold.attempt1.stderr.log"
     ).read_text(encoding="utf-8")
+
+
+def test_compile_progress_cleanup_skips_backend_daemons(monkeypatch) -> None:
+    module = _load_module()
+    ps_output = "\n".join(
+        [
+            " 101 /repo/.venv/bin/python -m molt.cli build --out-dir /tmp/marker",
+            " 202 /repo/target/debug/molt-backend --daemon --socket /tmp/marker.sock",
+        ]
+    )
+    killed: list[int] = []
+    ps_outputs = [ps_output, ""]
+
+    monkeypatch.setattr(module.os, "name", "posix")
+    monkeypatch.setattr(module.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, ps_outputs.pop(0) if ps_outputs else "", ""
+        ),
+    )
+    monkeypatch.setattr(
+        module.os,
+        "kill",
+        lambda pid, sig: killed.append(pid),
+    )
+    monkeypatch.setattr(module.time, "monotonic", lambda: 10_000.0)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+
+    assert module._kill_run_scoped_processes("/tmp/marker") == [101]
+    assert killed == [101]

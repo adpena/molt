@@ -50,7 +50,7 @@ pub(crate) fn async_sleep_poll_fn_addr() -> u64 {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        fn_addr!(crate::molt_async_sleep)
+        fn_addr!(crate::molt_async_sleep_poll)
     }
 }
 
@@ -644,12 +644,12 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn native_async_sleep_poll_id_is_stable_not_raw_code_address() {
         let poll_id = async_sleep_poll_fn_addr();
-        let raw_ptr = crate::molt_async_sleep as *const () as usize as u64;
+        let raw_ptr = crate::molt_async_sleep_poll as *const () as usize as u64;
 
         assert_ne!(poll_id, raw_ptr);
         assert_eq!(
             crate::builtins::functions::runtime_callable_target_ptr(poll_id),
-            Some(crate::molt_async_sleep as *const ())
+            Some(crate::molt_async_sleep_poll as *const ())
         );
         assert_eq!(
             crate::builtins::functions::canonicalize_runtime_callable_key(raw_ptr),

@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGETS = (
     REPO_ROOT / "tools",
     REPO_ROOT / "tests",
+    REPO_ROOT / "src" / "molt" / "backend_daemon_custody.py",
     REPO_ROOT / "src" / "molt" / "cli.py",
     REPO_ROOT / "src" / "molt" / "process_guard.py",
     REPO_ROOT / "src" / "molt" / "repl.py",
@@ -33,6 +34,8 @@ SUBPROCESS_METHODS = frozenset(
         "call",
     }
 )
+OS_SIGNAL_METHODS = frozenset({"kill", "killpg"})
+SHELL_KILL_PATTERNS = ("pkill ", "pkill\t", "pkill -", "kill -TERM", "kill -KILL")
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,22 +102,10 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git metadata probe; benchmark child execution uses MOLT_BENCH guard",
     ),
     AllowedRawSubprocessUse(
-        "tools/bench.py",
-        "_prune_backend_daemons",
-        "run",
-        "bounded ps metadata probe for daemon pruning before guarded benchmark runs",
-    ),
-    AllowedRawSubprocessUse(
         "tools/bench_friends.py",
         "_git_rev",
         "run",
         "bounded git metadata probe; suite phases use guarded_completed_process",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/bench_wasm.py",
-        "_prune_backend_daemons",
-        "run",
-        "bounded ps metadata probe for daemon pruning before guarded wasm benches",
     ),
     AllowedRawSubprocessUse(
         "tools/bench_wasm.py",
@@ -159,16 +150,10 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded ps metadata probe before killing marker-scoped compile children",
     ),
     AllowedRawSubprocessUse(
-        "tools/dev.py",
-        "_run_with_pty",
-        "Popen",
-        "TTY-only fallback when the shared guard is explicitly disabled",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/harness_memory_guard.py",
-        "guarded_completed_process",
-        "run",
-        "shared guard's intentional fallback path when limits are disabled",
+        "tools/compile_progress.py",
+        "_kill_run_scoped_processes",
+        "os.kill",
+        "marker-scoped compile-child cleanup; backend daemon commands are excluded",
     ),
     AllowedRawSubprocessUse(
         "tools/harness_memory_guard.py",
@@ -190,12 +175,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
-        "_darwin_available_memory_bytes",
-        "run",
-        "memory guard platform probe for adaptive live pressure budgets",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/memory_guard.py",
         "sample_processes",
         "run",
         "memory guard process sampler",
@@ -205,6 +184,39 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "run_guarded",
         "Popen",
         "lowest-level guarded subprocess implementation",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "_terminate_single_process_group",
+        "os.killpg",
+        "memory guard low-level process-group teardown primitive",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "_terminate_single_process_group",
+        "os.kill",
+        "memory guard low-level process-group fallback termination primitive",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "_terminate_single_pid",
+        "os.kill",
+        "memory guard exact escaped-PID teardown primitive",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "terminate_watched_processes",
+        "os.kill",
+        "memory guard watched-root and escaped-PID teardown primitive",
+        expected_count=3,
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "terminate_watched_processes",
+        "os.killpg",
+        "memory guard watched process-group escalation primitive",
     ),
     AllowedRawSubprocessUse(
         "tools/profile.py",
@@ -219,6 +231,45 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git diff/show helper for static secret scanning",
     ),
     AllowedRawSubprocessUse(
+        "tools/safe_run.py",
+        "_group_rss_kib",
+        "run",
+        "safe_run low-level process-group RSS sampler",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/safe_run.py",
+        "main",
+        "Popen",
+        "safe_run low-level guarded subprocess implementation",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/safe_run.py",
+        "_kill_group",
+        "os.killpg",
+        "safe_run low-level process-group teardown primitive",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/process_sentinel.py",
+        "terminate_group",
+        "os.killpg",
+        "repo process sentinel low-level process-group teardown primitive",
+        expected_count=3,
+    ),
+    AllowedRawSubprocessUse(
+        "tools/bench_backend_incremental.py",
+        "_terminate_process",
+        "os.killpg",
+        "backend incremental benchmark tears down its own timeout child group",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
+        "tools/check_subprocess_guard_coverage.py",
+        "<module>",
+        "shell.kill",
+        "static checker pattern vocabulary for shell kill detection",
+        expected_count=5,
+    ),
+    AllowedRawSubprocessUse(
         "tests/cli/test_backend_daemon_sequential.py",
         "daemon_socket",
         "Popen",
@@ -229,6 +280,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "test_internal_batch_build_server_ping_shutdown_roundtrip",
         "Popen",
         "interactive stdin/stdout protocol test uses CLI test process-group custody",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/cli/process_guard.py",
+        "guarded_cli_test_popen",
+        "Popen",
+        "interactive CLI test child runs as tools/memory_guard.py wrapper with "
+        "MOLT_CLI_TEST limits, process-group custody, and force-close helper",
     ),
     AllowedRawSubprocessUse(
         "tests/molt_diff.py",
@@ -267,6 +325,20 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "differential harness bounded dyld preflight compile probe",
     ),
     AllowedRawSubprocessUse(
+        "tests/molt_diff.py",
+        "_pid_alive",
+        "os.kill",
+        "differential harness generic pid-liveness probe",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/molt_diff.py",
+        "_kill_pid",
+        "os.kill",
+        "differential harness generic orphan worker/build-helper teardown; "
+        "backend daemon pruning is covered by identity-custody tests",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
         "tests/test_tkinter_phase0_wrappers.py",
         "_run_probe",
         "run",
@@ -280,10 +352,47 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "custody and explicit force-close cleanup",
     ),
     AllowedRawSubprocessUse(
+        "tests/test_wasm_split_runtime.py",
+        "_run_split_worker_live._terminate_worker_tree",
+        "os.killpg",
+        "interactive wrangler live-worker probe force-closes its own child group",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/tools/test_subprocess_guard_coverage.py",
+        "test_unclassified_shell_pkill_string_fails",
+        "shell.kill",
+        "static checker fixture that proves unclassified shell process-kill strings fail",
+    ),
+    AllowedRawSubprocessUse(
         "src/molt/cli.py",
         "_run_completed_command",
         "run",
         "CLI subprocess helper's explicit unguarded branch for opt-out call sites",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/cli.py",
+        "_build_lock",
+        "os.kill",
+        "build-lock holder liveness probe only; not cleanup signal authority",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/backend_daemon_custody.py",
+        "_process_command",
+        "run",
+        "bounded ps metadata probe before daemon identity sidecars can authorize signals",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/backend_daemon_custody.py",
+        "_pid_alive",
+        "os.kill",
+        "backend daemon custody pid-liveness probe only; not signal authority",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/backend_daemon_custody.py",
+        "terminate_backend_daemon_identity",
+        "os.kill",
+        "backend daemon custody verified termination and verified escalation",
+        expected_count=2,
     ),
     AllowedRawSubprocessUse(
         "src/molt/process_guard.py",
@@ -306,7 +415,9 @@ class _SubprocessVisitor(ast.NodeVisitor):
         self.path = path
         self.source_text = source_text
         self.subprocess_aliases: set[str] = {"subprocess"}
+        self.os_aliases: set[str] = {"os"}
         self.direct_imports: dict[str, str] = {}
+        self.direct_os_imports: dict[str, str] = {}
         self.stack: list[str] = []
         self.calls: list[RawSubprocessCall] = []
 
@@ -314,6 +425,8 @@ class _SubprocessVisitor(ast.NodeVisitor):
         for alias in node.names:
             if alias.name == "subprocess":
                 self.subprocess_aliases.add(alias.asname or "subprocess")
+            if alias.name == "os":
+                self.os_aliases.add(alias.asname or "os")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -321,6 +434,10 @@ class _SubprocessVisitor(ast.NodeVisitor):
             for alias in node.names:
                 if alias.name in SUBPROCESS_METHODS:
                     self.direct_imports[alias.asname or alias.name] = alias.name
+        if node.module == "os":
+            for alias in node.names:
+                if alias.name in OS_SIGNAL_METHODS:
+                    self.direct_os_imports[alias.asname or alias.name] = alias.name
         self.generic_visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -337,11 +454,11 @@ class _SubprocessVisitor(ast.NodeVisitor):
         self.visit_FunctionDef(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        method = self._subprocess_method(node.func)
+        method = self._raw_call_method(node.func)
         if method is not None:
             source = ast.get_source_segment(self.source_text, node)
             if source is None:
-                source = f"subprocess.{method}(...)"
+                source = f"{method}(...)"
             self.calls.append(
                 RawSubprocessCall(
                     path=self.path,
@@ -353,6 +470,28 @@ class _SubprocessVisitor(ast.NodeVisitor):
             )
         self.generic_visit(node)
 
+    def visit_Constant(self, node: ast.Constant) -> None:
+        if isinstance(node.value, str) and any(
+            pattern in node.value for pattern in SHELL_KILL_PATTERNS
+        ):
+            source = ast.get_source_segment(self.source_text, node) or repr(node.value)
+            self.calls.append(
+                RawSubprocessCall(
+                    path=self.path,
+                    line=node.lineno,
+                    qualname=".".join(self.stack) if self.stack else "<module>",
+                    method="shell.kill",
+                    source=" ".join(source.strip().split()),
+                )
+            )
+        self.generic_visit(node)
+
+    def _raw_call_method(self, node: ast.expr) -> str | None:
+        method = self._subprocess_method(node)
+        if method is not None:
+            return method
+        return self._os_signal_method(node)
+
     def _subprocess_method(self, node: ast.expr) -> str | None:
         if (
             isinstance(node, ast.Attribute)
@@ -363,6 +502,20 @@ class _SubprocessVisitor(ast.NodeVisitor):
             return node.attr
         if isinstance(node, ast.Name):
             return self.direct_imports.get(node.id)
+        return None
+
+    def _os_signal_method(self, node: ast.expr) -> str | None:
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in self.os_aliases
+            and node.attr in OS_SIGNAL_METHODS
+        ):
+            return f"os.{node.attr}"
+        if isinstance(node, ast.Name):
+            method = self.direct_os_imports.get(node.id)
+            if method is not None:
+                return f"os.{method}"
         return None
 
 

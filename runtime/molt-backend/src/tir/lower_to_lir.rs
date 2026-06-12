@@ -78,7 +78,14 @@ pub fn lower_function_to_lir_with_inline_proof(
                 .expect("sorted block id must exist");
             (
                 bid,
-                lower_block(block, &refined, &type_map, &mut allocator, repr, inline_proof),
+                lower_block(
+                    block,
+                    &refined,
+                    &type_map,
+                    &mut allocator,
+                    repr,
+                    inline_proof,
+                ),
             )
         })
         .collect();
@@ -166,7 +173,13 @@ fn lower_block(
     repr: ReprOverride<'_>,
     inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> LirBlock {
-    let mut ops = lower_block_ops(block.ops.as_slice(), type_map, allocator, repr, inline_proof);
+    let mut ops = lower_block_ops(
+        block.ops.as_slice(),
+        type_map,
+        allocator,
+        repr,
+        inline_proof,
+    );
     let terminator = lower_terminator(&block.terminator, func, type_map, allocator, &mut ops, repr);
     LirBlock {
         id: block.id,
@@ -206,14 +219,9 @@ fn lower_op(
     // which raises correctly. This is the WASM analogue of the native inline
     // zero-guard and the LLVM `emit_i64_divrem_zero_guarded` fast/slow split —
     // decided HERE, where the value-range proof lives, not in the emitter.
-    if matches!(
-        op.opcode,
-        OpCode::Div | OpCode::FloorDiv | OpCode::Mod
-    ) && op.operands.len() >= 2
-    {
+    if matches!(op.opcode, OpCode::Div | OpCode::FloorDiv | OpCode::Mod) && op.operands.len() >= 2 {
         let divisor = op.operands[1];
-        let divisor_nonzero = inline_proof
-            .is_some_and(|vr| vr.range_of(divisor).proves_nonzero());
+        let divisor_nonzero = inline_proof.is_some_and(|vr| vr.range_of(divisor).proves_nonzero());
         if !divisor_nonzero {
             let mut tir_op = op.clone();
             tir_op
@@ -256,8 +264,7 @@ fn lower_op(
             .any(|id| matches!(map.get(id), Some(Repr::RawI64Safe)))
     {
         let proven = |id: &ValueId| inline_proof.is_some_and(|vr| vr.fits_inline_int47(*id));
-        let all_proven = op.operands.iter().all(proven)
-            && op.results.iter().all(proven);
+        let all_proven = op.operands.iter().all(proven) && op.results.iter().all(proven);
         if !all_proven {
             let mut tir_op = op.clone();
             tir_op
@@ -333,9 +340,8 @@ fn lowers_to_checked_i64_arithmetic(
         None => true,
         Some(map) => {
             let proven_repr = |id: &ValueId| matches!(map.get(id), Some(Repr::RawI64Safe));
-            let proven_inline = |id: &ValueId| {
-                inline_proof.is_some_and(|vr| vr.fits_inline_int47(*id))
-            };
+            let proven_inline =
+                |id: &ValueId| inline_proof.is_some_and(|vr| vr.fits_inline_int47(*id));
             op.operands.iter().all(proven_repr)
                 && proven_repr(&op.results[0])
                 && op.operands.iter().all(proven_inline)
@@ -631,15 +637,7 @@ fn lower_return_values(
         .enumerate()
         .map(|(idx, value_id)| {
             let expected_ty = expected_types.get(idx).cloned().unwrap_or(TirType::DynBox);
-            materialize_value_for_type(
-                *value_id,
-                expected_ty,
-                None,
-                type_map,
-                allocator,
-                ops,
-                repr,
-            )
+            materialize_value_for_type(*value_id, expected_ty, None, type_map, allocator, ops, repr)
         })
         .collect()
 }

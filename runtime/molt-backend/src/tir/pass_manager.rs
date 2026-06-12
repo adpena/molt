@@ -161,12 +161,7 @@ pub trait TirPass {
     /// cached dominators / pred map / reachability / loop forest / def map; the
     /// [`TargetInfo`] is the unified cost model (Tier-0 S2) the pass consults
     /// for every profitability decision instead of a hardcoded constant.
-    fn run(
-        &self,
-        func: &mut TirFunction,
-        am: &mut AnalysisManager,
-        tti: &TargetInfo,
-    ) -> PassStats;
+    fn run(&self, func: &mut TirFunction, am: &mut AnalysisManager, tti: &TargetInfo) -> PassStats;
 }
 
 /// Adapter wrapping a legacy `fn(&mut TirFunction) -> PassStats` (or a closure
@@ -186,12 +181,7 @@ impl TirPass for FnPass {
     fn mutation_class(&self) -> Mutates {
         self.mutates
     }
-    fn run(
-        &self,
-        func: &mut TirFunction,
-        am: &mut AnalysisManager,
-        tti: &TargetInfo,
-    ) -> PassStats {
+    fn run(&self, func: &mut TirFunction, am: &mut AnalysisManager, tti: &TargetInfo) -> PassStats {
         (self.run)(func, am, tti)
     }
 }
@@ -202,11 +192,7 @@ fn pass(
     mutates: Mutates,
     run: fn(&mut TirFunction, &mut AnalysisManager, &TargetInfo) -> PassStats,
 ) -> Box<dyn TirPass> {
-    Box::new(FnPass {
-        name,
-        mutates,
-        run,
-    })
+    Box::new(FnPass { name, mutates, run })
 }
 
 /// The TIR pass pipeline: an ordered list of passes, the unified cost model
@@ -259,8 +245,7 @@ impl PassManager {
         let mut stats = Vec::with_capacity(passes::PIPELINE_PASS_CAPACITY_HINT);
 
         let has_loop_role = !func.loop_roles.is_empty();
-        let dump_tir =
-            std::env::var("MOLT_DUMP_IR").is_ok() || std::env::var("TIR_DUMP").is_ok();
+        let dump_tir = std::env::var("MOLT_DUMP_IR").is_ok() || std::env::var("TIR_DUMP").is_ok();
         if has_loop_role && dump_tir {
             dump_tir_artifact(func, "pre", &[]);
         }
@@ -389,7 +374,9 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("range_devirt", Cfg, |f, _am, _tti| {
             passes::range_devirt::run(f)
         }),
-        pass("iter_devirt", Cfg, |f, _am, _tti| passes::iter_devirt::run(f)),
+        pass("iter_devirt", Cfg, |f, _am, _tti| {
+            passes::iter_devirt::run(f)
+        }),
         pass("tuple_scalarize", OpsOnly, |f, _am, _tti| {
             passes::deforestation::run_tuple_scalarize(f)
         }),
@@ -430,7 +417,9 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         // redundant loads. Placed AFTER dead_store_elim so it sees the final set
         // of live stores, and its replacement IncRef is final (refcount_elim has
         // already run). OpsOnly: replaces a load with IncRef+Copy in place.
-        pass("mem_gvn", OpsOnly, |f, am, _tti| passes::mem_gvn::run(f, am)),
+        pass("mem_gvn", OpsOnly, |f, am, _tti| {
+            passes::mem_gvn::run(f, am)
+        }),
         // SROA promotes the fields of a proven-non-escaping object out of memory
         // and deletes the allocation. Placed AFTER mem_gvn (which forwards every
         // observable typed-slot load to a Copy, so a fully-promotable object's
@@ -447,7 +436,9 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("strength_reduction", OpsOnly, |f, _am, _tti| {
             passes::strength_reduction::run(f)
         }),
-        pass("fast_math", OpsOnly, |f, _am, _tti| passes::fast_math::run(f)),
+        pass("fast_math", OpsOnly, |f, _am, _tti| {
+            passes::fast_math::run(f)
+        }),
         // branchless_count rewrites a `CondBranch` cond-block into a `Branch`
         // and removes the then/else blocks → CFG mutation. Gated by the cost
         // model's branchless-rewrite profitability query.
@@ -473,7 +464,9 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("overflow_peel", Cfg, |f, am, _tti| {
             passes::overflow_peel::run(f, am)
         }),
-        pass("copy_prop", OpsOnly, |f, _am, _tti| passes::copy_prop::run(f)),
+        pass("copy_prop", OpsOnly, |f, _am, _tti| {
+            passes::copy_prop::run(f)
+        }),
         pass("dce", Cfg, |f, _am, _tti| passes::dce::run(f)),
         // NOTE: RC drop insertion (`drop_insertion` + `refcount_elim_post`,
         // design 20) is NOT here. It runs in a SEPARATE terminal phase
@@ -623,7 +616,11 @@ fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
         })
         .collect();
 
-    let label = if phase == "pre" { "PRE-OPT" } else { "POST-OPT" };
+    let label = if phase == "pre" {
+        "PRE-OPT"
+    } else {
+        "POST-OPT"
+    };
     let mut dump = format!(
         "// {} TIR: {} (loop_roles={:?})\n",
         label, func.name, func.loop_roles
@@ -787,7 +784,10 @@ mod tests {
     #[test]
     fn drop_pipeline_is_the_two_rc_passes() {
         let pm = build_drop_pipeline(TargetInfo::native_release_fast());
-        assert_eq!(pm.pass_names(), vec!["drop_insertion", "refcount_elim_post"]);
+        assert_eq!(
+            pm.pass_names(),
+            vec!["drop_insertion", "refcount_elim_post"]
+        );
 
         // And the default optimization pipeline must NOT carry them (the round-7
         // structural separation — drops must not run mid-transform).
@@ -858,39 +858,53 @@ mod tests {
         let body = func.fresh_block();
         let exit = func.fresh_block();
         let cond = func.fresh_value();
-        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
-            Terminator::Branch { target: header, args: vec![] };
-        func.blocks.insert(header, TirBlock {
-            id: header,
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: header,
             args: vec![],
-            ops: vec![TirOp {
-                dialect: Dialect::Molt,
-                opcode: OpCode::ConstBool,
-                operands: vec![],
-                results: vec![cond],
-                attrs: AttrDict::new(),
-                source_span: None,
-            }],
-            terminator: Terminator::CondBranch {
-                cond,
-                then_block: body,
-                then_args: vec![],
-                else_block: exit,
-                else_args: vec![],
+        };
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstBool,
+                    operands: vec![],
+                    results: vec![cond],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                }],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
             },
-        });
-        func.blocks.insert(body, TirBlock {
-            id: body,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::Branch { target: header, args: vec![] },
-        });
-        func.blocks.insert(exit, TirBlock {
-            id: exit,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::Return { values: vec![] },
-        });
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         func.loop_roles.insert(header, LoopRole::LoopHeader);
 
         let pm = build_default_pipeline(TargetInfo::native_release_fast());

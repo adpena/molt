@@ -1,8 +1,8 @@
 //! Cross-target render validation with real Falcon-OCR inference kernels.
 //!
 //! Renders the actual kernel patterns that Falcon-OCR inference generates
-//! through ALL 7 renderers (MSL, WGSL, GLSL, CUDA, HIP, OpenCL, MIL) and
-//! verifies each produces valid, structurally correct output.
+//! through the compute-pattern renderer set (MSL, WGSL, GLSL, CUDA, HIP,
+//! OpenCL, MIL) and verifies each produces valid, structurally correct output.
 
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
@@ -13,7 +13,9 @@ use molt_gpu::render::mil::MilRenderer;
 use molt_gpu::render::msl::MslRenderer;
 use molt_gpu::render::opencl::OpenClRenderer;
 use molt_gpu::render::wgsl::WgslRenderer;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain, Renderer,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 /// All 7 renderers.
@@ -36,62 +38,61 @@ fn all_renderers() -> Vec<(&'static str, Box<dyn Renderer>)> {
 // Real kernel constructors — patterns from Falcon-OCR inference
 // ============================================================================
 
-/// RMSNorm: x * rsqrt(mean(x^2) + eps)
-/// Fused as: mul(x, x) -> (materialized) -> reduce_sum -> scale by 1/n + eps -> rsqrt -> broadcast mul
-///
-/// The fused kernel here is the elementwise prefix: x * x (5 ops when including
-/// the full rmsnorm with weight scaling).
+/// RMSNorm reduction stage: rsqrt(mean(x^2) + eps).
 fn make_rmsnorm_fused_kernel(n: usize) -> FusedKernel {
     FusedKernel {
+        body: Default::default(),
         ops: vec![
             // v0 = x * x
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+                DType::Float32,
+            ),
             // v1 = reduce_sum(v0)
-            FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Op(0)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(0)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n], 0),
+            ),
             // v2 = v1 * (1/n)  (mean)
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![
                     FusedSrc::Op(1),
                     FusedSrc::Const {
                         val: 1.0 / n as f64,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
             // v3 = v2 + eps
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![
                     FusedSrc::Op(2),
                     FusedSrc::Const {
                         val: 1e-6,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
-            // v4 = x * rsqrt(v3) -- approximated as x * reciprocal(sqrt(v3))
-            // Using Mul with buf[2] (weight) for the full RMSNorm with learnable scale
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
+            // v4 = sqrt(v3)
+            FusedOp::elementwise(PrimitiveOp::Sqrt, vec![FusedSrc::Op(3)], DType::Float32),
+            // v5 = reciprocal(v4)
+            FusedOp::elementwise(
+                PrimitiveOp::Reciprocal,
+                vec![FusedSrc::Op(4)],
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
-                st: ShapeTracker::contiguous(&[n]),
+                st: ShapeTracker::contiguous(&[1]),
                 dtype: DType::Float32,
                 access: BufferAccess::Write,
             },
@@ -101,14 +102,8 @@ fn make_rmsnorm_fused_kernel(n: usize) -> FusedKernel {
                 dtype: DType::Float32,
                 access: BufferAccess::Read,
             },
-            BufferBinding {
-                buf_id: 2,
-                st: ShapeTracker::contiguous(&[n]),
-                dtype: DType::Float32,
-                access: BufferAccess::Read,
-            },
         ],
-        grid: [n as u32, 1, 1],
+        grid: [1, 1, 1],
         local: [256, 1, 1],
         spec: None,
         vectorize_width: 1,
@@ -120,31 +115,32 @@ fn make_rmsnorm_fused_kernel(n: usize) -> FusedKernel {
 /// Fused as 4 ops: mul, mul, sub, add.
 fn make_rope_kernel(n: usize) -> FusedKernel {
     FusedKernel {
+        body: Default::default(),
         ops: vec![
             // v0 = x_r * cos_theta
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(3)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(3)],
+                DType::Float32,
+            ),
             // v1 = x_i * sin_theta
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(2), FusedSrc::Buf(4)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(2), FusedSrc::Buf(4)],
+                DType::Float32,
+            ),
             // v2 = v0 - v1 (real part of rotation)
-            FusedOp {
-                op: PrimitiveOp::Sub,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Op(1)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Sub,
+                vec![FusedSrc::Op(0), FusedSrc::Op(1)],
+                DType::Float32,
+            ),
             // v3 = x_r * sin + x_i * cos (imaginary part — written to separate output)
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Op(1)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Op(0), FusedSrc::Op(1)],
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -190,31 +186,33 @@ fn make_rope_kernel(n: usize) -> FusedKernel {
 fn make_sdpa_qk_kernel(seq_len: usize, d_k: usize) -> FusedKernel {
     let scale = 1.0 / (d_k as f64).sqrt();
     FusedKernel {
+        body: Default::default(),
         ops: vec![
             // v0 = Q[i,:] * K[j,:] (elementwise, before reduce)
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
             // v1 = reduce_sum(v0) — dot product
-            FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Op(0)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(0)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[seq_len, d_k], 1),
+            ),
             // v2 = v1 * scale (1/sqrt(d_k))
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![
                     FusedSrc::Op(1),
                     FusedSrc::Const {
                         val: scale,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -247,23 +245,24 @@ fn make_sdpa_qk_kernel(seq_len: usize, d_k: usize) -> FusedKernel {
 /// The gating kernel: relu(x) -> square.
 fn make_squared_relu_gate_kernel(n: usize) -> FusedKernel {
     FusedKernel {
+        body: Default::default(),
         ops: vec![
             // v0 = max(0, x) — ReLU via cmplt + where
-            FusedOp {
-                op: PrimitiveOp::Cmplt,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Cmplt,
+                vec![
                     FusedSrc::Buf(1),
                     FusedSrc::Const {
                         val: 0.0,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Bool,
-            },
+                DType::Bool,
+            ),
             // v1 = where(v0, 0, x) — zero out negatives
-            FusedOp {
-                op: PrimitiveOp::Where,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Where,
+                vec![
                     FusedSrc::Op(0),
                     FusedSrc::Const {
                         val: 0.0,
@@ -271,14 +270,14 @@ fn make_squared_relu_gate_kernel(n: usize) -> FusedKernel {
                     },
                     FusedSrc::Buf(1),
                 ],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
             // v2 = v1 * v1 — square
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Op(1), FusedSrc::Op(1)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Op(1), FusedSrc::Op(1)],
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -365,7 +364,7 @@ fn test_rmsnorm_all_renderers() {
     let kernel = make_rmsnorm_fused_kernel(1024);
     let renderers = all_renderers();
 
-    println!("\n## RMSNorm (5 fused ops) — rendered kernel sizes:");
+    println!("\n## RMSNorm reduce stage (6 fused ops) — rendered kernel sizes:");
     for (name, renderer) in &renderers {
         let source = renderer.render(&kernel);
         assert!(

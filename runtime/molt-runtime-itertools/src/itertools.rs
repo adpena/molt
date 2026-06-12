@@ -167,7 +167,9 @@ fn builtin_func_bits(_py: &PyToken, slot: &AtomicU64, fn_ptr: u64, arity: u64) -
 }
 
 fn kwd_mark_bits(_py: &PyToken) -> u64 {
-    init_atomic_bits(_py, &itertools_state(_py).kwd_mark_bits, || alloc_kwd_mark(_py))
+    init_atomic_bits(_py, &itertools_state(_py).kwd_mark_bits, || {
+        alloc_kwd_mark(_py)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -3027,7 +3029,9 @@ fn itertools_drop_instance_inner(_py: &PyToken, ptr: *mut u8) -> bool {
         }
         return true;
     }
-    let class = state.combinations_with_replacement_class.load(Ordering::Acquire);
+    let class = state
+        .combinations_with_replacement_class
+        .load(Ordering::Acquire);
     if class_bits == class {
         let data_ptr = unsafe { combinations_with_replacement_data_ptr(ptr) };
         if !data_ptr.is_null() {

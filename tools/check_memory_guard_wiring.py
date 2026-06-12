@@ -377,6 +377,58 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "compliance tests must use their guarded process helper",
     ),
     TokenContract(
+        "pyproject.toml",
+        (
+            "molt.pytest_memory_guard_bootstrap",
+            "molt.pytest_memory_guard_config_plugin",
+        ),
+        "pytest config must load the startup guard plugin explicitly while "
+        "the package entry point guards console-script pytest before "
+        "conftest loading",
+    ),
+    TokenContract(
+        "src/molt/pytest_memory_guard_bootstrap.py",
+        (
+            "tools.pytest_memory_guard_bootstrap",
+            "pytest_load_initial_conftests",
+        ),
+        "packaged pytest plugin shim must make repo startup guard importable "
+        "from console-script pytest before pytest mutates sys.path",
+    ),
+    TokenContract(
+        "src/molt/pytest_memory_guard_config_plugin.py",
+        (
+            "pytest_load_initial_conftests",
+        ),
+        "repo pytest config plugin must keep memory-guard startup active even "
+        "when pytest entry-point autoload is disabled",
+    ),
+    TokenContract(
+        "sitecustomize.py",
+        (
+            "ensure_python_test_memory_guard",
+        ),
+        "Python startup must enter pytest or direct tests/** script memory "
+        "custody before test code can run outside the guard",
+    ),
+    TokenContract(
+        "tools/pytest_memory_guard_bootstrap.py",
+        (
+            "MOLT_MEMORY_GUARD_ACTIVE",
+            "MOLT_MEMORY_GUARD_PID",
+            "MOLT_PYTEST_OUTER_GUARD_REEXEC",
+            "MOLT_TEST_SCRIPT_OUTER_GUARD_REEXEC",
+            "tools/memory_guard.py",
+            "MOLT_TEST_SUITE",
+            "--noconftest",
+            "--confcutdir",
+            "sample_processes",
+            "os.execvpe",
+        ),
+        "test startup bootstrap must fail closed on forged guard markers, "
+        "reject pytest hook-disabling flags, and re-exec through memory_guard.py",
+    ),
+    TokenContract(
         "tests/conftest.py",
         (
             "harness_memory_guard",
@@ -385,7 +437,8 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
             "MOLT_PYTEST",
             "drain_on_exit=True",
         ),
-        "direct pytest sessions must install a suite-level repo sentinel",
+        "pytest collection must install a suite-level repo sentinel after "
+        "startup memory custody is active",
     ),
     TokenContract(
         "tests/runtime_compat/test_runtime_compat.py",

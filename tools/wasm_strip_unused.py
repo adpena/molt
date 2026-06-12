@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
@@ -29,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools import harness_memory_guard  # noqa: E402
+from tools import artifact_publish, harness_memory_guard  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -586,23 +587,34 @@ def strip_imports(wasm_path: Path, output_path: Path, result: AnalysisResult) ->
     strippable = result.strippable_imports
     if not strippable:
         print("No strippable imports found. Output is a copy of input.")
-        shutil.copy2(wasm_path, output_path)
+        artifact_publish.atomic_copy_file(wasm_path, output_path)
         return output_path
 
     # Use wasm-tools strip to remove debug/name sections and report size savings.
     print("Stripping debug and name sections...")
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
-    strip_proc = harness_memory_guard.guarded_completed_process(
-        [wasm_tools, "strip", str(wasm_path), "-o", str(output_path)],
-        prefix="MOLT_BENCH",
-        capture_output=True,
-        text=True,
-        timeout=120,
-        limits=limits,
-    )
-    if strip_proc.returncode != 0:
-        print(f"ERROR: wasm-tools strip failed: {strip_proc.stderr}", file=sys.stderr)
-        sys.exit(1)
+    tmp_output = artifact_publish.staged_output_path(output_path)
+    try:
+        strip_proc = harness_memory_guard.guarded_completed_process(
+            [wasm_tools, "strip", str(wasm_path), "-o", str(tmp_output)],
+            prefix="MOLT_BENCH",
+            capture_output=True,
+            text=True,
+            timeout=120,
+            limits=limits,
+        )
+        if strip_proc.returncode != 0:
+            print(
+                f"ERROR: wasm-tools strip failed: {strip_proc.stderr}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        artifact_publish.publish_validated_outputs([(tmp_output, output_path)])
+    finally:
+        try:
+            tmp_output.unlink()
+        except OSError:
+            pass
 
     original_size = wasm_path.stat().st_size
     stripped_size = output_path.stat().st_size
@@ -772,6 +784,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    import shutil
-
     main()

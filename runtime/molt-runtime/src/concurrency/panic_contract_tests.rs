@@ -66,7 +66,10 @@ impl Drop for ContractGuard {
 /// can assert the pending exception's class via `molt_err_matches`.
 fn builtin_exc_type_bits(tag: u64) -> u64 {
     let exc_bits = molt_exception_new_builtin_one(tag, MoltObject::from_int(0).bits());
-    assert_ne!(exc_bits, 0, "failed to construct builtin exception (tag {tag})");
+    assert_ne!(
+        exc_bits, 0,
+        "failed to construct builtin exception (tag {tag})"
+    );
     let kind_bits = molt_exception_kind(exc_bits);
     let class_bits = molt_exception_class(kind_bits);
     assert_ne!(class_bits, 0, "no class for builtin exception (tag {tag})");

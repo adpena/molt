@@ -502,6 +502,29 @@ def test_native_local_function_raise_is_caught_by_try_except(tmp_path: Path) -> 
     ]
 
 
+def test_native_module_try_except_assignment_survives_post_try_load(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "try:\n"
+            "    raise ModuleNotFoundError('x')\n"
+            "except ModuleNotFoundError:\n"
+            "    flag = True\n"
+            "else:\n"
+            "    flag = False\n"
+            "print(flag)\n"
+        ),
+        "module_try_except_assignment_post_load",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-try-except-assignment",
+        cache_dir=ROOT / ".molt_cache-module-try-except-assignment",
+        backend="cranelift",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["True"]
+
+
 def test_native_plain_function_metadata_survives_try_scope(tmp_path: Path) -> None:
     run = _build_and_run_with_env(
         tmp_path,
@@ -913,6 +936,85 @@ def test_native_package_entry_alias_imports_and_sys_modules_identity_are_resolve
         "helper-ok",
         "sibling-ok",
     ]
+
+
+def test_native_import_transaction_unifies_public_import_surfaces(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_package_bootstrap(
+        tmp_path,
+        (
+            "import builtins\n"
+            "import importlib\n"
+            "import sys\n"
+            "import pkg.helper as helper\n"
+            "leaf_from_importlib = importlib.import_module('pkg.helper')\n"
+            "leaf_from_relative_importlib = importlib.import_module('.helper', 'pkg')\n"
+            "resolved_relative = importlib.util.resolve_name('.helper', 'pkg')\n"
+            "top_from_dunder = builtins.__import__('pkg.helper', globals(), locals(), (), 0)\n"
+            "leaf_from_dunder = builtins.__import__('pkg.helper', globals(), locals(), ('ping',), 0)\n"
+            "relative_leaf = builtins.__import__('helper', globals(), locals(), ('ping',), 1)\n"
+            "relative_empty = builtins.__import__('', globals(), locals(), (), 1)\n"
+            "print(resolved_relative)\n"
+            "print(leaf_from_importlib is helper)\n"
+            "print(leaf_from_relative_importlib is helper)\n"
+            "print(top_from_dunder is sys.modules['pkg'])\n"
+            "print(leaf_from_dunder is helper)\n"
+            "print(relative_leaf is helper)\n"
+            "print(relative_empty is sys.modules['pkg'])\n"
+            "dotted_direct_rejected = False\n"
+            "try:\n"
+            "    builtins.__import__('.helper', globals(), locals(), ('ping',), 1)\n"
+            "except ModuleNotFoundError:\n"
+            "    dotted_direct_rejected = True\n"
+            "else:\n"
+            "    dotted_direct_rejected = False\n"
+            "print(dotted_direct_rejected)\n"
+            "print(getattr(sys.modules['pkg'], 'helper') is helper)\n"
+        ),
+        "package_entry_import_transaction_identity",
+        cache_suffix="import-transaction",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["pkg.helper"] + ["True"] * 8
+
+
+def test_native_importlib_import_module_literal_respects_rebinding(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import importlib\n"
+            "def fake(name):\n"
+            "    return 'fake:' + name\n"
+            "importlib.import_module = fake\n"
+            "print(importlib.import_module('json'))\n"
+        ),
+        "importlib_import_module_literal_rebinding",
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "fake:json"
+
+
+def test_native_importlib_import_module_literal_uses_transaction(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import importlib\n"
+            "import sys\n"
+            "mod = importlib.import_module('json')\n"
+            "print(mod.__name__)\n"
+            "print(mod is sys.modules['json'])\n"
+        ),
+        "importlib_import_module_literal_transaction",
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["json", "True"]
 
 
 def test_native_package_entry_alias_imports_preserve_os_and_sys_identity(

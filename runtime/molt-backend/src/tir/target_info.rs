@@ -523,8 +523,8 @@ mod tests {
     fn pgo_hook_grants_hot_budget() {
         let mut hot = std::collections::BTreeSet::new();
         hot.insert("hot_fn".to_string());
-        let t = TargetInfo::native_release_fast()
-            .with_profile_data(ProfileData { hot_functions: hot });
+        let t =
+            TargetInfo::native_release_fast().with_profile_data(ProfileData { hot_functions: hot });
 
         assert!(t.is_pgo_hot("hot_fn"));
         assert!(!t.is_pgo_hot("cold_fn"));

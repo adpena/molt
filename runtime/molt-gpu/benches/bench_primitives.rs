@@ -8,9 +8,13 @@
 
 use std::time::{Duration, Instant};
 
+use molt_gpu::device::cpu::interpret;
 use molt_gpu::device::cpu::CpuDevice;
 use molt_gpu::device::{Allocator, DeviceBuffer};
 use molt_gpu::dtype::DType;
+use molt_gpu::ops::PrimitiveOp;
+use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, KernelBody};
+use molt_gpu::shapetracker::ShapeTracker;
 
 /// Number of warmup iterations before measurement.
 const WARMUP_ITERS: usize = 3;
@@ -27,6 +31,76 @@ fn fill_buffer(device: &CpuDevice, buf: &DeviceBuffer, num_elements: usize) {
     device.copy_in(buf, &data).expect("copy_in failed");
 }
 
+fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
+    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+fn patterned_bytes(len: usize) -> Vec<u8> {
+    (0..len).map(|i| 0xa5u8.wrapping_add(i as u8)).collect()
+}
+
+fn make_materialize_copy_kernel(dtype: DType, src_st: ShapeTracker) -> FusedKernel {
+    let numel = src_st.numel();
+    FusedKernel {
+        body: KernelBody::MaterializeCopy,
+        ops: Vec::new(),
+        bufs: vec![
+            BufferBinding {
+                buf_id: 100,
+                st: ShapeTracker::contiguous(src_st.shape()),
+                dtype,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 77,
+                st: src_st,
+                dtype,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [numel as u32, 1, 1],
+        local: [numel.clamp(1, 256) as u32, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    }
+}
+
+fn make_same_storage_distinct_view_add_kernel(n: usize) -> FusedKernel {
+    let st = ShapeTracker::contiguous(&[n]);
+    FusedKernel {
+        body: KernelBody::Compute,
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 100,
+                st: st.clone(),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 77,
+                st: st.clone(),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 77,
+                st: st.flip(0),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n as u32, 1, 1],
+        local: [n.clamp(1, 256) as u32, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    }
+}
+
 /// Benchmark result for a single operation.
 struct BenchResult {
     name: String,
@@ -37,16 +111,16 @@ struct BenchResult {
 }
 
 impl BenchResult {
-    fn new(
+    fn from_totals(
         name: &str,
         elements: usize,
         duration: Duration,
-        flops_per_element: usize,
-        bytes_per_element: usize,
+        total_flops_per_iter: usize,
+        total_bytes_per_iter: usize,
     ) -> Self {
         let avg_us = duration.as_secs_f64() * 1e6 / MEASURE_ITERS as f64;
-        let total_flops = elements as f64 * flops_per_element as f64 * MEASURE_ITERS as f64;
-        let total_bytes = elements as f64 * bytes_per_element as f64 * MEASURE_ITERS as f64;
+        let total_flops = total_flops_per_iter as f64 * MEASURE_ITERS as f64;
+        let total_bytes = total_bytes_per_iter as f64 * MEASURE_ITERS as f64;
         let throughput_gflops = total_flops / duration.as_secs_f64() / 1e9;
         let bandwidth_gb_s = total_bytes / duration.as_secs_f64() / 1e9;
 
@@ -58,16 +132,26 @@ impl BenchResult {
             bandwidth_gb_s,
         }
     }
+
+    fn new(
+        name: &str,
+        elements: usize,
+        duration: Duration,
+        flops_per_element: usize,
+        bytes_per_element: usize,
+    ) -> Self {
+        Self::from_totals(
+            name,
+            elements,
+            duration,
+            elements * flops_per_element,
+            elements * bytes_per_element,
+        )
+    }
 }
 
 /// Run a benchmark with warmup and measurement.
-fn bench<F: FnMut()>(
-    name: &str,
-    elements: usize,
-    flops_per_element: usize,
-    bytes_per_element: usize,
-    mut f: F,
-) -> BenchResult {
+fn measure<F: FnMut()>(mut f: F) -> Duration {
     // Warmup
     for _ in 0..WARMUP_ITERS {
         f();
@@ -78,14 +162,38 @@ fn bench<F: FnMut()>(
     for _ in 0..MEASURE_ITERS {
         f();
     }
-    let elapsed = start.elapsed();
+    start.elapsed()
+}
 
+fn bench<F: FnMut()>(
+    name: &str,
+    elements: usize,
+    flops_per_element: usize,
+    bytes_per_element: usize,
+    f: F,
+) -> BenchResult {
     BenchResult::new(
         name,
         elements,
-        elapsed,
+        measure(f),
         flops_per_element,
         bytes_per_element,
+    )
+}
+
+fn bench_with_totals<F: FnMut()>(
+    name: &str,
+    elements: usize,
+    total_flops_per_iter: usize,
+    total_bytes_per_iter: usize,
+    f: F,
+) -> BenchResult {
+    BenchResult::from_totals(
+        name,
+        elements,
+        measure(f),
+        total_flops_per_iter,
+        total_bytes_per_iter,
     )
 }
 
@@ -98,6 +206,23 @@ fn print_results(title: &str, results: &[BenchResult]) {
         println!(
             "| {:<20} | {:>10} | {:>10.2} | {:>8.3} | {:>9.3} |",
             r.name, r.elements, r.avg_us, r.throughput_gflops, r.bandwidth_gb_s
+        );
+    }
+}
+
+fn print_results_with_baseline(title: &str, results: &[BenchResult], baseline_avg_us: f64) {
+    println!("\n## {}\n", title);
+    println!("| Operation | Elements | Avg (us) | GFLOPS | BW (GB/s) | vs baseline |");
+    println!("|-----------|----------|----------|--------|-----------|-------------|");
+    for r in results {
+        println!(
+            "| {:<28} | {:>10} | {:>10.2} | {:>8.3} | {:>9.3} | {:>10.2}x |",
+            r.name,
+            r.elements,
+            r.avg_us,
+            r.throughput_gflops,
+            r.bandwidth_gb_s,
+            r.avg_us / baseline_avg_us,
         );
     }
 }
@@ -207,6 +332,154 @@ fn main() {
     }));
 
     print_results("Individual Op Benchmarks (1M elements)", &results);
+
+    // --- ShapeTracker movement and MaterializeCopy benchmarks ---
+    //
+    // These rows are the explicit performance evidence for the view/copy
+    // contract: zero-copy movement can feed compute through distinct views, and
+    // Contiguous materialization performs an indexed raw-byte copy into fresh
+    // storage rather than silently aliasing the source buffer.
+    let copy_n = 1_000_000usize;
+    let copy_input_f32: Vec<f32> = (0..copy_n).map(|i| i as f32 * 0.001).collect();
+    let copy_input_bytes = f32_to_bytes(&copy_input_f32);
+    let copy_kernel_contiguous =
+        make_materialize_copy_kernel(DType::Float32, ShapeTracker::contiguous(&[copy_n]));
+    let copy_kernel_flipped =
+        make_materialize_copy_kernel(DType::Float32, ShapeTracker::contiguous(&[copy_n]).flip(0));
+    let shrink_n = copy_n - 2;
+    let copy_kernel_shrunk = make_materialize_copy_kernel(
+        DType::Float32,
+        ShapeTracker::contiguous(&[copy_n]).shrink(&[(1, copy_n - 1)]),
+    );
+    let pad_each_side = 1usize;
+    let padded_n = copy_n + 2 * pad_each_side;
+    let copy_kernel_padded = make_materialize_copy_kernel(
+        DType::Float32,
+        ShapeTracker::contiguous(&[copy_n]).pad(&[(pad_each_side, pad_each_side)]),
+    );
+    let same_storage_add_kernel = make_same_storage_distinct_view_add_kernel(copy_n);
+    let mut copy_results = Vec::new();
+
+    let mut raw_copy_out = vec![0u8; copy_n * DType::Float32.size_bytes()];
+    copy_results.push(bench_with_totals(
+        "raw_copy_f32",
+        copy_n,
+        0,
+        copy_n * DType::Float32.size_bytes() * 2,
+        || {
+            raw_copy_out.copy_from_slice(&copy_input_bytes);
+            std::hint::black_box(&raw_copy_out);
+        },
+    ));
+
+    let mut copy_bufs_contiguous = vec![
+        vec![0u8; copy_n * DType::Float32.size_bytes()],
+        copy_input_bytes.clone(),
+    ];
+    copy_results.push(bench_with_totals(
+        "materialize_contiguous_f32",
+        copy_n,
+        0,
+        copy_n * DType::Float32.size_bytes() * 2,
+        || {
+            interpret::execute_kernel(&copy_kernel_contiguous, &mut copy_bufs_contiguous);
+            std::hint::black_box(&copy_bufs_contiguous[0]);
+        },
+    ));
+
+    let mut copy_bufs_flipped = vec![
+        vec![0u8; copy_n * DType::Float32.size_bytes()],
+        copy_input_bytes.clone(),
+    ];
+    copy_results.push(bench_with_totals(
+        "materialize_flip_f32",
+        copy_n,
+        0,
+        copy_n * DType::Float32.size_bytes() * 2,
+        || {
+            interpret::execute_kernel(&copy_kernel_flipped, &mut copy_bufs_flipped);
+            std::hint::black_box(&copy_bufs_flipped[0]);
+        },
+    ));
+
+    let flip_width_bytes = copy_n * DType::Float32.size_bytes();
+    for (name, dtype) in [
+        ("materialize_flip_u8_4mb", DType::UInt8),
+        ("materialize_flip_u16_4mb", DType::UInt16),
+        ("materialize_flip_u32_4mb", DType::UInt32),
+        ("materialize_flip_u64_4mb", DType::UInt64),
+    ] {
+        let elem_size = dtype.size_bytes();
+        let elems = flip_width_bytes / elem_size;
+        let kernel =
+            make_materialize_copy_kernel(dtype, ShapeTracker::contiguous(&[elems]).flip(0));
+        let mut bufs = vec![
+            vec![0u8; flip_width_bytes],
+            patterned_bytes(flip_width_bytes),
+        ];
+        copy_results.push(bench_with_totals(
+            name,
+            elems,
+            0,
+            flip_width_bytes * 2,
+            || {
+                interpret::execute_kernel(&kernel, &mut bufs);
+                std::hint::black_box(&bufs[0]);
+            },
+        ));
+    }
+
+    let mut copy_bufs_shrunk = vec![
+        vec![0u8; shrink_n * DType::Float32.size_bytes()],
+        copy_input_bytes.clone(),
+    ];
+    copy_results.push(bench_with_totals(
+        "materialize_shrink_f32",
+        shrink_n,
+        0,
+        shrink_n * DType::Float32.size_bytes() * 2,
+        || {
+            interpret::execute_kernel(&copy_kernel_shrunk, &mut copy_bufs_shrunk);
+            std::hint::black_box(&copy_bufs_shrunk[0]);
+        },
+    ));
+
+    let mut copy_bufs_padded = vec![
+        vec![0u8; padded_n * DType::Float32.size_bytes()],
+        copy_input_bytes.clone(),
+    ];
+    copy_results.push(bench_with_totals(
+        "materialize_pad_f32",
+        padded_n,
+        0,
+        (copy_n + padded_n) * DType::Float32.size_bytes(),
+        || {
+            interpret::execute_kernel(&copy_kernel_padded, &mut copy_bufs_padded);
+            std::hint::black_box(&copy_bufs_padded[0]);
+        },
+    ));
+
+    let mut same_storage_add_bufs = vec![
+        vec![0u8; copy_n * DType::Float32.size_bytes()],
+        copy_input_bytes.clone(),
+        copy_input_bytes.clone(),
+    ];
+    copy_results.push(bench_with_totals(
+        "same_storage_view_add_f32",
+        copy_n,
+        copy_n,
+        copy_n * DType::Float32.size_bytes() * 3,
+        || {
+            interpret::execute_kernel(&same_storage_add_kernel, &mut same_storage_add_bufs);
+            std::hint::black_box(&same_storage_add_bufs[0]);
+        },
+    ));
+    let raw_copy_avg_us = copy_results[0].avg_us;
+    print_results_with_baseline(
+        "ShapeTracker MaterializeCopy Benchmarks",
+        &copy_results,
+        raw_copy_avg_us,
+    );
 
     // --- Composition benchmarks ---
     let mut comp_results = Vec::new();

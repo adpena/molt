@@ -11,7 +11,9 @@ use molt_gpu::dtype::DType;
 use molt_gpu::fuse::fuse;
 use molt_gpu::ops::PrimitiveOp;
 use molt_gpu::render::msl::MslRenderer;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain, Renderer,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 /// Number of warmup iterations.
@@ -56,11 +58,13 @@ fn main() {
     let softmax_unfused: Vec<FusedKernel> = vec![
         // 1. ReduceMax
         FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::ReduceMax,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceMax,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n], 0),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -82,11 +86,12 @@ fn main() {
         },
         // 2. Sub (x - max)
         FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Sub,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Sub,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -114,11 +119,12 @@ fn main() {
         },
         // 3. Exp2
         FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Exp2,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Exp2,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -140,11 +146,13 @@ fn main() {
         },
         // 4. ReduceSum
         FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n], 0),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -166,11 +174,12 @@ fn main() {
         },
         // 5. Reciprocal
         FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Reciprocal,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Reciprocal,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -192,11 +201,12 @@ fn main() {
         },
         // 6. Mul (exp * inv_sum)
         FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -224,89 +234,7 @@ fn main() {
         },
     ];
 
-    // Fused softmax: 2 kernels (reduce_max fused with sub+exp2, reduce_sum fused with recip+mul)
-    let softmax_fused: Vec<FusedKernel> = vec![
-        // Kernel 1: sub -> exp2 -> reduce_sum (with ReduceMax as separate first kernel)
-        FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::ReduceMax,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
-            bufs: vec![
-                BufferBinding {
-                    buf_id: 0,
-                    st: ShapeTracker::contiguous(&[1]),
-                    dtype: DType::Float32,
-                    access: BufferAccess::Write,
-                },
-                BufferBinding {
-                    buf_id: 1,
-                    st: ShapeTracker::contiguous(&[n]),
-                    dtype: DType::Float32,
-                    access: BufferAccess::Read,
-                },
-            ],
-            grid: [1, 1, 1],
-            local: [256, 1, 1],
-            spec: None,
-            vectorize_width: 1,
-        },
-        // Kernel 2: sub -> exp2 -> reduce_sum -> reciprocal -> mul (fused)
-        FusedKernel {
-            ops: vec![
-                FusedOp {
-                    op: PrimitiveOp::Sub,
-                    srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::Exp2,
-                    srcs: vec![FusedSrc::Op(0)],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::ReduceSum,
-                    srcs: vec![FusedSrc::Op(1)],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::Reciprocal,
-                    srcs: vec![FusedSrc::Op(2)],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::Mul,
-                    srcs: vec![FusedSrc::Op(1), FusedSrc::Op(3)],
-                    dst_dtype: DType::Float32,
-                },
-            ],
-            bufs: vec![
-                BufferBinding {
-                    buf_id: 0,
-                    st: ShapeTracker::contiguous(&[n]),
-                    dtype: DType::Float32,
-                    access: BufferAccess::Write,
-                },
-                BufferBinding {
-                    buf_id: 1,
-                    st: ShapeTracker::contiguous(&[n]),
-                    dtype: DType::Float32,
-                    access: BufferAccess::Read,
-                },
-                BufferBinding {
-                    buf_id: 2,
-                    st: ShapeTracker::contiguous(&[1]),
-                    dtype: DType::Float32,
-                    access: BufferAccess::Read,
-                },
-            ],
-            grid: [n as u32, 1, 1],
-            local: [256, 1, 1],
-            spec: None,
-            vectorize_width: 1,
-        },
-    ];
+    let softmax_fused = fuse(softmax_unfused.clone());
 
     // Measure unfused render time
     let unfused_duration = measure(|| {
@@ -339,11 +267,12 @@ fn main() {
     // --- Elementwise chain: 4 ops unfused vs 1 kernel fused ---
     let chain_unfused: Vec<FusedKernel> = (0..4)
         .map(|_| FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -372,27 +301,28 @@ fn main() {
         .collect();
 
     let chain_fused = vec![FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Buf(3)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Op(1), FusedSrc::Buf(4)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Op(2), FusedSrc::Buf(5)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Op(0), FusedSrc::Buf(3)],
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Op(1), FusedSrc::Buf(4)],
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Op(2), FusedSrc::Buf(5)],
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {

@@ -126,17 +126,18 @@ fn make_mul_add_kernel() -> FusedKernel {
     // y = a * b + c  ->  should emit fma(a, b, c)
     let n = 1024;
     FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Buf(3)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Op(0), FusedSrc::Buf(3)],
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -236,17 +237,18 @@ fn test_no_fma_for_integer_ops() {
     // INT32 MUL+ADD should NOT emit FMA
     let n = 1024;
     let kernel = FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Int32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Buf(3)],
-                dst_dtype: DType::Int32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Int32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Op(0), FusedSrc::Buf(3)],
+                DType::Int32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -296,11 +298,13 @@ fn test_no_fma_for_integer_ops() {
 fn test_unroll_hint_msl_small_reduce() {
     // Small reduce (8 elements) should get #pragma unroll
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[8], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -333,11 +337,13 @@ fn test_unroll_hint_msl_small_reduce() {
 fn test_no_unroll_hint_msl_large_reduce() {
     // Large reduce (256 elements) should NOT get #pragma unroll
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[256], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -374,11 +380,12 @@ fn test_no_unroll_hint_msl_large_reduce() {
 fn test_kernel_dedup_identical_ops() {
     // Two kernels with same ops, same shapes, different buf_ids
     let k1 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -406,11 +413,12 @@ fn test_kernel_dedup_identical_ops() {
     };
 
     let k2 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 10, // different buf_id
@@ -445,11 +453,12 @@ fn test_kernel_dedup_identical_ops() {
 #[test]
 fn test_kernel_dedup_different_ops() {
     let k1 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -477,11 +486,12 @@ fn test_kernel_dedup_different_ops() {
     };
 
     let k2 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul, // different op
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mul, // different op
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -698,11 +708,12 @@ mod simd_tests {
         let b: Vec<f32> = (0..n).map(|i| (i * 2) as f32).collect();
 
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -747,11 +758,12 @@ mod simd_tests {
         let b: Vec<f32> = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Max,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Max,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -804,17 +816,14 @@ mod simd_tests {
         let a: Vec<f32> = vec![1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0, 64.0];
 
         let kernel = FusedKernel {
+            body: Default::default(),
             ops: vec![
-                FusedOp {
-                    op: PrimitiveOp::Sqrt,
-                    srcs: vec![FusedSrc::Buf(1)],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::Reciprocal,
-                    srcs: vec![FusedSrc::Op(0)],
-                    dst_dtype: DType::Float32,
-                },
+                FusedOp::elementwise(PrimitiveOp::Sqrt, vec![FusedSrc::Buf(1)], DType::Float32),
+                FusedOp::elementwise(
+                    PrimitiveOp::Reciprocal,
+                    vec![FusedSrc::Op(0)],
+                    DType::Float32,
+                ),
             ],
             bufs: vec![
                 BufferBinding {
@@ -864,11 +873,12 @@ mod simd_tests {
 #[test]
 fn test_bounds_check_elim_for_divisible_size() {
     let mut kernels = vec![FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,

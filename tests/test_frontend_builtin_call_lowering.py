@@ -91,6 +91,38 @@ def _module_get_attr_names(main_ops: list[dict[str, object]]) -> set[str]:
     return attrs
 
 
+def _runtime_call_literal_targets(
+    main_ops: list[dict[str, object]], runtime_name: str
+) -> set[str]:
+    const_str = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op.get("kind") == "const_str"
+        and isinstance(op.get("out"), str)
+        and isinstance(op.get("s_value"), str)
+    }
+    runtime_funcs = {
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "builtin_func"
+        and op.get("s_value") == runtime_name
+        and isinstance(op.get("out"), str)
+    }
+    targets: set[str] = set()
+    for op in main_ops:
+        if op.get("kind") != "call_func":
+            continue
+        args = op.get("args")
+        if not isinstance(args, list) or len(args) < 2:
+            continue
+        if args[0] not in runtime_funcs:
+            continue
+        name_var = args[1]
+        if isinstance(name_var, str) and isinstance(const_str.get(name_var), str):
+            targets.add(const_str[name_var])
+    return targets
+
+
 def _importlib_literal_main_ops(source: str) -> list[dict[str, object]]:
     gen = SimpleTIRGenerator(
         known_modules={"importlib", "json"},
@@ -111,6 +143,41 @@ def _importlib_literal_function_ops(
     gen.visit(ast.parse(source))
     ir = gen.to_json()
     return next(func["ops"] for func in ir["functions"] if func["name"] == func_name)
+
+
+def _compiled_function_ops(source: str, func_name: str) -> list[dict[str, object]]:
+    ir = compile_to_tir(source)
+    return next(func["ops"] for func in ir["functions"] if func["name"] == func_name)
+
+
+def _generic_getattr_names(ops: list[dict[str, object]]) -> list[str]:
+    return [
+        op["s_value"]
+        for op in ops
+        if op.get("kind") == "get_attr_generic_obj"
+        and isinstance(op.get("s_value"), str)
+    ]
+
+
+def _index_const_values(ops: list[dict[str, object]]) -> list[int]:
+    const_values = {
+        op["out"]: op["value"]
+        for op in ops
+        if op.get("kind") == "const"
+        and isinstance(op.get("out"), str)
+        and isinstance(op.get("value"), int)
+    }
+    values: list[int] = []
+    for op in ops:
+        if op.get("kind") != "index":
+            continue
+        args = op.get("args")
+        if not isinstance(args, list) or len(args) < 2:
+            continue
+        index_var = args[1]
+        if isinstance(index_var, str) and isinstance(const_values.get(index_var), int):
+            values.append(const_values[index_var])
+    return values
 
 
 def _has_static_call(main_ops: list[dict[str, object]], symbol: str) -> bool:
@@ -276,6 +343,24 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     assert not any(op.get("kind") == "context_unwind_to" for op in func_ops)
 
 
+def test_module_try_except_post_try_assignment_reloads_module_dict() -> None:
+    source = (
+        "try:\n"
+        "    raise ModuleNotFoundError('x')\n"
+        "except ModuleNotFoundError:\n"
+        "    flag = True\n"
+        "else:\n"
+        "    flag = False\n"
+        "print(flag)\n"
+    )
+    ir = compile_to_tir(source)
+    main_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
+    )
+
+    assert "flag" in _module_get_attr_names(main_ops)
+
+
 def test_sync_try_except_keeps_context_unwind_when_body_enters_with() -> None:
     source = (
         "def f(p):\n"
@@ -433,14 +518,30 @@ def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic() -> None:
     assert _has_builtin_func(source, "molt_importlib_module_spec_is_package")
 
 
-def test_intrinsic_alias_lowers_to_canonical_runtime_symbol() -> None:
+def test_intrinsic_lookup_lowers_to_public_runtime_symbol() -> None:
     source = (
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
         "_HOOK = _require_intrinsic('molt_async_sleep')\n"
     )
     assert not _has_runtime_intrinsic_lookup_call(source, "molt_async_sleep")
-    assert _has_builtin_func(source, "molt_async_sleep_new")
+    assert _has_builtin_func(source, "molt_async_sleep")
     assert _has_builtin_func(source, "molt_require_intrinsic_runtime")
+
+
+def test_async_sleep_intrinsic_call_uses_poll_symbol() -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "molt_async_sleep = _require_intrinsic('molt_async_sleep')\n"
+        "def f():\n"
+        "    return molt_async_sleep(0.0, None)\n"
+    )
+    ir = compile_to_tir(source)
+    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
+    assert any(
+        op.get("kind") == "call_async"
+        and op.get("s_value") == "molt_async_sleep_poll"
+        for op in ops
+    )
 
 
 def test_chunked_stdlib_intrinsics_import_binding_survives_reset() -> None:
@@ -590,6 +691,44 @@ def test_function_metadata_uses_runtime_helper_instead_of_attr_storm() -> None:
         and isinstance(op.args[1], str)
         and op.args[1] in metadata_attrs
         for op in ops
+    )
+
+
+def test_direct_module_call_literal_defaults_read_live_function_metadata() -> None:
+    source = (
+        "def f(a=1, b=2, *, c=3):\n"
+        "    return a + b + c\n"
+        "def g():\n"
+        "    return f()\n"
+    )
+    func_ops = _compiled_function_ops(source, "__main____g")
+
+    attr_names = _generic_getattr_names(func_ops)
+    assert "__defaults__" in attr_names
+    assert "__kwdefaults__" in attr_names
+    assert _index_const_values(func_ops) == [0, 1]
+    assert any(op.get("kind") == "dict_get" for op in func_ops)
+    assert any(
+        op.get("kind") == "call" and op.get("s_value") == "__main____f"
+        for op in func_ops
+    )
+
+
+def test_guarded_function_object_call_literal_default_reads_live_defaults() -> None:
+    source = (
+        "def f(a=1):\n"
+        "    return a\n"
+        "def g():\n"
+        "    h = f\n"
+        "    return h()\n"
+    )
+    func_ops = _compiled_function_ops(source, "__main____g")
+
+    assert "__defaults__" in _generic_getattr_names(func_ops)
+    assert _index_const_values(func_ops) == [0]
+    assert any(
+        op.get("kind") == "call_guarded" and op.get("s_value") == "__main____f"
+        for op in func_ops
     )
 
 
@@ -989,40 +1128,98 @@ def test_known_module_import_uses_runtime_import_boundary() -> None:
     )
 
 
-def test_importlib_import_module_literal_lowers_to_module_import() -> None:
+def test_importlib_import_module_literal_lowers_to_import_transaction() -> None:
     main_ops = _importlib_literal_main_ops(
         "import importlib\nmod = importlib.import_module('json')\n"
     )
-    assert "json" in _module_import_targets(main_ops)
+    assert "json" in _runtime_call_literal_targets(
+        main_ops, "molt_importlib_import_transaction"
+    )
+    assert "json" not in _module_import_targets(main_ops)
     assert "import_module" not in _module_get_attr_names(main_ops)
     assert not _has_static_call(main_ops, "importlib__import_module")
 
 
-def test_importlib_import_module_literal_alias_lowers_to_module_import() -> None:
+def test_importlib_import_module_literal_alias_lowers_to_import_transaction() -> None:
     main_ops = _importlib_literal_main_ops(
         "import importlib as loader\nmod = loader.import_module('json')\n"
     )
-    assert "json" in _module_import_targets(main_ops)
+    assert "json" in _runtime_call_literal_targets(
+        main_ops, "molt_importlib_import_transaction"
+    )
+    assert "json" not in _module_import_targets(main_ops)
     assert "import_module" not in _module_get_attr_names(main_ops)
     assert not _has_static_call(main_ops, "importlib__import_module")
 
 
-def test_importlib_import_module_literal_from_import_lowers_to_module_import() -> None:
+def test_importlib_import_module_literal_respects_module_attr_rebinding() -> None:
+    main_ops = _importlib_literal_main_ops(
+        "import importlib\n"
+        "def fake(name):\n"
+        "    return name\n"
+        "importlib.import_module = fake\n"
+        "mod = importlib.import_module('json')\n"
+    )
+    assert "json" not in _module_import_targets(main_ops)
+    assert "json" not in _runtime_call_literal_targets(
+        main_ops, "molt_importlib_import_transaction"
+    )
+    assert "import_module" in _module_get_attr_names(main_ops)
+
+
+def test_importlib_import_module_literal_respects_alias_attr_rebinding() -> None:
+    main_ops = _importlib_literal_main_ops(
+        "import importlib as loader\n"
+        "def fake(name):\n"
+        "    return name\n"
+        "loader.import_module = fake\n"
+        "mod = loader.import_module('json')\n"
+    )
+    assert "json" not in _module_import_targets(main_ops)
+    assert "json" not in _runtime_call_literal_targets(
+        main_ops, "molt_importlib_import_transaction"
+    )
+    assert "import_module" in _module_get_attr_names(main_ops)
+
+
+def test_importlib_import_module_literal_respects_propagated_alias_rebinding() -> None:
+    main_ops = _importlib_literal_main_ops(
+        "import importlib\n"
+        "loader = importlib\n"
+        "def fake(name):\n"
+        "    return name\n"
+        "loader.import_module = fake\n"
+        "mod = importlib.import_module('json')\n"
+    )
+    assert "json" not in _module_import_targets(main_ops)
+    assert "json" not in _runtime_call_literal_targets(
+        main_ops, "molt_importlib_import_transaction"
+    )
+    assert "import_module" in _module_get_attr_names(main_ops)
+
+
+def test_importlib_import_module_literal_from_import_lowers_to_import_transaction() -> None:
     main_ops = _importlib_literal_main_ops(
         "from importlib import import_module\nmod = import_module('json')\n"
     )
-    assert "json" in _module_import_targets(main_ops)
+    assert "json" in _runtime_call_literal_targets(
+        main_ops, "molt_importlib_import_transaction"
+    )
+    assert "json" not in _module_import_targets(main_ops)
     assert not _has_static_call(main_ops, "importlib__import_module")
 
 
-def test_importlib_import_module_literal_in_function_lowers_to_module_import() -> None:
+def test_importlib_import_module_literal_in_function_lowers_to_import_transaction() -> None:
     func_ops = _importlib_literal_function_ops(
         "import importlib\n"
         "def f():\n"
         "    return importlib.import_module('json')\n",
         "__main____f",
     )
-    assert "json" in _module_import_targets(func_ops)
+    assert "json" in _runtime_call_literal_targets(
+        func_ops, "molt_importlib_import_transaction"
+    )
+    assert "json" not in _module_import_targets(func_ops)
     assert "import_module" not in _module_get_attr_names(func_ops)
     assert not _has_static_call(func_ops, "importlib__import_module")
 
@@ -1035,9 +1232,12 @@ def test_importlib_import_module_literal_respects_local_shadowing() -> None:
         "__main____f",
     )
     assert "json" not in _module_import_targets(func_ops)
+    assert "json" not in _runtime_call_literal_targets(
+        func_ops, "molt_importlib_import_transaction"
+    )
 
 
-def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime() -> None:
+def test_importlib_import_module_literal_unresolved_name_uses_transaction_authority() -> None:
     gen = SimpleTIRGenerator(
         known_modules={"importlib"},
         stdlib_allowlist={"importlib"},
@@ -1052,10 +1252,13 @@ def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime(
     main_ops = next(
         func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
     )
+    assert "molt_missing_importlib_literal_target" in _runtime_call_literal_targets(
+        main_ops, "molt_importlib_import_transaction"
+    )
     assert "molt_missing_importlib_literal_target" not in _module_import_targets(
         main_ops
     )
-    assert _has_static_call(main_ops, "importlib__import_module")
+    assert not _has_static_call(main_ops, "importlib__import_module")
 
 
 def test_sum_generator_expr_lowers_without_generator_task_or_builtin_call() -> None:

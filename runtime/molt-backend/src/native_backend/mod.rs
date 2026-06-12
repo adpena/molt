@@ -44,7 +44,7 @@ mod simple_backend;
 // The three externally-public backend types must flow through a `pub` path so
 // `lib.rs` can re-export them publicly (`molt_backend::SimpleBackend`, etc.);
 // the remaining crate-internal items stay `pub(crate)`.
-pub use simple_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
 pub(crate) use simple_backend::*;
+pub use simple_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
 
 mod function_compiler;

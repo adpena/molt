@@ -16,7 +16,10 @@ use molt_gpu::render::hip::HipRenderer;
 use molt_gpu::render::msl::MslRenderer;
 use molt_gpu::render::opencl::OpenClRenderer;
 use molt_gpu::render::wgsl::WgslRenderer;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, KernelBody, ReductionDomain,
+    Renderer,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 /// All 6 renderers with their names.
@@ -38,11 +41,13 @@ fn all_renderers() -> Vec<(&'static str, Box<dyn Renderer>)> {
 /// Simplified as: reduce_sum(exp2(x - reduce_max(x)))
 fn make_reduce_sum_kernel(n: usize, reduce_size: usize) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n, reduce_size], 1),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -67,11 +72,13 @@ fn make_reduce_sum_kernel(n: usize, reduce_size: usize) -> FusedKernel {
 /// Reduce-max kernel (used in softmax denominator computation).
 fn make_reduce_max_kernel(n: usize, reduce_size: usize) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceMax,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceMax,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n, reduce_size], 1),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -97,25 +104,22 @@ fn make_reduce_max_kernel(n: usize, reduce_size: usize) -> FusedKernel {
 /// Simplified as fused: mul(x, reciprocal(sqrt(reduce_sum(mul(x, x)))))
 fn make_elementwise_chain_kernel(n: usize) -> FusedKernel {
     FusedKernel {
+        body: Default::default(),
         ops: vec![
             // v0 = buf1 * buf2 (element-wise multiply)
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
             // v1 = sqrt(v0)
-            FusedOp {
-                op: PrimitiveOp::Sqrt,
-                srcs: vec![FusedSrc::Op(0)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(PrimitiveOp::Sqrt, vec![FusedSrc::Op(0)], DType::Float32),
             // v2 = reciprocal(v1)
-            FusedOp {
-                op: PrimitiveOp::Reciprocal,
-                srcs: vec![FusedSrc::Op(1)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Reciprocal,
+                vec![FusedSrc::Op(1)],
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -147,17 +151,14 @@ fn make_elementwise_chain_kernel(n: usize) -> FusedKernel {
 /// Attention score kernel: exp2(x) * y (used in softmax @ V).
 fn make_exp2_mul_kernel(n: usize) -> FusedKernel {
     FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Exp2,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(PrimitiveOp::Exp2, vec![FusedSrc::Buf(1)], DType::Float32),
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Op(0), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -189,31 +190,29 @@ fn make_exp2_mul_kernel(n: usize) -> FusedKernel {
 /// Fused reduce with pre-reduce elementwise: reduce_sum(exp2(x - const))
 fn make_fused_softmax_kernel(n: usize, reduce_size: usize) -> FusedKernel {
     FusedKernel {
+        body: Default::default(),
         ops: vec![
             // v0 = buf1 - 5.0 (subtract max)
-            FusedOp {
-                op: PrimitiveOp::Sub,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Sub,
+                vec![
                     FusedSrc::Buf(1),
                     FusedSrc::Const {
                         val: 5.0,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
             // v1 = exp2(v0)
-            FusedOp {
-                op: PrimitiveOp::Exp2,
-                srcs: vec![FusedSrc::Op(0)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(PrimitiveOp::Exp2, vec![FusedSrc::Op(0)], DType::Float32),
             // v2 = reduce_sum(v1)
-            FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Op(1)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n, reduce_size], 1),
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -231,6 +230,229 @@ fn make_fused_softmax_kernel(n: usize, reduce_size: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    }
+}
+
+fn make_reduce_uses_nonlast_prefix_source_kernel(n: usize, reduce_size: usize) -> FusedKernel {
+    FusedKernel {
+        body: KernelBody::Compute,
+        ops: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: 2.0,
+                        dtype: DType::Float32,
+                    },
+                ],
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: 1.0,
+                        dtype: DType::Float32,
+                    },
+                ],
+                DType::Float32,
+            ),
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(0)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n, reduce_size], 1),
+            ),
+        ],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n * reduce_size]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n as u32, 1, 1],
+        local: [256, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    }
+}
+
+fn make_same_storage_distinct_view_kernel() -> FusedKernel {
+    let st = ShapeTracker::contiguous(&[4]);
+    FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: st.clone(),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 77,
+                st: st.flip(0),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 77,
+                st,
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [4, 1, 1],
+        local: [4, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    }
+}
+
+#[test]
+fn test_reduction_accumulates_declared_source_not_last_prefix_op() {
+    let kernel = make_reduce_uses_nonlast_prefix_source_kernel(4, 8);
+
+    for (name, renderer) in all_renderers() {
+        let source = renderer.render(&kernel);
+        let (expected, forbidden) = match name {
+            "WGSL" | "GLSL" => ("acc = acc + v0", "acc = acc + v1"),
+            _ => ("acc += v0", "acc += v1"),
+        };
+        assert!(
+            source.contains(expected),
+            "{} must accumulate the reduce op's declared source v0\n{}",
+            name,
+            source
+        );
+        assert!(
+            !source.contains(forbidden),
+            "{} must not reduce the last pre-reduce op v1\n{}",
+            name,
+            source
+        );
+    }
+}
+
+fn make_masked_padded_view_kernel() -> FusedKernel {
+    let st = ShapeTracker::contiguous(&[3]).pad(&[(1, 1)]);
+    FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Neg,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[5]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 77,
+                st,
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [5, 1, 1],
+        local: [5, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    }
+}
+
+fn make_materialize_flip_copy_kernel() -> FusedKernel {
+    let st = ShapeTracker::contiguous(&[4]).flip(0);
+    FusedKernel {
+        body: KernelBody::MaterializeCopy,
+        ops: Vec::new(),
+        bufs: vec![
+            BufferBinding {
+                buf_id: 100,
+                st: ShapeTracker::contiguous(&[4]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 77,
+                st,
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [4, 1, 1],
+        local: [4, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    }
+}
+
+fn make_materialize_u32_flip_copy_kernel() -> FusedKernel {
+    let st = ShapeTracker::contiguous(&[4]).flip(0);
+    FusedKernel {
+        body: KernelBody::MaterializeCopy,
+        ops: Vec::new(),
+        bufs: vec![
+            BufferBinding {
+                buf_id: 100,
+                st: ShapeTracker::contiguous(&[4]),
+                dtype: DType::UInt32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 77,
+                st,
+                dtype: DType::UInt32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [4, 1, 1],
+        local: [4, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    }
+}
+
+fn make_materialize_padded_copy_kernel() -> FusedKernel {
+    let st = ShapeTracker::contiguous(&[3]).pad(&[(1, 1)]);
+    FusedKernel {
+        body: KernelBody::MaterializeCopy,
+        ops: Vec::new(),
+        bufs: vec![
+            BufferBinding {
+                buf_id: 100,
+                st: ShapeTracker::contiguous(&[5]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 77,
+                st,
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [5, 1, 1],
+        local: [5, 1, 1],
         spec: None,
         vectorize_width: 1,
     }
@@ -264,6 +486,263 @@ fn test_cross_all_renderers_produce_output() {
                 source.len(),
                 kernel_name,
             );
+        }
+    }
+}
+
+#[test]
+fn test_cross_renderers_name_parameters_by_binding_slot_not_storage_id() {
+    let kernel = make_same_storage_distinct_view_kernel();
+
+    for (renderer_name, renderer) in all_renderers() {
+        let source = renderer.render(&kernel);
+        match renderer_name {
+            "WGSL" => {
+                assert!(
+                    source.contains("buf1[u32((3i - i32(gid)))] + buf2[gid]"),
+                    "WGSL must read the flipped and contiguous views through distinct slots:\n{}",
+                    source,
+                );
+                assert!(
+                    !source.contains("buf77"),
+                    "WGSL leaked storage id into parameter names:\n{}",
+                    source,
+                );
+            }
+            "GLSL" => {
+                assert!(
+                    source.contains("u_tex1") && source.contains("u_tex2"),
+                    "GLSL must expose both same-storage views as distinct texture slots:\n{}",
+                    source,
+                );
+                assert!(
+                    source.contains("(3 - int(gid))"),
+                    "GLSL must render the flipped view index for the first slot:\n{}",
+                    source,
+                );
+                assert!(
+                    !source.contains("u_tex77"),
+                    "GLSL leaked storage id into texture names:\n{}",
+                    source,
+                );
+            }
+            "MSL" | "CUDA" | "HIP" | "OpenCL" => {
+                assert!(
+                    source.contains("buf1[(3 - ((long)(gid)))] + buf2[gid]"),
+                    "{} must read the flipped and contiguous views through distinct slots:\n{}",
+                    renderer_name,
+                    source,
+                );
+                assert!(
+                    !source.contains("buf77"),
+                    "{} leaked storage id into parameter names:\n{}",
+                    renderer_name,
+                    source,
+                );
+            }
+            _ => unreachable!("unexpected renderer {renderer_name}"),
+        }
+    }
+}
+
+#[test]
+fn test_cross_renderers_guard_masked_padded_view_reads() {
+    let kernel = make_masked_padded_view_kernel();
+
+    for (renderer_name, renderer) in all_renderers() {
+        let source = renderer.render(&kernel);
+        match renderer_name {
+            "WGSL" => {
+                assert!(
+                    source.contains("select(0, buf1[u32(select(0i"),
+                    "WGSL must guard padded reads through a safe index:\n{}",
+                    source,
+                );
+                assert!(
+                    source.contains("i32(gid) >= 1i && i32(gid) < 4i"),
+                    "WGSL must emit the pad mask predicate:\n{}",
+                    source,
+                );
+            }
+            "GLSL" => {
+                assert!(
+                    source.contains("? texelFetch(u_tex1"),
+                    "GLSL must guard padded texture reads:\n{}",
+                    source,
+                );
+                assert!(
+                    source.contains("int(gid) >= 1 && int(gid) < 4"),
+                    "GLSL must emit the pad mask predicate:\n{}",
+                    source,
+                );
+            }
+            "MSL" | "CUDA" | "HIP" | "OpenCL" => {
+                assert!(
+                    source.contains("? buf1["),
+                    "{} must guard padded buffer reads:\n{}",
+                    renderer_name,
+                    source,
+                );
+                assert!(
+                    source.contains("((long)(gid)) >= 1 && ((long)(gid)) < 4"),
+                    "{} must emit the pad mask predicate:\n{}",
+                    renderer_name,
+                    source,
+                );
+            }
+            _ => unreachable!("unexpected renderer {renderer_name}"),
+        }
+    }
+}
+
+#[test]
+fn test_cross_renderers_emit_materialize_copy_from_flipped_source() {
+    let kernel = make_materialize_flip_copy_kernel();
+
+    for (renderer_name, renderer) in all_renderers() {
+        let source = renderer.render(&kernel);
+        match renderer_name {
+            "WGSL" => {
+                assert!(
+                    source.contains("buf0[gid] = buf1[u32((3i - i32(gid)))]"),
+                    "WGSL must copy from the flipped source view into contiguous output:\n{}",
+                    source,
+                );
+            }
+            "GLSL" => {
+                assert!(
+                    source.contains("result[comp] = float(texelFetch(u_tex1")
+                        && source.contains("(3 - int(gid))"),
+                    "GLSL must copy flipped source texels into contiguous packed output:\n{}",
+                    source,
+                );
+            }
+            "MSL" | "CUDA" | "HIP" | "OpenCL" => {
+                assert!(
+                    source.contains("buf0[gid] = buf1[(3 - ((long)(gid)))]"),
+                    "{} must copy from the flipped source view into contiguous output:\n{}",
+                    renderer_name,
+                    source,
+                );
+            }
+            _ => unreachable!("unexpected renderer {renderer_name}"),
+        }
+    }
+}
+
+#[test]
+fn test_cross_renderers_emit_uint32_materialize_copy_body() {
+    let kernel = make_materialize_u32_flip_copy_kernel();
+
+    for (renderer_name, renderer) in all_renderers() {
+        let source = renderer.render(&kernel);
+        match renderer_name {
+            "WGSL" => {
+                assert!(
+                    source.contains("array<u32>"),
+                    "WGSL UInt32 MaterializeCopy must use u32 storage:\n{}",
+                    source,
+                );
+                assert!(
+                    source.contains("buf0[gid] = buf1[u32((3i - i32(gid)))]"),
+                    "WGSL UInt32 MaterializeCopy must copy from the flipped view:\n{}",
+                    source,
+                );
+            }
+            "MSL" => {
+                assert!(
+                    source.contains("device uint* buf0")
+                        && source.contains("const device uint* buf1")
+                        && source.contains("buf0[gid] = buf1[(3 - ((long)(gid)))]"),
+                    "MSL UInt32 MaterializeCopy must use uint buffers and flipped indexing:\n{}",
+                    source,
+                );
+            }
+            "CUDA" | "HIP" => {
+                assert!(
+                    source.contains("unsigned int* buf0")
+                        && source.contains("const unsigned int* buf1")
+                        && source.contains("buf0[gid] = buf1[(3 - ((long)(gid)))]"),
+                    "{} UInt32 MaterializeCopy must use unsigned int buffers and flipped indexing:\n{}",
+                    renderer_name,
+                    source,
+                );
+            }
+            "OpenCL" => {
+                assert!(
+                    source.contains("__global uint * restrict buf0")
+                        && source.contains("__global const uint * restrict buf1")
+                        && source.contains("buf0[gid] = buf1[(3 - ((long)(gid)))]"),
+                    "OpenCL UInt32 MaterializeCopy must use uint buffers and flipped indexing:\n{}",
+                    source,
+                );
+            }
+            "GLSL" => {
+                assert!(
+                    source.contains("result[comp] = float(texelFetch(u_tex1")
+                        && source.contains("(3 - int(gid))"),
+                    "GLSL UInt32 MaterializeCopy must copy the flipped texture source:\n{}",
+                    source,
+                );
+            }
+            _ => unreachable!("unexpected renderer {renderer_name}"),
+        }
+        assert!(
+            !source.contains(" v0 = ") && !source.contains("var v0"),
+            "{} UInt32 MaterializeCopy must not render a compute op chain:\n{}",
+            renderer_name,
+            source,
+        );
+    }
+}
+
+#[test]
+fn test_cross_renderers_emit_materialize_copy_from_padded_source() {
+    let kernel = make_materialize_padded_copy_kernel();
+
+    for (renderer_name, renderer) in all_renderers() {
+        let source = renderer.render(&kernel);
+        match renderer_name {
+            "WGSL" => {
+                assert!(
+                    source.contains("buf0[gid] = select(0, buf1[u32(select(0i"),
+                    "WGSL must emit a guarded MaterializeCopy store:\n{}",
+                    source,
+                );
+                assert!(
+                    !source.contains("var v0"),
+                    "WGSL MaterializeCopy must not render a compute op chain:\n{}",
+                    source,
+                );
+            }
+            "GLSL" => {
+                assert!(
+                    source.contains("result[comp] = float((")
+                        && source.contains("? texelFetch(u_tex1"),
+                    "GLSL must emit a guarded MaterializeCopy texture read:\n{}",
+                    source,
+                );
+                assert!(
+                    !source.contains(" v0 = "),
+                    "GLSL MaterializeCopy must not render a compute op chain:\n{}",
+                    source,
+                );
+            }
+            "MSL" | "CUDA" | "HIP" | "OpenCL" => {
+                assert!(
+                    source.contains("buf0[gid] =") && source.contains("? buf1["),
+                    "{} must emit a guarded MaterializeCopy store:\n{}",
+                    renderer_name,
+                    source,
+                );
+                assert!(
+                    !source.contains(" v0 = "),
+                    "{} MaterializeCopy must not render a compute op chain:\n{}",
+                    renderer_name,
+                    source,
+                );
+            }
+            _ => unreachable!("unexpected renderer {renderer_name}"),
         }
     }
 }
@@ -370,11 +849,12 @@ fn test_cross_renderers_correct_math_ops() {
 fn test_cross_renderers_type_narrowing() {
     // Use Float64 dtype — should be narrowed for WebGPU/GLSL/Metal
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float64,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float64,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -526,11 +1006,12 @@ fn test_cross_renderers_language_specific_headers() {
 fn test_cross_renderers_where_op_syntax() {
     // WGSL uses select(), others use ternary
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Where,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Where,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -614,11 +1095,12 @@ fn test_cross_renderers_fused_reduce_pre_reduce_ops() {
 #[test]
 fn test_cross_renderers_reciprocal_syntax() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Reciprocal,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Reciprocal,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,

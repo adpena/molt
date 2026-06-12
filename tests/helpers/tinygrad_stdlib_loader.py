@@ -28,7 +28,7 @@ def _load_module(module_name: str, path: Path):
 
 
 @contextmanager
-def tinygrad_stdlib_context(*extra_leaves: str):
+def tinygrad_stdlib_context(*extra_leaves: str, intrinsics: dict | None = None):
     leaves = tuple(
         dict.fromkeys(("dtypes", "lazy", "realize", "tensor", *extra_leaves))
     )
@@ -41,9 +41,12 @@ def tinygrad_stdlib_context(*extra_leaves: str):
     saved = {name: sys.modules.get(name, sentinel) for name in module_names}
 
     try:
-        intrinsics = types.ModuleType("_intrinsics")
-        intrinsics.require_intrinsic = lambda _name: lambda *args, **kwargs: None
-        sys.modules["_intrinsics"] = intrinsics
+        intrinsics_module = types.ModuleType("_intrinsics")
+        intrinsic_impls = intrinsics or {}
+        intrinsics_module.require_intrinsic = lambda name: intrinsic_impls.get(
+            name, lambda *args, **kwargs: None
+        )
+        sys.modules["_intrinsics"] = intrinsics_module
 
         package = types.ModuleType("tinygrad")
         package.__path__ = [str(TINYGRAD_STDLIB)]

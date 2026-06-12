@@ -19,6 +19,9 @@ dependencies = [
 [project.scripts]
 molt = "molt.cli:main"
 
+[project.entry-points.pytest11]
+molt_memory_guard = "molt.pytest_memory_guard_bootstrap"
+
 [tool.uv]
 managed = true
 
@@ -62,6 +65,8 @@ exclude = ["src/molt/stdlib/**", "stdlib/**", "tests/differential/**"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
+    "-p",
+    "molt.pytest_memory_guard_config_plugin",
     "--ignore=tests/differential",
     "--ignore=tests/molt_only",
     "--ignore=tests/compliance",

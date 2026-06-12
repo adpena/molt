@@ -377,12 +377,8 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, disabled: bool) ->
                 let store_root = alias.root(store_obj);
                 let value = op.operands[1];
                 let value_root = alias.root(value);
-                let value_is_neutral = store_value_is_refcount_neutral(
-                    value,
-                    func,
-                    &const_immediates,
-                    &ranges,
-                );
+                let value_is_neutral =
+                    store_value_is_refcount_neutral(value, func, &const_immediates, &ranges);
                 // The op must touch ONLY this store's target root (the value must
                 // not be a candidate root — that would mean the object captures
                 // another promotable object, an escape), and the value must be
@@ -533,7 +529,13 @@ fn emit_report(
     let sanitized: String = func
         .name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let _ = crate::debug_artifacts::write_debug_artifact(
         format!("sroa_report/{sanitized}.txt"),

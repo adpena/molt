@@ -539,11 +539,7 @@ def test_dev_py_tty_uses_guard_when_memory_guard_enabled(monkeypatch) -> None:
     def fake_check_call_guarded(cmd, env, *, limits=None):
         calls.append(("guarded", list(cmd)))
 
-    def fail_pty(cmd, env):
-        raise AssertionError("PTY path must not bypass memory guard")
-
     monkeypatch.setattr(module, "_check_call_guarded", fake_check_call_guarded)
-    monkeypatch.setattr(module, "_run_with_pty", fail_pty)
 
     module._run_repo_cmd(
         ["pytest", "-q"], {"MOLT_TEST_SUITE_MEMORY_GUARD": "1"}, tty=True
@@ -552,27 +548,20 @@ def test_dev_py_tty_uses_guard_when_memory_guard_enabled(monkeypatch) -> None:
     assert calls == [("guarded", ["pytest", "-q"])]
 
 
-def test_dev_py_tty_can_use_pty_when_memory_guard_disabled(monkeypatch) -> None:
+def test_dev_py_tty_uses_guard_when_legacy_disable_env_is_set(monkeypatch) -> None:
     module = _load_dev_py()
     calls: list[tuple[str, list[str]]] = []
 
-    def fail_guarded(cmd, env, *, limits=None):
-        raise AssertionError("guarded path should not run when guard is disabled")
+    def fake_check_call_guarded(cmd, env, *, limits=None):
+        calls.append(("guarded", list(cmd)))
 
-    def fake_pty(cmd, env):
-        calls.append(("pty", list(cmd)))
-
-    monkeypatch.setattr(module, "_check_call_guarded", fail_guarded)
-    monkeypatch.setattr(module, "_run_with_pty", fake_pty)
+    monkeypatch.setattr(module, "_check_call_guarded", fake_check_call_guarded)
 
     module._run_repo_cmd(
         ["pytest", "-q"], {"MOLT_TEST_SUITE_MEMORY_GUARD": "0"}, tty=True
     )
 
-    if module.os.name == "posix":
-        assert calls == [("pty", ["pytest", "-q"])]
-    else:
-        assert calls == []
+    assert calls == [("guarded", ["pytest", "-q"])]
 
 
 def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(monkeypatch) -> None:

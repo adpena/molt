@@ -37,29 +37,29 @@ pub(in crate::native_backend::function_compiler) enum OpFlow {
     Continue,
 }
 
-pub(in crate::native_backend::function_compiler) mod vec_reductions;
-pub(in crate::native_backend::function_compiler) mod generators;
-pub(in crate::native_backend::function_compiler) mod callargs;
-pub(in crate::native_backend::function_compiler) mod statistics;
-pub(in crate::native_backend::function_compiler) mod dataclass;
-pub(in crate::native_backend::function_compiler) mod memoryview_buffer;
-pub(in crate::native_backend::function_compiler) mod parse_ops;
-pub(in crate::native_backend::function_compiler) mod future_promise;
-pub(in crate::native_backend::function_compiler) mod type_checks;
-pub(in crate::native_backend::function_compiler) mod object_construct;
-pub(in crate::native_backend::function_compiler) mod class_ops;
-pub(in crate::native_backend::function_compiler) mod file_io;
-pub(in crate::native_backend::function_compiler) mod exception_stack;
-pub(in crate::native_backend::function_compiler) mod context_mgmt;
 pub(in crate::native_backend::function_compiler) mod attrs;
-pub(in crate::native_backend::function_compiler) mod modules;
-pub(in crate::native_backend::function_compiler) mod exceptions;
-pub(in crate::native_backend::function_compiler) mod list_ops;
+pub(in crate::native_backend::function_compiler) mod callargs;
+pub(in crate::native_backend::function_compiler) mod class_ops;
+pub(in crate::native_backend::function_compiler) mod context_mgmt;
+pub(in crate::native_backend::function_compiler) mod dataclass;
 pub(in crate::native_backend::function_compiler) mod dict_ops;
+pub(in crate::native_backend::function_compiler) mod exception_stack;
+pub(in crate::native_backend::function_compiler) mod exceptions;
+pub(in crate::native_backend::function_compiler) mod file_io;
+pub(in crate::native_backend::function_compiler) mod future_promise;
+pub(in crate::native_backend::function_compiler) mod generators;
+pub(in crate::native_backend::function_compiler) mod list_ops;
+pub(in crate::native_backend::function_compiler) mod memoryview_buffer;
+pub(in crate::native_backend::function_compiler) mod modules;
+pub(in crate::native_backend::function_compiler) mod object_construct;
+pub(in crate::native_backend::function_compiler) mod parse_ops;
 pub(in crate::native_backend::function_compiler) mod set_ops;
-pub(in crate::native_backend::function_compiler) mod type_conversions;
-pub(in crate::native_backend::function_compiler) mod text_transform;
+pub(in crate::native_backend::function_compiler) mod statistics;
 pub(in crate::native_backend::function_compiler) mod text_predicates;
+pub(in crate::native_backend::function_compiler) mod text_transform;
+pub(in crate::native_backend::function_compiler) mod type_checks;
+pub(in crate::native_backend::function_compiler) mod type_conversions;
+pub(in crate::native_backend::function_compiler) mod vec_reductions;
 
 /// Free-function form of `compile_func_inner`'s op-local
 /// `var_get_boxed_overflow_safe` closure: box a variable's value

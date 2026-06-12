@@ -34,6 +34,7 @@ import time
 import threading
 import tracemalloc
 import tokenize
+from types import MappingProxyType
 import urllib.parse
 import urllib.request
 import uuid
@@ -61,6 +62,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from molt.compat import CompatibilityError
+from molt import backend_daemon_custody as _daemon_custody
 from molt import process_guard as _process_guard
 from molt._wasm_runtime_exports import (
     wasm_runtime_export_link_args,
@@ -114,9 +116,13 @@ TypeHintPolicy = Literal["ignore", "trust", "check"]
 FallbackPolicy = Literal["error", "bridge"]
 BuildProfile = Literal["dev", "release"]
 EmitMode = Literal["bin", "obj", "wasm"]
+ImportScanMode = Literal["full", "module_init"]
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
 STUB_PARENT_MODULES = {"molt"}
-# Stdlib modules that rely on nested imports for required runtime semantics.
+# Modules whose function-body imports are part of the required static module
+# graph.  The default set is limited to stdlib modules with proven module-init
+# semantics; third-party lazy backend families stay runtime import obligations
+# unless they are entry modules or explicitly admitted here.
 STDLIB_NESTED_IMPORT_SCAN_MODULES = {
     "collections",
     "typing",
@@ -859,6 +865,15 @@ def _wrapper_build_dependency_fingerprints(
     stdlib_root = _stdlib_root_path()
     module_roots = list(resolved_build_entry.module_roots)
     roots = list(dict.fromkeys([*module_roots, stdlib_root]))
+    admitted_packages, admission_error = _parse_external_static_packages(
+        os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
+    )
+    if admission_error is not None:
+        return None
+    import_admission_policy = _ImportAdmissionPolicy(
+        external_roots=resolved_build_entry.external_module_roots,
+        admitted_external_packages=admitted_packages,
+    )
     try:
         graph, _explicit_imports = _discover_module_graph(
             resolved_build_entry.source_path,
@@ -867,6 +882,7 @@ def _wrapper_build_dependency_fingerprints(
             stdlib_root,
             project_root,
             _stdlib_allowlist(),
+            import_admission_policy=import_admission_policy,
             target_python=resolved_build_entry.target_python,
         )
     except (OSError, SyntaxError, UnicodeDecodeError):
@@ -1163,12 +1179,7 @@ def _run_wrapper_build(
     return contract, duration, None
 
 
-def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
-    filtered_names = [name for name in module_names if name]
-    known_modules = sorted({*filtered_names, "builtins"})
-    top_level_by_module = {
-        name: name.split(".", 1)[0] for name in known_modules if "." in name
-    }
+def _write_importer_module(output_dir: Path) -> Path:
     lines = [
         '"""Auto-generated import dispatcher for Molt-compiled modules."""',
         "",
@@ -1177,68 +1188,14 @@ def _write_importer_module(module_names: list[str], output_dir: Path) -> Path:
     ]
     lines.extend(
         [
-            "import sys as _sys",
             "from _intrinsics import require_intrinsic as _require_intrinsic",
             "",
-            f"_KNOWN_MODULES = frozenset({known_modules!r})",
-            f"_TOP_LEVEL_BY_MODULE = {top_level_by_module!r}",
-            "_MODULE_IMPORT = _require_intrinsic('molt_module_import', globals())",
-            "_IMPORT_MODULE = _require_intrinsic(",
-            "    'molt_importlib_import_module', globals()",
+            "_IMPORT_TRANSACTION = _require_intrinsic(",
+            "    'molt_importlib_import_transaction', globals()",
             ")",
             "",
-            "def _resolve_name(name: str, package: str | None, level: int) -> str:",
-            "    if level <= 0:",
-            "        return name",
-            "    if not package:",
-            '        raise ImportError("relative import requires package")',
-            '    parts = package.split(".")',
-            "    if level > len(parts):",
-            '        raise ImportError("attempted relative import beyond top-level package")',
-            "    cut = len(parts) - level + 1",
-            '    base = ".".join(parts[:cut])',
-            "    if name:",
-            '        return f"{base}.{name}" if base else name',
-            "    return base",
-            "",
-            "def _runtime_import_support(module_name: str):",
-            "    mod = _sys.modules.get(module_name)",
-            "    if mod is None:",
-            "        mod = _MODULE_IMPORT(module_name)",
-            "    if mod is not None:",
-            "        return mod",
-            '    raise RuntimeError(f"runtime support module unavailable: {module_name}")',
-            "",
             "def _molt_import(name, globals=None, locals=None, fromlist=(), level=0):",
-            "    if not name:",
-            '        raise ImportError("Empty module name")',
-            "    package = None",
-            "    if isinstance(globals, dict):",
-            '        package = globals.get("__package__")',
-            '        if not package and globals.get("__path__") and globals.get("__name__"):',
-            '            package = globals.get("__name__")',
-            "    resolved = _resolve_name(name, package, level) if level else name",
-            '    modules = getattr(_sys, "modules", {})',
-            "    if resolved in modules:",
-            "        mod = modules[resolved]",
-            "        if mod is None:",
-            '            raise ImportError(f"import of {resolved} halted; None in sys.modules")',
-            "        if resolved not in _KNOWN_MODULES:",
-            "            if fromlist:",
-            "                return mod",
-            "            top = _TOP_LEVEL_BY_MODULE.get(resolved, resolved)",
-            "            return modules.get(top, mod)",
-            "    if resolved not in _KNOWN_MODULES:",
-            "        raise ImportError(f\"No module named '{resolved}'\")",
-            "    util = _runtime_import_support('importlib.util')",
-            "    machinery = _runtime_import_support('importlib.machinery')",
-            "    mod = _IMPORT_MODULE(resolved, util, machinery)",
-            "    if mod is None:",
-            "        raise ImportError(f\"No module named '{resolved}'\")",
-            "    if fromlist:",
-            "        return mod",
-            "    top = _TOP_LEVEL_BY_MODULE.get(resolved, resolved)",
-            "    return modules.get(top, mod)",
+            "    return _IMPORT_TRANSACTION(name, globals, locals, fromlist, level)",
         ]
     )
     path = output_dir / f"{IMPORTER_MODULE_NAME}.py"
@@ -1358,6 +1315,7 @@ def _run_completed_command(
     cwd: Path | None,
     capture_output: bool,
     memory_guard_prefix: str | None,
+    input: str | None = None,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     guard_env = (
@@ -1370,6 +1328,7 @@ def _run_completed_command(
             cmd,
             env=env,
             cwd=cwd,
+            input=input,
             capture_output=capture_output,
             text=True,
             timeout=timeout,
@@ -1380,6 +1339,7 @@ def _run_completed_command(
         cwd=cwd,
         capture_output=capture_output,
         memory_guard_prefix=memory_guard_prefix,
+        input=input,
         timeout=timeout,
         guard_loader=_load_cli_harness_memory_guard,
     )
@@ -1840,6 +1800,74 @@ class _RuntimeImportSupportPolicy:
 
 
 @dataclass(frozen=True)
+class _ModuleRootResolution:
+    roots: tuple[Path, ...]
+    external_roots: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class _ImportAdmissionPolicy:
+    external_roots: tuple[Path, ...] = ()
+    admitted_external_packages: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        external_roots = tuple(
+            dict.fromkeys(root.resolve() for root in self.external_roots)
+        )
+        admitted = frozenset(
+            name.strip()
+            for name in self.admitted_external_packages
+            if name and name.strip()
+        )
+        object.__setattr__(self, "external_roots", external_roots)
+        object.__setattr__(self, "admitted_external_packages", admitted)
+
+    def _external_root_for_path(self, path: Path) -> Path | None:
+        resolved_path = path.resolve()
+        for root in self.external_roots:
+            if resolved_path == root or resolved_path.is_relative_to(root):
+                return root
+        return None
+
+    def _package_admitted(self, module_name: str) -> bool:
+        for package in self.admitted_external_packages:
+            if module_name == package or module_name.startswith(package + "."):
+                return True
+        return False
+
+    def admits_import(
+        self,
+        module_name: str,
+        path: Path,
+        *,
+        from_entry_path: bool,
+    ) -> bool:
+        if self._external_root_for_path(path) is None:
+            return True
+        return from_entry_path or self._package_admitted(module_name)
+
+    def admits_package_parent(
+        self,
+        module_name: str,
+        path: Path,
+        *,
+        existing_modules: Collection[str],
+    ) -> bool:
+        if self._external_root_for_path(path) is None:
+            return True
+        if self._package_admitted(module_name):
+            return True
+        prefix = module_name + "."
+        return any(name.startswith(prefix) for name in existing_modules)
+
+    def digest_payload(self) -> dict[str, Any]:
+        return {
+            "external_roots": [str(root) for root in self.external_roots],
+            "admitted_external_packages": sorted(self.admitted_external_packages),
+        }
+
+
+@dataclass(frozen=True)
 class _PreparedEntryModuleGraph:
     stdlib_allowlist: set[str]
     roots: list[Path]
@@ -1848,8 +1876,7 @@ class _PreparedEntryModuleGraph:
     explicit_imports: set[str]
     stub_parents: set[str]
     spawn_enabled: bool
-    needs_generated_importer: bool
-    needs_runtime_import_support: bool
+    runtime_import_support_policy: _RuntimeImportSupportPolicy
 
 
 @dataclass(frozen=True)
@@ -1860,14 +1887,28 @@ class _ResolvedBuildEntry:
     entry_source: str
     entry_tree: ast.AST
     target_python: TargetPythonVersion
+    external_module_roots: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
 class _PreparedBuildModuleOutputs:
-    namespace_module_names: set[str]
-    generated_module_source_paths: dict[str, str]
+    import_plan: "_ImportPlan"
     output_layout: _BuildOutputLayout
-    known_modules: set[str]
+
+
+@dataclass(frozen=True)
+class _ImportPlan:
+    stdlib_allowlist: frozenset[str]
+    roots: tuple[Path, ...]
+    module_resolution_cache: "_ModuleResolutionCache"
+    module_graph: Mapping[str, Path]
+    explicit_imports: frozenset[str]
+    stub_parents: frozenset[str]
+    spawn_enabled: bool
+    runtime_import_support_policy: _RuntimeImportSupportPolicy
+    namespace_module_names: frozenset[str]
+    generated_module_source_paths: Mapping[str, str]
+    known_modules: frozenset[str]
     known_modules_sorted: tuple[str, ...]
     stdlib_allowlist_sorted: tuple[str, ...]
     module_graph_metadata: _ModuleGraphMetadata
@@ -2226,12 +2267,7 @@ def _write_source_hash_cache_payload(
     payload: dict[str, Any],
 ) -> None:
     try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = cache_path.with_name(f"{cache_path.name}.tmp")
-        tmp_path.write_text(
-            json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        tmp_path.replace(cache_path)
+        _atomic_write_text(cache_path, json.dumps(payload, sort_keys=True) + "\n")
     except OSError:
         return
 
@@ -2398,10 +2434,7 @@ def _runtime_wasm_integrity_sidecar_path(path: Path) -> Path:
 def _write_runtime_wasm_integrity_sidecar(path: Path) -> None:
     digest = _sha256_file(path)
     sidecar = _runtime_wasm_integrity_sidecar_path(path)
-    sidecar.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = sidecar.with_name(f"{sidecar.name}.tmp")
-    tmp_path.write_text(f"{digest}\n", encoding="utf-8")
-    tmp_path.replace(sidecar)
+    _atomic_write_text(sidecar, f"{digest}\n")
 
 
 def _git_rev(root: Path) -> str | None:
@@ -3792,18 +3825,18 @@ class _ModuleResolutionCache:
     ast_error_cache: dict[tuple[Path, str, str], SyntaxError] = field(
         default_factory=dict
     )
-    runtime_import_protocol_cache: dict[tuple[Path, str | None, bool], bool] = field(
-        default_factory=dict
-    )
+    runtime_import_protocol_cache: dict[
+        tuple[Path, str | None, bool, ImportScanMode], bool
+    ] = field(default_factory=dict)
     module_name_cache: dict[tuple[Path, tuple[Path, ...], Path, Path | None], str] = (
         field(default_factory=dict)
     )
     module_name_context_key: tuple[tuple[Path, ...], Path, Path | None] | None = None
     module_name_context_cache: dict[Path, str] = field(default_factory=dict)
     stdlib_path_cache: dict[tuple[Path, Path], bool] = field(default_factory=dict)
-    import_scan_cache: dict[tuple[Path, str | None, bool, bool], tuple[str, ...]] = (
-        field(default_factory=dict)
-    )
+    import_scan_cache: dict[
+        tuple[Path, str | None, bool, ImportScanMode], tuple[str, ...]
+    ] = field(default_factory=dict)
     path_stat_cache: dict[Path, os.stat_result] = field(default_factory=dict)
     path_stat_error_cache: dict[Path, OSError] = field(default_factory=dict)
     module_parts_cache: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -4012,13 +4045,13 @@ class _ModuleResolutionCache:
         *,
         module_name: str | None = None,
         is_package: bool = False,
-        include_nested: bool = True,
+        import_scan_mode: ImportScanMode = "full",
     ) -> tuple[str, ...]:
         cache_key = (
             self.resolved_path(path),
             module_name,
             is_package,
-            include_nested,
+            import_scan_mode,
         )
         cached = self.import_scan_cache.get(cache_key)
         if cached is not None:
@@ -4027,7 +4060,7 @@ class _ModuleResolutionCache:
             tree,
             module_name,
             is_package,
-            include_nested=include_nested,
+            import_scan_mode=import_scan_mode,
         )
         cached_imports = tuple(imports)
         self.import_scan_cache[cache_key] = cached_imports
@@ -4040,8 +4073,14 @@ class _ModuleResolutionCache:
         *,
         module_name: str | None = None,
         is_package: bool = False,
+        import_scan_mode: ImportScanMode = "full",
     ) -> bool:
-        cache_key = (self.resolved_path(path), module_name, is_package)
+        cache_key = (
+            self.resolved_path(path),
+            module_name,
+            is_package,
+            import_scan_mode,
+        )
         cached = self.runtime_import_protocol_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -4049,6 +4088,7 @@ class _ModuleResolutionCache:
             tree,
             module_name=module_name,
             is_package=is_package,
+            import_scan_mode=import_scan_mode,
         )
         self.runtime_import_protocol_cache[cache_key] = cached
         return cached
@@ -4083,12 +4123,14 @@ def _resolve_build_entry(
     lib_paths: list[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[_ResolvedBuildEntry | None, _CliFailure | None]:
-    module_roots = _resolve_module_roots(
+    module_root_resolution = _resolve_module_root_resolution(
         project_root,
         cwd_root,
         respect_pythonpath=respect_pythonpath,
         lib_paths=lib_paths or [],
     )
+    module_roots = list(module_root_resolution.roots)
+    external_module_roots = tuple(module_root_resolution.external_roots)
     source_path: Path | None = None
     entry_module: str | None = None
     if file_path:
@@ -4187,6 +4229,7 @@ def _resolve_build_entry(
         entry_source=entry_source,
         entry_tree=entry_tree,
         target_python=target_python,
+        external_module_roots=external_module_roots,
     ), None
 
 
@@ -4626,14 +4669,22 @@ def _output_base_for_entry(entry_module: str, source_path: Path) -> str:
     return base
 
 
-def _resolve_module_roots(
+def _resolve_module_root_resolution(
     project_root: Path,
     cwd_root: Path,
     *,
     respect_pythonpath: bool,
     lib_paths: list[str] | None = None,
-) -> list[Path]:
+) -> _ModuleRootResolution:
     module_roots: list[Path] = []
+    external_roots: list[Path] = []
+
+    def add_root(path: Path, *, external: bool) -> None:
+        resolved = path.resolve()
+        module_roots.append(resolved)
+        if external:
+            external_roots.append(resolved)
+
     hermetic_module_roots = os.environ.get(
         "MOLT_HERMETIC_MODULE_ROOTS", ""
     ).lower() in {
@@ -4649,14 +4700,15 @@ def _resolve_module_roots(
                 continue
             entry_path = Path(entry).expanduser()
             if entry_path.exists():
-                module_roots.append(entry_path)
+                add_root(entry_path, external=True)
     for root in (project_root, cwd_root):
         if root.exists():
-            module_roots.append(root)
+            add_root(root, external=False)
         src_root = root / "src"
         if src_root.exists():
-            module_roots.append(src_root)
-        module_roots.extend(_vendor_roots(root))
+            add_root(src_root, external=False)
+        for vendor_root in _vendor_roots(root):
+            add_root(vendor_root, external=False)
     if respect_pythonpath:
         pythonpath = os.environ.get("PYTHONPATH", "")
         if pythonpath:
@@ -4665,24 +4717,76 @@ def _resolve_module_roots(
                     continue
                 entry_path = Path(entry).expanduser()
                 if entry_path.exists():
-                    module_roots.append(entry_path)
+                    add_root(entry_path, external=True)
     # --lib-path / [tool.molt] lib-paths: explicit third-party package roots
     for lp in lib_paths or []:
         lp_path = Path(lp).expanduser()
         if lp_path.exists():
-            module_roots.append(lp_path)
+            add_root(lp_path, external=True)
     # Auto-detect active venv site-packages when no explicit lib paths given
     if not lib_paths and not hermetic_module_roots:
         venv_path = project_root / ".venv"
         if venv_path.exists():
             for sp in sorted(venv_path.glob("lib/python*/site-packages")):
                 if sp.is_dir():
-                    module_roots.append(sp)
+                    add_root(sp, external=True)
     # Auto-detect .molt-venv site-packages (UV-managed venv)
     if not hermetic_module_roots:
         for sp in _molt_venv_site_packages(project_root):
-            module_roots.append(sp)
-    return list(dict.fromkeys(root.resolve() for root in module_roots))
+            add_root(sp, external=True)
+    roots = tuple(dict.fromkeys(module_roots))
+    external = tuple(root for root in dict.fromkeys(external_roots) if root in roots)
+    return _ModuleRootResolution(roots=roots, external_roots=external)
+
+
+def _resolve_module_roots(
+    project_root: Path,
+    cwd_root: Path,
+    *,
+    respect_pythonpath: bool,
+    lib_paths: list[str] | None = None,
+) -> list[Path]:
+    return list(
+        _resolve_module_root_resolution(
+            project_root,
+            cwd_root,
+            respect_pythonpath=respect_pythonpath,
+            lib_paths=lib_paths,
+        ).roots
+    )
+
+
+def _parse_external_static_packages(raw: str) -> tuple[frozenset[str], str | None]:
+    packages: set[str] = set()
+    for part in re.split(r"[\s,]+", raw.strip()):
+        if not part:
+            continue
+        if not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
+            part,
+        ):
+            return frozenset(), (
+                "MOLT_EXTERNAL_STATIC_PACKAGES must contain comma/space-separated "
+                f"Python package names; invalid entry: {part!r}"
+            )
+        packages.add(part)
+    return frozenset(packages), None
+
+
+def _resolve_import_admission_policy(
+    *,
+    external_module_roots: Sequence[Path],
+    json_output: bool,
+) -> tuple[_ImportAdmissionPolicy | None, _CliFailure | None]:
+    packages, error = _parse_external_static_packages(
+        os.environ.get("MOLT_EXTERNAL_STATIC_PACKAGES", "")
+    )
+    if error is not None:
+        return None, _fail(error, json_output, command="build")
+    return _ImportAdmissionPolicy(
+        external_roots=tuple(external_module_roots),
+        admitted_external_packages=packages,
+    ), None
 
 
 def _build_args_respect_pythonpath(args: list[str]) -> bool:
@@ -4962,8 +5066,10 @@ def _collect_package_parents(
     stdlib_allowlist: set[str],
     *,
     resolver_cache: _ModuleResolutionCache | None = None,
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
 ) -> set[str]:
     resolution_cache = resolver_cache or _ModuleResolutionCache()
+    import_admission_policy = import_admission_policy or _ImportAdmissionPolicy()
     pending: set[str] = set()
     added: set[str] = set()
     for module_name in list(module_graph):
@@ -4979,6 +5085,12 @@ def _collect_package_parents(
             parent, roots, stdlib_root, stdlib_allowlist
         )
         if resolved is None or resolved.name != "__init__.py":
+            continue
+        if not import_admission_policy.admits_package_parent(
+            parent,
+            resolved,
+            existing_modules=module_graph.keys(),
+        ):
             continue
         module_graph[parent] = resolved
         added.add(parent)
@@ -5036,13 +5148,59 @@ def _resolve_relative_import(
     return base_name or None
 
 
+def _module_init_scan_nodes(tree: ast.AST) -> tuple[ast.AST, ...]:
+    if not isinstance(tree, ast.Module):
+        return tuple(ast.walk(tree))
+    nodes: list[ast.AST] = []
+
+    def visit(node: ast.AST) -> None:
+        nodes.append(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for decorator in node.decorator_list:
+                visit(decorator)
+            for default in list(node.args.defaults) + [
+                default for default in node.args.kw_defaults if default is not None
+            ]:
+                visit(default)
+            for arg in (
+                list(node.args.posonlyargs)
+                + list(node.args.args)
+                + list(node.args.kwonlyargs)
+            ):
+                if arg.annotation is not None:
+                    visit(arg.annotation)
+            if node.args.vararg is not None and node.args.vararg.annotation is not None:
+                visit(node.args.vararg.annotation)
+            if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+                visit(node.args.kwarg.annotation)
+            if node.returns is not None:
+                visit(node.returns)
+            for type_param in getattr(node, "type_params", ()):
+                visit(type_param)
+            return
+        if isinstance(node, ast.Lambda):
+            for default in list(node.args.defaults) + [
+                default for default in node.args.kw_defaults if default is not None
+            ]:
+                visit(default)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    for stmt in tree.body:
+        visit(stmt)
+    return tuple(nodes)
+
+
 def _collect_imports(
     tree: ast.AST,
     module_name: str | None = None,
     is_package: bool = False,
     *,
-    include_nested: bool = True,
+    import_scan_mode: ImportScanMode = "full",
 ) -> list[str]:
+    if import_scan_mode not in {"full", "module_init"}:
+        raise ValueError(f"unknown import scan mode: {import_scan_mode}")
     imports: list[str] = []
     needs_typing = False
     needs_string_templatelib = False
@@ -5154,9 +5312,9 @@ def _collect_imports(
                 )
         return None
 
-    nested_module_scan = include_nested and isinstance(tree, ast.Module)
+    module_import_helper_scan = isinstance(tree, ast.Module)
 
-    if nested_module_scan:
+    if module_import_helper_scan:
         for stmt in module_body:
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
                 target = stmt.targets[0]
@@ -5226,15 +5384,15 @@ def _collect_imports(
                     pos = param_positions[first.id]
                     helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
 
-    if include_nested:
+    if import_scan_mode == "full":
         scan_nodes = tuple(ast.walk(tree))
     elif isinstance(tree, ast.Module):
-        scan_nodes = module_body
+        scan_nodes = _module_init_scan_nodes(tree)
     else:
         scan_nodes = tuple(ast.walk(tree))
 
     for node in scan_nodes:
-        if nested_module_scan:
+        if module_import_helper_scan:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 positions = helper_param_import_positions.get(node.func.id)
                 if positions:
@@ -5364,14 +5522,20 @@ def _runtime_import_alias_bindings(
     *,
     module_name: str | None,
     is_package: bool,
+    import_scan_mode: ImportScanMode = "full",
 ) -> dict[str, str]:
     bindings: dict[str, str] = {}
+    scan_nodes = (
+        tuple(ast.walk(tree))
+        if import_scan_mode == "full"
+        else _module_init_scan_nodes(tree)
+    )
 
     def _register_binding(local_name: str, qualified_name: str) -> None:
         if local_name and qualified_name:
             bindings[local_name] = qualified_name
 
-    for node in ast.walk(tree):
+    for node in scan_nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 local_name = alias.asname or alias.name.split(".", 1)[0]
@@ -5399,7 +5563,7 @@ def _runtime_import_alias_bindings(
             local_name = alias.asname or alias.name
             _register_binding(local_name, f"{resolved_module}.{alias.name}")
 
-    for node in ast.walk(tree):
+    for node in scan_nodes:
         value: ast.expr | None = None
         target_names: list[str] = []
         if isinstance(node, ast.Assign):
@@ -5425,13 +5589,20 @@ def _tree_uses_runtime_import_protocol(
     *,
     module_name: str | None,
     is_package: bool,
+    import_scan_mode: ImportScanMode = "full",
 ) -> bool:
     alias_bindings = _runtime_import_alias_bindings(
         tree,
         module_name=module_name,
         is_package=is_package,
+        import_scan_mode=import_scan_mode,
     )
-    for node in ast.walk(tree):
+    scan_nodes = (
+        tuple(ast.walk(tree))
+        if import_scan_mode == "full"
+        else _module_init_scan_nodes(tree)
+    )
+    for node in scan_nodes:
         if not isinstance(node, ast.Call):
             continue
         target = _resolve_runtime_import_expr_name(node.func, alias_bindings)
@@ -5455,6 +5626,7 @@ def _module_uses_runtime_import_protocol(
     module_path: Path,
     module_resolution_cache: "_ModuleResolutionCache",
     target_python: TargetPythonVersion,
+    import_scan_mode: ImportScanMode = "full",
     tree: ast.AST | None = None,
 ) -> bool:
     if module_name in _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES:
@@ -5483,6 +5655,7 @@ def _module_uses_runtime_import_protocol(
         tree,
         module_name=module_name,
         is_package=is_package,
+        import_scan_mode=import_scan_mode,
     )
 
 
@@ -5510,11 +5683,17 @@ def _module_graph_needs_runtime_import_support(
             if module_name == entry_module and module_path == entry_path
             else None
         )
+        import_scan_mode: ImportScanMode = (
+            "full"
+            if module_name == entry_module and module_path == entry_path
+            else "module_init"
+        )
         if _module_uses_runtime_import_protocol(
             module_name=module_name,
             module_path=module_path,
             module_resolution_cache=module_resolution_cache,
             target_python=target_python,
+            import_scan_mode=import_scan_mode,
             tree=tree,
         ):
             return _RuntimeImportSupportPolicy(
@@ -6540,6 +6719,8 @@ def _extend_module_graph_with_closure(
     skip_modules: set[str] | None = None,
     stub_parents: set[str] | None = None,
     nested_stdlib_scan_modules: set[str] | None = None,
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
+    allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> None:
     if not entry_paths:
@@ -6555,6 +6736,8 @@ def _extend_module_graph_with_closure(
         stub_parents=stub_parents,
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
         resolver_cache=resolver_cache,
+        import_admission_policy=import_admission_policy,
+        allow_entry_external_imports=allow_entry_external_imports,
         target_python=target_python,
     )
     if diagnostics_enabled:
@@ -6664,8 +6847,7 @@ def _emit_build_diagnostics(
     if diagnostics is None:
         return
     if diagnostics_path is not None:
-        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
-        diagnostics_path.write_text(json.dumps(diagnostics, indent=2) + "\n")
+        _atomic_write_json(diagnostics_path, diagnostics, indent=2)
     if json_output:
         return
     resolved_verbosity = _resolve_build_diagnostics_verbosity(verbosity)
@@ -7886,6 +8068,20 @@ def _requires_spawn_entry_override(
     return False
 
 
+def _module_graph_import_scan_mode(
+    *,
+    path: Path,
+    module_name: str,
+    entry_paths: frozenset[Path],
+    nested_scan_modules: Collection[str],
+    resolution_cache: _ModuleResolutionCache,
+) -> ImportScanMode:
+    resolved_path = resolution_cache.resolved_path(path)
+    if resolved_path in entry_paths or module_name in nested_scan_modules:
+        return "full"
+    return "module_init"
+
+
 def _discover_module_graph_from_paths(
     entry_paths: Sequence[Path],
     roots: list[Path],
@@ -7898,6 +8094,8 @@ def _discover_module_graph_from_paths(
     nested_stdlib_scan_modules: set[str] | None = None,
     resolver_cache: _ModuleResolutionCache | None = None,
     precomputed_imports_by_path: Mapping[Path, Collection[str]] | None = None,
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
+    allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[dict[str, Path], set[str]]:
     entry_paths = tuple(entry_paths)
@@ -7916,6 +8114,10 @@ def _discover_module_graph_from_paths(
     queue = list(reversed(entry_paths))
     queued_paths = set(entry_paths)
     resolution_cache = resolver_cache or _ModuleResolutionCache()
+    import_admission_policy = import_admission_policy or _ImportAdmissionPolicy()
+    resolved_entry_paths = frozenset(
+        resolution_cache.resolved_path(path) for path in entry_paths
+    )
 
     persisted_graph_paths: dict[str, Path] = {}
     dirty_persisted_modules: set[str] = set()
@@ -7933,6 +8135,9 @@ def _discover_module_graph_from_paths(
             skip_modules=skip_modules,
             stub_parents=stub_parents,
             nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+            stdlib_allowlist=stdlib_allowlist,
+            import_admission_policy=import_admission_policy,
+            allow_entry_external_imports=allow_entry_external_imports,
             resolution_cache=resolution_cache,
             target_python=target_python,
         )
@@ -7960,9 +8165,12 @@ def _discover_module_graph_from_paths(
             continue
         graph[module_name] = path
         is_package = path.name == "__init__.py"
-        include_nested_imports = (
-            not resolution_cache.is_stdlib_path(path, stdlib_root)
-            or module_name in nested_stdlib_scan_modules
+        import_scan_mode = _module_graph_import_scan_mode(
+            path=path,
+            module_name=module_name,
+            entry_paths=resolved_entry_paths,
+            nested_scan_modules=nested_stdlib_scan_modules,
+            resolution_cache=resolution_cache,
         )
         precomputed_imports = (
             precomputed_imports_by_path.get(path)
@@ -7978,7 +8186,7 @@ def _discover_module_graph_from_paths(
                         path,
                         module_name=module_name,
                         is_package=is_package,
-                        include_nested=include_nested_imports,
+                        import_scan_mode=import_scan_mode,
                         imports=imports,
                         target_python=target_python,
                     )
@@ -7990,7 +8198,7 @@ def _discover_module_graph_from_paths(
                     path,
                     module_name=module_name,
                     is_package=is_package,
-                    include_nested=include_nested_imports,
+                    import_scan_mode=import_scan_mode,
                     target_python=target_python,
                 )
             if persisted_imports is None:
@@ -8011,7 +8219,7 @@ def _discover_module_graph_from_paths(
                     path,
                     module_name=module_name,
                     is_package=is_package,
-                    include_nested=include_nested_imports,
+                    import_scan_mode=import_scan_mode,
                     tree=tree,
                     resolution_cache=resolution_cache,
                     project_root=project_root,
@@ -8035,7 +8243,19 @@ def _discover_module_graph_from_paths(
                 ):
                     continue
                 resolved = resolve_candidate(candidate)
-                if resolved is not None and resolved not in queued_paths:
+                if resolved is None or resolved in queued_paths:
+                    continue
+                from_entry_path = (
+                    allow_entry_external_imports
+                    and resolution_cache.resolved_path(path) in resolved_entry_paths
+                )
+                if not import_admission_policy.admits_import(
+                    candidate,
+                    resolved,
+                    from_entry_path=from_entry_path,
+                ):
+                    continue
+                if resolved not in queued_paths:
                     queued_paths.add(resolved)
                     queue.append(resolved)
     if use_persisted_graph_cache:
@@ -8049,6 +8269,9 @@ def _discover_module_graph_from_paths(
                 skip_modules=skip_modules,
                 stub_parents=stub_parents,
                 nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+                stdlib_allowlist=stdlib_allowlist,
+                import_admission_policy=import_admission_policy,
+                allow_entry_external_imports=allow_entry_external_imports,
                 graph=graph,
                 explicit_imports=explicit_imports,
                 target_python=target_python,
@@ -8068,6 +8291,7 @@ def _discover_module_graph(
     nested_stdlib_scan_modules: set[str] | None = None,
     resolver_cache: _ModuleResolutionCache | None = None,
     precomputed_imports: Collection[str] | None = None,
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[dict[str, Path], set[str]]:
     precomputed_imports_by_path = (
@@ -8085,6 +8309,7 @@ def _discover_module_graph(
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
         resolver_cache=resolver_cache,
         precomputed_imports_by_path=precomputed_imports_by_path,
+        import_admission_policy=import_admission_policy,
         target_python=target_python,
     )
 
@@ -8132,9 +8357,9 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
-_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 3
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 3
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 3
+_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 4
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 4
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 4
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
 
 _RUNTIME_STDLIB_PROFILE_ALIASES = {
@@ -8165,6 +8390,25 @@ def _runtime_lib_archive_names() -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+def _module_graph_policy_digest(
+    stdlib_allowlist: Collection[str],
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
+    *,
+    allow_entry_external_imports: bool = True,
+) -> str:
+    admission_policy = import_admission_policy or _ImportAdmissionPolicy()
+    payload = json.dumps(
+        {
+            "stdlib_allowlist": sorted(stdlib_allowlist),
+            "import_admission": admission_policy.digest_payload(),
+            "allow_entry_external_imports": allow_entry_external_imports,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
 def _runtime_cargo_scratch_lib_path(runtime_lib: Path) -> Path:
     return runtime_lib.with_name("libmolt_runtime.a")
 
@@ -8178,6 +8422,7 @@ def _module_graph_cache_key(
     skip_modules: tuple[str, ...],
     stub_parents: tuple[str, ...],
     nested_stdlib_scan_modules: tuple[str, ...],
+    stdlib_allowlist_digest: str,
     compiler_fingerprint: str,
     target_python_tag: str = _DEFAULT_TARGET_PYTHON_VERSION.tag,
 ) -> str:
@@ -8193,6 +8438,7 @@ def _module_graph_cache_key(
                 "skip_modules": list(skip_modules),
                 "stub_parents": list(stub_parents),
                 "nested_stdlib_scan_modules": list(nested_stdlib_scan_modules),
+                "stdlib_allowlist_digest": stdlib_allowlist_digest,
                 "target_python": target_python_tag,
             },
             sort_keys=True,
@@ -8213,6 +8459,22 @@ def _runtime_fingerprint_path(
         artifact,
         subdir="runtime_fingerprints",
         stem_suffix=f"{cargo_profile}.{target}",
+        extension="fingerprint",
+    )
+
+
+def _runtime_target_fingerprint_path(
+    build_state_root: Path,
+    artifact: Path,
+    *,
+    cargo_profile: str,
+    target_label: str,
+) -> Path:
+    return _artifact_state_path_for_build_state_root(
+        build_state_root,
+        artifact,
+        subdir="runtime_fingerprints",
+        stem_suffix=f"{cargo_profile}.{target_label}",
         extension="fingerprint",
     )
 
@@ -8291,6 +8553,7 @@ def _canonical_build_state_root(project_root: Path) -> Path:
         os.environ.get("MOLT_BUILD_STATE_DIR"),
         None,
         os.fspath(Path.cwd()),
+        None,
     )
 
 
@@ -8301,19 +8564,28 @@ def _maybe_hydrate_artifact_from_canonical_target(
     fingerprint_path: Path,
     candidate_artifact: Path,
     candidate_fingerprint_path: Path,
+    require_artifact_digest: bool = False,
 ) -> bool:
     if fingerprint is None:
         return False
     if artifact.resolve() == candidate_artifact.resolve():
         return False
-    candidate_fingerprint = _read_runtime_fingerprint(candidate_fingerprint_path)
-    if _artifact_needs_rebuild(candidate_artifact, fingerprint, candidate_fingerprint):
+    if not _runtime_artifact_fingerprint_matches(
+        candidate_artifact,
+        fingerprint,
+        candidate_fingerprint_path,
+        require_artifact_digest=require_artifact_digest,
+    ):
         return False
     try:
         artifact.parent.mkdir(parents=True, exist_ok=True)
         _atomic_copy_file(candidate_artifact, artifact)
         fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_runtime_fingerprint(fingerprint_path, fingerprint)
+        _write_runtime_fingerprint(
+            fingerprint_path,
+            fingerprint,
+            artifact=artifact if require_artifact_digest else None,
+        )
     except OSError:
         return False
     return True
@@ -8741,7 +9013,12 @@ def _read_runtime_fingerprint(path: Path) -> dict[str, Any] | None:
     }
 
 
-def _write_runtime_fingerprint(path: Path, fingerprint: dict[str, str | None]) -> None:
+def _write_runtime_fingerprint(
+    path: Path,
+    fingerprint: dict[str, str | None],
+    *,
+    artifact: Path | None = None,
+) -> None:
     payload = {
         "version": 2,
         "hash": fingerprint.get("hash"),
@@ -8749,18 +9026,40 @@ def _write_runtime_fingerprint(path: Path, fingerprint: dict[str, str | None]) -
         "inputs_digest": fingerprint.get("inputs_digest"),
         "meta_digest": fingerprint.get("meta_digest"),
     }
+    if artifact is not None:
+        payload["artifact_sha256"] = _sha256_file(artifact)
     _write_cached_json_object(path, payload)
 
 
+def _runtime_artifact_fingerprint_matches(
+    artifact: Path,
+    fingerprint: dict[str, str | None] | None,
+    fingerprint_path: Path,
+    *,
+    require_artifact_digest: bool,
+) -> bool:
+    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
+    if _artifact_needs_rebuild(artifact, fingerprint, stored_fingerprint):
+        return False
+    if not require_artifact_digest:
+        return True
+    artifact_digest = stored_fingerprint.get("artifact_sha256")
+    if not isinstance(artifact_digest, str) or not artifact_digest:
+        return False
+    try:
+        return _sha256_file(artifact) == artifact_digest
+    except OSError:
+        return False
+
+
 def _write_text_if_changed(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         existing = path.read_text()
     except OSError:
         existing = None
     if existing == content:
         return
-    path.write_text(content)
+    _atomic_write_text(path, content)
 
 
 def _check_lockfiles(
@@ -8903,10 +9202,7 @@ def _write_lock_check_cache(
         "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "inputs": inputs,
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n")
-    tmp_path.replace(path)
+    _atomic_write_text(path, json.dumps(payload, sort_keys=True) + "\n")
 
 
 def _verify_uv_lock(project_root: Path) -> str | None:
@@ -9321,13 +9617,15 @@ def _nm_candidate_binaries() -> list[str]:
     # The Rust toolchain's own llvm-nm (the `llvm-tools` component) matches the
     # bitcode producer exactly when installed.
     try:
-        sysroot = subprocess.run(
+        sysroot_result = _run_completed_command(
             ["rustc", "--print", "sysroot"],
             capture_output=True,
-            text=True,
             timeout=10,
-            check=False,
-        ).stdout.strip()
+            env=None,
+            cwd=None,
+            memory_guard_prefix="MOLT_BUILD",
+        )
+        sysroot = sysroot_result.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         sysroot = ""
     if sysroot:
@@ -9428,13 +9726,9 @@ def _runtime_intrinsic_symbols_file(runtime_lib: Path) -> tuple[Path | None, str
             "no available nm could extract the staticlib's molt_* symbols — "
             + "; ".join(failures or ["no nm candidates found"])
         )
-    tmp_path = cache_path.with_suffix(cache_path.suffix + f".{os.getpid()}.tmp")
     try:
-        tmp_path.write_text("\n".join(sorted(symbols)) + "\n", encoding="utf-8")
-        os.replace(tmp_path, cache_path)
+        _atomic_write_text(cache_path, "\n".join(sorted(symbols)) + "\n")
     except OSError as exc:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink()
         return None, f"failed to write symbol cache {cache_path}: {exc}"
     return cache_path, None
 
@@ -9537,13 +9831,10 @@ def _build_lock(project_root: Path, name: str):
         os.fspath(_build_state_root(project_root)),
     )
     lock_dir.mkdir(parents=True, exist_ok=True)
-    # Incorporate MOLT_SESSION_ID into the lock name so parallel sessions
-    # don't compete for the same lock.  Without this, `molt run` in one
-    # session blocks for up to 300s while another session's build holds the
-    # backend/compile lock.
-    session_id = os.environ.get("MOLT_SESSION_ID", "")
-    lock_suffix = f".{session_id}" if session_id else ""
-    lock_path = lock_dir / f"{name}{lock_suffix}.lock"
+    # The build-state root already carries target/session isolation. When an
+    # operator explicitly shares a target/build-state root, mutable Cargo
+    # artifacts must share the same lock regardless of MOLT_SESSION_ID.
+    lock_path = lock_dir / f"{name}.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
     timeout_raw = os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
     lock_timeout: float | None = 300.0
@@ -9564,8 +9855,9 @@ def _build_lock(project_root: Path, name: str):
             except OSError as exc:
                 if exc.errno not in (errno.EACCES, errno.EAGAIN):
                     raise
-                # After 5s of waiting, check if the holding process is still alive.
-                # If no process holds the lock (stale), force-acquire it.
+                # After 5s of waiting, check whether the recorded holder PID is
+                # still alive. Dead processes release flock state at the OS
+                # boundary, so this only retries the same lock inode.
                 if not stale_checked and time.monotonic() - wait_start > 5.0:
                     stale_checked = True
                     try:
@@ -9577,7 +9869,7 @@ def _build_lock(project_root: Path, name: str):
                             try:
                                 os.kill(holder_pid, 0)  # check if alive
                             except ProcessLookupError:
-                                # Holder is dead — force unlock and reacquire
+                                # Holder is dead; retry the same lock inode.
                                 fcntl.flock(fd, fcntl.LOCK_UN)
                                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                                 break
@@ -9586,15 +9878,6 @@ def _build_lock(project_root: Path, name: str):
                     except (ValueError, OSError):
                         pass  # no PID or read error — continue waiting
                 if deadline is not None and time.monotonic() >= deadline:
-                    # Last resort: force-remove the lock file and retry once
-                    try:
-                        os.unlink(lock_path)
-                        os.close(fd)
-                        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        break
-                    except OSError:
-                        pass
                     raise RuntimeError(
                         "Timed out waiting for build lock "
                         f"{lock_path} after {lock_timeout:.1f}s. "
@@ -9614,6 +9897,67 @@ def _build_lock(project_root: Path, name: str):
             fcntl.flock(fd, fcntl.LOCK_UN)
         except OSError:
             pass
+        os.close(fd)
+
+
+@functools.lru_cache(maxsize=64)
+def _shared_cache_lock_dir_cached(cache_root_str: str) -> Path:
+    return Path(cache_root_str) / "locks"
+
+
+@contextmanager
+def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
+    if os.name != "posix":
+        yield
+        return
+    try:
+        import fcntl
+    except Exception:
+        yield
+        return
+    if cache_root is None:
+        cache_root = _default_molt_cache()
+    lock_dir = _shared_cache_lock_dir_cached(os.fspath(cache_root))
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{name}.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+    timeout_raw = (
+        os.environ.get("MOLT_CACHE_LOCK_TIMEOUT", "").strip()
+        or os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
+    )
+    lock_timeout: float | None = 300.0
+    if timeout_raw:
+        try:
+            parsed = float(timeout_raw)
+        except ValueError:
+            parsed = 300.0
+        lock_timeout = parsed if parsed > 0 else None
+    try:
+        deadline = time.monotonic() + lock_timeout if lock_timeout is not None else None
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Timed out waiting for shared cache lock "
+                        f"{lock_path} after {lock_timeout:.1f}s. "
+                        "Check for stale molt build/backend helper processes."
+                    ) from exc
+                time.sleep(0.05)
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, str(os.getpid()).encode())
+        except OSError:
+            pass
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
 
 
@@ -10508,11 +10852,16 @@ def _run_bolt_post_link(
     # Replace the original binary with the BOLT-optimized one.
     bolt_binary = Path(f"{binary_path}.bolt")
     if bolt_binary.exists():
-        import shutil as _shutil
-
-        _shutil.move(str(bolt_binary), str(binary_path))
-        # Re-sign on macOS after replacing the binary.
-        _codesign_binary(binary_path)
+        try:
+            _atomic_copy_file(bolt_binary, binary_path, codesign=True)
+            bolt_binary.unlink()
+        except OSError as exc:
+            if not json_output:
+                print(
+                    f"BOLT: failed to publish optimized binary: {exc}",
+                    file=sys.stderr,
+                )
+            return 1
         if not json_output:
             print(
                 f"==> BOLT-optimized binary installed: {binary_path}",
@@ -10752,7 +11101,7 @@ def _export_wasm_table_refs(path: Path) -> None:
         rebuilt_sections.append((section_id, payload))
     if not inserted:
         rebuilt_sections.append((7, bytes(export_payload)))
-    path.write_bytes(_build_wasm_sections(rebuilt_sections))
+    _atomic_write_bytes(path, _build_wasm_sections(rebuilt_sections))
 
 
 def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
@@ -12138,10 +12487,9 @@ def _backend_binary_identity(backend_bin: Path) -> str:
     identity. A rebuilt backend with different codegen (e.g. drop passes wired
     in) whose source fingerprint happened to be stable -- or any A/B toggle that
     did not monotonically bump tracked source mtimes -- silently linked stale
-    objects compiled by the OLD binary. The mtime-based
-    ``_invalidate_stale_stdlib_cache`` guard is best-effort and separate from the
-    key; it does not survive worktree/git mtime resets or concurrent-session
-    target dirs.
+    objects compiled by the OLD binary. Backend binary identity is therefore
+    part of the cache variant itself; shared cache validation only accepts exact
+    key/manifest sidecars and never relies on broad mtime sweeps.
 
     This mirrors the established staleness convention the codebase already uses
     for the per-function TIR cache (``backend_cache_dir_for`` salts its namespace
@@ -12865,7 +13213,7 @@ def _backend_daemon_paths_cached(
     return (
         socket_path,
         daemon_root / f"{sidecar_stem}.log",
-        daemon_root / f"{sidecar_stem}.pid",
+        daemon_root / f"{sidecar_stem}.identity.json",
     )
 
 
@@ -12889,11 +13237,16 @@ def _backend_daemon_socket_path(
     return socket_path
 
 
-def _backend_daemon_log_path(project_root: Path, cargo_profile: str) -> Path:
+def _backend_daemon_log_path(
+    project_root: Path,
+    cargo_profile: str,
+    *,
+    config_digest: str | None = None,
+) -> Path:
     _socket_path, log_path, _pid_path = _backend_daemon_paths_cached(
         os.fspath(project_root),
         cargo_profile,
-        None,
+        config_digest,
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip(),
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
         os.fspath(_build_state_root(project_root)),
@@ -12904,71 +13257,67 @@ def _backend_daemon_log_path(project_root: Path, cargo_profile: str) -> Path:
     return log_path
 
 
-def _backend_daemon_pid_path(project_root: Path, cargo_profile: str) -> Path:
-    _socket_path, _log_path, pid_path = _backend_daemon_paths_cached(
+def _backend_daemon_identity_path(
+    project_root: Path,
+    cargo_profile: str,
+    *,
+    config_digest: str | None = None,
+) -> Path:
+    _socket_path, _log_path, identity_path = _backend_daemon_paths_cached(
         os.fspath(project_root),
         cargo_profile,
-        None,
+        config_digest,
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip(),
         os.environ.get("MOLT_BACKEND_DAEMON_SOCKET_DIR"),
         os.fspath(_build_state_root(project_root)),
         tempfile.gettempdir(),
         session_id=_molt_session_id(),
     )
-    pid_path.parent.mkdir(parents=True, exist_ok=True)
-    return pid_path
+    identity_path.parent.mkdir(parents=True, exist_ok=True)
+    return identity_path
 
 
-def _read_backend_daemon_pid(pid_path: Path) -> int | None:
-    try:
-        raw = pid_path.read_text().strip()
-    except OSError:
-        return None
-    if not raw.isdigit():
-        return None
-    pid = int(raw)
-    return pid if pid > 0 else None
+_BackendDaemonIdentity = _daemon_custody.BackendDaemonIdentity
 
 
-def _write_backend_daemon_pid(pid_path: Path, pid: int) -> None:
-    pid_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = pid_path.with_name(f".{pid_path.name}.{os.getpid()}.tmp")
-    try:
-        tmp_path.write_text(f"{pid}\n")
-        tmp_path.replace(pid_path)
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
+def _read_backend_daemon_identity(
+    identity_path: Path,
+) -> _BackendDaemonIdentity | None:
+    return _daemon_custody.read_backend_daemon_identity(identity_path)
 
 
-def _remove_backend_daemon_pid(pid_path: Path) -> None:
-    try:
-        pid_path.unlink()
-    except OSError:
-        pass
+def _write_backend_daemon_identity(
+    identity_path: Path,
+    identity: _BackendDaemonIdentity,
+) -> None:
+    _daemon_custody.write_backend_daemon_identity(identity_path, identity)
+
+
+def _remove_backend_daemon_identity(identity_path: Path) -> None:
+    _daemon_custody.remove_backend_daemon_identity(identity_path)
 
 
 def _kill_stale_backend_daemon(project_root: Path, cargo_profile: str) -> None:
     """Kill canonical backend daemon processes for this project/profile."""
-    import signal
-
     daemon_root = _build_state_root(project_root) / "backend_daemon"
-    pattern = f"molt-backend.{cargo_profile}*.pid"
     try:
-        pid_files = list(daemon_root.glob(pattern))
+        identity_files = list(
+            daemon_root.glob(f"molt-backend.{cargo_profile}*.identity.json")
+        )
+        legacy_pid_files = list(daemon_root.glob(f"molt-backend.{cargo_profile}*.pid"))
     except OSError:
         return
-    for pid_file in pid_files:
-        pid = _read_backend_daemon_pid(pid_file)
-        if pid is not None:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
-        _remove_backend_daemon_pid(pid_file)
+    for identity_file in identity_files:
+        identity = _read_backend_daemon_identity(identity_file)
+        if identity is not None:
+            _terminate_backend_daemon_identity(identity, grace=1.0)
+            with contextlib.suppress(OSError):
+                if identity.socket_path.exists():
+                    identity.socket_path.unlink()
+        _remove_backend_daemon_identity(identity_file)
+    for legacy_pid_file in legacy_pid_files:
+        with contextlib.suppress(OSError):
+            legacy_pid_file.unlink()
 
 
 def _sweep_orphaned_backend_daemon_locks(
@@ -12976,13 +13325,13 @@ def _sweep_orphaned_backend_daemon_locks(
     *,
     include_other_sessions: bool = True,
 ) -> int:
-    """Remove PID files whose recorded daemon process is dead.
+    """Remove identity files whose recorded daemon process is dead or foreign.
 
     Returns the number of orphan lock files that were cleaned up. This
     targets the multi-session corruption scenario where an agent session is
-    SIGKILLed mid-build and leaves a ``.pid`` sidecar behind. Live daemons
-    are never disturbed — only files whose PID does not correspond to a live
-    process (or is unreadable) are removed.
+    SIGKILLed mid-build and leaves a daemon sidecar behind. Live backend
+    daemons are never disturbed; files whose identity does not correspond to
+    a live process, is unreadable, or points at a non-daemon process are removed.
 
     When ``include_other_sessions`` is True, also walks
     ``target/sessions/*/.molt_state/backend_daemon`` so that stale state
@@ -13010,26 +13359,31 @@ def _sweep_orphaned_backend_daemon_locks(
 
     for daemon_root in candidate_roots:
         try:
-            pid_files = list(daemon_root.glob("*.pid"))
+            identity_files = list(daemon_root.glob("*.identity.json"))
+            legacy_pid_files = list(daemon_root.glob("*.pid"))
         except OSError:
             continue
-        for pid_file in pid_files:
-            pid = _read_backend_daemon_pid(pid_file)
-            if pid is None:
-                # Unreadable / malformed pid file: definitely orphan.
-                _remove_backend_daemon_pid(pid_file)
+        for legacy_pid_file in legacy_pid_files:
+            with contextlib.suppress(OSError):
+                legacy_pid_file.unlink()
+            cleaned += 1
+        for identity_file in identity_files:
+            identity = _read_backend_daemon_identity(identity_file)
+            if identity is None:
+                _remove_backend_daemon_identity(identity_file)
                 cleaned += 1
                 continue
-            if _pid_alive(pid):
+            if _pid_alive(identity.pid):
+                if _backend_daemon_identity_process_matches(identity):
+                    continue
+                _remove_backend_daemon_identity(identity_file)
+                cleaned += 1
                 continue
-            _remove_backend_daemon_pid(pid_file)
+            _remove_backend_daemon_identity(identity_file)
             cleaned += 1
-            # Remove the matching socket if present so the next spawn does
-            # not waste a probe window before deciding to restart.
-            socket_candidate = pid_file.with_suffix(".sock")
             try:
-                if socket_candidate.exists():
-                    socket_candidate.unlink()
+                if identity.socket_path.exists():
+                    identity.socket_path.unlink()
             except OSError:
                 pass
 
@@ -13063,7 +13417,7 @@ def _sweep_orphaned_backend_daemon_locks_once(project_root: Path) -> None:
 
 def _backend_daemon_binary_is_newer(
     backend_bin: Path,
-    pid_path: Path,
+    identity_path: Path,
     *,
     target_triple: str | None = None,
 ) -> bool:
@@ -13073,8 +13427,8 @@ def _backend_daemon_binary_is_newer(
     the backend or runtime has been rebuilt.
     """
     try:
-        pid_mtime = pid_path.stat().st_mtime + 1e-6
-        if backend_bin.stat().st_mtime > pid_mtime:
+        identity_mtime = identity_path.stat().st_mtime + 1e-6
+        if backend_bin.stat().st_mtime > identity_mtime:
             return True
         # Also check if the runtime library was rebuilt. The daemon
         # links compiled output against the runtime, so a stale daemon
@@ -13100,7 +13454,7 @@ def _backend_daemon_binary_is_newer(
             target_triple=target_triple,
         ):
             try:
-                if runtime_lib.stat().st_mtime > pid_mtime:
+                if runtime_lib.stat().st_mtime > identity_mtime:
                     return True
             except OSError:
                 continue
@@ -13108,7 +13462,7 @@ def _backend_daemon_binary_is_newer(
         # the daemon's cached compilations may produce different IR.
         frontend_init = candidate / "src" / "molt" / "frontend" / "__init__.py"
         try:
-            if frontend_init.stat().st_mtime > pid_mtime:
+            if frontend_init.stat().st_mtime > identity_mtime:
                 return True
         except OSError:
             pass
@@ -13131,7 +13485,7 @@ def _backend_daemon_binary_is_newer(
                     (f.stat().st_mtime for f in src_dir.rglob("*.rs") if f.is_file()),
                     default=0.0,
                 )
-                if newest_rs > pid_mtime:
+                if newest_rs > identity_mtime:
                     return True
             except OSError:
                 continue
@@ -13141,51 +13495,232 @@ def _backend_daemon_binary_is_newer(
 
 
 def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return _daemon_custody._pid_alive(pid)
 
 
-def _terminate_backend_daemon_pid(pid: int, *, grace: float = 1.0) -> None:
-    if pid <= 0:
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    except OSError:
-        return
-    deadline = time.monotonic() + max(0.05, grace)
-    while time.monotonic() < deadline:
-        if not _pid_alive(pid):
-            return
-        time.sleep(0.05)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        return
+def _backend_daemon_process_command(pid: int) -> str | None:
+    return _daemon_custody._process_command(pid)
 
 
-def _atomic_copy_file(src: Path, dst: Path) -> None:
+def _split_backend_daemon_command(command: str) -> tuple[str, ...]:
+    return _daemon_custody._split_command(command)
+
+
+def _command_executable_matches_backend(
+    executable: str,
+    backend_bin: Path | None,
+) -> bool:
+    return _daemon_custody._command_executable_matches_backend(
+        executable,
+        backend_bin,
+    )
+
+
+def _backend_daemon_command_has_socket(
+    tokens: Sequence[str],
+    socket_path: Path | None,
+) -> bool:
+    return _daemon_custody._command_has_socket(tokens, socket_path)
+
+
+def _backend_daemon_command_matches_identity(
+    command: str,
+    *,
+    backend_bin: Path | None,
+    socket_path: Path | None,
+) -> bool:
+    return _daemon_custody.backend_daemon_command_matches_identity(
+        command,
+        backend_bin=backend_bin,
+        socket_path=socket_path,
+    )
+
+
+def _backend_daemon_identity_process_matches(
+    identity: _BackendDaemonIdentity,
+) -> bool:
+    return _daemon_custody._backend_daemon_identity_process_matches(
+        identity,
+        process_command=_backend_daemon_process_command,
+    )
+
+
+def _backend_daemon_health_probe(
+    socket_path: Path,
+    timeout: float | None,
+) -> tuple[bool, dict[str, Any] | None]:
+    if timeout is None:
+        return _backend_daemon_ping_health(socket_path)
+    return _backend_daemon_ping_health(socket_path, timeout=timeout)
+
+
+def _backend_daemon_identity_health_matches(
+    identity: _BackendDaemonIdentity,
+    *,
+    timeout: float = 0.25,
+) -> bool:
+    return _daemon_custody._backend_daemon_identity_health_matches(
+        identity,
+        health_probe=_backend_daemon_health_probe,
+        timeout=timeout,
+    )
+
+
+def _backend_daemon_identity_is_verified(
+    identity: _BackendDaemonIdentity,
+    *,
+    allow_health_probe: bool,
+) -> bool:
+    return _daemon_custody.backend_daemon_identity_is_verified(
+        identity,
+        allow_health_probe=allow_health_probe,
+        health_probe=_backend_daemon_health_probe,
+        process_command=_backend_daemon_process_command,
+        pid_alive=_pid_alive,
+    )
+
+
+def _backend_daemon_identity_matches_context(
+    identity: _BackendDaemonIdentity,
+    *,
+    backend_bin: Path,
+    socket_path: Path,
+    project_root: Path,
+    cargo_profile: str,
+    config_digest: str | None,
+) -> bool:
+    return _daemon_custody.backend_daemon_identity_matches_context(
+        identity,
+        backend_bin=backend_bin,
+        socket_path=socket_path,
+        project_root=project_root,
+        cargo_profile=cargo_profile,
+        config_digest=config_digest,
+    )
+
+
+def _backend_daemon_identity_for_pid(
+    pid: int,
+    *,
+    socket_path: Path,
+    project_root: Path,
+    cargo_profile: str,
+    config_digest: str | None,
+    backend_bin: Path,
+) -> _BackendDaemonIdentity:
+    return _daemon_custody.backend_daemon_identity_for_pid(
+        pid=pid,
+        socket_path=socket_path,
+        project_root=project_root,
+        cargo_profile=cargo_profile,
+        config_digest=config_digest,
+        backend_bin=backend_bin,
+        process_command=_backend_daemon_process_command,
+    )
+
+
+def _backend_daemon_identity_from_health(
+    health: dict[str, Any] | None,
+    *,
+    socket_path: Path,
+    project_root: Path,
+    cargo_profile: str,
+    config_digest: str | None,
+    backend_bin: Path,
+) -> _BackendDaemonIdentity | None:
+    return _daemon_custody.backend_daemon_identity_from_health(
+        health,
+        socket_path=socket_path,
+        project_root=project_root,
+        cargo_profile=cargo_profile,
+        config_digest=config_digest,
+        backend_bin=backend_bin,
+        process_command=_backend_daemon_process_command,
+    )
+
+
+def _terminate_backend_daemon_identity(
+    identity: _BackendDaemonIdentity,
+    *,
+    grace: float = 1.0,
+) -> bool:
+    return _daemon_custody.terminate_backend_daemon_identity(
+        identity,
+        grace=grace,
+        health_probe=_backend_daemon_health_probe,
+        process_command=_backend_daemon_process_command,
+        pid_alive=_pid_alive,
+    )
+
+
+def _atomic_copy_file(src: Path, dst: Path, *, codesign: bool = False) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         shutil.copyfile(src, tmp_path)
         with contextlib.suppress(OSError):
             shutil.copymode(src, tmp_path)
+        if codesign:
+            _codesign_binary(tmp_path)
         tmp_path.replace(dst)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(dst.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
     finally:
         try:
             if tmp_path.exists():
                 tmp_path.unlink()
         except OSError:
             pass
+
+
+def _remove_file_or_tree(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _replace_directory_tree_from_source(
+    src: Path,
+    dst: Path,
+    *,
+    ignore: Any = None,
+) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    backup_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.old")
+    try:
+        shutil.copytree(src, tmp_path, ignore=ignore)
+        had_existing = dst.exists() or dst.is_symlink()
+        if had_existing:
+            os.replace(dst, backup_path)
+        try:
+            os.replace(tmp_path, dst)
+        except BaseException:
+            if had_existing and backup_path.exists() and not dst.exists():
+                os.replace(backup_path, dst)
+            raise
+        if backup_path.exists():
+            _remove_file_or_tree(backup_path)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(dst.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp_path.exists():
+                _remove_file_or_tree(tmp_path)
+        with contextlib.suppress(OSError):
+            if backup_path.exists():
+                _remove_file_or_tree(backup_path)
 
 
 def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
@@ -13217,6 +13752,70 @@ def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
                 tmp_path.unlink()
         except OSError:
             pass
+
+
+def _publish_immutable_backend_cache_artifact(
+    src: Path,
+    dst: Path,
+    *,
+    is_wasm: bool,
+    warnings: list[str],
+) -> Path:
+    """Publish a key-addressed backend cache artifact without clobbering peers."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        if _is_valid_cached_backend_artifact(dst, is_wasm=is_wasm):
+            return dst
+        warnings.append(
+            "Ignoring invalid existing immutable cache artifact; "
+            f"cleanup owns removal: {dst}"
+        )
+        return src
+
+    tmp_path = dst.with_name(f".{dst.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        try:
+            os.link(src, tmp_path)
+        except OSError as exc:
+            if exc.errno not in {
+                errno.EXDEV,
+                errno.EPERM,
+                errno.EACCES,
+                errno.ENOTSUP,
+                errno.ENOENT,
+            }:
+                raise
+            shutil.copyfile(src, tmp_path)
+            with contextlib.suppress(OSError):
+                shutil.copymode(src, tmp_path)
+        try:
+            os.link(tmp_path, dst)
+        except FileExistsError:
+            if _is_valid_cached_backend_artifact(dst, is_wasm=is_wasm):
+                return dst
+            warnings.append(
+                "Ignoring concurrently published invalid immutable cache artifact; "
+                f"cleanup owns removal: {dst}"
+            )
+            return src
+        except OSError as exc:
+            if exc.errno in {
+                errno.EXDEV,
+                errno.EPERM,
+                errno.EACCES,
+                errno.ENOTSUP,
+            }:
+                warnings.append(
+                    "Immutable cache publish skipped because no-clobber link "
+                    f"is unavailable for {dst}: {exc}"
+                )
+                return src
+            raise
+        return dst
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp_path.exists():
+                tmp_path.unlink()
 
 
 def _materialize_cached_backend_artifact(
@@ -13259,14 +13858,18 @@ def _materialize_cached_backend_artifact(
             tier == "function"
             and cache_path is not None
             and candidate != cache_path
-            and not cache_path.exists()
         ):
             with contextlib.suppress(OSError):
-                _atomic_link_or_copy_file(candidate, cache_path)
-                if module_cache_key:
-                    # Once the function hit seeds the canonical module cache
-                    # path, future daemon sync checks should treat output.o as
-                    # module-synced rather than function-only.
+                published_module_cache = _publish_immutable_backend_cache_artifact(
+                    candidate,
+                    cache_path,
+                    is_wasm=is_wasm_output,
+                    warnings=warnings,
+                )
+                if module_cache_key and published_module_cache == cache_path:
+                    # Once the canonical module cache path is valid, future
+                    # daemon sync checks should treat output.o as module-synced
+                    # rather than function-only.
                     sync_tier = "module"
                     sync_source_key = module_cache_key
         try:
@@ -13329,7 +13932,7 @@ def _try_cached_backend_candidates(
         output_stat = None
     for tier, candidate in cache_candidates:
         if stdlib_object_path is not None:
-            if not _shared_stdlib_cache_matches_key(
+            if not _shared_stdlib_cache_matches_key_locked(
                 stdlib_object_path,
                 stdlib_object_cache_key,
                 stdlib_object_manifest=stdlib_object_manifest,
@@ -13343,7 +13946,6 @@ def _try_cached_backend_candidates(
                             stdlib_object_manifest=stdlib_object_manifest,
                         )
                     )
-                    _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
                 # Native output.o cache hits are invalid without the matching
                 # stdlib_shared object they were compiled against.
                 continue
@@ -13351,8 +13953,6 @@ def _try_cached_backend_candidates(
             continue
         if not _is_valid_cached_backend_artifact(candidate, is_wasm=is_wasm):
             warnings.append(f"Ignoring invalid cache artifact: {candidate}")
-            with contextlib.suppress(OSError):
-                candidate.unlink()
             continue
         if not is_wasm and _native_object_has_unresolved_module_chunks(
             candidate,
@@ -13407,7 +14007,7 @@ def _backend_daemon_skip_output_sync_flags(
         stdlib_object_path,
     ):
         return False, False
-    if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key(
+    if stdlib_object_path is not None and not _shared_stdlib_cache_matches_key_locked(
         stdlib_object_path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
@@ -13488,20 +14088,19 @@ def _stage_backend_output_and_caches(
 
     staged_source = backend_output
     if cache_path is not None:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
         if backend_output != cache_path:
             try:
-                backend_output.replace(cache_path)
-                staged_source = cache_path
+                staged_source = _publish_immutable_backend_cache_artifact(
+                    backend_output,
+                    cache_path,
+                    is_wasm=is_wasm_output,
+                    warnings=warnings,
+                )
+                if staged_source == cache_path:
+                    with contextlib.suppress(OSError):
+                        backend_output.unlink()
             except OSError as exc:
-                if exc.errno != errno.EXDEV:
-                    return f"Failed to move backend output: {exc}"
-                try:
-                    _atomic_copy_file(backend_output, cache_path)
-                    backend_output.unlink()
-                    staged_source = cache_path
-                except OSError as copy_exc:
-                    return f"Failed to move backend output: {copy_exc}"
+                return f"Failed to publish backend cache output: {exc}"
         else:
             staged_source = cache_path
 
@@ -13550,7 +14149,12 @@ def _stage_backend_output_and_caches(
 
     if function_cache_path is not None and function_cache_path != cache_path:
         try:
-            _atomic_link_or_copy_file(cache_path, function_cache_path)
+            _publish_immutable_backend_cache_artifact(
+                staged_source,
+                function_cache_path,
+                is_wasm=is_wasm_output,
+                warnings=warnings,
+            )
         except OSError as exc:
             warnings.append(f"Function cache write failed: {exc}")
     if cache_key and not output_already_synced:
@@ -13576,7 +14180,7 @@ def _backend_daemon_request_bytes(
     data: bytes,
     *,
     timeout: float | None,
-    daemon_pid: int | None = None,
+    daemon_identity: _BackendDaemonIdentity | None = None,
     project_root: Path | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     request_sentinel = None
@@ -13591,8 +14195,8 @@ def _backend_daemon_request_bytes(
             request_sentinel = guard_context.start_repo_sentinel(
                 label=(
                     "backend_daemon_request"
-                    if daemon_pid is None
-                    else f"backend_daemon_request_{daemon_pid}"
+                    if daemon_identity is None
+                    else f"backend_daemon_request_{daemon_identity.pid}"
                 ),
                 drain_on_exit=False,
                 drain_until_clean_sec=0.0,
@@ -13605,14 +14209,14 @@ def _backend_daemon_request_bytes(
     try:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                if timeout is not None or daemon_pid is not None:
+                if timeout is not None or daemon_identity is not None:
                     sock.settimeout(timeout if timeout is not None else 1.0)
                 sock.connect(str(socket_path))
                 return _backend_daemon_request_on_socket(
                     sock,
                     data,
                     shutdown_write=True,
-                    daemon_pid=daemon_pid,
+                    daemon_identity=daemon_identity,
                 )
         except OSError as exc:
             return None, f"backend daemon connection failed: {exc}"
@@ -13626,7 +14230,7 @@ def _backend_daemon_request_on_socket(
     data: bytes,
     *,
     shutdown_write: bool,
-    daemon_pid: int | None = None,
+    daemon_identity: _BackendDaemonIdentity | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     try:
         sock.sendall(data)
@@ -13639,8 +14243,11 @@ def _backend_daemon_request_on_socket(
             try:
                 received = sock.recv_into(recv_view)
             except socket.timeout as exc:
-                if daemon_pid is not None:
-                    if not _pid_alive(daemon_pid):
+                if daemon_identity is not None:
+                    if not _backend_daemon_identity_is_verified(
+                        daemon_identity,
+                        allow_health_probe=False,
+                    ):
                         return None, "backend daemon died while request was in flight"
                     continue
                 return None, f"backend daemon connection failed: {exc}"
@@ -13865,6 +14472,7 @@ def _start_backend_daemon(
     cargo_profile: str,
     project_root: Path,
     target_triple: str | None,
+    config_digest: str | None,
     startup_timeout: float | None,
     json_output: bool,
     warnings: list[str],
@@ -13876,21 +14484,47 @@ def _start_backend_daemon(
             print(message, file=sys.stderr)
 
     startup_wait = startup_timeout if startup_timeout is not None else None
-    pid_path = _backend_daemon_pid_path(project_root, cargo_profile)
-    log_path = _backend_daemon_log_path(project_root, cargo_profile)
+    identity_path = _backend_daemon_identity_path(
+        project_root,
+        cargo_profile,
+        config_digest=config_digest,
+    )
+    log_path = _backend_daemon_log_path(
+        project_root,
+        cargo_profile,
+        config_digest=config_digest,
+    )
     if _unix_socket_path_exceeds_limit(socket_path):
         _report_daemon_issue(_backend_daemon_socket_path_error(socket_path))
         return False
-    # Cheap, idempotent cross-session orphan sweep. Live daemons are never
-    # touched (gated by _pid_alive). Suppress for the common case where the
-    # current PID is already alive — that path will short-circuit below.
+    # Cheap, idempotent cross-session orphan sweep. Verified live daemons are
+    # never disturbed. Suppress for the common case where the current identity
+    # is already alive — that path will short-circuit below.
     _sweep_orphaned_backend_daemon_locks_once(project_root)
-    existing_pid = _read_backend_daemon_pid(pid_path)
-    if existing_pid is not None:
-        if _pid_alive(existing_pid):
+    existing_identity = _read_backend_daemon_identity(identity_path)
+    if existing_identity is not None:
+        if not _backend_daemon_identity_matches_context(
+            existing_identity,
+            backend_bin=backend_bin,
+            socket_path=socket_path,
+            project_root=project_root,
+            cargo_profile=cargo_profile,
+            config_digest=config_digest,
+        ):
+            _report_daemon_issue(
+                "Ignoring stale backend daemon identity "
+                f"{identity_path}; recorded context no longer matches "
+                f"{backend_bin.name} --daemon --socket {socket_path}."
+            )
+            _remove_backend_daemon_identity(identity_path)
+            existing_identity = None
+        elif _backend_daemon_identity_is_verified(
+            existing_identity,
+            allow_health_probe=True,
+        ):
             if _backend_daemon_binary_is_newer(
-                backend_bin,
-                pid_path,
+                backend_bin=backend_bin,
+                identity_path=identity_path,
                 target_triple=target_triple,
             ):
                 if not json_output:
@@ -13898,14 +14532,17 @@ def _start_backend_daemon(
                         "Backend binary changed; restarting daemon...",
                         file=sys.stderr,
                     )
-                _terminate_backend_daemon_pid(existing_pid, grace=1.0)
-                _remove_backend_daemon_pid(pid_path)
+                _terminate_backend_daemon_identity(
+                    existing_identity,
+                    grace=1.0,
+                )
+                _remove_backend_daemon_identity(identity_path)
                 try:
                     if socket_path.exists():
                         socket_path.unlink()
                 except OSError:
                     pass
-                existing_pid = None
+                existing_identity = None
             else:
                 if socket_path.exists():
                     probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
@@ -13924,22 +14561,49 @@ def _start_backend_daemon(
                     if log_tail:
                         message = f"{message}\nLast daemon log lines:\n{log_tail}"
                     _report_daemon_issue(message)
-                    _terminate_backend_daemon_pid(existing_pid, grace=1.0)
-                    _remove_backend_daemon_pid(pid_path)
+                    _terminate_backend_daemon_identity(
+                        existing_identity,
+                        grace=1.0,
+                    )
+                    _remove_backend_daemon_identity(identity_path)
                     try:
                         if socket_path.exists():
                             socket_path.unlink()
                     except OSError:
                         pass
-                    existing_pid = None
+                    existing_identity = None
                 else:
-                    _terminate_backend_daemon_pid(existing_pid, grace=1.0)
-        if existing_pid is not None:
-            _remove_backend_daemon_pid(pid_path)
+                    _terminate_backend_daemon_identity(
+                        existing_identity,
+                        grace=1.0,
+                    )
+                    _remove_backend_daemon_identity(identity_path)
+                    existing_identity = None
+        else:
+            _report_daemon_issue(
+                "Ignoring stale backend daemon identity "
+                f"{identity_path}; recorded pid {existing_identity.pid} is not "
+                "a verified live daemon."
+            )
+            _remove_backend_daemon_identity(identity_path)
+            existing_identity = None
     try:
         if socket_path.exists():
-            _pid_for_sock = _read_backend_daemon_pid(pid_path)
-            _daemon_alive = _pid_for_sock is not None and _pid_alive(_pid_for_sock)
+            socket_identity = _read_backend_daemon_identity(identity_path)
+            _daemon_alive = socket_identity is not None and (
+                _backend_daemon_identity_matches_context(
+                    socket_identity,
+                    backend_bin=backend_bin,
+                    socket_path=socket_path,
+                    project_root=project_root,
+                    cargo_profile=cargo_profile,
+                    config_digest=config_digest,
+                )
+                and _backend_daemon_identity_is_verified(
+                    socket_identity,
+                    allow_health_probe=True,
+                )
+            )
             probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
             # A live PID is not enough to trust the socket. If the socket
             # cannot answer a short probe, treat it as stale and restart.
@@ -13958,13 +14622,26 @@ def _start_backend_daemon(
             else:
                 # Quick single-shot probe in case an orphaned daemon is
                 # still listening (PID file was lost but process lives).
-                ready, _ = _backend_daemon_wait_until_ready(
+                ready, health = _backend_daemon_wait_until_ready(
                     socket_path,
                     ready_timeout=probe_window,
                     probe_timeout=probe_window,
                 )
                 if ready:
-                    return True
+                    adopted_identity = _backend_daemon_identity_from_health(
+                        health,
+                        socket_path=socket_path,
+                        project_root=project_root,
+                        cargo_profile=cargo_profile,
+                        config_digest=config_digest,
+                        backend_bin=backend_bin,
+                    )
+                    if adopted_identity is not None:
+                        _write_backend_daemon_identity(
+                            identity_path,
+                            adopted_identity,
+                        )
+                        return True
                 message = (
                     f"Removed stale daemon socket {socket_path.name} "
                     f"(no live daemon process found)."
@@ -14020,10 +14697,20 @@ def _start_backend_daemon(
                     **daemon_popen_kwargs,
                 )
                 daemon_pid = daemon_proc.pid
-                _write_backend_daemon_pid(pid_path, daemon_pid)
+                _write_backend_daemon_identity(
+                    identity_path,
+                    _backend_daemon_identity_for_pid(
+                        daemon_pid,
+                        socket_path=socket_path,
+                        project_root=project_root,
+                        cargo_profile=cargo_profile,
+                        config_digest=config_digest,
+                        backend_bin=backend_bin,
+                    ),
+                )
         except OSError as exc:
             if daemon_pid is not None:
-                _remove_backend_daemon_pid(pid_path)
+                _remove_backend_daemon_identity(identity_path)
             if not json_output:
                 print(f"Failed to start backend daemon: {exc}", file=sys.stderr)
             return False
@@ -14098,13 +14785,13 @@ def _compile_with_backend_daemon(
     stdlib_module_symbols_json: str | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
-    daemon_pid: int | None = None,
+    daemon_identity: _BackendDaemonIdentity | None = None,
 ) -> _BackendDaemonCompileResult:
     full_request_bytes = request_bytes
     probe_request_bytes: bytes | None = None
     cache_probe_allowed = True
     if not is_wasm and stdlib_object_path is not None:
-        cache_probe_allowed = _shared_stdlib_cache_matches_key(
+        cache_probe_allowed = _shared_stdlib_cache_matches_key_locked(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
@@ -14172,7 +14859,7 @@ def _compile_with_backend_daemon(
             socket_path,
             probe_request_bytes,
             timeout=timeout,
-            daemon_pid=daemon_pid,
+            daemon_identity=daemon_identity,
             project_root=project_root,
         )
     else:
@@ -14181,7 +14868,7 @@ def _compile_with_backend_daemon(
             socket_path,
             full_request_bytes,
             timeout=timeout,
-            daemon_pid=daemon_pid,
+            daemon_identity=daemon_identity,
             project_root=project_root,
         )
     if err is not None:
@@ -14280,7 +14967,7 @@ def _compile_with_backend_daemon(
             socket_path,
             full_request_bytes,
             timeout=timeout,
-            daemon_pid=daemon_pid,
+            daemon_identity=daemon_identity,
             project_root=project_root,
         )
         if err is not None:
@@ -14425,6 +15112,10 @@ def _stdlib_object_manifest_sidecar_path(stdlib_object_path: Path) -> Path:
     return stdlib_object_path.with_suffix(".manifest.json")
 
 
+def _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path: Path) -> Path:
+    return stdlib_object_path.with_suffix(".partition.json")
+
+
 def _shared_stdlib_publish_lock_path(stdlib_object_path: Path) -> Path:
     return stdlib_object_path.with_name(f"{stdlib_object_path.name}.publish.lock")
 
@@ -14483,9 +15174,15 @@ def _stage_shared_stdlib_object_for_link(
     staged_key_path = _stdlib_object_key_sidecar_path(staged_stdlib_obj)
     staged_count_path = _stdlib_object_count_sidecar_path(staged_stdlib_obj)
     staged_manifest_path = _stdlib_object_manifest_sidecar_path(staged_stdlib_obj)
+    staged_partition_manifest_path = _stdlib_object_partition_manifest_sidecar_path(
+        staged_stdlib_obj
+    )
     source_key_path = _stdlib_object_key_sidecar_path(stdlib_object_path)
     source_count_path = _stdlib_object_count_sidecar_path(stdlib_object_path)
     source_manifest_path = _stdlib_object_manifest_sidecar_path(stdlib_object_path)
+    source_partition_manifest_path = _stdlib_object_partition_manifest_sidecar_path(
+        stdlib_object_path
+    )
     try:
         with _shared_stdlib_cache_lock(stdlib_object_path):
             if not _shared_stdlib_cache_matches_key(
@@ -14524,6 +15221,15 @@ def _stage_shared_stdlib_object_for_link(
                 )
             elif staged_manifest_path.exists():
                 staged_manifest_path.unlink()
+            if source_partition_manifest_path.exists():
+                _atomic_link_or_copy_file(
+                    source_partition_manifest_path, staged_partition_manifest_path
+                )
+            else:
+                raise OSError(
+                    "Shared stdlib cache contract mismatch during staging: "
+                    f"missing partition manifest sidecar for {stdlib_object_path}"
+                )
     except OSError:
         _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
         raise
@@ -14539,6 +15245,8 @@ def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
         _stdlib_object_key_sidecar_path(stdlib_object_path).unlink()
     with contextlib.suppress(OSError):
         _stdlib_object_manifest_sidecar_path(stdlib_object_path).unlink()
+    with contextlib.suppress(OSError):
+        _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).unlink()
 
 
 def _shared_stdlib_cache_matches_key(
@@ -14569,7 +15277,25 @@ def _shared_stdlib_cache_matches_key(
         ).read_text(encoding="utf-8")
     except OSError:
         return False
-    return cached_manifest.strip() == stdlib_object_manifest
+    if cached_manifest.strip() != stdlib_object_manifest:
+        return False
+    return _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).exists()
+
+
+def _shared_stdlib_cache_matches_key_locked(
+    stdlib_object_path: Path | None,
+    stdlib_object_cache_key: str | None,
+    *,
+    stdlib_object_manifest: str | None,
+) -> bool:
+    if stdlib_object_path is None:
+        return False
+    with _shared_stdlib_cache_lock(stdlib_object_path):
+        return _shared_stdlib_cache_matches_key(
+            stdlib_object_path,
+            stdlib_object_cache_key,
+            stdlib_object_manifest=stdlib_object_manifest,
+        )
 
 
 def _artifact_sync_state_path(project_root: Path, artifact: Path) -> Path:
@@ -14636,6 +15362,91 @@ def _read_cached_json_object(path: Path) -> dict[str, Any] | None:
     return payload
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp_path.open("wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+
+def _atomic_write_json(
+    path: Path,
+    payload: Any,
+    *,
+    indent: int | None = 2,
+    sort_keys: bool = False,
+    default: Any | None = None,
+) -> None:
+    _atomic_write_text(
+        path,
+        json.dumps(
+            payload,
+            indent=indent,
+            sort_keys=sort_keys,
+            default=default,
+        )
+        + "\n",
+    )
+
+
+@contextmanager
+def _atomic_zip_file(path: Path) -> Iterator[zipfile.ZipFile]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with zipfile.ZipFile(tmp_path, "w") as zf:
+            yield zf
+        os.replace(tmp_path, path)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp_path.exists():
+                tmp_path.unlink()
+
+
 def _write_artifact_sync_state(
     path: Path,
     *,
@@ -14651,7 +15462,7 @@ def _write_artifact_sync_state(
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
     }
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    _atomic_write_json(path, payload, indent=2)
     try:
         written_stat = path.stat()
     except OSError:
@@ -14670,9 +15481,7 @@ def _write_cached_json_object(
     *,
     default: Any | None = None,
 ) -> None:
-    text = json.dumps(payload, indent=2, default=default) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    _atomic_write_json(path, payload, indent=2, default=default)
     try:
         written_stat = path.stat()
     except OSError:
@@ -14691,8 +15500,7 @@ def _write_artifact_sync_payload(
     *,
     default: Any | None = None,
 ) -> None:
-    text = json.dumps(payload, indent=2, default=default) + "\n"
-    path.write_text(text)
+    _atomic_write_json(path, payload, indent=2, default=default)
     try:
         written_stat = path.stat()
     except OSError:
@@ -14746,7 +15554,7 @@ def _import_scan_cache_path(
     *,
     module_name: str,
     is_package: bool,
-    include_nested: bool,
+    import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path:
     root = _build_state_subdir_cached(
@@ -14757,7 +15565,7 @@ def _import_scan_cache_path(
         os.fspath(path),
         module_name,
         "pkg" if is_package else "mod",
-        "nested" if include_nested else "top",
+        import_scan_mode,
         target_python.tag,
         _cache_tooling_fingerprint(),
     )
@@ -14771,6 +15579,7 @@ def _module_analysis_cache_path(
     kind: str = "module_analysis_cache",
     module_name: str,
     is_package: bool | None = None,
+    import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path:
     root = _build_state_subdir_cached(
@@ -14782,6 +15591,7 @@ def _module_analysis_cache_path(
         os.fspath(path),
         module_name,
         package_kind,
+        import_scan_mode,
         kind,
         target_python.tag,
         _cache_tooling_fingerprint(),
@@ -14820,6 +15630,9 @@ def _module_graph_cache_path(
     skip_modules: set[str],
     stub_parents: set[str],
     nested_stdlib_scan_modules: set[str],
+    stdlib_allowlist: set[str],
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
+    allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> Path:
     root = _build_state_subdir_cached(
@@ -14834,6 +15647,11 @@ def _module_graph_cache_path(
         tuple(sorted(skip_modules)),
         tuple(sorted(stub_parents)),
         tuple(sorted(nested_stdlib_scan_modules)),
+        _module_graph_policy_digest(
+            stdlib_allowlist,
+            import_admission_policy,
+            allow_entry_external_imports=allow_entry_external_imports,
+        ),
         _cache_tooling_fingerprint(),
         target_python.tag,
     )
@@ -14850,6 +15668,9 @@ def _read_persisted_module_graph(
     skip_modules: set[str],
     stub_parents: set[str],
     nested_stdlib_scan_modules: set[str],
+    stdlib_allowlist: set[str],
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
+    allow_entry_external_imports: bool = True,
     resolution_cache: _ModuleResolutionCache | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> _PersistedModuleGraphState | None:
@@ -14862,6 +15683,9 @@ def _read_persisted_module_graph(
         skip_modules=skip_modules,
         stub_parents=stub_parents,
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        stdlib_allowlist=stdlib_allowlist,
+        import_admission_policy=import_admission_policy,
+        allow_entry_external_imports=allow_entry_external_imports,
         target_python=target_python,
     )
     payload = _read_cached_json_object(cache_path)
@@ -14934,6 +15758,9 @@ def _write_persisted_module_graph(
     skip_modules: set[str],
     stub_parents: set[str],
     nested_stdlib_scan_modules: set[str],
+    stdlib_allowlist: set[str],
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
+    allow_entry_external_imports: bool = True,
     graph: dict[str, Path],
     explicit_imports: set[str],
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -14968,6 +15795,9 @@ def _write_persisted_module_graph(
         skip_modules=skip_modules,
         stub_parents=stub_parents,
         nested_stdlib_scan_modules=nested_stdlib_scan_modules,
+        stdlib_allowlist=stdlib_allowlist,
+        import_admission_policy=import_admission_policy,
+        allow_entry_external_imports=allow_entry_external_imports,
         target_python=target_python,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -14980,7 +15810,7 @@ def _read_persisted_import_scan(
     *,
     module_name: str,
     is_package: bool,
-    include_nested: bool,
+    import_scan_mode: ImportScanMode,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[str, ...] | None:
@@ -14989,7 +15819,7 @@ def _read_persisted_import_scan(
         path,
         module_name=module_name,
         is_package=is_package,
-        include_nested=include_nested,
+        import_scan_mode=import_scan_mode,
         target_python=target_python,
     )
     payload = _read_artifact_sync_state(cache_path)
@@ -14998,6 +15828,7 @@ def _read_persisted_import_scan(
     if (
         payload.get("version") != _IMPORT_SCAN_CACHE_SCHEMA_VERSION
         or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
+        or payload.get("import_scan_mode") != import_scan_mode
     ):
         return None
     if path_stat is None:
@@ -15021,7 +15852,7 @@ def _write_persisted_import_scan(
     *,
     module_name: str,
     is_package: bool,
-    include_nested: bool,
+    import_scan_mode: ImportScanMode,
     imports: Iterable[str],
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> None:
@@ -15030,7 +15861,7 @@ def _write_persisted_import_scan(
         path,
         module_name=module_name,
         is_package=is_package,
-        include_nested=include_nested,
+        import_scan_mode=import_scan_mode,
         target_python=target_python,
     )
     stat = path.stat()
@@ -15042,7 +15873,7 @@ def _write_persisted_import_scan(
         "compiler_fingerprint": _cache_tooling_fingerprint(),
         "module_name": module_name,
         "is_package": is_package,
-        "include_nested": include_nested,
+        "import_scan_mode": import_scan_mode,
         "target_python": target_python.tag,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
@@ -15059,6 +15890,7 @@ def _read_persisted_module_analysis(
     *,
     module_name: str,
     is_package: bool,
+    import_scan_mode: ImportScanMode,
     path_stat: os.stat_result | None = None,
     validate_stat: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -15068,6 +15900,7 @@ def _read_persisted_module_analysis(
         path,
         module_name=module_name,
         is_package=is_package,
+        import_scan_mode=import_scan_mode,
         target_python=target_python,
     )
     payload = _read_artifact_sync_state(cache_path)
@@ -15076,6 +15909,7 @@ def _read_persisted_module_analysis(
     if (
         payload.get("version") != _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION
         or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
+        or payload.get("import_scan_mode") != import_scan_mode
     ):
         return None
     raw_defaults = payload.get("func_defaults")
@@ -15114,6 +15948,7 @@ def _write_persisted_module_analysis(
     *,
     module_name: str,
     is_package: bool,
+    import_scan_mode: ImportScanMode,
     func_defaults: dict[str, dict[str, Any]],
     imports: Iterable[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
@@ -15123,6 +15958,7 @@ def _write_persisted_module_analysis(
         path,
         module_name=module_name,
         is_package=is_package,
+        import_scan_mode=import_scan_mode,
         target_python=target_python,
     )
     stat = path.stat()
@@ -15134,6 +15970,7 @@ def _write_persisted_module_analysis(
         "compiler_fingerprint": _cache_tooling_fingerprint(),
         "module_name": module_name,
         "is_package": is_package,
+        "import_scan_mode": import_scan_mode,
         "target_python": target_python.tag,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
@@ -15183,7 +16020,7 @@ def _load_module_imports(
     *,
     module_name: str,
     is_package: bool,
-    include_nested: bool,
+    import_scan_mode: ImportScanMode,
     tree: ast.AST,
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
@@ -15195,7 +16032,7 @@ def _load_module_imports(
             path,
             module_name=module_name,
             is_package=is_package,
-            include_nested=include_nested,
+            import_scan_mode=import_scan_mode,
             target_python=target_python,
         )
         if persisted_imports is not None:
@@ -15205,7 +16042,7 @@ def _load_module_imports(
         tree,
         module_name=module_name,
         is_package=is_package,
-        include_nested=include_nested,
+        import_scan_mode=import_scan_mode,
     )
     if project_root is not None:
         with contextlib.suppress(OSError):
@@ -15214,7 +16051,7 @@ def _load_module_imports(
                 path,
                 module_name=module_name,
                 is_package=is_package,
-                include_nested=include_nested,
+                import_scan_mode=import_scan_mode,
                 imports=imports,
                 target_python=target_python,
             )
@@ -15226,7 +16063,7 @@ def _load_module_analysis(
     *,
     module_name: str,
     is_package: bool,
-    include_nested: bool,
+    import_scan_mode: ImportScanMode,
     source: str | None,
     logical_source_path: str,
     resolution_cache: _ModuleResolutionCache,
@@ -15251,6 +16088,7 @@ def _load_module_analysis(
             path,
             module_name=module_name,
             is_package=is_package,
+            import_scan_mode=import_scan_mode,
             path_stat=path_stat,
             target_python=target_python,
         )
@@ -15263,6 +16101,7 @@ def _load_module_analysis(
             path,
             module_name=module_name,
             is_package=is_package,
+            import_scan_mode=import_scan_mode,
             validate_stat=False,
             target_python=target_python,
         )
@@ -15282,7 +16121,7 @@ def _load_module_analysis(
             path,
             module_name=module_name,
             is_package=is_package,
-            include_nested=include_nested,
+            import_scan_mode=import_scan_mode,
             path_stat=path_stat,
             target_python=target_python,
         )
@@ -15304,7 +16143,7 @@ def _load_module_analysis(
             path,
             module_name=module_name,
             is_package=is_package,
-            include_nested=include_nested,
+            import_scan_mode=import_scan_mode,
             tree=tree,
             resolution_cache=resolution_cache,
             project_root=project_root,
@@ -15320,6 +16159,7 @@ def _load_module_analysis(
                     path,
                     module_name=module_name,
                     is_package=is_package,
+                    import_scan_mode=import_scan_mode,
                     func_defaults=func_defaults,
                     imports=imports,
                     target_python=target_python,
@@ -16883,9 +17723,7 @@ def _write_emitted_ir(emit_ir_path: Path | None, ir: Mapping[str, Any]) -> str |
         return None
     try:
         normalized = _normalize_ir_labels(ir)
-        emit_ir_path.write_text(
-            json.dumps(normalized, indent=2, default=_json_ir_default) + "\n"
-        )
+        _atomic_write_json(emit_ir_path, normalized, indent=2, default=_json_ir_default)
     except OSError as exc:
         return f"Failed to write IR: {exc}"
     return None
@@ -17248,6 +18086,8 @@ def _is_protected_runtime_entrypoint(name: str) -> bool:
 
 def _reachable_function_names_for_stdlib_cache(
     ir: Mapping[str, Any],
+    *,
+    stdlib_module_symbols: Collection[str],
 ) -> set[str]:
     functions = ir.get("functions")
     if not isinstance(functions, list) or not functions:
@@ -17304,6 +18144,14 @@ def _reachable_function_names_for_stdlib_cache(
     roots.extend(
         sorted(name for name in defined if _is_protected_runtime_entrypoint(name))
     )
+    roots.extend(
+        init_name
+        for init_name in (
+            f"molt_init_{module_symbol}"
+            for module_symbol in sorted(set(stdlib_module_symbols))
+        )
+        if init_name in defined
+    )
 
     reachable: set[str] = set()
     queue: deque[str] = deque()
@@ -17338,7 +18186,10 @@ def _shared_stdlib_cache_payload(
     """
     functions = ir.get("functions")
     stdlib_functions: list[dict[str, Any]] = []
-    reachable = _reachable_function_names_for_stdlib_cache(ir)
+    reachable = _reachable_function_names_for_stdlib_cache(
+        ir,
+        stdlib_module_symbols=stdlib_module_symbols,
+    )
     if isinstance(functions, list):
         for func in functions:
             if not isinstance(func, dict):
@@ -17454,7 +18305,7 @@ def _stdlib_object_cache_path(
     return cache_root / f"stdlib_shared_{stdlib_cache_key}.o"
 
 
-def _invalidate_stale_stdlib_cache(
+def _validate_shared_stdlib_cache_contract(
     stdlib_object_path: Path,
     project_root: Path | None,
     expected_key: str | None = None,
@@ -17462,82 +18313,15 @@ def _invalidate_stale_stdlib_cache(
     expected_manifest: str | None = None,
     target_triple: str | None = None,
 ) -> None:
-    """Delete the cached stdlib .o if the backend binary or runtime library is newer.
-
-    When the backend or runtime is rebuilt, the cached stdlib becomes stale
-    and will cause duplicate-symbol linker errors if reused.  This check
-    mirrors the mtime logic in ``_backend_daemon_binary_is_newer`` but
-    compares against the cached stdlib file instead of the daemon PID.
-    """
+    """Validate a shared stdlib entry without deleting immutable exact-key artifacts."""
+    del project_root, target_triple
     if not stdlib_object_path.exists():
         return
-    if not _shared_stdlib_cache_matches_key(
+    _shared_stdlib_cache_matches_key_locked(
         stdlib_object_path,
         expected_key,
         stdlib_object_manifest=expected_manifest,
-    ):
-        _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
-        return
-    try:
-        stdlib_mtime = stdlib_object_path.stat().st_mtime
-    except OSError:
-        return
-
-    # Discover project root the same way as _backend_daemon_binary_is_newer.
-    candidate = project_root
-    if candidate is None:
-        return
-    # Walk up to find Cargo.toml if needed.
-    _root = candidate
-    for _ in range(5):
-        if (_root / "Cargo.toml").exists():
-            break
-        _root = _root.parent
-    else:
-        _root = candidate
-
-    # Resolve the artifact root through the canonical cargo-target resolver so
-    # explicit CARGO_TARGET_DIR remains authoritative across stale-cache checks.
-    target_root = _cargo_target_root(_root)
-
-    # Check backend binary and runtime archives across all live profile dirs.
-    for profile_dir in _active_artifact_profile_dirs():
-        artifact = target_root / profile_dir / "molt-backend"
-        try:
-            if artifact.stat().st_mtime > stdlib_mtime:
-                _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
-                return
-        except OSError:
-            continue
-    for artifact in _runtime_lib_freshness_candidates(
-        target_root,
-        target_triple=target_triple,
-    ):
-        try:
-            if artifact.stat().st_mtime > stdlib_mtime:
-                _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
-                return
-        except OSError:
-            continue
-
-    # Also check backend and runtime Rust sources — cargo incremental
-    # compilation may skip the link step (no binary mtime change) even
-    # when sources changed.
-    backend_src = _root / "runtime" / "molt-backend" / "src"
-    runtime_src = _root / "runtime" / "molt-runtime" / "src"
-    for src_dir in (backend_src, runtime_src):
-        try:
-            if not src_dir.is_dir():
-                continue
-            newest_rs = max(
-                (f.stat().st_mtime for f in src_dir.rglob("*.rs") if f.is_file()),
-                default=0.0,
-            )
-            if newest_rs > stdlib_mtime:
-                _remove_shared_stdlib_cache_artifacts(stdlib_object_path)
-                return
-        except OSError:
-            continue
+    )
 
 
 def _attach_build_metadata(
@@ -18105,7 +18889,7 @@ def _build_native_link_command(
         # via an exported_symbols_list so the linker treats every other
         # symbol as local, maximizing dead-strip and ICF scope.
         _exp_path = output_binary.parent / ".molt_exports.exp"
-        _exp_path.write_text("_main\n")
+        _atomic_write_text(_exp_path, "_main\n")
         link_cmd.append(f"-Wl,-exported_symbols_list,{_exp_path}")
         # MOLT_KEEP_SYMBOLS=1 is a diagnostic-only escape hatch (default off):
         # it preserves local symbol names so size-attribution tools (nm/bloaty)
@@ -18133,7 +18917,7 @@ def _build_native_link_command(
         # This mirrors macOS -exported_symbols_list and gives GNU ld the
         # same dead-code-elimination scope as ld64's -dead_strip.
         _ver_path = output_binary.parent / ".molt_version.ver"
-        _ver_path.write_text("{ global: main; local: *; };\n")
+        _atomic_write_text(_ver_path, "{ global: main; local: *; };\n")
         link_cmd.append(f"-Wl,--version-script={_ver_path}")
         link_cmd.append("-lstdc++")
         link_cmd.append("-lm")
@@ -18325,14 +19109,14 @@ def _smoke_probe_native_binary(binary: Path, target_triple: str | None) -> None:
     if sys.platform == "win32":
         return
     try:
-        proc = subprocess.run(
+        proc = _run_completed_command(
             [str(binary)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
             timeout=20,
             env={**os.environ, "MOLT_BUILD_VALIDITY_PROBE": "1"},
-            check=False,
+            cwd=binary.parent,
+            capture_output=True,
+            memory_guard_prefix="MOLT_BUILD",
+            input="",
         )
     except OSError as exc:
         # ENOEXEC / "Exec format error" — the loader cannot run this image.
@@ -18494,7 +19278,7 @@ def _prepare_native_object_artifact(
 ) -> tuple[Path | None, subprocess.CompletedProcess[str] | None, _CliFailure | None]:
     if stdlib_obj_path is None or not stdlib_obj_path.exists():
         return output_artifact, None, None
-    if not _shared_stdlib_cache_matches_key(
+    if not _shared_stdlib_cache_matches_key_locked(
         stdlib_obj_path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
@@ -18508,8 +19292,9 @@ def _prepare_native_object_artifact(
                 command="build",
             ),
         )
-    merged_output = (
-        artifacts_root / f"{output_artifact.stem}_linked{output_artifact.suffix}"
+    merged_output = artifacts_root / (
+        f".{output_artifact.stem}_linked."
+        f"{os.getpid()}.{uuid.uuid4().hex}{output_artifact.suffix}"
     )
     try:
         link_process = _run_native_partial_link_command(
@@ -18521,6 +19306,9 @@ def _prepare_native_object_artifact(
             sysroot_path=sysroot_path,
         )
     except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            if merged_output.exists():
+                merged_output.unlink()
         return (
             None,
             None,
@@ -18531,14 +19319,25 @@ def _prepare_native_object_artifact(
             ),
         )
     except RuntimeError as exc:
+        with contextlib.suppress(OSError):
+            if merged_output.exists():
+                merged_output.unlink()
         return None, None, _fail(str(exc), json_output, command="build")
     if link_process.returncode != 0:
+        with contextlib.suppress(OSError):
+            if merged_output.exists():
+                merged_output.unlink()
         err = (link_process.stderr or "").strip() or (link_process.stdout or "").strip()
         msg = "Native object partial link failed"
         if err:
             msg = f"{msg}: {err}"
         return None, link_process, _fail(msg, json_output, command="build")
-    os.replace(merged_output, output_artifact)
+    try:
+        os.replace(merged_output, output_artifact)
+    finally:
+        with contextlib.suppress(OSError):
+            if merged_output.exists():
+                merged_output.unlink()
     return output_artifact, link_process, None
 
 
@@ -19232,9 +20031,7 @@ def _augment_support_modules(
     stub_parents: Collection[str],
     entry_module: str,
     needs_generated_importer: bool,
-    needs_runtime_import_support: bool,
     diagnostics_enabled: bool,
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> _SupportModuleAugmentation:
     namespace_parents = _collect_namespace_parents(
         module_graph,
@@ -19266,43 +20063,8 @@ def _augment_support_modules(
     for stub in stub_parents:
         if stub != entry_module and stub in namespace_modules:
             module_graph.pop(stub, None)
-    if needs_runtime_import_support:
-        # Dynamic import helpers bootstrap through these support modules at
-        # runtime. Discover their transitive closure only for graphs that
-        # actually require runtime import semantics.  Must run BEFORE the
-        # importer module is generated so that importlib.util and
-        # importlib.machinery appear in the importer's module list.
-        import_support_paths: list[Path] = []
-        for module_name in ("importlib", "importlib.util", "importlib.machinery"):
-            module_path = _resolve_module_path(module_name, [stdlib_root])
-            if module_path is None:
-                raise RuntimeError(
-                    f"Missing required stdlib support module: {module_name}"
-                )
-            import_support_paths.append(module_path)
-        _extend_module_graph_with_closure(
-            module_graph,
-            entry_paths=import_support_paths,
-            roots=[stdlib_root],
-            module_roots=[stdlib_root],
-            stdlib_root=stdlib_root,
-            project_root=None,
-            stdlib_allowlist=stdlib_allowlist,
-            resolver_cache=resolver_cache,
-            diagnostics_enabled=diagnostics_enabled,
-            module_reasons=module_reasons,
-            reason="import_support",
-            target_python=target_python,
-        )
     if needs_generated_importer and IMPORTER_MODULE_NAME not in module_graph:
-        importer_names = sorted(
-            {
-                name
-                for name in module_graph
-                if name not in {IMPORTER_MODULE_NAME, "builtins"}
-            }.union(stub_parents)
-        )
-        importer_path = _write_importer_module(importer_names, artifacts_root)
+        importer_path = _write_importer_module(artifacts_root)
         module_graph[IMPORTER_MODULE_NAME] = importer_path
         if diagnostics_enabled:
             _record_module_reason(
@@ -19315,6 +20077,64 @@ def _augment_support_modules(
     return _SupportModuleAugmentation(
         namespace_module_names=frozenset(namespace_modules),
         generated_module_source_paths=generated_module_source_paths,
+    )
+
+
+def _materialize_import_plan(
+    *,
+    prepared_module_graph: _PreparedEntryModuleGraph,
+    module_reasons: MutableMapping[str, set[str]],
+    stdlib_root: Path,
+    artifacts_root: Path,
+    entry_module: str,
+    diagnostics_enabled: bool,
+) -> _ImportPlan:
+    module_graph = dict(prepared_module_graph.module_graph)
+    stdlib_allowlist = set(prepared_module_graph.stdlib_allowlist)
+    stub_parents = set(prepared_module_graph.stub_parents)
+    support_modules = _augment_support_modules(
+        module_graph=module_graph,
+        module_reasons=module_reasons,
+        roots=list(prepared_module_graph.roots),
+        stdlib_root=stdlib_root,
+        stdlib_allowlist=stdlib_allowlist,
+        explicit_imports=prepared_module_graph.explicit_imports,
+        resolver_cache=prepared_module_graph.module_resolution_cache,
+        artifacts_root=artifacts_root,
+        stub_parents=stub_parents,
+        entry_module=entry_module,
+        needs_generated_importer=(
+            prepared_module_graph.runtime_import_support_policy.needs_generated_importer
+        ),
+        diagnostics_enabled=diagnostics_enabled,
+    )
+    namespace_module_names = support_modules.namespace_module_names
+    generated_module_source_paths = dict(support_modules.generated_module_source_paths)
+    known_modules = frozenset(module_graph)
+    stdlib_allowlist.update(STUB_MODULES)
+    stdlib_allowlist.update(stub_parents)
+    stdlib_allowlist.add("molt.stdlib")
+    module_graph_metadata = _build_module_graph_metadata(
+        module_graph,
+        generated_module_source_paths=generated_module_source_paths,
+        entry_module=entry_module,
+        namespace_module_names=set(namespace_module_names),
+    )
+    return _ImportPlan(
+        stdlib_allowlist=frozenset(stdlib_allowlist),
+        roots=tuple(prepared_module_graph.roots),
+        module_resolution_cache=prepared_module_graph.module_resolution_cache,
+        module_graph=MappingProxyType(dict(module_graph)),
+        explicit_imports=frozenset(prepared_module_graph.explicit_imports),
+        stub_parents=frozenset(stub_parents),
+        spawn_enabled=prepared_module_graph.spawn_enabled,
+        runtime_import_support_policy=prepared_module_graph.runtime_import_support_policy,
+        namespace_module_names=namespace_module_names,
+        generated_module_source_paths=MappingProxyType(generated_module_source_paths),
+        known_modules=known_modules,
+        known_modules_sorted=tuple(sorted(known_modules)),
+        stdlib_allowlist_sorted=tuple(sorted(stdlib_allowlist)),
+        module_graph_metadata=module_graph_metadata,
     )
 
 
@@ -19334,6 +20154,7 @@ def _augment_module_graph_for_entry_and_runtime(
     diagnostics_enabled: bool,
     json_output: bool,
     target: str,
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[_ModuleGraphAugmentation, _CliFailure | None]:
     roots = list(roots)
@@ -19366,7 +20187,7 @@ def _augment_module_graph_for_entry_and_runtime(
         reason="core_closure",
         skip_modules=stub_skip_modules,
         stub_parents=stub_parents,
-        nested_stdlib_scan_modules=set(),
+        import_admission_policy=import_admission_policy,
         target_python=target_python,
     )
     spawn_enabled = False
@@ -19408,6 +20229,7 @@ def _augment_module_graph_for_entry_and_runtime(
             reason="spawn_closure",
             skip_modules=stub_skip_modules,
             stub_parents=stub_parents,
+            import_admission_policy=import_admission_policy,
             target_python=target_python,
         )
     return _ModuleGraphAugmentation(
@@ -19429,6 +20251,7 @@ def _prepare_entry_module_graph(
     module_reasons: MutableMapping[str, set[str]],
     json_output: bool,
     target: str,
+    import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
     stdlib_allowlist = _stdlib_allowlist()
@@ -19448,6 +20271,7 @@ def _prepare_entry_module_graph(
         stub_parents=STUB_PARENT_MODULES,
         resolver_cache=module_resolution_cache,
         precomputed_imports=entry_imports,
+        import_admission_policy=import_admission_policy,
         target_python=target_python,
     )
     if diagnostics_enabled:
@@ -19461,6 +20285,7 @@ def _prepare_entry_module_graph(
             stdlib_root=stdlib_root,
             stdlib_allowlist=stdlib_allowlist,
             resolver_cache=module_resolution_cache,
+            import_admission_policy=import_admission_policy,
         )
         if diagnostics_enabled:
             _record_new_module_reasons(
@@ -19491,6 +20316,8 @@ def _prepare_entry_module_graph(
             reason="package_parent_closure",
             skip_modules=STUB_MODULES,
             stub_parents=STUB_PARENT_MODULES,
+            import_admission_policy=import_admission_policy,
+            allow_entry_external_imports=False,
             target_python=target_python,
         )
         if diagnostics_enabled:
@@ -19529,6 +20356,7 @@ def _prepare_entry_module_graph(
         diagnostics_enabled=diagnostics_enabled,
         json_output=json_output,
         target=target,
+        import_admission_policy=import_admission_policy,
         target_python=target_python,
     )
     if augmentation_error is not None:
@@ -19566,6 +20394,7 @@ def _prepare_entry_module_graph(
             diagnostics_enabled=diagnostics_enabled,
             module_reasons=module_reasons,
             reason="runtime_import_support",
+            import_admission_policy=import_admission_policy,
             target_python=target_python,
         )
         if diagnostics_enabled:
@@ -19583,27 +20412,17 @@ def _prepare_entry_module_graph(
         explicit_imports=augmentation.explicit_imports,
         stub_parents=augmentation.stub_parents,
         spawn_enabled=augmentation.spawn_enabled,
-        needs_generated_importer=runtime_import_support_policy.needs_generated_importer,
-        needs_runtime_import_support=(
-            runtime_import_support_policy.needs_runtime_import_support
-        ),
+        runtime_import_support_policy=runtime_import_support_policy,
     ), None
 
 
 def _prepare_build_module_outputs(
     *,
-    module_graph: MutableMapping[str, Path],
+    prepared_module_graph: _PreparedEntryModuleGraph,
     module_reasons: MutableMapping[str, set[str]],
-    roots: list[Path],
     stdlib_root: Path,
-    stdlib_allowlist: set[str],
-    explicit_imports: Collection[str],
-    resolver_cache: "_ModuleResolutionCache",
     artifacts_root: Path,
-    stub_parents: Collection[str],
     entry_module: str,
-    needs_generated_importer: bool,
-    needs_runtime_import_support: bool,
     diagnostics_enabled: bool,
     target: str,
     trusted: bool,
@@ -19619,26 +20438,15 @@ def _prepare_build_module_outputs(
     output_base: str,
     out_dir_path: Path | None,
     project_root: Path,
-    target_python: TargetPythonVersion,
 ) -> tuple[_PreparedBuildModuleOutputs | None, str | None]:
-    support_modules = _augment_support_modules(
-        module_graph=module_graph,
+    import_plan = _materialize_import_plan(
+        prepared_module_graph=prepared_module_graph,
         module_reasons=module_reasons,
-        roots=roots,
         stdlib_root=stdlib_root,
-        stdlib_allowlist=stdlib_allowlist,
-        explicit_imports=explicit_imports,
-        resolver_cache=resolver_cache,
         artifacts_root=artifacts_root,
-        stub_parents=stub_parents,
         entry_module=entry_module,
-        needs_generated_importer=needs_generated_importer,
-        needs_runtime_import_support=needs_runtime_import_support,
         diagnostics_enabled=diagnostics_enabled,
-        target_python=target_python,
     )
-    namespace_module_names = set(support_modules.namespace_module_names)
-    generated_module_source_paths = support_modules.generated_module_source_paths
     try:
         output_layout = _resolve_build_output_layout(
             target=target,
@@ -19659,26 +20467,9 @@ def _prepare_build_module_outputs(
         )
     except ValueError as exc:
         return None, str(exc)
-    known_modules = set(module_graph.keys())
-    stdlib_allowlist.update(STUB_MODULES)
-    stdlib_allowlist.update(stub_parents)
-    stdlib_allowlist.add("molt.stdlib")
-    known_modules_sorted = tuple(sorted(known_modules))
-    stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
-    module_graph_metadata = _build_module_graph_metadata(
-        module_graph,
-        generated_module_source_paths=generated_module_source_paths,
-        entry_module=entry_module,
-        namespace_module_names=namespace_module_names,
-    )
     return _PreparedBuildModuleOutputs(
-        namespace_module_names=namespace_module_names,
-        generated_module_source_paths=generated_module_source_paths,
+        import_plan=import_plan,
         output_layout=output_layout,
-        known_modules=known_modules,
-        known_modules_sorted=known_modules_sorted,
-        stdlib_allowlist_sorted=stdlib_allowlist_sorted,
-        module_graph_metadata=module_graph_metadata,
     ), None
 
 
@@ -19716,7 +20507,7 @@ def _prepare_frontend_analysis(
                 is_package=module_graph_metadata.module_is_package_by_module[
                     module_name
                 ],
-                include_nested=True,
+                import_scan_mode="full",
                 source=None,
                 logical_source_path=module_graph_metadata.logical_source_path_by_module[
                     module_name
@@ -20528,6 +21319,7 @@ def _prepare_backend_dispatch(
                 cargo_profile=backend_cargo_profile,
                 project_root=molt_root,
                 target_triple=target_triple,
+                config_digest=daemon_config_digest,
                 startup_timeout=startup_timeout,
                 json_output=json_output,
                 warnings=warnings,
@@ -20590,14 +21382,18 @@ def _execute_backend_compile(
         is_wasm=is_wasm,
     )
     with backend_output_ctx as backend_output:
-        daemon_pid_path = (
-            _backend_daemon_pid_path(molt_root, backend_cargo_profile)
+        daemon_identity_path = (
+            _backend_daemon_identity_path(
+                molt_root,
+                backend_cargo_profile,
+                config_digest=backend_daemon_config_digest,
+            )
             if daemon_socket is not None
             else None
         )
-        daemon_pid = (
-            _read_backend_daemon_pid(daemon_pid_path)
-            if daemon_pid_path is not None
+        daemon_identity = (
+            _read_backend_daemon_identity(daemon_identity_path)
+            if daemon_identity_path is not None
             else None
         )
         backend_compiled = False
@@ -20713,7 +21509,7 @@ def _execute_backend_compile(
                 stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                 timeout=None,
                 request_bytes=None,
-                daemon_pid=daemon_pid,
+                daemon_identity=daemon_identity,
             )
             backend_compiled = daemon_compile.ok
             backend_output_written = daemon_compile.output_written
@@ -20746,6 +21542,7 @@ def _execute_backend_compile(
                         cargo_profile=backend_cargo_profile,
                         project_root=molt_root,
                         target_triple=target_triple,
+                        config_digest=backend_daemon_config_digest,
                         startup_timeout=restart_timeout,
                         json_output=json_output,
                         warnings=warnings,
@@ -20774,9 +21571,11 @@ def _execute_backend_compile(
                         stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                         timeout=None,
                         request_bytes=None,
-                        daemon_pid=_read_backend_daemon_pid(daemon_pid_path)
-                        if daemon_pid_path is not None
-                        else None,
+                        daemon_identity=(
+                            _read_backend_daemon_identity(daemon_identity_path)
+                            if daemon_identity_path is not None
+                            else None
+                        ),
                     )
                     backend_compiled = daemon_compile.ok
                     backend_output_written = daemon_compile.output_written
@@ -21096,7 +21895,10 @@ def _prepare_backend_compile(
             print(f"Cache: {cache_state}{cache_detail}")
 
     compile_lock = (
-        _build_lock(project_root, f"compile.{cache_key}")
+        _shared_cache_lock(
+            f"compile.{cache_key}",
+            cache_root=cache_path.parent if cache_path is not None else None,
+        )
         if cache_enabled and cache_key is not None
         else nullcontext()
     )
@@ -21287,7 +22089,7 @@ def _generate_snapshot_header(
         "init_state_size": 0,
     }
 
-    snapshot_path.write_text(json.dumps(header, indent=2) + "\n")
+    _atomic_write_json(snapshot_path, header, indent=2)
     if verbose:
         print(f"Wrote snapshot header: {snapshot_path}", file=sys.stderr)
 
@@ -21912,19 +22714,55 @@ def _prepare_non_native_build_result(
             if link_skipped:
                 link_process = subprocess.CompletedProcess(link_cmd, 0, "", "")
             else:
-                link_process = _run_completed_command(
-                    link_cmd,
-                    cwd=molt_root,
-                    env=None,
-                    capture_output=True,
-                    memory_guard_prefix="MOLT_WASM_LINK",
-                )
-                if link_process.returncode != 0:
-                    err = link_process.stderr.strip() or link_process.stdout.strip()
-                    msg = "Wasm link failed"
-                    if err:
-                        msg = f"{msg}: {err}"
-                    return None, _fail(msg, json_output, command="build")
+                linked_tmp_output: Path | None = None
+                link_run_cmd = list(link_cmd)
+                if not _split_runtime:
+                    linked_tmp_output = resolved_linked_output.with_name(
+                        f".{resolved_linked_output.name}."
+                        f"{os.getpid()}.{uuid.uuid4().hex}.tmp"
+                    )
+                    output_arg_index = link_run_cmd.index("--output") + 1
+                    link_run_cmd[output_arg_index] = str(linked_tmp_output)
+                try:
+                    link_process = _run_completed_command(
+                        link_run_cmd,
+                        cwd=molt_root,
+                        env=None,
+                        capture_output=True,
+                        memory_guard_prefix="MOLT_WASM_LINK",
+                    )
+                    if link_process.returncode != 0:
+                        err = (
+                            link_process.stderr.strip()
+                            or link_process.stdout.strip()
+                        )
+                        msg = "Wasm link failed"
+                        if err:
+                            msg = f"{msg}: {err}"
+                        return None, _fail(msg, json_output, command="build")
+                    if linked_tmp_output is not None:
+                        if not _is_reusable_wasm_artifact(linked_tmp_output):
+                            return None, _fail(
+                                f"Wasm link produced invalid artifact: {linked_tmp_output}",
+                                json_output,
+                                command="build",
+                            )
+                        os.replace(linked_tmp_output, resolved_linked_output)
+                        if os.name == "posix":
+                            with contextlib.suppress(OSError):
+                                dir_fd = os.open(
+                                    resolved_linked_output.parent,
+                                    os.O_RDONLY,
+                                )
+                                try:
+                                    os.fsync(dir_fd)
+                                finally:
+                                    os.close(dir_fd)
+                finally:
+                    if linked_tmp_output is not None:
+                        with contextlib.suppress(OSError):
+                            if linked_tmp_output.exists():
+                                linked_tmp_output.unlink()
                 _write_link_fingerprint_if_needed(
                     link_skipped=False,
                     link_fingerprint=link_fingerprint,
@@ -21966,7 +22804,7 @@ def _prepare_non_native_build_result(
             staged_runtime_wasm = output_wasm.with_name("molt_runtime.wasm")
             if staged_runtime_wasm != runtime_wasm:
                 try:
-                    shutil.copy2(runtime_wasm, staged_runtime_wasm)
+                    _atomic_copy_file(runtime_wasm, staged_runtime_wasm)
                 except OSError as exc:
                     return None, _fail(
                         f"Failed to stage runtime wasm: {exc}",
@@ -22034,7 +22872,6 @@ def _prepare_non_native_build_result(
         # generate manifest.json and worker.js shim here.
         if _split_runtime and runtime_reloc_wasm is not None:
             split_dir = output_wasm.parent
-            import json as _json
 
             app_wasm = split_dir / "app.wasm"
             rt_wasm = split_dir / "molt_runtime.wasm"
@@ -22112,12 +22949,13 @@ def _prepare_non_native_build_result(
                 "instantiation_order": ["runtime", "app"],
                 "entry": {"module": "app", "function": "molt_main"},
             }
-            manifest.write_text(_json.dumps(manifest_data, indent=2) + "\n")
+            _atomic_write_json(manifest, manifest_data, indent=2)
 
             # Generate split-runtime Cloudflare Workers shim with full
             # WASI support and multi-module instantiation.
             worker_js = split_dir / "worker.js"
-            worker_js.write_text(
+            _atomic_write_text(
+                worker_js,
                 _generate_split_worker_js(
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
@@ -22131,7 +22969,7 @@ def _prepare_non_native_build_result(
             vfs_support_src = molt_root / "wasm" / "molt_vfs_browser.js"
             vfs_support_dst = split_dir / "molt_vfs_browser.js"
             try:
-                shutil.copy2(vfs_support_src, vfs_support_dst)
+                _atomic_copy_file(vfs_support_src, vfs_support_dst)
             except OSError as exc:
                 return None, _fail(
                     f"Failed to stage split-runtime VFS support: {exc}",
@@ -22143,7 +22981,8 @@ def _prepare_non_native_build_result(
             # JSONC is the modern Wrangler config shape and matches the
             # live-verification tooling contract.
             wrangler_jsonc = split_dir / "wrangler.jsonc"
-            wrangler_jsonc.write_text(
+            _atomic_write_text(
+                wrangler_jsonc,
                 _generate_split_wrangler_jsonc(dt.date.today().isoformat())
             )
             legacy_wrangler_toml = split_dir / "wrangler.toml"
@@ -22230,7 +23069,7 @@ def _prepare_native_link(
     output_obj = output_artifact
     link_stdlib_obj = stdlib_obj_path
     if stdlib_obj_path is not None:
-        if stdlib_obj_path.exists() and not _shared_stdlib_cache_matches_key(
+        if stdlib_obj_path.exists() and not _shared_stdlib_cache_matches_key_locked(
             stdlib_obj_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
@@ -22693,7 +23532,7 @@ def _prepare_frontend_stage_state(
     profile: BuildProfile,
 ) -> tuple[
     tuple[
-        _PreparedEntryModuleGraph,
+        _ImportPlan,
         _PreparedBuildModuleOutputs,
         _PreparedFrontendAnalysis,
         _PreparedFrontendLoweringConfig,
@@ -22736,6 +23575,15 @@ def _prepare_frontend_stage_state(
     warnings = prepared_build_preamble.warnings
     pgo_hot_function_names = prepared_build_config.pgo_hot_function_names
     frontend_phase_timeout = prepared_build_config.frontend_phase_timeout
+    import_admission_policy, import_admission_policy_error = (
+        _resolve_import_admission_policy(
+            external_module_roots=resolved_build_entry.external_module_roots,
+            json_output=json_output,
+        )
+    )
+    if import_admission_policy_error is not None:
+        return None, import_admission_policy_error
+    assert import_admission_policy is not None
     if diagnostics_enabled:
         phase_starts["module_graph"] = time.perf_counter()
     prepared_module_graph, prepared_module_graph_error = _prepare_entry_module_graph(
@@ -22749,59 +23597,24 @@ def _prepare_frontend_stage_state(
         diagnostics_enabled=diagnostics_enabled,
         json_output=json_output,
         target=target,
+        import_admission_policy=import_admission_policy,
         target_python=prepared_build_config.target_python,
     )
     if prepared_module_graph_error is not None:
         return None, prepared_module_graph_error
     assert prepared_module_graph is not None
-    if verbose and not json_output:
-        print(f"Project root: {project_root}")
-        print(f"Module roots: {', '.join(str(root) for root in module_roots)}")
-        print(f"Modules discovered: {len(prepared_module_graph.module_graph)}")
     output_base = _output_base_for_entry(entry_module, source_path)
     out_dir_path = _resolve_out_dir(project_root, out_dir)
     artifacts_root, bin_root, output_root = _resolve_output_roots(
         project_root, out_dir_path, output_base
     )
-    prepared_build_callbacks = _prepare_build_callbacks(
-        frontend_module_timings=frontend_module_timings,
-        frontend_timing_enabled=frontend_timing_enabled,
-        frontend_timing_raw=frontend_timing_raw,
-        frontend_timing_threshold=frontend_timing_threshold,
-        json_output=json_output,
-        diagnostics_enabled=diagnostics_enabled,
-        diagnostics_start=diagnostics_start,
-        phase_starts=phase_starts,
-        module_graph=prepared_module_graph.module_graph,
-        module_reasons=module_reasons,
-        allocation_diagnostics_enabled=allocation_diagnostics_enabled,
-        frontend_parallel_details=frontend_parallel_details,
-        profile=profile,
-        midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
-        midend_pass_stats_by_function=midend_pass_stats_by_function,
-        backend_daemon_health=backend_daemon_health,
-        backend_daemon_cached=backend_daemon_cached,
-        backend_daemon_cache_tier=backend_daemon_cache_tier,
-        backend_daemon_config_digest=backend_daemon_config_digest,
-        diagnostics_path_spec=diagnostics_path_spec,
-        artifacts_root=artifacts_root,
-    )
     prepared_build_outputs, prepared_build_outputs_error = (
         _prepare_build_module_outputs(
-            module_graph=prepared_module_graph.module_graph,
+            prepared_module_graph=prepared_module_graph,
             module_reasons=module_reasons,
-            roots=prepared_module_graph.roots,
             stdlib_root=stdlib_root,
-            stdlib_allowlist=prepared_module_graph.stdlib_allowlist,
-            explicit_imports=prepared_module_graph.explicit_imports,
-            resolver_cache=prepared_module_graph.module_resolution_cache,
             artifacts_root=artifacts_root,
-            stub_parents=prepared_module_graph.stub_parents,
             entry_module=entry_module,
-            needs_generated_importer=prepared_module_graph.needs_generated_importer,
-            needs_runtime_import_support=(
-                prepared_module_graph.needs_runtime_import_support
-            ),
             diagnostics_enabled=diagnostics_enabled,
             target=target,
             trusted=trusted,
@@ -22817,19 +23630,46 @@ def _prepare_frontend_stage_state(
             output_base=output_base,
             out_dir_path=out_dir_path,
             project_root=project_root,
-            target_python=prepared_build_config.target_python,
         )
     )
     if prepared_build_outputs_error is not None:
         return None, _fail(prepared_build_outputs_error, json_output, command="build")
     assert prepared_build_outputs is not None
+    import_plan = prepared_build_outputs.import_plan
+    if verbose and not json_output:
+        print(f"Project root: {project_root}")
+        print(f"Module roots: {', '.join(str(root) for root in module_roots)}")
+        print(f"Modules discovered: {len(import_plan.module_graph)}")
+    prepared_build_callbacks = _prepare_build_callbacks(
+        frontend_module_timings=frontend_module_timings,
+        frontend_timing_enabled=frontend_timing_enabled,
+        frontend_timing_raw=frontend_timing_raw,
+        frontend_timing_threshold=frontend_timing_threshold,
+        json_output=json_output,
+        diagnostics_enabled=diagnostics_enabled,
+        diagnostics_start=diagnostics_start,
+        phase_starts=phase_starts,
+        module_graph=import_plan.module_graph,
+        module_reasons=module_reasons,
+        allocation_diagnostics_enabled=allocation_diagnostics_enabled,
+        frontend_parallel_details=frontend_parallel_details,
+        profile=profile,
+        midend_policy_outcomes_by_function=midend_policy_outcomes_by_function,
+        midend_pass_stats_by_function=midend_pass_stats_by_function,
+        backend_daemon_health=backend_daemon_health,
+        backend_daemon_cached=backend_daemon_cached,
+        backend_daemon_cache_tier=backend_daemon_cache_tier,
+        backend_daemon_config_digest=backend_daemon_config_digest,
+        diagnostics_path_spec=diagnostics_path_spec,
+        artifacts_root=artifacts_root,
+    )
     if diagnostics_enabled:
         phase_starts["module_analysis"] = time.perf_counter()
     prepared_frontend_analysis, prepared_frontend_analysis_error = (
         _prepare_frontend_analysis(
-            module_graph=prepared_module_graph.module_graph,
-            module_graph_metadata=prepared_build_outputs.module_graph_metadata,
-            module_resolution_cache=prepared_module_graph.module_resolution_cache,
+            module_graph=import_plan.module_graph,
+            module_graph_metadata=import_plan.module_graph_metadata,
+            module_resolution_cache=import_plan.module_resolution_cache,
             project_root=project_root,
             entry_module=entry_module,
             json_output=json_output,
@@ -22845,19 +23685,19 @@ def _prepare_frontend_stage_state(
         _prepare_frontend_lowering_config(
             type_facts_path=type_facts_path,
             type_hint_policy=type_hint_policy,
-            module_graph=prepared_module_graph.module_graph,
+            module_graph=import_plan.module_graph,
             source_path=source_path,
             json_output=json_output,
             warnings=warnings,
             module_deps=prepared_frontend_analysis.module_deps,
             module_dep_closures=prepared_frontend_analysis.module_dep_closures,
             has_back_edges=prepared_frontend_analysis.has_back_edges,
-            known_modules=prepared_build_outputs.known_modules,
+            known_modules=import_plan.known_modules,
             known_func_defaults=prepared_frontend_analysis.known_func_defaults,
             pgo_hot_function_names=pgo_hot_function_names,
-            generated_module_source_paths=prepared_build_outputs.generated_module_source_paths,
+            generated_module_source_paths=import_plan.generated_module_source_paths,
             entry_module=entry_module,
-            namespace_module_names=prepared_build_outputs.namespace_module_names,
+            namespace_module_names=import_plan.namespace_module_names,
             module_sources=prepared_frontend_analysis.module_sources,
             is_wasm=prepared_build_outputs.output_layout.is_wasm,
             target_triple=prepared_build_outputs.output_layout.target_triple,
@@ -22870,7 +23710,7 @@ def _prepare_frontend_stage_state(
     assert prepared_frontend_lowering_config is not None
     return (
         (
-            prepared_module_graph,
+            import_plan,
             prepared_build_outputs,
             prepared_frontend_analysis,
             prepared_frontend_lowering_config,
@@ -22958,7 +23798,7 @@ def _prepare_frontend_pipeline(
         return None, prepared_frontend_stage_state_error
     assert prepared_frontend_stage_bundle is not None
     (
-        prepared_module_graph,
+        import_plan,
         prepared_build_outputs,
         prepared_frontend_analysis,
         prepared_frontend_lowering_config,
@@ -23010,24 +23850,24 @@ def _prepare_frontend_pipeline(
         midend_diagnostics_state,
     ) = _prepare_frontend_execution(
         syntax_error_modules=prepared_frontend_analysis.syntax_error_modules,
-        module_graph=prepared_module_graph.module_graph,
+        module_graph=import_plan.module_graph,
         module_sources=prepared_frontend_analysis.module_sources,
         project_root=prepared_build_roots.project_root,
-        module_resolution_cache=prepared_module_graph.module_resolution_cache,
+        module_resolution_cache=import_plan.module_resolution_cache,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         fallback_policy=fallback_policy,
         type_facts=prepared_frontend_lowering_config.type_facts,
         enable_phi=prepared_frontend_lowering_config.enable_phi,
-        known_modules=prepared_build_outputs.known_modules,
-        stdlib_allowlist=prepared_module_graph.stdlib_allowlist,
+        known_modules=import_plan.known_modules,
+        stdlib_allowlist=import_plan.stdlib_allowlist,
         known_func_defaults=prepared_frontend_analysis.known_func_defaults,
         module_deps=prepared_frontend_analysis.module_deps,
         module_chunk_max_ops=prepared_frontend_lowering_config.module_chunk_max_ops,
         optimization_profile=profile,
         pgo_hot_function_names=prepared_build_config.pgo_hot_function_names,
-        known_modules_sorted=prepared_build_outputs.known_modules_sorted,
-        stdlib_allowlist_sorted=prepared_build_outputs.stdlib_allowlist_sorted,
+        known_modules_sorted=import_plan.known_modules_sorted,
+        stdlib_allowlist_sorted=import_plan.stdlib_allowlist_sorted,
         pgo_hot_function_names_sorted=(
             prepared_build_config.pgo_hot_function_names_sorted
         ),
@@ -23041,7 +23881,7 @@ def _prepare_frontend_pipeline(
         stdlib_like_by_module=prepared_frontend_lowering_config.stdlib_like_by_module,
         known_classes=prepared_frontend_lowering_config.known_classes,
         module_trees=prepared_frontend_analysis.module_trees,
-        generated_module_source_paths=prepared_build_outputs.generated_module_source_paths,
+        generated_module_source_paths=import_plan.generated_module_source_paths,
         frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
         record_frontend_timing=record_frontend_timing,
         fail=_fail,
@@ -23062,7 +23902,7 @@ def _prepare_frontend_pipeline(
                 _dme_module_layers,
                 entry_module=resolved_build_entry.entry_module,
                 module_deps=prepared_frontend_analysis.module_deps,
-                module_names=set(prepared_module_graph.module_graph),
+                module_names=set(import_plan.module_graph),
             )
         )
         if _dme_eliminated > 0:
@@ -23092,13 +23932,13 @@ def _prepare_frontend_pipeline(
     return (
         (
             prepared_frontend_run_ticket,
-            prepared_module_graph.module_graph,
-            prepared_module_graph.explicit_imports,
-            prepared_module_graph.stdlib_allowlist,
-            prepared_module_graph.spawn_enabled,
+            import_plan.module_graph,
+            import_plan.explicit_imports,
+            import_plan.stdlib_allowlist,
+            import_plan.spawn_enabled,
             prepared_build_outputs.output_layout,
-            prepared_build_outputs.known_modules,
-            prepared_build_outputs.generated_module_source_paths,
+            import_plan.known_modules,
+            import_plan.generated_module_source_paths,
             prepared_frontend_analysis.known_func_defaults,
             _dme_module_order,
             prepared_frontend_lowering_config.type_facts,
@@ -23260,7 +24100,7 @@ def _prepare_backend_cache_setup(
                 _nocache_stub_path, _nocache_stdlib_key
             )
             if _nocache_stdlib_path is not None:
-                _invalidate_stale_stdlib_cache(
+                _validate_shared_stdlib_cache_contract(
                     _nocache_stdlib_path,
                     project_root,
                     _nocache_stdlib_key,
@@ -23340,7 +24180,7 @@ def _prepare_backend_cache_setup(
             cache_path, stdlib_object_cache_key
         )
         if stdlib_object_path is not None:
-            _invalidate_stale_stdlib_cache(
+            _validate_shared_stdlib_cache_contract(
                 stdlib_object_path,
                 project_root,
                 stdlib_object_cache_key,
@@ -24976,8 +25816,9 @@ def _ensure_backend_binary(
             if not source.exists():
                 return False
             if source != backend_bin:
-                shutil.copy2(source, backend_bin)
-            _codesign_binary(backend_bin)
+                _atomic_copy_file(source, backend_bin, codesign=True)
+            else:
+                _codesign_binary(backend_bin)
             return backend_bin.exists()
 
         def _materialize_rebuilt_backend_binary() -> bool:
@@ -25151,53 +25992,10 @@ def _ensure_backend_binary(
         # Kill any running backend daemon so it doesn't serve stale code
         # after the binary is rebuilt.
         _kill_stale_backend_daemon(project_root, cargo_profile)
-        # Invalidate TIR optimization cache — the optimized IR from the old
-        # backend may produce wrong code with the new passes (e.g. SCCP folding
-        # loop-carried phis). Also clear compiled binary cache.
-        #
-        # IMPORTANT: Do NOT wipe the entire molt cache root
-        # (~/Library/Caches/molt) — that also removes the build directory
-        # structure (home/build/*) and other infrastructure that later build
-        # steps depend on.  Only remove the specific artifact caches.
-        _cache_root = _default_molt_cache()
-        for cache_dir in [
-            project_root / ".molt_cache",
-            Path.home() / "Library" / "Caches" / "molt" / "home" / "bin",
-        ]:
-            if cache_dir.is_dir():
-                # If the project-local cache root is also the active shared
-                # cache root, keep it intact here and let the selective purge
-                # below remove only stale artifacts.  A full rmtree here would
-                # delete stdlib_shared_* artifacts before the preservation
-                # pass can see them.
-                if cache_dir == _cache_root:
-                    continue
-                shutil.rmtree(cache_dir, ignore_errors=True)
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                if not json_output:
-                    print(f"  Cleared stale cache: {cache_dir}", file=sys.stderr)
-        # Remove cached .o and .wasm artifacts from the cache root without
-        # destroying the directory tree (home/build/*, home/bin/, etc.).
-        if _cache_root.is_dir():
-            for _cached_file in _cache_root.iterdir():
-                # Preserve keyed shared stdlib caches and their sidecars —
-                # these are automatically invalidated when their exact stdlib
-                # IR identity or the toolchain fingerprint changes.
-                if _cached_file.name.startswith("stdlib_shared_"):
-                    continue
-                if _cached_file.is_file() and _cached_file.suffix in {
-                    ".o",
-                    ".wasm",
-                    ".fingerprint",
-                    ".count",
-                    ".key",
-                }:
-                    try:
-                        _cached_file.unlink()
-                    except OSError:
-                        pass
-            if not json_output:
-                print(f"  Cleared cached artifacts in: {_cache_root}", file=sys.stderr)
+        # Cache entries include backend/tooling/runtime identity in their keys.
+        # A backend rebuild therefore invalidates by selecting new keys, not by
+        # deleting shared immutable cache artifacts that concurrent sessions may
+        # still be reading. Size/age retention belongs to `molt clean`.
         cmd = [
             "cargo",
             "build",
@@ -25587,18 +26385,32 @@ def _wasm_runtime_staticlib_path(target_root: Path, profile_dir: str) -> Path:
 def _resolve_built_runtime_staticlib_artifact(
     target_root: Path, profile_dir: str
 ) -> Path:
-    primary = _wasm_runtime_staticlib_path(target_root, profile_dir)
-    if primary.exists():
-        return primary
-    deps_dir = _wasm_runtime_deps_dir(target_root, profile_dir)
-    candidates = sorted(
-        deps_dir.glob("libmolt_runtime-*.a"),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
-        reverse=True,
-    )
+    candidates = _wasm_runtime_staticlib_candidates(target_root, profile_dir)
     if candidates:
         return candidates[0]
-    return primary
+    return _wasm_runtime_staticlib_path(target_root, profile_dir)
+
+
+def _wasm_runtime_staticlib_candidates(
+    target_root: Path,
+    profile_dir: str,
+) -> list[Path]:
+    primary = _wasm_runtime_staticlib_path(target_root, profile_dir)
+    candidates: list[Path] = []
+    if primary.exists():
+        candidates.append(primary)
+    deps_dir = _wasm_runtime_deps_dir(target_root, profile_dir)
+    deps_candidates: list[tuple[int, str, Path]] = []
+    for path in deps_dir.glob("libmolt_runtime-*.a"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        deps_candidates.append((stat.st_mtime_ns, path.name, path))
+    candidates.extend(
+        path for _mtime_ns, _name, path in sorted(deps_candidates, reverse=True)
+    )
+    return candidates
 
 
 def _wasm_runtime_deps_dir(target_root: Path, profile_dir: str) -> Path:
@@ -25606,23 +26418,157 @@ def _wasm_runtime_deps_dir(target_root: Path, profile_dir: str) -> Path:
 
 
 def _resolve_built_runtime_wasm_artifact(target_root: Path, profile_dir: str) -> Path:
+    candidates = _wasm_runtime_wasm_candidates(target_root, profile_dir)
+    if candidates:
+        return candidates[0]
+    return _wasm_runtime_artifact_path(target_root, profile_dir)
+
+
+def _wasm_runtime_wasm_candidates(
+    target_root: Path,
+    profile_dir: str,
+) -> list[Path]:
     primary = _wasm_runtime_artifact_path(target_root, profile_dir)
+    candidates: list[Path] = []
     if primary.exists():
-        return primary
+        candidates.append(primary)
     deps_primary = (
         _wasm_runtime_deps_dir(target_root, profile_dir) / "molt_runtime.wasm"
     )
     if deps_primary.exists():
-        return deps_primary
+        candidates.append(deps_primary)
     deps_dir = _wasm_runtime_deps_dir(target_root, profile_dir)
-    candidates = sorted(
-        deps_dir.glob("molt_runtime-*.wasm"),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
-        reverse=True,
+    deps_candidates: list[tuple[int, str, Path]] = []
+    for path in deps_dir.glob("molt_runtime-*.wasm"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        deps_candidates.append((stat.st_mtime_ns, path.name, path))
+    candidates.extend(
+        path for _mtime_ns, _name, path in sorted(deps_candidates, reverse=True)
     )
-    if candidates:
-        return candidates[0]
-    return primary
+    return candidates
+
+
+def _current_runtime_target_artifact(
+    candidates: Sequence[Path],
+    *,
+    build_state_root: Path,
+    cargo_profile: str,
+    target_label: str,
+    fingerprint: dict[str, str | None] | None,
+) -> tuple[Path, Path] | None:
+    for candidate in candidates:
+        fingerprint_path = _runtime_target_fingerprint_path(
+            build_state_root,
+            candidate,
+            cargo_profile=cargo_profile,
+            target_label=target_label,
+        )
+        if _runtime_artifact_fingerprint_matches(
+            candidate,
+            fingerprint,
+            fingerprint_path,
+            require_artifact_digest=True,
+        ):
+            return candidate, fingerprint_path
+    return None
+
+
+def _runtime_cargo_report_missing_artifact_path(
+    target_root: Path,
+    profile_dir: str,
+    artifact_kind: Literal["cdylib", "staticlib"],
+) -> Path:
+    suffix = "a" if artifact_kind == "staticlib" else "wasm"
+    return (
+        _wasm_runtime_deps_dir(target_root, profile_dir)
+        / f".molt_runtime.cargo-report-missing.{suffix}"
+    )
+
+
+def _cargo_cmd_with_json_artifact_messages(cmd: Sequence[str]) -> list[str]:
+    if any(arg.startswith("--message-format") for arg in cmd):
+        return list(cmd)
+    try:
+        rustc_arg_index = list(cmd).index("--")
+    except ValueError:
+        return [*cmd, "--message-format=json-render-diagnostics"]
+    return [
+        *cmd[:rustc_arg_index],
+        "--message-format=json-render-diagnostics",
+        *cmd[rustc_arg_index:],
+    ]
+
+
+def _reported_runtime_artifact_matches(
+    path: Path,
+    *,
+    target_root: Path,
+    artifact_kind: Literal["cdylib", "staticlib"],
+) -> bool:
+    try:
+        resolved_path = path.resolve(strict=False)
+        resolved_root = target_root.resolve(strict=False)
+    except OSError:
+        return False
+    if not (
+        resolved_path == resolved_root
+        or resolved_path.is_relative_to(resolved_root)
+    ):
+        return False
+    name = resolved_path.name
+    if artifact_kind == "staticlib":
+        return name == "libmolt_runtime.a" or (
+            name.startswith("libmolt_runtime-") and name.endswith(".a")
+        )
+    return name == "molt_runtime.wasm" or (
+        name.startswith("molt_runtime-") and name.endswith(".wasm")
+    )
+
+
+def _reported_runtime_artifact_from_cargo_stdout(
+    stdout: str,
+    *,
+    target_root: Path,
+    artifact_kind: Literal["cdylib", "staticlib"],
+) -> Path | None:
+    reported: Path | None = None
+    for line in stdout.splitlines():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(message, dict):
+            continue
+        if message.get("reason") != "compiler-artifact":
+            continue
+        target = message.get("target")
+        target_name = target.get("name") if isinstance(target, dict) else None
+        package_id = message.get("package_id")
+        package_text = package_id if isinstance(package_id, str) else ""
+        if (
+            target_name not in {"molt_runtime", "molt-runtime"}
+            and "molt-runtime" not in package_text
+        ):
+            continue
+        filenames = message.get("filenames")
+        if not isinstance(filenames, list):
+            continue
+        for filename in filenames:
+            if not isinstance(filename, str) or not filename:
+                continue
+            path = Path(filename)
+            if not path.is_absolute():
+                path = target_root / path
+            if _reported_runtime_artifact_matches(
+                path,
+                target_root=target_root,
+                artifact_kind=artifact_kind,
+            ):
+                reported = path
+    return reported
 
 
 def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
@@ -25649,28 +26595,10 @@ def _run_runtime_wasm_cargo_build(
     # into the same directory the artifact lookup will check. Without
     # this, explicit and session-aware target resolution can drift apart.
     build_env["CARGO_TARGET_DIR"] = str(target_root)
-    if artifact_kind == "staticlib":
-        staticlib = _wasm_runtime_staticlib_path(target_root, profile_dir)
-        stale_artifacts = [staticlib]
-    else:
-        primary = _wasm_runtime_artifact_path(target_root, profile_dir)
-        deps_primary = (
-            _wasm_runtime_deps_dir(target_root, profile_dir) / "molt_runtime.wasm"
-        )
-        stale_artifacts = [primary, deps_primary]
-        stale_artifacts.extend(
-            _wasm_runtime_deps_dir(target_root, profile_dir).glob("molt_runtime-*.wasm")
-        )
-    for stale in stale_artifacts:
-        try:
-            stale.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
+    cargo_cmd = _cargo_cmd_with_json_artifact_messages(cmd)
     with _build_slot() as _slot:
         build_raw = _run_subprocess_captured_to_tempfiles(
-            cmd,
+            cargo_cmd,
             cwd=root,
             env=build_env,
             timeout=cargo_timeout,
@@ -25693,7 +26621,7 @@ def _run_runtime_wasm_cargo_build(
             )
         with _build_slot() as _slot:
             build_raw = _run_subprocess_captured_to_tempfiles(
-                cmd,
+                cargo_cmd,
                 cwd=root,
                 env=retry_env,
                 timeout=cargo_timeout,
@@ -25705,11 +26633,18 @@ def _run_runtime_wasm_cargo_build(
             build_raw.stdout.decode("utf-8", errors="replace"),
             build_raw.stderr.decode("utf-8", errors="replace"),
         )
-    if artifact_kind == "staticlib":
-        return build, _resolve_built_runtime_staticlib_artifact(
-            target_root, profile_dir
+    reported_artifact = _reported_runtime_artifact_from_cargo_stdout(
+        build.stdout,
+        target_root=target_root,
+        artifact_kind=artifact_kind,
+    )
+    if reported_artifact is None:
+        reported_artifact = _runtime_cargo_report_missing_artifact_path(
+            target_root,
+            profile_dir,
+            artifact_kind,
         )
-    return build, _resolve_built_runtime_wasm_artifact(target_root, profile_dir)
+    return build, reported_artifact
 
 
 def _link_runtime_staticlib_to_reloc_wasm(
@@ -25737,44 +26672,60 @@ def _link_runtime_staticlib_to_reloc_wasm(
             )
         return False
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_output_path = output_path.with_name(
+        f".{output_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
     export_args = [
         arg
         for chunk in export_link_args.split(" -C link-arg=")
         if (arg := chunk.strip()) and not arg.startswith("-C ")
     ]
-    process = _run_completed_command(
-        [
-            wasm_ld,
-            "-r",
-            *export_args,
-            "--whole-archive",
-            str(staticlib_path),
-            "--no-whole-archive",
-            str(libc_archive),
-            "-o",
-            str(output_path),
-        ],
-        cwd=output_path.parent,
-        env=None,
-        capture_output=True,
-        memory_guard_prefix="MOLT_WASM_LINK",
-        timeout=link_timeout,
-    )
-    if process.returncode != 0:
-        if not json_output:
-            err = (process.stderr or "").strip() or (process.stdout or "").strip()
-            msg = "Runtime relocatable wasm link failed"
-            if err:
-                msg = f"{msg}: {err}"
-            print(msg, file=sys.stderr)
-        return False
-    if not _is_valid_runtime_wasm_artifact(output_path):
-        if not json_output:
-            print(
-                f"Runtime relocatable wasm artifact is invalid/incomplete: {output_path}",
-                file=sys.stderr,
-            )
-        return False
+    try:
+        process = _run_completed_command(
+            [
+                wasm_ld,
+                "-r",
+                *export_args,
+                "--whole-archive",
+                str(staticlib_path),
+                "--no-whole-archive",
+                str(libc_archive),
+                "-o",
+                str(tmp_output_path),
+            ],
+            cwd=output_path.parent,
+            env=None,
+            capture_output=True,
+            memory_guard_prefix="MOLT_WASM_LINK",
+            timeout=link_timeout,
+        )
+        if process.returncode != 0:
+            if not json_output:
+                err = (process.stderr or "").strip() or (process.stdout or "").strip()
+                msg = "Runtime relocatable wasm link failed"
+                if err:
+                    msg = f"{msg}: {err}"
+                print(msg, file=sys.stderr)
+            return False
+        if not _is_valid_runtime_wasm_artifact(tmp_output_path):
+            if not json_output:
+                print(
+                    f"Runtime relocatable wasm artifact is invalid/incomplete: {tmp_output_path}",
+                    file=sys.stderr,
+                )
+            return False
+        os.replace(tmp_output_path, output_path)
+        if os.name == "posix":
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(output_path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            if tmp_output_path.exists():
+                tmp_output_path.unlink()
     return True
 
 
@@ -25912,33 +26863,18 @@ def _ensure_runtime_wasm(
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
         target_label = "wasm32-wasip1"
         target_build_state_root = _build_state_root(root)
-        target_runtime_wasm = _resolve_built_runtime_wasm_artifact(
-            target_root,
-            profile_dir,
-        )
-        target_runtime_wasm_fingerprint_path = (
-            _artifact_state_path_for_build_state_root(
-                target_build_state_root,
-                target_runtime_wasm,
-                subdir="runtime_fingerprints",
-                stem_suffix=f"{cargo_profile}.{target_label}",
-                extension="fingerprint",
-            )
-        )
-        target_runtime_wasm_stored_fingerprint = _read_runtime_fingerprint(
-            target_runtime_wasm_fingerprint_path
+        target_runtime_wasm_current = _current_runtime_target_artifact(
+            _wasm_runtime_wasm_candidates(target_root, profile_dir),
+            build_state_root=target_build_state_root,
+            cargo_profile=cargo_profile,
+            target_label=target_label,
+            fingerprint=fingerprint,
         )
         if (
             not reloc
-            and fingerprint is not None
-            and _artifact_newer_than_sources(
-                target_runtime_wasm,
-                _runtime_source_paths(root),
-            )
-            and not _artifact_needs_rebuild(
-                target_runtime_wasm,
-                fingerprint,
-                target_runtime_wasm_stored_fingerprint,
+            and target_runtime_wasm_current is not None
+            and (
+                target_runtime_wasm := target_runtime_wasm_current[0]
             )
             and _inspect_wasm_binary(target_runtime_wasm) == "valid"
             and _is_valid_shared_runtime_wasm_artifact(target_runtime_wasm)
@@ -25950,8 +26886,9 @@ def _ensure_runtime_wasm(
                 )
             )
         ):
+            target_runtime_wasm_fingerprint_path = target_runtime_wasm_current[1]
             runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(target_runtime_wasm, runtime_wasm)
+            _atomic_copy_file(target_runtime_wasm, runtime_wasm)
             if _inspect_wasm_binary(runtime_wasm) != "valid":
                 if not json_output:
                     print(
@@ -25968,9 +26905,14 @@ def _ensure_runtime_wasm(
                 _write_runtime_fingerprint(
                     target_runtime_wasm_fingerprint_path,
                     fingerprint,
+                    artifact=target_runtime_wasm,
                 )
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=runtime_wasm,
+                )
             except OSError:
                 if not json_output:
                     print(
@@ -25979,68 +26921,17 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
-        if not reloc and _maybe_hydrate_artifact_from_canonical_target(
-            artifact=runtime_wasm,
+        target_runtime_staticlib_current = _current_runtime_target_artifact(
+            _wasm_runtime_staticlib_candidates(target_root, profile_dir),
+            build_state_root=target_build_state_root,
+            cargo_profile=cargo_profile,
+            target_label=target_label,
             fingerprint=fingerprint,
-            fingerprint_path=fingerprint_path,
-            candidate_artifact=target_runtime_wasm,
-            candidate_fingerprint_path=target_runtime_wasm_fingerprint_path,
-        ):
-            if _inspect_wasm_binary(runtime_wasm) != "valid":
-                if not json_output:
-                    print(
-                        f"Hydrated runtime wasm artifact is invalid: {runtime_wasm}",
-                        file=sys.stderr,
-                    )
-                return False
-            if not _is_valid_shared_runtime_wasm_artifact(runtime_wasm):
-                if not json_output:
-                    print(
-                        "Hydrated runtime wasm artifact missing shared "
-                        "memory/table import ABI; forcing rebuild.",
-                        file=sys.stderr,
-                    )
-            elif validate_exports and not _runtime_wasm_exports_satisfy(
-                runtime_wasm, required_exports
-            ):
-                if not json_output:
-                    print(
-                        "Hydrated runtime wasm artifact missing required exports.",
-                        file=sys.stderr,
-                    )
-                return False
-            else:
-                try:
-                    _write_runtime_wasm_integrity_sidecar(runtime_wasm)
-                except OSError:
-                    if not json_output:
-                        print(
-                            "Failed to update runtime wasm integrity sidecar.",
-                            file=sys.stderr,
-                        )
-                    return False
-                return True
-        target_runtime_staticlib = _wasm_runtime_staticlib_path(
-            target_root,
-            profile_dir,
         )
-        target_runtime_staticlib_fingerprint_path = (
-            _artifact_state_path_for_build_state_root(
-                target_build_state_root,
-                target_runtime_staticlib,
-                subdir="runtime_fingerprints",
-                stem_suffix=f"{cargo_profile}.{target_label}",
-                extension="fingerprint",
+        if reloc and target_runtime_staticlib_current is not None:
+            target_runtime_staticlib, target_runtime_staticlib_fingerprint_path = (
+                target_runtime_staticlib_current
             )
-        )
-        if (
-            reloc
-            and fingerprint is not None
-            and _artifact_newer_than_sources(
-                target_runtime_staticlib,
-                _runtime_source_paths(root),
-            )
-        ):
             if not _link_runtime_staticlib_to_reloc_wasm(
                 staticlib_path=target_runtime_staticlib,
                 output_path=runtime_wasm,
@@ -26058,9 +26949,14 @@ def _ensure_runtime_wasm(
                 _write_runtime_fingerprint(
                     target_runtime_staticlib_fingerprint_path,
                     fingerprint,
+                    artifact=target_runtime_staticlib,
                 )
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=runtime_wasm,
+                )
             except OSError:
                 if not json_output:
                     print(
@@ -26069,41 +26965,11 @@ def _ensure_runtime_wasm(
                     )
                 return False
             return True
-        if reloc and not _artifact_needs_rebuild(
-            target_runtime_staticlib,
+        needs_rebuild = not _runtime_artifact_fingerprint_matches(
+            runtime_wasm,
             fingerprint,
-            _read_runtime_fingerprint(target_runtime_staticlib_fingerprint_path),
-        ):
-            if not _link_runtime_staticlib_to_reloc_wasm(
-                staticlib_path=target_runtime_staticlib,
-                output_path=runtime_wasm,
-                json_output=json_output,
-                link_timeout=cargo_timeout,
-                export_link_args=runtime_exports,
-            ):
-                return False
-            try:
-                _write_runtime_wasm_integrity_sidecar(runtime_wasm)
-            except OSError:
-                if not json_output:
-                    print(
-                        "Failed to update runtime wasm integrity sidecar.",
-                        file=sys.stderr,
-                    )
-                return False
-            if fingerprint is not None:
-                try:
-                    fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                    _write_runtime_fingerprint(fingerprint_path, fingerprint)
-                except OSError:
-                    if not json_output:
-                        print(
-                            "Warning: failed to write runtime fingerprint metadata.",
-                            file=sys.stderr,
-                        )
-            return True
-        needs_rebuild = _artifact_needs_rebuild(
-            runtime_wasm, fingerprint, stored_fingerprint
+            fingerprint_path,
+            require_artifact_digest=True,
         )
         if (
             not needs_rebuild
@@ -26117,29 +26983,14 @@ def _ensure_runtime_wasm(
                 or _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
             )
         ):
-            if not reloc:
-                current_src = _resolve_built_runtime_wasm_artifact(
-                    target_root, profile_dir
-                )
-                if (
-                    current_src != runtime_wasm
-                    and _inspect_wasm_binary(current_src) == "valid"
-                    and _is_valid_shared_runtime_wasm_artifact(current_src)
-                    and _runtime_wasm_exports_satisfy(current_src, required_exports)
-                ):
-                    runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(current_src, runtime_wasm)
-                    try:
-                        _write_runtime_wasm_integrity_sidecar(runtime_wasm)
-                    except OSError:
-                        if not json_output:
-                            print(
-                                "Failed to update runtime wasm integrity sidecar.",
-                                file=sys.stderr,
-                            )
-                        return False
             try:
                 _write_runtime_wasm_integrity_sidecar(runtime_wasm)
+                fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=runtime_wasm,
+                )
             except OSError:
                 if not json_output:
                     print(
@@ -26267,14 +27118,27 @@ def _ensure_runtime_wasm(
                 return False
             if fingerprint is not None:
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(fingerprint_path, fingerprint)
-                target_runtime_staticlib_fingerprint_path.parent.mkdir(
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=runtime_wasm,
+                )
+                reported_staticlib_fingerprint_path = (
+                    _runtime_target_fingerprint_path(
+                        target_build_state_root,
+                        src,
+                        cargo_profile=cargo_profile,
+                        target_label=target_label,
+                    )
+                )
+                reported_staticlib_fingerprint_path.parent.mkdir(
                     parents=True,
                     exist_ok=True,
                 )
                 _write_runtime_fingerprint(
-                    target_runtime_staticlib_fingerprint_path,
+                    reported_staticlib_fingerprint_path,
                     fingerprint,
+                    artifact=src,
                 )
             return True
         src_state = _inspect_wasm_binary(src)
@@ -26429,7 +27293,7 @@ def _ensure_runtime_wasm(
                 )
             return False
         runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, runtime_wasm)
+        _atomic_copy_file(src, runtime_wasm)
         if _inspect_wasm_binary(runtime_wasm) != "valid":
             if not json_output:
                 print(
@@ -26448,16 +27312,24 @@ def _ensure_runtime_wasm(
             return False
         if fingerprint is not None:
             try:
-                target_runtime_wasm_fingerprint_path.parent.mkdir(
-                    parents=True,
-                    exist_ok=True,
+                reported_wasm_fingerprint_path = _runtime_target_fingerprint_path(
+                    target_build_state_root,
+                    src,
+                    cargo_profile=cargo_profile,
+                    target_label=target_label,
                 )
+                reported_wasm_fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
                 _write_runtime_fingerprint(
-                    target_runtime_wasm_fingerprint_path,
+                    reported_wasm_fingerprint_path,
                     fingerprint,
+                    artifact=src,
                 )
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=runtime_wasm,
+                )
             except OSError:
                 if not json_output:
                     print(
@@ -27045,6 +27917,7 @@ def _build_state_root_cached(
     build_state_override: str | None,
     cargo_target_override: str | None,
     cwd_str: str,
+    session_id: str | None = None,
 ) -> Path:
     project_root = Path(project_root_str)
     if build_state_override:
@@ -27057,7 +27930,7 @@ def _build_state_root_cached(
             project_root_str,
             cargo_target_override,
             cwd_str,
-            _molt_session_id(),
+            session_id,
         )
         / ".molt_state"
     )
@@ -27069,6 +27942,7 @@ def _build_state_root(project_root: Path) -> Path:
         os.environ.get("MOLT_BUILD_STATE_DIR"),
         os.environ.get("CARGO_TARGET_DIR"),
         os.fspath(Path.cwd()),
+        _molt_session_id(),
     )
 
 
@@ -27750,7 +28624,7 @@ def _resolve_output_path(
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v2"
 _CACHE_KEY_SCHEMA_VERSION = "v4"
 _FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v2"
-_SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v2"
+_SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v3"
 _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION = "stdlib-manifest-v1"
 
 
@@ -29070,7 +29944,14 @@ def _deploy(
                 command="deploy",
             )
         dest = roblox_dir / luau_artifact.name
-        shutil.copy2(luau_artifact, dest)
+        try:
+            _atomic_copy_file(luau_artifact, dest)
+        except OSError as exc:
+            return _fail(
+                f"Failed to publish Roblox Luau artifact: {exc}",
+                json_output,
+                command="deploy",
+            )
         if not json_output:
             print(f"Copied {luau_artifact.name} -> {dest}", file=sys.stderr)
         return 0
@@ -31271,18 +32152,7 @@ def _resolve_validate_summary_path(root: Path, summary_out: str | None) -> Path:
 
 
 def _write_json_sidecar(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(tmp_path, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink()
-        raise
+    _atomic_write_json(path, payload, indent=2, sort_keys=True)
 
 
 def _persist_validate_summary(
@@ -32145,7 +33015,7 @@ def extension_build(
         record_lines.append(f"{record_path},,")
         record_bytes = ("\n".join(record_lines) + "\n").encode("utf-8")
 
-        with zipfile.ZipFile(wheel_path, "w") as zf:
+        with _atomic_zip_file(wheel_path) as zf:
             for path, data in wheel_entries:
                 _write_zip_member(zf, path, data)
             _write_zip_member(zf, record_path, record_bytes)
@@ -32162,9 +33032,7 @@ def extension_build(
             dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
         )
     manifest_path = output_root / "extension_manifest.json"
-    manifest_path.write_text(
-        json.dumps(sidecar_payload, sort_keys=True, indent=2) + "\n"
-    )
+    _atomic_write_json(manifest_path, sidecar_payload, sort_keys=True, indent=2)
 
     if json_output:
         payload = _json_payload(
@@ -32396,7 +33264,7 @@ def _resolve_extension_manifest_for_verify(
         return None, None, "Embedded extension_manifest.json must be a JSON object."
     tmpdir = tempfile.TemporaryDirectory(prefix="molt_ext_manifest_")
     manifest_path = Path(tmpdir.name) / "extension_manifest.json"
-    manifest_path.write_text(json.dumps(decoded, sort_keys=True, indent=2) + "\n")
+    _atomic_write_json(manifest_path, decoded, sort_keys=True, indent=2)
     return manifest_path, tmpdir, None
 
 
@@ -32845,7 +33713,7 @@ def package(
     manifest_bytes = (
         json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8") + b"\n"
     )
-    with zipfile.ZipFile(output_path, "w") as zf:
+    with _atomic_zip_file(output_path) as zf:
         _write_zip_member(zf, "manifest.json", manifest_bytes)
         _write_zip_member(zf, f"artifact/{artifact_path.name}", artifact_bytes)
         if sbom_bytes is not None:
@@ -32855,13 +33723,10 @@ def package(
             _write_zip_member(zf, f"signature/{signature_path.name}", signature_bytes)
 
     if sbom_bytes is not None and sbom_path is not None:
-        sbom_path.parent.mkdir(parents=True, exist_ok=True)
-        sbom_path.write_bytes(sbom_bytes)
-    signature_meta_path.parent.mkdir(parents=True, exist_ok=True)
-    signature_meta_path.write_bytes(signature_meta_bytes)
+        _atomic_write_bytes(sbom_path, sbom_bytes)
+    _atomic_write_bytes(signature_meta_path, signature_meta_bytes)
     if signature_bytes is not None and signature_path is not None:
-        signature_path.parent.mkdir(parents=True, exist_ok=True)
-        signature_path.write_bytes(signature_bytes)
+        _atomic_write_bytes(signature_path, signature_bytes)
 
     if json_output:
         payload = _json_payload(
@@ -33093,7 +33958,7 @@ def publish(
             dest = registry_path
         if not dry_run:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, dest)
+            _atomic_copy_file(source, dest)
         for suffix in (".sbom.json", ".sig.json", ".sig"):
             sidecar_src = source.with_name(source.stem + suffix)
             if not sidecar_src.exists():
@@ -33102,7 +33967,7 @@ def publish(
             sidecars.append({"source": str(sidecar_src), "dest": str(sidecar_dest)})
             if not dry_run:
                 sidecar_dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(sidecar_src, sidecar_dest)
+                _atomic_copy_file(sidecar_src, sidecar_dest)
     if json_output:
         payload = _json_payload(
             "publish",
@@ -33661,13 +34526,15 @@ def _clone_git_source(
             source_dir = repo_dir / subdirectory
             if not source_dir.exists():
                 raise RuntimeError(f"Git subdirectory not found: {subdirectory}")
-        if dest.exists():
-            shutil.rmtree(dest)
         if source_dir.is_dir():
-            shutil.copytree(source_dir, dest, ignore=shutil.ignore_patterns(".git"))
+            _replace_directory_tree_from_source(
+                source_dir,
+                dest,
+                ignore=shutil.ignore_patterns(".git"),
+            )
         else:
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_dir, dest)
+            _atomic_copy_file(source_dir, dest)
         return resolved_commit, tree_hash
 
 
@@ -34106,13 +34973,11 @@ def vendor(
                 src_path = (root / src_path).resolve()
             dest = local_dir / entry["name"]
             if not dry_run:
-                if dest.exists():
-                    shutil.rmtree(dest)
                 if src_path.is_dir():
-                    shutil.copytree(src_path, dest)
+                    _replace_directory_tree_from_source(src_path, dest)
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_path, dest)
+                    _atomic_copy_file(src_path, dest)
             manifest["packages"].append(
                 {
                     **entry,
@@ -34226,7 +35091,7 @@ def vendor(
                     json_output,
                     command="vendor",
                 )
-            dest.write_bytes(data)
+            _atomic_write_bytes(dest, data)
         manifest["packages"].append(
             {
                 **entry,
@@ -34239,7 +35104,7 @@ def vendor(
 
     if not dry_run:
         manifest_path = output_dir / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        _atomic_write_json(manifest_path, manifest, indent=2)
 
     if json_output:
         data: dict[str, Any] = {
@@ -35052,8 +35917,7 @@ def _emit_debug_payload(
             else render_debug_text_summary(payload)
         )
     if retained_output is not None:
-        retained_output.parent.mkdir(parents=True, exist_ok=True)
-        retained_output.write_text(summary, encoding="utf-8")
+        _atomic_write_text(retained_output, summary)
     print(summary, end="")
     return 0
 
@@ -35775,7 +36639,7 @@ def _handle_debug_reduce(
     scratch_input_path = scratch_dir / reduction_input.source_path.name
 
     def evaluator(candidate_text: str) -> dict[str, Any]:
-        scratch_input_path.write_text(candidate_text, encoding="utf-8")
+        _atomic_write_text(scratch_input_path, candidate_text)
         default_manifest = build_candidate_manifest(candidate_text, scratch_input_path)
         env_updates = {
             "MOLT_DEBUG_EVAL_MODE": "reduce",
@@ -35819,8 +36683,7 @@ def _handle_debug_reduce(
         result, artifact_root=paths.artifact_root
     )
     reduced_source_path = Path(reduction_payload["artifacts"]["reduced_source"])
-    reduced_source_path.parent.mkdir(parents=True, exist_ok=True)
-    reduced_source_path.write_text(result.reduced_source + "\n", encoding="utf-8")
+    _atomic_write_text(reduced_source_path, result.reduced_source + "\n")
     payload = normalize_debug_payload(
         subcommand=subcommand,
         status=DebugStatus.OK,
@@ -39043,26 +39906,15 @@ def _read_cached_artifact(cache_path: Path, expected_digest: str) -> bytes | Non
         return None
     digest = hashlib.sha256(data).hexdigest()
     if digest != expected_digest:
-        try:
-            cache_path.unlink()
-        except OSError:
-            pass
         return None
     return data
 
 
 def _write_cached_artifact(cache_path: Path, data: bytes) -> None:
-    tmp_path = cache_path.with_name(f"{cache_path.name}.tmp")
     try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path.write_bytes(data)
-        tmp_path.replace(cache_path)
+        _atomic_write_bytes(cache_path, data)
     except OSError:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
+        pass
 
 
 def _is_private_ip(host: str) -> bool:

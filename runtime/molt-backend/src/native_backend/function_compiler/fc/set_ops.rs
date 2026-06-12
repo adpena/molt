@@ -1,6 +1,6 @@
 use super::super::*;
-use super::var_get_boxed_overflow_safe_fn;
 use super::OpFlow;
+use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for `set`/`frozenset` ops: construction (`set_new`/`frozenset_new`), membership mutation (`add`/`add_probe`/`discard`/`remove`/`pop`), and in-place algebra (`update`/`intersection_update`/`difference_update`/`symdiff_update`).
 ///
@@ -33,35 +33,37 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
-    let var_get_boxed_overflow_safe =
-        |module: &mut ObjectModule,
-         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-         builder: &mut FunctionBuilder<'_>,
-         import_refs: &mut BTreeMap<&'static str, FuncRef>,
-         sealed_blocks: &mut BTreeSet<Block>,
-         vars: &BTreeMap<String, Variable>,
-         name: &str,
-         int_primary_vars: &BTreeSet<String>,
-         float_primary_vars: &BTreeSet<String>,
-         box_int_mask_var: Variable,
-         box_int_tag_var: Variable|
-         -> Option<crate::VarValue> {
-            var_get_boxed_overflow_safe_fn(
-                module,
-                import_ids,
-                builder,
-                import_refs,
-                sealed_blocks,
-                vars,
-                name,
-                int_primary_vars,
-                float_primary_vars,
-                bool_primary_vars,
-                nbc,
-                box_int_mask_var,
-                box_int_tag_var,
-            )
-        };
+    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+                                       import_ids: &mut BTreeMap<
+        &'static str,
+        (cranelift_module::FuncId, ImportSignatureShape),
+    >,
+                                       builder: &mut FunctionBuilder<'_>,
+                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       sealed_blocks: &mut BTreeSet<Block>,
+                                       vars: &BTreeMap<String, Variable>,
+                                       name: &str,
+                                       int_primary_vars: &BTreeSet<String>,
+                                       float_primary_vars: &BTreeSet<String>,
+                                       box_int_mask_var: Variable,
+                                       box_int_tag_var: Variable|
+     -> Option<crate::VarValue> {
+        var_get_boxed_overflow_safe_fn(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            name,
+            int_primary_vars,
+            float_primary_vars,
+            bool_primary_vars,
+            nbc,
+            box_int_mask_var,
+            box_int_tag_var,
+        )
+    };
     match op.kind.as_str() {
         "set_new" => {
             let empty_args: Vec<String> = Vec::new();
@@ -105,9 +107,7 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
                         box_int_mask_var,
                         box_int_tag_var,
                     )
-                    .unwrap_or_else(|| {
-                        panic!("Set elem not found in {} op {}", func_name, op_idx)
-                    });
+                    .unwrap_or_else(|| panic!("Set elem not found in {} op {}", func_name, op_idx));
                     builder.ins().call(add_local, &[set_bits, *val]);
                 }
             }

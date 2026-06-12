@@ -4924,8 +4924,7 @@ fn prepare_class_impl(
             dec_ref_bits(_py, val_bits);
             dec_ref_bits(_py, winner_bits);
             dec_ref_bits(_py, kwds_copy_bits);
-            let msg =
-                format!("{meta_name}.__prepare__() must return a mapping, not {ns_type}");
+            let msg = format!("{meta_name}.__prepare__() must return a mapping, not {ns_type}");
             let _ = raise_exception::<u64>(_py, "TypeError", &msg);
             return None;
         }

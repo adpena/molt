@@ -485,8 +485,7 @@ fn fields_to_list(
                         for b in &bits_vec {
                             dec_ref_bits(_py, *b);
                         }
-                        let msg =
-                            format!("could not convert string to float: '{}'", field.text);
+                        let msg = format!("could not convert string to float: '{}'", field.text);
                         return Err(raise_exception::<u64>(_py, "ValueError", &msg));
                     }
                 };

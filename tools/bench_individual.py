@@ -21,7 +21,6 @@ import json
 import os
 import platform
 import re
-import signal
 import statistics
 import sys
 import tempfile
@@ -29,15 +28,18 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
 TOOLS_ROOT = Path(__file__).resolve().parent
 BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
 BENCH_TMP_ROOT = REPO_ROOT / "tmp" / "bench"
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
+for _import_root in (SRC_ROOT, TOOLS_ROOT):
+    if str(_import_root) not in sys.path:
+        sys.path.insert(0, str(_import_root))
 
 from bench_metadata import benchmark_reference_contract  # noqa: E402
 import harness_memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
+from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 
 BENCHMARKS = bench_suites.BENCHMARKS
 MOLT_ARGS_BY_BENCH = bench_suites.MOLT_ARGS_BY_BENCH
@@ -186,50 +188,23 @@ class BackendDaemonCleanupReport:
         return len(self.killed)
 
 
-def _session_artifact_component(session_id: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:32]
-
-
 def _build_state_root_from_env(env: dict[str, str]) -> Path:
-    explicit = env.get("MOLT_BUILD_STATE_DIR")
-    if explicit:
-        path = Path(explicit).expanduser()
-        return path if path.is_absolute() else (REPO_ROOT / path).resolve()
-    target = Path(env.get("CARGO_TARGET_DIR", str(REPO_ROOT / "target"))).expanduser()
-    if not target.is_absolute():
-        target = (REPO_ROOT / target).resolve()
-    return target / ".molt_state"
+    return daemon_custody.backend_daemon_build_state_root_from_env(
+        env,
+        project_root=REPO_ROOT,
+    )
 
 
-def _current_session_pid_files(env: dict[str, str]) -> dict[int, Path]:
-    session_id = env.get("MOLT_SESSION_ID", "").strip()
-    if not session_id:
-        return {}
-    daemon_root = _build_state_root_from_env(env) / "backend_daemon"
-    label = _session_artifact_component(session_id)
-    try:
-        pid_paths = list(daemon_root.glob(f"molt-backend.*.{label}.*.pid"))
-    except OSError:
-        return {}
-    owned: dict[int, Path] = {}
-    for path in pid_paths:
-        try:
-            raw = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        if raw.isdigit():
-            pid = int(raw)
-            if pid > 0:
-                owned[pid] = path
-    return owned
-
-
-def _explicit_backend_socket(env: dict[str, str]) -> Path | None:
-    raw = env.get("MOLT_BACKEND_DAEMON_SOCKET", "").strip()
-    if not raw:
-        return None
-    path = Path(raw).expanduser()
-    return path if path.is_absolute() else (REPO_ROOT / path).resolve()
+def _current_session_identity_files(
+    env: dict[str, str],
+) -> dict[int, daemon_custody.BackendDaemonIdentityRecord]:
+    return {
+        record.identity.pid: record
+        for record in daemon_custody.current_session_backend_daemon_identity_records(
+            env,
+            project_root=REPO_ROOT,
+        )
+    }
 
 
 def _list_backend_daemon_processes() -> list[BackendDaemonProcess]:
@@ -270,52 +245,6 @@ def _list_backend_daemon_processes() -> list[BackendDaemonProcess]:
     return processes
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _terminate_pid(pid: int, *, grace: float = 0.75) -> None:
-    if pid <= 0:
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return
-    deadline = time.monotonic() + max(0.05, grace)
-    while time.monotonic() < deadline:
-        if not _pid_alive(pid):
-            return
-        time.sleep(0.05)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        return
-
-
-def _daemon_process_is_owned(
-    process: BackendDaemonProcess,
-    *,
-    owned_pid_files: dict[int, Path],
-    explicit_socket: Path | None,
-) -> bool:
-    if process.pid in owned_pid_files:
-        return True
-    if explicit_socket is not None:
-        try:
-            return process.socket_path.resolve() == explicit_socket.resolve()
-        except OSError:
-            return process.socket_path == explicit_socket
-    return False
-
-
 def _daemon_cleanup_artifact_path() -> Path:
     return BENCH_TMP_ROOT / "daemon_custody.jsonl"
 
@@ -352,43 +281,49 @@ def _cleanup_current_session_backend_daemons(
     started = time.perf_counter()
     env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=REPO_ROOT)
     session_id = env.get("MOLT_SESSION_ID", "")
-    owned_pid_files = _current_session_pid_files(env)
-    explicit_socket = _explicit_backend_socket(env)
+    owned_identity_files = _current_session_identity_files(env)
     processes = _list_backend_daemon_processes()
+    processes_by_pid = {process.pid: process for process in processes}
 
     killed: list[BackendDaemonKill] = []
     skipped_foreign = 0
     for process in processes:
-        if not _daemon_process_is_owned(
-            process,
-            owned_pid_files=owned_pid_files,
-            explicit_socket=explicit_socket,
-        ):
+        identity_record = owned_identity_files.get(process.pid)
+        if identity_record is None:
             skipped_foreign += 1
             continue
-        reason = (
-            "explicit_socket_isolation"
-            if explicit_socket is not None
-            else "session_isolation"
-        )
-        if not process.socket_path.exists():
+        identity = identity_record.identity
+        if not daemon_custody.backend_daemon_command_matches_identity(
+            process.command,
+            backend_bin=identity.backend_bin,
+            socket_path=identity.socket_path,
+        ):
+            skipped_foreign += 1
+    for identity_record in owned_identity_files.values():
+        identity = identity_record.identity
+        process = processes_by_pid.get(identity.pid)
+        reason = "session_identity_verified"
+        if not identity.socket_path.exists():
             reason = f"{reason}:missing_socket"
-        _terminate_pid(process.pid)
+        if not daemon_custody.terminate_backend_daemon_identity(
+            identity,
+            grace=0.75,
+        ):
+            continue
         killed.append(
             BackendDaemonKill(
-                pid=process.pid,
-                socket_path=str(process.socket_path),
+                pid=identity.pid,
+                socket_path=str(identity.socket_path),
                 reason=reason,
-                command=process.command,
-                elapsed_sec=process.elapsed_sec,
+                command=(
+                    process.command
+                    if process is not None
+                    else identity.command or "<unknown>"
+                ),
+                elapsed_sec=process.elapsed_sec if process is not None else None,
             )
         )
-        pid_path = owned_pid_files.get(process.pid)
-        if pid_path is not None:
-            try:
-                pid_path.unlink()
-            except OSError:
-                pass
+        daemon_custody.remove_backend_daemon_identity(identity_record.path)
 
     killed_at = datetime.now(UTC).isoformat() if killed else None
     report = BackendDaemonCleanupReport(
@@ -422,7 +357,7 @@ def _cleanup_current_session_backend_daemons(
             file=sys.stderr,
         )
         print(
-            "  [cleanup] reason=session isolation for cold benchmark custody; "
+            "  [cleanup] reason=session identity verification for cold benchmark custody; "
             "next action: if this was unexpected, inspect the daemon custody "
             "artifact and ensure each concurrent agent has a unique MOLT_SESSION_ID.",
             file=sys.stderr,

@@ -40,7 +40,7 @@ use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
-use super::scev::{compute_scev, find_loop_guard, ScevExpr, ScevResult, TripCount};
+use super::scev::{ScevExpr, ScevResult, TripCount, compute_scev, find_loop_guard};
 
 // ---------------------------------------------------------------------------
 // Integer interval
@@ -176,7 +176,12 @@ impl IntRange {
     /// Anything else (a negative operand without a constant non-negative mask)
     /// returns `FULL_I64`. `mask_const` is `Some(m)` when one operand is a
     /// compile-time constant, else `None`.
-    fn bit_and(self, other: IntRange, self_const: Option<i64>, other_const: Option<i64>) -> IntRange {
+    fn bit_and(
+        self,
+        other: IntRange,
+        self_const: Option<i64>,
+        other_const: Option<i64>,
+    ) -> IntRange {
         // Constant non-negative mask on either side bounds the result to [0, m].
         for m in [self_const, other_const].into_iter().flatten() {
             if m >= 0 {
@@ -261,7 +266,10 @@ impl IntRange {
         if s >= 127 {
             // Shifting any i64 right by >= 127 yields 0 (non-negative) or -1
             // (negative). Bound conservatively by [-1, 0] (sign-preserving).
-            return IntRange::new(if self.lo < 0 { -1 } else { 0 }, if self.hi < 0 { -1 } else { 0 });
+            return IntRange::new(
+                if self.lo < 0 { -1 } else { 0 },
+                if self.hi < 0 { -1 } else { 0 },
+            );
         }
         let div = 1i128 << s;
         let floor_div = |x: i128| -> i128 {
@@ -414,14 +422,20 @@ impl ValueRangeResult {
         if let Some(r) = self.block_range.get(&(bid, v)) {
             return *r;
         }
-        self.global_range.get(&v).copied().unwrap_or(IntRange::FULL_I64)
+        self.global_range
+            .get(&v)
+            .copied()
+            .unwrap_or(IntRange::FULL_I64)
     }
 
     /// The proven loop-invariant / constant range of `v` (ignoring per-block
     /// guard narrowing). `FULL_I64` if unknown.
     pub fn range_of(&self, v: ValueId) -> IntRange {
         let v = self.resolve(v);
-        self.global_range.get(&v).copied().unwrap_or(IntRange::FULL_I64)
+        self.global_range
+            .get(&v)
+            .copied()
+            .unwrap_or(IntRange::FULL_I64)
     }
 
     /// CONSERVATIVELY prove `0 <= index < len(container)` for an `Index` /
@@ -431,12 +445,7 @@ impl ValueRangeResult {
     /// This is the BCE memory-safety query. A false positive is a silent
     /// out-of-bounds access, so every path that does not *prove* safety must
     /// fall through to `false`.
-    pub fn proves_index_in_bounds(
-        &self,
-        bid: BlockId,
-        container: ValueId,
-        index: ValueId,
-    ) -> bool {
+    pub fn proves_index_in_bounds(&self, bid: BlockId, container: ValueId, index: ValueId) -> bool {
         let container = self.resolve(container);
         // `range_at` resolves the index itself.
         let idx_range = self.range_at(bid, index);
@@ -636,7 +645,12 @@ pub fn compute_value_range(func: &TirFunction, scev: &ScevResult) -> ValueRangeR
         };
         for arg in &header_block.args {
             let iv = arg.id;
-            let ScevExpr::AddRec { start, step, loop_header } = scev.scev_of(iv) else {
+            let ScevExpr::AddRec {
+                start,
+                step,
+                loop_header,
+            } = scev.scev_of(iv)
+            else {
                 continue;
             };
             if loop_header != header {
@@ -780,7 +794,11 @@ fn emit_vrange_report(
         lines.push(format!("  header {:?} trip={:?}", h, scev.trip_count(*h)));
         if let Some(hb) = func.blocks.get(h) {
             for arg in &hb.args {
-                lines.push(format!("    arg v{} scev={:?}", arg.id.0, scev.scev_of(arg.id)));
+                lines.push(format!(
+                    "    arg v{} scev={:?}",
+                    arg.id.0,
+                    scev.scev_of(arg.id)
+                ));
             }
         }
     }
@@ -792,7 +810,13 @@ fn emit_vrange_report(
     let sanitized: String = func
         .name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let _ = crate::debug_artifacts::write_debug_artifact(
         format!("vrange_report/{sanitized}.txt"),
@@ -875,7 +899,9 @@ fn seed_counted_loop_iv_ranges(
                     .get(&(b, iv_canon))
                     .copied()
                     .unwrap_or(IntRange::FULL_I64);
-                result.block_range.insert((b, iv_canon), existing.meet(iv_range));
+                result
+                    .block_range
+                    .insert((b, iv_canon), existing.meet(iv_range));
             }
         }
         // Range the back-edge update value `iv_next = iv + step` (one step later)
@@ -892,7 +918,9 @@ fn seed_counted_loop_iv_ranges(
                 .get(&next_canon)
                 .copied()
                 .unwrap_or(IntRange::FULL_I64);
-            result.global_range.insert(next_canon, existing.meet(next_range));
+            result
+                .global_range
+                .insert(next_canon, existing.meet(next_range));
         }
     }
 }
@@ -1368,7 +1396,10 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
                     // list-repeat: Mul(list_of_1, count) → length == count.
                     // Resolve operands through copies to reach the BuildList /
                     // const sources.
-                    let (a, b) = (result.resolve(op.operands[0]), result.resolve(op.operands[1]));
+                    let (a, b) = (
+                        result.resolve(op.operands[0]),
+                        result.resolve(op.operands[1]),
+                    );
                     let count = if result
                         .container_length
                         .get(&a)
@@ -1437,7 +1468,10 @@ fn build_loop_bodies(func: &TirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
         let pred_map = dominators::build_pred_map(func);
         let idoms = dominators::compute_idoms(func, &pred_map);
         for h in headers {
-            bodies.insert(h, dominators::collect_loop_blocks(func, &pred_map, &idoms, h));
+            bodies.insert(
+                h,
+                dominators::collect_loop_blocks(func, &pred_map, &idoms, h),
+            );
         }
     }
     bodies
@@ -1671,7 +1705,10 @@ mod tests {
         assert_eq!(a.join(b), IntRange::new(0, 20));
         assert_eq!(a.meet(b), IntRange::new(5, 10));
         // Disjoint meet → unknown (FULL), never a false tight range.
-        assert_eq!(IntRange::new(0, 1).meet(IntRange::new(5, 6)), IntRange::FULL_I64);
+        assert_eq!(
+            IntRange::new(0, 1).meet(IntRange::new(5, 6)),
+            IntRange::FULL_I64
+        );
     }
 
     #[test]
@@ -1694,9 +1731,15 @@ mod tests {
     #[test]
     fn transfer_sub_mul_neg() {
         // [2, 5] - [1, 3] = [2-3, 5-1] = [-1, 4].
-        assert_eq!(IntRange::new(2, 5).sub(IntRange::new(1, 3)), IntRange::new(-1, 4));
+        assert_eq!(
+            IntRange::new(2, 5).sub(IntRange::new(1, 3)),
+            IntRange::new(-1, 4)
+        );
         // [-2, 3] * [-4, 5] hull of {8,-10,-12,15} = [-12, 15].
-        assert_eq!(IntRange::new(-2, 3).mul(IntRange::new(-4, 5)), IntRange::new(-12, 15));
+        assert_eq!(
+            IntRange::new(-2, 3).mul(IntRange::new(-4, 5)),
+            IntRange::new(-12, 15)
+        );
         // -[3, 7] = [-7, -3]; -[i64::MIN, 0] saturates the low end.
         assert_eq!(IntRange::new(3, 7).neg(), IntRange::new(-7, -3));
         assert_eq!(IntRange::point(i64::MIN).neg().hi, i64::MAX);
@@ -1707,23 +1750,35 @@ mod tests {
         // Overflowing products/diffs saturate, never wrap.
         let big = IntRange::point(i64::MAX);
         assert_eq!(big.mul(IntRange::point(2)).hi, i64::MAX);
-        assert_eq!(IntRange::point(i64::MIN).sub(IntRange::point(1)).lo, i64::MIN);
+        assert_eq!(
+            IntRange::point(i64::MIN).sub(IntRange::point(1)).lo,
+            i64::MIN
+        );
     }
 
     #[test]
     fn transfer_bit_and_nonneg_mask() {
         // x & 15 ∈ [0, 15] for ANY x — even negative / unknown.
         let full = IntRange::FULL_I64;
-        assert_eq!(full.bit_and(IntRange::point(15), None, Some(15)), IntRange::new(0, 15));
+        assert_eq!(
+            full.bit_and(IntRange::point(15), None, Some(15)),
+            IntRange::new(0, 15)
+        );
         // mask on the left operand, dividend unknown.
-        assert_eq!(full.bit_and(IntRange::point(7), Some(7), None), IntRange::new(0, 7));
+        assert_eq!(
+            full.bit_and(IntRange::point(7), Some(7), None),
+            IntRange::new(0, 7)
+        );
         // negative x is fine: -1 & 15 == 15 ∈ [0, 15].
         assert_eq!(
             IntRange::new(-100, -1).bit_and(IntRange::point(15), None, Some(15)),
             IntRange::new(0, 15)
         );
         // mask 0 ⇒ [0, 0].
-        assert_eq!(full.bit_and(IntRange::point(0), None, Some(0)), IntRange::point(0));
+        assert_eq!(
+            full.bit_and(IntRange::point(0), None, Some(0)),
+            IntRange::point(0)
+        );
     }
 
     #[test]
@@ -1737,7 +1792,11 @@ mod tests {
             IntRange::new(0, 7)
         );
         // One operand possibly-negative, no constant mask ⇒ FULL.
-        assert!(IntRange::new(-1, 100).bit_and(IntRange::new(0, 7), None, None).is_full());
+        assert!(
+            IntRange::new(-1, 100)
+                .bit_and(IntRange::new(0, 7), None, None)
+                .is_full()
+        );
     }
 
     #[test]
@@ -1759,7 +1818,11 @@ mod tests {
             IntRange::new(0, 7)
         );
         // Negative operand ⇒ FULL (can't bound bitwise of negatives cheaply).
-        assert!(IntRange::new(-1, 5).bit_or_xor(IntRange::new(0, 2), true).is_full());
+        assert!(
+            IntRange::new(-1, 5)
+                .bit_or_xor(IntRange::new(0, 2), true)
+                .is_full()
+        );
         // fill_below saturation: huge value near bit 62 → i64::MAX.
         assert_eq!(fill_below((1i64 << 62) + 1), i64::MAX);
         assert_eq!(fill_below(8), 15);
@@ -1803,9 +1866,15 @@ mod tests {
     #[test]
     fn transfer_mod_range_sign_uniform() {
         // divisor provably in [2, 9] ⇒ result ∈ [0, 8].
-        assert_eq!(IntRange::mod_range(IntRange::new(2, 9)), IntRange::new(0, 8));
+        assert_eq!(
+            IntRange::mod_range(IntRange::new(2, 9)),
+            IntRange::new(0, 8)
+        );
         // divisor provably in [-9, -2] ⇒ result ∈ [-8, 0].
-        assert_eq!(IntRange::mod_range(IntRange::new(-9, -2)), IntRange::new(-8, 0));
+        assert_eq!(
+            IntRange::mod_range(IntRange::new(-9, -2)),
+            IntRange::new(-8, 0)
+        );
         // divisor straddles 0 (possible zero → raise, or mixed sign) ⇒ FULL.
         assert!(IntRange::mod_range(IntRange::new(-1, 5)).is_full());
         assert!(IntRange::mod_range(IntRange::new(0, 5)).is_full());
@@ -1943,7 +2012,8 @@ mod tests {
     }
     fn op_nsw(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         let mut o = op(opcode, operands, results);
-        o.attrs.insert("no_signed_wrap".into(), AttrValue::Bool(true));
+        o.attrs
+            .insert("no_signed_wrap".into(), AttrValue::Bool(true));
         o
     }
     fn cint(result: ValueId, value: i64) -> TirOp {
@@ -1995,7 +2065,10 @@ mod tests {
             header,
             Blk {
                 id: header,
-                args: vec![TirValue { id: iv, ty: TirType::I64 }],
+                args: vec![TirValue {
+                    id: iv,
+                    ty: TirType::I64,
+                }],
                 ops: vec![op(OpCode::Lt, vec![iv, stop_v], vec![cond])],
                 terminator: Terminator::CondBranch {
                     cond,
@@ -2125,7 +2198,9 @@ mod tests {
     /// Build `for i in range(stop): ...` with extra derived ops in the body, the
     /// `p.y = i + 1`-style values the forward sweep must range. Returns the func
     /// plus the derived-value ids.
-    fn range_loop_with_derived(stop: i64) -> (TirFunction, ValueId, ValueId, ValueId, ValueId, ValueId) {
+    fn range_loop_with_derived(
+        stop: i64,
+    ) -> (TirFunction, ValueId, ValueId, ValueId, ValueId, ValueId) {
         let (mut func, body, _a, iv) = range_loop_vr(64, stop);
         let one = func.fresh_value();
         let mask = func.fresh_value();
@@ -2191,9 +2266,7 @@ mod tests {
         let sh_id = sh_id.unwrap();
         for block in func.blocks.values_mut() {
             for op in block.ops.iter_mut() {
-                if op.opcode == OpCode::ConstInt
-                    && op.results.first() == Some(&sh_id)
-                {
+                if op.opcode == OpCode::ConstInt && op.results.first() == Some(&sh_id) {
                     op.attrs.insert("value".into(), AttrValue::Int(45));
                 }
             }
@@ -2289,7 +2362,12 @@ mod tests {
         let exit = func.fresh_block();
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            entry.ops = vec![cint(start_i, 0), cint(start_t, 0), cint(stop_v, 1000000), cint(step, 1)];
+            entry.ops = vec![
+                cint(start_i, 0),
+                cint(start_t, 0),
+                cint(stop_v, 1000000),
+                cint(step, 1),
+            ];
             entry.terminator = Terminator::Branch {
                 target: header,
                 args: vec![start_i, start_t],
@@ -2300,8 +2378,14 @@ mod tests {
             Blk {
                 id: header,
                 args: vec![
-                    TirValue { id: iv, ty: TirType::I64 },
-                    TirValue { id: total, ty: TirType::I64 },
+                    TirValue {
+                        id: iv,
+                        ty: TirType::I64,
+                    },
+                    TirValue {
+                        id: total,
+                        ty: TirType::I64,
+                    },
                 ],
                 ops: vec![op(OpCode::Lt, vec![iv, stop_v], vec![cond])],
                 terminator: Terminator::CondBranch {
@@ -2355,7 +2439,10 @@ mod tests {
             "accumulator update (total + i) must never be proven inline — it can \
              exceed the inline window and even i64, requiring a boxed BigInt"
         );
-        assert!(vr.range_of(next_t).is_full(), "total + i range must be FULL");
+        assert!(
+            vr.range_of(next_t).is_full(),
+            "total + i range must be FULL"
+        );
     }
 
     /// Build a single-latch loop whose header carries ONE phi `s` (start `s0`),
@@ -2417,8 +2504,14 @@ mod tests {
             Blk {
                 id: header,
                 args: vec![
-                    TirValue { id: iv, ty: TirType::I64 },
-                    TirValue { id: s_phi, ty: TirType::I64 },
+                    TirValue {
+                        id: iv,
+                        ty: TirType::I64,
+                    },
+                    TirValue {
+                        id: s_phi,
+                        ty: TirType::I64,
+                    },
                 ],
                 ops: vec![op(OpCode::Lt, vec![iv, stop_v], vec![cond])],
                 terminator: Terminator::CondBranch {
@@ -2661,8 +2754,14 @@ mod tests {
             Blk {
                 id: header,
                 args: vec![
-                    TirValue { id: iv, ty: TirType::I64 },
-                    TirValue { id: s_phi, ty: TirType::I64 },
+                    TirValue {
+                        id: iv,
+                        ty: TirType::I64,
+                    },
+                    TirValue {
+                        id: s_phi,
+                        ty: TirType::I64,
+                    },
                 ],
                 ops: vec![op(OpCode::Lt, vec![iv, stop_v], vec![cond])],
                 terminator: Terminator::CondBranch {
@@ -2740,7 +2839,10 @@ mod tests {
             "phi must narrow to [0, MASK] — the unreachable ConstNone edge must NOT \
              poison the JOIN"
         );
-        assert!(vr.fits_inline_int47(s_phi), "[0, 2**32-1] fits the inline window");
+        assert!(
+            vr.fits_inline_int47(s_phi),
+            "[0, 2**32-1] fits the inline window"
+        );
         // The shift result feeds the raw-i64 seed.
         assert_eq!(vr.range_of(shl_res), IntRange::new(0, mask_val << 1));
         assert!(vr.fits_inline_int47(shl_res));

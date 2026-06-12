@@ -34,8 +34,8 @@ use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode};
 
-use super::value_range::ValueRange;
 use super::PassStats;
+use super::value_range::ValueRange;
 
 /// Bounds Check Elimination pass.
 ///
@@ -261,7 +261,10 @@ mod tests {
         };
 
         let stats = run_bce(&mut func);
-        assert_eq!(stats.values_changed, 0, "OOB const index must NOT be marked");
+        assert_eq!(
+            stats.values_changed, 0,
+            "OOB const index must NOT be marked"
+        );
         let index_op = func.blocks[&func.entry_block]
             .ops
             .iter()
@@ -313,7 +316,11 @@ mod tests {
         let (mut ops, container) = build_list_of_len(&mut func, 5);
         let result = func.fresh_value();
         let param_idx = ValueId(0); // function parameter
-        ops.push(make_op(OpCode::Index, vec![container, param_idx], vec![result]));
+        ops.push(make_op(
+            OpCode::Index,
+            vec![container, param_idx],
+            vec![result],
+        ));
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = ops;
@@ -464,7 +471,11 @@ mod tests {
             body_ops.push(make_const_int(index_operand, -1));
         }
         let r = func.fresh_value();
-        body_ops.push(make_op(OpCode::Index, vec![container, index_operand], vec![r]));
+        body_ops.push(make_op(
+            OpCode::Index,
+            vec![container, index_operand],
+            vec![r],
+        ));
         body_ops.push(make_nsw_add(vec![iv, step], vec![next]));
         func.blocks.insert(
             body_id,
@@ -775,23 +786,22 @@ mod tests {
     // ------------------------------------------------------------------
     #[test]
     fn while_loop_guard_le_store_index_marked_safe() {
-        let (mut func, _header, body_id) =
-            build_while_guard_func(true, true, |func, n| {
-                // is_prime = [True] * (n + 1).
-                let const_1 = func.fresh_value();
-                let n_plus_1 = func.fresh_value();
-                let true_val = func.fresh_value();
-                let list_1 = func.fresh_value();
-                let is_prime = func.fresh_value();
-                let ops = vec![
-                    make_const_int(const_1, 1),
-                    make_nsw_add(vec![n, const_1], vec![n_plus_1]),
-                    make_const_int(true_val, 1),
-                    make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
-                    make_op(OpCode::Mul, vec![list_1, n_plus_1], vec![is_prime]),
-                ];
-                (ops, is_prime)
-            });
+        let (mut func, _header, body_id) = build_while_guard_func(true, true, |func, n| {
+            // is_prime = [True] * (n + 1).
+            let const_1 = func.fresh_value();
+            let n_plus_1 = func.fresh_value();
+            let true_val = func.fresh_value();
+            let list_1 = func.fresh_value();
+            let is_prime = func.fresh_value();
+            let ops = vec![
+                make_const_int(const_1, 1),
+                make_nsw_add(vec![n, const_1], vec![n_plus_1]),
+                make_const_int(true_val, 1),
+                make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
+                make_op(OpCode::Mul, vec![list_1, n_plus_1], vec![is_prime]),
+            ];
+            (ops, is_prime)
+        });
 
         let stats = run_bce(&mut func);
         let store_op = func.blocks[&body_id]
@@ -812,22 +822,21 @@ mod tests {
     // ------------------------------------------------------------------
     #[test]
     fn while_loop_guard_le_index_marked_safe() {
-        let (mut func, _header, body_id) =
-            build_while_guard_func(true, false, |func, n| {
-                let const_1 = func.fresh_value();
-                let n_plus_1 = func.fresh_value();
-                let true_val = func.fresh_value();
-                let list_1 = func.fresh_value();
-                let is_prime = func.fresh_value();
-                let ops = vec![
-                    make_const_int(const_1, 1),
-                    make_nsw_add(vec![n, const_1], vec![n_plus_1]),
-                    make_const_int(true_val, 1),
-                    make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
-                    make_op(OpCode::Mul, vec![list_1, n_plus_1], vec![is_prime]),
-                ];
-                (ops, is_prime)
-            });
+        let (mut func, _header, body_id) = build_while_guard_func(true, false, |func, n| {
+            let const_1 = func.fresh_value();
+            let n_plus_1 = func.fresh_value();
+            let true_val = func.fresh_value();
+            let list_1 = func.fresh_value();
+            let is_prime = func.fresh_value();
+            let ops = vec![
+                make_const_int(const_1, 1),
+                make_nsw_add(vec![n, const_1], vec![n_plus_1]),
+                make_const_int(true_val, 1),
+                make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
+                make_op(OpCode::Mul, vec![list_1, n_plus_1], vec![is_prime]),
+            ];
+            (ops, is_prime)
+        });
 
         let stats = run_bce(&mut func);
         let index_op = func.blocks[&body_id]
@@ -848,19 +857,18 @@ mod tests {
     // ------------------------------------------------------------------
     #[test]
     fn while_loop_guard_lt_index_marked_safe() {
-        let (mut func, _header, body_id) =
-            build_while_guard_func(false, false, |func, n| {
-                // container = [True] * n.
-                let true_val = func.fresh_value();
-                let list_1 = func.fresh_value();
-                let container = func.fresh_value();
-                let ops = vec![
-                    make_const_int(true_val, 1),
-                    make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
-                    make_op(OpCode::Mul, vec![list_1, n], vec![container]),
-                ];
-                (ops, container)
-            });
+        let (mut func, _header, body_id) = build_while_guard_func(false, false, |func, n| {
+            // container = [True] * n.
+            let true_val = func.fresh_value();
+            let list_1 = func.fresh_value();
+            let container = func.fresh_value();
+            let ops = vec![
+                make_const_int(true_val, 1),
+                make_op(OpCode::BuildList, vec![true_val], vec![list_1]),
+                make_op(OpCode::Mul, vec![list_1, n], vec![container]),
+            ];
+            (ops, container)
+        });
 
         let stats = run_bce(&mut func);
         let index_op = func.blocks[&body_id]

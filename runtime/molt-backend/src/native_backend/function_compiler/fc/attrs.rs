@@ -1,6 +1,6 @@
 use super::super::*;
-use super::var_get_boxed_overflow_safe_fn;
 use super::OpFlow;
+use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for object attribute ops: get (`get_attr_generic_ptr`/`_obj`/`_special_obj`/`_name`/`_name_default`), has (`has_attr_name`), set (`set_attr_name`/`_generic_ptr`/`_generic_obj`), and del (`del_attr_generic_ptr`/`_obj`/`_name`).
 ///
@@ -34,35 +34,37 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
-    let var_get_boxed_overflow_safe =
-        |module: &mut ObjectModule,
-         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-         builder: &mut FunctionBuilder<'_>,
-         import_refs: &mut BTreeMap<&'static str, FuncRef>,
-         sealed_blocks: &mut BTreeSet<Block>,
-         vars: &BTreeMap<String, Variable>,
-         name: &str,
-         int_primary_vars: &BTreeSet<String>,
-         float_primary_vars: &BTreeSet<String>,
-         box_int_mask_var: Variable,
-         box_int_tag_var: Variable|
-         -> Option<crate::VarValue> {
-            var_get_boxed_overflow_safe_fn(
-                module,
-                import_ids,
-                builder,
-                import_refs,
-                sealed_blocks,
-                vars,
-                name,
-                int_primary_vars,
-                float_primary_vars,
-                bool_primary_vars,
-                nbc,
-                box_int_mask_var,
-                box_int_tag_var,
-            )
-        };
+    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+                                       import_ids: &mut BTreeMap<
+        &'static str,
+        (cranelift_module::FuncId, ImportSignatureShape),
+    >,
+                                       builder: &mut FunctionBuilder<'_>,
+                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       sealed_blocks: &mut BTreeSet<Block>,
+                                       vars: &BTreeMap<String, Variable>,
+                                       name: &str,
+                                       int_primary_vars: &BTreeSet<String>,
+                                       float_primary_vars: &BTreeSet<String>,
+                                       box_int_mask_var: Variable,
+                                       box_int_tag_var: Variable|
+     -> Option<crate::VarValue> {
+        var_get_boxed_overflow_safe_fn(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            name,
+            int_primary_vars,
+            float_primary_vars,
+            bool_primary_vars,
+            nbc,
+            box_int_mask_var,
+            box_int_tag_var,
+        )
+    };
     match op.kind.as_str() {
         "get_attr_generic_ptr" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -79,14 +81,13 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
-            let data_id = module.declare_data(
+            let data_id = module
+                .declare_data(
                     &format!("attr_{}_{}", func_name, op_idx),
                     Linkage::Local,
                     false,
@@ -119,8 +120,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     &[types::I64, types::I64],
                     &[types::I64],
                 );
-                let probe_local =
-                    module.declare_func_in_func(probe_callee, builder.func);
+                let probe_local = module.declare_func_in_func(probe_callee, builder.func);
 
                 // --- Declare molt_getattr_ic_slow(obj_ptr, attr, len, ic_index) -> i64 ---
                 let slow_callee = SimpleBackend::import_func_id_split(
@@ -130,8 +130,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     &[types::I64, types::I64, types::I64, types::I64],
                     &[types::I64],
                 );
-                let slow_local =
-                    module.declare_func_in_func(slow_callee, builder.func);
+                let slow_local = module.declare_func_in_func(slow_callee, builder.func);
 
                 // --- Emit: probe_result = molt_ic_probe_fast(obj_ptr, ic_raw) ---
                 let probe_call = builder.ins().call(probe_local, &[obj_ptr, ic_raw]);
@@ -161,12 +160,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                     .call(slow_local, &[obj_ptr, attr_ptr, attr_len, ic_raw]);
                 let slow_result = builder.inst_results(slow_call)[0];
                 // Slow path returns a borrowed reference; inc_ref to own it.
-                emit_maybe_ref_adjust_v2(
-                    &mut *builder,
-                    slow_result,
-                    local_inc_ref_obj,
-                    nbc,
-                );
+                emit_maybe_ref_adjust_v2(&mut *builder, slow_result, local_inc_ref_obj, nbc);
                 jump_block(&mut *builder, merge_block, &[slow_result]);
 
                 // --- Merge ---
@@ -211,13 +205,12 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
-            let data_id = module.declare_data(
+            let data_id = module
+                .declare_data(
                     &format!("attr_{}_{}", func_name, op_idx),
                     Linkage::Local,
                     false,
@@ -241,11 +234,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let site_bits = builder.ins().iconst(
                 types::I64,
-                box_int(stable_ic_site_id(
-                    func_name,
-                    op_idx,
-                    "get_attr_generic_obj",
-                )),
+                box_int(stable_ic_site_id(func_name, op_idx, "get_attr_generic_obj")),
             );
             let call = builder
                 .ins()
@@ -273,13 +262,12 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
-            let data_id = module.declare_data(
+            let data_id = module
+                .declare_data(
                     &format!("attr_{}_{}", func_name, op_idx),
                     Linkage::Local,
                     false,
@@ -326,9 +314,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -376,9 +362,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -438,9 +422,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -484,9 +466,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -544,9 +524,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -564,7 +542,8 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
-            let data_id = module.declare_data(
+            let data_id = module
+                .declare_data(
                     &format!("attr_{}_{}", func_name, op_idx),
                     Linkage::Local,
                     false,
@@ -623,9 +602,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let val = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
@@ -643,7 +620,8 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
-            let data_id = module.declare_data(
+            let data_id = module
+                .declare_data(
                     &format!("attr_{}_{}", func_name, op_idx),
                     Linkage::Local,
                     false,
@@ -688,13 +666,12 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
-            let data_id = module.declare_data(
+            let data_id = module
+                .declare_data(
                     &format!("attr_{}_{}", func_name, op_idx),
                     Linkage::Local,
                     false,
@@ -747,13 +724,12 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let Some(attr_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
-            let data_id = module.declare_data(
+            let data_id = module
+                .declare_data(
                     &format!("attr_{}_{}", func_name, op_idx),
                     Linkage::Local,
                     false,
@@ -798,9 +774,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 box_int_mask_var,
                 box_int_tag_var,
             )
-            .unwrap_or_else(|| {
-                panic!("Attr object not found in {} op {}", func_name, op_idx)
-            });
+            .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,

@@ -8,12 +8,15 @@
 mod metal_e2e {
     use molt_gpu::device::cpu::interpret;
     use molt_gpu::device::metal::MetalDevice;
-    use molt_gpu::device::{Allocator, Compiler, Executor};
+    use molt_gpu::device::{Allocator, Compiler, DeviceBuffer, Executor};
     use molt_gpu::dtype::DType;
     use molt_gpu::fuse::fuse;
     use molt_gpu::ops::PrimitiveOp;
     use molt_gpu::render::msl::MslRenderer;
-    use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
+    use molt_gpu::render::{
+        BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, KernelBody, ReductionDomain,
+        Renderer,
+    };
     use molt_gpu::shapetracker::ShapeTracker;
 
     fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
@@ -27,6 +30,192 @@ mod metal_e2e {
             .collect()
     }
 
+    fn u16_to_bytes(vals: &[u16]) -> Vec<u8> {
+        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    fn u32_to_bytes(vals: &[u32]) -> Vec<u8> {
+        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    fn bytes_to_u16(bytes: &[u8]) -> Vec<u16> {
+        bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+            .collect()
+    }
+
+    fn run_kernel_metal_bytes(kernel: &FusedKernel, inputs: &[Vec<u8>]) -> Vec<u8> {
+        let device = MetalDevice::new().expect("Metal device required");
+        let out_len = kernel.bufs[0].st.numel() * kernel.bufs[0].dtype.size_bytes();
+        let out_buf = device.alloc(out_len).unwrap();
+        let mut input_bufs: Vec<DeviceBuffer> = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            let input_buf = device.alloc(input.len()).unwrap();
+            device.copy_in(&input_buf, input).unwrap();
+            input_bufs.push(input_buf);
+        }
+
+        let msl = MslRenderer.render(kernel);
+        let prog = device.compile(&msl, "molt_kernel").unwrap();
+        let mut refs: Vec<&DeviceBuffer> = Vec::with_capacity(kernel.bufs.len());
+        refs.push(&out_buf);
+        for input_buf in &input_bufs {
+            refs.push(input_buf);
+        }
+        device
+            .exec(&prog, &refs, kernel.grid, kernel.local)
+            .unwrap();
+        device.synchronize().unwrap();
+        drop(refs);
+
+        let mut result = vec![0u8; out_len];
+        device.copy_out(&out_buf, &mut result).unwrap();
+        device.free(out_buf).unwrap();
+        for input_buf in input_bufs {
+            device.free(input_buf).unwrap();
+        }
+        result
+    }
+
+    fn materialize_copy_kernel(dtype: DType, src_st: ShapeTracker) -> FusedKernel {
+        let numel = src_st.numel();
+        FusedKernel {
+            body: KernelBody::MaterializeCopy,
+            ops: Vec::new(),
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 100,
+                    st: ShapeTracker::contiguous(src_st.shape()),
+                    dtype,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 77,
+                    st: src_st,
+                    dtype,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [numel as u32, 1, 1],
+            local: [numel.clamp(1, 256) as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        }
+    }
+
+    #[test]
+    fn test_metal_e2e_materialize_copy_from_flipped_view() {
+        let kernel =
+            materialize_copy_kernel(DType::Float32, ShapeTracker::contiguous(&[4]).flip(0));
+        let input = f32_to_bytes(&[1.0, 2.0, 3.0, 4.0]);
+
+        let mut cpu_bufs = vec![vec![0u8; 16], input.clone()];
+        interpret::execute_kernel(&kernel, &mut cpu_bufs);
+        let metal = run_kernel_metal_bytes(&kernel, &[input]);
+
+        assert_eq!(bytes_to_f32(&cpu_bufs[0]), vec![4.0, 3.0, 2.0, 1.0]);
+        assert_eq!(bytes_to_f32(&metal), bytes_to_f32(&cpu_bufs[0]));
+    }
+
+    #[test]
+    fn test_metal_e2e_materialize_copy_from_padded_view() {
+        let kernel = materialize_copy_kernel(
+            DType::Float32,
+            ShapeTracker::contiguous(&[3]).pad(&[(1, 1)]),
+        );
+        let input = f32_to_bytes(&[1.0, 2.0, 3.0]);
+
+        let mut cpu_bufs = vec![vec![0u8; 20], input.clone()];
+        interpret::execute_kernel(&kernel, &mut cpu_bufs);
+        let metal = run_kernel_metal_bytes(&kernel, &[input]);
+
+        assert_eq!(bytes_to_f32(&cpu_bufs[0]), vec![0.0, 1.0, 2.0, 3.0, 0.0]);
+        assert_eq!(bytes_to_f32(&metal), bytes_to_f32(&cpu_bufs[0]));
+    }
+
+    #[test]
+    fn test_metal_e2e_materialize_copy_preserves_u16_raw_storage() {
+        let kernel = materialize_copy_kernel(DType::UInt16, ShapeTracker::contiguous(&[4]).flip(0));
+        let input = u16_to_bytes(&[0x0001, 0x00ff, 0x8001, 0xffff]);
+
+        let mut cpu_bufs = vec![vec![0u8; 8], input.clone()];
+        interpret::execute_kernel(&kernel, &mut cpu_bufs);
+        let metal = run_kernel_metal_bytes(&kernel, &[input]);
+
+        assert_eq!(
+            bytes_to_u16(&cpu_bufs[0]),
+            vec![0xffff, 0x8001, 0x00ff, 0x0001]
+        );
+        assert_eq!(bytes_to_u16(&metal), bytes_to_u16(&cpu_bufs[0]));
+    }
+
+    #[test]
+    fn test_metal_e2e_same_storage_distinct_views_share_device_buffer() {
+        let n = 4;
+        let st = ShapeTracker::contiguous(&[n]);
+        let kernel = FusedKernel {
+            body: KernelBody::Compute,
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: st.clone(),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 77,
+                    st: st.clone(),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 77,
+                    st: st.flip(0),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [n as u32, 1, 1],
+            local: [n as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        };
+        let input = f32_to_bytes(&[1.0, 2.0, 3.0, 4.0]);
+
+        let mut cpu_bufs = vec![vec![0u8; 16], input.clone(), input.clone()];
+        interpret::execute_kernel(&kernel, &mut cpu_bufs);
+
+        let device = MetalDevice::new().expect("Metal device required");
+        let out_buf = device.alloc(16).unwrap();
+        let in_buf = device.alloc(16).unwrap();
+        device.copy_in(&in_buf, &input).unwrap();
+        let msl = MslRenderer.render(&kernel);
+        let prog = device.compile(&msl, "molt_kernel").unwrap();
+        device
+            .exec(
+                &prog,
+                &[&out_buf, &in_buf, &in_buf],
+                kernel.grid,
+                kernel.local,
+            )
+            .unwrap();
+        device.synchronize().unwrap();
+
+        let mut metal = vec![0u8; 16];
+        device.copy_out(&out_buf, &mut metal).unwrap();
+        device.free(out_buf).unwrap();
+        device.free(in_buf).unwrap();
+
+        assert_eq!(bytes_to_f32(&cpu_bufs[0]), vec![5.0, 5.0, 5.0, 5.0]);
+        assert_eq!(bytes_to_f32(&metal), bytes_to_f32(&cpu_bufs[0]));
+    }
+
     /// Run a binary op on Metal and return results alongside CPU reference.
     fn run_binary_metal_vs_cpu(
         op: PrimitiveOp,
@@ -36,11 +225,12 @@ mod metal_e2e {
     ) -> (Vec<f32>, Vec<f32>) {
         let n = a.len();
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
                 op,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
                 dst_dtype,
-            }],
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -103,11 +293,12 @@ mod metal_e2e {
     fn run_unary_metal_vs_cpu(op: PrimitiveOp, a: &[f32]) -> (Vec<f32>, Vec<f32>) {
         let n = a.len();
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
                 op,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -156,6 +347,53 @@ mod metal_e2e {
         let metal_result = bytes_to_f32(&result_bytes);
 
         (metal_result, cpu_result)
+    }
+
+    fn unary_typed_kernel(
+        op: PrimitiveOp,
+        src_dtype: DType,
+        dst_dtype: DType,
+        n: usize,
+    ) -> FusedKernel {
+        FusedKernel {
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(op, vec![FusedSrc::Buf(1)], dst_dtype)],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: dst_dtype,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n]),
+                    dtype: src_dtype,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [n as u32, 1, 1],
+            local: [n.clamp(1, 256) as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        }
+    }
+
+    fn run_unary_typed_metal_vs_cpu_raw(
+        op: PrimitiveOp,
+        src_dtype: DType,
+        dst_dtype: DType,
+        input: Vec<u8>,
+        n: usize,
+    ) -> (Vec<u8>, Vec<u8>) {
+        assert_eq!(input.len(), n * src_dtype.size_bytes());
+        let kernel = unary_typed_kernel(op, src_dtype, dst_dtype, n);
+
+        let mut cpu_bufs = vec![vec![0u8; n * dst_dtype.size_bytes()], input.clone()];
+        interpret::execute_kernel(&kernel, &mut cpu_bufs);
+        let metal = run_kernel_metal_bytes(&kernel, &[input]);
+
+        (metal, cpu_bufs.remove(0))
     }
 
     fn assert_f32_close(metal: &[f32], cpu: &[f32], op_name: &str, tol: f32) {
@@ -373,11 +611,13 @@ mod metal_e2e {
 
         // Kernel 1: ReduceMax over input
         let k1 = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::ReduceMax,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceMax,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n], 0),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 10,
@@ -401,28 +641,25 @@ mod metal_e2e {
         // Kernel 2: Sub (x - max) -> Exp2(* LOG2_E) = exp
         let log2_e = std::f64::consts::LOG2_E;
         let k2 = FusedKernel {
+            body: Default::default(),
             ops: vec![
-                FusedOp {
-                    op: PrimitiveOp::Sub,
-                    srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::Mul,
-                    srcs: vec![
+                FusedOp::elementwise(
+                    PrimitiveOp::Sub,
+                    vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                    DType::Float32,
+                ),
+                FusedOp::elementwise(
+                    PrimitiveOp::Mul,
+                    vec![
                         FusedSrc::Op(0),
                         FusedSrc::Const {
                             val: log2_e,
                             dtype: DType::Float32,
                         },
                     ],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::Exp2,
-                    srcs: vec![FusedSrc::Op(1)],
-                    dst_dtype: DType::Float32,
-                },
+                    DType::Float32,
+                ),
+                FusedOp::elementwise(PrimitiveOp::Exp2, vec![FusedSrc::Op(1)], DType::Float32),
             ],
             bufs: vec![
                 BufferBinding {
@@ -452,11 +689,13 @@ mod metal_e2e {
 
         // Kernel 3: ReduceSum of exp values
         let k3 = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n], 0),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 30,
@@ -504,11 +743,13 @@ mod metal_e2e {
         let reduce_size = 3;
 
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n_out, reduce_size], 1),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -566,11 +807,12 @@ mod metal_e2e {
     fn test_metal_e2e_where() {
         let n = 4;
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Where,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Where,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -650,9 +892,78 @@ mod metal_e2e {
     // --- CAST ---
 
     #[test]
-    fn test_metal_e2e_cast() {
-        let (metal, cpu) = run_unary_metal_vs_cpu(PrimitiveOp::Cast, &[1.5, -2.7, 0.0, 42.0]);
-        assert_f32_close(&metal, &cpu, "Cast", 0.0);
+    fn test_metal_e2e_cast_float32_to_int32_raw_storage() {
+        let expected = vec![1, 0, 0, 0, 254, 255, 255, 255, 0, 0, 0, 0, 7, 0, 0, 0];
+        let (metal, cpu) = run_unary_typed_metal_vs_cpu_raw(
+            PrimitiveOp::Cast,
+            DType::Float32,
+            DType::Int32,
+            f32_to_bytes(&[1.25, -2.75, 0.0, 7.0]),
+            4,
+        );
+
+        assert_eq!(cpu, expected);
+        assert_eq!(metal, expected);
+    }
+
+    #[test]
+    fn test_metal_e2e_cast_float32_to_uint16_raw_storage() {
+        let expected = vec![0, 0, 1, 0, 255, 0, 255, 255];
+        let (metal, cpu) = run_unary_typed_metal_vs_cpu_raw(
+            PrimitiveOp::Cast,
+            DType::Float32,
+            DType::UInt16,
+            f32_to_bytes(&[0.0, 1.0, 255.0, 65535.0]),
+            4,
+        );
+
+        assert_eq!(cpu, expected);
+        assert_eq!(metal, expected);
+    }
+
+    #[test]
+    fn test_metal_e2e_cast_float32_to_uint8_raw_storage() {
+        let expected = vec![0, 1, 2, 255];
+        let (metal, cpu) = run_unary_typed_metal_vs_cpu_raw(
+            PrimitiveOp::Cast,
+            DType::Float32,
+            DType::UInt8,
+            f32_to_bytes(&[0.0, 1.0, 2.0, 255.0]),
+            4,
+        );
+
+        assert_eq!(cpu, expected);
+        assert_eq!(metal, expected);
+    }
+
+    #[test]
+    fn test_metal_e2e_bitcast_float32_to_uint32_raw_storage() {
+        let expected = vec![0, 0, 128, 63, 0, 0, 0, 128, 0, 0, 32, 64, 0, 0, 128, 255];
+        let (metal, cpu) = run_unary_typed_metal_vs_cpu_raw(
+            PrimitiveOp::Bitcast,
+            DType::Float32,
+            DType::UInt32,
+            f32_to_bytes(&[1.0, -0.0, 2.5, f32::NEG_INFINITY]),
+            4,
+        );
+
+        assert_eq!(cpu, expected);
+        assert_eq!(metal, expected);
+    }
+
+    #[test]
+    fn test_metal_e2e_bitcast_uint32_to_float32_raw_storage() {
+        let source = u32_to_bytes(&[0x3f80_0000, 0x8000_0000, 0x4020_0000, 0xff80_0000]);
+        let (metal, cpu) = run_unary_typed_metal_vs_cpu_raw(
+            PrimitiveOp::Bitcast,
+            DType::UInt32,
+            DType::Float32,
+            source.clone(),
+            4,
+        );
+
+        assert_eq!(cpu, source);
+        assert_eq!(metal, source);
     }
 
     // --- Bitwise on Metal (using float representation) ---
@@ -662,23 +973,20 @@ mod metal_e2e {
         // ReLU(-x) = max(-x, 0): tests fused chain on Metal
         let n = 4;
         let kernel = FusedKernel {
+            body: Default::default(),
             ops: vec![
-                FusedOp {
-                    op: PrimitiveOp::Neg,
-                    srcs: vec![FusedSrc::Buf(1)],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::Max,
-                    srcs: vec![
+                FusedOp::elementwise(PrimitiveOp::Neg, vec![FusedSrc::Buf(1)], DType::Float32),
+                FusedOp::elementwise(
+                    PrimitiveOp::Max,
+                    vec![
                         FusedSrc::Op(0),
                         FusedSrc::Const {
                             val: 0.0,
                             dtype: DType::Float32,
                         },
                     ],
-                    dst_dtype: DType::Float32,
-                },
+                    DType::Float32,
+                ),
             ],
             bufs: vec![
                 BufferBinding {

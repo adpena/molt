@@ -60,6 +60,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
+
 # Import the differential harness as a library: it owns the oracle + meta +
 # comparison + partition logic, which we reuse verbatim.
 sys.path.insert(0, str(ROOT / "tests"))
@@ -126,8 +132,9 @@ def _build_wasm(
     # lane grants, so wasm parity is measured on equal footing.
     env.setdefault("MOLT_DIFF_CAPABILITIES", "fs,env,time,random")
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_WASM_DIFF",
             cwd=str(ROOT),
             env=env,
             capture_output=True,
@@ -136,6 +143,8 @@ def _build_wasm(
         )
     except subprocess.TimeoutExpired:
         return None, f"wasm build timeout after {_wasm_build_timeout()}s"
+    if getattr(proc, "timed_out", False):
+        return None, proc.stderr or f"wasm build timeout after {_wasm_build_timeout()}s"
     linked = out_dir / "output_linked.wasm"
     if proc.returncode != 0 or not linked.exists():
         return None, (proc.stderr or proc.stdout or "wasm build failed")
@@ -150,8 +159,9 @@ def _run_wasm(linked: Path, runtime_wasm: Path | None) -> tuple[str, str, int]:
         env["MOLT_RUNTIME_WASM"] = str(runtime_wasm)
     cmd = [_node_bin(), str(RUN_WASM_JS), str(linked)]
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             cmd,
+            prefix="MOLT_WASM_DIFF",
             cwd=str(ROOT),
             env=env,
             capture_output=True,
@@ -160,6 +170,8 @@ def _run_wasm(linked: Path, runtime_wasm: Path | None) -> tuple[str, str, int]:
         )
     except subprocess.TimeoutExpired:
         return "", f"wasm run timeout after {_wasm_run_timeout()}s", 124
+    if getattr(proc, "timed_out", False):
+        return "", proc.stderr or f"wasm run timeout after {_wasm_run_timeout()}s", proc.returncode
     return proc.stdout, proc.stderr, proc.returncode
 
 

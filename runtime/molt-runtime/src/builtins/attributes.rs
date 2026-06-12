@@ -3959,9 +3959,8 @@ pub(crate) unsafe fn del_attr_ptr(
                 // immutable-type guard as set, yielding `cannot set '<attr>'
                 // attribute of immutable type '<type>'` (version-stable).
                 let class_label = class_name_for_error(class_bits);
-                let msg = format!(
-                    "cannot set '{attr_name}' attribute of immutable type '{class_label}'"
-                );
+                let msg =
+                    format!("cannot set '{attr_name}' attribute of immutable type '{class_label}'");
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
             if attr_name == "__annotate__" && pep649_enabled(_py) {

@@ -117,7 +117,7 @@ fn runtime_core_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> 
 
 fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> {
     match symbol_name {
-        "molt_async_sleep" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 1),
+        "molt_async_sleep_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 1),
         "molt_anext_default_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 2),
         "molt_asyncgen_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 3),
         "molt_promise_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 4),
@@ -198,7 +198,7 @@ fn runtime_poll_callable_key_from_raw(fn_ptr: u64) -> Option<u64> {
             }
         };
     }
-    poll_key!(crate::molt_async_sleep, 1);
+    poll_key!(crate::molt_async_sleep_poll, 1);
     poll_key!(crate::molt_anext_default_poll, 2);
     poll_key!(crate::molt_asyncgen_poll, 3);
     poll_key!(crate::molt_promise_poll, 4);
@@ -394,7 +394,7 @@ pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
 
 fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
     match fn_ptr.checked_sub(RUNTIME_POLL_CALLABLE_KEY_BASE)? {
-        1 => Some(crate::molt_async_sleep as *const ()),
+        1 => Some(crate::molt_async_sleep_poll as *const ()),
         2 => Some(crate::molt_anext_default_poll as *const ()),
         3 => Some(crate::molt_asyncgen_poll as *const ()),
         4 => Some(crate::molt_promise_poll as *const ()),

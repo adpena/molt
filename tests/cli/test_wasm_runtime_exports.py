@@ -56,11 +56,21 @@ TINYGRAD_STDLIB_MODULES = {
 TINYGRAD_STDLIB_GPU_EXPORTS = {
     "molt_gpu_prim_binary",
     "molt_gpu_prim_create_tensor",
+    "molt_gpu_prim_create_tensor_raw",
     "molt_gpu_prim_device",
+    "molt_gpu_prim_dtype",
+    "molt_gpu_prim_free",
+    "molt_gpu_prim_nbytes",
+    "molt_gpu_prim_numel",
+    "molt_gpu_prim_read_data_raw",
     "molt_gpu_prim_realize",
     "molt_gpu_prim_reduce",
+    "molt_gpu_prim_shape",
+    "molt_gpu_prim_cast",
+    "molt_gpu_prim_ternary",
     "molt_gpu_prim_unary",
     "molt_gpu_prim_zeros",
+    "molt_gpu_prim_zeros_dtype",
     "molt_gpu_rope_apply_contiguous",
 }
 
@@ -220,10 +230,10 @@ def test_wasm_runtime_required_import_names_include_time_capabilities() -> None:
     assert "capabilities_trusted" in names
 
 
-def test_wasm_runtime_required_import_names_canonicalize_intrinsic_aliases() -> None:
+def test_wasm_runtime_required_import_names_use_public_async_sleep_symbol() -> None:
     names = set(wasm_runtime_required_import_names({"asyncio"}))
-    assert "async_sleep_new" in names
-    assert "async_sleep" not in names
+    assert "async_sleep" in names
+    assert "async_sleep_new" not in names
 
 
 def test_wasm_codegen_env_digest_tracks_required_import_set() -> None:

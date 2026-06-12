@@ -393,11 +393,9 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
     for &bid in &preorder {
         // Inherited version on entry to this block.
         let inherited = match idoms.get(&bid).and_then(|d| *d) {
-            Some(idom) if idom != bid => result
-                .exit_def
-                .get(&idom)
-                .copied()
-                .unwrap_or(LIVE_ON_ENTRY),
+            Some(idom) if idom != bid => {
+                result.exit_def.get(&idom).copied().unwrap_or(LIVE_ON_ENTRY)
+            }
             // Entry block (or self-idom): the function's live-on-entry memory.
             _ => LIVE_ON_ENTRY,
         };
@@ -460,11 +458,8 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
 
     // --- Phase C tail: fill phi incoming edges from predecessors' exits. -----
     // A phi's incoming version on edge `pred → bid` is `pred`'s exit version.
-    let phi_versions: Vec<(BlockId, MemVersion)> = result
-        .block_phis
-        .iter()
-        .map(|(&b, &v)| (b, v))
-        .collect();
+    let phi_versions: Vec<(BlockId, MemVersion)> =
+        result.block_phis.iter().map(|(&b, &v)| (b, v)).collect();
     for (bid, phi_ver) in phi_versions {
         let mut incoming: Vec<(BlockId, MemVersion)> = pred_map
             .get(&bid)
@@ -648,10 +643,7 @@ fn iterated_dominance_frontier(
 
 /// Dominator-tree preorder from the root, in deterministic (ascending child id)
 /// order. Iterative to avoid deep recursion on long dominator chains.
-fn dom_tree_preorder(
-    root: BlockId,
-    dom_children: &HashMap<BlockId, Vec<BlockId>>,
-) -> Vec<BlockId> {
+fn dom_tree_preorder(root: BlockId, dom_children: &HashMap<BlockId, Vec<BlockId>>) -> Vec<BlockId> {
     let mut order: Vec<BlockId> = Vec::new();
     let mut stack: Vec<BlockId> = vec![root];
     let mut seen: HashSet<BlockId> = HashSet::new();
@@ -791,7 +783,11 @@ mod tests {
     #[test]
     fn single_block_store_then_load_has_direct_reaching_def() {
         // entry: store(obj, val, 0); r = load(obj, 0); return r
-        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox, TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
         let obj = ValueId(0);
         let val = ValueId(1);
         let r = func.fresh_value();
@@ -802,7 +798,9 @@ mod tests {
             entry.terminator = Terminator::Return { values: vec![r] };
         }
         let mem = run(&func);
-        let store_ver = mem.def_at(func.entry_block, 0).expect("store defines a version");
+        let store_ver = mem
+            .def_at(func.entry_block, 0)
+            .expect("store defines a version");
         let load_reaching = mem
             .reaching_def_for_use(func.entry_block, 1)
             .expect("load is a tracked use");
@@ -898,7 +896,11 @@ mod tests {
     #[test]
     fn store_store_kills_earlier_version_for_load() {
         // store(obj, v1, 0); store(obj, v2, 0); r = load(obj, 0)
-        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox, TirType::DynBox, TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
         let obj = ValueId(0);
         let v1 = ValueId(1);
         let v2 = ValueId(2);
@@ -914,8 +916,14 @@ mod tests {
         let first = mem.def_at(func.entry_block, 0).unwrap();
         let second = mem.def_at(func.entry_block, 1).unwrap();
         let reaching = mem.reaching_def_for_use(func.entry_block, 2).unwrap();
-        assert_eq!(reaching, second, "load reads the SECOND store (it kills the first)");
-        assert_ne!(reaching, first, "the first store is killed by the overwrite");
+        assert_eq!(
+            reaching, second,
+            "load reads the SECOND store (it kills the first)"
+        );
+        assert_ne!(
+            reaching, first,
+            "the first store is killed by the overwrite"
+        );
         // The second def flows through the first (the clobber chain is intact).
         assert_eq!(mem.def_version_of(second), Some(first));
     }
@@ -944,7 +952,9 @@ mod tests {
             entry.ops.push(store(obj, v2, 8)); // op 1 — TypedField{Point, 8}
             entry.ops.push(load(obj, 0, r0)); // op 2 — TypedField{Point, 0}
             entry.ops.push(load(obj, 8, r8)); // op 3 — TypedField{Point, 8}
-            entry.terminator = Terminator::Return { values: vec![r0, r8] };
+            entry.terminator = Terminator::Return {
+                values: vec![r0, r8],
+            };
         }
         let mem = run(&func);
         let store0 = mem.def_at(func.entry_block, 0).unwrap();
@@ -952,7 +962,10 @@ mod tests {
         let load0_reaching = mem.reaching_def_for_use(func.entry_block, 2).unwrap();
         let load8_reaching = mem.reaching_def_for_use(func.entry_block, 3).unwrap();
         // Offset disambiguation: each load reaches the store of ITS offset.
-        assert_eq!(load0_reaching, store0, "load@0 reaches store@0 (store@8 is a disjoint field)");
+        assert_eq!(
+            load0_reaching, store0,
+            "load@0 reaches store@0 (store@8 is a disjoint field)"
+        );
         assert_eq!(load8_reaching, store8, "load@8 reaches store@8");
         // The clobber chain is still store0 ← store8 (store@8 flows through
         // store@0 — they are ordered defs, just disjoint regions).
@@ -969,7 +982,12 @@ mod tests {
         // `TypedField{Point,0}` and `TypedField{Line,0}` are disjoint.
         let mut func = TirFunction::new(
             "f".into(),
-            vec![TirType::DynBox, TirType::DynBox, TirType::DynBox, TirType::DynBox],
+            vec![
+                TirType::DynBox,
+                TirType::DynBox,
+                TirType::DynBox,
+                TirType::DynBox,
+            ],
             TirType::DynBox,
         );
         let p = ValueId(0);
@@ -1000,7 +1018,12 @@ mod tests {
         // object identity is untracked, so two `Point.x@0` accesses may-alias.
         let mut func = TirFunction::new(
             "f".into(),
-            vec![TirType::DynBox, TirType::DynBox, TirType::DynBox, TirType::DynBox],
+            vec![
+                TirType::DynBox,
+                TirType::DynBox,
+                TirType::DynBox,
+                TirType::DynBox,
+            ],
             TirType::DynBox,
         );
         let a = ValueId(0);
@@ -1061,7 +1084,12 @@ mod tests {
         // bb0 -> {bb1: store(obj,v1,0), bb2: store(obj,v2,0)} -> bb3: r = load(obj,0)
         let mut func = TirFunction::new(
             "f".into(),
-            vec![TirType::DynBox, TirType::DynBox, TirType::DynBox, TirType::Bool],
+            vec![
+                TirType::DynBox,
+                TirType::DynBox,
+                TirType::DynBox,
+                TirType::Bool,
+            ],
             TirType::DynBox,
         );
         let obj = ValueId(0);
@@ -1082,28 +1110,50 @@ mod tests {
                 else_args: vec![],
             };
         }
-        func.blocks.insert(bb1, TirBlock {
-            id: bb1,
-            args: vec![],
-            ops: vec![store(obj, v1, 0)],
-            terminator: Terminator::Branch { target: bb3, args: vec![] },
-        });
-        func.blocks.insert(bb2, TirBlock {
-            id: bb2,
-            args: vec![],
-            ops: vec![store(obj, v2, 0)],
-            terminator: Terminator::Branch { target: bb3, args: vec![] },
-        });
-        func.blocks.insert(bb3, TirBlock {
-            id: bb3,
-            args: vec![],
-            ops: vec![load(obj, 0, r)],
-            terminator: Terminator::Return { values: vec![r] },
-        });
+        func.blocks.insert(
+            bb1,
+            TirBlock {
+                id: bb1,
+                args: vec![],
+                ops: vec![store(obj, v1, 0)],
+                terminator: Terminator::Branch {
+                    target: bb3,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            bb2,
+            TirBlock {
+                id: bb2,
+                args: vec![],
+                ops: vec![store(obj, v2, 0)],
+                terminator: Terminator::Branch {
+                    target: bb3,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            bb3,
+            TirBlock {
+                id: bb3,
+                args: vec![],
+                ops: vec![load(obj, 0, r)],
+                terminator: Terminator::Return { values: vec![r] },
+            },
+        );
         let mem = run(&func);
-        let phi = mem.block_phis.get(&bb3).copied().expect("a memory phi at the join");
+        let phi = mem
+            .block_phis
+            .get(&bb3)
+            .copied()
+            .expect("a memory phi at the join");
         let reaching = mem.reaching_def_for_use(bb3, 0).unwrap();
-        assert_eq!(reaching, phi, "the load reads the join phi, not either branch store");
+        assert_eq!(
+            reaching, phi,
+            "the load reads the join phi, not either branch store"
+        );
         // The phi has two incomings, one per branch, each that branch's store.
         match mem.access(phi) {
             Some(MemAccess::Phi { incoming, .. }) => {
@@ -1132,7 +1182,11 @@ mod tests {
         // The call is a GenericHeap def (the alias oracle widens Call), which
         // may_alias-es the typed-slot load — so the load reaches the CALL's
         // version, not the store's. Forwarding is correctly blocked.
-        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox, TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
         let obj = ValueId(0);
         let v1 = ValueId(1);
         let call_r = func.fresh_value();
@@ -1146,10 +1200,18 @@ mod tests {
         }
         let mem = run(&func);
         let store_ver = mem.def_at(func.entry_block, 0).unwrap();
-        let call_ver = mem.def_at(func.entry_block, 1).expect("the call is a memory def");
+        let call_ver = mem
+            .def_at(func.entry_block, 1)
+            .expect("the call is a memory def");
         let reaching = mem.reaching_def_for_use(func.entry_block, 2).unwrap();
-        assert_eq!(reaching, call_ver, "load reaches the clobbering call, not the store");
-        assert_ne!(reaching, store_ver, "the call kills the store's reaching-def relationship");
+        assert_eq!(
+            reaching, call_ver,
+            "load reaches the clobbering call, not the store"
+        );
+        assert_ne!(
+            reaching, store_ver,
+            "the call kills the store's reaching-def relationship"
+        );
         assert!(
             !mem.is_direct_def_of_use(store_ver, func.entry_block, 2),
             "store-to-load forwarding across a call barrier must be blocked"
@@ -1173,7 +1235,11 @@ mod tests {
         // is exactly the condition under which the oracle assigns a StackObject
         // region — a bare `ObjectNewBoundStack` op is the post-rewrite form the
         // escape pass produces and does not re-add to its tracked-root set.)
-        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox, TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
         let cls = ValueId(0);
         let v = ValueId(1);
         let obj = func.fresh_value();
@@ -1209,7 +1275,9 @@ mod tests {
         );
 
         let mem = compute_standalone(&func, &alias);
-        let store_ver = mem.def_at(func.entry_block, 1).expect("the field store is a def");
+        let store_ver = mem
+            .def_at(func.entry_block, 1)
+            .expect("the field store is a def");
         let reaching = mem.reaching_def_for_use(func.entry_block, 3).unwrap();
         assert_eq!(
             reaching, store_ver,
@@ -1240,33 +1308,45 @@ mod tests {
         let exit = func.fresh_block();
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            entry.terminator = Terminator::Branch { target: header, args: vec![] };
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![],
+            };
         }
-        func.blocks.insert(header, TirBlock {
-            id: header,
-            args: vec![],
-            ops: vec![store(obj, v, 0)],
-            terminator: Terminator::CondBranch {
-                cond,
-                then_block: header,
-                then_args: vec![],
-                else_block: exit,
-                else_args: vec![],
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![store(obj, v, 0)],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: header,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
             },
-        });
-        func.blocks.insert(exit, TirBlock {
-            id: exit,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::Return { values: vec![] },
-        });
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         func.loop_roles.insert(header, LoopRole::LoopHeader);
 
         let mem = run(&func);
         // The header is in the dominance frontier of itself (back-edge join),
         // so a memory phi must be placed there.
         let phi = mem.block_phis.get(&header).copied();
-        assert!(phi.is_some(), "a back-edge loop header must receive a memory phi");
+        assert!(
+            phi.is_some(),
+            "a back-edge loop header must receive a memory phi"
+        );
         let phi = phi.unwrap();
         match mem.access(phi) {
             Some(MemAccess::Phi { incoming, .. }) => {
@@ -1319,7 +1399,10 @@ mod tests {
     #[test]
     fn typed_slot_store_value_extracts_target_value_offset() {
         let s = store(ValueId(3), ValueId(7), 8);
-        assert_eq!(typed_slot_store_value(&s), Some((ValueId(3), ValueId(7), 8)));
+        assert_eq!(
+            typed_slot_store_value(&s),
+            Some((ValueId(3), ValueId(7), 8))
+        );
         // A non-store op yields None.
         let l = load(ValueId(3), 8, ValueId(9));
         assert_eq!(typed_slot_store_value(&l), None);
@@ -1331,7 +1414,11 @@ mod tests {
         // as a full `Use` node carrying its region (TypedField/GenericHeap) and
         // the reaching def. This pins the `MemAccess::Use` fields as load-bearing
         // for the S5-2b MemGVN consumer.
-        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox, TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
         let obj = ValueId(0);
         let val = ValueId(1);
         let r = func.fresh_value();
@@ -1361,7 +1448,10 @@ mod tests {
                 // names a `TypedField { "Point", 0 }` region (S5-1.5).
                 assert_eq!(
                     *region,
-                    MemRegion::TypedField { class: "Point".into(), offset: 0 }
+                    MemRegion::TypedField {
+                        class: "Point".into(),
+                        offset: 0
+                    }
                 );
             }
             other => panic!("expected a Use node, got {other:?}"),

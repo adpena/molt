@@ -1,6 +1,8 @@
 # Canonical Reading List
 
-These are the must-read docs for anyone changing Molt.
+These are the must-read docs for anyone changing Molt. Treat them as routing
+surfaces; live code, executable tests, and generated evidence remain the source
+of truth when a claim drifts.
 
 ## Start Here
 
@@ -26,6 +28,15 @@ These are the must-read docs for anyone changing Molt.
 - [spec/areas/compat/surfaces/language/language_surface_matrix.md](spec/areas/compat/surfaces/language/language_surface_matrix.md)
 - [spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md](spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md)
 - [spec/areas/compat/surfaces/c_api/c_api_surface_index.md](spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
+
+## Compiler Foundation
+
+- [design/foundation/00_integrated_parallel_program.md](design/foundation/00_integrated_parallel_program.md)
+- [design/foundation/20_rc-ownership-drop-insertion.md](design/foundation/20_rc-ownership-drop-insertion.md)
+- [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md)
+- [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
+- [design/foundation/27_perceus_borrow_inference.md](design/foundation/27_perceus_borrow_inference.md)
+- [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
 
 ## Proof And Validation
 

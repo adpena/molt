@@ -222,7 +222,8 @@ fn alloc_page_aligned(size_bytes: usize) -> Vec<u8> {
 pub mod interpret {
     use crate::dtype::DType;
     use crate::ops::PrimitiveOp;
-    use crate::render::{FusedKernel, FusedSrc};
+    use crate::render::{FusedKernel, FusedOp, FusedSrc, KernelBody, ReductionDomain};
+    use crate::shapetracker::View;
 
     /// Fused matrix multiplication: C = A @ B without intermediate allocation.
     ///
@@ -450,20 +451,20 @@ pub mod interpret {
 
         // Op 0 must be Mul(Buf(a), Buf(b)) where a != b
         let mul_op = &kernel.ops[0];
-        if mul_op.op != PrimitiveOp::Mul {
+        if mul_op.op() != PrimitiveOp::Mul {
             return None;
         }
-        let (a_idx, b_idx) = match (&mul_op.srcs[0], &mul_op.srcs[1]) {
+        let (a_idx, b_idx) = match (&mul_op.srcs()[0], &mul_op.srcs()[1]) {
             (FusedSrc::Buf(a), FusedSrc::Buf(b)) if a != b => (*a, *b),
             _ => return None,
         };
 
         // Op 1 must be ReduceSum(Op(0))
         let reduce_op = &kernel.ops[1];
-        if reduce_op.op != PrimitiveOp::ReduceSum {
+        if reduce_op.op() != PrimitiveOp::ReduceSum {
             return None;
         }
-        match &reduce_op.srcs[0] {
+        match &reduce_op.srcs()[0] {
             FusedSrc::Op(0) => {}
             _ => return None,
         }
@@ -471,11 +472,11 @@ pub mod interpret {
         // Check for optional bias add as op 2
         let bias_buf_idx = if n_ops == 3 {
             let add_op = &kernel.ops[2];
-            if add_op.op != PrimitiveOp::Add {
+            if add_op.op() != PrimitiveOp::Add {
                 return None;
             }
             // One source must be Op(1) (the reduce result), other must be Buf
-            match (&add_op.srcs[0], &add_op.srcs[1]) {
+            match (&add_op.srcs()[0], &add_op.srcs()[1]) {
                 (FusedSrc::Op(1), FusedSrc::Buf(bias)) => Some(*bias),
                 (FusedSrc::Buf(bias), FusedSrc::Op(1)) => Some(*bias),
                 _ => return None,
@@ -502,6 +503,12 @@ pub mod interpret {
             }
         }
 
+        let output_numel = kernel.bufs[0].st.numel();
+        let domain = reduce_op.require_reduction_domain();
+        if domain.output_numel() != output_numel || !domain_is_row_contiguous_segment(domain) {
+            return None;
+        }
+
         // Extract dimensions from buffer shapes and physical sizes.
         //
         // The ShapeTracker numels represent the LOGICAL (broadcast-expanded)
@@ -511,21 +518,20 @@ pub mod interpret {
         //   B physical: K*N elements
         //   Output physical: M*N elements
         //
-        // K = logical_numel / output_numel (the reduce dimension)
-        let output_numel = kernel.bufs[0].st.numel();
+        // The contraction dimension is owned by the reduction domain. Do not
+        // infer it from shape ratios: non-last-axis reductions can share the
+        // same counts while requiring different input indexing.
+        let k = domain.reduce_size;
+        if k == 0 {
+            return None;
+        }
         let logical_input_numel = kernel.bufs[a_idx].st.numel();
 
         // Both Mul inputs must have the same logical element count
         if kernel.bufs[b_idx].st.numel() != logical_input_numel {
             return None;
         }
-
-        // K = logical_input_numel / output_numel
-        if output_numel == 0 || !logical_input_numel.is_multiple_of(output_numel) {
-            return None;
-        }
-        let k = logical_input_numel / output_numel;
-        if k == 0 {
+        if logical_input_numel != domain.input_shape.iter().product() {
             return None;
         }
 
@@ -573,6 +579,16 @@ pub mod interpret {
             n,
             dtype,
         })
+    }
+
+    fn domain_is_row_contiguous_segment(domain: &ReductionDomain) -> bool {
+        domain.is_trailing_contiguous()
+            && domain.reduce_size > 0
+            && (domain.output_numel() == 0
+                || (domain.input_linear_index(0, 0) == 0
+                    && domain
+                        .input_linear_index(domain.output_numel() - 1, domain.reduce_size - 1)
+                        == domain.output_numel() * domain.reduce_size - 1))
     }
 
     /// Execute a detected matmul pattern directly, bypassing the per-element
@@ -776,156 +792,24 @@ pub mod interpret {
         out_f64[..m * n].copy_from_slice(&c);
     }
 
-    /// Detect a softmax-like reduction pattern in a fused kernel.
-    ///
-    /// Matches any kernel that contains both a ReduceMax and a ReduceSum
-    /// (the hallmark of softmax: max-stabilize, exponentiate, sum-normalize).
-    /// All buffers must be Float32 and contiguous.
-    ///
-    /// Returns `Some((input_buf_idx, reduce_size))` if the pattern matches.
-    fn detect_softmax_pattern(kernel: &FusedKernel) -> Option<(usize, usize)> {
-        // Need at least ReduceMax + something + ReduceSum + something = 4 ops minimum
-        if kernel.ops.len() < 4 {
-            return None;
-        }
-
-        // All buffers must be Float32 and contiguous
-        if !kernel
-            .bufs
-            .iter()
-            .all(|b| b.dtype == DType::Float32 && b.st.view().is_contiguous())
-        {
-            return None;
-        }
-
-        let has_reduce_max = kernel.ops.iter().any(|op| op.op == PrimitiveOp::ReduceMax);
-        let has_reduce_sum = kernel.ops.iter().any(|op| op.op == PrimitiveOp::ReduceSum);
-
-        if !has_reduce_max || !has_reduce_sum {
-            return None;
-        }
-
-        // Find the input buffer for the ReduceMax (should be the raw input)
-        let reduce_max_op = kernel
-            .ops
-            .iter()
-            .find(|op| op.op == PrimitiveOp::ReduceMax)?;
-        let input_buf_idx = match &reduce_max_op.srcs[0] {
-            FusedSrc::Buf(idx) => *idx,
-            _ => return None,
-        };
-
-        let output_numel = kernel.bufs[0].st.numel();
-        let input_numel = kernel.bufs[input_buf_idx].st.numel();
-        if output_numel == 0 {
-            return None;
-        }
-        let reduce_size = input_numel / output_numel;
-        if reduce_size == 0 || !input_numel.is_multiple_of(output_numel) {
-            return None;
-        }
-
-        Some((input_buf_idx, reduce_size))
-    }
-
-    /// Detect an RMSNorm-like pattern in a fused kernel.
-    ///
-    /// Matches kernels that: square input -> ReduceSum -> scale by rsqrt.
-    /// Specifically: first op is Mul(Buf(x), Buf(x)) (self-multiply = square),
-    /// followed by ReduceSum. All buffers must be Float32 and contiguous.
-    ///
-    /// Returns `Some((input_buf_idx, dim, eps))` if the pattern matches.
-    fn detect_rms_norm_pattern(kernel: &FusedKernel) -> Option<(usize, usize, f64)> {
-        // Need at least Mul(x,x) + ReduceSum = 2 ops
-        if kernel.ops.len() < 2 {
-            return None;
-        }
-
-        // All buffers must be Float32 and contiguous
-        if !kernel
-            .bufs
-            .iter()
-            .all(|b| b.dtype == DType::Float32 && b.st.view().is_contiguous())
-        {
-            return None;
-        }
-
-        // First op must be Mul(Buf(x), Buf(x)) — self-multiply (squaring)
-        let mul_op = &kernel.ops[0];
-        if mul_op.op != PrimitiveOp::Mul {
-            return None;
-        }
-        let input_buf_idx = match (&mul_op.srcs[0], &mul_op.srcs[1]) {
-            (FusedSrc::Buf(a), FusedSrc::Buf(b)) if a == b => *a,
-            _ => return None,
-        };
-
-        // Second op must be ReduceSum
-        if kernel.ops[1].op != PrimitiveOp::ReduceSum {
-            return None;
-        }
-
-        let output_numel = kernel.bufs[0].st.numel();
-        let input_numel = kernel.bufs[input_buf_idx].st.numel();
-        if output_numel == 0 {
-            return None;
-        }
-
-        // For single-row RMSNorm: output_numel == input_numel, dim == input_numel
-        // For multi-row RMSNorm: dim == input_numel / output_numel
-        // The detect path only fires for the square+reduce subkernel which
-        // reduces to a scalar. The full RMSNorm is: Mul(x,x) -> ReduceSum.
-        // output_numel for the reduce kernel is 1 (scalar), dim == input_numel.
-        let dim = input_numel;
-        let n = if output_numel > 0 {
-            output_numel
-        } else {
-            return None;
-        };
-
-        // Use standard epsilon for numerical stability
-        let eps = 1e-6_f64;
-
-        // Only match when output is the same size as input (the full rmsnorm
-        // pattern where we write back x * rsqrt). For partial patterns (just
-        // the reduce), the output is a scalar and we should fall through.
-        if kernel.bufs[0].st.numel() != input_numel {
-            return None;
-        }
-
-        Some((input_buf_idx, dim / n, eps))
-    }
-
     /// Interpret and execute a FusedKernel on CPU buffers.
     /// `bufs` are raw byte slices matching kernel.bufs order.
     /// bufs[0] is the output buffer (written to).
     #[inline(always)]
     pub fn execute_kernel(kernel: &FusedKernel, bufs: &mut [Vec<u8>]) {
+        if kernel.body == KernelBody::MaterializeCopy {
+            let (_, _, output_numel) = kernel.materialize_copy_contract();
+            execute_materialize_copy(kernel, bufs, output_numel);
+            return;
+        }
+        kernel.compute_body_contract();
+
         let output_numel = kernel.bufs[0].st.numel();
 
         // Fast path: detect matmul pattern (Mul + ReduceSum, optionally + Add bias).
         // Must be checked BEFORE the SIMD path since matmul contains a reduce op.
         if let Some(pattern) = detect_matmul_pattern(kernel, bufs) {
             execute_matmul_fast(&pattern, bufs);
-            return;
-        }
-
-        // Fast path: detect softmax pattern.
-        // ReduceMax -> Sub -> Mul(log2e) -> Exp2 -> ReduceSum -> Reciprocal -> Mul
-        // Or simpler: any kernel with ReduceMax followed by Sub/Exp2/ReduceSum/Mul.
-        if let Some(pattern) = detect_softmax_pattern(kernel) {
-            let (input_idx, reduce_size) = pattern;
-            let input = bufs[input_idx].clone();
-            fused_softmax(&input, &mut bufs[0], output_numel, reduce_size);
-            return;
-        }
-
-        // Fast path: detect RMSNorm pattern.
-        // Mul(x,x) -> ReduceSum -> ... -> Mul(x, rsqrt)
-        if let Some(pattern) = detect_rms_norm_pattern(kernel) {
-            let (input_idx, dim, eps) = pattern;
-            let input = bufs[input_idx].clone();
-            fused_rms_norm(&input, &mut bufs[0], output_numel, dim, eps);
             return;
         }
 
@@ -941,25 +825,24 @@ pub mod interpret {
 
         // Pre-allocate values buffer outside the hot loop to avoid per-element
         // heap allocation. This is the single biggest optimization for small kernels.
-        let mut values: Vec<f64> = vec![0.0; kernel.ops.len()];
+        let mut values: Vec<ScalarValue> =
+            vec![ScalarValue::zero(DType::Float32); kernel.ops.len()];
 
         for gid in 0..output_numel {
             // Pre-allocate pre_values ONCE outside the reduce inner loop.
             // This eliminates O(reduce_size) heap allocations per output element.
-            let mut pre_values: Vec<f64> = Vec::new();
+            let mut pre_values: Vec<ScalarValue> = Vec::new();
 
             for (op_idx, op) in kernel.ops.iter().enumerate() {
-                if matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax) {
-                    // Handle reduce ops
-                    let input_buf_idx = match &op.srcs[0] {
-                        FusedSrc::Buf(idx) => *idx,
-                        FusedSrc::Op(_) => 1,
-                        FusedSrc::Const { .. } => unreachable!(),
-                    };
-                    let input_numel = kernel.bufs[input_buf_idx].st.numel();
-                    let reduce_size = input_numel / output_numel;
+                if matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax) {
+                    let domain = op.require_reduction_domain();
+                    assert_eq!(
+                        domain.output_numel(),
+                        output_numel,
+                        "Reduction domain output shape must match kernel output"
+                    );
 
-                    let mut acc = match op.op {
+                    let mut acc = match op.op() {
                         PrimitiveOp::ReduceSum => 0.0f64,
                         PrimitiveOp::ReduceMax => f64::NEG_INFINITY,
                         _ => unreachable!(),
@@ -968,35 +851,39 @@ pub mod interpret {
                     // Reuse pre_values across reduce iterations instead of
                     // re-allocating on every iteration of the inner loop.
                     if op_idx > 0 {
-                        pre_values.resize(op_idx, 0.0);
+                        pre_values.resize(op_idx, ScalarValue::zero(DType::Float32));
                     }
 
-                    for rid in 0..reduce_size {
-                        let eidx = gid * reduce_size + rid;
+                    for rid in 0..domain.reduce_size {
+                        let eidx = domain.input_linear_index(gid, rid);
 
-                        // If there are pre-reduce ops, compute them for this element
-                        let val = if op_idx > 0 {
+                        if op_idx > 0 {
                             // Re-compute pre-reduce elementwise chain for this element index.
                             // pre_values is reused across iterations (no allocation).
                             for (pre_idx, pre_op) in kernel.ops[..op_idx].iter().enumerate() {
-                                let get_pre_src = |i: usize| -> f64 {
-                                    match &pre_op.srcs[i] {
+                                let get_pre_src = |i: usize| -> ScalarValue {
+                                    match &pre_op.srcs()[i] {
                                         FusedSrc::Buf(idx) => {
-                                            read_f64(&bufs[*idx], eidx, kernel.bufs[*idx].dtype)
+                                            read_binding_scalar(kernel, bufs, *idx, eidx)
                                         }
                                         FusedSrc::Op(prior) => pre_values[*prior],
-                                        FusedSrc::Const { val, .. } => *val,
+                                        FusedSrc::Const { val, dtype } => {
+                                            ScalarValue::from_f64(*val, *dtype)
+                                        }
                                     }
                                 };
                                 pre_values[pre_idx] =
-                                    compute_elementwise(pre_op.op, &get_pre_src, pre_op.srcs.len());
+                                    compute_elementwise_scalar(pre_op, &get_pre_src);
                             }
-                            pre_values[op_idx - 1]
-                        } else {
-                            read_f64(&bufs[input_buf_idx], eidx, kernel.bufs[input_buf_idx].dtype)
+                        }
+
+                        let val = match &op.srcs()[0] {
+                            FusedSrc::Buf(idx) => read_binding_f64(kernel, bufs, *idx, eidx),
+                            FusedSrc::Op(prior) => pre_values[*prior].to_f64(),
+                            FusedSrc::Const { val, .. } => *val,
                         };
 
-                        acc = match op.op {
+                        acc = match op.op() {
                             PrimitiveOp::ReduceSum => acc + val,
                             PrimitiveOp::ReduceMax => {
                                 // NaN-propagating max for floats
@@ -1009,24 +896,245 @@ pub mod interpret {
                             _ => unreachable!(),
                         };
                     }
-                    values[op_idx] = acc;
+                    values[op_idx] = ScalarValue::from_f64(acc, op.dst_dtype());
                     continue;
                 }
 
-                let get_src = |i: usize| -> f64 {
-                    match &op.srcs[i] {
-                        FusedSrc::Buf(idx) => read_f64(&bufs[*idx], gid, kernel.bufs[*idx].dtype),
+                let get_src = |i: usize| -> ScalarValue {
+                    match &op.srcs()[i] {
+                        FusedSrc::Buf(idx) => read_binding_scalar(kernel, bufs, *idx, gid),
                         FusedSrc::Op(prior) => values[*prior],
-                        FusedSrc::Const { val, .. } => *val,
+                        FusedSrc::Const { val, dtype } => ScalarValue::from_f64(*val, *dtype),
                     }
                 };
 
-                values[op_idx] = compute_elementwise(op.op, &get_src, op.srcs.len());
+                values[op_idx] = compute_elementwise_scalar(op, &get_src);
             }
 
             // Write output
             let result = values[kernel.ops.len() - 1];
-            write_f64(&mut bufs[0], gid, result, kernel.bufs[0].dtype);
+            write_binding_scalar(kernel, bufs, 0, gid, result);
+        }
+    }
+
+    fn execute_materialize_copy(kernel: &FusedKernel, bufs: &mut [Vec<u8>], output_numel: usize) {
+        assert!(
+            kernel.ops.is_empty() && kernel.bufs.len() == 2 && bufs.len() == 2,
+            "MaterializeCopy kernel must have one source binding and no ops"
+        );
+        let elem_size = kernel.bufs[0].dtype.size_bytes();
+        assert_eq!(
+            kernel.bufs[0].dtype, kernel.bufs[1].dtype,
+            "MaterializeCopy source and output dtypes must match"
+        );
+
+        let (out_slot, in_slots) = bufs.split_at_mut(1);
+        let out = &mut out_slot[0];
+        let src = &in_slots[0];
+        let dst_binding = &kernel.bufs[0];
+        let src_binding = &kernel.bufs[1];
+        let required_output_bytes = output_numel * elem_size;
+
+        if dst_binding.st.view().is_contiguous()
+            && src_binding.st.views.len() == 1
+            && src_binding.st.view().is_contiguous()
+        {
+            assert!(
+                required_output_bytes <= out.len(),
+                "MaterializeCopy output bytes {} exceed output buffer bytes {}",
+                required_output_bytes,
+                out.len()
+            );
+            assert!(
+                required_output_bytes <= src.len(),
+                "MaterializeCopy source bytes {} exceed source buffer bytes {}",
+                required_output_bytes,
+                src.len()
+            );
+            out[..required_output_bytes].copy_from_slice(&src[..required_output_bytes]);
+            return;
+        }
+
+        if dst_binding.st.view().is_contiguous() && src_binding.st.views.len() == 1 {
+            let src_view = src_binding.st.view();
+            if let Some(plan) = SingleView1dMaterializePlan::from_view(src_view, output_numel) {
+                assert!(
+                    required_output_bytes <= out.len(),
+                    "MaterializeCopy output bytes {} exceed output buffer bytes {}",
+                    required_output_bytes,
+                    out.len()
+                );
+                plan.execute(out, src, elem_size, output_numel);
+                return;
+            }
+        }
+
+        for gid in 0..output_numel {
+            let dst_idx = dst_binding
+                .st
+                .expr_idx(gid)
+                .expect("MaterializeCopy output must be addressable");
+            let dst_offset = dst_idx * elem_size;
+            assert!(
+                dst_offset + elem_size <= out.len(),
+                "MaterializeCopy output index {} exceeds output buffer bytes {}",
+                dst_idx,
+                out.len()
+            );
+            if let Some(src_idx) = src_binding.st.expr_idx(gid) {
+                let src_offset = src_idx * elem_size;
+                assert!(
+                    src_offset + elem_size <= src.len(),
+                    "MaterializeCopy source index {} exceeds source buffer bytes {}",
+                    src_idx,
+                    src.len()
+                );
+                out[dst_offset..dst_offset + elem_size]
+                    .copy_from_slice(&src[src_offset..src_offset + elem_size]);
+            } else {
+                out[dst_offset..dst_offset + elem_size].fill(0);
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct SingleView1dMaterializePlan {
+        valid_start: usize,
+        valid_end: usize,
+        first_src_idx: i64,
+        stride: i64,
+    }
+
+    impl SingleView1dMaterializePlan {
+        fn from_view(view: &View, output_numel: usize) -> Option<Self> {
+            if view.shape.len() != 1 || view.shape[0] != output_numel {
+                return None;
+            }
+            let stride = view.strides[0];
+            if stride != 1 && stride != -1 {
+                return None;
+            }
+
+            let (mut valid_start, mut valid_end) = match &view.mask {
+                Some(mask) if mask.len() == 1 => mask[0],
+                Some(_) => return None,
+                None => (0, output_numel as i64),
+            };
+            valid_start = valid_start.clamp(0, output_numel as i64);
+            valid_end = valid_end.clamp(valid_start, output_numel as i64);
+
+            let first_src_idx = if valid_start < valid_end {
+                let first = view.offset + valid_start * stride;
+                let last = view.offset + (valid_end - 1) * stride;
+                if first < 0 || last < 0 {
+                    return None;
+                }
+                first
+            } else {
+                0
+            };
+
+            Some(Self {
+                valid_start: valid_start as usize,
+                valid_end: valid_end as usize,
+                first_src_idx,
+                stride,
+            })
+        }
+
+        fn execute(&self, out: &mut [u8], src: &[u8], elem_size: usize, output_numel: usize) {
+            let required_output_bytes = output_numel * elem_size;
+            if self.valid_start > 0 {
+                out[..self.valid_start * elem_size].fill(0);
+            }
+            if self.valid_end < output_numel {
+                out[self.valid_end * elem_size..required_output_bytes].fill(0);
+            }
+            if self.valid_start == self.valid_end {
+                return;
+            }
+
+            match self.stride {
+                1 => self.copy_forward_span(out, src, elem_size),
+                -1 => self.copy_reverse_elements(out, src, elem_size),
+                _ => unreachable!("SingleView1dMaterializePlan only admits +/-1 stride"),
+            }
+        }
+
+        fn copy_forward_span(&self, out: &mut [u8], src: &[u8], elem_size: usize) {
+            let elems = self.valid_end - self.valid_start;
+            let src_offset = self.first_src_idx as usize * elem_size;
+            let dst_offset = self.valid_start * elem_size;
+            let byte_len = elems * elem_size;
+            assert!(
+                src_offset + byte_len <= src.len(),
+                "MaterializeCopy source span [{}..{}) exceeds source buffer bytes {}",
+                src_offset,
+                src_offset + byte_len,
+                src.len()
+            );
+            out[dst_offset..dst_offset + byte_len]
+                .copy_from_slice(&src[src_offset..src_offset + byte_len]);
+        }
+
+        fn copy_reverse_elements(&self, out: &mut [u8], src: &[u8], elem_size: usize) {
+            let elems = self.valid_end - self.valid_start;
+            let first_src_idx = self.first_src_idx as usize;
+            let last_src_idx = first_src_idx.checked_sub(elems - 1).expect(
+                "MaterializeCopy reverse source span must stay within non-negative indices",
+            );
+            let src_start = last_src_idx * elem_size;
+            let src_end = (first_src_idx + 1) * elem_size;
+            let dst_start = self.valid_start * elem_size;
+            let dst_end = self.valid_end * elem_size;
+            assert!(
+                src_end <= src.len(),
+                "MaterializeCopy reverse source span [{}..{}) exceeds source buffer bytes {}",
+                src_start,
+                src_end,
+                src.len()
+            );
+            assert!(
+                dst_end <= out.len(),
+                "MaterializeCopy reverse output span [{}..{}) exceeds output buffer bytes {}",
+                dst_start,
+                dst_end,
+                out.len()
+            );
+
+            match elem_size {
+                1 => Self::copy_reverse_fixed::<1>(out, src, dst_start, src_start, elems),
+                2 => Self::copy_reverse_fixed::<2>(out, src, dst_start, src_start, elems),
+                4 => Self::copy_reverse_fixed::<4>(out, src, dst_start, src_start, elems),
+                8 => Self::copy_reverse_fixed::<8>(out, src, dst_start, src_start, elems),
+                _ => unreachable!("DType::size_bytes only admits 1/2/4/8 byte elements"),
+            }
+        }
+
+        fn copy_reverse_fixed<const ELEM_SIZE: usize>(
+            out: &mut [u8],
+            src: &[u8],
+            dst_start: usize,
+            src_start: usize,
+            elems: usize,
+        ) {
+            debug_assert!(dst_start + elems * ELEM_SIZE <= out.len());
+            debug_assert!(src_start + elems * ELEM_SIZE <= src.len());
+
+            // SAFETY: The caller preflights both complete spans. `out` and
+            // `src` come from distinct MaterializeCopy buffer slots, and each
+            // iteration copies one fixed-width raw element without overlap.
+            unsafe {
+                let src_base = src.as_ptr().add(src_start);
+                let dst_base = out.as_mut_ptr().add(dst_start);
+                for elem in 0..elems {
+                    std::ptr::copy_nonoverlapping(
+                        src_base.add((elems - 1 - elem) * ELEM_SIZE),
+                        dst_base.add(elem * ELEM_SIZE),
+                        ELEM_SIZE,
+                    );
+                }
+            }
         }
     }
 
@@ -1062,13 +1170,13 @@ pub mod interpret {
         let has_reduce = kernel
             .ops
             .iter()
-            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+            .any(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
         if has_reduce {
             return false;
         }
 
         // All ops must be SIMD-able
-        kernel.ops.iter().all(|op| is_simd_op(op.op))
+        kernel.ops.iter().all(|op| is_simd_op(op.op()))
     }
 
     /// Whether a PrimitiveOp has a SIMD implementation.
@@ -1099,9 +1207,7 @@ pub mod interpret {
                 | PrimitiveOp::Xor
                 | PrimitiveOp::Shl
                 | PrimitiveOp::Shr
-                | PrimitiveOp::Bitcast
                 | PrimitiveOp::Where
-                | PrimitiveOp::Cast
                 | PrimitiveOp::Trunc
         )
     }
@@ -1128,7 +1234,7 @@ pub mod interpret {
 
             for (op_idx, op) in kernel.ops.iter().enumerate() {
                 let get_src_simd = |i: usize| -> f32x4 {
-                    match &op.srcs[i] {
+                    match &op.srcs()[i] {
                         FusedSrc::Buf(idx) => {
                             let buf = &bufs[*idx];
                             let offset = base * 4; // 4 bytes per f32
@@ -1148,7 +1254,7 @@ pub mod interpret {
                     }
                 };
 
-                simd_values[op_idx] = compute_elementwise_simd(op.op, &get_src_simd);
+                simd_values[op_idx] = compute_elementwise_simd(op.op(), &get_src_simd);
             }
 
             // Write SIMD output: store 4 contiguous f32 values in one shot.
@@ -1167,18 +1273,18 @@ pub mod interpret {
         for gid in remainder_start..output_numel {
             for (op_idx, op) in kernel.ops.iter().enumerate() {
                 let get_src = |i: usize| -> f64 {
-                    match &op.srcs[i] {
-                        FusedSrc::Buf(idx) => read_f64(&bufs[*idx], gid, kernel.bufs[*idx].dtype),
+                    match &op.srcs()[i] {
+                        FusedSrc::Buf(idx) => read_binding_f64(kernel, bufs, *idx, gid),
                         FusedSrc::Op(prior) => scalar_values[*prior],
                         FusedSrc::Const { val, .. } => *val,
                     }
                 };
 
-                scalar_values[op_idx] = compute_elementwise(op.op, &get_src, op.srcs.len());
+                scalar_values[op_idx] = compute_elementwise_f64(op.op(), &get_src);
             }
 
             let result = scalar_values[kernel.ops.len() - 1];
-            write_f64(&mut bufs[0], gid, result, kernel.bufs[0].dtype);
+            write_binding_f64(kernel, bufs, 0, gid, result);
         }
     }
 
@@ -1439,8 +1545,110 @@ pub mod interpret {
         }
     }
 
+    #[derive(Clone, Copy, Debug)]
+    struct ScalarValue {
+        dtype: DType,
+        bits: u64,
+    }
+
+    impl ScalarValue {
+        #[inline(always)]
+        fn zero(dtype: DType) -> Self {
+            Self { dtype, bits: 0 }
+        }
+
+        #[inline(always)]
+        fn from_f64(val: f64, dtype: DType) -> Self {
+            let bits = match dtype {
+                DType::Bool => u64::from(val != 0.0),
+                DType::Int8 => (val as i8 as u8) as u64,
+                DType::Int16 => (val as i16 as u16) as u64,
+                DType::Int32 => (val as i32 as u32) as u64,
+                DType::Int64 => val as i64 as u64,
+                DType::UInt8 => val as u8 as u64,
+                DType::UInt16 => val as u16 as u64,
+                DType::UInt32 => val as u32 as u64,
+                DType::UInt64 => val as u64,
+                DType::Float16 => half::f16::from_f64(val).to_bits() as u64,
+                DType::BFloat16 => half::bf16::from_f64(val).to_bits() as u64,
+                DType::Float32 => (val as f32).to_bits() as u64,
+                DType::Float64 => val.to_bits(),
+                DType::MxFP8 | DType::MxFP4 => val as u8 as u64,
+            };
+            Self {
+                dtype,
+                bits: bits & Self::storage_mask(dtype),
+            }
+        }
+
+        #[inline(always)]
+        fn to_f64(self) -> f64 {
+            match self.dtype {
+                DType::Bool => f64::from((self.bits & 1) != 0),
+                DType::Int8 => (self.bits as u8 as i8) as f64,
+                DType::Int16 => (self.bits as u16 as i16) as f64,
+                DType::Int32 => (self.bits as u32 as i32) as f64,
+                DType::Int64 => (self.bits as i64) as f64,
+                DType::UInt8 => (self.bits as u8) as f64,
+                DType::UInt16 => (self.bits as u16) as f64,
+                DType::UInt32 => (self.bits as u32) as f64,
+                DType::UInt64 => self.bits as f64,
+                DType::Float16 => half::f16::from_bits(self.bits as u16).to_f64(),
+                DType::BFloat16 => half::bf16::from_bits(self.bits as u16).to_f64(),
+                DType::Float32 => f32::from_bits(self.bits as u32) as f64,
+                DType::Float64 => f64::from_bits(self.bits),
+                DType::MxFP8 | DType::MxFP4 => (self.bits as u8) as f64,
+            }
+        }
+
+        #[inline(always)]
+        fn cast_to(self, dst_dtype: DType) -> Self {
+            Self::from_f64(self.to_f64(), dst_dtype)
+        }
+
+        #[inline(always)]
+        fn bitcast_to(self, dst_dtype: DType) -> Self {
+            assert_eq!(
+                self.dtype.size_bytes(),
+                dst_dtype.size_bytes(),
+                "CPU interpreter Bitcast requires equal-width source/destination dtypes: {:?} -> {:?}",
+                self.dtype,
+                dst_dtype
+            );
+            Self {
+                dtype: dst_dtype,
+                bits: self.bits & Self::storage_mask(dst_dtype),
+            }
+        }
+
+        #[inline(always)]
+        fn storage_mask(dtype: DType) -> u64 {
+            let bits = dtype.size_bytes() * 8;
+            if bits >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << bits) - 1
+            }
+        }
+    }
+
     #[inline(always)]
-    fn compute_elementwise(op: PrimitiveOp, get_src: &dyn Fn(usize) -> f64, _arity: usize) -> f64 {
+    fn compute_elementwise_scalar(
+        op: &FusedOp,
+        get_src: &dyn Fn(usize) -> ScalarValue,
+    ) -> ScalarValue {
+        match op.op() {
+            PrimitiveOp::Cast => get_src(0).cast_to(op.dst_dtype()),
+            PrimitiveOp::Bitcast => get_src(0).bitcast_to(op.dst_dtype()),
+            _ => {
+                let get_f64 = |idx: usize| -> f64 { get_src(idx).to_f64() };
+                ScalarValue::from_f64(compute_elementwise_f64(op.op(), &get_f64), op.dst_dtype())
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn compute_elementwise_f64(op: PrimitiveOp, get_src: &dyn Fn(usize) -> f64) -> f64 {
         match op {
             PrimitiveOp::Add => get_src(0) + get_src(1),
             PrimitiveOp::Sub => get_src(0) - get_src(1),
@@ -1513,189 +1721,97 @@ pub mod interpret {
                     get_src(2)
                 }
             }
-            PrimitiveOp::Cast => get_src(0),
-            PrimitiveOp::Bitcast => get_src(0),
-            PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax => unreachable!(),
+            PrimitiveOp::Cast
+            | PrimitiveOp::Bitcast
+            | PrimitiveOp::ReduceSum
+            | PrimitiveOp::ReduceMax => {
+                unreachable!()
+            }
         }
     }
 
     #[inline(always)]
-    fn read_f64(buf: &[u8], idx: usize, dtype: DType) -> f64 {
-        match dtype {
-            DType::Float32 => {
-                let offset = idx * 4;
-                if offset + 4 > buf.len() {
-                    return 0.0;
-                }
-                f32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as f64
-            }
-            DType::Float64 => {
-                let offset = idx * 8;
-                if offset + 8 > buf.len() {
-                    return 0.0;
-                }
-                f64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap())
-            }
-            DType::Int32 => {
-                let offset = idx * 4;
-                if offset + 4 > buf.len() {
-                    return 0.0;
-                }
-                i32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as f64
-            }
-            DType::Bool | DType::UInt8 => {
-                if idx >= buf.len() {
-                    return 0.0;
-                }
-                buf[idx] as f64
-            }
-            DType::Int8 => {
-                if idx >= buf.len() {
-                    return 0.0;
-                }
-                (buf[idx] as i8) as f64
-            }
-            DType::Int16 => {
-                let offset = idx * 2;
-                if offset + 2 > buf.len() {
-                    return 0.0;
-                }
-                i16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap()) as f64
-            }
-            DType::UInt16 => {
-                let offset = idx * 2;
-                if offset + 2 > buf.len() {
-                    return 0.0;
-                }
-                u16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap()) as f64
-            }
-            DType::Int64 => {
-                let offset = idx * 8;
-                if offset + 8 > buf.len() {
-                    return 0.0;
-                }
-                i64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap()) as f64
-            }
-            DType::UInt32 => {
-                let offset = idx * 4;
-                if offset + 4 > buf.len() {
-                    return 0.0;
-                }
-                u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as f64
-            }
-            DType::UInt64 => {
-                let offset = idx * 8;
-                if offset + 8 > buf.len() {
-                    return 0.0;
-                }
-                u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap()) as f64
-            }
-            DType::Float16 => {
-                let offset = idx * 2;
-                if offset + 2 > buf.len() {
-                    return 0.0;
-                }
-                let bits = u16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap());
-                half::f16::from_bits(bits).to_f64()
-            }
-            DType::BFloat16 => {
-                let offset = idx * 2;
-                if offset + 2 > buf.len() {
-                    return 0.0;
-                }
-                let bits = u16::from_le_bytes(buf[offset..offset + 2].try_into().unwrap());
-                half::bf16::from_bits(bits).to_f64()
-            }
-            // MXFP types: raw byte read. Dequantization happens at a higher level.
-            DType::MxFP8 | DType::MxFP4 => {
-                if idx >= buf.len() {
-                    return 0.0;
-                }
-                buf[idx] as f64
-            }
+    fn read_binding_f64(
+        kernel: &FusedKernel,
+        bufs: &[Vec<u8>],
+        binding_idx: usize,
+        logical_idx: usize,
+    ) -> f64 {
+        read_binding_scalar(kernel, bufs, binding_idx, logical_idx).to_f64()
+    }
+
+    #[inline(always)]
+    fn read_binding_scalar(
+        kernel: &FusedKernel,
+        bufs: &[Vec<u8>],
+        binding_idx: usize,
+        logical_idx: usize,
+    ) -> ScalarValue {
+        let binding = &kernel.bufs[binding_idx];
+        match binding.st.expr_idx(logical_idx) {
+            Some(physical_idx) => read_scalar(&bufs[binding_idx], physical_idx, binding.dtype),
+            None => ScalarValue::zero(binding.dtype),
         }
     }
 
-    fn write_f64(buf: &mut [u8], idx: usize, val: f64, dtype: DType) {
-        match dtype {
-            DType::Float32 => {
-                let offset = idx * 4;
-                if offset + 4 <= buf.len() {
-                    buf[offset..offset + 4].copy_from_slice(&(val as f32).to_le_bytes());
-                }
-            }
-            DType::Float64 => {
-                let offset = idx * 8;
-                if offset + 8 <= buf.len() {
-                    buf[offset..offset + 8].copy_from_slice(&val.to_le_bytes());
-                }
-            }
-            DType::Int32 => {
-                let offset = idx * 4;
-                if offset + 4 <= buf.len() {
-                    buf[offset..offset + 4].copy_from_slice(&(val as i32).to_le_bytes());
-                }
-            }
-            DType::Bool | DType::UInt8 => {
-                if idx < buf.len() {
-                    buf[idx] = if val != 0.0 { 1 } else { 0 };
-                }
-            }
-            DType::Int8 => {
-                if idx < buf.len() {
-                    buf[idx] = (val as i8) as u8;
-                }
-            }
-            DType::Int16 => {
-                let offset = idx * 2;
-                if offset + 2 <= buf.len() {
-                    buf[offset..offset + 2].copy_from_slice(&(val as i16).to_le_bytes());
-                }
-            }
-            DType::UInt16 => {
-                let offset = idx * 2;
-                if offset + 2 <= buf.len() {
-                    buf[offset..offset + 2].copy_from_slice(&(val as u16).to_le_bytes());
-                }
-            }
-            DType::Int64 => {
-                let offset = idx * 8;
-                if offset + 8 <= buf.len() {
-                    buf[offset..offset + 8].copy_from_slice(&(val as i64).to_le_bytes());
-                }
-            }
-            DType::UInt32 => {
-                let offset = idx * 4;
-                if offset + 4 <= buf.len() {
-                    buf[offset..offset + 4].copy_from_slice(&(val as u32).to_le_bytes());
-                }
-            }
-            DType::UInt64 => {
-                let offset = idx * 8;
-                if offset + 8 <= buf.len() {
-                    buf[offset..offset + 8].copy_from_slice(&(val as u64).to_le_bytes());
-                }
-            }
-            DType::Float16 => {
-                let offset = idx * 2;
-                if offset + 2 <= buf.len() {
-                    let h = half::f16::from_f64(val);
-                    buf[offset..offset + 2].copy_from_slice(&h.to_bits().to_le_bytes());
-                }
-            }
-            DType::BFloat16 => {
-                let offset = idx * 2;
-                if offset + 2 <= buf.len() {
-                    let h = half::bf16::from_f64(val);
-                    buf[offset..offset + 2].copy_from_slice(&h.to_bits().to_le_bytes());
-                }
-            }
-            // MXFP types: raw byte write. Quantization happens at a higher level.
-            DType::MxFP8 | DType::MxFP4 => {
-                if idx < buf.len() {
-                    buf[idx] = val as u8;
-                }
-            }
+    #[cfg(feature = "simd-accel")]
+    fn write_binding_f64(
+        kernel: &FusedKernel,
+        bufs: &mut [Vec<u8>],
+        binding_idx: usize,
+        logical_idx: usize,
+        val: f64,
+    ) {
+        write_binding_scalar(
+            kernel,
+            bufs,
+            binding_idx,
+            logical_idx,
+            ScalarValue::from_f64(val, kernel.bufs[binding_idx].dtype),
+        );
+    }
+
+    fn write_binding_scalar(
+        kernel: &FusedKernel,
+        bufs: &mut [Vec<u8>],
+        binding_idx: usize,
+        logical_idx: usize,
+        val: ScalarValue,
+    ) {
+        let binding = &kernel.bufs[binding_idx];
+        if let Some(physical_idx) = binding.st.expr_idx(logical_idx) {
+            write_scalar(&mut bufs[binding_idx], physical_idx, val, binding.dtype);
         }
+    }
+
+    fn read_scalar(buf: &[u8], idx: usize, dtype: DType) -> ScalarValue {
+        let size = dtype.size_bytes();
+        let offset = idx * size;
+        if offset + size > buf.len() {
+            return ScalarValue::zero(dtype);
+        }
+
+        let mut bytes = [0u8; 8];
+        bytes[..size].copy_from_slice(&buf[offset..offset + size]);
+        ScalarValue {
+            dtype,
+            bits: u64::from_le_bytes(bytes) & ScalarValue::storage_mask(dtype),
+        }
+    }
+
+    fn write_scalar(buf: &mut [u8], idx: usize, val: ScalarValue, dtype: DType) {
+        let size = dtype.size_bytes();
+        let offset = idx * size;
+        if offset + size > buf.len() {
+            return;
+        }
+
+        let stored = if val.dtype == dtype {
+            val
+        } else {
+            val.cast_to(dtype)
+        };
+        let bytes = stored.bits.to_le_bytes();
+        buf[offset..offset + size].copy_from_slice(&bytes[..size]);
     }
 }

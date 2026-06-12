@@ -88,6 +88,9 @@ fn count_nodes_recursive(node: &Arc<LazyOp>, visited: &mut HashSet<usize>) {
         LazyOp::Unary { src, .. } => {
             count_nodes_recursive(src, visited);
         }
+        LazyOp::Cast { src, .. } => {
+            count_nodes_recursive(src, visited);
+        }
         LazyOp::Binary { lhs, rhs, .. } => {
             count_nodes_recursive(lhs, visited);
             count_nodes_recursive(rhs, visited);
@@ -117,6 +120,9 @@ fn mark_reachable(node: &Arc<LazyOp>, reachable: &mut HashSet<usize>) {
     match node.as_ref() {
         LazyOp::Buffer { .. } => {}
         LazyOp::Unary { src, .. } => {
+            mark_reachable(src, reachable);
+        }
+        LazyOp::Cast { src, .. } => {
             mark_reachable(src, reachable);
         }
         LazyOp::Binary { lhs, rhs, .. } => {

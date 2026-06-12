@@ -283,6 +283,96 @@ def test_process_groups_keep_observed_child_group_after_reparenting() -> None:
     assert groups[0].total_rss_kb == 300
 
 
+def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=100,
+            rss_kb=250_000,
+            command="/usr/bin/python /repo/molt/tests/molt_diff.py",
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=200,
+            rss_kb=100,
+            command="/repo/molt/target/release-fast/molt-backend",
+        ),
+    }
+
+    groups = module.process_groups(
+        samples,
+        root=root,
+        self_pid=9999,
+        known_pgids={100},
+    )
+    skipped = module.skipped_protected_process_groups(
+        samples,
+        root=root,
+        self_pid=9999,
+        known_pgids={100},
+    )
+
+    assert [group.pgid for group in groups] == [200]
+    assert [group.pgid for group in skipped] == [100]
+    assert skipped[0].pids == [100, 101]
+
+
+def test_process_groups_exclude_ancestor_process_group() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        20: module.memory_guard.ProcessSample(
+            pid=20,
+            ppid=10,
+            pgid=10,
+            rss_kb=100,
+            command="/Applications/Codex.app/Contents/Resources/app-server",
+        ),
+        9999: module.memory_guard.ProcessSample(
+            pid=9999,
+            ppid=20,
+            pgid=10,
+            rss_kb=100,
+            command="/usr/bin/python -m pytest tests/test_memory_guard_tool.py",
+        ),
+        30: module.memory_guard.ProcessSample(
+            pid=30,
+            ppid=9999,
+            pgid=10,
+            rss_kb=100,
+            command="/repo/molt/target/release-fast/molt-backend",
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+    skipped = module.skipped_protected_process_groups(
+        samples,
+        root=root,
+        self_pid=9999,
+    )
+
+    assert groups == []
+    assert [group.pgid for group in skipped] == [10]
+
+
 def test_find_violations_can_kill_all_or_threshold() -> None:
     module = _load_process_sentinel()
     group = module.ProcessGroup(
@@ -329,6 +419,26 @@ def test_find_violations_can_kill_all_or_threshold() -> None:
     assert kill_all[0].reason == "kill_all"
     assert process_rss[0].reason == "process_rss"
     assert group_rss[0].reason == "group_rss"
+    payload = module.violation_payload(kill_all[0])
+    assert payload["external_parent_pids"] == [1]
+    assert payload["process_samples"] == [
+        {
+            "pid": 10,
+            "ppid": 1,
+            "pgid": 10,
+            "rss_kb": 100,
+            "elapsed_sec": None,
+            "command": "root",
+        },
+        {
+            "pid": 11,
+            "ppid": 10,
+            "pgid": 10,
+            "rss_kb": 900,
+            "elapsed_sec": None,
+            "command": "child",
+        },
+    ]
 
 
 def test_find_violations_marks_only_stale_orphaned_groups() -> None:
@@ -615,6 +725,11 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
 
     monkeypatch.setattr(module, "_utc_timestamp", lambda: "2026-05-24T10:00:00Z")
     monkeypatch.setattr(module.time, "monotonic", lambda: 50.0)
+    monkeypatch.setenv("MOLT_SESSION_ID", "sentinel-unit")
+    monkeypatch.setenv(
+        "PYTEST_CURRENT_TEST",
+        "tests/tools/test_process_sentinel.py::json_unit (call)",
+    )
     monkeypatch.setattr(
         module.memory_guard,
         "sample_processes",
@@ -641,6 +756,20 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
     assert payload["grace_sec"] == module.DEFAULT_GRACE_SEC
     assert payload["violation"]["reason"] == "kill_all"
     assert payload["violation"]["pgid"] == 10
+    assert payload["violation"]["external_parent_pids"] == [1]
+    assert payload["violation"]["process_samples"][0]["pid"] == 10
+    assert payload["repro"]["cwd"] == str(module.repo_root())
+    assert payload["repro"]["env"]["MOLT_SESSION_ID"] == "sentinel-unit"
+    assert payload["repro"]["pytest"]["current_test"].startswith(
+        "tests/tools/test_process_sentinel.py::json_unit"
+    )
+    assert payload["repro"]["limits"]["max_global_rss_kb"] is not None
+    assert payload["repro"]["sentinel"]["argv"][-4:] == [
+        "--once",
+        "--dry-run",
+        "--kill-all",
+        "--json",
+    ]
     assert payload["next_action"].startswith("rerun the interrupted")
 
 

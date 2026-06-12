@@ -45,17 +45,18 @@ fn test_concurrent_cpu_device_independent_compute() {
                 let addend = thread_id as f32;
 
                 let kernel = FusedKernel {
-                    ops: vec![FusedOp {
-                        op: PrimitiveOp::Add,
-                        srcs: vec![
+                    body: Default::default(),
+                    ops: vec![FusedOp::elementwise(
+                        PrimitiveOp::Add,
+                        vec![
                             FusedSrc::Buf(1),
                             FusedSrc::Const {
                                 val: addend as f64,
                                 dtype: DType::Float32,
                             },
                         ],
-                        dst_dtype: DType::Float32,
-                    }],
+                        DType::Float32,
+                    )],
                     bufs: vec![
                         BufferBinding {
                             buf_id: 0,
@@ -292,17 +293,18 @@ fn test_concurrent_different_kernel_shapes() {
                 let input: Vec<f32> = (0..n).map(|i| (i * (tid + 1)) as f32).collect();
 
                 let kernel = FusedKernel {
-                    ops: vec![FusedOp {
-                        op: PrimitiveOp::Mul,
-                        srcs: vec![
+                    body: Default::default(),
+                    ops: vec![FusedOp::elementwise(
+                        PrimitiveOp::Mul,
+                        vec![
                             FusedSrc::Buf(1),
                             FusedSrc::Const {
                                 val: 2.0,
                                 dtype: DType::Float32,
                             },
                         ],
-                        dst_dtype: DType::Float32,
-                    }],
+                        DType::Float32,
+                    )],
                     bufs: vec![
                         BufferBinding {
                             buf_id: 0,
