@@ -337,17 +337,32 @@ fn insert_exception_region_match_drops(
     let mut result = ExceptionRegionDropInsertion::default();
 
     for (position, values) in release_to_matches {
-        let Some(block) = func.blocks.get(&position.block) else {
-            continue;
+        let (
+            original_args,
+            pop_op,
+            prefix_source_ops,
+            tail_source_ops,
+            tail_source_terminator,
+        ) = {
+            let Some(block) = func.blocks.get(&position.block) else {
+                continue;
+            };
+            if position.op_index >= block.ops.len() {
+                continue;
+            }
+            debug_assert_eq!(
+                block.ops[position.op_index].opcode,
+                OpCode::Copy,
+                "ExceptionRegions release position must point at an exception_pop carrier"
+            );
+            (
+                block.args.clone(),
+                block.ops[position.op_index].clone(),
+                block.ops[..position.op_index].to_vec(),
+                block.ops[position.op_index + 1..].to_vec(),
+                block.terminator.clone(),
+            )
         };
-        if position.op_index >= block.ops.len() {
-            continue;
-        }
-        debug_assert_eq!(
-            block.ops[position.op_index].opcode,
-            OpCode::Copy,
-            "ExceptionRegions release position must point at an exception_pop carrier"
-        );
         let mut values: Vec<ValueId> = values
             .into_iter()
             .collect::<HashSet<_>>()
@@ -385,9 +400,6 @@ fn insert_exception_region_match_drops(
             continue;
         }
 
-        if position.op_index >= block.ops.len() {
-            continue;
-        }
         let incoming_arcs: Vec<(BlockId, ArcDescriptor, Vec<ValueId>)> = pred_map_term
             .get(&position.block)
             .into_iter()
@@ -409,10 +421,6 @@ fn insert_exception_region_match_drops(
             continue;
         }
 
-        let original_args = block.args.clone();
-        let pop_op = block.ops[position.op_index].clone();
-        let tail_source_ops: Vec<TirOp> = block.ops[position.op_index + 1..].to_vec();
-        let tail_source_terminator = block.terminator.clone();
         let mut tail_arg_remap: HashMap<ValueId, ValueId> = HashMap::new();
         let after_args: Vec<TirValue> = original_args
             .iter()
@@ -426,12 +434,25 @@ fn insert_exception_region_match_drops(
                 }
             })
             .collect();
+        let mut tail_value_remap = tail_arg_remap.clone();
+        for op in &prefix_source_ops {
+            if op.opcode != OpCode::Copy || op.operands.len() != 1 || op.results.len() != 1 {
+                continue;
+            }
+            let kind = original_kind(op);
+            if !crate::tir::passes::alias_analysis::copy_kind_is_explicit_no_heap_move(kind) {
+                continue;
+            }
+            if let Some(mapped_operand) = tail_value_remap.get(&op.operands[0]).copied() {
+                tail_value_remap.insert(op.results[0], mapped_operand);
+            }
+        }
         let original_arg_values: Vec<ValueId> = original_args.iter().map(|arg| arg.id).collect();
         let tail_ops: Vec<TirOp> = tail_source_ops
             .iter()
-            .map(|op| remap_op_operands(op, &tail_arg_remap))
+            .map(|op| remap_op_operands(op, &tail_value_remap))
             .collect();
-        let tail_terminator = remap_terminator_values(&tail_source_terminator, &tail_arg_remap);
+        let tail_terminator = remap_terminator_values(&tail_source_terminator, &tail_value_remap);
         let after_block = func.fresh_block();
         func.blocks.insert(
             after_block,
@@ -501,7 +522,7 @@ fn insert_exception_region_match_drops(
                 retarget_arc(&mut pred_block.terminator, &arc, split_block);
             }
         }
-        remap_uses_dominated_by_split_continuation(func, after_block, &tail_arg_remap);
+        remap_uses_dominated_by_split_continuation(func, after_block, &tail_value_remap);
         result.cfg_changed = true;
     }
 
@@ -2696,6 +2717,7 @@ mod tests {
         let normal_arg = func.fresh_value();
         let handler_arg = func.fresh_value();
         let pop_arg = func.fresh_value();
+        let pop_alias = func.fresh_value();
         let tail_value = func.fresh_value();
 
         func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(4)];
@@ -2750,7 +2772,10 @@ mod tests {
                     id: pop_arg,
                     ty: TirType::Str,
                 }],
-                ops: vec![original_copy("exception_pop", vec![])],
+                ops: vec![
+                    original_copy_with_operands("load_var", vec![pop_arg], vec![pop_alias]),
+                    original_copy("exception_pop", vec![]),
+                ],
                 terminator: Terminator::Branch {
                     target: after_pop,
                     args: vec![],
@@ -2762,7 +2787,7 @@ mod tests {
             TirBlock {
                 id: after_pop,
                 args: vec![],
-                ops: vec![op(OpCode::Copy, vec![pop_arg], vec![tail_value])],
+                ops: vec![op(OpCode::Copy, vec![pop_alias], vec![tail_value])],
                 terminator: Terminator::Return {
                     values: vec![tail_value],
                 },
