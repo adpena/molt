@@ -121,11 +121,9 @@
     },
     "D16": {
       "name": "Module-level __getattr__ (PEP 562) — lazy top-level imports",
-      "status": "unsupported",
-      "evidence": "searched ops.rs/platform.rs/frontend: no module-level __getattr__ dispatch found (all __getattr__ hits are class/instance) — LANE A.2 gap row",
-      "excluded_feature": "module-level __getattr__ (PEP 562) dispatch (absent TODAY)",
-      "notes": "Used by numpy, scipy, tensorflow, rich, sqlalchemy top-level. Doc 24: 'incompatible-by-design (TODAY) -> shim-able (PRIORITY)'. Highest-ROI single feature (LANE D rank 3).",
-      "tracking": "doc 24 LANE F Arc 2 (D16 module-level __getattr__ PEP 562: runtime module-attr fallback hook + frontend lowering); LANE D rank 3 (low-medium effort, large unlock)."
+      "status": "supported",
+      "evidence": "runtime/molt-runtime/src/builtins/attr.rs:754 module_attr_lookup dispatches the module-dict __getattr__ on a dict miss (self-recursion guard at :759), consulted by molt_module_get_attr (modules.rs:4561) for `module.attr` and molt_module_import_from (modules.rs:4706) for `from module import name`; module __dir__ override honored by molt_dir_builtin (object/ops_builtins.rs ~3271, module-dict path). Differential tests/differential/basic/pep562_module_getattr_dir.py byte-identical CPython 3.12/3.13/3.14. CORRECTS doc 24 LANE A.2 'ABSENT' (the dispatch landed 2026-04-14 d2dd9b39e + 2026-04-22 514cb31332; __dir__ completed this arc).",
+      "notes": "Used by numpy, scipy, tensorflow, rich, sqlalchemy top-level. Doc 24 LANE D rank 3 (highest-ROI single feature) — now LANDED. STATIC-GRAPH BOUNDARY: the dispatch mechanism is fully supported; a __getattr__ that RESOLVES to a NOT-COMPILED module at runtime cannot extend molt's static link set and fails loudly (the loud-refusal doctrine, same ambient AOT-import constraint that governs all imports). The lazy-import idiom that defers resolution of ALREADY-COMPILED submodules/attributes is fully supported."
     },
     "D17": {
       "name": "Import-time monkeypatching (module.__dict__[x]=... at import)",

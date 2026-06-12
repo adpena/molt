@@ -11,9 +11,9 @@ It drives `cargo` directly (NOT `molt build`) because the thing being optimised
 is the cargo build of the backend crate(s) themselves. Each scenario is run N
 times; we report min/median/max so noise from other agents is visible.
 
-The child cargo commands run through the shared harness memory guard so build
-timing remains under the same RSS/profile/repro custody as test and benchmark
-lanes.
+This tool is intentionally dependency-free (stdlib only) and never runs a
+compiled molt binary, so it carries no OOM risk of its own; the cargo builds it
+launches are memory-bounded by the host (and by the caller running few of them).
 """
 
 from __future__ import annotations
@@ -23,17 +23,12 @@ import json
 import os
 import shutil
 import statistics
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TOOLS_ROOT = REPO_ROOT / "tools"
-
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-
-import harness_memory_guard  # noqa: E402
 
 
 def _now() -> float:
@@ -58,9 +53,8 @@ def _touch(path: Path) -> None:
 
 def _run(cmd: list[str], env: dict[str, str], cwd: Path) -> tuple[int, float, str]:
     start = _now()
-    proc = harness_memory_guard.guarded_completed_process(
+    proc = subprocess.run(
         cmd,
-        prefix="MOLT_DX_BUILD",
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -69,19 +63,6 @@ def _run(cmd: list[str], env: dict[str, str], cwd: Path) -> tuple[int, float, st
     elapsed = _now() - start
     tail = "\n".join((proc.stderr or "").splitlines()[-8:])
     return proc.returncode, elapsed, tail
-
-
-def _cargo_version(env: dict[str, str]) -> str:
-    proc = harness_memory_guard.guarded_completed_process(
-        ["cargo", "--version"],
-        prefix="MOLT_DX_BUILD",
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    return (proc.stdout or proc.stderr or "").strip()
 
 
 def _build_cmd(args: argparse.Namespace, extra: list[str] | None = None) -> list[str]:
@@ -110,11 +91,20 @@ def main() -> int:
     ap.add_argument(
         "--scenarios",
         nargs="+",
-        default=["cold", "inc-value_range", "inc-function_compiler", "inc-modules", "test-lib"],
+        default=[
+            "cold",
+            "inc-value_range",
+            "inc-function_compiler",
+            "inc-modules",
+            "test-lib",
+        ],
     )
     ap.add_argument("--json-out", default=None)
-    ap.add_argument("--cold-clean", action="store_true",
-                    help="rm -rf target dir before the cold scenario (true cold)")
+    ap.add_argument(
+        "--cold-clean",
+        action="store_true",
+        help="rm -rf target dir before the cold scenario (true cold)",
+    )
     args = ap.parse_args()
 
     env = os.environ.copy()
@@ -122,7 +112,8 @@ def main() -> int:
 
     touch_files = {
         "value_range": REPO_ROOT / "runtime/molt-backend/src/tir/passes/value_range.rs",
-        "function_compiler": REPO_ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs",
+        "function_compiler": REPO_ROOT
+        / "runtime/molt-backend/src/native_backend/function_compiler.rs",
         "modules": REPO_ROOT / "runtime/molt-runtime/src/builtins/modules.rs",
         "gvn": REPO_ROOT / "runtime/molt-backend/src/tir/passes/gvn.rs",
     }
@@ -139,7 +130,10 @@ def main() -> int:
             rc, elapsed, tail = _run(cmd, env, REPO_ROOT)
             rc_last, tail_last = rc, tail
             samples.append(round(elapsed, 2))
-            print(f"  [{label}] run {i+1}/{args.runs}: {elapsed:.2f}s rc={rc}", flush=True)
+            print(
+                f"  [{label}] run {i + 1}/{args.runs}: {elapsed:.2f}s rc={rc}",
+                flush=True,
+            )
             if rc != 0:
                 print(f"    FAILED:\n{tail}", flush=True)
                 break
@@ -163,20 +157,24 @@ def main() -> int:
 
     for scen in args.scenarios:
         if scen == "cold":
+
             def cold_prep():
                 if args.cold_clean:
                     td = Path(args.target_dir)
                     if td.exists():
                         shutil.rmtree(td)
+
             measure("cold", cold_prep, _build_cmd(args))
         elif scen.startswith("inc-"):
-            key = scen[len("inc-"):]
+            key = scen[len("inc-") :]
             f = touch_files[key]
             measure(scen, (lambda f=f: _touch(f)), _build_cmd(args))
         elif scen == "test-lib":
-            measure("test-lib",
-                    (lambda: _touch(touch_files["value_range"])),
-                    _build_cmd(args, ["--tests", "--no-run"]))
+            measure(
+                "test-lib",
+                (lambda: _touch(touch_files["value_range"])),
+                _build_cmd(args, ["--tests", "--no-run"]),
+            )
         else:
             print(f"unknown scenario: {scen}", file=sys.stderr)
 
@@ -187,7 +185,9 @@ def main() -> int:
             "features": args.features,
             "runs": args.runs,
             "target_dir": args.target_dir,
-            "cargo": _cargo_version(env),
+            "cargo": subprocess.run(
+                ["cargo", "--version"], capture_output=True, text=True
+            ).stdout.strip(),
         },
         "results": results,
     }

@@ -1,0 +1,195 @@
+# molt_dev_gates.toml — the change-class -> required-gates manifest.
+#
+# Consumed by tools/molt_dev.py `integrate` (hazard 10): the set of touched
+# paths in the commits being integrated is matched against each rule's `globs`;
+# a rule matches when ANY touched path matches ANY of its globs, and its `gates`
+# are added to the run. `always` gates run for every non-empty change. Gates are
+# de-duplicated preserving first-seen order, so a gate listed by two rules runs
+# once. `integrate --extra-gate` appends arc-specific gates.
+#
+# This is the canonical mapping rustc's x.py / Go's dist embody: a change's
+# class determines exactly which checks must be green BEFORE push. It is NOT a
+# replacement for review — it is the floor of mechanical verification.
+#
+# Gate command strings mirror tools' canonical invocations in
+# pyproject.toml [tool.molt.dx.commands]. They run with shell=True, cwd=<repo>,
+# MOLT_SESSION_ID + PYTHONPATH=src exported. A gate's non-zero exit halts the
+# integration before push.
+#
+# DELIBERATELY: heavy cargo gates (clippy/build/test) are listed for the rules
+# whose change-class needs them. Under host contention an operator may run with
+# --no-gates and gate out-of-band, but the DEFAULT is full mechanical coverage.
+#
+# require_fresh_toolchain = true on a rule makes `integrate` additionally
+# demand a fresh built binary (hazard 6) when --toolchain-binary is supplied —
+# so a Rust change is never integrated against a stale artifact's gate result.
+
+# Gates that run for ANY non-empty change: the cheap Python contracts that must
+# never regress regardless of what was touched.
+always = [
+  "python3 tools/venv_exec.py python -m ruff check .",
+  "python3 tools/venv_exec.py python -m ruff format --check .",
+]
+
+# --- Native (Cranelift) backend Rust -------------------------------------
+[[rule]]
+name = "backend-native"
+description = "Cranelift/native backend Rust: clippy + backend lib tests, fresh binary."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-backend/**/*.rs",
+  "runtime/molt-backend/**/Cargo.toml",
+]
+gates = [
+  "cargo clippy -p molt-backend --features native-backend -- -D warnings",
+  "cargo test --profile release-fast -p molt-backend --features native-backend --lib",
+]
+
+# --- LLVM backend Rust (adds the +llvm lib test lane) --------------------
+[[rule]]
+name = "backend-llvm"
+description = "LLVM backend Rust: clippy + LLVM-feature lib tests."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-backend/src/llvm*/**/*.rs",
+  "runtime/molt-backend/src/**/llvm*.rs",
+]
+gates = [
+  "cargo test --profile release-fast -p molt-backend --features native-backend,llvm-backend --lib",
+]
+
+# --- Runtime crate Rust (object model / runtime library) -----------------
+[[rule]]
+name = "runtime-lib"
+description = "Runtime/object-model Rust: runtime lib tests + clippy, fresh binary."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-runtime/**/*.rs",
+  "runtime/molt-obj-model/**/*.rs",
+  "runtime/**/Cargo.toml",
+]
+gates = [
+  "cargo test --profile release-fast -p molt-runtime --lib",
+  # Mirror CI (ci.yml:159): lib-scoped clippy. --all-targets pulls in the
+  # documented pre-existing TEST-target debt (38+9 errors) — adding it is the
+  # clippy-test-debt ratchet arc, not this manifest's job.
+  "cargo clippy -p molt-backend --features native-backend -- -D warnings",
+  # NOTE: molt-runtime lib has 32 pre-existing clippy warnings (documented
+  # baseline); CI does not -D-warnings-gate it. The runtime-clippy ratchet arc
+  # = clear the 32, then add the gate here + CI in one change.
+]
+
+# --- Frontend / stdlib Python (bootstrap-critical) -----------------------
+[[rule]]
+name = "frontend-python"
+description = "Frontend lowering / stdlib Python: type check + verified-subset + dynamic policy."
+globs = [
+  "src/molt/**/*.py",
+]
+gates = [
+  # ty static type check (ratchet cleared 2026-06: the 16 pre-existing
+  # diagnostics are fixed and this gate now enforces zero). Mirrors the
+  # pre-commit `ty` hook and ci.yml docs-gates `ty check src` step.
+  "python3 tools/venv_exec.py python -m ty check src",
+  "python3 tools/verified_subset.py check",
+  "python3 tools/check_dynamic_policy.py",
+]
+
+# --- Bootstrap-critical stdlib modules (extra intrinsic audits) ----------
+[[rule]]
+name = "bootstrap-stdlib"
+description = "builtins/sys/importlib/_intrinsics: stdlib-intrinsic audits (Bootstrap Authority)."
+globs = [
+  "src/molt/stdlib/builtins.py",
+  "src/molt/stdlib/sys.py",
+  "src/molt/stdlib/_sys_impl.py",
+  "src/molt/stdlib/importlib/**/*.py",
+  "src/molt/stdlib/_intrinsics.py",
+]
+gates = [
+  "python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
+  "python3 tools/check_stdlib_intrinsics.py --critical-allowlist",
+]
+
+# --- Op-kind registry (generated files + emitter/registry drift) ---------
+[[rule]]
+name = "op-kind-registry"
+description = "Op-kind registry: generated-file sync + down-only emitter/registry drift."
+globs = [
+  "tools/gen_op_kinds.py",
+  "tools/audit_op_kinds.py",
+  "runtime/molt-backend/src/**/op_kind*.rs",
+  "runtime/molt-backend/src/**/ops*.rs",
+]
+gates = [
+  "python3 tools/gen_op_kinds.py --check",
+  "python3 tools/audit_op_kinds.py --check",
+]
+
+# --- Differential / suite-honesty surface --------------------------------
+[[rule]]
+name = "suite-honesty"
+description = "Differential tests or the honesty manifest: suite-layout hygiene + the down-only suite-honesty ratchet."
+globs = [
+  "tests/differential/**/*.py",
+  "tools/suite_honesty/**",
+  "tools/check_suite_honesty.py",
+  "tools/check_differential_suite_layout.py",
+]
+gates = [
+  # Lane/naming hygiene: no unexpected lane dirs, no stdlib-prefixed basic
+  # files (no `test_`-prefixed differential tests), live allowlist ledger.
+  "python3 tools/check_differential_suite_layout.py",
+  "python3 tools/check_suite_honesty.py",
+]
+
+# --- Ecosystem-compat ratchet --------------------------------------------
+[[rule]]
+name = "ecosystem-compat"
+description = "Dynamism-feature taxonomy or package triage: the down-only ecosystem ratchet."
+globs = [
+  "tools/ecosystem/**",
+  "tools/check_ecosystem_compat.py",
+]
+gates = [
+  "python3 tools/check_ecosystem_compat.py",
+]
+
+# --- Docs architecture / generated status blocks -------------------------
+[[rule]]
+name = "docs-architecture"
+description = "Docs/spec or status-block generators: the docs-architecture contract."
+globs = [
+  "docs/**/*.md",
+  "tools/update_status_blocks.py",
+  "tools/check_docs_architecture.py",
+]
+gates = [
+  "python3 tools/update_status_blocks.py --check",
+  "python3 tools/check_docs_architecture.py",
+]
+
+# --- The dev tooling itself (self-gate: its own failure-mode tests) ------
+[[rule]]
+name = "dev-tooling"
+description = "tools/molt_dev.py or its config/tests: run the driver's own failure-mode tests."
+globs = [
+  "tools/molt_dev.py",
+  "tools/molt_dev_gates.toml",
+  "tests/test_molt_dev.py",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
+]
+
+# --- CI workflow / pyproject lint wiring ---------------------------------
+[[rule]]
+name = "ci-wiring"
+description = "CI workflows or pyproject: the CI-topology contract test."
+globs = [
+  ".github/workflows/**",
+  "pyproject.toml",
+]
+gates = [
+  "python3 tools/venv_exec.py python -m pytest -q tests/test_ci_workflow_topology.py",
+]

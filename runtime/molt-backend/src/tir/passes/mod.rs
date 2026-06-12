@@ -23,6 +23,7 @@ pub mod ip_summary;
 pub mod iter_devirt;
 pub mod licm;
 pub mod liveness;
+pub mod ownership_lattice_min;
 pub mod loop_unroll;
 pub mod mem_gvn;
 pub mod memory_ssa;

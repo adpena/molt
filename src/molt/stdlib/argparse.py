@@ -281,7 +281,7 @@ class ArgumentParser:
     ) -> _SubParsersAction:
         if self._subparsers is not None:
             raise RuntimeError("argparse currently supports only one subparsers group")
-        group_handle = int(_ADD_SUBPARSERS(self._handle, title, dest))
+        group_handle = int(_ADD_SUBPARSERS(self._handle, title, dest, required))
         self._subparsers = _SubParsersAction(
             group_handle,
             exit_on_error=self.exit_on_error,

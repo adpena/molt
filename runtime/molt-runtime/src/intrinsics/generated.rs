@@ -6283,6 +6283,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_function_defaults_version",
+        symbol: "molt_function_defaults_version",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_builtin_class_lookup",
         symbol: "molt_builtin_class_lookup",
         arity: 1,
@@ -7255,7 +7260,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_argparse_add_subparsers",
         symbol: "molt_argparse_add_subparsers",
-        arity: 3,
+        arity: 4,
     },
     IntrinsicSpec {
         name: "molt_argparse_error",
@@ -7311,11 +7316,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_array_delitem",
         symbol: "molt_array_delitem",
         arity: 2,
-    },
-    IntrinsicSpec {
-        name: "molt_array_drop",
-        symbol: "molt_array_drop",
-        arity: 1,
     },
     IntrinsicSpec {
         name: "molt_array_extend",
@@ -13215,6 +13215,10 @@ fn resolve_core_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_function_set_defaults",
             crate::molt_function_set_defaults as *const (),
         )),
+        "molt_function_defaults_version" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_function_defaults_version",
+            crate::molt_function_defaults_version as *const (),
+        )),
         "molt_builtin_class_lookup" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_builtin_class_lookup",
             crate::molt_builtin_class_lookup as *const (),
@@ -13571,10 +13575,6 @@ fn resolve_array_symbol(symbol: &str) -> Option<u64> {
         "molt_array_delitem" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_array_delitem",
             crate::molt_array_delitem as *const (),
-        )),
-        "molt_array_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_array_drop",
-            crate::molt_array_drop as *const (),
         )),
         "molt_array_extend" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_array_extend",

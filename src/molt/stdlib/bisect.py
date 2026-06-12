@@ -13,19 +13,19 @@ _require_intrinsic("molt_bisect_left")
 
 
 def bisect_left(a, x, lo=0, hi=None, *, key=None):
-    return _bisect.bisect_left(a, x, lo, hi, key)
+    return _bisect.bisect_left(a, x, lo, hi, key=key)
 
 
 def bisect_right(a, x, lo=0, hi=None, *, key=None):
-    return _bisect.bisect_right(a, x, lo, hi, key)
+    return _bisect.bisect_right(a, x, lo, hi, key=key)
 
 
 def insort_left(a, x, lo=0, hi=None, *, key=None):
-    _bisect.insort_left(a, x, lo, hi, key)
+    _bisect.insort_left(a, x, lo, hi, key=key)
 
 
 def insort_right(a, x, lo=0, hi=None, *, key=None):
-    _bisect.insort_right(a, x, lo, hi, key)
+    _bisect.insort_right(a, x, lo, hi, key=key)
 
 
 bisect = bisect_right

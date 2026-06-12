@@ -174,9 +174,7 @@ def test_ensure_runtime_wasm_uses_fallback_profile_when_release_artifacts_invali
     # recommended (and default) fallback is wasm-release-fallback. The previous
     # `release-fast` value (opt-3, panic=unwind) inflated the wasm runtime past
     # the 3MB Cloudflare ceiling and is no longer the contract.
-    monkeypatch.setenv(
-        "MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "wasm-release-fallback"
-    )
+    monkeypatch.setenv("MOLT_WASM_RUNTIME_FALLBACK_PROFILE", "wasm-release-fallback")
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
     )
@@ -358,9 +356,7 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
     target_root = tmp_path / "target"
     runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
-    cargo_runtime = (
-        target_root / "wasm32-wasip1" / "dev-fast" / "molt_runtime.wasm"
-    )
+    cargo_runtime = target_root / "wasm32-wasip1" / "dev-fast" / "molt_runtime.wasm"
     cargo_runtime.parent.mkdir(parents=True, exist_ok=True)
     cargo_runtime.write_bytes(b"\x00asm\x01\x00\x00\x00owned-memory")
     runtime_source = project_root / "runtime" / "molt-runtime" / "src" / "lib.rs"

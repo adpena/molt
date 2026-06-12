@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from molt.harness_report import LayerResult, LayerStatus
 
@@ -27,10 +27,19 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-try:
+# ``tools.harness_memory_guard`` lives beside the repo, not inside the installed
+# ``molt`` package, so an installed-without-repo deployment imports this module
+# without it.  The name doubles as a type namespace below
+# (``harness_memory_guard.HarnessMemoryLimits``), so we import it as the module
+# for the type checker and guard the *runtime* import in the ``else`` branch the
+# checker skips — ``_require_harness_memory_guard`` enforces presence at use.
+if TYPE_CHECKING:
     from tools import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - installed package without repo tools
-    harness_memory_guard = None  # type: ignore[assignment]
+else:
+    try:
+        from tools import harness_memory_guard
+    except ModuleNotFoundError:  # pragma: no cover - installed without repo tools
+        harness_memory_guard = None
 
 HARNESS_MEMORY_PREFIX = "MOLT_HARNESS"
 

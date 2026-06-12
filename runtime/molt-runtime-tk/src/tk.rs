@@ -323,13 +323,15 @@ impl TclTypePtrs {
             }
         }
         unsafe {
-            let mut t = TclTypePtrs::default();
-            t.double_t = type_by_name(api, b"double\0");
-            t.wide_int_t = type_by_name(api, b"wideInt\0");
-            t.bignum_t = type_by_name(api, b"bignum\0");
-            t.list_t = type_by_name(api, b"list\0");
-            t.string_t = type_by_name(api, b"string\0");
-            t.utf32_string_t = type_by_name(api, b"utf32string\0");
+            let mut t = TclTypePtrs {
+                double_t: type_by_name(api, b"double\0"),
+                wide_int_t: type_by_name(api, b"wideInt\0"),
+                bignum_t: type_by_name(api, b"bignum\0"),
+                list_t: type_by_name(api, b"list\0"),
+                string_t: type_by_name(api, b"string\0"),
+                utf32_string_t: type_by_name(api, b"utf32string\0"),
+                ..Default::default()
+            };
 
             // "wideInt" is the canonical integer type. If the build does not
             // register it by name, read it from a fresh wide-int object.
@@ -347,7 +349,7 @@ impl TclTypePtrs {
             }
             // "boolean": force a string->boolean conversion, then read typePtr.
             {
-                let probe = (api.new_string_obj)(b"true\0".as_ptr().cast::<c_char>(), 4);
+                let probe = (api.new_string_obj)(c"true".as_ptr(), 4);
                 if !probe.is_null() {
                     let mut b: c_int = 0;
                     let _ = (api.get_boolean_from_obj)(ptr::null_mut(), probe, &mut b);
@@ -3454,13 +3456,12 @@ fn tcl_obj_alloc_typed_from_bits(
             return alloc_string_obj(api, "");
         }
         // bytes / bytearray -> Tcl byte array object.
-        if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-            if let Some(slice) = rt_bytes_as_slice(bits) {
+        if (type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY)
+            && let Some(slice) = rt_bytes_as_slice(bits) {
                 let len = slice.len() as c_int;
                 let o = unsafe { (api.new_byte_array_obj)(slice.as_ptr(), len) };
                 return non_null_obj(o, "Tcl_NewByteArrayObj returned null");
             }
-        }
     }
     // tuple / list -> Tcl list of typed elements (font tuples, coordinate lists).
     if let Some(elements) = decode_value_list(obj) {
@@ -14804,7 +14805,7 @@ fn tk_call_dispatch(py: &PyToken, handle: i64, args: &[u64]) -> Result<u64, u64>
                 return run_tcl_command_with_ctx(py, handle, args, api, interp_addr, types);
             }
         }
-        return run_tcl_command(py, handle, args);
+        run_tcl_command(py, handle, args)
     }
 
     #[cfg(any(target_arch = "wasm32", not(feature = "tk")))]

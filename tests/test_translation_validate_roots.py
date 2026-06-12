@@ -90,9 +90,7 @@ def test_main_wraps_run_in_conformance_memory_guard_scope(
         lambda *args, **kwargs: translation_validate.ValidationResult(
             source_path=str(src),
             cpython=translation_validate.RunResult("ok\n", "", 0, 1.0, "cpython"),
-            molt_full=translation_validate.RunResult(
-                "ok\n", "", 0, 1.0, "molt_full"
-            ),
+            molt_full=translation_validate.RunResult("ok\n", "", 0, 1.0, "molt_full"),
             molt_no_midend=translation_validate.RunResult(
                 "ok\n", "", 0, 1.0, "molt_no_midend"
             ),

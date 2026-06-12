@@ -1,0 +1,96 @@
+{
+  "kind": "cold_start_decomposition",
+  "generated_at": "2026-06-08T20:17:10.702363+00:00",
+  "git_rev": "b54dd9b896b4fb6d5ad8196902a75b34cb5094ae",
+  "platform": "darwin",
+  "method": {
+    "fresh_path": "fresh binary copy per sample \u2014 worst-case FIRST launch (incl macOS codesign/Gatekeeper of an unsigned binary)",
+    "same_path": "repeated launches of one path \u2014 REALISTIC repeated cold (signature cached); the operating point of an installed binary",
+    "minimal_probe": "print()-only molt binary = pure init floor",
+    "noop_c": "process-launch + dyld baseline; (fresh - same) isolates the one-time codesign cost",
+    "runtime_init_trace": "MOLT_TRACE_RUNTIME_INIT=1 per-phase microseconds",
+    "dyld_statistics": "DYLD_PRINT_STATISTICS=1 dyld total time",
+    "note": "the scoreboard COLD column is a single first-run; components attribute the SAME-PATH realistic tax, with codesign reported separately as one-time."
+  },
+  "highest_leverage_component": "process-launch/dyld = 18.00ms (release-output) \u2014 the #62 attack target (size-driven; converges with the binary-size/tree-shaking arc)",
+  "profiles": [
+    {
+      "profile": "release-fast",
+      "minimal_total_fresh_ms": 122.0,
+      "noop_c_fresh_ms": 88.0,
+      "minimal_total_samepath_ms": 18.0,
+      "noop_c_samepath_ms": 18.0,
+      "json_total_samepath_ms": 18.0,
+      "minimal_total_ms": 18.0,
+      "json_total_ms": 18.0,
+      "noop_c_ms": 18.0,
+      "dyld_stat_ms": null,
+      "minimal_binary_kib": 4256.3,
+      "runtime_init_phases_ms": {
+        "enter": 0.0,
+        "state_allocated": 0.046,
+        "runtime_reset_for_init": 0.007,
+        "intrinsics_registered": 0.036,
+        "serial_vtable": 0.004,
+        "itertools_vtable": 0.004,
+        "core_gil_vtable": 0.004,
+        "resources": 0.006,
+        "audit": 0.005,
+        "io_mode": 0.004,
+        "capabilities": 0.006,
+        "ok": 0.005
+      },
+      "runtime_init_total_ms": 0.127,
+      "components_ms": {
+        "macos-codesign-first-launch (one-time/install)": 70.0,
+        "process-launch/dyld": 18.0,
+        "molt-runtime-init": 0.127,
+        "binary-page-in+entry+teardown": 0.0,
+        "module-init (per json import)": 0.0
+      },
+      "notes": [
+        "minimal: build 3.4s rc=0",
+        "json: build 3.4s rc=0"
+      ]
+    },
+    {
+      "profile": "release-output",
+      "minimal_total_fresh_ms": 122.0,
+      "noop_c_fresh_ms": 88.0,
+      "minimal_total_samepath_ms": 18.0,
+      "noop_c_samepath_ms": 18.0,
+      "json_total_samepath_ms": 18.0,
+      "minimal_total_ms": 18.0,
+      "json_total_ms": 18.0,
+      "noop_c_ms": 18.0,
+      "dyld_stat_ms": null,
+      "minimal_binary_kib": 4256.3,
+      "runtime_init_phases_ms": {
+        "enter": 0.0,
+        "state_allocated": 0.045,
+        "runtime_reset_for_init": 0.007,
+        "intrinsics_registered": 0.035,
+        "serial_vtable": 0.004,
+        "itertools_vtable": 0.004,
+        "core_gil_vtable": 0.004,
+        "resources": 0.006,
+        "audit": 0.004,
+        "io_mode": 0.005,
+        "capabilities": 0.007,
+        "ok": 0.004
+      },
+      "runtime_init_total_ms": 0.125,
+      "components_ms": {
+        "macos-codesign-first-launch (one-time/install)": 70.0,
+        "process-launch/dyld": 18.0,
+        "molt-runtime-init": 0.125,
+        "binary-page-in+entry+teardown": 0.0,
+        "module-init (per json import)": 0.0
+      },
+      "notes": [
+        "minimal: build 3.6s rc=0",
+        "json: build 3.6s rc=0"
+      ]
+    }
+  ]
+}

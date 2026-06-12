@@ -40,8 +40,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::PassStats;
 use super::value_range::{ValueRange, ValueRangeResult};
+use super::PassStats;
 use crate::tir::analysis::{AnalysisManager, DefMap, LoopForest};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
@@ -65,8 +65,7 @@ use crate::tir::values::ValueId;
 fn is_hoistable(op: &TirOp, vr: &ValueRangeResult) -> bool {
     super::effects::opcode_is_pure_movable(op.opcode)
         || op.is_plain_value_copy()
-        || (super::effects::opcode_is_pure_may_throw(op.opcode)
-            && throw_condition_disproven(op, vr))
+        || (super::effects::opcode_is_pure_may_throw(op.opcode) && throw_condition_disproven(op, vr))
 }
 
 /// True when a `pure_may_throw` op (`{Div, FloorDiv, Mod, Pow, Shl, Shr}`) is
@@ -1171,11 +1170,17 @@ mod tests {
             &vr
         ));
         assert!(
-            !throw_condition_disproven(&make_binop(OpCode::Shl, x, count_neg, ValueId(22)), &vr),
+            !throw_condition_disproven(
+                &make_binop(OpCode::Shl, x, count_neg, ValueId(22)),
+                &vr
+            ),
             "a possibly-negative count can raise ValueError — must NOT be disproven"
         );
         assert!(
-            !throw_condition_disproven(&make_binop(OpCode::Shl, x, count_big, ValueId(23)), &vr),
+            !throw_condition_disproven(
+                &make_binop(OpCode::Shl, x, count_big, ValueId(23)),
+                &vr
+            ),
             "a count > 63 is a wrong-value machine shift — must NOT be disproven"
         );
         assert!(
@@ -1189,18 +1194,27 @@ mod tests {
         // Div / FloorDiv / Mod: disproven iff divisor proven non-zero.
         for opcode in [OpCode::Div, OpCode::FloorDiv, OpCode::Mod] {
             assert!(
-                throw_condition_disproven(&make_binop(opcode, x, divisor_nz, ValueId(30)), &vr),
+                throw_condition_disproven(
+                    &make_binop(opcode, x, divisor_nz, ValueId(30)),
+                    &vr
+                ),
                 "{opcode:?} with a non-zero divisor must be disproven"
             );
             assert!(
-                !throw_condition_disproven(&make_binop(opcode, x, divisor_zero, ValueId(31)), &vr),
+                !throw_condition_disproven(
+                    &make_binop(opcode, x, divisor_zero, ValueId(31)),
+                    &vr
+                ),
                 "{opcode:?} with a possibly-zero divisor must NOT be disproven"
             );
         }
 
         // Pow: REFUSED unconditionally (gnarly base/exponent coupling).
         assert!(
-            !throw_condition_disproven(&make_binop(OpCode::Pow, x, divisor_nz, ValueId(40)), &vr),
+            !throw_condition_disproven(
+                &make_binop(OpCode::Pow, x, divisor_nz, ValueId(40)),
+                &vr
+            ),
             "Pow's throw condition is not a single-operand range fact — always refused"
         );
     }
@@ -1248,10 +1262,7 @@ mod tests {
             loop_header,
             TirBlock {
                 id: loop_header,
-                args: vec![TirValue {
-                    id: loop_var,
-                    ty: TirType::I64,
-                }],
+                args: vec![TirValue { id: loop_var, ty: TirType::I64 }],
                 ops: vec![make_const_int(1, cond)],
                 terminator: Terminator::CondBranch {
                     cond,
@@ -1282,14 +1293,9 @@ mod tests {
             exit,
             TirBlock {
                 id: exit,
-                args: vec![TirValue {
-                    id: result,
-                    ty: TirType::I64,
-                }],
+                args: vec![TirValue { id: result, ty: TirType::I64 }],
                 ops: vec![],
-                terminator: Terminator::Return {
-                    values: vec![result],
-                },
+                terminator: Terminator::Return { values: vec![result] },
             },
         );
         func.loop_roles.insert(loop_header, LoopRole::LoopHeader);

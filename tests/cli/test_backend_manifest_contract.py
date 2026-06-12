@@ -199,6 +199,59 @@ def test_runtime_micro_profile_includes_core_non_network_intrinsics() -> None:
     assert "stdlib_net" not in micro_features
 
 
+def test_cli_micro_base_mirror_does_not_drift_from_cargo_stdlib_micro() -> None:
+    """cli.py's profile-availability mirror must equal Cargo.toml ``stdlib_micro``.
+
+    ``_MICRO_BASE_RUNTIME_FEATURES`` is a hand-maintained Python mirror of the
+    Cargo ``stdlib_micro`` feature list, which is the always-linked base of every
+    profile (strict superset chain micro→edge→standard→server→full).  When the
+    mirror omits a feature ``stdlib_micro`` pulls in, the compile-time
+    profile-availability gate falsely refuses any import graph that statically
+    reaches that feature's intrinsics.  That exact drift (the mirror omitted
+    ``stdlib_collections``) silently broke ``import pprint`` / ``import asyncio``
+    the moment P0 #50 made class-body control flow execute.  This guard turns
+    the drift into a CI failure instead of a latent silent refusal (task #85).
+    """
+    from molt.cli import _MICRO_BASE_RUNTIME_FEATURES
+
+    runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
+    with runtime_manifest_path.open("rb") as handle:
+        runtime_manifest = tomllib.load(handle)
+    micro_features = runtime_manifest["features"]["stdlib_micro"]
+
+    assert set(_MICRO_BASE_RUNTIME_FEATURES) == set(micro_features), (
+        "cli.py _MICRO_BASE_RUNTIME_FEATURES drifted from Cargo.toml stdlib_micro: "
+        f"cli={sorted(_MICRO_BASE_RUNTIME_FEATURES)} cargo={sorted(micro_features)}"
+    )
+
+
+def test_cli_profile_availability_covers_every_always_linked_micro_feature() -> None:
+    """Every profile/target enabled set must cover the always-linked micro base.
+
+    ``stdlib_micro`` is linked into EVERY profile archive, so the
+    profile-availability gate must never exclude a micro-base feature for any
+    profile or target — doing so falsely refuses builds whose import graph
+    reaches those intrinsics.  This pins the invariant across the three branches
+    of ``_runtime_builtin_features_for_profile`` (non-micro / micro-wasm /
+    micro-native).
+    """
+    from molt.cli import (
+        _MICRO_BASE_RUNTIME_FEATURES,
+        _runtime_builtin_features_for_profile,
+    )
+
+    micro_base = set(_MICRO_BASE_RUNTIME_FEATURES)
+    for profile in (None, "full", "server", "micro"):
+        for target in (None, "aarch64-apple-darwin", "wasm32-unknown-unknown"):
+            enabled = set(
+                _runtime_builtin_features_for_profile(profile, target_triple=target)
+            )
+            assert micro_base <= enabled, (
+                f"profile={profile!r} target={target!r} omits always-linked "
+                f"micro-base feature(s) {sorted(micro_base - enabled)}"
+            )
+
+
 def test_runtime_micro_tls_from_fd_stub_matches_intrinsic_arity() -> None:
     manifest_source = (
         ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "manifest.pyi"
@@ -279,17 +332,18 @@ def test_backend_ir_model_and_passes_are_split_out_of_lib_rs() -> None:
 
 
 def test_backend_native_trampoline_identity_is_split_out_of_lib_rs() -> None:
-    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
-    native_backend_mod = (
+    native_backend_mod_path = (
         ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "mod.rs"
     )
-    trampolines_rs = (
-        ROOT / "runtime" / "molt-backend" / "src" / "native_backend" / "trampolines.rs"
-    )
+    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
 
-    assert native_backend_mod.exists()
-    assert trampolines_rs.exists()
+    assert native_backend_mod_path.exists()
+    # The god-file split extracted trampoline identity OUT of the lib.rs facade
+    # and into the native_backend module (struct TrampolineKey lives in mod.rs,
+    # not a standalone trampolines.rs).  Assert the real current home so the
+    # guard pins the actual structure rather than a renamed-away filename.
     assert "struct TrampolineKey" not in lib_rs
+    assert "struct TrampolineKey" in native_backend_mod_path.read_text()
 
 
 def test_backend_native_compile_func_is_split_out_of_lib_rs() -> None:

@@ -327,6 +327,17 @@ impl CallGraph {
         &self.functions
     }
 
+    /// True iff `name` is a function defined in this module — the same
+    /// membership predicate [`classify_call_op`]'s `defined` set encodes (a named
+    /// `Call` target resolves to [`CallEdge::StaticDirect`] iff this holds, else
+    /// [`CallEdge::Opaque`]). Exposed so the [`CallFacts`](crate::tir::call_facts)
+    /// typed-target classifier resolves `StaticDirect` against the *same* truth
+    /// the graph was built from, rather than re-deriving a `defined` set. O(log n)
+    /// over the sorted [`Self::functions`] list.
+    pub fn is_defined(&self, name: &str) -> bool {
+        self.functions.binary_search_by(|f| f.as_str().cmp(name)).is_ok()
+    }
+
     /// The static-direct callees of `name` (module-internal targets only),
     /// sorted and de-duplicated. Empty for an unknown function.
     pub fn callees(&self, name: &str) -> &[String] {

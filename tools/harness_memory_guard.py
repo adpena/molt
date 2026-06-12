@@ -887,8 +887,7 @@ def _append_guarded_command_profile(
     except OSError as exc:
         return (
             path,
-            "memory_guard: command profile write failed: "
-            f"path={path} error={exc}\n",
+            f"memory_guard: command profile write failed: path={path} error={exc}\n",
         )
     return path, None
 

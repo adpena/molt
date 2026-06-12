@@ -64,6 +64,7 @@ from packaging.version import InvalidVersion, Version
 from molt.compat import CompatibilityError
 from molt import backend_daemon_custody as _daemon_custody
 from molt import process_guard as _process_guard
+from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt._wasm_runtime_exports import (
     wasm_runtime_export_link_args,
     wasm_runtime_missing_required_exports,
@@ -6542,21 +6543,27 @@ _INTRINSIC_CALL_NAMES = {
 _STDLIB_PROBE_INTRINSIC = "molt_stdlib_probe"
 
 
-def _stdlib_module_intrinsic_status(path: Path) -> str:
+def _module_required_intrinsic_names(path: Path) -> frozenset[str]:
+    """Return every ``molt_*`` intrinsic a module statically requires.
+
+    Walks the module source for ``require_intrinsic`` / ``load_intrinsic`` /
+    ``_lazy_intrinsic`` style calls (see ``_INTRINSIC_CALL_NAMES``) and collects
+    the string-literal first argument when it names an intrinsic. This is the
+    same extraction used to classify a module's intrinsic status *and* to decide
+    whether a feature-gated module is buildable on the selected profile, so the
+    two views never disagree. Returns an empty set on read/parse failure (a
+    module that cannot be parsed requires no intrinsics from this analysis).
+    """
     try:
         source = path.read_text(encoding="utf-8")
     except Exception:
-        return "python-only"
-
-    if path.name == "_intrinsics.py":
-        return "intrinsic-backed"
-
-    intrinsic_names: set[str] = set()
+        return frozenset()
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        return "python-only"
+        return frozenset()
 
+    intrinsic_names: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -6580,7 +6587,18 @@ def _stdlib_module_intrinsic_status(path: Path) -> str:
         name = first.value
         if name.startswith("molt_"):
             intrinsic_names.add(name)
+    return frozenset(intrinsic_names)
 
+
+def _stdlib_module_intrinsic_status(path: Path) -> str:
+    if path.name == "_intrinsics.py":
+        return "intrinsic-backed"
+    try:
+        path.read_text(encoding="utf-8")
+    except Exception:
+        return "python-only"
+
+    intrinsic_names = _module_required_intrinsic_names(path)
     if not intrinsic_names:
         return "python-only"
     if intrinsic_names == {_STDLIB_PROBE_INTRINSIC}:
@@ -6622,6 +6640,126 @@ def _enforce_intrinsic_stdlib(
             "\n\nProbe-only modules in this build (thin wrappers + policy gate only):\n"
             + "\n".join(f"  - {name}" for name in probe_only)
         )
+    return _fail(message, json_output, command="build")
+
+
+def _profile_feature_gap_for_module(
+    path: Path,
+    enabled_features: frozenset[str],
+) -> dict[str, list[str]]:
+    """Map each excluded gating feature this module needs to its intrinsics.
+
+    For every ``molt_*`` intrinsic *path* statically requires, resolve the
+    Cargo feature whose absence would remove the runtime *symbol definition*
+    from the linked archive (``None`` ⇒ always linked: an ungated symbol such as
+    the deliberately-ungated ``molt_ssl_*`` ABI, OR a resolver-only feature
+    whose ``#[unsafe(no_mangle)]`` definition is compiled unconditionally — see
+    ``LINK_AFFECTING_FEATURES``). A link-affecting feature that is NOT in
+    *enabled_features* would leave the intrinsic undefined at link. The result
+    maps each such excluded feature to the sorted intrinsics that need it
+    (empty ⇒ buildable on this profile).
+    """
+    gap: dict[str, set[str]] = {}
+    for symbol in _module_required_intrinsic_names(path):
+        feature = link_affecting_feature_gate_for_symbol(symbol)
+        if feature is None or feature in enabled_features:
+            continue
+        gap.setdefault(feature, set()).add(symbol)
+    return {feature: sorted(symbols) for feature, symbols in gap.items()}
+
+
+def _enforce_profile_feature_availability(
+    module_graph: dict[str, Path],
+    stdlib_root: Path,
+    stdlib_profile: str | None,
+    target: str,
+    json_output: bool,
+) -> int | None:
+    """Refuse, loudly and at compile time, builds whose import graph needs a
+    runtime feature the selected profile excludes.
+
+    Domain-feature-gated stdlib modules (``ast`` → ``stdlib_ast``, ``sqlite3``
+    → ``sqlite``, …) call runtime intrinsics that are ``#[cfg(feature = ...)]``
+    -gated. Feature selection is **profile-driven, not import-driven**
+    (``_runtime_builtin_features_for_profile``): the native ``micro`` profile
+    excludes the heavy domains to keep tiny binaries small. Without this gate,
+    importing such a module on a profile that excludes its feature surfaces only
+    as an opaque undefined-symbol **linker error** late in the build. This pass
+    makes the loud-refusal doctrine executable: it detects the gap from the
+    static import graph and refuses with an actionable remedy *before any link
+    is attempted*.
+
+    The enabled-feature set is computed with the exact function the runtime
+    staticlib build uses, so the refusal can never disagree with what actually
+    links.
+    """
+    # The wasm staticlib excludes a slightly different set on the micro profile;
+    # derive the effective triple from the target the same way the build does so
+    # the enabled-feature computation matches the linked runtime exactly.
+    # `_runtime_builtin_features_for_profile` keys the wasm distinction on a
+    # `wasm32`-prefixed triple, so map the symbolic wasm targets (and an explicit
+    # wasm32 triple, if ever passed) to one.
+    is_wasm = target in {"wasm", "wasm-freestanding"} or target.startswith("wasm32")
+    effective_triple = "wasm32-wasip1" if is_wasm else None
+    enabled_features = frozenset(
+        _runtime_builtin_features_for_profile(
+            stdlib_profile,
+            target_triple=effective_triple,
+        )
+    )
+    profile_name = stdlib_profile or "micro"
+    stdlib_root = stdlib_root.resolve()
+
+    # feature -> {module -> [intrinsics]} so one message can group every module
+    # blocked by the same excluded feature.
+    blocked: dict[str, dict[str, list[str]]] = {}
+    for name, path in module_graph.items():
+        if not path or path.suffix != ".py":
+            continue
+        try:
+            path.resolve().relative_to(stdlib_root)
+        except ValueError:
+            continue
+        gap = _profile_feature_gap_for_module(path, enabled_features)
+        for feature, symbols in gap.items():
+            blocked.setdefault(feature, {})[name] = symbols
+    if not blocked:
+        return None
+
+    lines: list[str] = []
+    for feature in sorted(blocked):
+        modules = blocked[feature]
+        module_list = ", ".join(repr(m) for m in sorted(modules))
+        plural = "module" if len(modules) == 1 else "modules"
+        lines.append(f"  {feature}: required by {plural} {module_list}")
+        for module_name in sorted(modules):
+            sample = ", ".join(modules[module_name][:4])
+            more = len(modules[module_name]) - 4
+            if more > 0:
+                sample += f", … (+{more} more)"
+            lines.append(f"      {module_name} → {sample}")
+
+    excluded_features = sorted(blocked)
+    feature_phrase = (
+        f"the {excluded_features[0]!r} runtime feature"
+        if len(excluded_features) == 1
+        else "runtime features " + ", ".join(repr(f) for f in excluded_features)
+    )
+    message = (
+        f"Profile '{profile_name}' excludes {feature_phrase} that this program's "
+        f"import graph requires.\n"
+        f"These statically-imported stdlib modules need a feature profile "
+        f"'{profile_name}' does not build, so their runtime intrinsics would be "
+        f"undefined at link:\n"
+        + "\n".join(lines)
+        + "\n\nFeature selection is profile-driven, not import-driven: the "
+        "native 'micro' profile omits heavy domains (ast, crypto, "
+        "compression, …) to keep small binaries small.\n"
+        "Rebuild with the full stdlib profile, which includes these features:\n"
+        "    --stdlib-profile full\n"
+        "or set the environment knob the build reads as its canonical profile:\n"
+        "    MOLT_STDLIB_PROFILE=full"
+    )
     return _fail(message, json_output, command="build")
 
 
@@ -8879,6 +9017,23 @@ _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES = frozenset(
     }
 )
 
+# Runtime features the ``stdlib_micro`` Cargo feature pulls in unconditionally
+# (runtime/molt-runtime/Cargo.toml ``stdlib_micro = [...]``).  ``stdlib_micro``
+# is the base of EVERY profile (micro/edge/standard/server/full all include it),
+# so these features are present in every linked runtime archive.  They are
+# ``dep:``-backed / ``mod``-gated (hence members of ``LINK_AFFECTING_FEATURES``),
+# but because they are always built they must appear in the profile-availability
+# enabled-feature set for ALL profiles — otherwise the compile-time gate falsely
+# refuses any import graph that references their intrinsics (e.g. ``pprint`` /
+# ``asyncio`` reaching ``molt_ordereddict_*`` through ``stdlib_collections``).
+_MICRO_BASE_RUNTIME_FEATURES: tuple[str, ...] = (
+    "stdlib_asyncio",
+    "stdlib_collections",
+    "stdlib_fs_extra",
+    "stdlib_logging",
+    "stdlib_logging_ext",
+)
+
 
 def _runtime_builtin_features_for_profile(
     stdlib_profile: str | None,
@@ -8891,7 +9046,13 @@ def _runtime_builtin_features_for_profile(
     be a function of the runtime target/profile, not the current user import
     graph, so changing user code does not rebuild or overwrite runtime libs.
     """
-    all_features = list(_ALL_BUILTIN_FEATURES) + list(_ALL_DOMAIN_FEATURES)
+    # ``stdlib_micro`` is the base of every profile, so its features are always
+    # in the linked archive regardless of the selected profile or target.
+    all_features = (
+        list(_ALL_BUILTIN_FEATURES)
+        + list(_ALL_DOMAIN_FEATURES)
+        + list(_MICRO_BASE_RUNTIME_FEATURES)
+    )
     if stdlib_profile != "micro":
         return all_features
     if target_triple is not None and target_triple.startswith("wasm32"):
@@ -8900,7 +9061,7 @@ def _runtime_builtin_features_for_profile(
             for feature in all_features
             if feature not in _WASM_RUNTIME_STABLE_EXCLUDED_FEATURES
         ]
-    return list(_ALL_BUILTIN_FEATURES)
+    return list(_ALL_BUILTIN_FEATURES) + list(_MICRO_BASE_RUNTIME_FEATURES)
 
 
 _WASM_RUNTIME_FULL_FEATURES: tuple[str, ...] = (
@@ -9644,7 +9805,9 @@ def _nm_candidate_binaries() -> list[str]:
     return list(dict.fromkeys(candidates))
 
 
-def _runtime_intrinsic_symbols_file(runtime_lib: Path) -> tuple[Path | None, str | None]:
+def _runtime_intrinsic_symbols_file(
+    runtime_lib: Path,
+) -> tuple[Path | None, str | None]:
     """Materialize a newline-separated list of the `molt_*` intrinsic symbols the
     runtime staticlib *defines*, returning ``(cache file path, failure detail)``.
 
@@ -14688,13 +14851,23 @@ def _start_backend_daemon(
             # reach the backend process. Daemon stderr goes to the log file
             # so it's always available for post-mortem debugging.
             with log_path.open("ab") as log_file:
-                daemon_proc = subprocess.Popen(
-                    [str(backend_bin), "--daemon", "--socket", str(socket_path)],
-                    cwd=project_root,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    env=daemon_env,
-                    **daemon_popen_kwargs,
+                # The daemon is launched in bytes mode (no ``text``/``encoding``
+                # arg here or in ``daemon_popen_kwargs``, which only carries OS
+                # process-group controls — ``start_new_session`` / ``preexec_fn``
+                # / ``creationflags``).  Splatting the ``dict[str, Any]`` of those
+                # controls erases Popen's bytes-vs-text overload for the checker,
+                # which then infers ``Popen[str]``; cast restores the proven
+                # ``Popen[bytes]`` the declared ``daemon_proc`` slot expects.
+                daemon_proc = cast(
+                    "subprocess.Popen[bytes]",
+                    subprocess.Popen(
+                        [str(backend_bin), "--daemon", "--socket", str(socket_path)],
+                        cwd=project_root,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        env=daemon_env,
+                        **daemon_popen_kwargs,
+                    ),
                 )
                 daemon_pid = daemon_proc.pid
                 _write_backend_daemon_identity(
@@ -20341,6 +20514,19 @@ def _prepare_entry_module_graph(
     )
     if intrinsic_enforced is not None:
         return None, intrinsic_enforced
+    # MOLT_STDLIB_PROFILE is the single canonical profile signal the module-graph
+    # construction and the runtime staticlib build both read (see the
+    # `--stdlib-profile` propagation note); use the same source here so the
+    # feature-availability refusal matches the profile that will actually link.
+    feature_availability_enforced = _enforce_profile_feature_availability(
+        module_graph,
+        stdlib_root,
+        os.environ.get("MOLT_STDLIB_PROFILE", "micro"),
+        target,
+        json_output,
+    )
+    if feature_availability_enforced is not None:
+        return None, feature_availability_enforced
     augmentation, augmentation_error = _augment_module_graph_for_entry_and_runtime(
         source_path=source_path,
         entry_module=entry_module,
@@ -26788,9 +26974,7 @@ def _ensure_runtime_wasm(
         if use_legacy_wasm_flags:
             # Legacy path keeps --export-dynamic for bit-for-bit reproducibility
             # of older shared runtimes.
-            flags = (
-                f"{shared_import_flags} -C link-arg=--export-dynamic"
-            )
+            flags = f"{shared_import_flags} -C link-arg=--export-dynamic"
         else:
             # Split-runtime size policy (feedback_wasm_export_treeshaking: "only
             # export table refs for split-runtime builds").  --export-dynamic

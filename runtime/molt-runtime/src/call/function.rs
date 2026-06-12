@@ -101,7 +101,10 @@ unsafe fn normalized_function_trampoline_ptr(func_ptr: *mut u8, fn_ptr: u64) -> 
 
 #[cfg(not(target_arch = "wasm32"))]
 #[inline]
-unsafe fn function_call_target_or_legacy_ptr(func_ptr: *mut u8, fn_ptr: u64) -> *const () {
+pub(crate) unsafe fn function_call_target_or_legacy_ptr(
+    func_ptr: *mut u8,
+    fn_ptr: u64,
+) -> *const () {
     let target = unsafe { function_call_target_ptr(func_ptr) };
     if target.is_null() {
         if let Some(runtime_target) = runtime_callable_target_ptr(fn_ptr) {

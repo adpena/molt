@@ -12,11 +12,11 @@
 
 | Verdict class | Count |
 |---|---|
-| compatible | 10 |
+| compatible | 11 |
 | compatible-via-typed-shim | 3 |
 | compatible-via-bridge | 1 |
 | partial | 7 |
-| incompatible-by-design | 4 |
+| incompatible-by-design | 3 |
 | **TOTAL** | **25** |
 
 ## Packages
@@ -40,7 +40,7 @@
 | python-dateutil | compatible | D2 | D2 | - | pending |
 | pyyaml | partial | D22 | D22 | D23, D26 | pending |
 | requests | partial | D20 | D20, D22 | - | pending |
-| rich | incompatible-by-design | D16 | D12, D16 | - | pending |
+| rich | compatible | D12 | D12, D16 | - | pending |
 | six | compatible | - | (none) | D17 | pending |
 | sqlalchemy | incompatible-by-design | D11 | D11, D19, D4 | - | pending |
 | toml-tomli | compatible | - | (none) | - | pending |
@@ -68,7 +68,7 @@
 | D13 inspect.getsource / frame/source reflection | unsupported | incompatible-by-design | doc 24 verified-subset policy boundary (LANE A.5) — permanent exclusion, no conversion arc; AOT binary has no source object. Tracked as a documented design exclusion, not a gap. |
 | D14 Controlled string-exec codegen (dataclasses/namedtuple/attrs-__init__) | typed-shim | compatible-via-typed-shim | - |
 | D15 Arbitrary user exec/eval/compile | unsupported | incompatible-by-design | doc 24 LANE A.5 verified-subset policy boundary — permanent exclusion (CLAUDE.md: no exec/eval/compile). Tracked as a documented design exclusion, not a gap. |
-| D16 Module-level __getattr__ (PEP 562) — lazy top-level imports | unsupported | incompatible-by-design | doc 24 LANE F Arc 2 (D16 module-level __getattr__ PEP 562: runtime module-attr fallback hook + frontend lowering); LANE D rank 3 (low-medium effort, large unlock). |
+| D16 Module-level __getattr__ (PEP 562) — lazy top-level imports | supported | compatible | - |
 | D17 Import-time monkeypatching (module.__dict__[x]=... at import) | partial | partial | doc 24 LANE B.1 D17 — characterize which import-time mutations are deterministically capturable vs genuinely runtime; no dedicated arc yet (planning input). |
 | D18 Runtime monkeypatching / mock.patch / fixture injection | unsupported | incompatible-by-design | doc 24 LANE A.5 verified-subset policy boundary — permanent exclusion (CLAUDE.md: no runtime monkeypatching). Tracked as a documented design exclusion, not a gap. |
 | D19 Generators / yield / yield from / async generators | unsupported | incompatible-by-design | doc 24 LANE F Arc 5 (D19 generators) + docs/design/generator_fusion.md keystone; LANE D rank 1 (very high effort, 50+ pkgs). |

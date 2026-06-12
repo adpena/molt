@@ -10,7 +10,7 @@
 
 ## Part 0: Test Corpus Baseline
 
-The differential asyncio test corpus sits in `tests/differential/stdlib/asyncio_*.py` (100+ files) and `tests/differential/basic/test_asyncio_basic.py`, `test_asyncio_cancel.py`. None of the files in this corpus carry `pytest.mark.skip` or any WASM gating annotation — the skip machinery is entirely in the test harness runner (`src/molt/cli.py`) and in conftest logic, not in the test source files. The specific "4/5 runtime-heavy" tests are not identified with a stable marker in the source tree; they are a category referenced in the audit narrative rather than a named test set. The four named blockers must therefore be traced by analyzing what the WASM build path actually does or cannot do, not by searching for explicit skip annotations.
+The differential asyncio test corpus sits in `tests/differential/stdlib/asyncio_*.py` (100+ files, including `asyncio_basic.py` and `asyncio_cancel.py`). None of the files in this corpus carry `pytest.mark.skip` or any WASM gating annotation — the skip machinery is entirely in the test harness runner (`src/molt/cli.py`) and in conftest logic, not in the test source files. The specific "4/5 runtime-heavy" tests are not identified with a stable marker in the source tree; they are a category referenced in the audit narrative rather than a named test set. The four named blockers must therefore be traced by analyzing what the WASM build path actually does or cannot do, not by searching for explicit skip annotations.
 
 The following analysis identifies the real failure mode for each of the four claimed blockers.
 

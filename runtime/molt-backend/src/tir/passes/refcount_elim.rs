@@ -1476,22 +1476,18 @@ mod tests {
             AttrValue::Bool(true),
         ));
         // Heap-expose `del_obj` (Call may capture) so Step 5 keeps its DecRef.
-        entry.ops.push(make_op(
-            OpCode::Call,
-            vec![callee, del_obj],
-            vec![call_result],
-        ));
         entry
             .ops
-            .push(make_op(OpCode::DecRef, vec![del_obj], vec![]));
+            .push(make_op(OpCode::Call, vec![callee, del_obj], vec![call_result]));
+        entry.ops.push(make_op(OpCode::DecRef, vec![del_obj], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
         run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let ops = &func.blocks[&func.entry_block].ops;
         assert!(
-            ops.iter()
-                .any(|op| op.opcode == OpCode::DecRef && op.operands.first() == Some(&del_obj)),
+            ops.iter().any(|op| op.opcode == OpCode::DecRef
+                && op.operands.first() == Some(&del_obj)),
             "finalizer DecRef must survive as a DecRef"
         );
         assert!(

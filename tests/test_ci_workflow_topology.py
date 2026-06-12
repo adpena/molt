@@ -41,6 +41,13 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "group: ${{ github.workflow }}-${{ github.ref }}" in ci_text
     assert "cancel-in-progress: true" in ci_text
     assert "docs-gates:" in ci_text
+    # The frontend-Python ty type-check is a zero-diagnostic ratchet enforced in
+    # CI (pre-commit is not run in Actions), mirroring the pre-commit `ty` hook.
+    assert "uv run ty check src" in ci_text
+    # The differential suite-layout checker (lane/naming hygiene) runs in
+    # docs-gates alongside the suite-honesty ratchet — a blocking gate so new
+    # lane/naming debt cannot land silently.
+    assert "uv run python3 tools/check_differential_suite_layout.py" in ci_text
     assert "python-tooling-smoke:" in ci_text
     assert "rust-build-unit-smoke:" in ci_text
     assert "llvm-backend:" in ci_text
@@ -64,14 +71,14 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "Run bench CLI native smoke tests" in ci_text
     assert (
         "tests/test_bench_tool.py::"
-        "test_bench_cli_native_smoke_contract_batch_reuses_compiler"
-        in ci_text
+        "test_bench_cli_native_smoke_contract_batch_reuses_compiler" in ci_text
     )
     assert "tests/test_bench_tool.py::test_bench_no_cpython_sets_null_baseline" not in (
         ci_text
     )
-    assert "tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok" not in (
-        ci_text
+    assert (
+        "tests/test_bench_tool.py::test_bench_runtime_timeout_marks_molt_not_ok"
+        not in (ci_text)
     )
     assert "tests/test_bench_harness.py" in ci_text
     assert "tests/test_bench_tool.py" in ci_text

@@ -425,7 +425,8 @@ def test_guarded_completed_process_writes_command_profile(
 
     assert result.returncode == 0
     payload = [
-        json.loads(line) for line in profile_log.read_text(encoding="utf-8").splitlines()
+        json.loads(line)
+        for line in profile_log.read_text(encoding="utf-8").splitlines()
     ]
     assert len(payload) == 1
     event = payload[0]

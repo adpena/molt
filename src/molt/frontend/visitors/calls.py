@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import sys
 
+from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -380,19 +381,6 @@ class CallVisitorMixin(_MixinBase):
             return f"molt.stdlib.{module_name}"
         return module_name
 
-    def _module_function_attr_is_stable(
-        self,
-        module_name: str | None,
-        attr_name: str,
-        *,
-        normalized: str | None = None,
-    ) -> bool:
-        candidates = {name for name in (module_name, normalized) if name}
-        return all(
-            (candidate, attr_name) not in self.module_attr_overrides
-            for candidate in candidates
-        )
-
     def _call_allowlist_suggestion(
         self, func_id: str, imported_from: str | None
     ) -> str | None:
@@ -416,6 +404,67 @@ class CallVisitorMixin(_MixinBase):
                 display_module = self._display_allowlist_module(imported_from)
                 return f"{display_module}.{func_id}"
         return None
+
+    def _emit_function_defaults_version(self, func_obj: MoltValue) -> MoltValue:
+        """Read the function object's __defaults__/__kwdefaults__ mutation
+        version stamp (0 == never mutated since creation)."""
+        res = MoltValue(self.next_var(), type_hint="int")
+        self.emit(
+            MoltOp(
+                kind="FUNCTION_DEFAULTS_VERSION",
+                args=[func_obj],
+                result=res,
+            )
+        )
+        return res
+
+    def _emit_defaults_pristine_guard(self, func_obj: MoltValue) -> MoltValue:
+        """Emit `func.__defaults_version__ == 0` as a bool guard.
+
+        True iff neither `__defaults__` nor `__kwdefaults__` has been reassigned
+        since the function object was created — i.e. a compile-time-baked literal
+        default is still observably correct.  Any reassignment bumps the stamp
+        (runtime: the generic function attribute setter), flipping this to False
+        so the call deopts to a live `__defaults__`/`__kwdefaults__` read.
+        """
+        version = self._emit_function_defaults_version(func_obj)
+        zero = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
+        is_pristine = MoltValue(self.next_var(), type_hint="bool")
+        self.emit(MoltOp(kind="EQ", args=[version, zero], result=is_pristine))
+        return is_pristine
+
+    def _emit_guarded_default_value(
+        self,
+        guard: MoltValue,
+        baked_value: object,
+        emit_live: Callable[[], MoltValue],
+    ) -> MoltValue:
+        """Select a default argument value under the pristine guard.
+
+        `IF guard -> baked literal (compile-time constant, the fast/devirt path)
+        ELSE -> emit_live() (a thunk that reads the live __defaults__ tuple /
+        __kwdefaults__ dict) END_IF; PHI`.  Mirrors
+        `_emit_guarded_field_get_with_guard`'s structured-conditional shape
+        (portable across all backends).
+
+        The baked literal is materialized INSIDE the fast arm and the live read
+        is materialized INSIDE the slow arm, so the hot (never-mutated) path
+        executes only the literal const — no `__defaults__` GETATTR/INDEX — which
+        is the whole point of the devirtualization.  The PHI merges the two
+        producers; the result type is `Any` unless both sides agree.
+        """
+        self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
+        fast_val = self._emit_const_value(baked_value)
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        slow_val = emit_live()
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        res_hint = (
+            fast_val.type_hint if fast_val.type_hint == slow_val.type_hint else "Any"
+        )
+        merged = MoltValue(self.next_var(), type_hint=res_hint)
+        self.emit(MoltOp(kind="PHI", args=[fast_val, slow_val], result=merged))
+        return merged
 
     def _emit_function_defaults_tuple(self, func_obj: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="Any")
@@ -476,22 +525,61 @@ class CallVisitorMixin(_MixinBase):
             return None
         base_index = len(default_specs) - missing
         specs_slice = default_specs[base_index : base_index + missing]
+        has_const = any(spec.get("const", False) for spec in specs_slice)
         needs_tuple = any(
             not spec.get("const", False) and not spec.get("kwonly", False)
             for spec in specs_slice
-        ) or (
-            func_obj is not None
-            and any(not spec.get("kwonly", False) for spec in specs_slice)
         )
         needs_kwdefaults = any(
             not spec.get("const", False) and spec.get("kwonly", False)
             for spec in specs_slice
-        ) or (
-            func_obj is not None
-            and any(spec.get("kwonly", False) for spec in specs_slice)
+        )
+        # The pristine guard: when ANY default is a compile-time-baked literal
+        # AND we have a handle on the function object, read the live
+        # __defaults__/__kwdefaults__ too and guard each baked literal with a
+        # `defaults-version == 0` check.  This devirtualizes the common
+        # (never-mutated) call to a direct CALL with inlined literals while
+        # preserving CPython's call-time `__defaults__` binding: a runtime
+        # `func.__defaults__ = (...)` reassignment bumps the version, flips the
+        # guard, and deopts the baked value to the live read.  Without a
+        # function object we cannot read the version or the live tuple, so the
+        # literals are baked unguarded (the truly anonymous, not-reachable-by-
+        # name case — its defaults cannot be mutated through a name binding).
+        #
+        # The guard uses a structured IF/ELSE/PHI conditional, sound only on the
+        # phi-enabled, non-async lowering path (an async body threads merged
+        # values through closure slots, not phis). When phis are unavailable the
+        # const defaults fall through to the UNCONDITIONAL live read below
+        # (always CPython-correct: it binds the live tuple/dict at call time),
+        # just without the baked-literal fast path. Mutation semantics stay
+        # correct everywhere; only the devirt fast path's speed is phi-gated.
+        use_phi = self.enable_phi and not self.is_async()
+        guard_const = has_const and func_obj is not None and use_phi
+        # No-phi / async: route const defaults through the live read too (so they
+        # observe a runtime mutation) instead of baking them.
+        live_const_fallback = has_const and func_obj is not None and not use_phi
+        # A positional const default's ELSE branch reads `__defaults__[idx]`; a
+        # kwonly const default's ELSE branch reads `__kwdefaults__[name]`.  When
+        # guarding (or live-fallback), ensure the corresponding live container is
+        # materialized even if every default in this class happens to be const.
+        const_or_guard = guard_const or live_const_fallback
+        needs_tuple_live = needs_tuple or (
+            const_or_guard
+            and any(
+                spec.get("const", False) and not spec.get("kwonly", False)
+                for spec in specs_slice
+            )
+        )
+        needs_kwdefaults_live = needs_kwdefaults or (
+            const_or_guard
+            and any(
+                spec.get("const", False) and spec.get("kwonly", False)
+                for spec in specs_slice
+            )
         )
         defaults_tuple: MoltValue | None = None
         kwdefaults_dict: MoltValue | None = None
+        pristine_guard: MoltValue | None = None
         if needs_tuple or needs_kwdefaults:
             if func_obj is None:
                 raise self.compat.unsupported(
@@ -501,34 +589,95 @@ class CallVisitorMixin(_MixinBase):
                     alternative="pass explicit arguments",
                     detail="only literal defaults are supported for direct calls",
                 )
-            if needs_tuple:
+        if func_obj is not None:
+            if needs_tuple_live:
                 defaults_tuple = self._emit_function_defaults_tuple(func_obj)
-            if needs_kwdefaults:
+            if needs_kwdefaults_live:
                 kwdefaults_dict = self._emit_function_kwdefaults_dict(func_obj)
+            if guard_const:
+                pristine_guard = self._emit_defaults_pristine_guard(func_obj)
         missing_val: MoltValue | None = None
+
+        def _live_positional_default(spec_offset: int) -> MoltValue:
+            assert defaults_tuple is not None
+            idx_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(
+                MoltOp(kind="CONST", args=[base_index + spec_offset], result=idx_val)
+            )
+            res = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(MoltOp(kind="INDEX", args=[defaults_tuple, idx_val], result=res))
+            return res
+
+        def _live_kwonly_default(spec: dict[str, Any]) -> MoltValue:
+            nonlocal missing_val
+            assert kwdefaults_dict is not None
+            if missing_val is None:
+                missing_val = self._emit_missing_value()
+            key_name = spec.get("name")
+            if not isinstance(key_name, str):
+                raise NotImplementedError("Invalid kwonly default spec name")
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[key_name], result=key_val))
+            res = MoltValue(self.next_var(), type_hint="Any")
+            self.emit(
+                MoltOp(
+                    kind="DICT_GET",
+                    args=[kwdefaults_dict, key_val, missing_val],
+                    result=res,
+                )
+            )
+            return res
+
         for offset, spec in enumerate(specs_slice):
-            if spec.get("kwonly", False):
-                if kwdefaults_dict is not None:
-                    if missing_val is None:
-                        missing_val = self._emit_missing_value()
-                    key_name = spec.get("name")
-                    if not isinstance(key_name, str):
-                        raise NotImplementedError("Invalid kwonly default spec name")
-                    key_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[key_name], result=key_val))
-                    default_val = MoltValue(self.next_var(), type_hint="Any")
-                    self.emit(
-                        MoltOp(
-                            kind="DICT_GET",
-                            args=[kwdefaults_dict, key_val, missing_val],
-                            result=default_val,
-                        )
-                    )
-                    args.append(default_val)
+            if spec.get("const", False):
+                if live_const_fallback:
+                    # No-phi / async: read the live default unconditionally so a
+                    # runtime __defaults__/__kwdefaults__ mutation is observed
+                    # (no baked literal, no guard branch).
+                    if spec.get("kwonly", False):
+                        args.append(_live_kwonly_default(spec))
+                    else:
+                        args.append(_live_positional_default(offset))
                     continue
-                if spec.get("const", False):
+                if pristine_guard is None:
+                    # No function object: bake unguarded (anonymous callee whose
+                    # __defaults__ is not reachable by name to be mutated).
                     args.append(self._emit_const_value(spec.get("value")))
                     continue
+                # Guard the baked literal against a runtime defaults mutation.
+                # The live read is a thunk so it is emitted only inside the
+                # deopt (ELSE) arm — the fast path is purely the const literal.
+                baked_value = spec.get("value")
+                # Bind the loop-varying capture (`spec` / `offset`) as a default
+                # parameter so each thunk reads its own default, not the final
+                # iteration's — the same late-binding guard the prior lambdas had.
+                if spec.get("kwonly", False):
+
+                    def live_thunk(_spec: dict[str, Any] = spec) -> MoltValue:
+                        return _live_kwonly_default(_spec)
+                else:
+
+                    def live_thunk(_off: int = offset) -> MoltValue:
+                        return _live_positional_default(_off)
+
+                args.append(
+                    self._emit_guarded_default_value(
+                        pristine_guard, baked_value, live_thunk
+                    )
+                )
+                continue
+            if spec.get("kwonly", False):
+                if kwdefaults_dict is None:
+                    raise self.compat.unsupported(
+                        node,
+                        f"call to {call_name} with non-constant defaults",
+                        impact="medium",
+                        alternative="pass explicit arguments",
+                        detail="only literal defaults are supported for direct calls",
+                    )
+                args.append(_live_kwonly_default(spec))
+                continue
+            if defaults_tuple is None:
                 raise self.compat.unsupported(
                     node,
                     f"call to {call_name} with non-constant defaults",
@@ -536,35 +685,7 @@ class CallVisitorMixin(_MixinBase):
                     alternative="pass explicit arguments",
                     detail="only literal defaults are supported for direct calls",
                 )
-            if defaults_tuple is not None:
-                spec_index = base_index + offset
-                tuple_index = sum(
-                    1
-                    for prior in default_specs[:spec_index]
-                    if not prior.get("kwonly", False)
-                )
-                idx_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[tuple_index], result=idx_val))
-                default_val = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="INDEX",
-                        args=[defaults_tuple, idx_val],
-                        result=default_val,
-                    )
-                )
-                args.append(default_val)
-                continue
-            if spec.get("const", False):
-                args.append(self._emit_const_value(spec.get("value")))
-                continue
-            raise self.compat.unsupported(
-                node,
-                f"call to {call_name} with non-constant defaults",
-                impact="medium",
-                alternative="pass explicit arguments",
-                detail="only literal defaults are supported for direct calls",
-            )
+            args.append(_live_positional_default(offset))
         return args
 
     def _apply_direct_call_defaults(
@@ -588,11 +709,15 @@ class CallVisitorMixin(_MixinBase):
         func_obj = None
         if total_params is not None:
             missing = total_params - len(args)
-            # Load the function object whenever any trailing default is filled.
-            # If the callee is reachable by object, _apply_default_specs reads
-            # live __defaults__/__kwdefaults__ for both literal and dynamic
-            # defaults so runtime reassignment is observed.
-            if missing > 0 and missing <= len(defaults):
+            # Load the function object whenever a trailing default is filled.
+            # A non-const default needs the live `__defaults__`/`__kwdefaults__`
+            # read; a CONST default needs the version stamp for the
+            # `__defaults__`-mutation deopt guard (heals the module-level
+            # baked-defaults divergence — a runtime `func.__defaults__ = (...)`
+            # reassignment must be observed even for a literal def-site default).
+            # `_apply_default_specs` bakes unguarded only when no function object
+            # is available (a truly anonymous callee, not reachable by name).
+            if 0 < missing <= len(defaults):
                 resolved_module = module_name or self.module_name
                 normalized = self._normalize_allowlist_module(resolved_module)
                 if normalized is not None:
@@ -654,10 +779,10 @@ class CallVisitorMixin(_MixinBase):
             positional_limit = total_params - kwonly_count
         if total_params is not None:
             missing = total_params - len(args)
-            # Load the function object whenever any trailing default is filled;
-            # literal defaults are also read live when the function object is
-            # available.
-            if missing > 0 and missing <= len(defaults):
+            # Load the function object whenever a trailing default is filled: a
+            # const default needs the version stamp for the `__defaults__`-
+            # mutation deopt guard, a non-const default needs the live read.
+            if 0 < missing <= len(defaults):
                 if func_obj is None:
                     func_obj = self.visit(node.func)
         args = self._apply_default_specs(
@@ -1847,7 +1972,9 @@ class CallVisitorMixin(_MixinBase):
             if self._inline_super_must_fold:
                 raise _InlineSuperFoldRequired
             return None
-        if self.current_class is None or self.current_method_first_param is None:
+        current_class = self.current_class
+        current_first_param = self.current_method_first_param
+        if current_class is None or current_first_param is None:
             if self._inline_super_must_fold:
                 raise _InlineSuperFoldRequired
             return None
@@ -1861,7 +1988,9 @@ class CallVisitorMixin(_MixinBase):
                     raise _InlineSuperFoldRequired
                 return None  # *args spread — needs builder
         method_name = node.func.attr
-        folded = self._fold_bare_super_static(node, method_name)
+        folded = self._fold_bare_super_static(
+            node, method_name, current_class, current_first_param
+        )
         if folded is None and self._inline_super_must_fold:
             # A bare ``super().method()`` that did not fold while inlining a
             # ``__class__``-cell method: the general dispatch fallback would
@@ -1871,13 +2000,20 @@ class CallVisitorMixin(_MixinBase):
         return folded
 
     def _fold_bare_super_static(
-        self, node: ast.Call, method_name: str
+        self,
+        node: ast.Call,
+        method_name: str,
+        current_class: str,
+        current_first_param: str,
     ) -> "MoltValue | None":
         """Fold a confirmed bare ``super().method(*positional)`` call to a
         direct CALL / inline when the MRO is statically resolvable.  Returns
         ``None`` to fall through to the general dispatch path.  The caller
         (``_try_emit_super_static_call``) has already validated the bare-super
-        shape and handles the inline-abort policy.
+        shape and handles the inline-abort policy.  It also proved
+        ``self.current_class`` / ``self.current_method_first_param`` non-None
+        and threads them in as ``current_class`` / ``current_first_param`` so
+        the fold reads the narrowed values rather than the optional attributes.
         """
         # SOUNDNESS GATE for the static super fold.  ``super().method()`` in
         # ``current_class.method`` resolves to the first class defining
@@ -1893,10 +2029,10 @@ class CallVisitorMixin(_MixinBase):
         # be defined downstream and are invisible here).  When it bails, super()
         # lowers to the runtime path, which the backend fuses into the
         # allocation-free ``call_super_method_ic`` — already the fast path.
-        if not self._super_fold_is_sound(self.current_class, method_name):
+        if not self._super_fold_is_sound(current_class, method_name):
             return None
         method_info, owner_class = self._resolve_super_method_info(
-            self.current_class, method_name
+            current_class, method_name
         )
         if method_info is None or owner_class is None:
             return None
@@ -1933,9 +2069,9 @@ class CallVisitorMixin(_MixinBase):
         if len(node.args) != expected_positional:
             return None
 
-        self_val = self._load_local_value(self.current_method_first_param)
-        if self_val is None and self.current_method_first_param in self.free_vars:
-            self_val = self._emit_free_var_load(self.current_method_first_param)
+        self_val = self._load_local_value(current_first_param)
+        if self_val is None and current_first_param in self.free_vars:
+            self_val = self._emit_free_var_load(current_first_param)
         if self_val is None:
             return None
 
@@ -2012,6 +2148,24 @@ class CallVisitorMixin(_MixinBase):
         inline_owner = method_info.get("inline_owner_class")
         if inline_return is None or inline_params is None:
             return None
+        # Fail-closed soundness gate (cross-module global mis-resolution).
+        # The body is spliced into the *current* module's scope and re-lowered.
+        # Any bare Name in the body that is not a substituted parameter or a
+        # builtin (recorded in `inline_free_names`) resolves through
+        # `visit_Name -> _emit_global_get` against the CURRENT module's globals.
+        # When the method is defined in a *different* module, such a name is one
+        # of the defining module's globals (e.g. `_MOLT_ARRAY_TOLIST`, a sibling
+        # helper, a module-level constant) and would mis-resolve here — a silent
+        # NameError at runtime.  Refuse the inline so the call site falls through
+        # to a real CALL to the method symbol, which reads the defining module's
+        # globals correctly (via the method body's own module-cache lookup).
+        # Same-module inlines are unaffected: the current module IS the defining
+        # module, so the global resolves to the same dict either way.
+        inline_free_names = method_info.get("inline_free_names")
+        if inline_free_names:
+            owner_module = method_info.get("inline_owner_module")
+            if owner_module is not None and owner_module != self.module_name:
+                return None
         # The first param is `self` (for non-classmethod / non-static).
         if len(inline_params) != 1 + len(call_args):
             return None
@@ -2193,6 +2347,29 @@ class CallVisitorMixin(_MixinBase):
                 )
         return True
 
+    def _method_func_obj_for_defaults(
+        self, owner_class: str, method_name: str
+    ) -> "MoltValue | None":
+        """Load the unbound function object for ``owner_class.method_name`` so the
+        defaults-devirt deopt guard can read its ``__defaults__`` version stamp
+        and live default tuple/dict.
+
+        ``owner_class`` is the class that actually *defines* the method (the MRO
+        owner, which may be a base class), so the function object — and thus the
+        ``__defaults__`` a runtime ``Class.method.__defaults__ = (...)`` mutates
+        — is read from there.  Returns ``None`` if that class cannot be resolved
+        as a module attribute (the caller then declines to devirtualize the
+        defaults-bearing call rather than guard against a missing object).
+        """
+        class_info = self.classes.get(owner_class)
+        if class_info is None:
+            return None
+        module_name = class_info.get("module")
+        if not isinstance(module_name, str):
+            return None
+        class_ref = self._emit_module_attr_get_on(module_name, owner_class)
+        return self._emit_class_method_func(class_ref, method_name)
+
     def _try_emit_user_method_static_call(self, node: ast.Call) -> "MoltValue | None":
         """Phase 1 (frontend variant) — direct call for monomorphic user methods.
 
@@ -2257,10 +2434,6 @@ class CallVisitorMixin(_MixinBase):
             return None
         if method_info.get("has_varkw"):
             return None
-        if method_info.get("kwonly_count"):
-            return None
-        if method_info.get("defaults"):
-            return None
         # Honour __getattribute__ overrides: the runtime path goes
         # through the override and could observe the bound-method
         # construction.  Skip the fold for those.
@@ -2282,7 +2455,19 @@ class CallVisitorMixin(_MixinBase):
         if param_count is None:
             return None
         expected_positional = param_count - 1  # exclude self
-        if len(node.args) != expected_positional:
+        # A method with positional defaults / kw-only params is direct-fillable:
+        # the missing trailing arguments are padded from the function's live
+        # __defaults__/__kwdefaults__ (or the compile-time literals when the
+        # defaults version proves no runtime mutation — see
+        # `_apply_default_specs`).  Reject only over-supply; under-supply is
+        # filled below.  `kwonly_count` caps the positional region.
+        kwonly_count = method_info.get("kwonly_count") or 0
+        defaults_specs = method_info.get("defaults") or []
+        has_fillable_defaults = bool(defaults_specs) or bool(kwonly_count)
+        positional_param_count = expected_positional - kwonly_count
+        if len(node.args) > positional_param_count:
+            return None
+        if len(node.args) < expected_positional and not has_fillable_defaults:
             return None
 
         receiver = self.visit(attr_node.value)
@@ -2293,12 +2478,42 @@ class CallVisitorMixin(_MixinBase):
         if any(a is None for a in call_args):
             return None
 
+        # Pad missing trailing arguments from the method's defaults.  When the
+        # method has no defaults this is an exact-arity call and the list is
+        # unchanged.  `_apply_default_specs` emits the `__defaults__`-mutation
+        # deopt guard (baked literal fast path + live-read fallback) so a runtime
+        # `Class.method.__defaults__ = (...)` reassignment is observed, matching
+        # CPython's call-time default binding.  The function object the guard
+        # reads is loaded from the (statically-known, non-dynamic) class.
+        if has_fillable_defaults:
+            method_func_obj = self._method_func_obj_for_defaults(
+                owner_class, method_name
+            )
+            if method_func_obj is None:
+                return None
+            positional_limit = positional_param_count
+            padded = self._apply_default_specs(
+                expected_positional,
+                defaults_specs,
+                call_args,
+                node,
+                call_name=f"{class_name}.{method_name}",
+                func_obj=method_func_obj,
+                implicit_self=False,
+                positional_limit=positional_limit if kwonly_count else None,
+            )
+            if padded is None:
+                return None
+            call_args = padded
+
         # Phase 2 inline opportunity: if the method has a trivially
         # inlinable body (single Return of a constant/param/binop/etc.
         # expression), emit the body inline rather than a CALL.  For a
         # ``__class__``-cell closure target this is the only foldable path:
         # the recursive super-fold inside the inlined body resolves the chain
-        # statically and never reads the cell.
+        # statically and never reads the cell.  Only attempt the inline when the
+        # supplied-arg arity already matches (a defaults-padded call has the full
+        # argument list materialized above, so this still holds).
         inlined = self._try_inline_method_call(method_info, receiver, call_args)
         if inlined is not None:
             return inlined
@@ -2348,9 +2563,7 @@ class CallVisitorMixin(_MixinBase):
             return False
         return name in self.locals or name in self.boxed_locals
 
-    def _literal_importlib_import_module_target(
-        self, node: ast.Call
-    ) -> str | None:
+    def _literal_importlib_import_module_target(self, node: ast.Call) -> str | None:
         if node.keywords or len(node.args) != 1:
             return None
         arg = node.args[0]
@@ -2370,8 +2583,6 @@ class CallVisitorMixin(_MixinBase):
                 return None
             if self.imported_modules.get(binding_name) != "importlib":
                 return None
-            if ("importlib", "import_module") in self.module_attr_overrides:
-                return None
         elif isinstance(node.func, ast.Name):
             binding_name = node.func.id
             if self._local_name_shadows_import_binding(binding_name):
@@ -2388,12 +2599,14 @@ class CallVisitorMixin(_MixinBase):
                 )
             if original_attr != "import_module":
                 return None
-            if ("importlib", "import_module") in self.module_attr_overrides:
-                return None
         else:
             return None
 
-        return module_name
+        if module_name in self.known_modules:
+            return module_name
+        if self._should_attempt_runtime_module_import(module_name):
+            return module_name
+        return None
 
     def _try_emit_importlib_import_module_literal_call(
         self, node: ast.Call
@@ -2401,11 +2614,7 @@ class CallVisitorMixin(_MixinBase):
         module_name = self._literal_importlib_import_module_target(node)
         if module_name is None:
             return None
-        # The frontend only proves that this call is the canonical public
-        # importlib API with a literal absolute name. Runtime import
-        # success/failure, cache custody, version-gated absence, fromlist
-        # behavior, and error shape stay owned by the Rust import transaction.
-        return self._emit_importlib_import_module_transaction(module_name)
+        return self._emit_module_load(module_name)
 
     def visit_Call(self, node: ast.Call) -> Any:
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
@@ -2785,7 +2994,11 @@ class CallVisitorMixin(_MixinBase):
                             fixed_param_count -= 1
                         func_obj = None
                         missing = fixed_param_count - len(args)
-                        if missing > 0 and missing <= len(defaults):
+                        # Load the function object whenever a trailing default is
+                        # filled: a const default needs the version stamp for the
+                        # `__defaults__`-mutation deopt guard, a non-const default
+                        # needs the live `__defaults__`/`__kwdefaults__` read.
+                        if 0 < missing <= len(defaults):
                             class_ref = None
                             if lookup_class:
                                 class_info = self.classes.get(lookup_class)
@@ -4202,11 +4415,6 @@ class CallVisitorMixin(_MixinBase):
                 if (
                     allowlist_key in MOLT_DIRECT_CALLS
                     and func_id in MOLT_DIRECT_CALLS[allowlist_key]
-                    and self._module_function_attr_is_stable(
-                        module_name,
-                        func_id,
-                        normalized=allowlist_key,
-                    )
                 ):
                     force_bind = func_id in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
                         allowlist_key, set()
@@ -5244,9 +5452,7 @@ class CallVisitorMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="Future")
                 self.emit(
                     MoltOp(
-                        kind="CALL_ASYNC",
-                        args=["molt_async_sleep_poll", *args],
-                        result=res,
+                        kind="CALL_ASYNC", args=["molt_async_sleep", *args], result=res
                     )
                 )
                 return res
@@ -5519,9 +5725,7 @@ class CallVisitorMixin(_MixinBase):
                     # fold still fires for the in-chunk case, because a live
                     # `constructor_fold_safe` class always satisfies the
                     # resolver's (superset) layout/decoration/mutation guards.
-                    static_class_ref = self._current_module_static_class_ref(
-                        class_id
-                    )
+                    static_class_ref = self._current_module_static_class_ref(class_id)
                     if static_class_ref is not None and class_info.get(
                         "constructor_fold_safe"
                     ):
@@ -5580,6 +5784,39 @@ class CallVisitorMixin(_MixinBase):
                         init_func = init_method["func"]
                         target_name = init_func.type_hint.split(":", 1)[1]
                         init_args = [res] + args
+                        if init_method.get("has_closure"):
+                            # A closure __init__ (e.g. a bare `super()` body
+                            # captures the implicit `__class__` cell) compiles
+                            # with the cell as its leading parameter; a
+                            # bare-name CALL would omit the cell argument and
+                            # mis-match the symbol arity (LLVM verifier
+                            # rejects; Cranelift only tolerates it when the
+                            # cell is never read). Same invariant as the
+                            # method-call fold: closure targets never get the
+                            # direct symbol CALL — route through the bound
+                            # path, which threads the cell via the function
+                            # object.
+                            init_func_val = self._emit_class_method_func(
+                                class_ref, "__init__"
+                            )
+                            bound_init = MoltValue(self.next_var(), type_hint="method")
+                            self.emit(
+                                MoltOp(
+                                    kind="BOUND_METHOD_NEW",
+                                    args=[init_func_val, res],
+                                    result=bound_init,
+                                )
+                            )
+                            callargs = self._emit_call_args_builder(node)
+                            init_res = MoltValue(self.next_var(), type_hint="Any")
+                            self.emit(
+                                MoltOp(
+                                    kind="CALL_BIND",
+                                    args=[bound_init, callargs],
+                                    result=init_res,
+                                )
+                            )
+                            return res
                         func_obj = None
                         param_count = init_method.get("param_count")
                         defaults = init_method.get("defaults", [])
@@ -5589,7 +5826,11 @@ class CallVisitorMixin(_MixinBase):
                             positional_limit = param_count - kwonly_count
                         if param_count is not None:
                             missing = param_count - len(init_args)
-                            if missing > 0 and missing <= len(defaults):
+                            # Load __init__ whenever a trailing default is filled:
+                            # a const default needs the version stamp for the
+                            # `__defaults__`-mutation deopt guard, a non-const
+                            # default needs the live read.
+                            if 0 < missing <= len(defaults):
                                 func_obj = self._emit_class_method_func(
                                     class_ref, "__init__"
                                 )
@@ -5861,9 +6102,31 @@ class CallVisitorMixin(_MixinBase):
                                                 inline_params = init_info.get(
                                                     "inline_params"
                                                 )
+                                                # Fail-closed cross-module gate
+                                                # (mirrors _try_inline_method_call):
+                                                # an __init__ value-expression that
+                                                # reads a defining-module global
+                                                # (recorded in inline_free_names)
+                                                # must not be spliced into a
+                                                # different module's scope, where
+                                                # the global would mis-resolve.
+                                                init_free_names = init_info.get(
+                                                    "inline_free_names"
+                                                )
+                                                init_cross_module = False
+                                                if init_free_names:
+                                                    init_owner_module = init_info.get(
+                                                        "inline_owner_module"
+                                                    )
+                                                    init_cross_module = (
+                                                        init_owner_module is not None
+                                                        and init_owner_module
+                                                        != self.module_name
+                                                    )
                                                 if (
                                                     init_assigns is not None
                                                     and inline_params is not None
+                                                    and not init_cross_module
                                                     and self._try_inline_init_assigns(
                                                         init_assigns,
                                                         inline_params,
@@ -6213,7 +6476,11 @@ class CallVisitorMixin(_MixinBase):
                         positional_limit = param_count - kwonly_count
                     if param_count is not None:
                         missing = param_count - (len(args) + 1)
-                        if missing > 0 and missing <= len(defaults):
+                        # Load the bound method's function whenever a trailing
+                        # default is filled: a const default needs the version
+                        # stamp for the `__defaults__`-mutation deopt guard, a
+                        # non-const default needs the live read.
+                        if 0 < missing <= len(defaults):
                             func_obj = self._emit_bound_method_func(target_info)
                     args = self._apply_default_specs(
                         param_count,
@@ -7044,7 +7311,7 @@ class CallVisitorMixin(_MixinBase):
                         args = self._emit_call_args(node.args)
                         self.emit(
                             MoltOp(kind="CALL_FUNC", args=[callee] + args, result=res)
-                    )
+                        )
                     return res
                 if not node.args:
                     return self._emit_type_error_value(
@@ -7950,11 +8217,7 @@ class CallVisitorMixin(_MixinBase):
                         and func_id in MOLT_DIRECT_CALLS[imported_from]
                     ):
                         target_module = imported_from
-                if target_module is not None and self._module_function_attr_is_stable(
-                    imported_from,
-                    self.imported_attr_names.get(func_id, func_id),
-                    normalized=target_module,
-                ):
+                if target_module is not None:
                     if needs_bind:
                         callee = self.visit(node.func)
                         if callee is None:
@@ -8057,11 +8320,6 @@ class CallVisitorMixin(_MixinBase):
                     not needs_bind
                     and not force_bind
                     and (has_known_direct_target or allow_speculative_internal_direct)
-                    and self._module_function_attr_is_stable(
-                        imported_from,
-                        original_attr,
-                        normalized=target_module,
-                    )
                 ):
                     args = self._emit_direct_call_args(
                         target_module, original_attr, node

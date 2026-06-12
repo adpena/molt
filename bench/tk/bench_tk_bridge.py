@@ -86,7 +86,9 @@ def bench_result_list(tk, iters):
     total = 0
     t0 = _now_ns()
     for _ in range(iters):
-        parts = tk.splitlist(tk.call("lrange", tk.call("set", "molt_bench_list"), 0, "end"))
+        parts = tk.splitlist(
+            tk.call("lrange", tk.call("set", "molt_bench_list"), 0, "end")
+        )
         total += len(parts)
     elapsed = _now_ns() - t0
     assert total == 100 * iters, total

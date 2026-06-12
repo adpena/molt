@@ -851,6 +851,10 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         | OpCode::Raise
         | OpCode::CheckException
         | OpCode::ExceptionPending
+        // Reads a function object's defaults version stamp via a runtime call;
+        // the LIR fast lane does not model it, so bail this function to the
+        // generic WASM emitter (which has a `function_defaults_version` arm).
+        | OpCode::FunctionDefaultsVersion
         | OpCode::AllocTask
         | OpCode::Yield
         | OpCode::YieldFrom
