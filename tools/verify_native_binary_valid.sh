@@ -3,11 +3,11 @@
 # bug-class (and the "agent verified in session-local state" meta-bug).
 #
 # Builds a corpus of programs (trivial AND non-trivial) in a CLEAN, environment-
-# independent way — kills stale daemons, drops stale runtime staticlibs + symbol
-# caches, builds DAEMON-OFF (in-process, current backend) across BOTH stdlib
-# profiles — then asserts every emitted Mach-O is structurally VALID (64-bit
-# magic 0xfeedfacf, not the 0xfeedface corruption) AND RUNS to the expected
-# output. A single corrupt/SIGKILL/wrong-output binary fails the gate.
+# independent way — drops stale runtime staticlibs + symbol caches, builds
+# DAEMON-OFF (in-process, current backend) across BOTH stdlib profiles — then
+# asserts every emitted Mach-O is structurally VALID (64-bit magic 0xfeedfacf,
+# not the 0xfeedface corruption) AND RUNS to the expected output. A single
+# corrupt/SIGKILL/wrong-output binary fails the gate.
 #
 # Why this exists: the per-app intrinsic resolver corruption flipped the Mach-O
 # magic byte (cf->ce) for large/non-trivial manifests, producing a kernel-
@@ -27,9 +27,7 @@ PY="${MOLT_PY:-.venv/bin/python3}"
 mkdir -p tmp/verify_corpus
 
 echo "== self-protection: clean-environment native-binary validity gate =="
-echo "-- killing stale backend daemons --"
-pkill -9 -f "moltbd" 2>/dev/null || true
-pkill -9 -f "molt-backend.*daemon" 2>/dev/null || true
+echo "-- backend daemon disabled for this gate; no process-wide daemon kill --"
 
 # Corpus: trivial -> non-trivial (manifest grows). file|profiles|expected_stdout
 #

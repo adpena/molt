@@ -13,7 +13,9 @@
 use molt_gpu::device::cpu::interpret;
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
@@ -116,11 +118,12 @@ fn gpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
 
     // MUL(x, x)
     let k_sq = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -144,11 +147,13 @@ fn gpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
 
     // ReduceSum
     let k_sum = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -173,17 +178,18 @@ fn gpu_rms_norm(x: &[f32], eps: f32) -> Vec<f32> {
 
     // MUL(x, inv_rms)
     let k_scale = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![
                 FusedSrc::Buf(1),
                 FusedSrc::Const {
                     val: inv_rms as f64,
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        }],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -490,11 +496,13 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
 
     // ReduceMax
     let k_max = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceMax,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceMax,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -520,34 +528,31 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
     // Fused Sub + Mul(log2e) + Exp2
     let log2_e = std::f64::consts::LOG2_E;
     let k_exp = FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Sub,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Sub,
+                vec![
                     FusedSrc::Buf(1),
                     FusedSrc::Const {
                         val: max_val as f64,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![
                     FusedSrc::Op(0),
                     FusedSrc::Const {
                         val: log2_e,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Exp2,
-                srcs: vec![FusedSrc::Op(1)],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
+            FusedOp::elementwise(PrimitiveOp::Exp2, vec![FusedSrc::Op(1)], DType::Float32),
         ],
         bufs: vec![
             BufferBinding {
@@ -573,11 +578,13 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
 
     // ReduceSum
     let k_sum = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -602,17 +609,18 @@ fn test_falcon_ocr_synthetic_4_layer_inference() {
 
     // Mul(exp, 1/sum)
     let k_div = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![
                 FusedSrc::Buf(1),
                 FusedSrc::Const {
                     val: inv_sum as f64,
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        }],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,

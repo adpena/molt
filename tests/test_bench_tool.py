@@ -55,7 +55,6 @@ def test_bench_no_cpython_sets_null_baseline(tmp_path: Path) -> None:
         "0",
         "--molt-profile",
         "dev",
-        "--reuse-molt-build-cache",
         "--json-out",
         str(out_json),
         "--script",
@@ -113,7 +112,6 @@ def test_bench_runtime_timeout_marks_molt_not_ok(tmp_path: Path) -> None:
         "0",
         "--molt-profile",
         "dev",
-        "--reuse-molt-build-cache",
         "--runtime-timeout-sec",
         "0.1",
         "--json-out",
@@ -167,7 +165,6 @@ def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
         "0",
         "--molt-profile",
         "dev",
-        "--reuse-molt-build-cache",
         "--runtime-timeout-sec",
         "1.0",
         "--json-out",
@@ -238,12 +235,13 @@ def test_canonical_bench_env_uses_repo_roots_and_preserves_session() -> None:
     assert env["MOLT_SESSION_ID"] == "bench-review"
 
 
-def test_prepare_molt_binary_defaults_to_no_cache_rebuild(
+def test_prepare_molt_binary_defaults_to_cache_reuse(
     monkeypatch, tmp_path: Path
 ) -> None:
     script = tmp_path / "bench_sample.py"
     script.write_text("print(1)\n", encoding="utf-8")
     commands: list[list[str]] = []
+    pruned_envs: list[dict[str, str]] = []
 
     def fake_guard(command, **kwargs):
         del kwargs
@@ -259,7 +257,11 @@ def test_prepare_molt_binary_defaults_to_no_cache_rebuild(
         )
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
-    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda: None)
+    monkeypatch.setattr(
+        bench_tool,
+        "_prune_backend_daemons",
+        lambda env=None: pruned_envs.append(dict(env or {})),
+    )
     monkeypatch.setattr(
         bench_tool.harness_memory_guard,
         "guarded_completed_process",
@@ -271,13 +273,14 @@ def test_prepare_molt_binary_defaults_to_no_cache_rebuild(
     assert binary is not None
     try:
         command = commands[0]
-        assert "--rebuild" in command
-        assert "--cache" not in command
+        assert "--cache" in command
+        assert "--rebuild" not in command
+        assert pruned_envs == [{"BASE": "1"}]
     finally:
         binary.temp_dir.cleanup()
 
 
-def test_prepare_molt_binary_can_reuse_molt_build_cache(
+def test_prepare_molt_binary_can_force_cold_rebuild(
     monkeypatch, tmp_path: Path
 ) -> None:
     script = tmp_path / "bench_sample.py"
@@ -298,7 +301,7 @@ def test_prepare_molt_binary_can_reuse_molt_build_cache(
         )
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
-    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda: None)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     monkeypatch.setattr(
         bench_tool.harness_memory_guard,
         "guarded_completed_process",
@@ -308,14 +311,14 @@ def test_prepare_molt_binary_can_reuse_molt_build_cache(
     binary = bench_tool.prepare_molt_binary(
         str(script),
         env={},
-        reuse_molt_build_cache=True,
+        use_molt_build_cache=False,
     )
 
     assert binary is not None
     try:
         command = commands[0]
-        assert "--cache" in command
-        assert "--rebuild" not in command
+        assert "--rebuild" in command
+        assert "--cache" not in command
     finally:
         binary.temp_dir.cleanup()
 
@@ -472,7 +475,7 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
-    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda: None)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     monkeypatch.setattr(
         bench_tool,
         "bench_results",
@@ -481,7 +484,7 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
                 {
                     "molt_profile": args[10],
                     "benchmarks": args[0],
-                    "reuse_molt_build_cache": kwargs["reuse_molt_build_cache"],
+                    "use_molt_build_cache": kwargs["use_molt_build_cache"],
                 }
             )
             or {}
@@ -496,7 +499,6 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
             "tools/bench.py",
             "--molt-profile",
             "release",
-            "--reuse-molt-build-cache",
             "--script",
             str(tmp_path / "bench_sample.py"),
         ],
@@ -507,7 +509,7 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
 
     assert captured["molt_profile"] == "release"
     assert captured["benchmarks"] == [str(tmp_path / "bench_sample.py")]
-    assert captured["reuse_molt_build_cache"] is True
+    assert captured["use_molt_build_cache"] is True
 
 
 def test_bench_cli_defaults_molt_profile_to_release(
@@ -516,7 +518,7 @@ def test_bench_cli_defaults_molt_profile_to_release(
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
-    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda: None)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     monkeypatch.setattr(
         bench_tool,
         "bench_results",
@@ -524,7 +526,7 @@ def test_bench_cli_defaults_molt_profile_to_release(
             captured.update(
                 {
                     "molt_profile": args[10],
-                    "reuse_molt_build_cache": kwargs["reuse_molt_build_cache"],
+                    "use_molt_build_cache": kwargs["use_molt_build_cache"],
                 }
             )
             or {}
@@ -546,7 +548,41 @@ def test_bench_cli_defaults_molt_profile_to_release(
     bench_tool.main()
 
     assert captured["molt_profile"] == "release"
-    assert captured["reuse_molt_build_cache"] is False
+    assert captured["use_molt_build_cache"] is True
+
+
+def test_bench_cli_can_disable_molt_build_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
+    monkeypatch.setattr(
+        bench_tool,
+        "bench_results",
+        lambda *args, **kwargs: (
+            captured.update({"use_molt_build_cache": kwargs["use_molt_build_cache"]})
+            or {}
+        ),
+    )
+    monkeypatch.setattr(bench_tool, "_git_rev", lambda: "deadbeef")
+    monkeypatch.setattr(bench_tool, "write_json", lambda path, payload: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tools/bench.py",
+            "--no-molt-build-cache",
+            "--script",
+            str(tmp_path / "bench_sample.py"),
+        ],
+    )
+    (tmp_path / "bench_sample.py").write_text("print(1)\n", encoding="utf-8")
+
+    bench_tool.main()
+
+    assert captured["use_molt_build_cache"] is False
 
 
 def test_summarize_samples_retains_raw_sample_evidence() -> None:
@@ -647,7 +683,7 @@ def test_prepare_molt_binary_uses_batch_build_server(
             }
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
-    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda: None)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
 
     binary = bench_tool.prepare_molt_binary(
         str(script),
@@ -670,13 +706,13 @@ def test_prepare_molt_binary_uses_batch_build_server(
         assert params["stdlib_profile"] == "full"
         assert params["trusted"] is True
         assert params["json_output"] is True
-        assert params["cache"] is False
+        assert params["cache"] is True
         assert params["env_overrides"] == {"BASE": "1"}
     finally:
         binary.temp_dir.cleanup()
 
 
-def test_prepare_molt_binary_passes_reuse_cache_to_batch_build_server(
+def test_prepare_molt_binary_passes_cache_policy_to_batch_build_server(
     monkeypatch, tmp_path: Path
 ) -> None:
     script = tmp_path / "bench_sample.py"
@@ -700,18 +736,18 @@ def test_prepare_molt_binary_passes_reuse_cache_to_batch_build_server(
             }
 
     monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
-    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda: None)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
 
     binary = bench_tool.prepare_molt_binary(
         str(script),
         env={},
         batch_server=_FakeBatchServer(),
-        reuse_molt_build_cache=True,
+        use_molt_build_cache=False,
     )
 
     assert binary is not None
     try:
-        assert requests[0]["cache"] is True
+        assert requests[0]["cache"] is False
     finally:
         binary.temp_dir.cleanup()
 
@@ -932,7 +968,7 @@ def test_main_writes_json_then_exits_nonzero_on_output_parity_failure(
     writes: list[Path] = []
 
     monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
-    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda: None)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
     monkeypatch.setattr(
         bench_tool,
         "bench_results",

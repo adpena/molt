@@ -52,6 +52,7 @@ Generated files (do not hand-edit semantic data):
 - `surfaces/language/core_language_pep_coverage.generated.md`
 - `surfaces/language/generator_api_coverage.generated.md`
 - `surfaces/stdlib/stdlib_platform_availability.generated.md`
+- `surfaces/ecosystem/ecosystem_compat_matrix.generated.md`
 
 Hand-edited control files:
 - `surfaces/stdlib/stdlib_surface_matrix.md`

@@ -121,11 +121,12 @@ mod wasm_cpu_tests {
 
         // Simple add kernel: buf0 = buf1 + buf2
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,

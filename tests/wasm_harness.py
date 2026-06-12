@@ -678,6 +678,7 @@ let asyncgenAthrowMethodIdx = null;
 let asyncgenAcloseMethodIdx = null;
 const asyncgenMethodBits = new Map();
 let asyncgenPollIdx = null;
+let asyncSleepPollIdx = null;
 let promisePollIdx = null;
 const tableFuncCache = new Map();
 const getObj = (val) => heap.get(val & POINTER_MASK);
@@ -6613,8 +6614,26 @@ BASE_IMPORTS = """\
     }
     return objBits;
   },
-  async_sleep: (taskPtr) => {
-    const addr = expectPtrAddr(taskPtr, 'async_sleep');
+  async_sleep: (delayBits, resultBits) => {
+    if (!memory) return boxNone();
+    let pollIdx = asyncSleepPollIdx;
+    if (pollIdx === null) {
+      pollIdx = getOrAddTableFunc(baseImports.async_sleep_poll, 1);
+      if (pollIdx === null) return boxNone();
+      asyncSleepPollIdx = pollIdx;
+    }
+    const futureBits = baseImports.task_new(BigInt(pollIdx), 16n, TASK_KIND_FUTURE);
+    if (!isPtr(futureBits) || heap.has(futureBits & POINTER_MASK)) return futureBits;
+    const addr = ptrAddr(futureBits);
+    const view = memView();
+    view.setBigInt64(addr + 0, delayBits, true);
+    view.setBigInt64(addr + 8, resultBits, true);
+    baseImports.inc_ref_obj(delayBits);
+    baseImports.inc_ref_obj(resultBits);
+    return futureBits;
+  },
+  async_sleep_poll: (taskPtr) => {
+    const addr = expectPtrAddr(taskPtr, 'async_sleep_poll');
     if (addr === 0 || !memory) return boxNone();
     const view = memView();
     const stateBits = view.getBigInt64(addr - HEADER_STATE_OFFSET, true);

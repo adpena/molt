@@ -7,7 +7,10 @@ use std::fmt::Write;
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
-use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, Renderer};
+use crate::render::indexing::{
+    render_reduction_input_index, render_shapetracker_index, zero_literal_for_dtype, IndexDialect,
+};
+use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer};
 
 /// Metal Shading Language renderer for all 26 primitive ops.
 pub struct MslRenderer;
@@ -54,74 +57,38 @@ impl MslRenderer {
     }
 
     /// Render a buffer read expression at the given index.
-    fn render_buf_read(binding: &crate::render::BufferBinding, idx_var: &str) -> String {
-        let st = &binding.st;
-        let view = st.view();
-
-        // Build index expression from ShapeTracker
-        let ndim = view.shape.len();
-        if ndim == 0 {
-            return format!("buf{}[0]", binding.buf_id);
-        }
-
-        // For contiguous single-dim or simple strides, generate direct expression
-        if view.is_contiguous() && view.mask.is_none() {
-            return format!("buf{}[{}]", binding.buf_id, idx_var);
-        }
-
-        // General case: decompose linear index, apply strides
-        let mut parts = Vec::new();
-        for dim in 0..ndim {
-            let stride = view.strides[dim];
-            if stride == 0 {
-                continue;
-            }
-            let size = view.shape[dim];
-            let idx_expr = if dim == ndim - 1 {
-                format!("({} % {})", idx_var, size)
-            } else {
-                let divisor: usize = view.shape[dim + 1..].iter().product();
-                format!("({} / {} % {})", idx_var, divisor, size)
-            };
-            if stride == 1 {
-                parts.push(idx_expr);
-            } else if stride == -1 {
-                parts.push(format!("({} - {})", size - 1, idx_expr));
-            } else if stride > 0 {
-                parts.push(format!("{} * {}", idx_expr, stride));
-            } else {
-                parts.push(format!("({} - {}) * {}", size - 1, idx_expr, -stride));
-            }
-        }
-
-        let offset = if view.offset != 0 {
-            format!("{} + ", view.offset)
+    fn render_buf_read(
+        binding_idx: usize,
+        binding: &crate::render::BufferBinding,
+        idx_var: &str,
+    ) -> String {
+        let idx = render_shapetracker_index(&binding.st, idx_var, IndexDialect::CLike);
+        let read = format!("buf{}[{}]", binding_idx, idx.index);
+        if let Some(valid) = idx.valid {
+            let zero = zero_literal_for_dtype(binding.dtype.narrow_metal(), "false");
+            format!("({} ? {} : {})", valid, read, zero)
         } else {
-            String::new()
-        };
+            read
+        }
+    }
 
-        let idx_sum = if parts.is_empty() {
-            "0".to_string()
-        } else {
-            parts.join(" + ")
-        };
-
-        format!("buf{}[{}{}]", binding.buf_id, offset, idx_sum)
+    fn render_src(src: &FusedSrc, kernel: &FusedKernel, idx_var: &str) -> String {
+        match src {
+            FusedSrc::Buf(buf_idx) => {
+                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
+            }
+            FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
+            FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
+        }
     }
 
     /// Render a single op expression.
     fn render_op(op: &FusedOp, _op_idx: usize, kernel: &FusedKernel, idx_var: &str) -> String {
-        let src = |i: usize| -> String {
-            match &op.srcs[i] {
-                FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var),
-                FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
-                FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-            }
-        };
+        let src = |i: usize| -> String { Self::render_src(&op.srcs()[i], kernel, idx_var) };
 
-        let dst_type = op.dst_dtype.narrow_metal().msl_type();
+        let dst_type = op.dst_dtype().narrow_metal().msl_type();
 
-        match op.op {
+        match op.op() {
             // Arithmetic
             PrimitiveOp::Add => format!("({} + {})", src(0), src(1)),
             PrimitiveOp::Sub => format!("({} - {})", src(0), src(1)),
@@ -169,38 +136,39 @@ impl MslRenderer {
         op: &FusedOp,
         op_idx: usize,
         kernel: &FusedKernel,
+        idx_var: &str,
     ) -> Option<(String, String, String)> {
-        if op.op != PrimitiveOp::Add {
+        if op.op() != PrimitiveOp::Add {
             return None;
         }
         // Only emit FMA for float types
-        if !op.dst_dtype.narrow_metal().is_float() {
+        if !op.dst_dtype().narrow_metal().is_float() {
             return None;
         }
 
         // Check if either source is a MUL op result
         for (mul_src_pos, add_src_pos) in [(0, 1), (1, 0)] {
-            if let FusedSrc::Op(prior_idx) = &op.srcs[mul_src_pos] {
+            if let FusedSrc::Op(prior_idx) = &op.srcs()[mul_src_pos] {
                 if *prior_idx < op_idx {
                     let prior_op = &kernel.ops[*prior_idx];
-                    if prior_op.op == PrimitiveOp::Mul {
-                        let a = match &prior_op.srcs[0] {
+                    if prior_op.op() == PrimitiveOp::Mul {
+                        let a = match &prior_op.srcs()[0] {
                             FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
                             }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
-                        let b = match &prior_op.srcs[1] {
+                        let b = match &prior_op.srcs()[1] {
                             FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
                             }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
                         };
-                        let c = match &op.srcs[add_src_pos] {
+                        let c = match &op.srcs()[add_src_pos] {
                             FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
                             }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
@@ -241,7 +209,7 @@ impl Renderer for MslRenderer {
             write!(
                 out,
                 "{} {}* buf{} [[buffer({})]]",
-                qualifier, dtype_str, binding.buf_id, i
+                qualifier, dtype_str, i, i
             )
             .unwrap();
         }
@@ -253,11 +221,27 @@ impl Renderer for MslRenderer {
         // Bounds check
         let output_numel = kernel.bufs[0].st.numel();
 
+        if kernel.body == KernelBody::MaterializeCopy {
+            let (_, src_binding, copy_numel) = kernel.materialize_copy_contract();
+            assert_eq!(copy_numel, output_numel);
+            assert_eq!(
+                src_binding.dtype,
+                src_binding.dtype.narrow_metal(),
+                "MSL MaterializeCopy requires a non-narrowed dtype"
+            );
+            writeln!(out, "    if (gid >= {}) return;", output_numel).unwrap();
+            let src = Self::render_buf_read(1, src_binding, "gid");
+            writeln!(out, "    buf0[gid] = {};", src).unwrap();
+            writeln!(out, "}}").unwrap();
+            return out;
+        }
+        kernel.compute_body_contract();
+
         // Check if we have reduce ops
         let has_reduce = kernel
             .ops
             .iter()
-            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+            .any(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
 
         // Vectorized path: when vectorize_width == 4 and kernel is pure elementwise,
         // each thread processes 4 elements using float4 loads/stores for coalesced
@@ -280,8 +264,8 @@ impl Renderer for MslRenderer {
             writeln!(out, "        uint eidx = base + lane;").unwrap();
 
             for (i, op) in kernel.ops.iter().enumerate() {
-                let dtype_str = op.dst_dtype.narrow_metal().msl_type();
-                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel) {
+                let dtype_str = op.dst_dtype().narrow_metal().msl_type();
+                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel, "eidx") {
                     format!("fma({}, {}, {})", a, b, c)
                 } else {
                     Self::render_op(op, i, kernel, "eidx")
@@ -290,20 +274,15 @@ impl Renderer for MslRenderer {
             }
 
             let last_op = kernel.ops.len() - 1;
-            writeln!(
-                out,
-                "        buf{}[eidx] = v{};",
-                kernel.bufs[0].buf_id, last_op
-            )
-            .unwrap();
+            writeln!(out, "        buf0[eidx] = v{};", last_op).unwrap();
             writeln!(out, "    }}").unwrap();
         } else if !has_reduce {
             writeln!(out, "    if (gid >= {}) return;", output_numel).unwrap();
             // Pure elementwise kernel — straightforward
             for (i, op) in kernel.ops.iter().enumerate() {
-                let dtype_str = op.dst_dtype.narrow_metal().msl_type();
+                let dtype_str = op.dst_dtype().narrow_metal().msl_type();
                 // Try FMA emission: fma(a, b, c) is faster and more accurate than a*b+c
-                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel) {
+                let expr = if let Some((a, b, c)) = Self::detect_fma(op, i, kernel, "gid") {
                     format!("fma({}, {}, {})", a, b, c)
                 } else {
                     Self::render_op(op, i, kernel, "gid")
@@ -313,28 +292,29 @@ impl Renderer for MslRenderer {
 
             // Write output
             let last_op = kernel.ops.len() - 1;
-            writeln!(out, "    buf{}[gid] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(out, "    buf0[gid] = v{};", last_op).unwrap();
         } else {
             // Fused kernel with reduce: elementwise prefix -> reduce -> elementwise suffix
             let reduce_idx = kernel
                 .ops
                 .iter()
-                .position(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+                .position(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
                 .expect("has_reduce but no reduce op found");
 
             let reduce_op = &kernel.ops[reduce_idx];
-            let reduce_src = &reduce_op.srcs[0];
-            let reduce_dtype = reduce_op.dst_dtype.narrow_metal();
+            let reduce_src = &reduce_op.srcs()[0];
+            let reduce_dtype = reduce_op.dst_dtype().narrow_metal();
+            let domain = reduce_op.require_reduction_domain();
+            assert_eq!(
+                domain.output_numel(),
+                output_numel,
+                "MSL reduction domain output shape must match kernel output"
+            );
+            let reduce_size = domain.reduce_size;
+            let reduce_index =
+                render_reduction_input_index(domain, "gid", "rid", IndexDialect::CLike);
 
-            // Find the input buffer for the reduce source
-            let input_buf = match reduce_src {
-                FusedSrc::Buf(idx) => &kernel.bufs[*idx],
-                FusedSrc::Op(_) => &kernel.bufs[1],
-                FusedSrc::Const { .. } => unreachable!("reduce on constant"),
-            };
-            let reduce_size = input_buf.st.numel() / output_numel;
-
-            let init_val = match reduce_op.op {
+            let init_val = match reduce_op.op() {
                 PrimitiveOp::ReduceSum => "0",
                 PrimitiveOp::ReduceMax => "-INFINITY",
                 _ => unreachable!(),
@@ -355,21 +335,23 @@ impl Renderer for MslRenderer {
                     reduce_size
                 )
                 .unwrap();
-                writeln!(out, "        uint eidx = gid * {} + rid;", reduce_size).unwrap();
+                writeln!(out, "        uint eidx = {};", reduce_index).unwrap();
 
                 for i in 0..reduce_idx {
                     let op = &kernel.ops[i];
-                    let dtype_str = op.dst_dtype.narrow_metal().msl_type();
+                    let dtype_str = op.dst_dtype().narrow_metal().msl_type();
                     let expr = Self::render_op(op, i, kernel, "eidx");
                     writeln!(out, "        {} v{} = {};", dtype_str, i, expr).unwrap();
                 }
 
                 // Accumulate
-                let src_var = format!("v{}", reduce_idx - 1);
-                match reduce_op.op {
-                    PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_var).unwrap(),
+                let src_expr = Self::render_src(reduce_src, kernel, "eidx");
+                match reduce_op.op() {
+                    PrimitiveOp::ReduceSum => {
+                        writeln!(out, "        acc += {};", src_expr).unwrap()
+                    }
                     PrimitiveOp::ReduceMax => {
-                        writeln!(out, "        acc = max(acc, {});", src_var).unwrap()
+                        writeln!(out, "        acc = max(acc, {});", src_expr).unwrap()
                     }
                     _ => unreachable!(),
                 }
@@ -385,12 +367,9 @@ impl Renderer for MslRenderer {
                     reduce_size
                 )
                 .unwrap();
-                writeln!(out, "        uint eidx = gid * {} + rid;", reduce_size).unwrap();
-                let src_expr = match reduce_src {
-                    FusedSrc::Buf(idx) => Self::render_buf_read(&kernel.bufs[*idx], "eidx"),
-                    _ => unreachable!(),
-                };
-                match reduce_op.op {
+                writeln!(out, "        uint eidx = {};", reduce_index).unwrap();
+                let src_expr = Self::render_src(reduce_src, kernel, "eidx");
+                match reduce_op.op() {
                     PrimitiveOp::ReduceSum => {
                         writeln!(out, "        acc += {};", src_expr).unwrap()
                     }
@@ -414,14 +393,14 @@ impl Renderer for MslRenderer {
             // Post-reduce elementwise ops
             for i in (reduce_idx + 1)..kernel.ops.len() {
                 let op = &kernel.ops[i];
-                let dtype_str = op.dst_dtype.narrow_metal().msl_type();
+                let dtype_str = op.dst_dtype().narrow_metal().msl_type();
                 let expr = Self::render_op(op, i, kernel, "gid");
                 writeln!(out, "    {} v{} = {};", dtype_str, i, expr).unwrap();
             }
 
             // Write output
             let last_op = kernel.ops.len() - 1;
-            writeln!(out, "    buf{}[gid] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(out, "    buf0[gid] = v{};", last_op).unwrap();
         }
 
         writeln!(out, "}}").unwrap();

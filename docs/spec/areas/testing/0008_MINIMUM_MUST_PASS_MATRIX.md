@@ -12,8 +12,21 @@ This is the executable gate for the Month 1 "must-pass" roadmap item.
 - Run commands from repo root.
 - Use `uv run --python ...`; do not call `.venv` interpreters directly.
 - Differential runs must include `MOLT_DIFF_MEASURE_RSS=1`.
-- Keep the adaptive default-on harness memory guard active for diff runs; set
-  explicit caps only for a deliberate narrower investigation.
+- Keep the adaptive harness memory guard active for every test run. Direct
+  pytest entrypoints enter custody through root `sitecustomize.py` and the
+  packaged `molt.pytest_memory_guard_bootstrap` pytest entry point before
+  collection; the repo-configured `molt.pytest_memory_guard_config_plugin`
+  keeps the same guard active when pytest entry-point autoload is disabled.
+  Unguarded pytest re-execs through `tools/memory_guard.py`, forged guard env
+  markers fail closed unless a live repo memory-guard ancestor is verified, and
+  `--noconftest` / unsafe `--confcutdir` are rejected before tests can run.
+  Python interpreter-option forms and programmatic `pytest.main()` launches use
+  pytest's own initial hook args as the custody authority. Legacy
+  `*_MEMORY_GUARD=0` env knobs are ignored by the shared harness; set explicit
+  caps only for a deliberate narrower investigation, never to disable RSS
+  custody. Tempfile-backed subprocess capture, suite calibration, wasm diff,
+  DX build timing, perf-scoreboard launchers, and CLI smoke probes also stay on
+  the shared guard path.
 - Use canonical repo-local roots: `target/`, `tmp/diff`, `.molt_cache/`, and `.uv-cache/`.
 - If `MOLT_EXT_ROOT` is set, place those same roots under it explicitly.
 
@@ -63,7 +76,11 @@ Required hardening gate details for IR dedicated probes (part of G3):
   (`target/`, `tmp/`, `dist/`, `build/`, `wasm/`, and `bench/results/`) as
   Molt-owned launch surfaces and propagates matched ownership across nested
   child process groups so detached descendants stay inside cumulative RSS
-  accounting.
+  accounting. Guard teardown must stay narrower than accounting: terminate the
+  guarded root process group and exact tracked escaped descendant PIDs, never
+  ancestor, Codex app/control-plane, or child-reported process groups that can
+  include unrelated host processes. Skipped protected groups are recorded in the
+  sentinel JSONL as `repo_process_guard_protected_host_group`.
 - If RSS grows rapidly, terminate the run, record abort details and last RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md), then rerun with lower parallelism.
 
 ## Minimal Sign-off Checklist

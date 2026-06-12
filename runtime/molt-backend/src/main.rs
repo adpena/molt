@@ -79,6 +79,7 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_ENTRY_MODULE",
     "MOLT_STDLIB_OBJ",
     "MOLT_STDLIB_CACHE_KEY",
+    "MOLT_STDLIB_CACHE_MANIFEST",
     "MOLT_STDLIB_MODULE_SYMBOLS",
     "MOLT_RUNTIME_INTRINSIC_SYMBOLS",
     "MOLT_DEBUG_DROP",
@@ -507,6 +508,60 @@ fn stdlib_cache_manifest_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf 
 }
 
 #[cfg(feature = "native-backend")]
+fn stdlib_cache_partition_manifest_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
+    stdlib_path.with_extension("partition.json")
+}
+
+#[cfg(feature = "native-backend")]
+const STDLIB_PARTITION_MANIFEST_SCHEMA: &str = "stdlib-partition-v1";
+
+#[cfg(feature = "native-backend")]
+fn update_fnv1a64(mut hash: u64, bytes: &[u8]) -> u64 {
+    const FNV_PRIME: u64 = 0x100000001b3;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+#[cfg(feature = "native-backend")]
+fn shared_stdlib_partition_manifest(
+    stdlib_funcs: &[molt_backend::FunctionIR],
+) -> io::Result<String> {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    let mut funcs: Vec<&molt_backend::FunctionIR> = stdlib_funcs.iter().collect();
+    funcs.sort_by(|left, right| left.name.cmp(&right.name));
+
+    let mut names: Vec<String> = Vec::with_capacity(funcs.len());
+    let mut body_hash = FNV_OFFSET;
+    for func in funcs {
+        names.push(func.name.clone());
+        body_hash = update_fnv1a64(body_hash, func.name.as_bytes());
+        body_hash = update_fnv1a64(body_hash, &[0]);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "name": &func.name,
+            "params": &func.params,
+            "ops": &func.ops,
+            "param_types": &func.param_types,
+            "source_file": &func.source_file,
+            "is_extern": func.is_extern,
+        }))
+        .map_err(io::Error::other)?;
+        body_hash = update_fnv1a64(body_hash, &body);
+        body_hash = update_fnv1a64(body_hash, &[0xff]);
+    }
+
+    serde_json::to_string(&serde_json::json!({
+        "schema": STDLIB_PARTITION_MANIFEST_SCHEMA,
+        "function_count": names.len(),
+        "functions": names,
+        "body_hash": format!("{body_hash:016x}"),
+    }))
+    .map_err(io::Error::other)
+}
+
+#[cfg(feature = "native-backend")]
 fn stdlib_cache_publish_lock_path(stdlib_path: &Path) -> PathBuf {
     stdlib_path.with_file_name(format!(
         "{}.publish.lock",
@@ -606,11 +661,20 @@ fn read_stdlib_cache_manifest(stdlib_path: &Path) -> Option<String> {
 }
 
 #[cfg(feature = "native-backend")]
+fn read_stdlib_cache_partition_manifest(stdlib_path: &Path) -> Option<String> {
+    std::fs::read_to_string(stdlib_cache_partition_manifest_sidecar_path(stdlib_path))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(feature = "native-backend")]
 fn remove_shared_stdlib_cache_artifacts(stdlib_path: &Path) {
     let _ = std::fs::remove_file(stdlib_path);
     let _ = std::fs::remove_file(stdlib_cache_count_sidecar_path(stdlib_path));
     let _ = std::fs::remove_file(stdlib_cache_key_sidecar_path(stdlib_path));
     let _ = std::fs::remove_file(stdlib_cache_manifest_sidecar_path(stdlib_path));
+    let _ = std::fs::remove_file(stdlib_cache_partition_manifest_sidecar_path(stdlib_path));
 }
 
 #[cfg(feature = "native-backend")]
@@ -618,6 +682,7 @@ fn shared_stdlib_cache_matches(
     stdlib_path: &Path,
     expected_key: Option<&str>,
     expected_manifest: Option<&str>,
+    expected_partition_manifest: Option<&str>,
 ) -> bool {
     let Some(expected_key) = expected_key.filter(|key| !key.is_empty()) else {
         return false;
@@ -625,8 +690,18 @@ fn shared_stdlib_cache_matches(
     let Some(expected_manifest) = expected_manifest.filter(|manifest| !manifest.is_empty()) else {
         return false;
     };
-    read_stdlib_cache_key(stdlib_path).as_deref() == Some(expected_key)
-        && read_stdlib_cache_manifest(stdlib_path).as_deref() == Some(expected_manifest)
+    if read_stdlib_cache_key(stdlib_path).as_deref() != Some(expected_key)
+        || read_stdlib_cache_manifest(stdlib_path).as_deref() != Some(expected_manifest)
+    {
+        return false;
+    }
+    let cached_partition_manifest = read_stdlib_cache_partition_manifest(stdlib_path);
+    if let Some(expected_partition_manifest) =
+        expected_partition_manifest.filter(|manifest| !manifest.is_empty())
+    {
+        return cached_partition_manifest.as_deref() == Some(expected_partition_manifest);
+    }
+    cached_partition_manifest.is_some()
 }
 
 #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
@@ -643,6 +718,7 @@ fn daemon_memory_cache_allowed_for_job(job: &DaemonJobRequest) -> bool {
             Path::new(&stdlib_obj_path),
             std::env::var("MOLT_STDLIB_CACHE_KEY").ok().as_deref(),
             std::env::var("MOLT_STDLIB_CACHE_MANIFEST").ok().as_deref(),
+            None,
         )
     }
     #[cfg(not(feature = "native-backend"))]
@@ -657,6 +733,7 @@ fn write_shared_stdlib_cache_sidecars(
     stdlib_count: usize,
     cache_key: Option<&str>,
     cache_manifest: Option<&str>,
+    partition_manifest: &str,
 ) -> io::Result<()> {
     let count_path = stdlib_cache_count_sidecar_path(stdlib_path);
     write_atomic_text_file(&count_path, &stdlib_count.to_string())?;
@@ -682,6 +759,11 @@ fn write_shared_stdlib_cache_sidecars(
             Err(err) => return Err(err),
         }
     }
+
+    write_atomic_text_file(
+        &stdlib_cache_partition_manifest_sidecar_path(stdlib_path),
+        partition_manifest,
+    )?;
     Ok(())
 }
 
@@ -692,15 +774,20 @@ fn publish_shared_stdlib_cache_object(
     stdlib_count: usize,
     cache_key: Option<&str>,
     cache_manifest: Option<&str>,
+    partition_manifest: &str,
 ) -> io::Result<()> {
     let result = with_shared_stdlib_cache_publish_lock(stdlib_path, || {
         if let Err(err) = atomic_replace_file(temp_object_path, stdlib_path) {
             remove_shared_stdlib_cache_artifacts(stdlib_path);
             return Err(err);
         }
-        if let Err(err) =
-            write_shared_stdlib_cache_sidecars(stdlib_path, stdlib_count, cache_key, cache_manifest)
-        {
+        if let Err(err) = write_shared_stdlib_cache_sidecars(
+            stdlib_path,
+            stdlib_count,
+            cache_key,
+            cache_manifest,
+            partition_manifest,
+        ) {
             remove_shared_stdlib_cache_artifacts(stdlib_path);
             return Err(err);
         }
@@ -1379,22 +1466,44 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                             );
                         },
                     );
+                    let current_partition_manifest =
+                        match shared_stdlib_partition_manifest(&stdlib_funcs) {
+                            Ok(manifest) => manifest,
+                            Err(err) => {
+                                return DaemonJobResponse {
+                                    id: job.id,
+                                    ok: false,
+                                    cached: false,
+                                    cache_tier: None,
+                                    output_written: false,
+                                    needs_ir: false,
+                                    message: Some(format!(
+                                        "failed to compute shared stdlib partition manifest: {err}"
+                                    )),
+                                    warnings: Vec::new(),
+                                };
+                            }
+                        };
 
                     if have_entry_module && stdlib_path.exists() {
                         if !shared_stdlib_cache_matches(
                             stdlib_path,
                             expected_stdlib_cache_key.as_deref(),
                             expected_stdlib_cache_manifest.as_deref(),
+                            Some(current_partition_manifest.as_str()),
                         ) {
                             let cached_key = read_stdlib_cache_key(stdlib_path);
                             let cached_manifest = read_stdlib_cache_manifest(stdlib_path);
+                            let cached_partition_manifest =
+                                read_stdlib_cache_partition_manifest(stdlib_path);
                             eprintln!(
                                 "MOLT_BACKEND(daemon): stdlib cache contract mismatch \
-                                 (cached key {}, expected key {}; cached manifest {}, expected manifest present {}) — rebuilding",
+                                 (cached key {}, expected key {}; cached manifest {}, expected manifest present {}; cached partition manifest present {}, expected partition manifest present true) — rebuilding",
                                 cached_key.as_deref().unwrap_or("<missing>"),
                                 expected_stdlib_cache_key.as_deref().unwrap_or("<missing>"),
                                 cached_manifest.as_deref().unwrap_or("<missing>"),
                                 expected_stdlib_cache_manifest.is_some(),
+                                cached_partition_manifest.is_some(),
                             );
                             remove_shared_stdlib_cache_artifacts(stdlib_path);
                         } else {
@@ -1466,6 +1575,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                                 stdlib_count,
                                 expected_stdlib_cache_key.as_deref(),
                                 expected_stdlib_cache_manifest.as_deref(),
+                                current_partition_manifest.as_str(),
                             ) {
                                 let _ = std::fs::remove_file(&temp_stdlib_path);
                                 return DaemonJobResponse {
@@ -2378,6 +2488,7 @@ fn main() -> io::Result<()> {
                 ensure_output_parent_dir(stdlib_path.to_str().unwrap_or("")).unwrap_or_else(|e| {
                     eprintln!("MOLT_BACKEND: warning: failed to create stdlib parent: {e}");
                 });
+                let current_partition_manifest = shared_stdlib_partition_manifest(&stdlib_funcs)?;
                 if have_entry_module && stdlib_path.exists() {
                     // Cached stdlib exists — only reuse it when the CLI and
                     // backend agree on the exact stdlib IR identity.
@@ -2393,6 +2504,7 @@ fn main() -> io::Result<()> {
                         stdlib_path,
                         expected_stdlib_cache_key.as_deref(),
                         expected_stdlib_cache_manifest.as_deref(),
+                        Some(current_partition_manifest.as_str()),
                     ) {
                         // Cache exactly matches the requested stdlib IR — mark
                         // stdlib functions as extern stubs so the backend declares
@@ -2413,12 +2525,15 @@ fn main() -> io::Result<()> {
                         );
                     } else {
                         // Cache is stale or from a different stdlib IR topology.
+                        let cached_partition_manifest =
+                            read_stdlib_cache_partition_manifest(stdlib_path);
                         eprintln!(
-                            "MOLT_BACKEND: stdlib cache contract mismatch (cached key {}, expected key {}; cached manifest {}, expected manifest present {}; cached {} functions, need {}) — rebuilding",
+                            "MOLT_BACKEND: stdlib cache contract mismatch (cached key {}, expected key {}; cached manifest {}, expected manifest present {}; cached partition manifest present {}, expected partition manifest present true; cached {} functions, need {}) — rebuilding",
                             cached_key.as_deref().unwrap_or("<missing>"),
                             expected_stdlib_cache_key.as_deref().unwrap_or("<missing>"),
                             cached_manifest.as_deref().unwrap_or("<missing>"),
                             expected_stdlib_cache_manifest.is_some(),
+                            cached_partition_manifest.is_some(),
                             cached_count,
                             current_stdlib_count,
                         );
@@ -2455,6 +2570,7 @@ fn main() -> io::Result<()> {
                         stdlib_count,
                         expected_stdlib_cache_key.as_deref(),
                         expected_stdlib_cache_manifest.as_deref(),
+                        current_partition_manifest.as_str(),
                     )?;
                     // Now compile user functions only
                     ir.functions = std::mem::take(&mut user_remaining);
@@ -2613,6 +2729,7 @@ mod tests {
         partition_functions_for_batches, prune_and_partition_native_stdlib,
         read_bounded_request_bytes, read_daemon_request_bytes, relocatable_linker_binary,
         resolve_backend_output_path, resolved_batch_size_limit, shared_stdlib_cache_matches,
+        shared_stdlib_partition_manifest, stdlib_cache_partition_manifest_sidecar_path,
         write_cached_output, write_shared_stdlib_cache_sidecars,
     };
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
@@ -3184,31 +3301,105 @@ mod tests {
             7,
             Some("abc123"),
             Some("{\"cache_key\":\"abc123\"}"),
+            "partition-a",
         )
         .expect("write sidecars");
         assert!(shared_stdlib_cache_matches(
             &stdlib_path,
             Some("abc123"),
-            Some("{\"cache_key\":\"abc123\"}")
+            Some("{\"cache_key\":\"abc123\"}"),
+            Some("partition-a"),
+        ));
+        assert!(shared_stdlib_cache_matches(
+            &stdlib_path,
+            Some("abc123"),
+            Some("{\"cache_key\":\"abc123\"}"),
+            None,
         ));
         assert!(!shared_stdlib_cache_matches(
             &stdlib_path,
             Some("def456"),
-            Some("{\"cache_key\":\"abc123\"}")
+            Some("{\"cache_key\":\"abc123\"}"),
+            Some("partition-a"),
         ));
         assert!(!shared_stdlib_cache_matches(
             &stdlib_path,
             Some("abc123"),
-            Some("{\"cache_key\":\"def456\"}")
+            Some("{\"cache_key\":\"def456\"}"),
+            Some("partition-a"),
         ));
         assert!(!shared_stdlib_cache_matches(
             &stdlib_path,
             Some("abc123"),
-            None
+            Some("{\"cache_key\":\"abc123\"}"),
+            Some("partition-b"),
         ));
-        assert!(!shared_stdlib_cache_matches(&stdlib_path, None, None));
+        assert!(!shared_stdlib_cache_matches(
+            &stdlib_path,
+            Some("abc123"),
+            None,
+            Some("partition-a"),
+        ));
+        assert!(!shared_stdlib_cache_matches(&stdlib_path, None, None, None));
+
+        std::fs::remove_file(stdlib_cache_partition_manifest_sidecar_path(&stdlib_path))
+            .expect("remove partition manifest");
+        assert!(!shared_stdlib_cache_matches(
+            &stdlib_path,
+            Some("abc123"),
+            Some("{\"cache_key\":\"abc123\"}"),
+            None,
+        ));
+        assert!(!shared_stdlib_cache_matches(
+            &stdlib_path,
+            Some("abc123"),
+            Some("{\"cache_key\":\"abc123\"}"),
+            Some("partition-a"),
+        ));
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
+        let func_a = FunctionIR {
+            name: "molt_init_sys".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "return_none".to_string(),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let func_b = FunctionIR {
+            name: "sys__version".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("3.12".to_string()),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let mut changed = func_b.clone();
+        changed.ops[0].s_value = Some("3.13".to_string());
+
+        let ordered = shared_stdlib_partition_manifest(&[func_a.clone(), func_b.clone()])
+            .expect("partition manifest");
+        let reordered = shared_stdlib_partition_manifest(&[func_b, func_a.clone()])
+            .expect("partition manifest");
+        let body_changed =
+            shared_stdlib_partition_manifest(&[func_a, changed]).expect("partition manifest");
+
+        assert_eq!(ordered, reordered);
+        assert_ne!(ordered, body_changed);
+        assert!(ordered.contains("\"molt_init_sys\""));
+        assert!(ordered.contains("\"sys__version\""));
+        assert!(ordered.contains("\"schema\":\"stdlib-partition-v1\""));
     }
 
     #[test]
@@ -3231,6 +3422,7 @@ mod tests {
             7,
             Some("abc123"),
             Some("{\"cache_key\":\"abc123\"}"),
+            "partition-a",
         )
         .expect_err("sidecar writes should fail when parent is not a directory");
         assert!(!err.to_string().is_empty());

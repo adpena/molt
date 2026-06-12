@@ -13,14 +13,14 @@ use super::io::{
     filesystem_encode_errors, filesystem_encoding, fspath_bits_with_flavor,
     glob_dir_fd_arg_from_bits, glob_escape_text, glob_has_magic_text, glob_iter_alloc_object,
     glob_iter_new_state, glob_translate_text, path_abspath_text, path_as_uri_text,
-    path_basename_text,
-    path_compare_text, path_dirname_text, path_expandvars_text, path_expandvars_with_lookup,
-    path_from_bits, path_glob_matches, path_isabs_text, path_join_many_text, path_join_raw,
-    path_join_text, path_match_text, path_name_text, path_normpath_text, path_parents_text,
-    path_parts_text, path_relative_to_text, path_relpath_text, path_resolve_text, path_sep_char,
-    path_sequence_from_bits, path_splitext_text, path_splitroot_text, path_stem_text,
-    path_str_arg_from_bits, path_string_from_bits, path_string_with_flavor_from_bits,
-    path_suffix_text, path_suffixes_text, raise_io_error_for_glob, raw_from_bytes_text,
+    path_basename_text, path_compare_text, path_dirname_text, path_expandvars_text,
+    path_expandvars_with_lookup, path_from_bits, path_glob_matches, path_isabs_text,
+    path_join_many_text, path_join_raw, path_join_text, path_match_text, path_name_text,
+    path_normpath_text, path_parents_text, path_parts_text, path_relative_to_text,
+    path_relpath_text, path_resolve_text, path_sep_char, path_sequence_from_bits,
+    path_splitext_text, path_splitroot_text, path_stem_text, path_str_arg_from_bits,
+    path_string_from_bits, path_string_with_flavor_from_bits, path_suffix_text, path_suffixes_text,
+    raise_io_error_for_glob, raw_from_bytes_text,
 };
 use crate::PyToken;
 use crate::audit::{AuditArgs, audit_capability_decision};
@@ -1860,10 +1860,7 @@ pub(crate) fn at_path_to_cstring(
 /// message. The returned error bits already carry a recorded exception.
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 #[inline]
-pub(crate) fn at_resolve_dir_fd(
-    _py: &PyToken<'_>,
-    dir_fd_bits: u64,
-) -> Result<libc::c_int, u64> {
+pub(crate) fn at_resolve_dir_fd(_py: &PyToken<'_>, dir_fd_bits: u64) -> Result<libc::c_int, u64> {
     let obj = obj_from_bits(dir_fd_bits);
     if obj.is_none() {
         return Ok(libc::AT_FDCWD);
@@ -2203,9 +2200,8 @@ pub extern "C" fn molt_os_rename_at(
                 Ok(c) => c,
                 Err(bits) => return bits,
             };
-            let rc = unsafe {
-                libc::renameat(src_dir_fd, c_src.as_ptr(), dst_dir_fd, c_dst.as_ptr())
-            };
+            let rc =
+                unsafe { libc::renameat(src_dir_fd, c_src.as_ptr(), dst_dir_fd, c_dst.as_ptr()) };
             if rc < 0 {
                 return raise_os_error::<u64>(_py, std::io::Error::last_os_error(), "rename");
             }
@@ -2272,9 +2268,8 @@ pub extern "C" fn molt_os_replace_at(
                 Ok(c) => c,
                 Err(bits) => return bits,
             };
-            let rc = unsafe {
-                libc::renameat(src_dir_fd, c_src.as_ptr(), dst_dir_fd, c_dst.as_ptr())
-            };
+            let rc =
+                unsafe { libc::renameat(src_dir_fd, c_src.as_ptr(), dst_dir_fd, c_dst.as_ptr()) };
             if rc < 0 {
                 return raise_os_error::<u64>(_py, std::io::Error::last_os_error(), "replace");
             }

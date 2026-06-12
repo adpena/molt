@@ -28,7 +28,9 @@ def test_current_repo_subprocess_guard_coverage_is_green() -> None:
     audit = module.audit_paths()
 
     assert audit.ok, module._format_text(audit)
-    assert len(audit.raw_calls) == len(module.ALLOWLIST)
+    assert len(audit.raw_calls) == sum(
+        entry.expected_count for entry in module.ALLOWLIST
+    )
     assert REPO_ROOT / "src" / "molt" / "repl.py" in module.DEFAULT_TARGETS
 
 
@@ -49,6 +51,43 @@ def test_unclassified_raw_subprocess_call_fails(tmp_path: Path) -> None:
     assert audit.unexpected[0].path == "bad.py"
     assert audit.unexpected[0].qualname == "launch"
     assert audit.unexpected[0].method == "run"
+
+
+def test_unclassified_os_kill_call_fails(tmp_path: Path) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "bad_kill.py"
+    source.write_text(
+        "import os\n\n"
+        "def terminate(pid):\n"
+        "    os.kill(pid, 9)\n",
+        encoding="utf-8",
+    )
+
+    audit = module.audit_paths([source], root=tmp_path, allowlist=())
+
+    assert not audit.ok
+    assert len(audit.unexpected) == 1
+    assert audit.unexpected[0].path == "bad_kill.py"
+    assert audit.unexpected[0].qualname == "terminate"
+    assert audit.unexpected[0].method == "os.kill"
+
+
+def test_unclassified_shell_pkill_string_fails(tmp_path: Path) -> None:
+    module = _load_audit_tool()
+    source = tmp_path / "bad_shell.py"
+    source.write_text(
+        "def script():\n"
+        "    return 'pkill -f molt-backend'\n",
+        encoding="utf-8",
+    )
+
+    audit = module.audit_paths([source], root=tmp_path, allowlist=())
+
+    assert not audit.ok
+    assert len(audit.unexpected) == 1
+    assert audit.unexpected[0].path == "bad_shell.py"
+    assert audit.unexpected[0].qualname == "script"
+    assert audit.unexpected[0].method == "shell.kill"
 
 
 def test_stale_allowlist_entry_fails(tmp_path: Path) -> None:

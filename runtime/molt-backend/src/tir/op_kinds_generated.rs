@@ -55,15 +55,34 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "object_new_bound" => Some(OpCode::ObjectNewBound),
         "object_new_bound_stack" => Some(OpCode::ObjectNewBoundStack),
         "free" => Some(OpCode::Free),
-        "get_attr" | "get_attr_generic_ptr" | "get_attr_generic_obj" | "get_attr_name" | "guarded_field_get" | "load" | "load_attr" => Some(OpCode::LoadAttr),
-        "set_attr" | "store_attr" | "set_attr_name" | "set_attr_generic_ptr" | "set_attr_generic_obj" | "guarded_field_set" | "guarded_field_set_init" | "store" | "store_init" => Some(OpCode::StoreAttr),
-        "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => Some(OpCode::DelAttr),
+        "get_attr"
+        | "get_attr_generic_ptr"
+        | "get_attr_generic_obj"
+        | "get_attr_name"
+        | "guarded_field_get"
+        | "load"
+        | "load_attr" => Some(OpCode::LoadAttr),
+        "set_attr"
+        | "store_attr"
+        | "set_attr_name"
+        | "set_attr_generic_ptr"
+        | "set_attr_generic_obj"
+        | "guarded_field_set"
+        | "guarded_field_set_init"
+        | "store"
+        | "store_init" => Some(OpCode::StoreAttr),
+        "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => {
+            Some(OpCode::DelAttr)
+        }
         "index" => Some(OpCode::Index),
         "store_index" | "index_set" => Some(OpCode::StoreIndex),
         "del_index" => Some(OpCode::DelIndex),
-        "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind" | "call_function" | "call_guarded" | "invoke_ffi" => Some(OpCode::Call),
+        "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind"
+        | "call_function" | "call_guarded" | "invoke_ffi" => Some(OpCode::Call),
         // GPU offload primitives lower through the call machinery.
-        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => Some(OpCode::Call),
+        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => {
+            Some(OpCode::Call)
+        }
         "call_method" => Some(OpCode::CallMethod),
         "call_builtin" | "builtin_print" | "print" | "range_new" => Some(OpCode::CallBuiltin),
         "ord_at" => Some(OpCode::OrdAt),
@@ -131,53 +150,51 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
 pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
     matches!(
         kind,
-        "aiter" |
-        "ascii_from_obj" |
-        "complex_from_obj" |
-        "contains" |
-        "dict_from_obj" |
-        "dict_items" |
-        "dict_keys" |
-        "dict_new" |
-        "dict_values" |
-        "enumerate" |
-        "float_from_obj" |
-        "inplace_bit_and" |
-        "inplace_bit_or" |
-        "inplace_bit_xor" |
-        "inplace_div" |
-        "inplace_floordiv" |
-        "inplace_lshift" |
-        "inplace_matmul" |
-        "inplace_mod" |
-        "inplace_pow" |
-        "inplace_rshift" |
-        "int_from_obj" |
-        "int_from_str_of_obj" |
-        "iter" |
-        "list_fill_new" |
-        "list_from_range" |
-        "list_new" |
-        "object_new" |
-        "range_new" |
-        "repr_from_obj" |
-        "set_new" |
-        "slice" |
-        "slice_new" |
-        "str_from_obj" |
-        "string_format" |
-        "string_join" |
-        "tuple_from_list" |
-        "tuple_new"
+        "aiter"
+            | "ascii_from_obj"
+            | "complex_from_obj"
+            | "contains"
+            | "dict_from_obj"
+            | "dict_items"
+            | "dict_keys"
+            | "dict_new"
+            | "dict_values"
+            | "enumerate"
+            | "float_from_obj"
+            | "inplace_bit_and"
+            | "inplace_bit_or"
+            | "inplace_bit_xor"
+            | "inplace_div"
+            | "inplace_floordiv"
+            | "inplace_lshift"
+            | "inplace_matmul"
+            | "inplace_mod"
+            | "inplace_pow"
+            | "inplace_rshift"
+            | "int_from_obj"
+            | "int_from_str_of_obj"
+            | "iter"
+            | "list_fill_new"
+            | "list_from_range"
+            | "list_new"
+            | "object_new"
+            | "range_new"
+            | "repr_from_obj"
+            | "set_new"
+            | "slice"
+            | "slice_new"
+            | "str_from_obj"
+            | "string_format"
+            | "string_join"
+            | "tuple_from_list"
+            | "tuple_new"
     )
 }
 
 /// Prefix rules for `copy_kind_mints_fresh_owned_ref`: a kind starting
 /// with any of these mints a fresh owned reference (e.g. the `vec_*`
 /// vectorized-reduction family, each calling a dedicated `molt_vec_*`).
-pub(crate) const FRESH_VALUE_PREFIXES: &[&str] = &[
-    "vec_",
-];
+pub(crate) const FRESH_VALUE_PREFIXES: &[&str] = &["vec_"];
 
 /// EXACT-match arm of `classify_copy_kind`'s inert bucket: kinds with a
 /// dedicated RC-inert backend lowering and no surviving heap reference to
@@ -186,19 +203,19 @@ pub(crate) const FRESH_VALUE_PREFIXES: &[&str] = &[
 pub(crate) fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
     matches!(
         kind,
-        "guard_bool" |
-        "guard_dict_shape" |
-        "guard_float" |
-        "guard_int" |
-        "guard_layout" |
-        "guard_layout_ptr" |
-        "guard_none" |
-        "guard_str" |
-        "line" |
-        "missing" |
-        "nop" |
-        "trace_enter_slot" |
-        "trace_exit"
+        "guard_bool"
+            | "guard_dict_shape"
+            | "guard_float"
+            | "guard_int"
+            | "guard_layout"
+            | "guard_layout_ptr"
+            | "guard_none"
+            | "guard_str"
+            | "line"
+            | "missing"
+            | "nop"
+            | "trace_enter_slot"
+            | "trace_exit"
     )
 }
 
@@ -210,13 +227,13 @@ pub(crate) fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
 pub(crate) fn copy_kind_is_explicit_no_heap_move_table(kind: &str) -> bool {
     matches!(
         kind,
-        "copy" |
-        "copy_var" |
-        "guard_tag" |
-        "guard_type" |
-        "identity_alias" |
-        "load_var" |
-        "store_var"
+        "copy"
+            | "copy_var"
+            | "guard_tag"
+            | "guard_type"
+            | "identity_alias"
+            | "load_var"
+            | "store_var"
     )
 }
 

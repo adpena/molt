@@ -81,12 +81,12 @@ pub enum PrimitiveOp {
     /// `cond ? a : b` — ternary select.
     Where,
     /// Type conversion: `(target_type)a`.
-    /// Target dtype is stored in FusedOp.dst_dtype.
+    /// Target dtype is stored in FusedOp::dst_dtype().
     Cast,
 
     // --- Specialized (3) ---
     /// Reinterpret bits as different type (no conversion).
-    /// Target dtype is stored in FusedOp.dst_dtype.
+    /// Target dtype is stored in FusedOp::dst_dtype().
     Bitcast,
     /// `sum(a[i]) over axis` — reduce op.
     ReduceSum,

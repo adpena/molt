@@ -1510,10 +1510,7 @@ impl GlobIterState {
     }
 
     /// Public driver used by the eager `glob()` drain (`list(iglob(...))`).
-    pub(crate) fn next_path_public(
-        &mut self,
-        _py: &PyToken<'_>,
-    ) -> Result<Option<String>, u64> {
+    pub(crate) fn next_path_public(&mut self, _py: &PyToken<'_>) -> Result<Option<String>, u64> {
         self.next_path(_py)
     }
 
@@ -1769,11 +1766,7 @@ impl GlobIterState {
 
     /// Produce the next parent directory for an `Iglob` frame (literal or from
     /// the nested recursive `iglob(dirname, dironly=True)`).
-    fn iglob_next_parent(
-        &mut self,
-        _py: &PyToken<'_>,
-        idx: usize,
-    ) -> Result<Option<String>, u64> {
+    fn iglob_next_parent(&mut self, _py: &PyToken<'_>, idx: usize) -> Result<Option<String>, u64> {
         // Literal source: take the single dirname once.
         {
             let GlobFrame::Iglob { dirs, .. } = &mut self.stack[idx] else {
@@ -1910,8 +1903,7 @@ pub(crate) fn glob_iter_new_state(
     bytes_mode: bool,
     sep: char,
 ) -> Result<Box<GlobIterState>, u64> {
-    let skip_leading_empty =
-        pathname.is_empty() || (recursive && pathname.starts_with("**"));
+    let skip_leading_empty = pathname.is_empty() || (recursive && pathname.starts_with("**"));
     let cfg = GlobIterConfig {
         root_dir: root_dir.map(str::to_string),
         dir_fd,

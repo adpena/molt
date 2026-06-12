@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 use molt_gpu::device::cpu::interpret;
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain,
+};
 #[allow(unused_imports)]
 use molt_gpu::shapetracker::ShapeTracker;
 
@@ -84,17 +86,19 @@ fn gpu_matmul(a_data: &[f32], b_data: &[f32], m: usize, k: usize, n: usize) -> V
     let mkn = m * k * n;
 
     let kernel = FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Op(0)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(0)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[out_n, k], 1),
+            ),
         ],
         bufs: vec![
             BufferBinding {

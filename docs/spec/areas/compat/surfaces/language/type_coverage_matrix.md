@@ -137,7 +137,7 @@
   - Implemented: generator state objects (`gi_running`, `gi_frame` stub, `gi_yieldfrom`) and `inspect.getgeneratorstate`.
   - TODO(introspection, owner:runtime, milestone:TC3, priority:P2, status:missing): full frame objects + `gi_code` parity.
   - Implemented: comprehension lowering to iterators (list/set/dict comprehensions + generator expressions).
-  - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:missing): async comprehensions (async for/await in comprehensions).
+  - Implemented: async comprehensions (`async for`/`await` in comprehensions) with focused differential coverage.
   - Implemented (partial): builtin iterators (`iter` with sentinel, `next`, `reversed`, `zip`, `map`, `filter`).
   - Implemented (partial): builtin numeric ops (`abs`, `divmod`, `min`, `max`, `sum`) for numeric types.
   - TODO(type-coverage, owner:frontend, milestone:TC2, priority:P2, status:partial): builtin conversions (`str`, `bool`).

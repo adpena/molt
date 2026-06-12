@@ -96,6 +96,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_memory_guard
+
 ROOT = Path(__file__).resolve().parents[1]
 HONESTY_DIR = Path(__file__).resolve().parent / "suite_honesty"
 MANIFEST_PATH = HONESTY_DIR / "differential_expectations.json"
@@ -792,7 +794,15 @@ def cmd_calibrate(paths: list[str], results_out: Path, jobs: int, profile: str) 
         *targets,
     ]
     print(f"calibrating: {' '.join(cmd)}", file=sys.stderr)
-    proc = subprocess.run(cmd, env=env)
+    proc = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_DIFF",
+        env=env,
+        cwd=ROOT,
+        capture_output=False,
+    )
+    if proc.stderr:
+        print(proc.stderr, file=sys.stderr, end="")
     if not results_out.exists():
         print(
             f"calibration produced no results file at {results_out}",
@@ -832,7 +842,15 @@ def cmd_calibrate_wasm(
         *targets,
     ]
     print(f"calibrating wasm: {' '.join(cmd)}", file=sys.stderr)
-    proc = subprocess.run(cmd, env=env)
+    proc = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix="MOLT_WASM_DIFF",
+        env=env,
+        cwd=ROOT,
+        capture_output=False,
+    )
+    if proc.stderr:
+        print(proc.stderr, file=sys.stderr, end="")
     if not results_out.exists():
         print(f"wasm calibration produced no results at {results_out}", file=sys.stderr)
         return 1

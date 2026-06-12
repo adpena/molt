@@ -27,7 +27,9 @@ mod metal_bench {
     use molt_gpu::dtype::DType;
     use molt_gpu::ops::PrimitiveOp;
     use molt_gpu::render::msl::MslRenderer;
-    use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
+    use molt_gpu::render::{
+        BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain, Renderer,
+    };
     use molt_gpu::shapetracker::ShapeTracker;
 
     const WARMUP: usize = 5;
@@ -64,11 +66,12 @@ mod metal_bench {
         let b_bytes = f32_to_bytes(&b);
 
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -214,11 +217,13 @@ mod metal_bench {
         // (Metal doesn't have a native fused matmul shader in the primitive ops,
         // so we time the reduce_sum path which is what the Metal backend actually runs)
         let reduce_kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[out_n, k], 1),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -322,11 +327,13 @@ mod metal_bench {
 
         // Build kernels
         let k_reduce_max = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::ReduceMax,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceMax,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n], 0),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -349,28 +356,25 @@ mod metal_bench {
 
         let log2_e = std::f64::consts::LOG2_E;
         let k_exp = FusedKernel {
+            body: Default::default(),
             ops: vec![
-                FusedOp {
-                    op: PrimitiveOp::Sub,
-                    srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::Mul,
-                    srcs: vec![
+                FusedOp::elementwise(
+                    PrimitiveOp::Sub,
+                    vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                    DType::Float32,
+                ),
+                FusedOp::elementwise(
+                    PrimitiveOp::Mul,
+                    vec![
                         FusedSrc::Op(0),
                         FusedSrc::Const {
                             val: log2_e,
                             dtype: DType::Float32,
                         },
                     ],
-                    dst_dtype: DType::Float32,
-                },
-                FusedOp {
-                    op: PrimitiveOp::Exp2,
-                    srcs: vec![FusedSrc::Op(1)],
-                    dst_dtype: DType::Float32,
-                },
+                    DType::Float32,
+                ),
+                FusedOp::elementwise(PrimitiveOp::Exp2, vec![FusedSrc::Op(1)], DType::Float32),
             ],
             bufs: vec![
                 BufferBinding {
@@ -399,11 +403,13 @@ mod metal_bench {
         };
 
         let k_reduce_sum = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n], 0),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -482,11 +488,12 @@ mod metal_bench {
 
         // Build a normalize kernel for the final division
         let k_norm = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,

@@ -7,14 +7,15 @@
 //! static shapes, computes optimal grid/local sizes and determines
 //! whether bounds checks can be eliminated.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::dtype::DType;
 use crate::lazy::LazyOp;
 use crate::ops::PrimitiveOp;
 use crate::render::{
-    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ShapeSpecialization,
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, KernelBody, ReductionDomain,
+    ShapeSpecialization,
 };
 use crate::shapetracker::ShapeTracker;
 
@@ -60,15 +61,20 @@ pub fn preferred_local_sizes_for_backend(
 ///
 /// ## Buffer identity contract
 ///
-/// Each [`BufferBinding::buf_id`] is the *identity of the DAG node that
-/// produces that buffer's data*, NOT a fresh per-binding counter:
+/// Each [`BufferBinding::buf_id`] is the storage identity of the concrete
+/// buffer that supplies a binding's bytes. It is not the shader parameter
+/// identity:
 ///
 /// - A **leaf** ([`LazyOp::Buffer`]) contributes its own [`DeviceBufferRef::id`]
 ///   as the binding id. That id is the key the runtime uses to fetch the leaf's
-///   realized bytes, so the schedule→execute bridge (which looks data up by
+///   realized bytes, so the schedule -> execute bridge (which looks data up by
 ///   binding id) resolves to the correct input buffer. Two ops reading the same
-///   leaf therefore share a binding id, and a leaf read twice within one kernel
-///   (e.g. `x - x`) collapses to a single binding.
+///   leaf therefore share a storage id.
+/// - A **Movement** ([`LazyOp::Movement`]) also contributes its source storage
+///   id, while the per-kernel [`BufferBinding::st`] carries the movement view.
+///   If one physical buffer is read through two distinct views in one kernel,
+///   the scheduler emits two binding slots with the same storage id and
+///   different ShapeTrackers; renderers name shader parameters by binding slot.
 /// - An **intermediate** (the result of a non-leaf op that another kernel
 ///   consumes) gets a fresh globally-unique id from [`alloc_buffer_id`],
 ///   memoized per node so the producing kernel's output binding and every
@@ -82,10 +88,60 @@ pub fn schedule(root: &Arc<LazyOp>, _output_shape: &[usize]) -> Vec<FusedKernel>
     let mut ctx = ScheduleCtx::default();
 
     schedule_recursive(root, &mut kernels, &mut ctx);
+    schedule_root_materialization(root, _output_shape, &mut kernels, &mut ctx);
     kernels
 }
 
-/// Scheduler state: maps each DAG node to its stable buffer identity.
+/// Realizing a root view is an explicit materialization boundary.
+///
+/// Movement nodes are still free when consumed by compute kernels: the operand
+/// binding carries the view and reads source storage directly. When the Movement
+/// itself is the scheduled root, however, callers are asking for concrete
+/// contiguous output bytes. Emit the same MaterializeCopy kernel that an
+/// explicit `Contiguous` node would have produced instead of letting the
+/// zero-kernel pipeline invent an all-zero result.
+fn schedule_root_materialization(
+    root: &Arc<LazyOp>,
+    output_shape: &[usize],
+    kernels: &mut Vec<FusedKernel>,
+    ctx: &mut ScheduleCtx,
+) {
+    let LazyOp::Movement { st, .. } = root.as_ref() else {
+        return;
+    };
+    assert_eq!(
+        root.shape(),
+        output_shape,
+        "root Movement materialization shape mismatch"
+    );
+
+    let n = output_shape.iter().product::<usize>();
+    kernels.push(FusedKernel {
+        body: KernelBody::MaterializeCopy,
+        ops: Vec::new(),
+        bufs: vec![
+            BufferBinding {
+                buf_id: crate::lazy::alloc_buffer_id(),
+                st: ShapeTracker::contiguous(output_shape),
+                dtype: root.dtype(),
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: ctx.buf_id_for(root),
+                st: st.clone(),
+                dtype: root.dtype(),
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n.max(1) as u32, 1, 1],
+        local: [n.clamp(1, 256) as u32, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    });
+}
+
+/// Scheduler state: maps each DAG node to its stable buffer identity and
+/// remembers which producer nodes already emitted their kernel.
 ///
 /// Keyed by the node's `Arc<LazyOp>` pointer address (stable for the lifetime of
 /// the DAG, which the root keeps alive across scheduling). The same node always
@@ -94,6 +150,8 @@ pub fn schedule(root: &Arc<LazyOp>, _output_shape: &[usize]) -> Vec<FusedKernel>
 struct ScheduleCtx {
     /// `Arc<LazyOp>` pointer (as usize) -> assigned buffer id.
     node_ids: HashMap<usize, usize>,
+    /// Producer nodes that already emitted a kernel.
+    scheduled_nodes: HashSet<usize>,
 }
 
 impl ScheduleCtx {
@@ -112,58 +170,45 @@ impl ScheduleCtx {
             // globally-unique id, memoized per node so the producing kernel's
             // output binding and every consuming kernel's input binding agree.
             LazyOp::Unary { .. }
+            | LazyOp::Cast { .. }
             | LazyOp::Binary { .. }
             | LazyOp::Ternary { .. }
-            | LazyOp::Reduce { .. } => {
+            | LazyOp::Reduce { .. }
+            | LazyOp::Contiguous { .. } => {
                 let key = Arc::as_ptr(node) as usize;
                 *self
                     .node_ids
                     .entry(key)
                     .or_insert_with(crate::lazy::alloc_buffer_id)
             }
-            // Movement re-views its source's buffer (different strides/offset, no
-            // new data); Contiguous would materialize its source into a fresh
-            // contiguous buffer via a copy kernel. Binding either as a kernel
-            // operand needs more than an id: a Movement consumer must compose the
-            // movement's ShapeTracker into its input binding, and Contiguous must
-            // actually emit its copy kernel — neither of which the scheduler
-            // threads today (see `schedule_recursive`, which treats both as pure
-            // scheduling passthroughs and drops the movement view). Minting a
-            // fresh id here would bind the consumer to a buffer no kernel produces
-            // (silent zeros — the exact "realize computes on zeros" bug class this
-            // contract exists to kill), or, with a half-done view fix, a
-            // wrong-strided read (silent miscompile). Fail loud instead.
-            //
-            // These nodes are unreachable through the current realize FFI (no
-            // Movement/Contiguous constructor exists); this guard turns the gap
-            // into an immediate, actionable error the moment one is added rather
-            // than a silent miscompute. The exhaustive match (no `_`) also forces
-            // any future LazyOp variant to declare its buffer identity here.
-            //
-            // TODO(perf, owner:runtime, milestone:RT, priority:P2, status:missing):
-            // thread tinygrad-faithful movement views into consuming kernel
-            // bindings and emit a Contiguous materialization (copy) kernel, then
-            // bind Movement by source identity and Contiguous by a fresh copy id.
-            LazyOp::Movement { .. } => panic!(
-                "molt-gpu scheduler: cannot bind a Movement node as a kernel \
-                 operand yet — its ShapeTracker view is not threaded into the \
-                 consuming binding (tracked in ROADMAP). This DAG shape is \
-                 unreachable via the current realize FFI; constructing it is a \
-                 buffer-identity contract violation."
-            ),
-            LazyOp::Contiguous { .. } => panic!(
-                "molt-gpu scheduler: cannot bind a Contiguous node as a kernel \
-                 operand yet — its materialization (copy) kernel is unimplemented \
-                 (tracked in ROADMAP). This DAG shape is unreachable via the \
-                 current realize FFI; constructing it is a buffer-identity \
-                 contract violation."
-            ),
+            // Movement is a view of its source storage, not a producer of fresh
+            // bytes. The binding view is carried separately by
+            // `operand_binding_st`; the storage lookup id remains the source id.
+            LazyOp::Movement { src, .. } => self.buf_id_for(src),
         }
     }
 }
 
+/// The view a kernel operand must use when bound as an input.
+///
+/// Most producer nodes materialize contiguous output storage, so the consuming
+/// kernel's expected logical input view is the caller-supplied `default_st`.
+/// Leaf buffers and Movement nodes are already view-bearing: the binding must
+/// preserve their ShapeTracker rather than replacing it with the output view.
+fn operand_binding_st(operand: &Arc<LazyOp>, default_st: &ShapeTracker) -> ShapeTracker {
+    match operand.as_ref() {
+        LazyOp::Buffer { st, .. } | LazyOp::Movement { st, .. } => st.clone(),
+        LazyOp::Contiguous { .. } => default_st.clone(),
+        LazyOp::Unary { .. }
+        | LazyOp::Cast { .. }
+        | LazyOp::Binary { .. }
+        | LazyOp::Ternary { .. }
+        | LazyOp::Reduce { .. } => default_st.clone(),
+    }
+}
+
 /// Build the input bindings for a kernel from its ordered operand nodes,
-/// deduplicating operands that refer to the same DAG node.
+/// deduplicating operands that refer to the same storage id and view.
 ///
 /// Returns `(input_bindings, operand_slots)` where `input_bindings` are the
 /// distinct input [`BufferBinding`]s (to be appended after the output at
@@ -172,12 +217,16 @@ impl ScheduleCtx {
 ///
 /// Deduplication is required for two reasons that the historical
 /// fresh-id-per-operand scheme violated:
-/// 1. **Codegen correctness**: renderers emit `buf{buf_id}` as a unique kernel
-///    parameter name; two bindings with the same id (the same source) would
-///    declare the parameter twice. Collapsing repeats keeps names unique.
+/// 1. **Codegen correctness**: renderers emit `buf{slot}` where `slot` is the
+///    binding index in `FusedKernel.bufs`. Collapsing exact repeats keeps the IR
+///    minimal without confusing storage identity and shader parameter identity.
 /// 2. **Data routing**: the same source must map to one physical input buffer
 ///    (e.g. `x - x` reads one buffer, used for both operands), mirroring the
 ///    `srcs: [Buf(1), Buf(1)]` convention the interpreter and Metal paths expect.
+///
+/// Movement views refine that rule: repeated reads through the same storage id
+/// and same view collapse, but different views of the same storage stay as
+/// separate binding slots so each source expression uses its own ShapeTracker.
 ///
 /// `binding_st` is the [`ShapeTracker`] view every input binding of this kernel
 /// shares: the output view for elementwise ops, the source view for a reduce
@@ -192,15 +241,19 @@ fn build_input_bindings(
 
     for operand in operands {
         let id = ctx.buf_id_for(operand);
+        let st = operand_binding_st(operand, binding_st);
         // bufs[0] is the output; inputs begin at slot 1. Reuse an existing slot
-        // if this operand's source is already bound (same buffer id).
-        if let Some(pos) = input_bindings.iter().position(|b| b.buf_id == id) {
+        // if this operand's source and view are already bound.
+        if let Some(pos) = input_bindings
+            .iter()
+            .position(|b| b.buf_id == id && b.st == st)
+        {
             operand_slots.push(pos + 1);
         } else {
             let slot = input_bindings.len() + 1;
             input_bindings.push(BufferBinding {
                 buf_id: id,
-                st: binding_st.clone(),
+                st,
                 dtype: operand.dtype(),
                 access: BufferAccess::Read,
             });
@@ -271,13 +324,14 @@ pub fn specialize_shapes(kernels: &mut [FusedKernel]) {
         // 2. All buffers are Float32 (SIMD float4 loads/stores)
         // 3. All buffer views are contiguous (no stride gaps)
         // 4. No reduce ops (vectorized reduce needs different codegen)
-        let can_vectorize = total.is_multiple_of(4)
+        let can_vectorize = kernel.body == KernelBody::Compute
+            && total.is_multiple_of(4)
             && kernel.bufs.iter().all(|b| b.dtype == DType::Float32)
             && kernel.bufs.iter().all(|b| b.st.view().is_contiguous())
             && !kernel
                 .ops
                 .iter()
-                .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+                .any(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
         if can_vectorize {
             kernel.vectorize_width = 4;
         }
@@ -325,11 +379,14 @@ fn kernel_structural_hash(kernel: &FusedKernel) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
 
+    kernel.body.hash(&mut hasher);
+
     // Hash op chain structure
     for op in &kernel.ops {
-        std::mem::discriminant(&op.op).hash(&mut hasher);
-        op.dst_dtype.hash(&mut hasher);
-        for src in &op.srcs {
+        std::mem::discriminant(&op.op()).hash(&mut hasher);
+        op.dst_dtype().hash(&mut hasher);
+        op.domain().hash(&mut hasher);
+        for src in op.srcs() {
             match src {
                 FusedSrc::Buf(_) => 0u8.hash(&mut hasher),
                 FusedSrc::Op(idx) => {
@@ -345,9 +402,9 @@ fn kernel_structural_hash(kernel: &FusedKernel) -> u64 {
         }
     }
 
-    // Hash buffer shapes and dtypes (not IDs)
+    // Hash full view contracts and dtypes (not storage IDs).
     for buf in &kernel.bufs {
-        buf.st.shape().hash(&mut hasher);
+        buf.st.hash(&mut hasher);
         buf.dtype.hash(&mut hasher);
         buf.access.hash(&mut hasher);
     }
@@ -355,6 +412,8 @@ fn kernel_structural_hash(kernel: &FusedKernel) -> u64 {
     // Hash grid/local sizes
     kernel.grid.hash(&mut hasher);
     kernel.local.hash(&mut hasher);
+    kernel.spec.hash(&mut hasher);
+    kernel.vectorize_width.hash(&mut hasher);
 
     hasher.finish()
 }
@@ -365,16 +424,39 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
             // Leaf node — already materialized, nothing to schedule. Its buffer
             // id is its own `DeviceBufferRef::id`, resolved on demand by
             // `ScheduleCtx::buf_id_for` when a parent op binds it.
+            return;
         }
+        LazyOp::Movement { src, st: _ } => {
+            // Movement ops are free — just modify the ShapeTracker.
+            schedule_recursive(src, kernels, ctx);
+            return;
+        }
+        LazyOp::Unary { .. }
+        | LazyOp::Cast { .. }
+        | LazyOp::Binary { .. }
+        | LazyOp::Ternary { .. }
+        | LazyOp::Reduce { .. }
+        | LazyOp::Contiguous { .. } => {}
+    }
+
+    let node_key = Arc::as_ptr(node) as usize;
+    if !ctx.scheduled_nodes.insert(node_key) {
+        return;
+    }
+
+    match node.as_ref() {
         LazyOp::Unary { op, src } => {
+            assert!(
+                !matches!(op, PrimitiveOp::Cast | PrimitiveOp::Bitcast),
+                "Cast/Bitcast LazyOps must use LazyOp::Cast with explicit dst_dtype"
+            );
             schedule_recursive(src, kernels, ctx);
             let shape = node.shape();
             let n = shape.iter().product::<usize>();
 
             let out_id = ctx.buf_id_for(node);
             let st = ShapeTracker::contiguous(&shape);
-            let (inputs, slots) =
-                build_input_bindings(ctx, &st, &[src]);
+            let (inputs, slots) = build_input_bindings(ctx, &st, &[src]);
 
             let mut bufs = Vec::with_capacity(1 + inputs.len());
             bufs.push(BufferBinding {
@@ -386,11 +468,49 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
             bufs.extend(inputs);
 
             kernels.push(FusedKernel {
-                ops: vec![FusedOp {
-                    op: *op,
-                    srcs: vec![FusedSrc::Buf(slots[0])],
-                    dst_dtype: node.dtype(),
-                }],
+                body: KernelBody::Compute,
+                ops: vec![FusedOp::elementwise(
+                    *op,
+                    vec![FusedSrc::Buf(slots[0])],
+                    node.dtype(),
+                )],
+                bufs,
+                grid: [n.max(1) as u32, 1, 1],
+                local: [n.clamp(1, 256) as u32, 1, 1],
+                spec: None,
+                vectorize_width: 1,
+            });
+        }
+        LazyOp::Cast { op, src, dst_dtype } => {
+            assert!(
+                matches!(op, PrimitiveOp::Cast | PrimitiveOp::Bitcast),
+                "LazyOp::Cast only supports Cast/Bitcast, got {:?}",
+                op
+            );
+            schedule_recursive(src, kernels, ctx);
+            let shape = node.shape();
+            let n = shape.iter().product::<usize>();
+
+            let out_id = ctx.buf_id_for(node);
+            let st = ShapeTracker::contiguous(&shape);
+            let (inputs, slots) = build_input_bindings(ctx, &st, &[src]);
+
+            let mut bufs = Vec::with_capacity(1 + inputs.len());
+            bufs.push(BufferBinding {
+                buf_id: out_id,
+                st: st.clone(),
+                dtype: *dst_dtype,
+                access: BufferAccess::Write,
+            });
+            bufs.extend(inputs);
+
+            kernels.push(FusedKernel {
+                body: KernelBody::Compute,
+                ops: vec![FusedOp::elementwise(
+                    *op,
+                    vec![FusedSrc::Buf(slots[0])],
+                    *dst_dtype,
+                )],
                 bufs,
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
@@ -406,8 +526,7 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
 
             let out_id = ctx.buf_id_for(node);
             let st = ShapeTracker::contiguous(&shape);
-            let (inputs, slots) =
-                build_input_bindings(ctx, &st, &[lhs, rhs]);
+            let (inputs, slots) = build_input_bindings(ctx, &st, &[lhs, rhs]);
 
             let mut bufs = Vec::with_capacity(1 + inputs.len());
             bufs.push(BufferBinding {
@@ -419,11 +538,12 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
             bufs.extend(inputs);
 
             kernels.push(FusedKernel {
-                ops: vec![FusedOp {
-                    op: *op,
-                    srcs: vec![FusedSrc::Buf(slots[0]), FusedSrc::Buf(slots[1])],
-                    dst_dtype: node.dtype(),
-                }],
+                body: KernelBody::Compute,
+                ops: vec![FusedOp::elementwise(
+                    *op,
+                    vec![FusedSrc::Buf(slots[0]), FusedSrc::Buf(slots[1])],
+                    node.dtype(),
+                )],
                 bufs,
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
@@ -440,8 +560,7 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
 
             let out_id = ctx.buf_id_for(node);
             let st = ShapeTracker::contiguous(&shape);
-            let (inputs, slots) =
-                build_input_bindings(ctx, &st, &[cond, a, b]);
+            let (inputs, slots) = build_input_bindings(ctx, &st, &[cond, a, b]);
 
             let mut bufs = Vec::with_capacity(1 + inputs.len());
             bufs.push(BufferBinding {
@@ -453,15 +572,16 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
             bufs.extend(inputs);
 
             kernels.push(FusedKernel {
-                ops: vec![FusedOp {
-                    op: *op,
-                    srcs: vec![
+                body: KernelBody::Compute,
+                ops: vec![FusedOp::elementwise(
+                    *op,
+                    vec![
                         FusedSrc::Buf(slots[0]),
                         FusedSrc::Buf(slots[1]),
                         FusedSrc::Buf(slots[2]),
                     ],
-                    dst_dtype: node.dtype(),
-                }],
+                    node.dtype(),
+                )],
                 bufs,
                 grid: [n.max(1) as u32, 1, 1],
                 local: [n.clamp(1, 256) as u32, 1, 1],
@@ -469,10 +589,11 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
                 vectorize_width: 1,
             });
         }
-        LazyOp::Reduce { op, src, axis: _ } => {
+        LazyOp::Reduce { op, src, axis } => {
             schedule_recursive(src, kernels, ctx);
             let in_shape = src.shape();
-            let out_shape = node.shape();
+            let domain = ReductionDomain::from_axis(&in_shape, *axis);
+            let out_shape = domain.output_shape.clone();
             let out_n = out_shape.iter().product::<usize>().max(1);
 
             let out_id = ctx.buf_id_for(node);
@@ -480,8 +601,7 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
             // output), so the binding ShapeTracker is the input shape, not the
             // output shape.
             let in_st = ShapeTracker::contiguous(&in_shape);
-            let (inputs, slots) =
-                build_input_bindings(ctx, &in_st, &[src]);
+            let (inputs, slots) = build_input_bindings(ctx, &in_st, &[src]);
 
             let mut bufs = Vec::with_capacity(1 + inputs.len());
             bufs.push(BufferBinding {
@@ -493,11 +613,13 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
             bufs.extend(inputs);
 
             kernels.push(FusedKernel {
-                ops: vec![FusedOp {
-                    op: *op,
-                    srcs: vec![FusedSrc::Buf(slots[0])],
-                    dst_dtype: node.dtype(),
-                }],
+                body: KernelBody::Compute,
+                ops: vec![FusedOp::reduction(
+                    *op,
+                    vec![FusedSrc::Buf(slots[0])],
+                    node.dtype(),
+                    domain,
+                )],
                 bufs,
                 grid: [out_n as u32, 1, 1],
                 local: [out_n.min(256) as u32, 1, 1],
@@ -505,13 +627,39 @@ fn schedule_recursive(node: &Arc<LazyOp>, kernels: &mut Vec<FusedKernel>, ctx: &
                 vectorize_width: 1,
             });
         }
-        LazyOp::Movement { src, st: _ } => {
-            // Movement ops are free — just modify the ShapeTracker.
-            schedule_recursive(src, kernels, ctx);
-        }
         LazyOp::Contiguous { src } => {
-            // Force materialization — insert a copy kernel.
             schedule_recursive(src, kernels, ctx);
+            let shape = node.shape();
+            let n = shape.iter().product::<usize>();
+
+            let out_id = ctx.buf_id_for(node);
+            let out_st = ShapeTracker::contiguous(&shape);
+            let (inputs, _slots) = build_input_bindings(ctx, &out_st, &[src]);
+            assert_eq!(
+                inputs.len(),
+                1,
+                "Contiguous materialization must bind exactly one source"
+            );
+
+            let mut bufs = Vec::with_capacity(2);
+            bufs.push(BufferBinding {
+                buf_id: out_id,
+                st: out_st,
+                dtype: node.dtype(),
+                access: BufferAccess::Write,
+            });
+            bufs.extend(inputs);
+
+            kernels.push(FusedKernel {
+                body: KernelBody::MaterializeCopy,
+                ops: Vec::new(),
+                bufs,
+                grid: [n.max(1) as u32, 1, 1],
+                local: [n.clamp(1, 256) as u32, 1, 1],
+                spec: None,
+                vectorize_width: 1,
+            });
         }
+        LazyOp::Buffer { .. } | LazyOp::Movement { .. } => unreachable!(),
     }
 }

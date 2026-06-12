@@ -175,6 +175,7 @@ class HarnessMemoryLimits:
     child_rlimit_kb: int | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "enabled", True)
         object.__setattr__(
             self,
             "max_process_rss_kb",
@@ -349,13 +350,8 @@ def enabled_from_env(
     prefix: str,
     env: Mapping[str, str] | None = None,
 ) -> bool:
-    source = _effective_env(env)
-    normalized = _normalize_prefix(prefix)
-    return _env_bool(
-        source,
-        [f"{normalized}_MEMORY_GUARD", "MOLT_MEMORY_GUARD"],
-        default=True,
-    )
+    del prefix, env
+    return True
 
 
 def limits_from_env(
@@ -365,7 +361,6 @@ def limits_from_env(
     source = _effective_env(env)
     normalized = _normalize_prefix(prefix)
     adaptive_budget = memory_guard.adaptive_memory_budget(normalized, source)
-    enabled = enabled_from_env(normalized, source)
     process_override = _env_float_optional(
         source,
         [
@@ -449,7 +444,7 @@ def limits_from_env(
         )
         child_rlimit_gb = _clamp_hard_limit(child_rlimit_gb, child_rlimit_cap_gb)
     return HarnessMemoryLimits(
-        enabled=enabled,
+        enabled=True,
         max_process_rss_gb=process_gb,
         max_total_rss_gb=total_gb,
         max_global_rss_gb=global_gb,
@@ -761,6 +756,47 @@ def _github_context_payload(env: Mapping[str, str]) -> dict[str, str] | None:
     return payload or None
 
 
+def _command_profile_mode(env: Mapping[str, str]) -> str:
+    raw = (
+        env.get("MOLT_GUARD_PROFILE", "")
+        or env.get("MOLT_GUARD_PROFILE_MODE", "")
+    ).strip().lower()
+    if raw in FALSE_VALUES:
+        return "off"
+    if env.get("MOLT_GUARD_PROFILE_LOG", "").strip():
+        return "all"
+    if raw in {"1", "all", "always", "true", "yes", "on"}:
+        return "all"
+    if raw in {"incident", "incidents", "failure", "failures"}:
+        return "incident"
+    return "incident"
+
+
+def _guard_repro_message(
+    *,
+    command: Sequence[str],
+    cwd: str | Path | None,
+    env: Mapping[str, str] | None,
+    limits: HarnessMemoryLimits,
+    timeout: float | None,
+    prefix: str,
+) -> str:
+    payload = memory_guard.repro_context_payload(
+        command=command,
+        cwd=cwd,
+        environ=_effective_env(env),
+        max_process_rss_kb=limits.max_process_rss_kb,
+        max_total_rss_kb=limits.max_total_rss_kb,
+        max_global_rss_kb=limits.max_global_rss_kb,
+        child_rlimit_kb=limits.current_child_rlimit_kb(env),
+        timeout_s=timeout,
+        poll_interval_s=limits.poll_interval,
+        summary_json=None,
+    )
+    payload["prefix"] = _normalize_prefix(prefix) or "MOLT"
+    return f"memory_guard: repro context: {memory_guard.repro_context_line(payload)}\n"
+
+
 def _append_guarded_command_profile(
     *,
     command: Sequence[str],
@@ -770,13 +806,14 @@ def _append_guarded_command_profile(
     limits: HarnessMemoryLimits,
     returncode: int,
     elapsed_s: float | None,
+    timeout_s: float | None,
     violation: memory_guard.RssViolation | None,
     timed_out: bool,
     limit_at_violation: memory_guard.ResolvedMemoryLimits | None,
     orphaned_process_groups: Sequence[int],
     peak: memory_guard.RssViolation | None = None,
     peak_total: memory_guard.RssViolation | None = None,
-    ) -> tuple[Path, str | None]:
+) -> tuple[Path, str | None]:
     source = _effective_env(env)
     path = command_profile_log_path(source)
     max_bytes = _max_bytes_from_mb(
@@ -791,6 +828,15 @@ def _append_guarded_command_profile(
         if violation is not None or timed_out
         else memory_guard.exit_signal_payload(returncode)
     )
+    status = _guarded_command_status(
+        returncode=returncode,
+        violation=violation,
+        timed_out=timed_out,
+        orphaned_process_groups=orphaned_process_groups,
+    )
+    mode = _command_profile_mode(source)
+    if mode == "off" or (mode == "incident" and status == "pass"):
+        return path, None
     payload: dict[str, object] = {
         "schema_version": "1.0",
         "event": "guarded_command_profile",
@@ -800,12 +846,7 @@ def _append_guarded_command_profile(
         "cwd": str(Path(cwd).expanduser() if cwd is not None else Path.cwd()),
         "command": list(command),
         "returncode": returncode,
-        "status": _guarded_command_status(
-            returncode=returncode,
-            violation=violation,
-            timed_out=timed_out,
-            orphaned_process_groups=orphaned_process_groups,
-        ),
+        "status": status,
         "elapsed_s": None if elapsed_s is None else round(elapsed_s, 6),
         "memory_guard": limits_summary(limits),
         "memory_guard_enabled": limits.enabled,
@@ -821,6 +862,23 @@ def _append_guarded_command_profile(
         ),
         "exit_signal": exit_signal,
     }
+    if status != "pass":
+        payload["repro"] = memory_guard.repro_context_payload(
+            command=command,
+            cwd=cwd,
+            environ=source,
+            max_process_rss_kb=limits.max_process_rss_kb,
+            max_total_rss_kb=limits.max_total_rss_kb,
+            max_global_rss_kb=(
+                limit_at_violation.max_global_rss_kb
+                if limit_at_violation is not None
+                else limits.max_global_rss_kb
+            ),
+            child_rlimit_kb=limits.current_child_rlimit_kb(env),
+            timeout_s=timeout_s,
+            poll_interval_s=limits.poll_interval,
+            summary_json=None,
+        )
     github_context = _github_context_payload(source)
     if github_context is not None:
         payload["github"] = github_context
@@ -893,13 +951,44 @@ def _stale_cleanup_message(
     )
 
 
+def _repo_sentinel_repro_payload(
+    *,
+    command: str,
+    cwd: str | Path | None,
+    env: Mapping[str, str] | None,
+    limits: HarnessMemoryLimits,
+    resolved_limits: memory_guard.ResolvedMemoryLimits,
+    label: str,
+    accounted_rss_kb: int,
+    timeout_s: float | None = None,
+) -> dict[str, object]:
+    command_payload = [command] if command else list(sys.argv)
+    payload = memory_guard.repro_context_payload(
+        command=command_payload,
+        cwd=cwd,
+        environ=_effective_env(env),
+        max_process_rss_kb=resolved_limits.max_process_rss_kb,
+        max_total_rss_kb=resolved_limits.max_total_rss_kb,
+        max_global_rss_kb=resolved_limits.max_global_rss_kb,
+        child_rlimit_kb=limits.current_child_rlimit_kb(
+            env,
+            accounted_rss_kb=accounted_rss_kb,
+        ),
+        timeout_s=timeout_s,
+        poll_interval_s=limits.poll_interval,
+        summary_json=None,
+    )
+    payload["sentinel_label"] = label
+    return payload
+
+
 def _prune_stale_repo_processes(
     *,
     prefix: str,
     env: Mapping[str, str] | None,
     limits: HarnessMemoryLimits,
 ) -> tuple[process_sentinel.SentinelViolation, ...]:
-    if not limits.enabled or not _stale_orphan_cleanup_enabled(prefix, env):
+    if not _stale_orphan_cleanup_enabled(prefix, env):
         return ()
     stale_orphan_sec = _stale_seconds_from_env(
         prefix,
@@ -921,6 +1010,11 @@ def _prune_stale_repo_processes(
         root=_REPO_ROOT,
         self_pid=os.getpid(),
         self_pgid=os.getpgrp() if os.name == "posix" else None,
+    )
+    accounted_rss_kb = sum(group.total_rss_kb for group in groups)
+    current_limits = limits.current_memory_limits(
+        env,
+        accounted_rss_kb=accounted_rss_kb,
     )
     violations = process_sentinel.find_violations(
         groups,
@@ -945,6 +1039,15 @@ def _prune_stale_repo_processes(
                 "event": "repo_process_guard_stale_preflight",
                 "label": label,
                 "violation": process_sentinel.violation_payload(violation),
+                "repro": _repo_sentinel_repro_payload(
+                    command=violation.command,
+                    cwd=_REPO_ROOT,
+                    env=env,
+                    limits=limits,
+                    resolved_limits=current_limits,
+                    label=label,
+                    accounted_rss_kb=accounted_rss_kb,
+                ),
                 "killed_at": killed_at,
                 "action": (
                     "terminated stale orphaned repo-scoped Molt process group "
@@ -969,11 +1072,7 @@ def _auto_repo_sentinel(
     env: Mapping[str, str] | None,
     limits: HarnessMemoryLimits,
 ) -> Iterator[RepoProcessMemorySentinel | None]:
-    if (
-        not limits.enabled
-        or _sentinel_active()
-        or _external_repo_sentinel_active(prefix, env)
-    ):
+    if _sentinel_active() or _external_repo_sentinel_active(prefix, env):
         yield None
         return
     _prune_stale_repo_processes(prefix=prefix, env=env, limits=limits)
@@ -1011,46 +1110,9 @@ def guarded_completed_process(
     errors: str = "replace",
 ) -> GuardedCompletedProcess:
     resolved_limits = limits or limits_from_env(prefix, env)
-    # Resolve a relative path-bearing interpreter against the parent cwd so the
-    # disabled-guard fast path matches the guarded path: `subprocess.run(cwd=...)`
-    # would otherwise mis-resolve a relative `command[0]` against the child cwd.
+    # Resolve a relative path-bearing interpreter against the parent cwd before
+    # memory_guard.run_guarded hands it to the child spawn boundary.
     command = memory_guard._resolve_relative_executable(command)
-    if not resolved_limits.enabled:
-        started = time.perf_counter()
-        completed = subprocess.run(
-            list(command),
-            cwd=cwd,
-            env=dict(env) if env is not None else None,
-            input=input,
-            capture_output=capture_output,
-            text=text,
-            timeout=timeout,
-            check=False,
-        )
-        elapsed_s = time.perf_counter() - started
-        _profile_path, profile_error = _append_guarded_command_profile(
-            command=command,
-            prefix=prefix,
-            cwd=cwd,
-            env=env,
-            limits=resolved_limits,
-            returncode=completed.returncode,
-            elapsed_s=elapsed_s,
-            violation=None,
-            timed_out=False,
-            limit_at_violation=None,
-            orphaned_process_groups=(),
-        )
-        stderr = completed.stderr
-        if profile_error:
-            stderr = (stderr or "") + profile_error
-        return GuardedCompletedProcess(
-            list(command),
-            completed.returncode,
-            completed.stdout,
-            stderr,
-            elapsed_s=elapsed_s,
-        )
     sentinel_is_active = _sentinel_active() or _external_repo_sentinel_active(
         prefix,
         env,
@@ -1129,6 +1191,20 @@ def guarded_completed_process(
             elapsed_s=guarded.elapsed_s,
             killed_at=incident_at,
         )
+    if (
+        guarded.violation is not None
+        or guarded.timed_out
+        or bool(guarded.orphaned_process_groups)
+        or memory_guard.exit_signal_payload(guarded.returncode) is not None
+    ):
+        stderr += _guard_repro_message(
+            command=command,
+            cwd=cwd,
+            env=env,
+            limits=resolved_limits,
+            timeout=timeout,
+            prefix=prefix,
+        )
     _profile_path, profile_error = _append_guarded_command_profile(
         command=command,
         prefix=prefix,
@@ -1137,6 +1213,7 @@ def guarded_completed_process(
         limits=resolved_limits,
         returncode=guarded.returncode,
         elapsed_s=guarded.elapsed_s,
+        timeout_s=timeout,
         violation=guarded.violation,
         timed_out=guarded.timed_out,
         limit_at_violation=guarded.limit_at_violation,
@@ -1270,15 +1347,13 @@ def guarded_completed_process_to_tempfiles(
     # Resolve a relative path-bearing executable against the parent cwd before
     # Popen, which would otherwise exec it relative to the child `cwd=`.
     command = memory_guard._resolve_relative_executable(command)
-    guard_enabled = bool(resolved_limits.enabled)
     popen_kwargs: dict[str, object] = {}
-    if guard_enabled:
-        popen_kwargs.update(batch_process_group_kwargs(resolved_limits, env=env))
+    popen_kwargs.update(batch_process_group_kwargs(resolved_limits, env=env))
 
-    sentinel_scope = (
-        _auto_repo_sentinel(prefix=prefix, env=env, limits=resolved_limits)
-        if guard_enabled
-        else contextlib.nullcontext(None)
+    sentinel_scope = _auto_repo_sentinel(
+        prefix=prefix,
+        env=env,
+        limits=resolved_limits,
     )
     with sentinel_scope:
         with (
@@ -1294,9 +1369,7 @@ def guarded_completed_process_to_tempfiles(
                 stdin=subprocess.PIPE if input is not None else None,
                 **popen_kwargs,
             )
-            tracker = (
-                memory_guard.ProcessTreeTracker(proc.pid) if guard_enabled else None
-            )
+            tracker = memory_guard.ProcessTreeTracker(proc.pid)
             if input is not None and proc.stdin is not None:
                 try:
                     proc.stdin.write(input)
@@ -1311,11 +1384,7 @@ def guarded_completed_process_to_tempfiles(
             next_keepalive = (
                 started + keepalive_interval if keepalive_interval is not None else None
             )
-            next_guard_sample = (
-                started + max(0.01, resolved_limits.poll_interval)
-                if guard_enabled
-                else None
-            )
+            next_guard_sample = started + max(0.01, resolved_limits.poll_interval)
             while True:
                 now = time.monotonic()
                 remaining = None if timeout is None else timeout - (now - started)
@@ -1400,6 +1469,16 @@ def guarded_completed_process_to_tempfiles(
                                     elapsed_s=now - started,
                                 )
                             )
+                            stderr_file.write(
+                                _guard_repro_message(
+                                    command=command,
+                                    cwd=cwd,
+                                    env=env,
+                                    limits=resolved_limits,
+                                    timeout=timeout,
+                                    prefix=prefix,
+                                ).encode("utf-8", errors="replace")
+                            )
                             stderr_file.flush()
                             _terminate_guarded_bytes_process(
                                 proc,
@@ -1462,8 +1541,6 @@ def batch_process_group_kwargs(
     env: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     resolved_limits = limits or limits_from_env("MOLT", env)
-    if not resolved_limits.enabled:
-        return {}
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         return {"creationflags": creationflags} if creationflags else {}
@@ -1569,14 +1646,13 @@ class RepoProcessMemorySentinel:
         self._baseline_pgids: set[int] = set()
         self._observed_pgids: set[int] = set()
         self._terminated_pgids: set[int] = set()
+        self._protected_pgids_recorded: set[int] = set()
         self.tripped = False
         self._started_monotonic = time.monotonic()
         self._started_at = _utc_timestamp()
         self.events_path = artifact_root / "memory_guard" / f"{label}_sentinel.jsonl"
 
     def __enter__(self) -> "RepoProcessMemorySentinel":
-        if not self._limits.enabled:
-            return self
         if self._suppress_auto_guard:
             _note_auto_sentinel_suppressor_entered()
         try:
@@ -1600,10 +1676,10 @@ class RepoProcessMemorySentinel:
             self._stop.set()
             if self._thread is not None:
                 self._thread.join(timeout=max(0.5, self._limits.poll_interval * 2))
-            if self._limits.enabled and self._drain_on_exit:
+            if self._drain_on_exit:
                 self.drain_new_processes()
         finally:
-            if self._limits.enabled and self._suppress_auto_guard:
+            if self._suppress_auto_guard:
                 _note_auto_sentinel_suppressor_exited()
 
     def _record(self, payload: dict[str, object]) -> None:
@@ -1660,8 +1736,10 @@ class RepoProcessMemorySentinel:
         *,
         update_observed: bool = True,
     ) -> list[process_sentinel.ProcessGroup]:
+        samples = memory_guard.sample_processes()
+        self._record_skipped_protected_groups(samples)
         groups = process_sentinel.process_groups(
-            memory_guard.sample_processes(),
+            samples,
             root=self._repo_root,
             self_pid=os.getpid(),
             self_pgid=os.getpgrp(),
@@ -1670,6 +1748,43 @@ class RepoProcessMemorySentinel:
         if update_observed:
             self._observed_pgids.update(group.pgid for group in groups)
         return groups
+
+    def _record_skipped_protected_groups(
+        self,
+        samples: Mapping[int, memory_guard.ProcessSample],
+    ) -> None:
+        protected = process_sentinel.skipped_protected_process_groups(
+            samples,
+            root=self._repo_root,
+            self_pid=os.getpid(),
+            self_pgid=os.getpgrp(),
+            known_pgids=self._observed_pgids,
+        )
+        for group in protected:
+            if not any(
+                process_sentinel.is_host_control_plane_process(sample)
+                for sample in group.samples
+            ):
+                continue
+            if group.pgid in self._protected_pgids_recorded:
+                continue
+            self._protected_pgids_recorded.add(group.pgid)
+            peak = group.peak
+            self._record(
+                {
+                    "event": "repo_process_guard_protected_host_group",
+                    "pgid": group.pgid,
+                    "pids": group.pids,
+                    "command": "" if peak is None else peak.command,
+                    "guard_started_at": self._started_at,
+                    "observed_at": _utc_timestamp(),
+                    "elapsed_s": self._elapsed_s(),
+                    "action": (
+                        "excluded protected host/control-plane process group from "
+                        "Molt repo process guard kill set"
+                    ),
+                }
+            )
 
     def _current_group_pgids(self) -> set[int]:
         try:
@@ -1686,8 +1801,9 @@ class RepoProcessMemorySentinel:
     def scan_once(self) -> None:
         try:
             groups = self._current_groups()
+            accounted_rss_kb = sum(group.total_rss_kb for group in groups)
             current_limits = self._limits.current_memory_limits(
-                accounted_rss_kb=sum(group.total_rss_kb for group in groups),
+                accounted_rss_kb=accounted_rss_kb,
             )
             self._notify_scan(groups, current_limits)
             violations = process_sentinel.find_violations(
@@ -1709,14 +1825,17 @@ class RepoProcessMemorySentinel:
                 claimed = False
                 if violation.pgid not in self._terminated_pgids:
                     claimed = _claim_terminated_pgid(violation.pgid)
-                action = (
-                    "terminated process group to prevent orphaned Molt subprocesses; "
-                    "inspect this JSONL event, child logs, and guard limits before "
-                    "rerun"
-                    if claimed
-                    else "process group was already claimed by another guard; inspect "
-                    "the first matching guard event for kill details"
-                )
+                if claimed:
+                    action = (
+                        "terminated process group to prevent orphaned Molt "
+                        "subprocesses; inspect this JSONL event, child logs, and "
+                        "guard limits before rerun"
+                    )
+                else:
+                    action = (
+                        "process group was already claimed by another guard; inspect "
+                        "the first matching guard event for kill details"
+                    )
                 payload = {
                     "event": "repo_process_guard_tripped",
                     "violation": process_sentinel.violation_payload(violation),
@@ -1727,6 +1846,15 @@ class RepoProcessMemorySentinel:
                     "global_total_kb": global_total_kb,
                     "global_total_gb": global_total_kb / (1024 * 1024),
                     "active_pgids": active_pgids,
+                    "repro": _repo_sentinel_repro_payload(
+                        command=violation.command,
+                        cwd=self._repo_root,
+                        env=None,
+                        limits=self._limits,
+                        resolved_limits=current_limits,
+                        label=self._label,
+                        accounted_rss_kb=accounted_rss_kb,
+                    ),
                     "action": action,
                 }
                 self._record(payload)
@@ -1767,6 +1895,10 @@ class RepoProcessMemorySentinel:
                     return drained
             else:
                 clean_since = None
+                accounted_rss_kb = sum(group.total_rss_kb for group in groups)
+                current_limits = self._limits.current_memory_limits(
+                    accounted_rss_kb=accounted_rss_kb,
+                )
                 for group in groups:
                     if (
                         group.pgid in drained_pgids
@@ -1783,6 +1915,10 @@ class RepoProcessMemorySentinel:
                         peak_rss_kb=None if peak is None else peak.rss_kb,
                         pids=tuple(group.pids),
                         command="" if peak is None else peak.command,
+                        samples=group.samples,
+                        external_parent_pids=tuple(group.external_parent_pids),
+                        oldest_elapsed_sec=group.oldest_elapsed_sec,
+                        orphaned=group.is_orphaned,
                     )
                     self._record(
                         {
@@ -1791,6 +1927,16 @@ class RepoProcessMemorySentinel:
                             "guard_started_at": self._started_at,
                             "killed_at": _utc_timestamp(),
                             "elapsed_s": self._elapsed_s(),
+                            "repro": _repo_sentinel_repro_payload(
+                                command=violation.command,
+                                cwd=self._repo_root,
+                                env=None,
+                                limits=self._limits,
+                                resolved_limits=current_limits,
+                                label=self._label,
+                                accounted_rss_kb=accounted_rss_kb,
+                                timeout_s=self._drain_max_runtime_sec,
+                            ),
                             "action": (
                                 "terminated process group left behind by the guarded "
                                 "scope to prevent orphaned Molt subprocesses; inspect "
@@ -1987,11 +2133,7 @@ class HarnessExecutionContext:
         ]
         | None = None,
     ) -> RepoProcessMemorySentinel | None:
-        if (
-            not self.limits.enabled
-            or _sentinel_active()
-            or _external_repo_sentinel_active(self.prefix, self.env)
-        ):
+        if _sentinel_active() or _external_repo_sentinel_active(self.prefix, self.env):
             return None
         sentinel = repo_process_sentinel(
             repo_root=self.repo_root,

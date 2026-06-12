@@ -15,8 +15,15 @@ This spec defines:
 - package/module metadata expectations,
 - compatibility boundaries for dynamic imports.
 
-TODO(import-system, owner:stdlib, milestone:TC3, priority:P1, status:planned): project-root builds (package discovery, `__init__` handling, namespace packages, deterministic dependency graph caching).
-Implemented: relative imports (explicit and implicit) with deterministic package resolution, honoring `__package__`/`__spec__` metadata and namespace packages.
+Implemented: project-root/package builds, relative imports (explicit and
+implicit) with deterministic package resolution for the currently lowered
+paths, `__init__` handling, namespace packages, a Rust import transaction for
+the active importlib/`builtins.__import__` runtime paths, and persisted module
+graph/import-scan caches keyed by compiler/tooling policy inputs. Remaining
+transaction work is not closed: public importlib API validation shapes,
+`__package__`/`__spec__.parent` package-context calculation, frontend syntax
+import lowering, `fromlist` auto-import/binding semantics, and stale duplicate
+intrinsic surfaces still need structural reconciliation against CPython 3.12.
 
 ---
 
@@ -51,9 +58,55 @@ Modules may be:
 - `from x import *` (module scope only; honors `__all__` when present, otherwise skips underscore-prefixed names)
 
 ### 3.3 Dynamic Imports
-- `__import__` and `importlib` are supported only when the bridge policy is
-  enabled and the target is allowlisted.
-- Non-allowlisted imports raise a deterministic error.
+- Build-time graph discovery separates module-init closure from future runtime
+  behavior. Entry modules and explicit nested-scan exceptions use full import
+  discovery; transitive dependencies use module-init scanning so function-body
+  lazy imports do not bloat binaries or startup.
+- Build-time resolution and build-time admission are separate. Explicit
+  external roots (`MOLT_MODULE_ROOTS`, `--lib-path`, respected `PYTHONPATH`, and
+  auto site-packages) make modules resolvable, but only direct entry imports
+  are admitted by default. Transitive closure for an external package requires
+  an explicit `MOLT_EXTERNAL_STATIC_PACKAGES` package admission, and the module
+  graph cache key includes that policy. Package-parent `__init__` files needed
+  for an admitted leaf cannot backdoor additional external children unless the
+  package is explicitly admitted.
+- Core stdlib closure must use the same explicit nested-scan exception set as
+  normal stdlib discovery. Disabling those exceptions for bootstrap/core
+  closure can leave compiled stdlib function bodies with dangling direct module
+  symbols, even when the entry program never calls the affected method.
+- Shared stdlib cache identity must use the same stdlib module-init roots as
+  backend dead-function elimination. Reuse is valid only when the key, CLI
+  manifest, and backend-written partition manifest sidecar match; key+manifest
+  sidecars without the partition manifest are stale.
+- Build-time graph materialization has one immutable `ImportPlan`. Entry
+  planning owns runtime-import support closure; materialization owns generated
+  namespace/importer modules, known-module sets, allowlist snapshots, and graph
+  metadata before frontend lowering consumes the graph.
+- `__import__` and `importlib.import_module` share the single Rust-backed
+  runtime import transaction intrinsic, `molt_importlib_import_transaction`, for
+  modules present in the compiled module registry and required support surface.
+  Do not reintroduce `molt_importlib_import_module`; the old
+  resolved-name-only intrinsic split import authority and is intentionally
+  deleted. `importlib.util.resolve_name` remains a public helper over the same
+  private relative-name rules. Public argument validation must stay API-specific
+  even when helpers share resolver logic; CPython 3.12 gives
+  `resolve_name(".x", None)` and `import_module(".x", None)` different error
+  classes.
+- `importlib.import_module` has no alias side table in the Python shim. The old
+  empty `_MODULE_ALIASES` map was a dead second source of truth and must not be
+  restored. Frontend literal and direct-call folds for
+  `importlib.import_module("literal")` must call the same
+  `molt_importlib_import_transaction(name, None, None, ("*",), 0)` intrinsic as
+  the public importlib shim. The frontend proves callable identity and literal
+  absolute name only; runtime import success, missing-module errors,
+  version-gated absence, cache custody, fromlist behavior, and module
+  provenance remain owned by the Rust transaction. Syntactic rebinding through
+  `importlib` or a module alias forces runtime dispatch so the user replacement
+  is observed. Source-language `import x` remains the internal
+  `MODULE_IMPORT` path; public importlib APIs do not bypass the transaction.
+- Target/device-specific lazy imports, such as GPU backend families, must be
+  represented as explicit runtime/device policy edges before they are admitted
+  to the compiled graph. Non-admitted imports raise deterministic errors.
 
 ---
 
@@ -76,6 +129,7 @@ Import/bootstrap changes are expected to be covered by the existing in-tree regr
 Build emits an import manifest:
 - list of resolved modules,
 - module origin (compiled/stdlib/bridge),
+- import scan mode and reason/profile impact for each admitted support edge,
 - hash or version for each module.
 
 This manifest is part of reproducible builds.
@@ -91,6 +145,15 @@ Import errors must include:
 ---
 
 ## 8. Open Questions
+- Complete CPython 3.12 package-context calculation for `builtins.__import__`,
+  including `globals=None`, missing `__name__`, `__package__ is None`, and
+  `__spec__.parent`.
+- Make frontend syntax imports carry `name`/`fromlist`/`level` into the same
+  Rust transaction path while keeping compile-time graph discovery separate.
+- Implement CPython `fromlist` handling inside the Rust transaction, including
+  submodule auto-import/binding and non-string entry errors.
+- Delete or privatize stale duplicate public intrinsic surfaces once all callers
+  use the transaction authority.
 - Policy for namespace packages.
 - Editable installs and dev-mode behaviors.
 

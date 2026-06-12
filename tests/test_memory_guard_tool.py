@@ -134,7 +134,9 @@ def test_find_rss_violation_catches_reparented_process_group_member() -> None:
     )
 
 
-def test_terminate_watched_processes_fans_out_to_tracked_groups(monkeypatch) -> None:
+def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
+    monkeypatch,
+) -> None:
     if memory_guard.os.name != "posix":
         return
     samples = {
@@ -165,10 +167,51 @@ def test_terminate_watched_processes_fans_out_to_tracked_groups(monkeypatch) -> 
     )
 
     assert (100, memory_guard.signal.SIGTERM) in sent_groups
-    assert (101, memory_guard.signal.SIGTERM) in sent_groups
-    assert (102, memory_guard.signal.SIGTERM) in sent_groups
+    assert (101, memory_guard.signal.SIGTERM) not in sent_groups
+    assert (102, memory_guard.signal.SIGTERM) not in sent_groups
+    assert (101, memory_guard.signal.SIGTERM) in sent_pids
+    assert (102, memory_guard.signal.SIGTERM) in sent_pids
     assert (101, memory_guard.signal.SIGKILL) in sent_pids
     assert (102, memory_guard.signal.SIGKILL) in sent_pids
+
+
+def test_terminate_watched_processes_never_killpgs_shared_child_group(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    samples = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=777),
+        200: memory_guard.ProcessSample(200, 1, 999, "unrelated", pgid=777),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+
+    def fake_killpg(pgid, sig):
+        sent_groups.append((pgid, sig))
+        if sig == memory_guard.signal.SIGTERM:
+            raise ProcessLookupError
+
+    def fake_kill(pid, sig):
+        sent_pids.append((pid, sig))
+
+    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
+    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
+
+    memory_guard.terminate_watched_processes(
+        100,
+        samples=samples,
+        watched={100, 101},
+        grace=0.001,
+    )
+
+    assert (100, memory_guard.signal.SIGTERM) in sent_groups
+    assert all(pgid != 777 for pgid, _sig in sent_groups)
+    assert (101, memory_guard.signal.SIGTERM) in sent_pids
+    assert (101, memory_guard.signal.SIGKILL) in sent_pids
+    assert all(pid != 200 for pid, _sig in sent_pids)
 
 
 def test_find_rss_violation_ignores_unrelated_processes() -> None:
@@ -741,6 +784,73 @@ def test_main_reports_signal_status_without_guard_violation(
     assert payload["incident"]["elapsed_s"] == pytest.approx(0.3)
 
 
+def test_main_reports_incident_repro_context(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch,
+) -> None:
+    summary_path = tmp_path / "rss-summary.json"
+    env = {
+        "PATH": "/usr/bin",
+        "PYTEST_CURRENT_TEST": "tests/test_memory_guard_tool.py::unit (call)",
+        "MOLT_SESSION_ID": "unit-session",
+        "SECRET_TOKEN": "must-not-leak",
+    }
+
+    def fake_run_guarded(_command, **_kwargs):
+        return memory_guard.GuardResult(
+            returncode=memory_guard.GUARD_RETURN_CODE,
+            violation=memory_guard.RssViolation(
+                pid=321,
+                rss_kb=4 * 1024 * 1024,
+                command="python hungry.py",
+                scope="process_tree",
+            ),
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=1.25,
+            limit_at_violation=memory_guard.ResolvedMemoryLimits(
+                max_process_rss_kb=2 * 1024 * 1024,
+                max_total_rss_kb=3 * 1024 * 1024,
+            ),
+        )
+
+    monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: {})
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "2",
+            "--max-total-rss-gb",
+            "3",
+            "--poll-interval",
+            "0.01",
+            "--summary-json",
+            str(summary_path),
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ],
+        environ=env,
+    )
+
+    assert rc == memory_guard.GUARD_RETURN_CODE
+    stderr = capsys.readouterr().err
+    assert "memory_guard: repro context:" in stderr
+    assert "tests/test_memory_guard_tool.py::unit" in stderr
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    repro = payload["repro"]
+    assert repro["command"] == [sys.executable, "-c", "pass"]
+    assert repro["pytest"]["current_test"] == env["PYTEST_CURRENT_TEST"]
+    assert repro["env"]["MOLT_SESSION_ID"] == "unit-session"
+    assert "SECRET_TOKEN" not in repro["env"]
+    assert repro["limits"]["max_total_rss_gb"] == pytest.approx(3.0)
+
+
 def test_main_rejects_unsafe_threshold(capsys: pytest.CaptureFixture[str]) -> None:
     rc = memory_guard.main(["--max-rss-gb", "112", "--", sys.executable, "-c", "pass"])
 
@@ -823,6 +933,27 @@ def test_main_reexec_hides_guarded_command_from_guard_argv() -> None:
     encoded = env[memory_guard.INTERNAL_COMMAND_ENV]
     assert json.loads(encoded) == [sys.executable, "-c", f"print({marker!r})"]
     assert env[memory_guard.INTERNAL_WORKER_ENV] == "1"
+
+
+def test_run_guarded_marks_child_environment_as_guarded() -> None:
+    result = memory_guard.run_guarded(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; "
+                "print(os.environ.get('MOLT_MEMORY_GUARD_ACTIVE')); "
+                "print(bool(os.environ.get('MOLT_MEMORY_GUARD_PID')))"
+            ),
+        ],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        child_rlimit_kb=None,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["1", "True"]
 
 
 def test_main_reexec_preserves_stream_and_sample_rotation_options(tmp_path) -> None:
@@ -1052,9 +1183,9 @@ def test_main_writes_summary_json(tmp_path) -> None:
     assert payload["returncode"] == 0
     assert payload["violation"] is None
     assert payload["peak"]["rss_kb"] > 0
-    assert payload["peak"]["scope"] == "process"
+    assert payload["peak"]["scope"] in {"process", "process_rusage"}
     assert payload["peak_total"]["rss_kb"] >= payload["peak"]["rss_kb"]
-    assert payload["peak_total"]["scope"] == "process_tree"
+    assert payload["peak_total"]["scope"] in {"process_tree", "process_tree_rusage"}
     assert payload["max_total_rss_gb"] == pytest.approx(18.0)
     assert payload["child_rlimit_gb"] is None
     assert payload["orphaned_process_groups"] == []

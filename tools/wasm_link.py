@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import hashlib
 import os
@@ -21,6 +22,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+import artifact_publish  # noqa: E402
 
 
 WASM_MAGIC = b"\x00asm"
@@ -2689,10 +2691,13 @@ def _read_cached_tree_shaken_runtime(path: Path) -> bytes | None:
 
 
 def _write_cached_tree_shaken_runtime(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_bytes(data)
-    tmp_path.replace(path)
+    tmp_path = artifact_publish.staged_output_path(path)
+    try:
+        tmp_path.write_bytes(data)
+        artifact_publish.publish_validated_outputs([(tmp_path, path)])
+    finally:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
 
 
 def _canonical_split_runtime_required_exports(runtime_data: bytes) -> set[str]:
@@ -4911,6 +4916,49 @@ def _validate_linked(linked: Path) -> bool:
     return True
 
 
+def _validate_split_runtime_outputs(app_wasm: Path, rt_wasm: Path) -> bool:
+    try:
+        app_data = app_wasm.read_bytes()
+        rt_data = rt_wasm.read_bytes()
+    except OSError as exc:
+        print(f"Failed to read split-runtime staged output: {exc}", file=sys.stderr)
+        return False
+    if not _is_wasm_binary(app_data):
+        print(
+            f"Split-runtime app output is not a wasm binary: {app_wasm}",
+            file=sys.stderr,
+        )
+        return False
+    if not _is_wasm_binary(rt_data):
+        print(
+            f"Split-runtime shared runtime output is not a wasm binary: {rt_wasm}",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        app_imports = _collect_module_imports(app_data, "molt_runtime")
+        rt_exports = _collect_function_exports(rt_data)
+    except ValueError as exc:
+        print(f"Failed to parse split-runtime staged output: {exc}", file=sys.stderr)
+        return False
+    missing = sorted(
+        name
+        for name in app_imports
+        if name not in rt_exports
+        and f"molt_{name}" not in rt_exports
+        and name.removeprefix("molt_") not in rt_exports
+        and name not in _ESSENTIAL_EXPORTS
+    )
+    if missing:
+        print(
+            "Split-runtime app imports are absent from staged shared runtime: "
+            f"{', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 # Pass pipelines from docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md Section 4.4.
 _OZ_PASSES: list[str] = [
     "--closed-world",
@@ -4990,7 +5038,7 @@ def _run_wasm_opt_via_optimize(
     extra_passes = _LEVEL_PASSES.get(level)
 
     pre_size = linked.stat().st_size
-    temp_output = linked.with_suffix(".opt.wasm")
+    temp_output = artifact_publish.staged_output_path(linked)
     if required_exports is None:
         try:
             required_exports = set(_collect_function_exports(linked.read_bytes()))
@@ -5008,11 +5056,11 @@ def _run_wasm_opt_via_optimize(
     if not result["ok"]:
         err = result.get("error", "unknown error")
         print(f"wasm-opt failed (non-fatal): {err}", file=sys.stderr)
-        if temp_output.exists():
+        with contextlib.suppress(OSError):
             temp_output.unlink()
         return False
 
-    shutil.move(str(temp_output), str(linked))
+    artifact_publish.publish_validated_outputs([(temp_output, linked)])
 
     post_size = result["output_bytes"]
     savings = pre_size - post_size
@@ -5103,6 +5151,13 @@ def _run_wasm_ld(
     if not allowlist.exists():
         print(f"Allowlist not found: {allowlist}", file=sys.stderr)
         return 1
+    staged_outputs: list[Path] = []
+    work_linked = artifact_publish.staged_output_path(linked)
+    staged_outputs.append(work_linked)
+    app_wasm: Path | None = None
+    rt_wasm: Path | None = None
+    app_stage: Path | None = None
+    rt_stage: Path | None = None
 
     # When imports were rewritten to prefixed names that are missing from
     # the non-relocatable runtime's export section (e.g. inlined away by
@@ -5214,7 +5269,7 @@ def _run_wasm_ld(
         cmd.append(f"--export={sym}")
     cmd += [
         "-o",
-        str(linked),
+        str(work_linked),
         str(rewritten_path),
         str(link_runtime_path),
     ]
@@ -5225,17 +5280,18 @@ def _run_wasm_ld(
             if err:
                 print(err, file=sys.stderr)
             return res.returncode
-        if not linked.exists():
+        if not work_linked.exists():
             print(
-                f"wasm-ld exited successfully but produced no linked output: {linked}",
+                "wasm-ld exited successfully but produced no linked output: "
+                f"{work_linked}",
                 file=sys.stderr,
             )
             return 1
-        linked_bytes = _read_wasm_bytes_with_retry(linked)
+        linked_bytes = _read_wasm_bytes_with_retry(work_linked)
         if not _is_wasm_binary(linked_bytes):
             print(
                 "wasm-ld produced non-wasm linked output "
-                f"({linked}, size={len(linked_bytes)} bytes)",
+                f"({work_linked}, size={len(linked_bytes)} bytes)",
                 file=sys.stderr,
             )
             return 1
@@ -5253,7 +5309,7 @@ def _run_wasm_ld(
             print(f"Failed to flatten wasm rec groups: {exc}", file=sys.stderr)
             return 1
         if flattened is not None:
-            linked.write_bytes(flattened)
+            work_linked.write_bytes(flattened)
             linked_bytes = flattened
         public_export_map = {
             name: export_symbol_map[name]
@@ -5278,7 +5334,7 @@ def _run_wasm_ld(
             linked_bytes, public_export_map
         )
         if updated is not None:
-            linked.write_bytes(updated)
+            work_linked.write_bytes(updated)
             linked_bytes = updated
         rename_map = {
             export_symbol_map[name]: name
@@ -5287,11 +5343,11 @@ def _run_wasm_ld(
         }
         updated = _rename_export_names(linked_bytes, rename_map)
         if updated is not None:
-            linked.write_bytes(updated)
+            work_linked.write_bytes(updated)
             linked_bytes = updated
         updated = _restore_output_export_aliases(linked_bytes)
         if updated is not None:
-            linked.write_bytes(updated)
+            work_linked.write_bytes(updated)
             linked_bytes = updated
 
         if not split_runtime:
@@ -5301,7 +5357,7 @@ def _run_wasm_ld(
                 print(f"Failed to neutralize linked table init: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                linked.write_bytes(updated)
+                work_linked.write_bytes(updated)
                 linked_bytes = updated
 
         # MOL-183/MOL-186: Post-link optimization to reduce V8 OOM risk.
@@ -5328,12 +5384,16 @@ def _run_wasm_ld(
                 f"{savings / pre_opt_size * 100:.1f}% reduction)",
                 file=sys.stderr,
             )
-            linked.write_bytes(linked_bytes)
+            work_linked.write_bytes(linked_bytes)
 
         if optimize:
-            if _run_wasm_opt_via_optimize(linked, level=optimize_level, converge=False):
+            if _run_wasm_opt_via_optimize(
+                work_linked,
+                level=optimize_level,
+                converge=False,
+            ):
                 # Re-read after optimization since the file changed on disk
-                linked_bytes = linked.read_bytes()
+                linked_bytes = work_linked.read_bytes()
 
         output_table_min = _table_import_min(output.read_bytes())
         required_table_min = _required_linked_table_min(linked_bytes, output_table_min)
@@ -5344,7 +5404,7 @@ def _run_wasm_ld(
                 print(f"Failed to rewrite linked table min: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                linked.write_bytes(updated)
+                work_linked.write_bytes(updated)
                 linked_bytes = updated
         output_memory_min = _memory_import_min(output.read_bytes())
         if output_memory_min is not None:
@@ -5354,7 +5414,7 @@ def _run_wasm_ld(
                 print(f"Failed to rewrite linked memory min: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                linked.write_bytes(updated)
+                work_linked.write_bytes(updated)
                 linked_bytes = updated
         append_table_refs_raw = os.environ.get("MOLT_WASM_LINK_APPEND_TABLE_REFS")
         append_table_refs = (
@@ -5380,7 +5440,7 @@ def _run_wasm_ld(
                 print(f"Failed to append table ref elements: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                linked.write_bytes(updated)
+                work_linked.write_bytes(updated)
                 linked_bytes = updated
         try:
             referenced_ref_funcs = _scan_code_ref_funcs(linked_bytes)
@@ -5394,7 +5454,7 @@ def _run_wasm_ld(
                 print(f"Failed to declare ref.func elements: {exc}", file=sys.stderr)
                 return 1
             if updated is not None:
-                linked.write_bytes(updated)
+                work_linked.write_bytes(updated)
                 linked_bytes = updated
         try:
             updated = _ensure_table_export(linked_bytes)
@@ -5402,7 +5462,7 @@ def _run_wasm_ld(
             print(f"Failed to ensure table export: {exc}", file=sys.stderr)
             return 1
         if updated is not None:
-            linked.write_bytes(updated)
+            work_linked.write_bytes(updated)
             linked_bytes = updated
         if not split_runtime:
             updated = _strip_internal_exports(
@@ -5411,7 +5471,7 @@ def _run_wasm_ld(
                 preserve_table_refs=False,
             )
             if updated is not None:
-                linked.write_bytes(updated)
+                work_linked.write_bytes(updated)
                 linked_bytes = updated
         if freestanding:
             try:
@@ -5426,7 +5486,7 @@ def _run_wasm_ld(
                 spec.loader.exec_module(stub_mod)
                 linked_bytes, n_stubbed = stub_mod.stub_wasi_imports(linked_bytes)
                 if n_stubbed > 0:
-                    linked.write_bytes(linked_bytes)
+                    work_linked.write_bytes(linked_bytes)
                     print(
                         f"Freestanding: stubbed {n_stubbed} WASI imports",
                         file=sys.stderr,
@@ -5442,6 +5502,9 @@ def _run_wasm_ld(
 
             app_wasm = out_dir / "app.wasm"
             rt_wasm = out_dir / "molt_runtime.wasm"
+            app_stage = artifact_publish.staged_output_path(app_wasm)
+            rt_stage = artifact_publish.staged_output_path(rt_wasm)
+            staged_outputs.extend([app_stage, rt_stage])
 
             # For split-runtime, the app artifact must remain unlinked while
             # preserving the runtime ABI rewrite performed earlier in the link
@@ -5457,7 +5520,7 @@ def _run_wasm_ld(
                 optimize=optimize,
                 optimize_level=optimize_level,
             )
-            app_wasm.write_bytes(optimized_app)
+            app_stage.write_bytes(optimized_app)
 
             # Resolve the deploy-ready (non-relocatable) runtime.
             env_deploy_runtime = os.environ.get("MOLT_WASM_DEPLOY_RUNTIME", "").strip()
@@ -5518,7 +5581,7 @@ def _run_wasm_ld(
                     _canonical_split_runtime_required_exports(deploy_runtime_data)
                 )
                 app_imports = _collect_module_imports(
-                    app_wasm.read_bytes(), "molt_runtime"
+                    app_stage.read_bytes(), "molt_runtime"
                 )
                 missing_runtime_imports = sorted(
                     name
@@ -5554,16 +5617,16 @@ def _run_wasm_ld(
                 shaken_runtime = _tree_shake_runtime(
                     deploy_runtime_data, canonical_required_exports
                 )
-                rt_wasm.write_bytes(shaken_runtime)
+                rt_stage.write_bytes(shaken_runtime)
             except Exception as exc:
                 print(
                     f"Runtime tree-shake failed (falling back to full copy): {exc}",
                     file=sys.stderr,
                 )
-                shutil.copy2(str(deploy_runtime), str(rt_wasm))
+                shutil.copy2(str(deploy_runtime), str(rt_stage))
 
-            app_size = app_wasm.stat().st_size
-            rt_size = rt_wasm.stat().st_size
+            app_size = app_stage.stat().st_size
+            rt_size = rt_stage.stat().st_size
             total = app_size + rt_size
             print(
                 f"Split-runtime output: "
@@ -5584,24 +5647,42 @@ def _run_wasm_ld(
         # element/code-rewriting passes and BEFORE the final validation.
         repaired = _safe_repair_out_of_bounds_func_refs(linked_bytes)
         if repaired is not None:
-            linked.write_bytes(repaired)
+            work_linked.write_bytes(repaired)
             linked_bytes = repaired
         stripped_debug = _strip_debug_sections(linked_bytes)
         if stripped_debug is not None:
-            linked.write_bytes(stripped_debug)
+            work_linked.write_bytes(stripped_debug)
             linked_bytes = stripped_debug
-        linked_ok = _validate_linked(linked)
+        linked_ok = _validate_linked(work_linked)
         if not linked_ok:
             if split_runtime:
                 print(
-                    "Linked wasm validation failed after split-runtime outputs were emitted; "
+                    "Linked wasm validation failed before split-runtime publication; "
                     "failing because linked validation is the canonical table/memory/import guard.",
                     file=sys.stderr,
                 )
             return 1
 
+        publish_pairs = [(work_linked, linked)]
+        if split_runtime:
+            assert app_stage is not None
+            assert rt_stage is not None
+            assert app_wasm is not None
+            assert rt_wasm is not None
+            if not _validate_split_runtime_outputs(app_stage, rt_stage):
+                return 1
+            publish_pairs.extend([(rt_stage, rt_wasm), (app_stage, app_wasm)])
+        try:
+            artifact_publish.publish_validated_outputs(publish_pairs)
+        except OSError as exc:
+            print(f"Failed to publish wasm linker outputs: {exc}", file=sys.stderr)
+            return 1
+
         return 0
     finally:
+        for staged_output in staged_outputs:
+            with contextlib.suppress(OSError):
+                staged_output.unlink()
         temp_dir.cleanup()
 
 
@@ -5662,8 +5743,6 @@ def main() -> int:
         print(f"Output wasm not found: {output}", file=sys.stderr)
         return 1
     linked.parent.mkdir(parents=True, exist_ok=True)
-    if linked.exists():
-        linked.unlink()
 
     wasm_ld = _find_tool(["wasm-ld"])
     if not wasm_ld:

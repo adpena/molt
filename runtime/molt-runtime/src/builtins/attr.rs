@@ -2069,7 +2069,13 @@ pub(crate) unsafe fn object_method_ic_resolve(
                         );
                         return None;
                     }
-                    descriptor_cache_store(class_bits, attr_bits, class_version, None, Some(val_bits));
+                    descriptor_cache_store(
+                        class_bits,
+                        attr_bits,
+                        class_version,
+                        None,
+                        Some(val_bits),
+                    );
                     val_bits
                 }
             }

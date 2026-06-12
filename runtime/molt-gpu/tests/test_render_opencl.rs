@@ -1,16 +1,19 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
 use molt_gpu::render::opencl::OpenClRenderer;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain, Renderer,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
             op,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -40,11 +43,8 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
 
 fn make_unary_kernel(op: PrimitiveOp, n: usize, dtype: DType) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
-            op,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: dtype,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(op, vec![FusedSrc::Buf(1)], dtype)],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -130,11 +130,12 @@ fn test_opencl_global_buffer_qualifiers() {
 #[test]
 fn test_opencl_f64_with_extension() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float64,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float64,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -174,11 +175,12 @@ fn test_opencl_f64_with_extension() {
 #[test]
 fn test_opencl_f64_without_extension() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float64,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float64,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -219,11 +221,12 @@ fn test_opencl_f64_without_extension() {
 #[test]
 fn test_opencl_i64_native_support() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Int64,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Int64,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -257,11 +260,12 @@ fn test_opencl_i64_native_support() {
 #[test]
 fn test_opencl_bool_as_int() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Cmplt,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Bool,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Cmplt,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Bool,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -300,11 +304,12 @@ fn test_opencl_bool_as_int() {
 #[test]
 fn test_opencl_ternary_where() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Where,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Where,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -346,11 +351,12 @@ fn test_opencl_ternary_where() {
 #[test]
 fn test_opencl_bitcast_as_type() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Bitcast,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Int32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Bitcast,
+            vec![FusedSrc::Buf(1)],
+            DType::Int32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -425,11 +431,13 @@ fn test_opencl_max_uses_fmax() {
 #[test]
 fn test_opencl_reduce_sum_with_barrier() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[256], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -475,11 +483,13 @@ fn test_opencl_reduce_sum_with_barrier() {
 #[test]
 fn test_opencl_reduce_max_with_barrier() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceMax,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceMax,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[256], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -519,17 +529,19 @@ fn test_opencl_reduce_max_with_barrier() {
 fn test_opencl_reduce_with_prefix_ops() {
     // Test fused: elementwise prefix -> reduce
     let kernel = FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Op(0)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(0)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[256], 0),
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -570,10 +582,11 @@ fn test_opencl_reduce_with_prefix_ops() {
 fn test_opencl_all_26_ops_render() {
     let elementwise_ops = PrimitiveOp::ALL
         .iter()
+        .copied()
         .filter(|op| op.is_elementwise())
         .collect::<Vec<_>>();
 
-    for &&op in &elementwise_ops {
+    for op in elementwise_ops {
         let srcs = match op.arity() {
             1 => vec![FusedSrc::Buf(1)],
             2 => vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
@@ -595,10 +608,11 @@ fn test_opencl_all_26_ops_render() {
             });
         }
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
                 op,
                 srcs,
-                dst_dtype: if matches!(
+                if matches!(
                     op,
                     PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
                 ) {
@@ -606,7 +620,7 @@ fn test_opencl_all_26_ops_render() {
                 } else {
                     DType::Float32
                 },
-            }],
+            )],
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
@@ -634,11 +648,13 @@ fn test_opencl_all_26_ops_render() {
     // Test reduce ops
     for reduce_op in [PrimitiveOp::ReduceSum, PrimitiveOp::ReduceMax] {
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: reduce_op,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                reduce_op,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[64], 0),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,

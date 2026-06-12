@@ -3619,7 +3619,11 @@ fn tcl_obj_result_to_bits(
                 return tuple_bits;
             }
             // Genuine allocation failure.
-            return raise_exception_u64(py, "MemoryError", "failed to allocate tkinter result tuple");
+            return raise_exception_u64(
+                py,
+                "MemoryError",
+                "failed to allocate tkinter result tuple",
+            );
         }
         return tcl_obj_string_to_bits(api, obj);
     }
@@ -3666,7 +3670,8 @@ fn tcl_obj_int_string_to_bits(py: &PyToken, api: &'static TclApi, obj: *mut c_vo
     // which promotes to arbitrary precision on overflow (CPython fromBignumObj
     // parity).
     let s_bits = rt_string_from(&text);
-    let parsed = unsafe { molt_int_from_obj(s_bits, rt_int(10), MoltObject::from_bool(true).bits()) };
+    let parsed =
+        unsafe { molt_int_from_obj(s_bits, rt_int(10), MoltObject::from_bool(true).bits()) };
     dec_ref_bits(py, s_bits);
     parsed
 }

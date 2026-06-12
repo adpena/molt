@@ -47,6 +47,22 @@ fn test_expand() {
 }
 
 #[test]
+fn test_expand_inner_axis_reuses_source_offsets() {
+    let st = ShapeTracker::contiguous(&[2, 1]);
+    let expanded = st.expand(&[2, 3]);
+    let offsets: Vec<Option<usize>> = (0..expanded.numel())
+        .map(|idx| expanded.expr_idx(idx))
+        .collect();
+
+    assert_eq!(expanded.shape(), &[2, 3]);
+    assert_eq!(expanded.view().strides, vec![1, 0]);
+    assert_eq!(
+        offsets,
+        vec![Some(0), Some(0), Some(0), Some(1), Some(1), Some(1)]
+    );
+}
+
+#[test]
 fn test_pad() {
     let st = ShapeTracker::contiguous(&[3]);
     let padded = st.pad(&[(1, 2)]);
@@ -78,6 +94,31 @@ fn test_flip() {
     assert_eq!(flipped.expr_idx(1), Some(2));
     assert_eq!(flipped.expr_idx(2), Some(1));
     assert_eq!(flipped.expr_idx(3), Some(0));
+}
+
+#[test]
+fn test_flip_transforms_pad_mask_coordinates() {
+    let st = ShapeTracker::contiguous(&[5]);
+    let padded_flipped = st.pad(&[(1, 2)]).flip(0);
+    assert_eq!(padded_flipped.shape(), &[8]);
+    assert_eq!(padded_flipped.expr_idx(0), None);
+    assert_eq!(padded_flipped.expr_idx(1), None);
+    assert_eq!(padded_flipped.expr_idx(2), Some(4));
+    assert_eq!(padded_flipped.expr_idx(3), Some(3));
+    assert_eq!(padded_flipped.expr_idx(4), Some(2));
+    assert_eq!(padded_flipped.expr_idx(5), Some(1));
+    assert_eq!(padded_flipped.expr_idx(6), Some(0));
+    assert_eq!(padded_flipped.expr_idx(7), None);
+}
+
+#[test]
+fn test_shrink_transforms_pad_mask_coordinates() {
+    let st = ShapeTracker::contiguous(&[3]);
+    let view = st.pad(&[(1, 2)]).shrink(&[(1, 4)]).flip(0);
+    let offsets: Vec<Option<usize>> = (0..view.numel()).map(|idx| view.expr_idx(idx)).collect();
+
+    assert_eq!(view.shape(), &[3]);
+    assert_eq!(offsets, vec![Some(2), Some(1), Some(0)]);
 }
 
 #[test]

@@ -1,10 +1,16 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
+import time
 
 import pytest
 
 import molt.cli as cli
+from tests.cli.process_guard import close_cli_test_process_group, guarded_cli_test_popen
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _cache_variant(backend_binary_identity: str = "") -> str:
@@ -39,6 +45,10 @@ def _ir_with_stdlib(*, user_ops: list[dict], stdlib_ops: list[dict]) -> dict:
 
 def _manifest(cache_key: str) -> str:
     return f'{{"cache_key":"{cache_key}"}}'
+
+
+def _partition_manifest(name: str = "partition-a") -> str:
+    return f'{{"body_hash":"{name}","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}}'
 
 
 def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
@@ -172,7 +182,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
     assert key_a == key_b
 
 
-def test_shared_stdlib_cache_key_changes_with_reachable_stdlib_subset() -> None:
+def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
     variant = _cache_variant()
     stdlib_modules = _explicit_stdlib_modules("sys", "json")
     ir_a = {
@@ -235,7 +245,7 @@ def test_shared_stdlib_cache_key_changes_with_reachable_stdlib_subset() -> None:
         cache_variant=variant,
     )
 
-    assert key_a != key_b
+    assert key_a == key_b
 
 
 def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_matches() -> (
@@ -304,7 +314,7 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
     assert key_a == key_b
 
 
-def test_shared_stdlib_cache_key_ignores_unreachable_stdlib_changes() -> None:
+def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() -> None:
     variant = _cache_variant()
     stdlib_modules = _explicit_stdlib_modules("sys", "json")
     ir_a = {
@@ -367,7 +377,7 @@ def test_shared_stdlib_cache_key_ignores_unreachable_stdlib_changes() -> None:
         cache_variant=variant,
     )
 
-    assert key_a == key_b
+    assert key_a != key_b
 
 
 def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> None:
@@ -466,6 +476,15 @@ def test_shared_stdlib_cache_matches_key_requires_present_matching_contract(
     )
 
     manifest_sidecar.write_text(_manifest("abc123") + "\n", encoding="utf-8")
+    assert not cli._shared_stdlib_cache_matches_key(
+        stdlib_object,
+        "abc123",
+        stdlib_object_manifest=_manifest("abc123"),
+    )
+
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        _partition_manifest() + "\n", encoding="utf-8"
+    )
     assert cli._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
@@ -478,7 +497,11 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
 ) -> None:
     project_root = tmp_path
     cache_root = project_root / ".molt_cache"
+    home_bin = tmp_path / "molt-home" / "bin"
     cache_root.mkdir(parents=True)
+    home_bin.mkdir(parents=True)
+    home_bin_sentinel = home_bin / "preserve-me"
+    home_bin_sentinel.write_text("owned by another session\n", encoding="utf-8")
     stdlib_object = cache_root / "stdlib_shared_deadbeef.o"
     stdlib_object.write_bytes(b"shared-stdlib")
     cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
@@ -487,6 +510,18 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
         "stdlib-cache-key\n", encoding="utf-8"
     )
+    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+        _manifest("stdlib-cache-key") + "\n", encoding="utf-8"
+    )
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        _partition_manifest() + "\n", encoding="utf-8"
+    )
+    module_object = cache_root / "module_cache_old.o"
+    module_object.write_bytes(b"module-object")
+    wasm_object = cache_root / "module_cache_old.wasm"
+    wasm_object.write_bytes(b"\x00asm")
+    fingerprint_sidecar = cache_root / "module_cache_old.fingerprint"
+    fingerprint_sidecar.write_text("old-fingerprint\n", encoding="utf-8")
 
     backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend"
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
@@ -507,6 +542,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    monkeypatch.setenv("MOLT_HOME", str(home_bin.parent))
     monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
     monkeypatch.setattr(cli, "_codesign_binary", lambda _binary_path: None)
     monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
@@ -535,9 +571,15 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     assert stdlib_object.exists()
     assert cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
     assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
+    assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
+    assert module_object.exists()
+    assert wasm_object.exists()
+    assert fingerprint_sidecar.exists()
+    assert home_bin_sentinel.exists()
 
 
-def test_invalidate_stale_stdlib_cache_tracks_active_artifact_profiles(
+def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_newer_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_root = tmp_path
@@ -557,6 +599,9 @@ def test_invalidate_stale_stdlib_cache_tracks_active_artifact_profiles(
     cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
         "1\n", encoding="utf-8"
     )
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        _partition_manifest() + "\n", encoding="utf-8"
+    )
 
     backend_bin = target_root / "dev-fast" / "molt-backend"
     runtime_lib = target_root / "release-output" / "libmolt_runtime.a"
@@ -573,20 +618,21 @@ def test_invalidate_stale_stdlib_cache_tracks_active_artifact_profiles(
     os.utime(backend_bin, (current, current))
     os.utime(runtime_lib, (current, current))
 
-    cli._invalidate_stale_stdlib_cache(
+    cli._validate_shared_stdlib_cache_contract(
         stdlib_object,
         project_root,
         expected_key="active-key",
         expected_manifest=_manifest("active-key"),
     )
 
-    assert not stdlib_object.exists()
-    assert not cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
-    assert not cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
-    assert not cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
+    assert stdlib_object.exists()
+    assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
+    assert cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
+    assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
 
 
-def test_invalidate_stale_stdlib_cache_tracks_target_runtime_alias(
+def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_target_runtime_alias(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_root = tmp_path
@@ -607,6 +653,9 @@ def test_invalidate_stale_stdlib_cache_tracks_target_runtime_alias(
     cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
         "1\n", encoding="utf-8"
     )
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        _partition_manifest() + "\n", encoding="utf-8"
+    )
 
     runtime_lib = (
         target_root / target_triple / "release-output" / "libmolt_runtime.stdlib_full.a"
@@ -622,7 +671,7 @@ def test_invalidate_stale_stdlib_cache_tracks_target_runtime_alias(
     os.utime(stdlib_object, (old, old))
     os.utime(runtime_lib, (current, current))
 
-    cli._invalidate_stale_stdlib_cache(
+    cli._validate_shared_stdlib_cache_contract(
         stdlib_object,
         project_root,
         expected_key="target-key",
@@ -630,13 +679,14 @@ def test_invalidate_stale_stdlib_cache_tracks_target_runtime_alias(
         target_triple=target_triple,
     )
 
-    assert not stdlib_object.exists()
-    assert not cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
-    assert not cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
-    assert not cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
+    assert stdlib_object.exists()
+    assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+    assert cli._stdlib_object_count_sidecar_path(stdlib_object).exists()
+    assert cli._stdlib_object_manifest_sidecar_path(stdlib_object).exists()
+    assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
 
 
-def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
+def test_validate_shared_stdlib_cache_contract_preserves_other_keyed_siblings(
     tmp_path: Path,
 ) -> None:
     cache_root = tmp_path / ".molt_cache"
@@ -651,6 +701,9 @@ def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
         _manifest("active-key") + "\n", encoding="utf-8"
     )
     cli._stdlib_object_count_sidecar_path(active).write_text("1\n", encoding="utf-8")
+    cli._stdlib_object_partition_manifest_sidecar_path(active).write_text(
+        _partition_manifest() + "\n", encoding="utf-8"
+    )
 
     sibling = cache_root / "stdlib_shared_sibling.o"
     sibling.write_bytes(b"sibling")
@@ -661,8 +714,11 @@ def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
         _manifest("sibling-key") + "\n", encoding="utf-8"
     )
     cli._stdlib_object_count_sidecar_path(sibling).write_text("2\n", encoding="utf-8")
+    cli._stdlib_object_partition_manifest_sidecar_path(sibling).write_text(
+        _partition_manifest("partition-b") + "\n", encoding="utf-8"
+    )
 
-    cli._invalidate_stale_stdlib_cache(
+    cli._validate_shared_stdlib_cache_contract(
         active,
         project_root=tmp_path,
         expected_key="active-key",
@@ -674,6 +730,206 @@ def test_invalidate_stale_stdlib_cache_preserves_other_keyed_siblings(
     assert cli._stdlib_object_key_sidecar_path(sibling).exists()
     assert cli._stdlib_object_count_sidecar_path(sibling).exists()
     assert cli._stdlib_object_manifest_sidecar_path(sibling).exists()
+    assert cli._stdlib_object_partition_manifest_sidecar_path(sibling).exists()
+
+
+def test_validate_shared_stdlib_cache_contract_does_not_unlink_mismatched_exact_key_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdlib_object = tmp_path / ".molt_cache" / "stdlib_shared_active.o"
+    stdlib_object.parent.mkdir(parents=True)
+    stdlib_object.write_bytes(b"stdlib")
+    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        "wrong-key\n", encoding="utf-8"
+    )
+
+    def fail_remove(path: Path) -> None:
+        raise AssertionError(f"unexpected stdlib cache deletion: {path}")
+
+    monkeypatch.setattr(cli, "_remove_shared_stdlib_cache_artifacts", fail_remove)
+
+    cli._validate_shared_stdlib_cache_contract(
+        stdlib_object,
+        project_root=tmp_path,
+        expected_key="active-key",
+        expected_manifest=_manifest("active-key"),
+    )
+
+    assert stdlib_object.exists()
+    assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
+
+
+def test_validate_shared_stdlib_cache_contract_waits_for_publish_lock(
+    tmp_path: Path,
+) -> None:
+    stdlib_object = tmp_path / ".molt_cache" / "stdlib_shared_active.o"
+    stdlib_object.parent.mkdir(parents=True)
+    stdlib_object.write_bytes(b"stdlib")
+    ready_path = tmp_path / "holder.ready"
+    release_path = tmp_path / "holder.release"
+    key = "active-key"
+    manifest = _manifest(key)
+    partition_manifest = _partition_manifest()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src")
+
+    holder_code = r"""
+from pathlib import Path
+import sys
+import time
+import molt.cli as cli
+
+stdlib_object = Path(sys.argv[1])
+ready_path = Path(sys.argv[2])
+release_path = Path(sys.argv[3])
+key = sys.argv[4]
+manifest = sys.argv[5]
+partition_manifest = sys.argv[6]
+
+with cli._shared_stdlib_cache_lock(stdlib_object):
+    ready_path.write_text("ready\n", encoding="utf-8")
+    while not release_path.exists():
+        time.sleep(0.01)
+    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        key + "\n", encoding="utf-8"
+    )
+    cli._stdlib_object_count_sidecar_path(stdlib_object).write_text(
+        "1\n", encoding="utf-8"
+    )
+    cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
+        manifest + "\n", encoding="utf-8"
+    )
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        partition_manifest + "\n", encoding="utf-8"
+    )
+"""
+    invalidator_code = r"""
+from pathlib import Path
+import sys
+import molt.cli as cli
+
+cli._validate_shared_stdlib_cache_contract(
+    Path(sys.argv[1]),
+    project_root=Path(sys.argv[2]),
+    expected_key=sys.argv[3],
+    expected_manifest=sys.argv[4],
+)
+"""
+
+    holder = guarded_cli_test_popen(
+        [
+            sys.executable,
+            "-c",
+            holder_code,
+            str(stdlib_object),
+            str(ready_path),
+            str(release_path),
+            key,
+            manifest,
+            partition_manifest,
+        ],
+        cwd=str(ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    invalidator: subprocess.Popen[str] | None = None
+    try:
+        deadline = time.monotonic() + 5.0
+        while not ready_path.exists() and time.monotonic() < deadline:
+            if holder.poll() is not None:
+                stdout, stderr = holder.communicate(timeout=1)
+                pytest.fail(
+                    f"publish-lock holder exited early with {holder.returncode}: "
+                    f"stdout={stdout!r} stderr={stderr!r}"
+                )
+            time.sleep(0.02)
+        assert ready_path.exists()
+
+        invalidator = guarded_cli_test_popen(
+            [
+                sys.executable,
+                "-c",
+                invalidator_code,
+                str(stdlib_object),
+                str(tmp_path),
+                key,
+                manifest,
+            ],
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(0.25)
+        if invalidator.poll() is not None:
+            stdout, stderr = invalidator.communicate(timeout=1)
+            pytest.fail(
+                "validator did not wait for the shared stdlib publish lock: "
+                f"stdout={stdout!r} stderr={stderr!r}"
+            )
+
+        release_path.write_text("release\n", encoding="utf-8")
+        holder_stdout, holder_stderr = holder.communicate(timeout=5)
+        assert holder.returncode == 0, (holder_stdout, holder_stderr)
+        invalidator_stdout, invalidator_stderr = invalidator.communicate(timeout=5)
+        assert invalidator.returncode == 0, (invalidator_stdout, invalidator_stderr)
+    finally:
+        if invalidator is not None:
+            close_cli_test_process_group(invalidator)
+        close_cli_test_process_group(holder)
+
+    assert stdlib_object.exists()
+    assert cli._stdlib_object_key_sidecar_path(stdlib_object).read_text(
+        encoding="utf-8"
+    ).strip() == key
+    assert cli._stdlib_object_manifest_sidecar_path(stdlib_object).read_text(
+        encoding="utf-8"
+    ).strip() == manifest
+    assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
+
+
+def test_try_cached_backend_candidates_skips_mismatched_stdlib_without_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdlib_object = tmp_path / ".molt_cache" / "stdlib_shared_active.o"
+    stdlib_object.parent.mkdir(parents=True)
+    stdlib_object.write_bytes(b"stdlib")
+    cli._stdlib_object_key_sidecar_path(stdlib_object).write_text(
+        "wrong-key\n", encoding="utf-8"
+    )
+    candidate = tmp_path / ".molt_cache" / "module_cache.o"
+    candidate.write_bytes(b"not inspected because stdlib mismatches")
+    output_artifact = tmp_path / "target" / "out.o"
+    output_artifact.parent.mkdir(parents=True)
+    output_artifact.write_bytes(b"old")
+    warnings: list[str] = []
+
+    def fail_remove(path: Path) -> None:
+        raise AssertionError(f"unexpected stdlib cache deletion: {path}")
+
+    monkeypatch.setattr(cli, "_remove_shared_stdlib_cache_artifacts", fail_remove)
+
+    cache_hit, tier = cli._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=(("module", candidate),),
+        output_artifact=output_artifact,
+        is_wasm=False,
+        cache_key="module-key",
+        function_cache_key=None,
+        cache_path=candidate,
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="active-key",
+        stdlib_object_manifest=_manifest("active-key"),
+        warnings=warnings,
+    )
+
+    assert (cache_hit, tier) == (False, None)
+    assert any("mismatched contract" in warning for warning in warnings)
+    assert stdlib_object.exists()
+    assert cli._stdlib_object_key_sidecar_path(stdlib_object).exists()
 
 
 def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sidecar(
@@ -720,6 +976,17 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     cli._stdlib_object_manifest_sidecar_path(stdlib_object).write_text(
         _manifest("abc123") + "\n", encoding="utf-8"
     )
+    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
+        cli._stage_shared_stdlib_object_for_link(
+            stdlib_object,
+            stdlib_object_cache_key="abc123",
+            stdlib_object_manifest=_manifest("abc123"),
+            artifacts_root=artifacts_root,
+        )
+
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
+        _partition_manifest() + "\n", encoding="utf-8"
+    )
 
     staged = cli._stage_shared_stdlib_object_for_link(
         stdlib_object,
@@ -740,6 +1007,12 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     assert (
         cli._stdlib_object_manifest_sidecar_path(staged).read_text(encoding="utf-8")
         == _manifest("abc123") + "\n"
+    )
+    assert (
+        cli._stdlib_object_partition_manifest_sidecar_path(staged).read_text(
+            encoding="utf-8"
+        )
+        == _partition_manifest() + "\n"
     )
 
 

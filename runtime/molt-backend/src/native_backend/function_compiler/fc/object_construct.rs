@@ -1,7 +1,6 @@
 use super::super::*;
 use super::var_get_boxed_overflow_safe_fn;
 
-
 /// Cranelift codegen handlers for object/descriptor construction: `object_new`/`object_new_bound`/`object_new_bound_stack`/`super_new`/`classmethod_new`/`staticmethod_new`/`property_new`/`bound_method_new`.
 ///
 /// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
@@ -30,35 +29,37 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
-    let var_get_boxed_overflow_safe =
-        |module: &mut ObjectModule,
-         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-         builder: &mut FunctionBuilder<'_>,
-         import_refs: &mut BTreeMap<&'static str, FuncRef>,
-         sealed_blocks: &mut BTreeSet<Block>,
-         vars: &BTreeMap<String, Variable>,
-         name: &str,
-         int_primary_vars: &BTreeSet<String>,
-         float_primary_vars: &BTreeSet<String>,
-         box_int_mask_var: Variable,
-         box_int_tag_var: Variable|
-         -> Option<crate::VarValue> {
-            var_get_boxed_overflow_safe_fn(
-                module,
-                import_ids,
-                builder,
-                import_refs,
-                sealed_blocks,
-                vars,
-                name,
-                int_primary_vars,
-                float_primary_vars,
-                bool_primary_vars,
-                nbc,
-                box_int_mask_var,
-                box_int_tag_var,
-            )
-        };
+    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+                                       import_ids: &mut BTreeMap<
+        &'static str,
+        (cranelift_module::FuncId, ImportSignatureShape),
+    >,
+                                       builder: &mut FunctionBuilder<'_>,
+                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       sealed_blocks: &mut BTreeSet<Block>,
+                                       vars: &BTreeMap<String, Variable>,
+                                       name: &str,
+                                       int_primary_vars: &BTreeSet<String>,
+                                       float_primary_vars: &BTreeSet<String>,
+                                       box_int_mask_var: Variable,
+                                       box_int_tag_var: Variable|
+     -> Option<crate::VarValue> {
+        var_get_boxed_overflow_safe_fn(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            name,
+            int_primary_vars,
+            float_primary_vars,
+            bool_primary_vars,
+            nbc,
+            box_int_mask_var,
+            box_int_tag_var,
+        )
+    };
     match op.kind.as_str() {
         "bound_method_new" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -319,10 +320,9 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             // NaN-box it as a TAG_PTR value, matching what
             // `MoltObject::from_ptr(data_ptr).bits()` does
             // inside the runtime `molt_object_init_stack`.
-            let data_ptr =
-                builder
-                    .ins()
-                    .stack_addr(types::I64, slot, MOLT_HEADER_SIZE as i32);
+            let data_ptr = builder
+                .ins()
+                .stack_addr(types::I64, slot, MOLT_HEADER_SIZE as i32);
             let res = box_ptr_value(&mut *builder, data_ptr, nbc);
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);
@@ -493,4 +493,5 @@ pub(in crate::native_backend::function_compiler) fn handle_object_construct_op(
             }
         }
         _ => unreachable!("handler invoked with non-matching op.kind"),
-    }}
+    }
+}

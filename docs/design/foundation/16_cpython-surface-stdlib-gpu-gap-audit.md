@@ -284,17 +284,17 @@
 
 | Component | File | Status | Notes |
 |-----------|------|--------|-------|
-| **LazyOp DAG** | lazy.rs (5.6KB) | Done | Deferred computation graph; Buffer/Unary/Binary/Ternary/Reduce/Movement/Contiguous nodes |
+| **LazyOp DAG** | lazy.rs (5.6KB) | Done | Deferred computation graph; Buffer/Unary/Cast/Binary/Ternary/Reduce/Movement/Contiguous nodes; cast target dtype is explicit |
 | **Scheduler** | schedule.rs (21.6KB) | Done | DAG → topological FusedKernel list; backend-adaptive workgroup sizing (Vulkan 256, Metal 128, D3D12 256, GL 64) |
 | **Fusion Engine** | fuse.rs (17.7KB) | Done | Merge consecutive elementwise; elementwise→reduce→elementwise chains; reduce-to-reduce is fusion boundary |
-| **ShapeTracker** | shapetracker.rs (14.8KB) | Done | Zero-copy view system (shape, strides, offset, optional mask); all movement ops O(1) |
+| **ShapeTracker** | shapetracker.rs (14.8KB) | Done | Zero-copy view system (shape, strides, offset, optional mask); all movement ops O(1); shrink now rewrites padded mask coordinates before composition |
 | **Op Definitions** | ops.rs (4.9KB) | Done | 26 primitive ops (9 unary, 14 binary, 1 ternary, 2 reduce, 6 movement) |
 | **DType System** | dtype.rs (11.4KB) | Done | f32, f16, bf16, i32, i64, u32, u64, bool; narrowing at render time (e.g., f64→f32 on Metal) |
 | **DCE** | dce.rs (5.7KB) | Done | Removes unused nodes from DAG before scheduling |
-| **MLIR Codegen** | mlir.rs (9.4KB) | Experimental | Cross-compilation target; not primary path |
-| **CPU Executor** | device/cpu.rs (63.5KB) | Done | Reference implementation; all ops functional |
+| **MLIR/MIL Codegen** | mlir.rs, render/mil.rs | Partial/active | Cross-compilation targets; MLIR `MaterializeCopy` and pure elementwise compute emit real flat-memref `scf.for` lowering with ShapeTracker index/mask support; non-MXFP casts use explicit `arith` conversion selection from first-class lazy/scheduler target dtype; MIL `MaterializeCopy` has verified Bool/Int8/16/32/UInt8/16/32/Float16/Float32 gather/select lowering; reductions, MXFP quantized casts, and MIL storage lanes without Core ML package compile/run/raw-byte proof remain fail-closed |
+| **CPU Executor** | device/cpu.rs (63.5KB) | Done | Reference implementation; ShapeTracker-aware raw materialization plus typed scalar Cast/Bitcast execution for terminal, fused intermediate, and pre-reduce values; runtime raw readback exposes dtype, storage byte count, and exact byte copy while legacy f32 readback rejects non-Float32 |
 | **WASM CPU** | device/wasm_cpu.rs (6.3KB) | Done | Browser fallback using wasm32 bounds checks |
-| **Metal** | device/metal.rs (9.3KB) + render/msl.rs (17.4KB) + render/msl4.rs (19.0KB) | Done | MSL codegen; f32, f16, bf16, i32, i64 (no f64) |
+| **Metal** | device/metal.rs (9.3KB) + render/msl.rs (17.4KB) + render/msl4.rs (19.0KB) | Done | MSL codegen; f32, f16, bf16, i32, i64 (no f64); raw byte proof covers non-f32 Cast/Bitcast storage for Float32->Int32/UInt16/UInt8 and equal-width Float32<->UInt32 |
 | **WebGPU** | device/webgpu.rs (18.5KB) + render/wgsl.rs (18.6KB) | Done | WGSL codegen; f32, f16, i32, u32 (no f64, i64, u64) |
 | **WebGL2** | device/webgl2.rs (13.7KB) + render/glsl.rs (18.9KB) | Done | GLSL ES 3.0; f32, i32, u32 only |
 | **CUDA** | render/cuda.rs (17.3KB) | Done | CUDA C codegen; full dtype support incl. bf16 via nv_bfloat16 |
@@ -308,6 +308,8 @@ All layers green under test: test_schedule_spec.rs, test_fusion.rs, test_constan
 ### 3.2 Python Tensor API Surface (Tinygrad Fidelity)
 
 **File:** `/Users/adpena/Projects/molt/src/molt/gpu/tensor.py` (90.2KB) — 80+ Tensor methods: creation (zeros/ones/full/eye/arange/linspace/normal/uniform/stack), shape ops, fancy indexing, arithmetic/comparison/bitwise, reductions (sum/mean/var/std/min/max/argmin/argmax), matmul (RESHAPE+EXPAND+MUL+REDUCE_SUM composition), activations (relu/sigmoid/tanh/softmax/log_softmax/gelu/silu), norms (layernorm/batchnorm/rmsnorm), scaled_dot_product_attention, conv2d/conv_transpose2d (im2col composition), pooling, 4-bit TurboQuant dequant, cat/split/chunk/flatten, KV-cache ops (take_rows, scatter_rows, linear_split_last_dim, scaled_relu_gate_interleaved).
+
+**Stdlib tinygrad wrapper:** `/Users/adpena/Projects/molt/src/molt/stdlib/tinygrad/tensor.py` now routes typed constructors, zeros, raw readback, unary/binary/ternary `where`/cast, explicit-axis reductions, Rust-owned all-axis reductions via `molt_gpu_prim_reduce_all`, movement-family views (`reshape`, `expand`, `permute`, zero-fill `pad`, `shrink`, `flip`, `contiguous`), and matmul composition through runtime GPU primitive handles. Remaining wrapper migration lanes are convolution, which needs a first-class window/im2col view primitive, and nonzero-pad semantics, which remain fail-closed until typed pad-fill or mask/`where` behavior is defined across runtime and backends.
 
 Falcon-OCR VLM e2e working (DFlash multi-head attention, RMSNorm, rotary embeddings, patch embeddings); quantized inference working.
 

@@ -99,6 +99,35 @@ skip_reason = "Configure molt run_cmd (and optional build_cmd) for this suite be
 skip_reason = "Configure pyodide run_cmd (and optional prepare_cmds) before enabling."
 
 [[suite]]
+id = "tinygrad_off_the_shelf"
+enabled = false
+friend = "tinygrad"
+display_name = "tinygrad Off-The-Shelf API Workloads"
+source = "git"
+repo_url = "https://github.com/tinygrad/tinygrad.git"
+repo_ref = "a83710396c991272241e40da94489747c2393851"
+semantic_mode = "runs_unmodified"
+adapter_notes = "Compile/profile unmodified upstream tinygrad package code through tools/tinygrad_off_shelf_adapter.py; use adapter only as the public-API benchmark driver, never as a patched tinygrad fork."
+tags = ["gpu", "mlir", "tinygrad", "compatibility", "benchmark-suite"]
+repeat = 5
+timeout_sec = 1800
+
+[suite.env]
+PYTHONPATH = "{suite_root}"
+
+[suite.runners.cpython]
+json_stdout = true
+run_cmd = ["{python}", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
+
+[suite.runners.molt]
+json_stdout = true
+env = { MOLT_MODULE_ROOTS = "{suite_root}", MOLT_EXTERNAL_STATIC_PACKAGES = "tinygrad", PYTHONPATH = "{suite_root}" }
+run_cmd = ["molt", "run", "--profile", "dev", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
+
+[suite.runners.friend]
+skip_reason = "Select and pin the upstream tinygrad official benchmark/test command after repo_ref is immutable; CPython/Molt lanes already run unmodified package code through the public API adapter."
+
+[[suite]]
 id = "pyperformance_benchmarks"
 enabled = false
 friend = "pyperformance"
@@ -114,7 +143,9 @@ timeout_sec = 1800
 env = {}
 
 [suite.runners.cpython]
-run_cmd = ["python3", "{repo_root}/tools/pyperformance_adapter.py", "run-subset", "--suite-root", "{suite_root}", "--benchmarks", "nbody,fannkuch", "--rounds", "2", "--json"]
+json_stdout = true
+run_cmd = ["{python}", "{repo_root}/tools/pyperformance_adapter.py", "run-subset", "--suite-root", "{suite_root}", "--benchmarks", "nbody,fannkuch", "--rounds", "2", "--json"]
 
 [suite.runners.molt]
+json_stdout = true
 run_cmd = ["molt", "run", "--profile", "dev", "{repo_root}/tools/pyperformance_adapter.py", "--", "run-subset", "--suite-root", "{suite_root}", "--benchmarks", "nbody,fannkuch", "--rounds", "2", "--json"]

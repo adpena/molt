@@ -34,7 +34,10 @@ use std::fmt::Write;
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
-use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, Renderer};
+use crate::render::indexing::{
+    render_reduction_input_index, render_shapetracker_index, zero_literal_for_dtype, IndexDialect,
+};
+use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer};
 
 /// GLSL ES 3.0 fragment shader renderer for all 26 primitive ops.
 ///
@@ -96,7 +99,7 @@ impl GlslRenderer {
     ///
     /// Texture coordinate: `vec2(float(col) + 0.5, float(row) + 0.5) / tex_size`
     /// The +0.5 centers on the texel to avoid interpolation artifacts.
-    fn render_tex_read(buf_id: usize, idx_expr: &str) -> String {
+    fn render_tex_read(binding_idx: usize, idx_expr: &str) -> String {
         // Each RGBA texel holds 4 float values. We compute:
         //   texel_idx = idx / 4
         //   component = idx % 4 (select r/g/b/a)
@@ -105,81 +108,51 @@ impl GlslRenderer {
         //   uv = ivec2(col, row)
         // Then use texelFetch(sampler, uv, 0)[component]
         format!(
-            "texelFetch(u_tex{buf}, ivec2(({idx} / 4) % u_tex_width, ({idx} / 4) / u_tex_width), 0)[({idx}) % 4]",
-            buf = buf_id,
+            "texelFetch(u_tex{slot}, ivec2(({idx} / 4) % u_tex_width, ({idx} / 4) / u_tex_width), 0)[({idx}) % 4]",
+            slot = binding_idx,
             idx = idx_expr,
         )
     }
 
     /// Render a buffer read expression at the given index variable,
     /// accounting for ShapeTracker view transformations.
-    fn render_buf_read(binding: &crate::render::BufferBinding, idx_var: &str) -> String {
-        let st = &binding.st;
-        let view = st.view();
-
-        let ndim = view.shape.len();
-        if ndim == 0 {
-            return Self::render_tex_read(binding.buf_id, "0");
-        }
-
-        if view.is_contiguous() && view.mask.is_none() {
-            return Self::render_tex_read(binding.buf_id, idx_var);
-        }
-
-        // General case: decompose linear index, apply strides
-        let mut parts = Vec::new();
-        for dim in 0..ndim {
-            let stride = view.strides[dim];
-            if stride == 0 {
-                continue;
-            }
-            let size = view.shape[dim];
-            let idx_expr = if dim == ndim - 1 {
-                format!("({} % {})", idx_var, size)
-            } else {
-                let divisor: usize = view.shape[dim + 1..].iter().product();
-                format!("({} / {} % {})", idx_var, divisor, size)
-            };
-            if stride == 1 {
-                parts.push(idx_expr);
-            } else if stride == -1 {
-                parts.push(format!("({} - {})", size - 1, idx_expr));
-            } else if stride > 0 {
-                parts.push(format!("{} * {}", idx_expr, stride));
-            } else {
-                parts.push(format!("({} - {}) * {}", size - 1, idx_expr, -stride));
-            }
-        }
-
-        let offset = if view.offset != 0 {
-            format!("{} + ", view.offset)
+    fn render_buf_read(
+        binding_idx: usize,
+        binding: &crate::render::BufferBinding,
+        idx_var: &str,
+    ) -> String {
+        let idx = render_shapetracker_index(&binding.st, idx_var, IndexDialect::Glsl);
+        let read = Self::render_tex_read(binding_idx, &idx.index);
+        let read = if binding.dtype.narrow_webgl2() == DType::Bool {
+            format!("({} != 0.0)", read)
         } else {
-            String::new()
+            read
         };
-
-        let idx_sum = if parts.is_empty() {
-            "0".to_string()
+        if let Some(valid) = idx.valid {
+            let zero = zero_literal_for_dtype(binding.dtype.narrow_webgl2(), "false");
+            format!("({} ? {} : {})", valid, read, zero)
         } else {
-            parts.join(" + ")
-        };
+            read
+        }
+    }
 
-        let final_idx = format!("{}{}", offset, idx_sum);
-        Self::render_tex_read(binding.buf_id, &final_idx)
+    fn render_src(src: &FusedSrc, kernel: &FusedKernel, idx_var: &str) -> String {
+        match src {
+            FusedSrc::Buf(buf_idx) => {
+                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
+            }
+            FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
+            FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
+        }
     }
 
     /// Render a single op expression as GLSL ES 3.0.
     fn render_op(op: &FusedOp, _op_idx: usize, kernel: &FusedKernel, idx_var: &str) -> String {
-        let src = |i: usize| -> String {
-            match &op.srcs[i] {
-                FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var),
-                FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
-                FusedSrc::Const { val, dtype } => Self::format_const(*val, *dtype),
-            }
-        };
+        let src = |i: usize| -> String { Self::render_src(&op.srcs()[i], kernel, idx_var) };
 
-        let dst_type = op.dst_dtype.narrow_webgl2().glsl_type();
+        let dst_type = op.dst_dtype().narrow_webgl2().glsl_type();
 
-        match op.op {
+        match op.op() {
             // Arithmetic
             PrimitiveOp::Add => format!("({} + {})", src(0), src(1)),
             PrimitiveOp::Sub => format!("({} - {})", src(0), src(1)),
@@ -224,7 +197,7 @@ impl GlslRenderer {
             PrimitiveOp::Cast => format!("{}({})", dst_type, src(0)),
             // Bitcast in GLSL ES 3.0 uses intBitsToFloat / floatBitsToInt / floatBitsToUint
             PrimitiveOp::Bitcast => {
-                let narrowed = op.dst_dtype.narrow_webgl2();
+                let narrowed = op.dst_dtype().narrow_webgl2();
                 match narrowed {
                     DType::Float32 => format!("intBitsToFloat(int({}))", src(0)),
                     DType::Int32 => format!("floatBitsToInt({})", src(0)),
@@ -246,9 +219,9 @@ impl GlslRenderer {
     /// Comparisons produce float 1.0/0.0 in fragment shaders since
     /// the output goes to a float texture.
     fn glsl_var_type(op: &FusedOp) -> &'static str {
-        let narrowed = op.dst_dtype.narrow_webgl2();
+        let narrowed = op.dst_dtype().narrow_webgl2();
         if matches!(
-            op.op,
+            op.op(),
             PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
         ) {
             // Comparison ops produce float for texture output
@@ -292,9 +265,9 @@ impl Renderer for GlslRenderer {
         writeln!(out).unwrap();
 
         // Input texture uniforms (bufs[1..] are inputs)
-        for binding in kernel.bufs.iter() {
+        for (i, binding) in kernel.bufs.iter().enumerate() {
             if binding.access == BufferAccess::Read {
-                writeln!(out, "uniform sampler2D u_tex{};", binding.buf_id).unwrap();
+                writeln!(out, "uniform sampler2D u_tex{};", i).unwrap();
             }
         }
         writeln!(out).unwrap();
@@ -323,123 +296,142 @@ impl Renderer for GlslRenderer {
         let has_reduce = kernel
             .ops
             .iter()
-            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+            .any(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
         let output_numel = kernel.bufs[0].st.numel();
 
-        if !has_reduce {
-            // Pure elementwise kernel
-            for (i, op) in kernel.ops.iter().enumerate() {
-                let type_str = Self::glsl_var_type(op);
-                let expr = Self::render_op(op, i, kernel, "gid");
-                writeln!(out, "        {} v{} = {};", type_str, i, expr).unwrap();
-            }
-            let last_op = kernel.ops.len() - 1;
-            writeln!(out, "        result[comp] = float(v{});", last_op).unwrap();
-        } else {
-            // Fused kernel with reduce: elementwise prefix -> reduce -> elementwise suffix
-            let reduce_idx = kernel
-                .ops
-                .iter()
-                .position(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
-                .expect("has_reduce but no reduce op found");
-
-            let reduce_op = &kernel.ops[reduce_idx];
-            let reduce_src = &reduce_op.srcs[0];
-            let reduce_dtype = reduce_op.dst_dtype.narrow_webgl2();
-
-            let input_buf = match reduce_src {
-                FusedSrc::Buf(idx) => &kernel.bufs[*idx],
-                FusedSrc::Op(_) => &kernel.bufs[1],
-                FusedSrc::Const { .. } => unreachable!("reduce on constant"),
-            };
-            let reduce_size = input_buf.st.numel() / output_numel;
-
-            let init_val = match reduce_op.op {
-                PrimitiveOp::ReduceSum => format!("{}(0)", reduce_dtype.glsl_type()),
-                PrimitiveOp::ReduceMax => "intBitsToFloat(int(0xff800000u))".to_string(),
-                _ => unreachable!(),
-            };
-
-            writeln!(
-                out,
-                "        {} acc = {};",
-                reduce_dtype.glsl_type(),
-                init_val
-            )
-            .unwrap();
-
-            if reduce_idx > 0 {
-                // Pre-reduce elementwise ops inside reduction loop
-                writeln!(
-                    out,
-                    "        for (int rid = 0; rid < {}; rid++) {{",
-                    reduce_size
-                )
-                .unwrap();
-                writeln!(out, "            int eidx = gid * {} + rid;", reduce_size).unwrap();
-
-                for i in 0..reduce_idx {
-                    let op = &kernel.ops[i];
-                    let type_str = Self::glsl_var_type(op);
-                    let expr = Self::render_op(op, i, kernel, "eidx");
-                    writeln!(out, "            {} v{} = {};", type_str, i, expr).unwrap();
-                }
-
-                let src_var = format!("v{}", reduce_idx - 1);
-                match reduce_op.op {
-                    PrimitiveOp::ReduceSum => {
-                        writeln!(out, "            acc = acc + {};", src_var).unwrap();
-                    }
-                    PrimitiveOp::ReduceMax => {
-                        writeln!(out, "            acc = max(acc, {});", src_var).unwrap();
-                    }
-                    _ => unreachable!(),
-                }
-                writeln!(out, "        }}").unwrap();
+        if kernel.body == KernelBody::MaterializeCopy {
+            let (_, src_binding, copy_numel) = kernel.materialize_copy_contract();
+            assert_eq!(copy_numel, output_numel);
+            assert_eq!(
+                src_binding.dtype,
+                src_binding.dtype.narrow_webgl2(),
+                "GLSL MaterializeCopy requires a non-narrowed dtype"
+            );
+            let src = Self::render_buf_read(1, src_binding, "gid");
+            let stored = if src_binding.dtype.narrow_webgl2() == DType::Bool {
+                format!("({} ? 1.0 : 0.0)", src)
             } else {
-                // Reduce directly from texture
-                writeln!(
-                    out,
-                    "        for (int rid = 0; rid < {}; rid++) {{",
-                    reduce_size
-                )
-                .unwrap();
-                writeln!(out, "            int eidx = gid * {} + rid;", reduce_size).unwrap();
-                let src_expr = match reduce_src {
-                    FusedSrc::Buf(idx) => Self::render_buf_read(&kernel.bufs[*idx], "eidx"),
+                format!("float({})", src)
+            };
+            writeln!(out, "        result[comp] = {};", stored).unwrap();
+        } else {
+            kernel.compute_body_contract();
+            if !has_reduce {
+                // Pure elementwise kernel
+                for (i, op) in kernel.ops.iter().enumerate() {
+                    let type_str = Self::glsl_var_type(op);
+                    let expr = Self::render_op(op, i, kernel, "gid");
+                    writeln!(out, "        {} v{} = {};", type_str, i, expr).unwrap();
+                }
+                let last_op = kernel.ops.len() - 1;
+                writeln!(out, "        result[comp] = float(v{});", last_op).unwrap();
+            } else {
+                // Fused kernel with reduce: elementwise prefix -> reduce -> elementwise suffix
+                let reduce_idx = kernel
+                    .ops
+                    .iter()
+                    .position(|op| {
+                        matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax)
+                    })
+                    .expect("has_reduce but no reduce op found");
+
+                let reduce_op = &kernel.ops[reduce_idx];
+                let reduce_src = &reduce_op.srcs()[0];
+                let reduce_dtype = reduce_op.dst_dtype().narrow_webgl2();
+                let domain = reduce_op.require_reduction_domain();
+                assert_eq!(
+                    domain.output_numel(),
+                    output_numel,
+                    "GLSL reduction domain output shape must match kernel output"
+                );
+                let reduce_size = domain.reduce_size;
+                let reduce_index =
+                    render_reduction_input_index(domain, "gid", "rid", IndexDialect::Glsl);
+
+                let init_val = match reduce_op.op() {
+                    PrimitiveOp::ReduceSum => format!("{}(0)", reduce_dtype.glsl_type()),
+                    PrimitiveOp::ReduceMax => "intBitsToFloat(int(0xff800000u))".to_string(),
                     _ => unreachable!(),
                 };
-                match reduce_op.op {
-                    PrimitiveOp::ReduceSum => {
-                        writeln!(out, "            acc = acc + {};", src_expr).unwrap();
+
+                writeln!(
+                    out,
+                    "        {} acc = {};",
+                    reduce_dtype.glsl_type(),
+                    init_val
+                )
+                .unwrap();
+
+                if reduce_idx > 0 {
+                    // Pre-reduce elementwise ops inside reduction loop
+                    writeln!(
+                        out,
+                        "        for (int rid = 0; rid < {}; rid++) {{",
+                        reduce_size
+                    )
+                    .unwrap();
+                    writeln!(out, "            int eidx = {};", reduce_index).unwrap();
+
+                    for i in 0..reduce_idx {
+                        let op = &kernel.ops[i];
+                        let type_str = Self::glsl_var_type(op);
+                        let expr = Self::render_op(op, i, kernel, "eidx");
+                        writeln!(out, "            {} v{} = {};", type_str, i, expr).unwrap();
                     }
-                    PrimitiveOp::ReduceMax => {
-                        writeln!(out, "            acc = max(acc, {});", src_expr).unwrap();
+
+                    let src_expr = Self::render_src(reduce_src, kernel, "eidx");
+                    match reduce_op.op() {
+                        PrimitiveOp::ReduceSum => {
+                            writeln!(out, "            acc = acc + {};", src_expr).unwrap();
+                        }
+                        PrimitiveOp::ReduceMax => {
+                            writeln!(out, "            acc = max(acc, {});", src_expr).unwrap();
+                        }
+                        _ => unreachable!(),
                     }
-                    _ => unreachable!(),
+                    writeln!(out, "        }}").unwrap();
+                } else {
+                    // Reduce directly from texture
+                    writeln!(
+                        out,
+                        "        for (int rid = 0; rid < {}; rid++) {{",
+                        reduce_size
+                    )
+                    .unwrap();
+                    writeln!(out, "            int eidx = {};", reduce_index).unwrap();
+                    let src_expr = Self::render_src(reduce_src, kernel, "eidx");
+                    match reduce_op.op() {
+                        PrimitiveOp::ReduceSum => {
+                            writeln!(out, "            acc = acc + {};", src_expr).unwrap();
+                        }
+                        PrimitiveOp::ReduceMax => {
+                            writeln!(out, "            acc = max(acc, {});", src_expr).unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                    writeln!(out, "        }}").unwrap();
                 }
-                writeln!(out, "        }}").unwrap();
+
+                // Store reduce result
+                writeln!(
+                    out,
+                    "        {} v{} = acc;",
+                    reduce_dtype.glsl_type(),
+                    reduce_idx
+                )
+                .unwrap();
+
+                // Post-reduce elementwise ops
+                for i in (reduce_idx + 1)..kernel.ops.len() {
+                    let op = &kernel.ops[i];
+                    let type_str = Self::glsl_var_type(op);
+                    let expr = Self::render_op(op, i, kernel, "gid");
+                    writeln!(out, "        {} v{} = {};", type_str, i, expr).unwrap();
+                }
+
+                let last_op = kernel.ops.len() - 1;
+                writeln!(out, "        result[comp] = float(v{});", last_op).unwrap();
             }
-
-            // Store reduce result
-            writeln!(
-                out,
-                "        {} v{} = acc;",
-                reduce_dtype.glsl_type(),
-                reduce_idx
-            )
-            .unwrap();
-
-            // Post-reduce elementwise ops
-            for i in (reduce_idx + 1)..kernel.ops.len() {
-                let op = &kernel.ops[i];
-                let type_str = Self::glsl_var_type(op);
-                let expr = Self::render_op(op, i, kernel, "gid");
-                writeln!(out, "        {} v{} = {};", type_str, i, expr).unwrap();
-            }
-
-            let last_op = kernel.ops.len() - 1;
-            writeln!(out, "        result[comp] = float(v{});", last_op).unwrap();
         }
 
         writeln!(out, "    }}").unwrap();

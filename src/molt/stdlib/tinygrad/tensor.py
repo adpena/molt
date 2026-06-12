@@ -19,7 +19,7 @@ _gpu_device = _require_intrinsic("molt_gpu_prim_device")
 
 import math
 import random as _random
-from _intrinsics import require_intrinsic as _require_intrinsic
+import struct as _struct
 from tinygrad.dtypes import DType, dtypes
 from tinygrad.lazy import LazyBuffer, LazyOp
 import tinygrad.realize
@@ -28,14 +28,124 @@ import tinygrad.realize
 # when compiled via `molt build --target wasm`. At runtime in CPython,
 # these are None (Python-only fallback path is used instead).
 _gpu_create = _require_intrinsic("molt_gpu_prim_create_tensor")
+_gpu_create_raw = _require_intrinsic("molt_gpu_prim_create_tensor_raw")
 _gpu_zeros = _require_intrinsic("molt_gpu_prim_zeros")
+_gpu_zeros_dtype = _require_intrinsic("molt_gpu_prim_zeros_dtype")
 _gpu_realize = _require_intrinsic("molt_gpu_prim_realize")
+_gpu_dtype = _require_intrinsic("molt_gpu_prim_dtype")
+_gpu_nbytes = _require_intrinsic("molt_gpu_prim_nbytes")
+_gpu_read_raw = _require_intrinsic("molt_gpu_prim_read_data_raw")
+_gpu_free = _require_intrinsic("molt_gpu_prim_free")
 _gpu_unary = _require_intrinsic("molt_gpu_prim_unary")
+_gpu_cast = _require_intrinsic("molt_gpu_prim_cast")
 _gpu_binary = _require_intrinsic("molt_gpu_prim_binary")
+_gpu_ternary = _require_intrinsic("molt_gpu_prim_ternary")
 _gpu_reduce = _require_intrinsic("molt_gpu_prim_reduce")
+_gpu_reduce_all = _require_intrinsic("molt_gpu_prim_reduce_all")
+_gpu_reshape = _require_intrinsic("molt_gpu_prim_reshape")
+_gpu_expand = _require_intrinsic("molt_gpu_prim_expand")
+_gpu_permute = _require_intrinsic("molt_gpu_prim_permute")
+_gpu_pad = _require_intrinsic("molt_gpu_prim_pad")
+_gpu_shrink = _require_intrinsic("molt_gpu_prim_shrink")
+_gpu_flip = _require_intrinsic("molt_gpu_prim_flip")
+_gpu_contiguous = _require_intrinsic("molt_gpu_prim_contiguous")
+_gpu_shape = _require_intrinsic("molt_gpu_prim_shape")
+_gpu_numel = _require_intrinsic("molt_gpu_prim_numel")
 
 _LOG2_E = math.log2(math.e)
 _LN_2 = math.log(2)
+_INVALID_HANDLE = (1 << 64) - 1
+_DTYPE_CODES = (
+    dtypes.bool_,
+    dtypes.int8,
+    dtypes.int16,
+    dtypes.int32,
+    dtypes.int64,
+    dtypes.uint8,
+    dtypes.uint16,
+    dtypes.uint32,
+    dtypes.uint64,
+    dtypes.float16,
+    dtypes.bfloat16,
+    dtypes.float32,
+    dtypes.float64,
+)
+_CODE_TO_DTYPE = {dtype.code: dtype for dtype in _DTYPE_CODES}
+_INTEGER_DTYPES = (
+    dtypes.int8,
+    dtypes.int16,
+    dtypes.int32,
+    dtypes.int64,
+    dtypes.uint8,
+    dtypes.uint16,
+    dtypes.uint32,
+    dtypes.uint64,
+)
+_FLOAT_DTYPES = (dtypes.float16, dtypes.float32, dtypes.float64)
+_RAW_STRUCT_DTYPES = _INTEGER_DTYPES + (
+    dtypes.bool_,
+    dtypes.float16,
+    dtypes.float32,
+    dtypes.float64,
+)
+_UNARY_OP_CODES = {
+    "NEG": 5,
+    "EXP2": 14,
+    "LOG2": 15,
+    "SIN": 16,
+    "SQRT": 17,
+    "RECIPROCAL": 18,
+    "TRUNC": 19,
+}
+_BINARY_OP_CODES = {
+    "ADD": 0,
+    "SUB": 1,
+    "MUL": 2,
+    "IDIV": 3,
+    "MOD": 4,
+    "CMPLT": 6,
+    "CMPEQ": 7,
+    "CMPNE": 8,
+    "AND": 9,
+    "OR": 10,
+    "XOR": 11,
+    "SHL": 12,
+    "SHR": 13,
+    "MAX": 20,
+}
+_TERNARY_OP_CODES = {"WHERE": 21}
+_CAST_OP_CODES = {"CAST": 22, "BITCAST": 23}
+_REDUCE_OP_CODES = {"REDUCE_SUM": 24, "REDUCE_MAX": 25}
+_DTYPE_PROMOTION_PRIORITY = {
+    dtypes.bool_: 0,
+    dtypes.int8: 1,
+    dtypes.uint8: 2,
+    dtypes.int16: 3,
+    dtypes.uint16: 4,
+    dtypes.int32: 5,
+    dtypes.uint32: 6,
+    dtypes.int64: 7,
+    dtypes.uint64: 8,
+    dtypes.float16: 11,
+    dtypes.bfloat16: 12,
+    dtypes.float32: 13,
+    dtypes.float64: 14,
+}
+_DTYPE_PROMOTION_EDGES = {
+    dtypes.bool_: (dtypes.int8, dtypes.uint8),
+    dtypes.int8: (dtypes.int16,),
+    dtypes.uint8: (dtypes.int16, dtypes.uint16),
+    dtypes.int16: (dtypes.int32,),
+    dtypes.uint16: (dtypes.int32, dtypes.uint32),
+    dtypes.int32: (dtypes.int64,),
+    dtypes.uint32: (dtypes.int64, dtypes.uint64),
+    dtypes.int64: (dtypes.float16, dtypes.bfloat16),
+    dtypes.uint64: (dtypes.float16, dtypes.bfloat16),
+    dtypes.float16: (dtypes.float32,),
+    dtypes.bfloat16: (dtypes.float32,),
+    dtypes.float32: (dtypes.float64,),
+    dtypes.float64: (),
+}
 
 
 class Tensor:
@@ -47,15 +157,13 @@ class Tensor:
             return
 
         if data is None:
-            self.lazydata = LazyBuffer(None, dtype or dtypes.float32, ())
+            self.lazydata = LazyBuffer(None, _resolve_dtype(dtype), ())
             return
 
-        # Convert from Python data
-        flat, shape = _flatten_data(data)
-        resolved_dtype = dtype or dtypes.float32
-        flat = [float(x) for x in flat]
-        op = LazyOp("LOAD", (), arg=None, dtype=resolved_dtype, shape=shape)
-        self.lazydata = LazyBuffer(op, resolved_dtype, shape, data=flat)
+        flat, shape, inferred_dtype = _flatten_data(data)
+        resolved_dtype = _resolve_dtype(dtype or inferred_dtype or dtypes.float32)
+        flat = _coerce_values_for_dtype(flat, resolved_dtype)
+        self.lazydata = _lazy_load_from_values(flat, resolved_dtype, shape)
 
     @property
     def shape(self) -> tuple:
@@ -76,12 +184,12 @@ class Tensor:
 
     def realize(self) -> "Tensor":
         """Force materialization of the lazy computation graph."""
-        tinygrad.realize.realize(self.lazydata)
+        _realize_host_values(self.lazydata)
         return self
 
     def numpy(self) -> list:
         """Realize and return data as a nested Python list (numpy-like)."""
-        flat = tinygrad.realize.realize(self.lazydata)
+        flat = _realize_host_values(self.lazydata)
         return _unflatten_data(flat, self.shape)
 
     def tolist(self) -> list:
@@ -90,7 +198,7 @@ class Tensor:
 
     def item(self) -> float:
         """Return scalar value. Tensor must have exactly one element."""
-        flat = tinygrad.realize.realize(self.lazydata)
+        flat = _realize_host_values(self.lazydata)
         if len(flat) != 1:
             raise ValueError(f"item() requires tensor with 1 element, got {len(flat)}")
         return flat[0]
@@ -100,55 +208,55 @@ class Tensor:
     @staticmethod
     def zeros(*shape, dtype: DType = None) -> "Tensor":
         resolved_shape = _resolve_shape(shape)
-        dt = dtype or dtypes.float32
+        dt = _resolve_dtype(dtype)
         numel = 1
         for s in resolved_shape:
             numel *= s
         op = LazyOp("CONST", (), arg=0.0, dtype=dt, shape=resolved_shape)
-        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape))
+        handle = _try_create_runtime_zeros(dt, resolved_shape)
+        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape, handle=handle))
 
     @staticmethod
     def ones(*shape, dtype: DType = None) -> "Tensor":
         resolved_shape = _resolve_shape(shape)
-        dt = dtype or dtypes.float32
+        dt = _resolve_dtype(dtype)
         op = LazyOp("CONST", (), arg=1.0, dtype=dt, shape=resolved_shape)
         return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape))
 
     @staticmethod
     def rand(*shape, dtype: DType = None) -> "Tensor":
         resolved_shape = _resolve_shape(shape)
-        dt = dtype or dtypes.float32
+        dt = _resolve_dtype(dtype)
         numel = 1
         for s in resolved_shape:
             numel *= s
         data = [_random.random() for _ in range(numel)]
-        op = LazyOp("LOAD", (), arg=None, dtype=dt, shape=resolved_shape)
-        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape, data=data))
+        return tensor_from_lazy(
+            _lazy_load_from_values(_coerce_values_for_dtype(data, dt), dt, resolved_shape)
+        )
 
     @staticmethod
     def eye(n: int, dtype: DType = None) -> "Tensor":
-        dt = dtype or dtypes.float32
+        dt = _resolve_dtype(dtype)
         data = [1.0 if i == j else 0.0 for i in range(n) for j in range(n)]
-        op = LazyOp("LOAD", (), arg=None, dtype=dt, shape=(n, n))
-        return tensor_from_lazy(LazyBuffer(op, dt, (n, n), data=data))
+        return tensor_from_lazy(
+            _lazy_load_from_values(_coerce_values_for_dtype(data, dt), dt, (n, n))
+        )
 
     @staticmethod
     def empty(*shape, dtype: DType = None) -> "Tensor":
         resolved_shape = _resolve_shape(shape)
-        dt = dtype or dtypes.float32
-        numel = 1
-        for s in resolved_shape:
-            numel *= s
+        dt = _resolve_dtype(dtype)
         op = LazyOp("CONST", (), arg=0.0, dtype=dt, shape=resolved_shape)
-        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape))
+        handle = _try_create_runtime_zeros(dt, resolved_shape)
+        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape, handle=handle))
 
     @staticmethod
     def full(*shape, fill_value: float, dtype: DType = None) -> "Tensor":
         # If shape is passed as (shape_tuple, fill_value=...) handle it
         resolved_shape = _resolve_shape(shape)
-        dt = dtype or dtypes.float32
-        op = LazyOp("CONST", (), arg=float(fill_value), dtype=dt, shape=resolved_shape)
-        return tensor_from_lazy(LazyBuffer(op, dt, resolved_shape))
+        dt = _resolve_dtype(dtype)
+        return Tensor._const(fill_value, resolved_shape, dt)
 
     # --- Unary Ops (compositions of 26 primitives) ---
 
@@ -266,6 +374,46 @@ class Tensor:
     def maximum(self, other) -> "Tensor":
         return self._binary("MAX", other)
 
+    def where(self, x, y) -> "Tensor":
+        true_dtype = _where_operand_dtype(x)
+        false_dtype = _where_operand_dtype(y)
+        result_dtype = _least_upper_dtype(true_dtype, false_dtype)
+        true_t = Tensor._ensure_tensor(x, self.shape, true_dtype)
+        false_t = Tensor._ensure_tensor(y, self.shape, false_dtype)
+
+        out_shape = _broadcast_shape(_broadcast_shape(self.shape, true_t.shape), false_t.shape)
+        cond_t = _cast_tensor_for_where(self, dtypes.bool_)._broadcast_to(out_shape)
+        true_t = _cast_tensor_for_where(true_t, result_dtype)._broadcast_to(out_shape)
+        false_t = _cast_tensor_for_where(false_t, result_dtype)._broadcast_to(out_shape)
+        op = LazyOp(
+            "WHERE",
+            (cond_t.lazydata, true_t.lazydata, false_t.lazydata),
+            dtype=result_dtype,
+            shape=out_shape,
+        )
+        handle = _try_runtime_ternary(
+            "WHERE",
+            cond_t.lazydata,
+            true_t.lazydata,
+            false_t.lazydata,
+            out_shape,
+        )
+        if handle is not None:
+            return tensor_from_lazy(LazyBuffer(op, result_dtype, out_shape, handle=handle))
+        _raise_if_any_handle_backed_runtime_failed(
+            (cond_t.lazydata, true_t.lazydata, false_t.lazydata), "where"
+        )
+
+        cond_values = _realize_host_values(cond_t.lazydata)
+        true_values = _realize_host_values(true_t.lazydata)
+        false_values = _realize_host_values(false_t.lazydata)
+        values = [
+            true_values[i] if cond_values[i] != 0 else false_values[i]
+            for i in range(_numel(out_shape))
+        ]
+        values = _coerce_values_for_dtype(values, result_dtype)
+        return tensor_from_lazy(LazyBuffer(op, result_dtype, out_shape, data=values))
+
     def __lt__(self, other) -> "Tensor":
         return self._binary("CMPLT", other)
 
@@ -306,7 +454,7 @@ class Tensor:
 
     def argmax(self, axis: int = -1) -> "Tensor":
         """argmax via iterative max comparison."""
-        flat = tinygrad.realize.realize(self.lazydata)
+        flat = _realize_host_values(self.lazydata)
         if axis < 0:
             axis = self.ndim + axis
 
@@ -371,56 +519,117 @@ class Tensor:
             resolved[neg_idx] = self.numel() // known_product
         resolved = tuple(resolved)
 
-        flat = tinygrad.realize.realize(self.lazydata)
-        op = LazyOp("LOAD", (), dtype=self.dtype, shape=resolved)
+        op = LazyOp("RESHAPE", (self.lazydata,), arg=resolved, dtype=self.dtype, shape=resolved)
+        handle = _try_runtime_reshape(self.lazydata, resolved)
+        if handle is not None:
+            return tensor_from_lazy(LazyBuffer(op, self.dtype, resolved, handle=handle))
+        _raise_if_handle_backed_runtime_failed(self.lazydata, "reshape")
+        flat = _realize_host_values(self.lazydata)
         return tensor_from_lazy(LazyBuffer(op, self.dtype, resolved, data=list(flat)))
 
     def permute(self, *order) -> "Tensor":
         if len(order) == 1 and isinstance(order[0], (list, tuple)):
             order = tuple(order[0])
-        flat = tinygrad.realize.realize(self.lazydata)
+        order = tuple(int(axis) for axis in order)
+        if sorted(order) != list(range(self.ndim)):
+            raise ValueError(f"permute order {order} is not a permutation of {self.ndim} axes")
         new_shape = tuple(self.shape[i] for i in order)
-        # Perform actual permutation on data
+        op = LazyOp("PERMUTE", (self.lazydata,), arg=order, dtype=self.dtype, shape=new_shape)
+        handle = _try_runtime_permute(self.lazydata, order)
+        if handle is not None:
+            return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, handle=handle))
+        _raise_if_handle_backed_runtime_failed(self.lazydata, "permute")
+        flat = _realize_host_values(self.lazydata)
         result = _permute_data(flat, self.shape, order)
-        op = LazyOp("LOAD", (), dtype=self.dtype, shape=new_shape)
         return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, data=result))
 
     def expand(self, *new_shape) -> "Tensor":
         resolved = _resolve_shape(new_shape)
-        flat = tinygrad.realize.realize(self.lazydata)
+        if len(resolved) != self.ndim:
+            raise ValueError(
+                f"expand requires {self.ndim} dims for source shape {self.shape}, got {resolved}"
+            )
+        for old, new in zip(self.shape, resolved):
+            if old != new and old != 1:
+                raise ValueError(f"cannot expand shape {self.shape} to {resolved}")
+        op = LazyOp("EXPAND", (self.lazydata,), arg=resolved, dtype=self.dtype, shape=resolved)
+        handle = _try_runtime_expand(self.lazydata, resolved)
+        if handle is not None:
+            return tensor_from_lazy(LazyBuffer(op, self.dtype, resolved, handle=handle))
+        _raise_if_handle_backed_runtime_failed(self.lazydata, "expand")
+        flat = _realize_host_values(self.lazydata)
         result = _expand_data(flat, self.shape, resolved)
-        op = LazyOp("LOAD", (), dtype=self.dtype, shape=resolved)
         return tensor_from_lazy(LazyBuffer(op, self.dtype, resolved, data=result))
 
     def pad(self, padding, value: float = 0.0) -> "Tensor":
         """Pad tensor. padding is list of (before, after) pairs per dim."""
-        flat = tinygrad.realize.realize(self.lazydata)
-        new_shape = tuple(s + p[0] + p[1] for s, p in zip(self.shape, padding))
+        padding = _normalize_pairs(padding, self.ndim, "pad")
+        new_shape = tuple(s + before + after for s, (before, after) in zip(self.shape, padding))
+        op = LazyOp(
+            "PAD",
+            (self.lazydata,),
+            arg=(padding, value),
+            dtype=self.dtype,
+            shape=new_shape,
+        )
+        if value == 0.0:
+            handle = _try_runtime_pad(self.lazydata, padding)
+            if handle is not None:
+                return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, handle=handle))
+            _raise_if_handle_backed_runtime_failed(self.lazydata, "pad")
+        elif self.lazydata.handle is not None:
+            raise RuntimeError("molt GPU runtime pad currently supports zero padding only")
+
+        flat = _realize_host_values(self.lazydata)
         numel = 1
         for s in new_shape:
             numel *= s
         result = [value] * numel
         _copy_with_padding(flat, self.shape, result, new_shape, padding)
-        op = LazyOp("LOAD", (), dtype=self.dtype, shape=new_shape)
         return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, data=result))
 
     def shrink(self, bounds) -> "Tensor":
         """Extract sub-region. bounds is list of (start, end) per dim."""
-        flat = tinygrad.realize.realize(self.lazydata)
+        bounds = _normalize_pairs(bounds, self.ndim, "shrink")
+        for dim, (start, end) in enumerate(bounds):
+            if start > end or end > self.shape[dim]:
+                raise ValueError(f"invalid shrink bounds {bounds} for shape {self.shape}")
         new_shape = tuple(e - s for s, e in bounds)
+        op = LazyOp("SHRINK", (self.lazydata,), arg=bounds, dtype=self.dtype, shape=new_shape)
+        handle = _try_runtime_shrink(self.lazydata, bounds)
+        if handle is not None:
+            return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, handle=handle))
+        _raise_if_handle_backed_runtime_failed(self.lazydata, "shrink")
+        flat = _realize_host_values(self.lazydata)
         result = _shrink_data(flat, self.shape, bounds)
-        op = LazyOp("LOAD", (), dtype=self.dtype, shape=new_shape)
         return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, data=result))
 
     def flip(self, axis: int = 0) -> "Tensor":
-        flat = tinygrad.realize.realize(self.lazydata)
+        axis = int(axis)
+        if axis < 0:
+            axis += self.ndim
+        if axis < 0 or axis >= self.ndim:
+            raise ValueError(f"flip axis {axis} out of bounds for shape {self.shape}")
+        op = LazyOp("FLIP", (self.lazydata,), arg=axis, dtype=self.dtype, shape=self.shape)
+        handle = _try_runtime_flip(self.lazydata, axis)
+        if handle is not None:
+            return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape, handle=handle))
+        _raise_if_handle_backed_runtime_failed(self.lazydata, "flip")
+        flat = _realize_host_values(self.lazydata)
         result = _flip_data(flat, self.shape, axis)
-        op = LazyOp("LOAD", (), dtype=self.dtype, shape=self.shape)
         return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape, data=result))
 
     def contiguous(self) -> "Tensor":
         """Force materialization."""
-        return self.realize()
+        op = LazyOp("CONTIGUOUS", (self.lazydata,), dtype=self.dtype, shape=self.shape)
+        handle = _try_runtime_contiguous(self.lazydata)
+        if handle is not None:
+            return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape, handle=handle))
+        _raise_if_handle_backed_runtime_failed(self.lazydata, "contiguous")
+        flat = _realize_host_values(self.lazydata)
+        return tensor_from_lazy(
+            _lazy_load_from_values(_coerce_values_for_dtype(flat, self.dtype), self.dtype, self.shape)
+        )
 
     @property
     def T(self) -> "Tensor":
@@ -474,7 +683,7 @@ class Tensor:
         """
         if n_rep == 1:
             return self
-        flat = tinygrad.realize.realize(self.lazydata)
+        flat = _realize_host_values(self.lazydata)
         ndim = self.ndim
         shape = self.shape
         ax = axis if axis >= 0 else ndim + axis
@@ -517,7 +726,7 @@ class Tensor:
         Returns a tuple of Tensors, each with the last dimension sliced
         according to the sizes tuple.
         """
-        flat = tinygrad.realize.realize(self.lazydata)
+        flat = _realize_host_values(self.lazydata)
         total = sum(sizes)
         if total != self.shape[-1]:
             raise ValueError(
@@ -556,7 +765,7 @@ class Tensor:
         [g0, u0, g1, u1, ...]. Output is relu(gate)^2 * up with
         the last dimension halved.
         """
-        flat = tinygrad.realize.realize(self.lazydata)
+        flat = _realize_host_values(self.lazydata)
         shape = self.shape
         last_dim = shape[-1]
         if last_dim % 2 != 0:
@@ -594,35 +803,22 @@ class Tensor:
 
     def matmul(self, other: "Tensor") -> "Tensor":
         """Matrix multiplication. Supports 2D @ 2D."""
-        a_data = tinygrad.realize.realize(self.lazydata)
-        b_data = tinygrad.realize.realize(other.lazydata)
-        if self.ndim == 2 and other.ndim == 2:
+        other_t = other if isinstance(other, Tensor) else Tensor(other, dtype=self.dtype)
+        if self.ndim == 2 and other_t.ndim == 2:
             m, k = self.shape
-            k2, n = other.shape
+            k2, n = other_t.shape
             if k != k2:
                 raise ValueError(f"matmul shape mismatch: ({m},{k}) @ ({k2},{n})")
-            result = [0.0] * (m * n)
-            for i in range(m):
-                for j in range(n):
-                    s = 0.0
-                    for p in range(k):
-                        s += a_data[i * k + p] * b_data[p * n + j]
-                    result[i * n + j] = s
-            shape = (m, n)
-        elif self.ndim == 1 and other.ndim == 1:
-            if len(a_data) != len(b_data):
+            lhs = self.reshape(m, k, 1).expand(m, k, n)
+            rhs = other_t.reshape(1, k, n).expand(m, k, n)
+            return (lhs * rhs).sum(axis=1).reshape(m, n)
+        if self.ndim == 1 and other_t.ndim == 1:
+            if self.shape[0] != other_t.shape[0]:
                 raise ValueError("dot product length mismatch")
-            s = 0.0
-            for i in range(len(a_data)):
-                s += a_data[i] * b_data[i]
-            result = [s]
-            shape = (1,)
-        else:
-            raise ValueError(
-                f"matmul not supported for ndim {self.ndim} @ {other.ndim}"
-            )
-        op = LazyOp("LOAD", (), dtype=self.dtype, shape=shape)
-        return tensor_from_lazy(LazyBuffer(op, self.dtype, shape, data=result))
+            return (self * other_t).sum(axis=0).reshape(1)
+        raise ValueError(
+            f"matmul not supported for ndim {self.ndim} @ {other_t.ndim}"
+        )
 
     def __matmul__(self, other: "Tensor") -> "Tensor":
         return self.matmul(other)
@@ -635,7 +831,7 @@ class Tensor:
         if not tensors:
             raise ValueError("cat requires at least one tensor")
 
-        all_data = [tinygrad.realize.realize(t.lazydata) for t in tensors]
+        all_data = [_realize_host_values(t.lazydata) for t in tensors]
         shapes = [t.shape for t in tensors]
 
         # Compute output shape
@@ -674,8 +870,8 @@ class Tensor:
                 result.append(rows[row])
             return self.__class__(result, dtype=self.dtype)
 
-        src_data = tinygrad.realize.realize(self.lazydata)
-        idx_data = tinygrad.realize.realize(index.lazydata)
+        src_data = _realize_host_values(self.lazydata)
+        idx_data = _realize_host_values(index.lazydata)
         result = _gather_data(src_data, self.shape, idx_data, index.shape, dim)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=index.shape)
         return self.__class__(LazyBuffer(op, self.dtype, index.shape, data=result))
@@ -699,16 +895,16 @@ class Tensor:
                 rows[row] = src_rows[pos]
             return self.__class__(rows, dtype=self.dtype)
 
-        self_data = list(tinygrad.realize.realize(self.lazydata))
-        src_data = tinygrad.realize.realize(src.lazydata)
-        idx_data = tinygrad.realize.realize(index.lazydata)
+        self_data = list(_realize_host_values(self.lazydata))
+        src_data = _realize_host_values(src.lazydata)
+        idx_data = _realize_host_values(index.lazydata)
         _scatter_data(self_data, self.shape, src_data, idx_data, index.shape, dim)
         op = LazyOp("LOAD", (), dtype=self.dtype, shape=self.shape)
         return self.__class__(LazyBuffer(op, self.dtype, self.shape, data=self_data))
 
     def __getitem__(self, idx) -> "Tensor":
         """Basic integer/slice indexing."""
-        flat = tinygrad.realize.realize(self.lazydata)
+        flat = _realize_host_values(self.lazydata)
         if isinstance(idx, int):
             if self.ndim == 1:
                 return tensor_from_data([flat[idx]], dtype=self.dtype)
@@ -867,11 +1063,11 @@ class Tensor:
         if any(size < 0 for size in out_spatial):
             raise ValueError(f"conv2d output shape is invalid: {out_spatial}")
 
-        x_data = tinygrad.realize.realize(x.lazydata)
-        w_data = tinygrad.realize.realize(weight.lazydata)
+        x_data = _realize_host_values(x.lazydata)
+        w_data = _realize_host_values(weight.lazydata)
         b_data = None
         if bias is not None:
-            b_data = tinygrad.realize.realize(bias.lazydata)
+            b_data = _realize_host_values(bias.lazydata)
 
         out_shape = (batch, out_channels, *out_spatial)
         out_data = [0.0] * _numel(out_shape)
@@ -971,8 +1167,8 @@ class Tensor:
 
         out_shape = (batch, out_channels, *out_spatial)
         out_data = [0.0] * _numel(out_shape)
-        x_data = tinygrad.realize.realize(x.lazydata)
-        w_data = tinygrad.realize.realize(weight.lazydata)
+        x_data = _realize_host_values(x.lazydata)
+        w_data = _realize_host_values(weight.lazydata)
         x_strides = _strides_for_shape(x.shape)
         w_strides = _strides_for_shape(weight.shape)
         out_strides = _strides_for_shape(out_shape)
@@ -1005,7 +1201,7 @@ class Tensor:
                             out_data[out_index] += x_val * w_data[w_index]
 
         if bias is not None:
-            b_data = tinygrad.realize.realize(bias.lazydata)
+            b_data = _realize_host_values(bias.lazydata)
             for n in range(batch):
                 for oc in range(out_channels):
                     for out_coords in _iter_indices(out_spatial):
@@ -1019,7 +1215,8 @@ class Tensor:
 
     def _unary(self, op_name: str) -> "Tensor":
         op = LazyOp(op_name, (self.lazydata,), dtype=self.dtype, shape=self.shape)
-        return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape))
+        handle = _try_runtime_unary(op_name, self.lazydata)
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape, handle=handle))
 
     def _unary_compose(
         self, op_name: str, pre_mul: float = None, post_mul: float = None
@@ -1044,7 +1241,8 @@ class Tensor:
             dtype=out_dtype,
             shape=out_shape,
         )
-        return tensor_from_lazy(LazyBuffer(op, out_dtype, out_shape))
+        handle = _try_runtime_binary(op_name, self.lazydata, other_t.lazydata, out_shape)
+        return tensor_from_lazy(LazyBuffer(op, out_dtype, out_shape, handle=handle))
 
     def _reduce(self, op_name: str, axis) -> "Tensor":
         if axis is not None:
@@ -1061,21 +1259,32 @@ class Tensor:
             dtype=self.dtype,
             shape=out_shape,
         )
-        return tensor_from_lazy(LazyBuffer(op, self.dtype, out_shape))
+        handle = (
+            _try_runtime_reduce(op_name, self.lazydata, ax)
+            if axis is not None
+            else _try_runtime_reduce_all(op_name, self.lazydata, out_shape)
+        )
+        return tensor_from_lazy(LazyBuffer(op, self.dtype, out_shape, handle=handle))
 
     def _broadcast_to(self, target_shape: tuple) -> "Tensor":
         """Broadcast this tensor to target_shape by repeating data."""
+        target_shape = tuple(target_shape)
         if self.shape == target_shape:
             return self
-        flat = tinygrad.realize.realize(self.lazydata)
-        result = _expand_data(flat, self.shape, target_shape)
-        op = LazyOp("LOAD", (), dtype=self.dtype, shape=target_shape)
-        return tensor_from_lazy(LazyBuffer(op, self.dtype, target_shape, data=result))
+        if len(self.shape) > len(target_shape):
+            raise ValueError(f"cannot broadcast shape {self.shape} to {target_shape}")
+        source = self
+        if len(self.shape) < len(target_shape):
+            padded = (1,) * (len(target_shape) - len(self.shape)) + self.shape
+            source = self.reshape(padded)
+        return source.expand(target_shape)
 
     @staticmethod
     def _const(val: float, shape: tuple, dtype: DType) -> "Tensor":
+        coerced = _coerce_values_for_dtype([val] * _numel(shape), dtype)
         op = LazyOp("CONST", (), arg=val, dtype=dtype, shape=shape)
-        return tensor_from_lazy(LazyBuffer(op, dtype, shape))
+        handle = _try_create_runtime_tensor(coerced, dtype, shape)
+        return tensor_from_lazy(LazyBuffer(op, dtype, shape, data=coerced, handle=handle))
 
     @staticmethod
     def _ensure_tensor(x, shape: tuple, dtype: DType) -> "Tensor":
@@ -1084,6 +1293,20 @@ class Tensor:
         if isinstance(x, (int, float)):
             return Tensor._const(float(x), (1,), dtype)
         return tensor_from_data(x, dtype=dtype)
+
+    def cast(self, dtype) -> "Tensor":
+        dt = _resolve_dtype(dtype)
+        op = LazyOp("CAST", (self.lazydata,), dtype=dt, shape=self.shape)
+        handle = _try_runtime_cast("CAST", self.lazydata, dt)
+        if handle is not None:
+            return tensor_from_lazy(LazyBuffer(op, dt, self.shape, handle=handle))
+        flat = _realize_host_values(self.lazydata)
+        return tensor_from_lazy(
+            _lazy_load_from_values(_coerce_values_for_dtype(flat, dt), dt, self.shape)
+        )
+
+    def float(self) -> "Tensor":
+        return self.cast(dtypes.float32)
 
     def __repr__(self) -> str:
         return f"<Tensor shape={self.shape} dtype={self.dtype}>"
@@ -1100,6 +1323,382 @@ def tensor_from_data(data, dtype=None):
 # --- Utility Functions ---
 
 
+def _resolve_dtype(dtype) -> DType:
+    if dtype is None:
+        return dtypes.float32
+    if isinstance(dtype, DType):
+        return dtype
+    if dtype is float:
+        return dtypes.float32
+    if dtype is int:
+        return dtypes.int32
+    if dtype is bool:
+        return dtypes.bool_
+    raise TypeError(f"unsupported dtype {dtype!r}")
+
+
+def _where_operand_dtype(value) -> DType:
+    if isinstance(value, Tensor):
+        return value.dtype
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return dtypes.uint8
+    if isinstance(value, bool):
+        return dtypes.bool_
+    if isinstance(value, int):
+        return dtypes.int32
+    if isinstance(value, float):
+        return dtypes.float32
+    flat, _shape, inferred_dtype = _flatten_data(value)
+    if inferred_dtype is not None:
+        return inferred_dtype
+    if not flat:
+        return dtypes.float32
+    if all(isinstance(item, bool) for item in flat):
+        return dtypes.bool_
+    if all(isinstance(item, (bool, int)) and not isinstance(item, float) for item in flat):
+        return dtypes.int32
+    if all(isinstance(item, (bool, int, float)) for item in flat):
+        return dtypes.float32
+    raise TypeError(f"cannot infer tensor dtype for {value!r}")
+
+
+def _dtype_promotion_parents(dtype: DType) -> set:
+    if dtype not in _DTYPE_PROMOTION_PRIORITY:
+        raise TypeError(f"unsupported dtype promotion for {dtype!r}")
+    parents = {dtype}
+    for parent in _DTYPE_PROMOTION_EDGES[dtype]:
+        parents.update(_dtype_promotion_parents(parent))
+    return parents
+
+
+def _least_upper_dtype(*operand_dtypes: DType) -> DType:
+    if not operand_dtypes:
+        return dtypes.float32
+    parent_sets = [_dtype_promotion_parents(dtype) for dtype in operand_dtypes]
+    common = set.intersection(*parent_sets)
+    if not common:
+        raise TypeError(f"no common dtype for {operand_dtypes!r}")
+    return min(common, key=lambda dtype: _DTYPE_PROMOTION_PRIORITY[dtype])
+
+
+def _cast_tensor_for_where(tensor: Tensor, dtype: DType) -> Tensor:
+    dt = _resolve_dtype(dtype)
+    if tensor.dtype == dt:
+        return tensor
+    op = LazyOp("CAST", (tensor.lazydata,), dtype=dt, shape=tensor.shape)
+    handle = _try_runtime_cast("CAST", tensor.lazydata, dt)
+    if handle is not None:
+        return tensor_from_lazy(LazyBuffer(op, dt, tensor.shape, handle=handle))
+    _raise_if_handle_backed_runtime_failed(tensor.lazydata, "where")
+    flat = _realize_host_values(tensor.lazydata)
+    return tensor_from_lazy(
+        _lazy_load_from_values(_coerce_values_for_dtype(flat, dt), dt, tensor.shape)
+    )
+
+
+def _coerce_values_for_dtype(values: list, dtype: DType) -> list:
+    if dtype is dtypes.bool_:
+        return [bool(value) for value in values]
+    if dtype in _INTEGER_DTYPES:
+        return [int(value) for value in values]
+    if dtype in _FLOAT_DTYPES or dtype is dtypes.bfloat16:
+        return [float(value) for value in values]
+    raise TypeError(f"unsupported tensor dtype {dtype!r}")
+
+
+def _pack_typed_values(values: list, dtype: DType) -> bytes:
+    if dtype is dtypes.bfloat16:
+        raise RuntimeError("bfloat16 raw tensor packing requires runtime-owned bf16 packing")
+    if dtype not in _RAW_STRUCT_DTYPES:
+        raise RuntimeError(f"unsupported raw tensor dtype {dtype!r}")
+    if not values:
+        return b""
+    return _struct.pack("<" + str(len(values)) + dtype.fmt, *values)
+
+
+def _unpack_typed_values(raw: bytes | bytearray, dtype: DType) -> list:
+    if dtype is dtypes.bfloat16:
+        raise RuntimeError("bfloat16 raw tensor readback requires runtime-owned bf16 unpacking")
+    if dtype not in _RAW_STRUCT_DTYPES:
+        raise RuntimeError(f"unsupported raw tensor dtype {dtype!r}")
+    if len(raw) % dtype.itemsize != 0:
+        raise RuntimeError("raw tensor byte length is not divisible by dtype itemsize")
+    count = len(raw) // dtype.itemsize
+    if count == 0:
+        return []
+    return list(_struct.unpack("<" + str(count) + dtype.fmt, bytes(raw)))
+
+
+def _expected_storage_nbytes(shape: tuple, dtype: DType) -> int:
+    return _numel(shape) * dtype.itemsize
+
+
+def _runtime_handle_or_none(raw_handle) -> int | None:
+    if isinstance(raw_handle, int) and raw_handle != _INVALID_HANDLE:
+        return raw_handle
+    return None
+
+
+def _try_create_runtime_tensor(values: list, dtype: DType, shape: tuple) -> int | None:
+    if dtype.code is None:
+        return None
+    try:
+        raw = _pack_typed_values(values, dtype)
+    except RuntimeError:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_create_raw(raw, len(raw), dtype.code, shape))
+    except Exception:
+        return None
+
+
+def _try_create_runtime_zeros(dtype: DType, shape: tuple) -> int | None:
+    if dtype.code is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_zeros_dtype(dtype.code, shape))
+    except Exception:
+        return None
+
+
+def _ensure_runtime_handle(lazydata: LazyBuffer) -> int | None:
+    if lazydata.handle is not None:
+        return lazydata.handle
+    if lazydata._data is None:
+        return None
+    handle = _try_create_runtime_tensor(lazydata._data, lazydata.dtype, lazydata.shape)
+    if handle is not None:
+        lazydata._handle = handle
+    return handle
+
+
+def _try_runtime_unary(op_name: str, src: LazyBuffer) -> int | None:
+    op_code = _UNARY_OP_CODES.get(op_name)
+    src_handle = _ensure_runtime_handle(src)
+    if op_code is None or src_handle is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_unary(op_code, src_handle))
+    except Exception:
+        return None
+
+
+def _try_runtime_binary(
+    op_name: str, lhs: LazyBuffer, rhs: LazyBuffer, out_shape: tuple
+) -> int | None:
+    op_code = _BINARY_OP_CODES.get(op_name)
+    lhs_handle = _ensure_runtime_handle(lhs)
+    rhs_handle = _ensure_runtime_handle(rhs)
+    if (
+        op_code is None
+        or lhs_handle is None
+        or rhs_handle is None
+        or lhs.shape != out_shape
+    ):
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_binary(op_code, lhs_handle, rhs_handle))
+    except Exception:
+        return None
+
+
+def _try_runtime_ternary(
+    op_name: str,
+    cond: LazyBuffer,
+    a: LazyBuffer,
+    b: LazyBuffer,
+    out_shape: tuple,
+) -> int | None:
+    op_code = _TERNARY_OP_CODES.get(op_name)
+    cond_handle = _ensure_runtime_handle(cond)
+    a_handle = _ensure_runtime_handle(a)
+    b_handle = _ensure_runtime_handle(b)
+    if (
+        op_code is None
+        or cond_handle is None
+        or a_handle is None
+        or b_handle is None
+        or cond.dtype != dtypes.bool_
+        or cond.shape != out_shape
+        or a.shape != out_shape
+        or b.shape != out_shape
+        or a.dtype != b.dtype
+    ):
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_ternary(op_code, cond_handle, a_handle, b_handle))
+    except Exception:
+        return None
+
+
+def _try_runtime_cast(op_name: str, src: LazyBuffer, dst_dtype: DType) -> int | None:
+    op_code = _CAST_OP_CODES.get(op_name)
+    src_handle = _ensure_runtime_handle(src)
+    if op_code is None or src_handle is None or dst_dtype.code is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_cast(op_code, src_handle, dst_dtype.code))
+    except Exception:
+        return None
+
+
+def _try_runtime_reduce(op_name: str, src: LazyBuffer, axis: int) -> int | None:
+    op_code = _REDUCE_OP_CODES.get(op_name)
+    src_handle = _ensure_runtime_handle(src)
+    if op_code is None or src_handle is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_reduce(op_code, src_handle, axis))
+    except Exception:
+        return None
+
+
+def _try_runtime_reduce_all(op_name: str, src: LazyBuffer, out_shape: tuple) -> int | None:
+    op_code = _REDUCE_OP_CODES.get(op_name)
+    src_handle = _ensure_runtime_handle(src)
+    if op_code is None or src_handle is None:
+        return None
+    try:
+        handle = _runtime_handle_or_none(_gpu_reduce_all(op_code, src_handle))
+        if handle is None:
+            return None
+        if out_shape == (1,):
+            return handle
+        return _runtime_handle_or_none(_gpu_reshape(handle, out_shape))
+    except Exception:
+        return None
+
+
+def _try_runtime_reshape(src: LazyBuffer, shape: tuple) -> int | None:
+    src_handle = _ensure_runtime_handle(src)
+    if src_handle is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_reshape(src_handle, shape))
+    except Exception:
+        return None
+
+
+def _try_runtime_expand(src: LazyBuffer, shape: tuple) -> int | None:
+    src_handle = _ensure_runtime_handle(src)
+    if src_handle is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_expand(src_handle, shape))
+    except Exception:
+        return None
+
+
+def _try_runtime_permute(src: LazyBuffer, order: tuple) -> int | None:
+    src_handle = _ensure_runtime_handle(src)
+    if src_handle is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_permute(src_handle, order))
+    except Exception:
+        return None
+
+
+def _try_runtime_pad(src: LazyBuffer, padding: tuple) -> int | None:
+    src_handle = _ensure_runtime_handle(src)
+    if src_handle is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_pad(src_handle, _flatten_pairs(padding)))
+    except Exception:
+        return None
+
+
+def _try_runtime_shrink(src: LazyBuffer, bounds: tuple) -> int | None:
+    src_handle = _ensure_runtime_handle(src)
+    if src_handle is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_shrink(src_handle, _flatten_pairs(bounds)))
+    except Exception:
+        return None
+
+
+def _try_runtime_flip(src: LazyBuffer, axis: int) -> int | None:
+    src_handle = _ensure_runtime_handle(src)
+    if src_handle is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_flip(src_handle, axis))
+    except Exception:
+        return None
+
+
+def _try_runtime_contiguous(src: LazyBuffer) -> int | None:
+    src_handle = _ensure_runtime_handle(src)
+    if src_handle is None:
+        return None
+    try:
+        return _runtime_handle_or_none(_gpu_contiguous(src_handle))
+    except Exception:
+        return None
+
+
+def _raise_if_handle_backed_runtime_failed(src: LazyBuffer, op_name: str) -> None:
+    if src.handle is not None:
+        raise RuntimeError(f"molt GPU runtime {op_name} failed")
+
+
+def _raise_if_any_handle_backed_runtime_failed(srcs: tuple, op_name: str) -> None:
+    for src in srcs:
+        _raise_if_handle_backed_runtime_failed(src, op_name)
+
+
+def _normalize_pairs(pairs, ndim: int, op_name: str) -> tuple:
+    normalized = tuple((int(start), int(end)) for start, end in pairs)
+    if len(normalized) != ndim:
+        raise ValueError(f"{op_name} requires {ndim} pairs, got {normalized}")
+    for start, end in normalized:
+        if start < 0 or end < 0:
+            raise ValueError(f"{op_name} pairs must be non-negative, got {normalized}")
+    return normalized
+
+
+def _flatten_pairs(pairs: tuple) -> tuple:
+    return tuple(value for pair in pairs for value in pair)
+
+
+def _read_runtime_values(handle: int, expected_dtype: DType, shape: tuple) -> list:
+    realized = _gpu_realize(handle)
+    if realized not in (0, None):
+        raise RuntimeError("molt GPU tensor realization failed")
+
+    dtype_code = _gpu_dtype(handle)
+    dtype = _CODE_TO_DTYPE.get(dtype_code, expected_dtype)
+    nbytes = _gpu_nbytes(handle)
+    if not isinstance(nbytes, int) or nbytes == _INVALID_HANDLE:
+        nbytes = _expected_storage_nbytes(shape, dtype)
+
+    raw = bytearray(nbytes)
+    if dtype.code is None:
+        raise RuntimeError("runtime tensor readback requires a canonical dtype code")
+    read = _gpu_read_raw(handle, dtype.code, raw, nbytes)
+    if read != nbytes:
+        raise RuntimeError("molt GPU tensor raw readback failed")
+    return _unpack_typed_values(raw, dtype)
+
+
+def _realize_host_values(lazydata: LazyBuffer) -> list:
+    if lazydata._data is not None:
+        return list(lazydata._data)
+    if lazydata.handle is not None:
+        values = _read_runtime_values(lazydata.handle, lazydata.dtype, lazydata.shape)
+        lazydata._data = values
+        return list(values)
+    return tinygrad.realize.realize(lazydata)
+
+
+def _lazy_load_from_values(values: list, dtype: DType, shape: tuple) -> LazyBuffer:
+    op = LazyOp("LOAD", (), arg=None, dtype=dtype, shape=shape)
+    handle = _try_create_runtime_tensor(values, dtype, shape)
+    return LazyBuffer(op, dtype, shape, data=list(values), handle=handle)
+
+
 def _resolve_shape(args) -> tuple:
     """Resolve shape from *args: (3, 4) or ((3, 4),)."""
     if len(args) == 1 and isinstance(args[0], (list, tuple)):
@@ -1109,10 +1708,15 @@ def _resolve_shape(args) -> tuple:
 
 def _flatten_data(data) -> tuple:
     """Flatten nested lists/tuples into (flat_list, shape)."""
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        raw = bytes(data)
+        return [int(b) for b in raw], (len(raw),), dtypes.uint8
+    if isinstance(data, bool):
+        return [data], (1,), dtypes.bool_
     if isinstance(data, (int, float)):
-        return [float(data)], (1,)
+        return [data], (1,), None
     if not isinstance(data, (list, tuple)):
-        return [float(data)], (1,)
+        return [data], (1,), None
 
     shape = []
     current = data
@@ -1124,17 +1728,17 @@ def _flatten_data(data) -> tuple:
 
     flat = []
     _flatten_recursive(data, flat)
-    return flat, tuple(shape)
+    return flat, tuple(shape), None
 
 
 def _flatten_recursive(data, out: list) -> None:
-    if isinstance(data, (int, float)):
-        out.append(float(data))
+    if isinstance(data, (bool, int, float)):
+        out.append(data)
     elif isinstance(data, (list, tuple)):
         for item in data:
             _flatten_recursive(item, out)
     else:
-        out.append(float(data))
+        out.append(data)
 
 
 def _unflatten_data(flat: list, shape: tuple) -> list:

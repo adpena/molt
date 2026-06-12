@@ -86,6 +86,16 @@ PYTEST_PROCESS_TOKENS = (
     "python3 -m pytest",
 )
 
+HOST_CONTROL_PLANE_TOKENS = (
+    "/Applications/Codex.app/",
+    "Codex.app/Contents/",
+    "Codex (Renderer)",
+    "Codex Helper",
+    "codex app-server",
+    "codex_chronicle",
+    "/cua_node/bin/node_repl",
+)
+
 INSPECTION_COMMAND_TOKENS = (
     "tools/process_sentinel.py",
     "process_sentinel.py",
@@ -184,6 +194,8 @@ class SentinelViolation:
     peak_rss_kb: int | None
     pids: tuple[int, ...]
     command: str
+    samples: tuple[memory_guard.ProcessSample, ...] = ()
+    external_parent_pids: tuple[int, ...] = ()
     oldest_elapsed_sec: int | None = None
     stale_sec: float | None = None
     orphaned: bool = False
@@ -207,6 +219,84 @@ def _normalized_repo_token(root: Path) -> str:
     return root.resolve().as_posix()
 
 
+def _sample_pgid(sample: memory_guard.ProcessSample) -> int:
+    return sample.pgid if sample.pgid is not None else sample.pid
+
+
+def is_host_control_plane_process(sample: memory_guard.ProcessSample) -> bool:
+    return any(token in sample.command for token in HOST_CONTROL_PLANE_TOKENS)
+
+
+def _ancestor_pids(
+    samples: Mapping[int, memory_guard.ProcessSample],
+    pid: int | None,
+) -> set[int]:
+    if pid is None or pid <= 0:
+        return set()
+    ancestors: set[int] = set()
+    current = pid
+    while current > 0 and current not in ancestors:
+        ancestors.add(current)
+        sample = samples.get(current)
+        if sample is None or sample.ppid <= 0 or sample.ppid == current:
+            break
+        current = sample.ppid
+    return ancestors
+
+
+def protected_process_group_ids(
+    samples: Mapping[int, memory_guard.ProcessSample],
+    *,
+    self_pid: int | None = None,
+    self_pgid: int | None = None,
+) -> set[int]:
+    protected: set[int] = set()
+    if self_pgid is not None and self_pgid > 0:
+        protected.add(self_pgid)
+    ancestor_ids = _ancestor_pids(samples, self_pid)
+    for sample in samples.values():
+        if sample.pid in ancestor_ids or is_host_control_plane_process(sample):
+            protected.add(_sample_pgid(sample))
+    return protected
+
+
+def _group_samples_by_pgid(
+    samples: Mapping[int, memory_guard.ProcessSample],
+) -> dict[int, list[memory_guard.ProcessSample]]:
+    grouped: dict[int, list[memory_guard.ProcessSample]] = {}
+    for sample in samples.values():
+        grouped.setdefault(_sample_pgid(sample), []).append(sample)
+    return grouped
+
+
+def _matched_process_group_ids(
+    samples: Mapping[int, memory_guard.ProcessSample],
+    grouped: Mapping[int, Sequence[memory_guard.ProcessSample]],
+    *,
+    root: Path,
+    self_pid: int | None,
+    known_pgids: set[int] | None,
+) -> set[int]:
+    matched: set[int] = set() if known_pgids is None else set(known_pgids)
+    for sample in samples.values():
+        if is_molt_process(sample, root=root, self_pid=self_pid):
+            matched.add(_sample_pgid(sample))
+    changed = True
+    while changed:
+        changed = False
+        matched_pids = {
+            sample.pid for pgid in matched for sample in grouped.get(pgid, ())
+        }
+        if not matched_pids:
+            break
+        for sample in samples.values():
+            pgid = _sample_pgid(sample)
+            if pgid not in matched and sample.ppid in matched_pids:
+                matched.add(pgid)
+                changed = True
+    return matched
+
+
 def is_molt_process(
     sample: memory_guard.ProcessSample,
     *,
@@ -216,6 +306,8 @@ def is_molt_process(
     if self_pid is not None and sample.pid == self_pid:
         return False
     command = sample.command
+    if is_host_control_plane_process(sample):
+        return False
     if any(token in command for token in INSPECTION_COMMAND_TOKENS):
         return False
     repo_token = _normalized_repo_token(root)
@@ -234,30 +326,19 @@ def process_groups(
     self_pgid: int | None = None,
     known_pgids: set[int] | None = None,
 ) -> list[ProcessGroup]:
-    grouped: dict[int, list[memory_guard.ProcessSample]] = {}
-    matched: set[int] = set() if known_pgids is None else set(known_pgids)
-    for sample in samples.values():
-        pgid = sample.pgid if sample.pgid is not None else sample.pid
-        if self_pgid is not None and pgid == self_pgid:
-            continue
-        grouped.setdefault(pgid, []).append(sample)
-        if is_molt_process(sample, root=root, self_pid=self_pid):
-            matched.add(pgid)
-    changed = True
-    while changed:
-        changed = False
-        matched_pids = {
-            sample.pid for pgid in matched for sample in grouped.get(pgid, ())
-        }
-        if not matched_pids:
-            break
-        for sample in samples.values():
-            pgid = sample.pgid if sample.pgid is not None else sample.pid
-            if self_pgid is not None and pgid == self_pgid:
-                continue
-            if pgid not in matched and sample.ppid in matched_pids:
-                matched.add(pgid)
-                changed = True
+    grouped = _group_samples_by_pgid(samples)
+    protected_pgids = protected_process_group_ids(
+        samples,
+        self_pid=self_pid,
+        self_pgid=self_pgid,
+    )
+    matched = _matched_process_group_ids(
+        samples,
+        grouped,
+        root=root,
+        self_pid=self_pid,
+        known_pgids=known_pgids,
+    )
     groups = [
         ProcessGroup(
             pgid=pgid,
@@ -265,9 +346,44 @@ def process_groups(
             matched=pgid in matched,
         )
         for pgid, group in grouped.items()
-        if pgid in matched
+        if pgid in matched and pgid not in protected_pgids
     ]
     return sorted(groups, key=lambda group: group.pgid)
+
+
+def skipped_protected_process_groups(
+    samples: Mapping[int, memory_guard.ProcessSample],
+    *,
+    root: Path,
+    self_pid: int | None = None,
+    self_pgid: int | None = None,
+    known_pgids: set[int] | None = None,
+) -> list[ProcessGroup]:
+    grouped = _group_samples_by_pgid(samples)
+    protected_pgids = protected_process_group_ids(
+        samples,
+        self_pid=self_pid,
+        self_pgid=self_pgid,
+    )
+    matched = _matched_process_group_ids(
+        samples,
+        grouped,
+        root=root,
+        self_pid=self_pid,
+        known_pgids=known_pgids,
+    )
+    return sorted(
+        (
+            ProcessGroup(
+                pgid=pgid,
+                samples=tuple(sorted(group, key=lambda item: item.pid)),
+                matched=False,
+            )
+            for pgid, group in grouped.items()
+            if pgid in matched and pgid in protected_pgids
+        ),
+        key=lambda group: group.pgid,
+    )
 
 
 def find_violations(
@@ -311,6 +427,8 @@ def find_violations(
                 peak_rss_kb=None if peak is None else peak.rss_kb,
                 pids=tuple(group.pids),
                 command="" if peak is None else peak.command,
+                samples=group.samples,
+                external_parent_pids=tuple(group.external_parent_pids),
                 oldest_elapsed_sec=group.oldest_elapsed_sec,
                 stale_sec=stale_sec,
                 orphaned=group.is_orphaned,
@@ -350,6 +468,11 @@ def _violation_payload(violation: SentinelViolation) -> dict[str, object]:
         "peak_rss_gb": violation.peak_rss_gb,
         "pids": list(violation.pids),
         "command": violation.command,
+        "process_samples": [
+            memory_guard.process_sample_payload(sample)
+            for sample in violation.samples
+        ],
+        "external_parent_pids": list(violation.external_parent_pids),
         "oldest_elapsed_sec": violation.oldest_elapsed_sec,
         "stale_sec": violation.stale_sec,
         "orphaned": violation.orphaned,
@@ -389,6 +512,43 @@ def _next_action_for_violation(violation: SentinelViolation) -> str:
     return "inspect the process command, logs, and guard budgets before rerunning"
 
 
+def _process_sentinel_repro_payload(
+    violation: SentinelViolation,
+    *,
+    root: Path,
+    args: argparse.Namespace,
+    raw_argv: Sequence[str],
+    limits: memory_guard.ResolvedMemoryLimits,
+) -> dict[str, object]:
+    command = [violation.command] if violation.command else list(sys.argv)
+    timeout_s = None if args.once else args.max_runtime_sec
+    payload = memory_guard.repro_context_payload(
+        command=command,
+        cwd=root,
+        environ=os.environ,
+        max_process_rss_kb=limits.max_process_rss_kb,
+        max_total_rss_kb=limits.max_total_rss_kb,
+        max_global_rss_kb=limits.max_global_rss_kb,
+        child_rlimit_kb=None,
+        timeout_s=timeout_s,
+        poll_interval_s=args.poll_interval,
+        summary_json=None,
+    )
+    payload["sentinel"] = {
+        "argv": [sys.executable, str(_THIS_FILE), *raw_argv],
+        "repo_root": str(root.resolve(strict=False)),
+        "dry_run": bool(args.dry_run),
+        "kill_all": bool(args.kill_all),
+        "once": bool(args.once),
+        "until_clean_sec": args.until_clean_sec,
+        "max_runtime_sec": args.max_runtime_sec,
+        "grace_sec": args.grace_sec,
+        "stale_orphan_sec": args.stale_orphan_sec,
+        "stale_pytest_sec": args.stale_pytest_sec,
+    }
+    return payload
+
+
 def _incident_payload(
     violation: SentinelViolation,
     *,
@@ -396,9 +556,10 @@ def _incident_payload(
     elapsed_s: float | None,
     dry_run: bool,
     grace_sec: float,
+    repro: dict[str, object] | None = None,
 ) -> dict[str, object]:
     timestamp_key = "observed_at" if dry_run else "killed_at"
-    return {
+    payload: dict[str, object] = {
         "event": "process_sentinel_violation",
         "action": "dry_run" if dry_run else "terminate",
         timestamp_key: incident_at,
@@ -407,6 +568,9 @@ def _incident_payload(
         "next_action": _next_action_for_violation(violation),
         "violation": _violation_payload(violation),
     }
+    if repro is not None:
+        payload["repro"] = repro
+    return payload
 
 
 def _format_violation(
@@ -447,6 +611,7 @@ def emit_violations(
     elapsed_s: float | None,
     dry_run: bool,
     grace_sec: float,
+    repro_payloads: Mapping[int, dict[str, object]] | None = None,
 ) -> None:
     for violation in violations:
         if json_mode:
@@ -458,6 +623,9 @@ def emit_violations(
                         elapsed_s=elapsed_s,
                         dry_run=dry_run,
                         grace_sec=grace_sec,
+                        repro=None
+                        if repro_payloads is None
+                        else repro_payloads.get(violation.pgid),
                     ),
                     sort_keys=True,
                 ),
@@ -652,6 +820,7 @@ def _resolved_limits_from_args(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
     try:
         _validate_explicit_memory_limit(
@@ -720,6 +889,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             stale_pytest_sec=args.stale_pytest_sec,
         )
         now = time.monotonic()
+        repro_payloads = (
+            {
+                violation.pgid: _process_sentinel_repro_payload(
+                    violation,
+                    root=root,
+                    args=args,
+                    raw_argv=raw_argv,
+                    limits=current_limits,
+                )
+                for violation in violations
+            }
+            if args.json and violations
+            else None
+        )
         emit_violations(
             violations,
             json_mode=args.json,
@@ -728,6 +911,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             elapsed_s=now - started,
             dry_run=args.dry_run,
             grace_sec=args.grace_sec,
+            repro_payloads=repro_payloads,
         )
         if not args.dry_run:
             for violation in violations:

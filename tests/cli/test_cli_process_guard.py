@@ -65,3 +65,39 @@ def test_cli_test_popen_kwargs_applies_child_rlimit(monkeypatch) -> None:
 
     assert kwargs.get("start_new_session") is True
     assert callable(kwargs.get("preexec_fn"))
+
+
+def test_guarded_cli_test_popen_enters_memory_guard_wrapper(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakePopen:
+        def __init__(self, args, **kwargs):  # type: ignore[no-untyped-def]
+            captured["args"] = list(args)
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(process_guard.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(
+        process_guard.harness_memory_guard,
+        "batch_process_group_kwargs",
+        lambda *_args, **_kwargs: {"start_new_session": True},
+    )
+
+    proc = process_guard.guarded_cli_test_popen(
+        ["python3", "-c", "print('ok')"],
+        cwd=tmp_path,
+        env={"MOLT_EXT_ROOT": str(tmp_path)},
+    )
+
+    assert isinstance(proc, FakePopen)
+    args = captured["args"]
+    assert isinstance(args, list)
+    assert args[0] == process_guard.sys.executable
+    assert args[1] == str(process_guard.ROOT / "tools" / "memory_guard.py")
+    assert "--summary-json" in args
+    assert args[-4:] == ["--", "python3", "-c", "print('ok')"]
+    kwargs = captured["kwargs"]
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["text"] is True
+    assert kwargs["start_new_session"] is True

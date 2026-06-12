@@ -147,10 +147,8 @@ mod tests {
     fn expected_pipeline_pass_counts() -> (usize, HashMap<&'static str, usize>) {
         let mut func = make_add_func("expected_pipeline_shape");
         super::super::type_refine::refine_types(&mut func);
-        let stats = super::super::passes::run_pipeline(
-            &mut func,
-            &TargetInfo::native_release_fast(),
-        );
+        let stats =
+            super::super::passes::run_pipeline(&mut func, &TargetInfo::native_release_fast());
         let mut counts = HashMap::new();
         for stat in &stats {
             *counts.entry(stat.name).or_insert(0) += 1;
@@ -229,10 +227,8 @@ mod tests {
 
         // Sequential path.
         super::super::type_refine::refine_types(&mut seq_func);
-        let seq_stats = super::super::passes::run_pipeline(
-            &mut seq_func,
-            &TargetInfo::native_release_fast(),
-        );
+        let seq_stats =
+            super::super::passes::run_pipeline(&mut seq_func, &TargetInfo::native_release_fast());
 
         // Parallel path (single function in module).
         let mut module = TirModule {

@@ -147,6 +147,7 @@ class _GeneratorProtocol(Protocol):
     imported_attr_names: dict[str, str]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
+    module_attr_overrides: set[tuple[str, str]]
     in_annotation: Any
     in_generator: Any
     instance_attr_mutations: dict[str, set[str]]
@@ -846,6 +847,12 @@ class _GeneratorProtocol(Protocol):
     def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None: ...
 
     def _should_attempt_runtime_module_import(self, module_name: str) -> bool: ...
+
+    def _emit_runtime_module_import(self, module_name: str) -> MoltValue: ...
+
+    def _emit_importlib_import_module_transaction(
+        self, module_name: str
+    ) -> MoltValue: ...
 
     def _emit_module_load(self, module_name: str) -> MoltValue: ...
 

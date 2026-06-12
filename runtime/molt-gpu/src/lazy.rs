@@ -4,11 +4,12 @@
 //! No GPU kernel is executed until realize() is called. This enables
 //! the fusion engine to see the full computation graph.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
+use crate::render::ReductionDomain;
 use crate::shapetracker::ShapeTracker;
 
 /// Process-global monotonic allocator for buffer identities.
@@ -25,8 +26,9 @@ use crate::shapetracker::ShapeTracker;
 /// - The scheduler assigns each `BufferBinding::buf_id` from the identity of the
 ///   DAG node that produces that buffer (a leaf's own id, or a fresh id for an
 ///   intermediate). Because leaf ids and intermediate ids are drawn from this
-///   one counter, the two id spaces can never overlap, and the codegen layer
-///   (which uses `buf_id` as a unique per-kernel parameter name) stays correct.
+///   one counter, the two id spaces can never overlap. Codegen uses per-kernel
+///   binding slots as parameter names, so one storage id can be bound through
+///   multiple ShapeTracker views without naming collisions.
 ///
 /// Starts at 1 so `0` is never a live buffer id — making a stale/placeholder `0`
 /// (the historical "realize computes on zeros" bug) impossible to mistake for a
@@ -65,6 +67,12 @@ pub enum LazyOp {
     },
     /// Elementwise unary op.
     Unary { op: PrimitiveOp, src: Arc<LazyOp> },
+    /// Elementwise typed cast or bitcast.
+    Cast {
+        op: PrimitiveOp,
+        src: Arc<LazyOp>,
+        dst_dtype: DType,
+    },
     /// Elementwise binary op.
     Binary {
         op: PrimitiveOp,
@@ -101,14 +109,12 @@ impl LazyOp {
             Self::Buffer { dtype, .. } => *dtype,
             Self::Unary { op, src } => {
                 if matches!(op, PrimitiveOp::Cast | PrimitiveOp::Bitcast) {
-                    // For Cast/Bitcast, the target dtype must be stored elsewhere
-                    // (in the FusedOp layer). At the LazyOp level, we propagate
-                    // the source dtype as a placeholder. The scheduler resolves this.
-                    src.dtype()
+                    panic!("Cast/Bitcast LazyOps must use LazyOp::Cast with explicit dst_dtype")
                 } else {
                     src.dtype()
                 }
             }
+            Self::Cast { dst_dtype, .. } => *dst_dtype,
             Self::Binary { op, lhs, .. } => {
                 if matches!(
                     op,
@@ -131,16 +137,11 @@ impl LazyOp {
         match self {
             Self::Buffer { st, .. } => st.shape().to_vec(),
             Self::Unary { src, .. } => src.shape(),
+            Self::Cast { src, .. } => src.shape(),
             Self::Binary { lhs, .. } => lhs.shape(),
             Self::Ternary { a, .. } => a.shape(),
             Self::Reduce { src, axis, .. } => {
-                let mut shape = src.shape();
-                shape.remove(*axis);
-                if shape.is_empty() {
-                    vec![1] // scalar result
-                } else {
-                    shape
-                }
+                ReductionDomain::from_axis(&src.shape(), *axis).output_shape
             }
             Self::Movement { st, .. } => st.shape().to_vec(),
             Self::Contiguous { src } => src.shape(),

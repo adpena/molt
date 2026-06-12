@@ -66,8 +66,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::counted_loop::{self, CountedLoop};
 use super::PassStats;
+use super::counted_loop::{self, CountedLoop};
 use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -1335,8 +1335,14 @@ mod tests {
             TirBlock {
                 id: header,
                 args: vec![
-                    TirValue { id: iv, ty: TirType::I64 },
-                    TirValue { id: acc, ty: TirType::I64 },
+                    TirValue {
+                        id: iv,
+                        ty: TirType::I64,
+                    },
+                    TirValue {
+                        id: acc,
+                        ty: TirType::I64,
+                    },
                 ],
                 ops: vec![],
                 terminator: Terminator::Branch {
@@ -1398,9 +1404,14 @@ mod tests {
             exit,
             TirBlock {
                 id: exit,
-                args: vec![TirValue { id: exit_arg, ty: TirType::I64 }],
+                args: vec![TirValue {
+                    id: exit_arg,
+                    ty: TirType::I64,
+                }],
                 ops: vec![],
-                terminator: Terminator::Return { values: vec![exit_arg] },
+                terminator: Terminator::Return {
+                    values: vec![exit_arg],
+                },
             },
         );
 
@@ -1599,7 +1610,10 @@ mod tests {
         let unknown = func.fresh_value();
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            entry.args.push(TirValue { id: unknown, ty: TirType::I64 });
+            entry.args.push(TirValue {
+                id: unknown,
+                ty: TirType::I64,
+            });
         }
         let cond_block = func.blocks.get_mut(&cond).unwrap();
         for op in cond_block.ops.iter_mut() {
@@ -1659,117 +1673,164 @@ mod tests {
             entry.ops.push(const_int_op(acc0, 0));
             entry.ops.push(const_int_op(slot, 0));
             entry.ops.push(const_int_op(guard_cond, 1));
-            entry.terminator = Terminator::Branch { target: guard, args: vec![] };
+            entry.terminator = Terminator::Branch {
+                target: guard,
+                args: vec![],
+            };
         }
         // Guard: CondBranch → early-return path / preheader.
-        func.blocks.insert(guard, TirBlock {
-            id: guard,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::CondBranch {
-                cond: guard_cond,
-                then_block: exit, // shared merge: non-loop path into the exit
-                then_args: vec![acc0],
-                else_block: preheader,
-                else_args: vec![],
-            },
-        });
-        // Preheader → header(start, acc0).
-        func.blocks.insert(preheader, TirBlock {
-            id: preheader,
-            args: vec![],
-            ops: vec![const_int_op(early, 0)],
-            terminator: Terminator::Branch { target: header, args: vec![start_val, acc0] },
-        });
-        // Header (multi-arg) → cond.
-        func.blocks.insert(header, TirBlock {
-            id: header,
-            args: vec![
-                TirValue { id: iv, ty: TirType::I64 },
-                TirValue { id: acc, ty: TirType::I64 },
-            ],
-            ops: vec![],
-            terminator: Terminator::Branch { target: cond, args: vec![] },
-        });
-        // Cond: iv_view = Copy(iv); cmp; CondBranch(cmp, body, exit(acc)).
-        func.blocks.insert(cond, TirBlock {
-            id: cond,
-            args: vec![],
-            ops: vec![
-                TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::Copy,
-                    operands: vec![iv],
-                    results: vec![iv_view],
-                    attrs: {
-                        let mut m = AttrDict::new();
-                        m.insert("_simple_out".into(), AttrValue::Str("i".into()));
-                        m
-                    },
-                    source_span: None,
+        func.blocks.insert(
+            guard,
+            TirBlock {
+                id: guard,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: guard_cond,
+                    then_block: exit, // shared merge: non-loop path into the exit
+                    then_args: vec![acc0],
+                    else_block: preheader,
+                    else_args: vec![],
                 },
-                cmp_op(OpCode::Lt, iv_view, stop_val, cmp),
-            ],
-            terminator: Terminator::CondBranch {
-                cond: cmp,
-                then_block: body,
-                then_args: vec![],
-                else_block: exit,
-                else_args: vec![acc],
             },
-        });
+        );
+        // Preheader → header(start, acc0).
+        func.blocks.insert(
+            preheader,
+            TirBlock {
+                id: preheader,
+                args: vec![],
+                ops: vec![const_int_op(early, 0)],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![start_val, acc0],
+                },
+            },
+        );
+        // Header (multi-arg) → cond.
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![
+                    TirValue {
+                        id: iv,
+                        ty: TirType::I64,
+                    },
+                    TirValue {
+                        id: acc,
+                        ty: TirType::I64,
+                    },
+                ],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: cond,
+                    args: vec![],
+                },
+            },
+        );
+        // Cond: iv_view = Copy(iv); cmp; CondBranch(cmp, body, exit(acc)).
+        func.blocks.insert(
+            cond,
+            TirBlock {
+                id: cond,
+                args: vec![],
+                ops: vec![
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::Copy,
+                        operands: vec![iv],
+                        results: vec![iv_view],
+                        attrs: {
+                            let mut m = AttrDict::new();
+                            m.insert("_simple_out".into(), AttrValue::Str("i".into()));
+                            m
+                        },
+                        source_span: None,
+                    },
+                    cmp_op(OpCode::Lt, iv_view, stop_val, cmp),
+                ],
+                terminator: Terminator::CondBranch {
+                    cond: cmp,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![acc],
+                },
+            },
+        );
         // Body: InplaceAdd(acc, iv_view) -> acc_next; store-to-slot Copy with no
         // result; store_var Copy(acc_next,acc_next) is implicit via back-edge;
         // iv_next = Add(iv_view, step).
-        func.blocks.insert(body, TirBlock {
-            id: body,
-            args: vec![],
-            ops: vec![
-                TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::InplaceAdd,
-                    operands: vec![acc, iv_view],
-                    results: vec![acc_next],
-                    attrs: {
-                        let mut m = AttrDict::new();
-                        m.insert("_simple_out".into(), AttrValue::Str("total".into()));
-                        m
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::InplaceAdd,
+                        operands: vec![acc, iv_view],
+                        results: vec![acc_next],
+                        attrs: {
+                            let mut m = AttrDict::new();
+                            m.insert("_simple_out".into(), AttrValue::Str("total".into()));
+                            m
+                        },
+                        source_span: None,
                     },
-                    source_span: None,
-                },
-                // store-to-slot: Copy(value, slot) -> () (no result, 2 operands)
-                TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::Copy,
-                    operands: vec![acc_next, slot],
-                    results: vec![],
-                    attrs: {
-                        let mut m = AttrDict::new();
-                        m.insert("_original_kind".into(), AttrValue::Str("store".into()));
-                        m
+                    // store-to-slot: Copy(value, slot) -> () (no result, 2 operands)
+                    TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::Copy,
+                        operands: vec![acc_next, slot],
+                        results: vec![],
+                        attrs: {
+                            let mut m = AttrDict::new();
+                            m.insert("_original_kind".into(), AttrValue::Str("store".into()));
+                            m
+                        },
+                        source_span: None,
                     },
-                    source_span: None,
+                    add_op(iv_view, step_val, iv_next),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![iv_next, acc_next],
                 },
-                add_op(iv_view, step_val, iv_next),
-            ],
-            terminator: Terminator::Branch { target: header, args: vec![iv_next, acc_next] },
-        });
+            },
+        );
         // Exit: shared merge (from guard's then-edge and the loop). Return.
-        func.blocks.insert(exit, TirBlock {
-            id: exit,
-            args: vec![TirValue { id: exit_arg, ty: TirType::I64 }],
-            ops: vec![],
-            terminator: Terminator::Return { values: vec![exit_arg] },
-        });
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![TirValue {
+                    id: exit_arg,
+                    ty: TirType::I64,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![exit_arg],
+                },
+            },
+        );
         // Dead LoopEnd marker (no predecessors) branching to the header.
         let d0 = func.fresh_value();
         let d1 = func.fresh_value();
-        func.blocks.insert(dead_end, TirBlock {
-            id: dead_end,
-            args: vec![],
-            ops: vec![const_int_op(d0, 0), const_int_op(d1, 0)],
-            terminator: Terminator::Branch { target: header, args: vec![d0, d1] },
-        });
+        func.blocks.insert(
+            dead_end,
+            TirBlock {
+                id: dead_end,
+                args: vec![],
+                ops: vec![const_int_op(d0, 0), const_int_op(d1, 0)],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![d0, d1],
+                },
+            },
+        );
 
         func.loop_roles.insert(header, LoopRole::LoopHeader);
         func.loop_roles.insert(dead_end, LoopRole::LoopEnd);

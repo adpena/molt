@@ -380,6 +380,19 @@ class CallVisitorMixin(_MixinBase):
             return f"molt.stdlib.{module_name}"
         return module_name
 
+    def _module_function_attr_is_stable(
+        self,
+        module_name: str | None,
+        attr_name: str,
+        *,
+        normalized: str | None = None,
+    ) -> bool:
+        candidates = {name for name in (module_name, normalized) if name}
+        return all(
+            (candidate, attr_name) not in self.module_attr_overrides
+            for candidate in candidates
+        )
+
     def _call_allowlist_suggestion(
         self, func_id: str, imported_from: str | None
     ) -> str | None:
@@ -466,10 +479,16 @@ class CallVisitorMixin(_MixinBase):
         needs_tuple = any(
             not spec.get("const", False) and not spec.get("kwonly", False)
             for spec in specs_slice
+        ) or (
+            func_obj is not None
+            and any(not spec.get("kwonly", False) for spec in specs_slice)
         )
         needs_kwdefaults = any(
             not spec.get("const", False) and spec.get("kwonly", False)
             for spec in specs_slice
+        ) or (
+            func_obj is not None
+            and any(spec.get("kwonly", False) for spec in specs_slice)
         )
         defaults_tuple: MoltValue | None = None
         kwdefaults_dict: MoltValue | None = None
@@ -488,36 +507,28 @@ class CallVisitorMixin(_MixinBase):
                 kwdefaults_dict = self._emit_function_kwdefaults_dict(func_obj)
         missing_val: MoltValue | None = None
         for offset, spec in enumerate(specs_slice):
-            if spec.get("const", False):
-                args.append(self._emit_const_value(spec.get("value")))
-                continue
             if spec.get("kwonly", False):
-                if kwdefaults_dict is None:
-                    raise self.compat.unsupported(
-                        node,
-                        f"call to {call_name} with non-constant defaults",
-                        impact="medium",
-                        alternative="pass explicit arguments",
-                        detail="only literal defaults are supported for direct calls",
+                if kwdefaults_dict is not None:
+                    if missing_val is None:
+                        missing_val = self._emit_missing_value()
+                    key_name = spec.get("name")
+                    if not isinstance(key_name, str):
+                        raise NotImplementedError("Invalid kwonly default spec name")
+                    key_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(MoltOp(kind="CONST_STR", args=[key_name], result=key_val))
+                    default_val = MoltValue(self.next_var(), type_hint="Any")
+                    self.emit(
+                        MoltOp(
+                            kind="DICT_GET",
+                            args=[kwdefaults_dict, key_val, missing_val],
+                            result=default_val,
+                        )
                     )
-                if missing_val is None:
-                    missing_val = self._emit_missing_value()
-                key_name = spec.get("name")
-                if not isinstance(key_name, str):
-                    raise NotImplementedError("Invalid kwonly default spec name")
-                key_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(MoltOp(kind="CONST_STR", args=[key_name], result=key_val))
-                default_val = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(
-                    MoltOp(
-                        kind="DICT_GET",
-                        args=[kwdefaults_dict, key_val, missing_val],
-                        result=default_val,
-                    )
-                )
-                args.append(default_val)
-                continue
-            if defaults_tuple is None:
+                    args.append(default_val)
+                    continue
+                if spec.get("const", False):
+                    args.append(self._emit_const_value(spec.get("value")))
+                    continue
                 raise self.compat.unsupported(
                     node,
                     f"call to {call_name} with non-constant defaults",
@@ -525,17 +536,35 @@ class CallVisitorMixin(_MixinBase):
                     alternative="pass explicit arguments",
                     detail="only literal defaults are supported for direct calls",
                 )
-            idx_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[base_index + offset], result=idx_val))
-            default_val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="INDEX",
-                    args=[defaults_tuple, idx_val],
-                    result=default_val,
+            if defaults_tuple is not None:
+                spec_index = base_index + offset
+                tuple_index = sum(
+                    1
+                    for prior in default_specs[:spec_index]
+                    if not prior.get("kwonly", False)
                 )
+                idx_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[tuple_index], result=idx_val))
+                default_val = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(
+                    MoltOp(
+                        kind="INDEX",
+                        args=[defaults_tuple, idx_val],
+                        result=default_val,
+                    )
+                )
+                args.append(default_val)
+                continue
+            if spec.get("const", False):
+                args.append(self._emit_const_value(spec.get("value")))
+                continue
+            raise self.compat.unsupported(
+                node,
+                f"call to {call_name} with non-constant defaults",
+                impact="medium",
+                alternative="pass explicit arguments",
+                detail="only literal defaults are supported for direct calls",
             )
-            args.append(default_val)
         return args
 
     def _apply_direct_call_defaults(
@@ -559,9 +588,11 @@ class CallVisitorMixin(_MixinBase):
         func_obj = None
         if total_params is not None:
             missing = total_params - len(args)
-            if missing > 0 and any(
-                not spec.get("const", False) for spec in defaults[-missing:]
-            ):
+            # Load the function object whenever any trailing default is filled.
+            # If the callee is reachable by object, _apply_default_specs reads
+            # live __defaults__/__kwdefaults__ for both literal and dynamic
+            # defaults so runtime reassignment is observed.
+            if missing > 0 and missing <= len(defaults):
                 resolved_module = module_name or self.module_name
                 normalized = self._normalize_allowlist_module(resolved_module)
                 if normalized is not None:
@@ -623,9 +654,10 @@ class CallVisitorMixin(_MixinBase):
             positional_limit = total_params - kwonly_count
         if total_params is not None:
             missing = total_params - len(args)
-            if missing > 0 and any(
-                not spec.get("const", False) for spec in defaults[-missing:]
-            ):
+            # Load the function object whenever any trailing default is filled;
+            # literal defaults are also read live when the function object is
+            # available.
+            if missing > 0 and missing <= len(defaults):
                 if func_obj is None:
                     func_obj = self.visit(node.func)
         args = self._apply_default_specs(
@@ -2338,6 +2370,8 @@ class CallVisitorMixin(_MixinBase):
                 return None
             if self.imported_modules.get(binding_name) != "importlib":
                 return None
+            if ("importlib", "import_module") in self.module_attr_overrides:
+                return None
         elif isinstance(node.func, ast.Name):
             binding_name = node.func.id
             if self._local_name_shadows_import_binding(binding_name):
@@ -2354,14 +2388,12 @@ class CallVisitorMixin(_MixinBase):
                 )
             if original_attr != "import_module":
                 return None
+            if ("importlib", "import_module") in self.module_attr_overrides:
+                return None
         else:
             return None
 
-        if module_name in self.known_modules:
-            return module_name
-        if self._should_attempt_runtime_module_import(module_name):
-            return module_name
-        return None
+        return module_name
 
     def _try_emit_importlib_import_module_literal_call(
         self, node: ast.Call
@@ -2369,7 +2401,11 @@ class CallVisitorMixin(_MixinBase):
         module_name = self._literal_importlib_import_module_target(node)
         if module_name is None:
             return None
-        return self._emit_module_load(module_name)
+        # The frontend only proves that this call is the canonical public
+        # importlib API with a literal absolute name. Runtime import
+        # success/failure, cache custody, version-gated absence, fromlist
+        # behavior, and error shape stay owned by the Rust import transaction.
+        return self._emit_importlib_import_module_transaction(module_name)
 
     def visit_Call(self, node: ast.Call) -> Any:
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
@@ -2749,9 +2785,7 @@ class CallVisitorMixin(_MixinBase):
                             fixed_param_count -= 1
                         func_obj = None
                         missing = fixed_param_count - len(args)
-                        if missing > 0 and any(
-                            not spec.get("const", False) for spec in defaults[-missing:]
-                        ):
+                        if missing > 0 and missing <= len(defaults):
                             class_ref = None
                             if lookup_class:
                                 class_info = self.classes.get(lookup_class)
@@ -4168,6 +4202,11 @@ class CallVisitorMixin(_MixinBase):
                 if (
                     allowlist_key in MOLT_DIRECT_CALLS
                     and func_id in MOLT_DIRECT_CALLS[allowlist_key]
+                    and self._module_function_attr_is_stable(
+                        module_name,
+                        func_id,
+                        normalized=allowlist_key,
+                    )
                 ):
                     force_bind = func_id in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
                         allowlist_key, set()
@@ -5205,7 +5244,9 @@ class CallVisitorMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="Future")
                 self.emit(
                     MoltOp(
-                        kind="CALL_ASYNC", args=["molt_async_sleep", *args], result=res
+                        kind="CALL_ASYNC",
+                        args=["molt_async_sleep_poll", *args],
+                        result=res,
                     )
                 )
                 return res
@@ -5548,10 +5589,7 @@ class CallVisitorMixin(_MixinBase):
                             positional_limit = param_count - kwonly_count
                         if param_count is not None:
                             missing = param_count - len(init_args)
-                            if missing > 0 and any(
-                                not spec.get("const", False)
-                                for spec in defaults[-missing:]
-                            ):
+                            if missing > 0 and missing <= len(defaults):
                                 func_obj = self._emit_class_method_func(
                                     class_ref, "__init__"
                                 )
@@ -6175,9 +6213,7 @@ class CallVisitorMixin(_MixinBase):
                         positional_limit = param_count - kwonly_count
                     if param_count is not None:
                         missing = param_count - (len(args) + 1)
-                        if missing > 0 and any(
-                            not spec.get("const", False) for spec in defaults[-missing:]
-                        ):
+                        if missing > 0 and missing <= len(defaults):
                             func_obj = self._emit_bound_method_func(target_info)
                     args = self._apply_default_specs(
                         param_count,
@@ -7914,7 +7950,11 @@ class CallVisitorMixin(_MixinBase):
                         and func_id in MOLT_DIRECT_CALLS[imported_from]
                     ):
                         target_module = imported_from
-                if target_module is not None:
+                if target_module is not None and self._module_function_attr_is_stable(
+                    imported_from,
+                    self.imported_attr_names.get(func_id, func_id),
+                    normalized=target_module,
+                ):
                     if needs_bind:
                         callee = self.visit(node.func)
                         if callee is None:
@@ -8017,6 +8057,11 @@ class CallVisitorMixin(_MixinBase):
                     not needs_bind
                     and not force_bind
                     and (has_known_direct_target or allow_speculative_internal_direct)
+                    and self._module_function_attr_is_stable(
+                        imported_from,
+                        original_attr,
+                        normalized=target_module,
+                    )
                 ):
                     args = self._emit_direct_call_args(
                         target_module, original_attr, node

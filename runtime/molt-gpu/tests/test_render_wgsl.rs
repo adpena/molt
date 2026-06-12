@@ -1,16 +1,19 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
 use molt_gpu::render::wgsl::WgslRenderer;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain, Renderer,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
             op,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -60,11 +63,12 @@ fn test_wgsl_render_mul() {
 fn test_wgsl_render_select_not_ternary() {
     // WGSL must use select() instead of ternary operator
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Where,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Where,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -110,11 +114,12 @@ fn test_wgsl_render_select_not_ternary() {
 #[test]
 fn test_wgsl_render_bitcast() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Bitcast,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Bitcast,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -156,11 +161,12 @@ fn test_wgsl_storage_bindings() {
 fn test_wgsl_dtype_narrowing() {
     // f64 should be narrowed to f32 in WGSL
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float64,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float64,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -196,10 +202,11 @@ fn test_wgsl_dtype_narrowing() {
 fn test_wgsl_all_26_ops_have_render_patterns() {
     let elementwise_ops = PrimitiveOp::ALL
         .iter()
+        .copied()
         .filter(|op| op.is_elementwise())
         .collect::<Vec<_>>();
 
-    for &&op in &elementwise_ops {
+    for op in elementwise_ops {
         let srcs = match op.arity() {
             1 => vec![FusedSrc::Buf(1)],
             2 => vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
@@ -221,10 +228,11 @@ fn test_wgsl_all_26_ops_have_render_patterns() {
             });
         }
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
                 op,
                 srcs,
-                dst_dtype: if matches!(
+                if matches!(
                     op,
                     PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
                 ) {
@@ -232,7 +240,7 @@ fn test_wgsl_all_26_ops_have_render_patterns() {
                 } else {
                     DType::Float32
                 },
-            }],
+            )],
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
@@ -246,4 +254,38 @@ fn test_wgsl_all_26_ops_have_render_patterns() {
             op
         );
     }
+}
+
+#[test]
+fn test_wgsl_reduce_axis0_uses_unsigned_affine_domain_index() {
+    let kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[2, 3], 0),
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[3]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[6]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [3, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+
+    let wgsl = WgslRenderer::new().render(&kernel);
+    assert!(wgsl.contains("let eidx = (((rid % 2u) * 3u) + (gid % 3u));"));
 }

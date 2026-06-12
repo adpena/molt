@@ -9,7 +9,9 @@ use molt_gpu::device::cpu::interpret;
 use molt_gpu::dtype::DType;
 use molt_gpu::fuse::constant_fold;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 // --- Helpers ---
@@ -27,11 +29,12 @@ fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
 
 fn make_unary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
             op,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -55,11 +58,12 @@ fn make_unary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
 
 fn make_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
             op,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -393,11 +397,13 @@ fn test_reduce_sum_single_element() {
     let n_in = 1;
     let n_out = 1;
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n_in], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -429,11 +435,13 @@ fn test_reduce_max_single_element() {
     let n_in = 1;
     let n_out = 1;
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceMax,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceMax,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n_in], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -469,11 +477,13 @@ fn test_reduce_sum_large() {
     let expected: f32 = (0..n_in).map(|i| i as f32).sum();
 
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n_in], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -583,34 +593,35 @@ fn test_fused_chain_20_ops() {
     let mut ops = Vec::with_capacity(num_chain_ops);
 
     // First op: Add(buf[1], const 1.0)
-    ops.push(FusedOp {
-        op: PrimitiveOp::Add,
-        srcs: vec![
+    ops.push(FusedOp::elementwise(
+        PrimitiveOp::Add,
+        vec![
             FusedSrc::Buf(1),
             FusedSrc::Const {
                 val: 1.0,
                 dtype: DType::Float32,
             },
         ],
-        dst_dtype: DType::Float32,
-    });
+        DType::Float32,
+    ));
 
     // Remaining ops: Add(prev_op, const 1.0)
     for i in 1..num_chain_ops {
-        ops.push(FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![
+        ops.push(FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![
                 FusedSrc::Op(i - 1),
                 FusedSrc::Const {
                     val: 1.0,
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        });
+            DType::Float32,
+        ));
     }
 
     let kernel = FusedKernel {
+        body: Default::default(),
         ops,
         bufs: vec![
             BufferBinding {
@@ -655,11 +666,11 @@ fn test_fused_chain_mixed_ops_25() {
     let mut ops = Vec::new();
 
     // Op 0: Neg(buf[1])
-    ops.push(FusedOp {
-        op: PrimitiveOp::Neg,
-        srcs: vec![FusedSrc::Buf(1)],
-        dst_dtype: DType::Float32,
-    });
+    ops.push(FusedOp::elementwise(
+        PrimitiveOp::Neg,
+        vec![FusedSrc::Buf(1)],
+        DType::Float32,
+    ));
 
     for i in 1..25 {
         let (op, srcs) = match i % 4 {
@@ -695,14 +706,11 @@ fn test_fused_chain_mixed_ops_25() {
             ),
             _ => (PrimitiveOp::Neg, vec![FusedSrc::Op(i - 1)]),
         };
-        ops.push(FusedOp {
-            op,
-            srcs,
-            dst_dtype: DType::Float32,
-        });
+        ops.push(FusedOp::elementwise(op, srcs, DType::Float32));
     }
 
     let kernel = FusedKernel {
+        body: Default::default(),
         ops,
         bufs: vec![
             BufferBinding {
@@ -753,9 +761,10 @@ fn test_constant_fold_all_constant_chain() {
     // Kernel: Const(2.0) + Const(3.0) = 5.0 (compile-time)
     let n = 16;
     let mut kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![
                 FusedSrc::Const {
                     val: 2.0,
                     dtype: DType::Float32,
@@ -765,8 +774,8 @@ fn test_constant_fold_all_constant_chain() {
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        }],
+            DType::Float32,
+        )],
         bufs: vec![BufferBinding {
             buf_id: 0,
             st: ShapeTracker::contiguous(&[n]),
@@ -789,10 +798,11 @@ fn test_constant_fold_nested_chain() {
     // Const(2) * Const(3) -> result + Const(4) -> all constant
     let n = 8;
     let mut kernel = FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![
                     FusedSrc::Const {
                         val: 2.0,
                         dtype: DType::Float32,
@@ -802,19 +812,19 @@ fn test_constant_fold_nested_chain() {
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![
                     FusedSrc::Op(0), // result of Mul = 6.0
                     FusedSrc::Const {
                         val: 4.0,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
         ],
         bufs: vec![BufferBinding {
             buf_id: 0,
@@ -840,21 +850,22 @@ fn test_constant_fold_partial_chain() {
     // Op 2: Op(0) + Op(1) -- references folded op1 as Const(6.0)
     let n = 4;
     let mut kernel = FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![
                     FusedSrc::Buf(1),
                     FusedSrc::Const {
                         val: 5.0,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![
                     FusedSrc::Const {
                         val: 2.0,
                         dtype: DType::Float32,
@@ -864,13 +875,13 @@ fn test_constant_fold_partial_chain() {
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Op(0), FusedSrc::Op(1)],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Op(0), FusedSrc::Op(1)],
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -897,7 +908,7 @@ fn test_constant_fold_partial_chain() {
     assert_eq!(kernel.ops.len(), 2, "2 ops should remain");
 
     // The second remaining op should reference Const(6.0) for its second source
-    match &kernel.ops[1].srcs[1] {
+    match &kernel.ops[1].srcs()[1] {
         FusedSrc::Const { val, .. } => {
             assert!(
                 (val - 6.0).abs() < 1e-10,
@@ -922,11 +933,12 @@ fn test_where_op_large() {
     let b: Vec<f32> = vec![200.0; n];
 
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Where,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Where,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,

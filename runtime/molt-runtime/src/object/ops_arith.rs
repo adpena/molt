@@ -3980,8 +3980,7 @@ fn lshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         // `__lshift__`). Only fall to TypeError once that chain is exhausted —
         // raising on the first non-integer operand skipped the dunder protocol
         // entirely (so `x << y` on a custom class wrongly raised).
-        let (Some(value), Some(count)) =
-            (strict_integer_from_obj(a), strict_integer_from_obj(b))
+        let (Some(value), Some(count)) = (strict_integer_from_obj(a), strict_integer_from_obj(b))
         else {
             unsafe {
                 let lshift_name_bits = intern_static_name(
@@ -4084,8 +4083,7 @@ fn rshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         let rhs = obj_from_bits(b);
         // Try `a.__rshift__(b)` then `b.__rrshift__(a)` for any operand the
         // integer fast path can't consume (mirrors `lshift_impl`).
-        let (Some(value), Some(count)) =
-            (strict_integer_from_obj(a), strict_integer_from_obj(b))
+        let (Some(value), Some(count)) = (strict_integer_from_obj(a), strict_integer_from_obj(b))
         else {
             unsafe {
                 let rshift_name_bits = intern_static_name(
@@ -4302,7 +4300,11 @@ mod tests {
             ("1152921504606846976", "2", 0x43a0_0000_0000_0000), // (1<<60)/2
             ("1152921504606846976", "3", 0x4395_5555_5555_5555), // (1<<60)/3
             ("1152921504606846977", "2", 0x43a0_0000_0000_0000), // ((1<<60)+1)/2 (ties-to-even)
-            ("1000000000000000000000000000000", "7", 0x45fc_d98a_8b00_a10b), // 10**30/7
+            (
+                "1000000000000000000000000000000",
+                "7",
+                0x45fc_d98a_8b00_a10b,
+            ), // 10**30/7
             ("-1180591620717411303424", "3", 0xc435_5555_5555_5555), // -(1<<70)/3
             ("1", "3", 0x3fd5_5555_5555_5555),
             (

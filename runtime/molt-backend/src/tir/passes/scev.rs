@@ -219,7 +219,10 @@ fn build_loop_context(func: &TirFunction) -> LoopContext {
         let pred_map = dominators::build_pred_map(func);
         let idoms = dominators::compute_idoms(func, &pred_map);
         for &h in &headers {
-            bodies.insert(h, dominators::collect_loop_blocks(func, &pred_map, &idoms, h));
+            bodies.insert(
+                h,
+                dominators::collect_loop_blocks(func, &pred_map, &idoms, h),
+            );
         }
     }
 
@@ -297,7 +300,9 @@ fn build_def_index(func: &TirFunction) -> DefIndex {
     }
     // Function parameters are defined at entry.
     for i in 0..func.param_types.len() {
-        def_block.entry(ValueId(i as u32)).or_insert(func.entry_block);
+        def_block
+            .entry(ValueId(i as u32))
+            .or_insert(func.entry_block);
     }
 
     DefIndex {
@@ -317,7 +322,11 @@ struct HeaderIncoming {
     edges: Vec<(BlockId, Vec<ValueId>, bool)>,
 }
 
-fn collect_header_incoming(func: &TirFunction, header: BlockId, body: &HashSet<BlockId>) -> HeaderIncoming {
+fn collect_header_incoming(
+    func: &TirFunction,
+    header: BlockId,
+    body: &HashSet<BlockId>,
+) -> HeaderIncoming {
     let mut edges = Vec::new();
     for (&bid, block) in &func.blocks {
         let is_back = body.contains(&bid);
@@ -530,7 +539,10 @@ impl<'a> ScevBuilder<'a> {
         }
         // Resolve operands through copies; the Add increments the IV phi via a
         // copy of it (`Add(Copy(iv), step)`).
-        let (a, b) = (self.defs.resolve(operands[0]), self.defs.resolve(operands[1]));
+        let (a, b) = (
+            self.defs.resolve(operands[0]),
+            self.defs.resolve(operands[1]),
+        );
         let iv_resolved = self.defs.resolve(iv);
         let step_val = if a == iv_resolved {
             b
@@ -853,10 +865,7 @@ fn compute_trip_count(
     // step +1 → trip count == stop (a loop-invariant expression). Only emit a
     // symbolic trip when start==0 and step==1 (the dominant `range(stop)`
     // shape), where trip == stop exactly.
-    if positive_guard
-        && step_const == 1
-        && start_const == Some(0)
-    {
+    if positive_guard && step_const == 1 && start_const == Some(0) {
         let bound_scev = builder.scev(bound_val);
         if !matches!(bound_scev, ScevExpr::Unknown) {
             return TripCount::Symbolic(Box::new(bound_scev));
@@ -1050,18 +1059,15 @@ mod tests {
             }
         }
         // header gets a 2nd block arg `total`.
-        func.blocks
-            .get_mut(&header)
-            .unwrap()
-            .args
-            .push(TirValue {
-                id: total,
-                ty: TirType::I64,
-            });
+        func.blocks.get_mut(&header).unwrap().args.push(TirValue {
+            id: total,
+            ty: TirType::I64,
+        });
         // body: total_next = Add(total, iv) [nsw]; pass back as 2nd arg.
         {
             let b = func.blocks.get_mut(&body).unwrap();
-            b.ops.push(op_nsw(OpCode::Add, vec![total, iv], vec![total_next]));
+            b.ops
+                .push(op_nsw(OpCode::Add, vec![total, iv], vec![total_next]));
             if let Terminator::Branch { args, .. } = &mut b.terminator {
                 args.push(total_next);
             }
@@ -1102,8 +1108,7 @@ mod tests {
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             for o in entry.ops.iter_mut() {
-                if o.opcode == OpCode::ConstInt
-                    && o.attrs.get("value") == Some(&AttrValue::Int(1))
+                if o.opcode == OpCode::ConstInt && o.attrs.get("value") == Some(&AttrValue::Int(1))
                 {
                     o.attrs.insert("value".into(), AttrValue::Int(2));
                 }

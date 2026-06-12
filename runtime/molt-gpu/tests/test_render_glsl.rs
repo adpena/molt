@@ -1,16 +1,19 @@
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
 use molt_gpu::render::glsl::GlslRenderer;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, Renderer};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain, Renderer,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
             op,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -40,11 +43,12 @@ fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
 
 fn make_simple_unary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
             op,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -179,11 +183,12 @@ fn test_glsl_gl_fragcoord_index() {
 #[test]
 fn test_glsl_no_f64_types() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float64,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float64,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -218,11 +223,12 @@ fn test_glsl_no_f64_types() {
 #[test]
 fn test_glsl_no_i64_u64_types() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Int64,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Int64,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -316,11 +322,12 @@ fn test_glsl_render_neg() {
 #[test]
 fn test_glsl_render_cmplt() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Cmplt,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Bool,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Cmplt,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Bool,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -357,11 +364,12 @@ fn test_glsl_render_cmplt() {
 #[test]
 fn test_glsl_render_cmpeq() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Cmpeq,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Bool,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Cmpeq,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Bool,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -394,11 +402,12 @@ fn test_glsl_render_cmpeq() {
 #[test]
 fn test_glsl_render_cmpne() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Cmpne,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Bool,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Cmpne,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Bool,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -528,11 +537,12 @@ fn test_glsl_render_max() {
 #[test]
 fn test_glsl_render_where_ternary() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Where,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Where,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -576,11 +586,12 @@ fn test_glsl_render_where_ternary() {
 #[test]
 fn test_glsl_render_cast() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Cast,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Int32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Cast,
+            vec![FusedSrc::Buf(1)],
+            DType::Int32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -607,11 +618,12 @@ fn test_glsl_render_cast() {
 #[test]
 fn test_glsl_render_bitcast_to_float() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Bitcast,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Bitcast,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -641,11 +653,12 @@ fn test_glsl_render_bitcast_to_float() {
 #[test]
 fn test_glsl_render_bitcast_to_int() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Bitcast,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Int32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Bitcast,
+            vec![FusedSrc::Buf(1)],
+            DType::Int32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -675,11 +688,12 @@ fn test_glsl_render_bitcast_to_int() {
 #[test]
 fn test_glsl_render_bitcast_to_uint() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Bitcast,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::UInt32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Bitcast,
+            vec![FusedSrc::Buf(1)],
+            DType::UInt32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -713,11 +727,13 @@ fn test_glsl_render_bitcast_to_uint() {
 #[test]
 fn test_glsl_render_reduce_sum() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[1024], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -753,11 +769,13 @@ fn test_glsl_render_reduce_sum() {
 #[test]
 fn test_glsl_render_reduce_max() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceMax,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceMax,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[1024], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -794,17 +812,19 @@ fn test_glsl_render_reduce_max() {
 fn test_glsl_render_fused_elementwise_then_reduce() {
     // Fused chain: Mul -> ReduceSum
     let kernel = FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::ReduceSum,
-                srcs: vec![FusedSrc::Op(0)],
-                dst_dtype: DType::Float32,
-            },
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(0)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[4, 256], 1),
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -849,28 +869,25 @@ fn test_glsl_render_fused_elementwise_then_reduce() {
 fn test_glsl_render_fused_elementwise_chain() {
     // Fused chain: Add -> Mul -> Neg
     let kernel = FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Mul,
-                srcs: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![
                     FusedSrc::Op(0),
                     FusedSrc::Const {
                         val: 2.0,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Neg,
-                srcs: vec![FusedSrc::Op(1)],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
+            FusedOp::elementwise(PrimitiveOp::Neg, vec![FusedSrc::Op(1)], DType::Float32),
         ],
         bufs: vec![
             BufferBinding {
@@ -916,10 +933,11 @@ fn test_glsl_render_fused_elementwise_chain() {
 fn test_glsl_all_26_ops_have_render_patterns() {
     let elementwise_ops: Vec<_> = PrimitiveOp::ALL
         .iter()
+        .copied()
         .filter(|op| op.is_elementwise())
         .collect();
 
-    for &&op in &elementwise_ops {
+    for op in elementwise_ops {
         let srcs = match op.arity() {
             1 => vec![FusedSrc::Buf(1)],
             2 => vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
@@ -941,10 +959,11 @@ fn test_glsl_all_26_ops_have_render_patterns() {
             });
         }
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
                 op,
                 srcs,
-                dst_dtype: if matches!(
+                if matches!(
                     op,
                     PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
                 ) {
@@ -952,7 +971,7 @@ fn test_glsl_all_26_ops_have_render_patterns() {
                 } else {
                     DType::Float32
                 },
-            }],
+            )],
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],
@@ -981,11 +1000,13 @@ fn test_glsl_all_26_ops_have_render_patterns() {
     // Also check reduce ops render via dedicated kernels
     for reduce_op in [PrimitiveOp::ReduceSum, PrimitiveOp::ReduceMax] {
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: reduce_op,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                reduce_op,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[256], 0),
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,
@@ -1060,17 +1081,18 @@ fn test_dtype_glsl_type() {
 #[test]
 fn test_glsl_const_infinity() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![
                 FusedSrc::Buf(1),
                 FusedSrc::Const {
                     val: f64::INFINITY,
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        }],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -1100,17 +1122,18 @@ fn test_glsl_const_infinity() {
 #[test]
 fn test_glsl_const_neg_infinity() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![
                 FusedSrc::Buf(1),
                 FusedSrc::Const {
                     val: f64::NEG_INFINITY,
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        }],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -1140,17 +1163,18 @@ fn test_glsl_const_neg_infinity() {
 #[test]
 fn test_glsl_const_nan() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![
                 FusedSrc::Buf(1),
                 FusedSrc::Const {
                     val: f64::NAN,
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        }],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -1175,4 +1199,38 @@ fn test_glsl_const_nan() {
         glsl.contains("intBitsToFloat(0x7fc00000)"),
         "NaN should use intBitsToFloat pattern in GLSL"
     );
+}
+
+#[test]
+fn test_glsl_reduce_axis0_uses_affine_domain_index() {
+    let kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[2, 3], 0),
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[3]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[6]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [3, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+
+    let glsl = GlslRenderer.render(&kernel);
+    assert!(glsl.contains("int eidx = (((rid % 2) * 3) + (gid % 3));"));
 }

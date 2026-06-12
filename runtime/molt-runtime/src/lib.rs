@@ -244,8 +244,13 @@ pub use crate::builtins::gpu::molt_gpu_tensor_from_parts;
 pub use crate::builtins::gpu::molt_gpu_turboquant_attention_packed;
 #[cfg(feature = "molt_gpu_primitives")]
 pub use crate::builtins::gpu_primitives::{
-    molt_gpu_prim_binary, molt_gpu_prim_create_tensor, molt_gpu_prim_device, molt_gpu_prim_realize,
-    molt_gpu_prim_reduce, molt_gpu_prim_unary, molt_gpu_prim_zeros,
+    molt_gpu_prim_binary, molt_gpu_prim_cast, molt_gpu_prim_contiguous,
+    molt_gpu_prim_create_tensor, molt_gpu_prim_create_tensor_raw, molt_gpu_prim_device,
+    molt_gpu_prim_dtype, molt_gpu_prim_expand, molt_gpu_prim_flip, molt_gpu_prim_free,
+    molt_gpu_prim_nbytes, molt_gpu_prim_numel, molt_gpu_prim_pad, molt_gpu_prim_permute,
+    molt_gpu_prim_read_data_raw, molt_gpu_prim_realize, molt_gpu_prim_reduce,
+    molt_gpu_prim_reduce_all, molt_gpu_prim_reshape, molt_gpu_prim_shape, molt_gpu_prim_shrink,
+    molt_gpu_prim_ternary, molt_gpu_prim_unary, molt_gpu_prim_zeros, molt_gpu_prim_zeros_dtype,
 };
 pub use crate::builtins::strings::molt_string_from_bytes;
 pub use crate::concurrency::isolates::*;

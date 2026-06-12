@@ -500,8 +500,8 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     // ── INTERNAL: IO wait (internal) ──
     ("io_wait_new", 5),
     // ── STDLIB: asyncio ──
-    ("async_sleep", 2),
-    ("async_sleep_new", 3),
+    ("async_sleep", 3),
+    ("async_sleep_poll", 2),
     ("asyncgen_hooks_get", 0),
     ("asyncgen_hooks_set", 3),
     ("asyncgen_locals", 2),
@@ -596,7 +596,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("importlib_find_spec_orchestrate", 12),
     ("importlib_frozen_external_payload", 3),
     ("importlib_frozen_payload", 3),
-    ("importlib_import_module", 5),
+    ("importlib_import_transaction", 7),
     ("importlib_import_optional", 2),
     ("importlib_import_or_fallback", 3),
     ("importlib_import_required", 2),

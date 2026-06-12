@@ -48,7 +48,7 @@ class LazyBuffer:
     This is the internal representation that Tensor wraps.
     """
 
-    __slots__ = ("op", "dtype", "shape", "_data")
+    __slots__ = ("op", "dtype", "shape", "_data", "_handle")
 
     def __init__(
         self,
@@ -56,15 +56,21 @@ class LazyBuffer:
         dtype: DType,
         shape: tuple,
         data: list | None = None,
+        handle: int | None = None,
     ) -> None:
         self.op = op
         self.dtype = dtype
         self.shape = shape
         self._data = data
+        self._handle = handle
 
     @property
     def realized(self) -> bool:
-        return self._data is not None
+        return self._data is not None or self._handle is not None
+
+    @property
+    def handle(self) -> int | None:
+        return self._handle
 
     @property
     def numel(self) -> int:
@@ -77,6 +83,8 @@ class LazyBuffer:
         """Materialize this buffer by executing the LazyOp DAG."""
         if self._data is not None:
             return self._data
+        if self._handle is not None:
+            raise RuntimeError("handle-only LazyBuffer requires typed tensor readback")
         if self.op is None:
             raise RuntimeError("LazyBuffer has no op and no data")
         self._data = _execute_lazy_op(self.op, self.shape)

@@ -5,11 +5,8 @@ import importlib.util
 import json
 import os
 import platform
-import re
 import shlex
-import signal
 import shutil
-import socket
 import statistics
 import subprocess
 import sys
@@ -36,6 +33,7 @@ from bench_evidence import comparable_run_metadata_errors  # noqa: E402
 from bench_metadata import benchmark_reference_contract  # noqa: E402
 import harness_memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
+from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
@@ -180,102 +178,17 @@ def _canonical_interpreter(executable: str) -> str:
     return harness_memory_guard.canonical_interpreter(executable)
 
 
-def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _kill_pid(pid: int, *, grace: float = 0.75) -> None:
-    if pid <= 0:
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return
-    deadline = time.monotonic() + max(0.05, grace)
-    while time.monotonic() < deadline:
-        if not _pid_alive(pid):
-            return
-        time.sleep(0.05)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError:
-        return
-
-
-def _daemon_ping(socket_path: Path, *, timeout: float = 0.75) -> bool:
-    if os.name != "posix" or not socket_path.exists():
-        return False
-    payload = {"version": 1, "ping": True}
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            sock.connect(str(socket_path))
-            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-            sock.shutdown(socket.SHUT_WR)
-            chunks: list[bytes] = []
-            while True:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-    except OSError:
-        return False
-    try:
-        response = json.loads(b"".join(chunks).decode("utf-8", "replace").strip())
-    except json.JSONDecodeError:
-        return False
-    return bool(response.get("ok")) and bool(response.get("pong"))
-
-
-def _prune_backend_daemons() -> None:
+def _prune_backend_daemons(env: dict[str, str] | None = None) -> int:
     if os.name != "posix":
-        return
-    try:
-        result = subprocess.run(
-            ["ps", "-axo", "pid=,command="],
-            capture_output=True,
-            text=True,
-            check=False,
+        return 0
+    prune_env = env if env is not None else _canonical_bench_env()
+    return len(
+        daemon_custody.terminate_backend_daemons_for_session(
+            prune_env,
+            project_root=REPO_ROOT,
+            grace=0.75,
         )
-    except OSError:
-        return
-    pattern = re.compile(r"^\s*(\d+)\s+(.*)$")
-    socket_pat = re.compile(r"--socket\s+(\S+)")
-    groups: dict[Path, list[int]] = {}
-    for line in result.stdout.splitlines():
-        match = pattern.match(line)
-        if match is None:
-            continue
-        pid = int(match.group(1))
-        cmd = match.group(2)
-        if "molt-backend" not in cmd or "--daemon" not in cmd:
-            continue
-        socket_match = socket_pat.search(cmd)
-        if socket_match is None:
-            continue
-        socket_path = Path(socket_match.group(1)).expanduser()
-        groups.setdefault(socket_path, []).append(pid)
-    for socket_path, pids in groups.items():
-        live = sorted({pid for pid in pids if _pid_alive(pid)})
-        if not live:
-            continue
-        if not socket_path.exists():
-            for pid in live:
-                _kill_pid(pid)
-            continue
-        if len(live) > 1:
-            for pid in live[:-1]:
-                _kill_pid(pid)
-            live = live[-1:]
-        _daemon_ping(socket_path)
+    )
 
 
 def _is_codon_bench_script(script: str) -> bool:
@@ -390,7 +303,7 @@ def _resolve_molt_output(payload: dict) -> Path | None:
 def _bench_session_id(env: dict[str, str] | None = None) -> str:
     source = env if env is not None else os.environ
     explicit = source.get("MOLT_SESSION_ID", "").strip()
-    return explicit or "bench"
+    return explicit or f"bench-{os.getpid()}"
 
 
 def _canonical_bench_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -465,7 +378,7 @@ def _molt_build_params(
     build_profile: str,
     extra_args: list[str] | None,
     env: dict[str, str],
-    reuse_molt_build_cache: bool = False,
+    use_molt_build_cache: bool = True,
 ) -> dict[str, object]:
     params: dict[str, object] = {
         "file_path": script,
@@ -474,7 +387,7 @@ def _molt_build_params(
         "trusted": True,
         "json_output": True,
         "out_dir": str(out_dir),
-        "cache": reuse_molt_build_cache,
+        "cache": use_molt_build_cache,
         "env_overrides": env,
         "codec": env.get("MOLT_CODEC", "msgpack"),
     }
@@ -547,10 +460,10 @@ def prepare_molt_binary(
     batch_server: _BenchBatchBuildServer | None = None,
     build_timeout_s: float = DEFAULT_BATCH_BUILD_TIMEOUT_S,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-    reuse_molt_build_cache: bool = False,
+    use_molt_build_cache: bool = True,
 ) -> MoltBinary | None:
-    _prune_backend_daemons()
     env = _canonical_bench_env(env)
+    _prune_backend_daemons(env)
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
 
     def _attempt_build() -> MoltBinary | None:
@@ -560,7 +473,7 @@ def prepare_molt_binary(
             *_molt_build_cmd(build_profile),
             "--trusted",
             "--json",
-            "--cache" if reuse_molt_build_cache else "--rebuild",
+            "--cache" if use_molt_build_cache else "--rebuild",
             "--out-dir",
             str(out_dir),
         ]
@@ -585,7 +498,7 @@ def prepare_molt_binary(
                     build_profile=build_profile,
                     extra_args=extra_args,
                     env=env,
-                    reuse_molt_build_cache=reuse_molt_build_cache,
+                    use_molt_build_cache=use_molt_build_cache,
                 )
                 response = batch_server.request_build(params, timeout_s=build_timeout_s)
                 res = _batch_response_completed_process(args, response)
@@ -630,7 +543,7 @@ def prepare_molt_binary(
     print(
         "Backend build failed; pruning stale daemons and retrying...", file=sys.stderr
     )
-    _prune_backend_daemons()
+    _prune_backend_daemons(env)
     time.sleep(1)
     return _attempt_build()
 
@@ -1038,7 +951,7 @@ def bench_results(
     tty: bool,
     nuitka_cmd: str | None,
     pyodide_cmd: str | None,
-    reuse_molt_build_cache: bool = False,
+    use_molt_build_cache: bool = True,
 ):
     base_env = _canonical_bench_env(_base_python_env())
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", base_env)
@@ -1111,7 +1024,7 @@ def bench_results(
                         resolved_pyodide_cmd=resolved_pyodide_cmd,
                         batch_server=batch_server,
                         limits=limits,
-                        reuse_molt_build_cache=reuse_molt_build_cache,
+                        use_molt_build_cache=use_molt_build_cache,
                     )
                 )
         finally:
@@ -1140,7 +1053,7 @@ def _bench_one(
     resolved_pyodide_cmd: list[str] | None,
     batch_server: _BenchBatchBuildServer,
     limits: harness_memory_guard.HarnessMemoryLimits,
-    reuse_molt_build_cache: bool = False,
+    use_molt_build_cache: bool = True,
 ):
     results = {}
     runtime_ok = {}
@@ -1298,7 +1211,7 @@ def _bench_one(
         build_profile=molt_build_profile,
         batch_server=batch_server,
         limits=limits,
-        reuse_molt_build_cache=reuse_molt_build_cache,
+        use_molt_build_cache=use_molt_build_cache,
     )
     if molt_runner is not None:
         try:
@@ -1582,11 +1495,11 @@ def main():
         help="Build profile used for Molt benchmark binaries (default: release).",
     )
     parser.add_argument(
-        "--reuse-molt-build-cache",
+        "--no-molt-build-cache",
         action="store_true",
         help=(
-            "Allow Molt build-cache reuse for tooling smoke runs. Full benchmark "
-            "runs default to no-cache rebuilds so build timings remain fresh."
+            "Disable Molt build-cache reads for a deliberate cold rebuild "
+            "investigation. Benchmark runs reuse cache by default."
         ),
     )
     args = parser.parse_args()
@@ -1649,7 +1562,7 @@ def main():
         tty=use_tty,
         nuitka_cmd=args.nuitka_cmd,
         pyodide_cmd=args.pyodide_cmd,
-        reuse_molt_build_cache=args.reuse_molt_build_cache,
+        use_molt_build_cache=not args.no_molt_build_cache,
     )
 
     load_avg = None

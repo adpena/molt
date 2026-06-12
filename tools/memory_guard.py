@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import datetime as dt
 import json
 import os
+import platform
 from pathlib import Path
 import signal
 import subprocess
@@ -44,6 +45,8 @@ INTERNAL_CHILD_RUNNER_ENV = "MOLT_MEMORY_GUARD_CHILD_RUNNER"
 INTERNAL_CHILD_COMMAND_ENV = "MOLT_MEMORY_GUARD_CHILD_COMMAND_JSON"
 INTERNAL_CHILD_RLIMIT_KB_ENV = "MOLT_MEMORY_GUARD_CHILD_RLIMIT_KB"
 INTERNAL_CHILD_STARTED_FD_ENV = "MOLT_MEMORY_GUARD_CHILD_STARTED_FD"
+ACTIVE_ENV = "MOLT_MEMORY_GUARD_ACTIVE"
+ACTIVE_GUARD_PID_ENV = "MOLT_MEMORY_GUARD_PID"
 _INTERNAL_ENV_KEYS = (
     INTERNAL_COMMAND_ENV,
     INTERNAL_WORKER_ENV,
@@ -274,6 +277,10 @@ def _linux_meminfo_bytes(key: str) -> int | None:
 
 def _darwin_physical_memory_bytes() -> int | None:
     try:
+        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
         result = subprocess.run(
             ["sysctl", "-n", "hw.memsize"],
             capture_output=True,
@@ -281,63 +288,17 @@ def _darwin_physical_memory_bytes() -> int | None:
             timeout=1.0,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, TypeError):
         result = None
     if result is not None and result.returncode == 0:
         raw = result.stdout.strip()
         if raw.isdigit():
             return int(raw)
-    try:
-        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
-    except (OSError, ValueError):
-        return None
+    return None
 
 
 def _darwin_available_memory_bytes() -> int | None:
-    try:
-        result = subprocess.run(
-            ["vm_stat"],
-            capture_output=True,
-            text=True,
-            timeout=1.0,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    page_size = None
-    pages: dict[str, int] = {}
-    for line in result.stdout.splitlines():
-        if "page size of" in line:
-            for token in line.replace(".", "").split():
-                if token.isdigit():
-                    page_size = int(token)
-                    break
-            continue
-        if ":" not in line:
-            continue
-        key, raw_value = line.split(":", 1)
-        digits = "".join(ch for ch in raw_value if ch.isdigit())
-        if digits:
-            pages[key.strip()] = int(digits)
-    if page_size is None:
-        try:
-            page_size = int(os.sysconf("SC_PAGE_SIZE"))
-        except (OSError, ValueError):
-            return None
-    available_pages = sum(
-        pages.get(name, 0)
-        for name in (
-            "Pages free",
-            "Pages inactive",
-            "Pages speculative",
-            "Pages purgeable",
-        )
-    )
-    if available_pages <= 0:
-        return None
-    return available_pages * page_size
+    return None
 
 
 def physical_memory_bytes(
@@ -944,6 +905,27 @@ def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
     return False
 
 
+def _terminate_single_pid(pid: int, *, grace: float) -> bool:
+    if pid <= 0 or pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    deadline = time.monotonic() + max(0.0, grace)
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
 def terminate_watched_processes(
     root_pid: int,
     *,
@@ -967,21 +949,31 @@ def terminate_watched_processes(
         if watched is not None
         else watched_pids(observed_samples, root_pid, tracker=tracker)
     )
-    pgids: set[int] = {root_pid}
     pids: set[int] = {root_pid}
+    root_group_pgid = root_pid
+    escaped_pids: set[int] = set()
     for pid in observed:
+        if pid <= 0:
+            continue
         sample = observed_samples.get(pid)
         pids.add(pid)
         if sample is not None:
-            pgids.add(sample.pgid if sample.pgid is not None else sample.pid)
+            sample_pgid = sample.pgid if sample.pgid is not None else sample.pid
+            if sample_pgid != root_group_pgid:
+                escaped_pids.add(pid)
     remaining_pgids: set[int] = set()
-    for pgid in sorted(pgids):
-        if not _terminate_single_process_group(pgid, grace=grace):
-            remaining_pgids.add(pgid)
+    if not _terminate_single_process_group(root_group_pgid, grace=grace):
+        remaining_pgids.add(root_group_pgid)
+    remaining_pids: set[int] = set()
+    for pid in sorted(escaped_pids):
+        if not _terminate_single_pid(pid, grace=grace):
+            remaining_pids.add(pid)
     for pgid in sorted(remaining_pgids):
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.killpg(pgid, signal.SIGKILL)
-    for pid in sorted(pids):
+    for pid in sorted(pids | remaining_pids):
+        if pid == os.getpid():
+            continue
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, signal.SIGKILL)
 
@@ -1272,10 +1264,13 @@ def run_guarded(
         raise ValueError("timeout must be greater than 0")
     if keepalive_interval is not None and keepalive_interval <= 0:
         keepalive_interval = None
+    child_env = dict(os.environ) if env is None else dict(env)
+    child_env[ACTIVE_ENV] = "1"
+    child_env[ACTIVE_GUARD_PID_ENV] = str(os.getpid())
     start = time.monotonic()
     launch = _guarded_launch(
         command,
-        dict(env) if env is not None else None,
+        child_env,
         child_rlimit_kb=child_rlimit_kb,
     )
     stdout_capture = None
@@ -1466,16 +1461,26 @@ def run_guarded(
             dynamic_total_rss=dynamic_total_rss,
             accounted_rss_kb=0,
         )
-        if child_exit_usage.max_rss_kb > current_limits.max_process_rss_kb:
-            violation = RssViolation(
+        rusage_peak = RssViolation(
+            pid=proc.pid,
+            rss_kb=child_exit_usage.max_rss_kb,
+            command=" ".join(command),
+            scope="process_rusage",
+        )
+        if rusage_peak.rss_kb > 0 and (peak is None or rusage_peak.rss_kb > peak.rss_kb):
+            peak = rusage_peak
+        if rusage_peak.rss_kb > 0 and (
+            peak_total is None or rusage_peak.rss_kb > peak_total.rss_kb
+        ):
+            peak_total = RssViolation(
                 pid=proc.pid,
-                rss_kb=child_exit_usage.max_rss_kb,
-                command=" ".join(command),
-                scope="process_rusage",
+                rss_kb=rusage_peak.rss_kb,
+                command="process tree aggregate from direct child rusage",
+                scope="process_tree_rusage",
             )
+        if child_exit_usage.max_rss_kb > current_limits.max_process_rss_kb:
+            violation = rusage_peak
             limit_at_violation = current_limits
-            if peak is None or child_exit_usage.max_rss_kb > peak.rss_kb:
-                peak = violation
     stdout = ""
     stderr = ""
     orphaned_process_groups: tuple[int, ...] = ()
@@ -1586,6 +1591,207 @@ def memory_limits_payload(limits: ResolvedMemoryLimits) -> dict[str, object]:
     }
 
 
+_REPRO_ENV_KEYS = {
+    "CARGO_TARGET_DIR",
+    "CI",
+    "CODEX_SESSION_ID",
+    "CODEX_WORKSPACE",
+    "MOLT_CACHE",
+    "MOLT_DIFF_CARGO_TARGET_DIR",
+    "MOLT_DIFF_ROOT",
+    "MOLT_EXT_ROOT",
+    "MOLT_GUARD_PROFILE",
+    "MOLT_GUARD_PROFILE_LOG",
+    "MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC",
+    "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+    "MOLT_SESSION_ID",
+    "PYTEST_CURRENT_TEST",
+    "PYTEST_XDIST_WORKER",
+    "PYTHONHASHSEED",
+    "PYTHONPATH",
+    "RUSTFLAGS",
+    "RUSTC_WRAPPER",
+    "TMPDIR",
+    "UV_CACHE_DIR",
+    "VIRTUAL_ENV",
+}
+_REPRO_ENV_PREFIXES = ("CODEX_", "GITHUB_", "MOLT_", "PYTEST_")
+_SECRET_ENV_TOKENS = (
+    "AUTH",
+    "COOKIE",
+    "CREDENTIAL",
+    "KEY",
+    "PASS",
+    "SECRET",
+    "TOKEN",
+)
+
+
+def _safe_repro_env(environ: Mapping[str, str]) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    for key in sorted(environ):
+        upper = key.upper()
+        if any(token in upper for token in _SECRET_ENV_TOKENS):
+            continue
+        if key not in _REPRO_ENV_KEYS and not any(
+            key.startswith(prefix) for prefix in _REPRO_ENV_PREFIXES
+        ):
+            continue
+        value = str(environ.get(key, ""))
+        payload[key] = value if len(value) <= 512 else f"{value[:512]}...<truncated>"
+    return payload
+
+
+def _safe_getpgrp() -> int | None:
+    if os.name != "posix":
+        return None
+    try:
+        return os.getpgrp()
+    except OSError:
+        return None
+
+
+def _safe_getpgid(pid: int) -> int | None:
+    if os.name != "posix":
+        return None
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def _safe_getsid(pid: int) -> int | None:
+    if os.name != "posix":
+        return None
+    try:
+        return os.getsid(pid)
+    except OSError:
+        return None
+
+
+def _process_sample_payload(sample: ProcessSample) -> dict[str, object]:
+    return {
+        "pid": sample.pid,
+        "ppid": sample.ppid,
+        "pgid": sample.pgid,
+        "rss_kb": sample.rss_kb,
+        "elapsed_sec": sample.elapsed_sec,
+        "command": sample.command,
+    }
+
+
+def process_sample_payload(sample: ProcessSample) -> dict[str, object]:
+    return _process_sample_payload(sample)
+
+
+def _process_lineage_payload(
+    samples: Mapping[int, ProcessSample],
+    *,
+    pid: int,
+    max_depth: int = 8,
+) -> list[dict[str, object]]:
+    lineage: list[dict[str, object]] = []
+    seen: set[int] = set()
+    current = pid
+    for _ in range(max_depth):
+        if current <= 0 or current in seen:
+            break
+        seen.add(current)
+        sample = samples.get(current)
+        if sample is None:
+            lineage.append({"pid": current, "sample_missing": True})
+            break
+        lineage.append(_process_sample_payload(sample))
+        if sample.ppid <= 0 or sample.ppid == current:
+            break
+        current = sample.ppid
+    return lineage
+
+
+def repro_context_payload(
+    *,
+    command: Sequence[str],
+    cwd: str | Path | None,
+    environ: Mapping[str, str] | None = None,
+    max_process_rss_kb: int | None = None,
+    max_total_rss_kb: int | None = None,
+    max_global_rss_kb: int | None = None,
+    child_rlimit_kb: int | None = None,
+    timeout_s: float | None = None,
+    poll_interval_s: float | None = None,
+    summary_json: str | None = None,
+) -> dict[str, object]:
+    source = os.environ if environ is None else environ
+    cwd_path = Path.cwd() if cwd is None else Path(cwd).expanduser()
+    samples = sample_processes()
+    pid = os.getpid()
+    parent_pid = os.getppid()
+    payload: dict[str, object] = {
+        "command": list(command),
+        "cwd": str(cwd_path.resolve(strict=False)),
+        "env": _safe_repro_env(source),
+        "guard_process": {
+            "pid": pid,
+            "ppid": parent_pid,
+            "pgid": _safe_getpgrp(),
+            "sid": _safe_getsid(0),
+            "argv": list(sys.argv),
+        },
+        "host": {
+            "python_executable": sys.executable,
+            "python_version": sys.version.split()[0],
+            "platform": sys.platform,
+            "platform_detail": platform.platform(),
+            "machine": platform.machine(),
+        },
+        "limits": {
+            "max_process_rss_kb": max_process_rss_kb,
+            "max_process_rss_gb": (
+                None
+                if max_process_rss_kb is None
+                else max_process_rss_kb / (1024 * 1024)
+            ),
+            "max_total_rss_kb": max_total_rss_kb,
+            "max_total_rss_gb": (
+                None if max_total_rss_kb is None else max_total_rss_kb / (1024 * 1024)
+            ),
+            "max_global_rss_kb": max_global_rss_kb,
+            "max_global_rss_gb": (
+                None
+                if max_global_rss_kb is None
+                else max_global_rss_kb / (1024 * 1024)
+            ),
+            "child_rlimit_kb": child_rlimit_kb,
+            "child_rlimit_gb": (
+                None if child_rlimit_kb is None else child_rlimit_kb / (1024 * 1024)
+            ),
+            "timeout_s": timeout_s,
+            "poll_interval_s": poll_interval_s,
+        },
+        "parent_lineage": _process_lineage_payload(samples, pid=pid),
+        "pytest": {
+            "current_test": source.get("PYTEST_CURRENT_TEST", ""),
+            "xdist_worker": source.get("PYTEST_XDIST_WORKER", ""),
+        },
+    }
+    if summary_json:
+        payload["summary_json"] = str(Path(summary_json).expanduser())
+    parent_sample = samples.get(parent_pid)
+    if parent_sample is not None:
+        payload["parent_process"] = _process_sample_payload(parent_sample)
+    else:
+        payload["parent_process"] = {
+            "pid": parent_pid,
+            "pgid": _safe_getpgid(parent_pid),
+            "sample_missing": True,
+        }
+    return payload
+
+
+def repro_context_line(payload: Mapping[str, object]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
 def exit_signal_payload(returncode: int) -> dict[str, object] | None:
     conventional_shell_status = False
     if returncode < 0:
@@ -1693,14 +1899,20 @@ def _write_summary_json(
     path: str,
     *,
     command: Sequence[str],
+    cwd: str | Path | None,
+    environ: Mapping[str, str],
     max_rss_kb: int,
     max_total_rss_kb: int | None,
+    max_global_rss_kb: int | None,
     child_rlimit_kb: int | None,
+    timeout_s: float | None,
+    poll_interval_s: float,
     result: GuardResult,
 ) -> None:
     summary_path = Path(path)
     if summary_path.parent:
         summary_path.parent.mkdir(parents=True, exist_ok=True)
+    incident = _incident_payload(result)
     payload = {
         "command": list(command),
         "returncode": result.returncode,
@@ -1730,8 +1942,21 @@ def _write_summary_json(
             if result.violation is not None or result.timed_out
             else _exit_signal_payload(result.returncode)
         ),
-        "incident": _incident_payload(result),
+        "incident": incident,
     }
+    if incident is not None:
+        payload["repro"] = repro_context_payload(
+            command=command,
+            cwd=cwd,
+            environ=environ,
+            max_process_rss_kb=max_rss_kb,
+            max_total_rss_kb=max_total_rss_kb,
+            max_global_rss_kb=max_global_rss_kb,
+            child_rlimit_kb=child_rlimit_kb,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+            summary_json=path,
+        )
     summary_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -1901,6 +2126,7 @@ def main(
         )
         max_rss_kb = max_rss_kb_from_gb(max_rss_gb)
         max_total_rss_kb = max_rss_kb_from_gb(max_total_rss_gb)
+        max_global_rss_kb = max_global_rss_kb_from_gb(budget.max_global_rss_gb)
         poll_interval = float(args.poll_interval)
         if poll_interval <= 0:
             raise ValueError("poll interval must be greater than 0")
@@ -1955,14 +2181,34 @@ def main(
         dynamic_process_rss=dynamic_process_rss,
         dynamic_total_rss=dynamic_total_rss,
     )
+    incident = _incident_payload(result)
+    repro_payload: dict[str, object] | None = None
+    if incident is not None:
+        repro_payload = repro_context_payload(
+            command=command,
+            cwd=None,
+            environ=current_env,
+            max_process_rss_kb=max_rss_kb,
+            max_total_rss_kb=max_total_rss_kb,
+            max_global_rss_kb=max_global_rss_kb,
+            child_rlimit_kb=child_rlimit_kb,
+            timeout_s=args.timeout,
+            poll_interval_s=poll_interval,
+            summary_json=args.summary_json,
+        )
     if args.summary_json:
         try:
             _write_summary_json(
                 args.summary_json,
                 command=command,
+                cwd=None,
+                environ=current_env,
                 max_rss_kb=max_rss_kb,
                 max_total_rss_kb=max_total_rss_kb,
+                max_global_rss_kb=max_global_rss_kb,
                 child_rlimit_kb=child_rlimit_kb,
+                timeout_s=args.timeout,
+                poll_interval_s=poll_interval,
                 result=result,
             )
         except OSError as exc:
@@ -2055,6 +2301,12 @@ def main(
             "memory_guard: next action: inspect child stderr/logs or host signal "
             "source, including direct-child resource limits such as RLIMIT_AS; "
             "the guard did not classify this as an RSS limit trip.",
+            file=sys.stderr,
+        )
+    if repro_payload is not None:
+        print(
+            "memory_guard: repro context: "
+            f"{repro_context_line(repro_payload)}",
             file=sys.stderr,
         )
     return result.returncode

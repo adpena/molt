@@ -243,7 +243,10 @@ impl Analysis for LoopForest {
             let pred_map = dominators::build_pred_map(func);
             let idoms = dominators::compute_idoms(func, &pred_map);
             for &h in &headers {
-                bodies.insert(h, dominators::collect_loop_blocks(func, &pred_map, &idoms, h));
+                bodies.insert(
+                    h,
+                    dominators::collect_loop_blocks(func, &pred_map, &idoms, h),
+                );
             }
         }
         LoopForestResult { headers, bodies }
@@ -425,16 +428,31 @@ mod tests {
         let mut func = TirFunction::new("lin".into(), vec![], TirType::None);
         let bb1 = func.fresh_block();
         let bb2 = func.fresh_block();
-        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
-            Terminator::Branch { target: bb1, args: vec![] };
-        func.blocks.insert(bb1, TirBlock {
-            id: bb1, args: vec![], ops: vec![],
-            terminator: Terminator::Branch { target: bb2, args: vec![] },
-        });
-        func.blocks.insert(bb2, TirBlock {
-            id: bb2, args: vec![], ops: vec![],
-            terminator: Terminator::Return { values: vec![] },
-        });
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: bb1,
+            args: vec![],
+        };
+        func.blocks.insert(
+            bb1,
+            TirBlock {
+                id: bb1,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: bb2,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            bb2,
+            TirBlock {
+                id: bb2,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         func
     }
 
@@ -464,15 +482,28 @@ mod tests {
             };
         }
         for b in [bb1, bb2] {
-            func.blocks.insert(b, TirBlock {
-                id: b, args: vec![], ops: vec![],
-                terminator: Terminator::Branch { target: bb3, args: vec![] },
-            });
+            func.blocks.insert(
+                b,
+                TirBlock {
+                    id: b,
+                    args: vec![],
+                    ops: vec![],
+                    terminator: Terminator::Branch {
+                        target: bb3,
+                        args: vec![],
+                    },
+                },
+            );
         }
-        func.blocks.insert(bb3, TirBlock {
-            id: bb3, args: vec![], ops: vec![],
-            terminator: Terminator::Return { values: vec![] },
-        });
+        func.blocks.insert(
+            bb3,
+            TirBlock {
+                id: bb3,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         func
     }
 
@@ -482,29 +513,41 @@ mod tests {
         let header = func.fresh_block();
         let exit = func.fresh_block();
         let cond = func.fresh_value();
-        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
-            Terminator::Branch { target: header, args: vec![] };
-        func.blocks.insert(header, TirBlock {
-            id: header, args: vec![], ops: vec![TirOp {
-                dialect: Dialect::Molt,
-                opcode: OpCode::ConstBool,
-                operands: vec![],
-                results: vec![cond],
-                attrs: AttrDict::new(),
-                source_span: None,
-            }],
-            terminator: Terminator::CondBranch {
-                cond,
-                then_block: header,
-                then_args: vec![],
-                else_block: exit,
-                else_args: vec![],
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: header,
+            args: vec![],
+        };
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstBool,
+                    operands: vec![],
+                    results: vec![cond],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                }],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: header,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
             },
-        });
-        func.blocks.insert(exit, TirBlock {
-            id: exit, args: vec![], ops: vec![],
-            terminator: Terminator::Return { values: vec![] },
-        });
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         func.loop_roles.insert(header, LoopRole::LoopHeader);
         func
     }
@@ -624,12 +667,12 @@ mod tests {
         // stale cached one.
         let mut func = diamond();
         let mut am = AnalysisManager::new();
-        let bb3 = *func
-            .blocks
-            .keys()
-            .max_by_key(|b| b.0)
-            .unwrap();
-        let before = am.get::<PredMap>(&func).get(&bb3).cloned().unwrap_or_default();
+        let bb3 = *func.blocks.keys().max_by_key(|b| b.0).unwrap();
+        let before = am
+            .get::<PredMap>(&func)
+            .get(&bb3)
+            .cloned()
+            .unwrap_or_default();
         let before_len = before.len();
 
         // Mutate: redirect bb1 to also create a new predecessor structure.
@@ -644,21 +687,40 @@ mod tests {
         };
         // then_target currently branches to bb3; insert bb4 between by adding a
         // brand-new predecessor edge bb4 → bb3 and routing then_target → bb4.
-        func.blocks.get_mut(&then_target).unwrap().terminator =
-            Terminator::Branch { target: bb4, args: vec![] };
-        func.blocks.insert(bb4, TirBlock {
-            id: bb4,
+        func.blocks.get_mut(&then_target).unwrap().terminator = Terminator::Branch {
+            target: bb4,
             args: vec![],
-            ops: vec![],
-            terminator: Terminator::Branch { target: bb3, args: vec![] },
-        });
+        };
+        func.blocks.insert(
+            bb4,
+            TirBlock {
+                id: bb4,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: bb3,
+                    args: vec![],
+                },
+            },
+        );
 
         am.invalidate_cfg();
-        let after = am.get::<PredMap>(&func).get(&bb3).cloned().unwrap_or_default();
+        let after = am
+            .get::<PredMap>(&func)
+            .get(&bb3)
+            .cloned()
+            .unwrap_or_default();
         // bb3's predecessors changed: previously {bb1,bb2}, now {bb2,bb4}.
-        assert!(after.contains(&bb4), "fresh pred map must include the new edge");
+        assert!(
+            after.contains(&bb4),
+            "fresh pred map must include the new edge"
+        );
         assert!(!after.contains(&then_target), "stale edge must be gone");
-        assert_eq!(after.len(), before_len, "still two predecessors, but different ones");
+        assert_eq!(
+            after.len(),
+            before_len,
+            "still two predecessors, but different ones"
+        );
     }
 
     #[test]

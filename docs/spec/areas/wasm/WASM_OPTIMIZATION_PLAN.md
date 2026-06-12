@@ -250,7 +250,15 @@ Migration path (aligned with spec 0400 Section 13):
 
 ### 4.1 Current State
 
-Per the import analysis (`docs/architecture/wasm-import-stripping.md`), a compiled `generator.wasm` is 13.1 MB with 90 imports (60 of which are unused). The monolithic import surface is the primary size driver.
+WASM import retention has one authority per output form. Non-relocatable
+`WasmProfile::Auto` registers the canonical runtime import registry, records
+every import lookup through `TrackedImportIds` during code emission, and strips
+unreferenced function imports from the serialized module after validation.
+Relocatable `WasmProfile::Auto` cannot use that final serialized-module strip
+phase, so it declares a conservative pre-emission frontier for `wasm-ld` and
+lets linker garbage collection own final reachability. `WasmProfile::Pure`
+remains a compile-time capability profile that omits IO/ASYNC/TIME-style import
+families and emits deterministic traps for unsupported use.
 
 ### 4.2 Optimization Pipeline
 
@@ -277,7 +285,9 @@ brotli / gzip  -->  output_stripped.wasm.br
 
 | Optimization | Estimated Reduction | Status |
 |---|---|---|
-| **Import stripping** (`--wasm-profile pure`) | 30-50% for pure-compute modules | DONE (ddc8ea4c) — compile-time IO/ASYNC/TIME import stripping |
+| **Non-reloc Auto import stripping** (`WasmProfile::Auto`) | Workload-dependent; removes unused function imports after codegen | DONE — emitted-use ledger (`TrackedImportIds`) plus validated `strip_unused_imports` owns final non-reloc retention |
+| **Reloc Auto import declaration** (`WasmProfile::Auto` + reloc) | Enables linker GC without missing required imports | DONE — conservative pre-emission frontier is reloc-only; `MOLT_WASM_EXTRA_REQUIRED_IMPORTS` is a linker-declaration hint, not a non-reloc retention override |
+| **Pure capability stripping** (`--wasm-profile pure`) | 30-50% for pure-compute modules | DONE (ddc8ea4c) — compile-time IO/ASYNC/TIME import family omission |
 | **Dead code elimination** via `wasm-opt --dce` | 10-20% | Integrated into build |
 | **Name section stripping** via `wasm-tools strip` | 5-10% | Integrated (--strip-debug in Oz pipeline) |
 | **Brotli compression** | 60-70% of stripped size | Available, not integrated into build |

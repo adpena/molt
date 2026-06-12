@@ -76,6 +76,122 @@ When you identify the correct fix and feel tempted to do something "simpler" ins
 - **All backends** (native/Cranelift, WASM, LLVM) must have parity. No backend-specific workarounds.
 - **Extreme optimization and performance**. Choose the most performant algorithm and data structure. No lazy shortcuts.
 
+## Performance Constitution — speed is a correctness property (release-blocking)
+
+Correctness parity is the FLOOR. Performance dominance is the PRODUCT CONTRACT. A molt
+feature is not complete because it passes CPython differential tests; it is complete only
+when it preserves or improves the performance contract across the relevant targets, profiles,
+and backends. This is a release-blocking contract, not an aspiration.
+
+**The bar:** molt must be faster than CPython on EVERY benchmark in the verified subset, on
+EVERY supported target, backend, and profile; and it must steadily approach, match, or exceed
+PyPy and Codon on the benchmark classes where their execution models apply. Codon is the
+AOT/native north star for the statically compilable subset (10–100×+ over CPython, C/C++-class,
+non-drop-in semantics). PyPy is the dynamic-runtime reference (~3× over CPython 3.11 via JIT)
+for pure-Python dynamic workloads.
+
+**Non-negotiable gates — every correctness landing must answer "what did this do to speed?"**
+- A commit that fixes parity but introduces a permanent benchmark regression is INCOMPLETE.
+  Silent slowdown is a FAILED landing. If a structural fix necessarily slows a path
+  temporarily, the commit must state exactly which perf debt was introduced, why it is
+  unavoidable, which invariant now enables recovery, and which follow-up arc retires it.
+- CPython is the absolute floor: faster on every verified-subset benchmark. Any benchmark
+  below 1.00× vs CPython is RED and is a contract violation, not "later optimization work."
+- PyPy is the dynamic reference: match/beat on JIT-favorable pure-Python workloads, or NAME the
+  missing compiler fact (IC tiering, class-version guard, borrow inference, generator fusion,
+  shape propagation, trace-like loop specialization).
+- Codon is the AOT reference: approach/exceed on numeric/loop/data-structure/NumPy-like/typed
+  kernels where semantics match; mark non-equivalent semantic models as "non-equivalent," never
+  as a win/loss.
+- A backend "degradation" must be a DOCUMENTED target limitation (an explicit portable-IR fact),
+  never a hidden benchmark exception. A profile-specific slowdown is still a bug: dev may
+  optimize compile latency, but release-fast/release-output are held to shipped-perf standards.
+
+**Methodology — pyperformance/pyperf discipline, not vibes.** Every perf claim reports:
+`benchmark → target → backend → profile → CPython ratio → PyPy ratio (when applicable) →
+Codon ratio (when applicable) → binary size → peak RSS → compile time → command/log artifact`.
+Repeated worker runs, calibration, instability detection, statistics, JSON output. No
+"looks faster," no cherry-picked one-off, no warm-cache-only wins (report cold AND warm). No
+benchmark is healed until measured against the full matrix it affects.
+
+**Required machine-readable scoreboards** (kept green, CI-gated): (1) CPython — every benchmark
+× backend/profile, any <1.00× is red; (2) PyPy — pure-Python dynamic, names the missing molt
+mechanism where PyPy wins; (3) Codon — static/AOT subset on matched semantics; (4) Backend —
+native/LLVM/WASM/Luau each its own table, a native win never excuses a WASM regression;
+(5) Profile — dev/release-fast/release-output are separate products, none hides runtime regressions.
+
+**Perf triage priority** (after P0 silent-wrong-answer + memory unsafety): (1) any benchmark
+slower than CPython; (2) any previously-green benchmark that regressed; (3) any backend/profile
+divergence losing a known optimization; (4) any PyPy/Codon gap where molt lacks the needed
+representation fact; (5) binary size / cold start / RSS / compile-time regressions.
+
+**Posture — do not "optimize passes," fix the REPRESENTATION.** When a benchmark is slow the
+first question is never "which peephole recovers it" but "which FACT is missing from IR?": RC
+overhead → ownership/borrow/reuse; dynamic dispatch → class identity/version/target/shape;
+boxing → Repr precision; slow loops → induction/range/overflow/lane stability; slow generators
+→ resumable-frame ownership + fusion eligibility; WASM losing a native opt → the fact belongs in
+portable IR, not native codegen; release-output wins but dev unusable → profile-tier separation.
+
+**Landing report format:** not just "tests green" but "tests green; perf matrix green; no
+CPython-red benchmarks; PyPy/Codon deltas known; regressions zero or explicitly tracked with
+owner and structural fix."
+
+## Council Operating Doctrine (2026-06-08, binding)
+
+**Ratified fork resolutions** (full record: memory project_council_decisions_20260608):
+- **Finalizer ordering goes on a minimal OWNERSHIP LATTICE, never as another DropInsertion
+  special-case.** Build the smallest slice `alias-root → ownership state → Python lifetime
+  boundary → ordered release obligation` (new `ownership_lattice_min.rs`/`ownership_boundaries.rs`),
+  then ship ordering on it. Narrow is allowed; a disguised ad-hoc finalizer patch is not. This
+  is the rung-1→rung-2 bridge — do NOT boil the ocean, do NOT re-patch DropInsertion.
+- **`Free` is demoted.** For Python heap objects it is a backend/runtime LOWERING of a
+  proven-unique DecRef only under `¬MayFinalize ∧ ¬HasWeakrefs ∧ ¬MayResurrect ∧
+  ¬InnerRefOrdering ∧ ProvenUnique`; otherwise the only legal op is finalizer-aware DecRef.
+  Runtime-internal finalizer-free frees get a SEPARATE opcode (`FreeInternal`/`FreeRaw`) — never
+  share with "free Python object."
+- **`MOLT_ASSERT_NO_LEAK` = actual destruction** (not zero-transition).
+- **`FinalizerSensitive` = one ClassInfo/MRO/version-derived cached fact**, consumed by escape +
+  refcount-elim + stack-alloc + Free-eligibility + ownership-lowering. No pass-local finalizer
+  reasoning. Any optimization changing lifetime/placement/release-order/direct-free-eligibility
+  consults the same fact.
+
+**P0 ranking:** a resurrection/finalizer/weakref MEMORY-CORRUPTION bug (e.g. the resurrection-
+at-scale SIGSEGV) OUTRANKS the native RC flip and all performance/feature work — it invalidates
+trust in the memory model. Root-cause structurally; never cap the repro or mark it expected.
+
+**Three-lane model** (non-overlapping files, continuous): A = P0 semantic safety (corruption,
+finalizer ordering, ownership-lattice slice, flip blockers, leak/finalizer/weakref/unwind tests);
+B = performance frontier (CPython-reds, regressions, PyPy/Codon harness, raw/boxed/dispatch/loop/
+generator bottlenecks); C = infra/scoreboards/decomposition that makes A&B faster. A blocks B only
+when memory unsafety makes perf numbers untrustworthy; B blocks new features when any benchmark
+< CPython; C is never decorative.
+
+**Every batch reports the PERF/SPEED STATUS block** (CPython-red benchmarks + suspected missing
+fact; regressions; PyPy/Codon deltas where semantically comparable; fastest next unlock = one
+fact / one file-lane / one gate). If it cannot be filled, the next task is to CREATE THE
+MEASUREMENT PATH, not optimize blind. Perf work's deliverable is a NEW IR FACT that makes a
+class of slow programs unexpressible — not "faster code." Five-year target = retire one CLASS
+of slowness per month (the compression ladder), not one benchmark.
+
+**Tranche & evidence standard (binding).** A unit of reported work ("tranche") must CHANGE
+PROJECT STATE — landed code/tests/tooling/docs, a verified refusal that deletes a bad plan, or
+(only at a real fork) a decision packet with a recommended default — never "status + a question."
+Build first; ask only when the next step encodes a semantic invariant, needs a public/API/subset
+decision, faces two mutually-exclusive structural designs, would risk a workaround, or is
+contradicted by memory-safety/correctness evidence; otherwise default, implement, measure, test,
+report. Research→artifact→next-move; falsification must leave a durable artifact (test/doc/baton/
+deleted-plan) or it didn't count.
+- **Perf claims are quiescent, repeated, attributed, classified.** No optimizing from a noisy
+  red; no warm-time claim from allocation counters alone (alloc-count is a memory-dimension
+  signal — warm reds need CYCLE attribution); no "one run flipped it"; no stale-local-main
+  authority. Classify every result GREEN / RED_STABLE / RED_NOISY / TIE / DIMENSIONAL_WIN. A
+  DIMENSIONAL_WIN (alloc/RSS/binary/cold/backend improved, warm gate did not flip) is reported
+  honestly as dimensional, NEVER as a speed heal.
+- **Gates:** run the relevant gates for the touched surface, full gates before integration, and
+  explicitly list any omitted gate with its reason. NEVER imply an unrun gate is green.
+- Cold-start is an artifact-footprint/page-in/codesign problem, NOT a runtime-init problem
+  (runtime init measured 0.127ms); it is WARN under the v0 budget, not an execution-engine red.
+
 ## Bootstrap Authority (Non-Negotiable)
 
 - Runtime-known module bootstrap must go through the runtime import boundary (`MODULE_IMPORT`). Do not split bootstrap ownership between frontend special cases and runtime import code.
@@ -141,10 +257,19 @@ Rules:
 export MOLT_SESSION_ID="agent-1"  # MUST come before any molt or cargo command
 ```
 
-Each session gets its own `target-<id>/` cargo directory (e.g., `target-agent_1/`). All cargo builds, path resolution, staleness checks, and cache lookups automatically route through the session-specific directory.
+Each session gets its own `target/sessions/<id>/` cargo directory (the CLI's
+`_session_target_dir`). The **molt CLI** routes all builds, path resolution,
+staleness checks, and cache lookups through it automatically. **Raw `cargo`
+commands do NOT honor `MOLT_SESSION_ID`** — they fall through to the shared
+`target/` and will lock-collide with (and silently kill) concurrent agents'
+builds. For any direct cargo invocation also export:
+
+```bash
+export CARGO_TARGET_DIR="$PWD/target/sessions/$MOLT_SESSION_ID"
+```
 
 This gives each session:
-- **Its own cargo target directory** (`target-agent_1/`) — no cargo lock contention, no artifact clobbering
+- **Its own cargo target directory** (`target/sessions/<id>/`) — no cargo lock contention, no artifact clobbering
 - **Its own daemon socket** — no kill/restart conflicts between sessions
 - **Its own build state and lock-check caches** — fully isolated build lifecycle
 - **No `cargo clean`** — incremental builds only, no binary deletion

@@ -7,6 +7,7 @@
 pub mod cuda;
 pub mod glsl;
 pub mod hip;
+pub(crate) mod indexing;
 pub mod mil;
 pub mod msl;
 #[cfg(feature = "metal4")]
@@ -18,12 +19,28 @@ use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
 use crate::shapetracker::ShapeTracker;
 
+mod fused_op;
+pub use fused_op::{FusedOp, FusedOpDomain, ReductionDomain};
+
+/// Executable body carried by a scheduled kernel.
+///
+/// Compute kernels evaluate the ordered [`FusedOp`] chain. Materialization
+/// kernels copy one input binding through its ShapeTracker view into fresh
+/// contiguous output storage. Keeping this distinction in the IR prevents
+/// `Contiguous` from becoming either a fake primitive op or a silent passthrough.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum KernelBody {
+    #[default]
+    Compute,
+    MaterializeCopy,
+}
+
 /// Metadata from the shape specialization pass.
 ///
 /// When all dimensions of a kernel's output shape are statically known (no
 /// dynamic dims), the scheduler can compute optimal work distribution and
 /// determine whether bounds checks are eliminable.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct ShapeSpecialization {
     /// `true` when total element count is exactly divisible by the local
     /// workgroup size. When set, renderers may omit the `if (gid < N)` guard.
@@ -42,10 +59,19 @@ pub struct ShapeSpecialization {
 /// A single fused kernel ready for codegen.
 #[derive(Debug, Clone)]
 pub struct FusedKernel {
+    /// The executable body shape. `Compute` consumes [`FusedKernel::ops`];
+    /// `MaterializeCopy` requires `ops.is_empty()` and exactly one input
+    /// binding at `bufs[1]`.
+    pub body: KernelBody,
     /// Ordered chain of ops: elementwise prefix -> optional reduce -> elementwise suffix.
     pub ops: Vec<FusedOp>,
     /// Buffer bindings. Convention: bufs[0] is ALWAYS the output (Write access).
     /// bufs[1..] are inputs (Read access). ReadWrite is used for in-place ops.
+    ///
+    /// Binding identity is the slot index in this vector. Runtime storage
+    /// identity is [`BufferBinding::buf_id`]. Renderers must name shader
+    /// parameters by slot (`buf0`, `buf1`, ...) so one physical storage id can
+    /// appear multiple times with distinct ShapeTracker views.
     pub bufs: Vec<BufferBinding>,
     /// Work distribution. Computed by the scheduler, NOT the renderer.
     pub grid: [u32; 3],
@@ -61,15 +87,67 @@ pub struct FusedKernel {
     pub vectorize_width: u32,
 }
 
-/// A single op in a fused chain.
-#[derive(Debug, Clone)]
-pub struct FusedOp {
-    /// The primitive op to execute.
-    pub op: PrimitiveOp,
-    /// Input sources (explicit references, not ambiguous indices).
-    pub srcs: Vec<FusedSrc>,
-    /// Output dtype. Always DType::Bool for comparison ops (Cmplt, Cmpeq, Cmpne).
-    pub dst_dtype: DType,
+impl FusedKernel {
+    pub(crate) fn materialize_copy_contract(&self) -> (&BufferBinding, &BufferBinding, usize) {
+        assert_eq!(self.body, KernelBody::MaterializeCopy);
+        assert!(self.ops.is_empty());
+        assert_eq!(self.bufs.len(), 2);
+        assert_eq!(self.bufs[0].access, BufferAccess::Write);
+        assert_eq!(self.bufs[1].access, BufferAccess::Read);
+        assert_eq!(self.bufs[0].dtype, self.bufs[1].dtype);
+        assert_eq!(self.bufs[0].st.numel(), self.bufs[1].st.numel());
+        assert!(
+            self.bufs[0].st.views.len() == 1 && self.bufs[0].st.view().is_contiguous(),
+            "MaterializeCopy output must be a single contiguous view"
+        );
+        (&self.bufs[0], &self.bufs[1], self.bufs[0].st.numel())
+    }
+
+    pub(crate) fn compute_body_contract(&self) {
+        assert_eq!(self.body, KernelBody::Compute);
+        assert!(
+            !self.ops.is_empty(),
+            "Compute kernels must carry at least one op"
+        );
+        assert!(
+            !self.bufs.is_empty(),
+            "Compute kernels must carry an output binding"
+        );
+        let output_numel = self.bufs[0].st.numel();
+        let reduce_count = self
+            .ops
+            .iter()
+            .filter(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+            .count();
+        assert!(
+            reduce_count <= 1,
+            "Compute kernels may carry at most one reduce op"
+        );
+        for op in &self.ops {
+            match (
+                op.domain(),
+                matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax),
+            ) {
+                (FusedOpDomain::Reduction(domain), true) => {
+                    assert_eq!(
+                        domain.output_numel(),
+                        output_numel,
+                        "Reduction domain output shape must match kernel output"
+                    );
+                }
+                (FusedOpDomain::Elementwise, false) => {}
+                (FusedOpDomain::Reduction(_), false) => {
+                    panic!(
+                        "Elementwise op {:?} must not carry a reduction domain",
+                        op.op()
+                    )
+                }
+                (FusedOpDomain::Elementwise, true) => {
+                    panic!("Reduce op {:?} must carry a reduction domain", op.op())
+                }
+            }
+        }
+    }
 }
 
 /// Source reference for a fused op.
@@ -97,7 +175,11 @@ pub enum BufferAccess {
 /// A buffer binding with its view into memory.
 #[derive(Debug, Clone)]
 pub struct BufferBinding {
-    /// Runtime buffer handle index.
+    /// Runtime storage handle identity.
+    ///
+    /// This is the id the executor uses to resolve bytes/handles. It is not a
+    /// renderer-local parameter name; the binding slot in `FusedKernel.bufs` is
+    /// the renderer-local identity.
     pub buf_id: usize,
     /// How this buffer is accessed (ShapeTracker view).
     pub st: ShapeTracker,

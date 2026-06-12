@@ -11,7 +11,7 @@
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
-use crate::render::{BufferBinding, FusedKernel, FusedOp, FusedSrc};
+use crate::render::{BufferBinding, FusedKernel, FusedOp, FusedSrc, KernelBody};
 
 /// Fuse a list of single-op kernels into minimal fused kernels.
 ///
@@ -30,10 +30,31 @@ pub fn fuse(kernels: Vec<FusedKernel>) -> Vec<FusedKernel> {
     let mut has_reduce_in_chain = false;
 
     for kernel in kernels {
+        if kernel.body == KernelBody::MaterializeCopy {
+            if !current_chain.is_empty() {
+                fused.push(merge_chain(current_chain));
+                current_chain = Vec::new();
+                has_reduce_in_chain = false;
+            }
+            fused.push(kernel);
+            continue;
+        }
+
         let is_reduce = kernel
             .ops
             .iter()
-            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+            .any(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+        if has_reduce_in_chain
+            && !current_chain.is_empty()
+            && !post_reduce_shapes_compatible(
+                current_chain.last().expect("non-empty chain"),
+                &kernel,
+            )
+        {
+            fused.push(merge_chain(current_chain));
+            current_chain = Vec::new();
+            has_reduce_in_chain = false;
+        }
 
         if is_reduce && has_reduce_in_chain {
             // Fusion boundary: reduce-to-reduce.
@@ -59,6 +80,10 @@ pub fn fuse(kernels: Vec<FusedKernel>) -> Vec<FusedKernel> {
     fused
 }
 
+fn post_reduce_shapes_compatible(producer: &FusedKernel, consumer: &FusedKernel) -> bool {
+    producer.bufs[0].st.shape() == consumer.bufs[0].st.shape()
+}
+
 /// Merge a chain of kernels into a single fused kernel.
 ///
 /// Inter-kernel data flow is expressed by **buffer identity**: a consuming
@@ -70,13 +95,19 @@ pub fn fuse(kernels: Vec<FusedKernel>) -> Vec<FusedKernel> {
 /// longer a real input). Only ids that are NOT produced within the chain remain
 /// as external input bindings.
 ///
-/// This is the same buffer-identity contract the scheduler establishes (each
-/// binding id is the identity of the node that produces it), so fusion composes
-/// with it without a second, divergent notion of "which buffer is which".
+/// This is the same storage-identity-plus-view contract the scheduler
+/// establishes, so fusion composes with it without a second, divergent notion
+/// of "which buffer is which".
 fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
     if chain.len() == 1 {
         return chain.into_iter().next().unwrap();
     }
+    assert!(
+        chain
+            .iter()
+            .all(|kernel| kernel.body == KernelBody::Compute),
+        "MaterializeCopy kernels are hard fusion barriers"
+    );
 
     // Output ids produced by kernels in this chain. A binding with one of these
     // ids is an intermediate computed in-chain, not an external input.
@@ -87,7 +118,9 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
 
     // Merged inputs: the last kernel's output at slot 0, then every DISTINCT
     // input binding whose id is NOT produced within the chain (i.e. genuinely
-    // external leaves / upstream intermediates), deduplicated by id.
+    // external leaves / upstream intermediates), deduplicated by storage id,
+    // ShapeTracker view, dtype, and access mode. Same storage through different
+    // views must remain two binding slots.
     let mut merged_bufs: Vec<BufferBinding> = Vec::new();
     merged_bufs.push(last.bufs[0].clone());
     for kernel in &chain {
@@ -95,7 +128,7 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
             if produced_ids.contains(&buf.buf_id) {
                 continue; // produced in-chain → becomes an Op, not an input.
             }
-            if !merged_bufs.iter().any(|b| b.buf_id == buf.buf_id) {
+            if !merged_bufs.iter().any(|b| same_external_binding(b, buf)) {
                 merged_bufs.push(buf.clone());
             }
         }
@@ -104,19 +137,19 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
     // Map each in-chain-produced buffer id to the merged-op index that writes it
     // (a kernel's last op). Filled as kernels are appended so later kernels can
     // reference earlier outputs as `Op(..)`.
-    let mut produced_at: std::collections::HashMap<usize, usize> =
-        std::collections::HashMap::new();
+    let mut produced_at: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
 
     // Build ops chain: remap FusedSrc references by buffer identity.
     let mut merged_ops: Vec<FusedOp> = Vec::new();
     for kernel in &chain {
         let op_offset = merged_ops.len();
         for op in &kernel.ops {
-            let mut remapped_srcs = Vec::with_capacity(op.srcs.len());
-            for src in &op.srcs {
+            let mut remapped_srcs = Vec::with_capacity(op.srcs().len());
+            for src in op.srcs() {
                 match src {
                     FusedSrc::Buf(idx) => {
-                        let buf_id = kernel.bufs[*idx].buf_id;
+                        let binding = &kernel.bufs[*idx];
+                        let buf_id = binding.buf_id;
                         if let Some(&producer_op) = produced_at.get(&buf_id) {
                             // Produced by an earlier kernel in this chain — read
                             // its SSA result instead of a device buffer.
@@ -124,7 +157,7 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
                         } else {
                             let new_idx = merged_bufs
                                 .iter()
-                                .position(|b| b.buf_id == buf_id)
+                                .position(|b| same_external_binding(b, binding))
                                 .expect("external input must be in the merged buffer set");
                             remapped_srcs.push(FusedSrc::Buf(new_idx));
                         }
@@ -140,17 +173,14 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
                     }
                 }
             }
-            merged_ops.push(FusedOp {
-                op: op.op,
-                srcs: remapped_srcs,
-                dst_dtype: op.dst_dtype,
-            });
+            merged_ops.push(op.clone_with_srcs(remapped_srcs));
         }
         // This kernel's output is produced by its final merged op.
         produced_at.insert(kernel.bufs[0].buf_id, merged_ops.len() - 1);
     }
 
     FusedKernel {
+        body: KernelBody::Compute,
         ops: merged_ops,
         bufs: merged_bufs,
         grid: last.grid,
@@ -158,6 +188,13 @@ fn merge_chain(chain: Vec<FusedKernel>) -> FusedKernel {
         spec: None,
         vectorize_width: 1,
     }
+}
+
+fn same_external_binding(lhs: &BufferBinding, rhs: &BufferBinding) -> bool {
+    lhs.buf_id == rhs.buf_id
+        && lhs.st == rhs.st
+        && lhs.dtype == rhs.dtype
+        && lhs.access == rhs.access
 }
 
 /// Constant folding pass for fused kernels.
@@ -183,6 +220,10 @@ pub fn constant_fold(kernels: &mut [FusedKernel]) -> usize {
 ///
 /// Returns the number of ops that were folded (removed).
 fn constant_fold_kernel(kernel: &mut FusedKernel) -> usize {
+    if kernel.body != KernelBody::Compute {
+        return 0;
+    }
+
     // Phase 1: Evaluate all ops that have only Const sources.
     // Store the computed constant value for each foldable op.
     let n_ops = kernel.ops.len();
@@ -193,7 +234,7 @@ fn constant_fold_kernel(kernel: &mut FusedKernel) -> usize {
 
         // Resolve each source to a constant value if possible.
         let const_srcs: Vec<Option<(f64, DType)>> = op
-            .srcs
+            .srcs()
             .iter()
             .map(|src| match src {
                 FusedSrc::Const { val, dtype } => Some((*val, *dtype)),
@@ -205,9 +246,9 @@ fn constant_fold_kernel(kernel: &mut FusedKernel) -> usize {
         // If all sources are constants, evaluate the op.
         if const_srcs.iter().all(|s| s.is_some()) {
             let vals: Vec<f64> = const_srcs.iter().map(|s| s.unwrap().0).collect();
-            let dst_dtype = op.dst_dtype;
+            let dst_dtype = op.dst_dtype();
 
-            if let Some(result) = evaluate_const_op(op.op, &vals) {
+            if let Some(result) = evaluate_const_op(op.op(), &vals) {
                 folded_values[i] = Some((result, dst_dtype));
             }
         }
@@ -229,7 +270,7 @@ fn constant_fold_kernel(kernel: &mut FusedKernel) -> usize {
 
         // Remap sources: replace references to folded ops with Const values.
         let remapped_srcs: Vec<FusedSrc> = kernel.ops[i]
-            .srcs
+            .srcs()
             .iter()
             .map(|src| match src {
                 FusedSrc::Op(prior_idx) => {
@@ -245,11 +286,7 @@ fn constant_fold_kernel(kernel: &mut FusedKernel) -> usize {
             })
             .collect();
 
-        new_ops.push(FusedOp {
-            op: kernel.ops[i].op,
-            srcs: remapped_srcs,
-            dst_dtype: kernel.ops[i].dst_dtype,
-        });
+        new_ops.push(kernel.ops[i].clone_with_srcs(remapped_srcs));
     }
 
     let folded_count = n_ops - new_ops.len();
@@ -280,6 +317,10 @@ pub fn identity_fold(kernels: &mut [FusedKernel]) -> usize {
 
 /// Identity-fold a single kernel's ops.
 fn identity_fold_kernel(kernel: &mut FusedKernel) -> usize {
+    if kernel.body != KernelBody::Compute {
+        return 0;
+    }
+
     let n_ops = kernel.ops.len();
     if n_ops == 0 {
         return 0;
@@ -300,31 +341,31 @@ fn identity_fold_kernel(kernel: &mut FusedKernel) -> usize {
     let mut replacements: Vec<Replacement> = vec![Replacement::Keep; n_ops];
 
     for (op, replacement) in kernel.ops.iter().zip(replacements.iter_mut()) {
-        match op.op {
+        match op.op() {
             PrimitiveOp::Add => {
                 // ADD(x, 0) -> x, ADD(0, x) -> x
-                if is_const_val(&op.srcs[1], 0.0) {
-                    *replacement = Replacement::PassThrough(op.srcs[0].clone());
-                } else if is_const_val(&op.srcs[0], 0.0) {
-                    *replacement = Replacement::PassThrough(op.srcs[1].clone());
+                if is_const_val(&op.srcs()[1], 0.0) {
+                    *replacement = Replacement::PassThrough(op.srcs()[0].clone());
+                } else if is_const_val(&op.srcs()[0], 0.0) {
+                    *replacement = Replacement::PassThrough(op.srcs()[1].clone());
                 }
             }
             PrimitiveOp::Sub => {
                 // SUB(x, 0) -> x
-                if is_const_val(&op.srcs[1], 0.0) {
-                    *replacement = Replacement::PassThrough(op.srcs[0].clone());
+                if is_const_val(&op.srcs()[1], 0.0) {
+                    *replacement = Replacement::PassThrough(op.srcs()[0].clone());
                 }
             }
             PrimitiveOp::Mul => {
                 // MUL(x, 1) -> x, MUL(1, x) -> x
-                if is_const_val(&op.srcs[1], 1.0) {
-                    *replacement = Replacement::PassThrough(op.srcs[0].clone());
-                } else if is_const_val(&op.srcs[0], 1.0) {
-                    *replacement = Replacement::PassThrough(op.srcs[1].clone());
+                if is_const_val(&op.srcs()[1], 1.0) {
+                    *replacement = Replacement::PassThrough(op.srcs()[0].clone());
+                } else if is_const_val(&op.srcs()[0], 1.0) {
+                    *replacement = Replacement::PassThrough(op.srcs()[1].clone());
                 }
                 // MUL(x, 0) -> 0, MUL(0, x) -> 0
-                else if is_const_val(&op.srcs[1], 0.0) || is_const_val(&op.srcs[0], 0.0) {
-                    *replacement = Replacement::Const(0.0, op.dst_dtype);
+                else if is_const_val(&op.srcs()[1], 0.0) || is_const_val(&op.srcs()[0], 0.0) {
+                    *replacement = Replacement::Const(0.0, op.dst_dtype());
                 }
             }
             _ => {}
@@ -344,15 +385,11 @@ fn identity_fold_kernel(kernel: &mut FusedKernel) -> usize {
                 old_to_new[i] = Some(new_ops.len());
                 // Remap sources
                 let remapped_srcs: Vec<FusedSrc> = kernel.ops[i]
-                    .srcs
+                    .srcs()
                     .iter()
                     .map(|src| remap_src(src, &old_to_new, &replace_with))
                     .collect();
-                new_ops.push(FusedOp {
-                    op: kernel.ops[i].op,
-                    srcs: remapped_srcs,
-                    dst_dtype: kernel.ops[i].dst_dtype,
-                });
+                new_ops.push(kernel.ops[i].clone_with_srcs(remapped_srcs));
             }
             Replacement::PassThrough(src) => {
                 // This op is eliminated. Store the remapped source for downstream.

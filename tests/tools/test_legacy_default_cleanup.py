@@ -123,3 +123,100 @@ def test_wasm_strip_unused_defaults_output_next_to_input(
     mod.main()
 
     assert captured["output"] == wasm_path.with_name("sample-stripped.wasm")
+
+
+def test_wasm_strip_unused_copy_fallback_publishes_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    mod = _load_tool_module(REPO_ROOT / "tools" / "wasm_strip_unused.py")
+
+    wasm_path = tmp_path / "input.wasm"
+    output_path = tmp_path / "output.wasm"
+    wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00copy")
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/wasm-tools")
+    original_publish = mod.artifact_publish.publish_validated_outputs
+    published_sources: list[Path] = []
+
+    def record_publish(pairs: list[tuple[Path, Path]]) -> None:
+        assert len(pairs) == 1
+        staged, final = pairs[0]
+        assert final == output_path
+        published_sources.append(staged)
+        original_publish(pairs)
+
+    monkeypatch.setattr(
+        mod.artifact_publish,
+        "publish_validated_outputs",
+        record_publish,
+    )
+
+    class _NoStrippable:
+        strippable_imports: list[object] = []
+
+    assert mod.strip_imports(wasm_path, output_path, _NoStrippable()) == output_path
+
+    assert output_path.read_bytes() == wasm_path.read_bytes()
+    assert len(published_sources) == 1
+    assert published_sources[0].name.startswith(".output.wasm.")
+    assert published_sources[0].name.endswith(".tmp")
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+def test_wasm_strip_unused_strip_writes_temp_before_final_publish(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    mod = _load_tool_module(REPO_ROOT / "tools" / "wasm_strip_unused.py")
+
+    wasm_path = tmp_path / "input.wasm"
+    output_path = tmp_path / "output.wasm"
+    wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00input")
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/wasm-tools")
+    monkeypatch.setattr(mod.harness_memory_guard, "limits_from_env", lambda _prefix: None)
+    original_publish = mod.artifact_publish.publish_validated_outputs
+    published_sources: list[Path] = []
+    seen_commands: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+        stderr = ""
+
+    def fake_guarded_completed_process(cmd: list[str], **_kwargs: object) -> _Proc:
+        seen_commands.append(cmd)
+        output_index = cmd.index("-o") + 1
+        temp_output = Path(cmd[output_index])
+        assert temp_output != output_path
+        assert temp_output.name.startswith(".output.wasm.")
+        temp_output.write_bytes(b"\x00asm\x01\x00\x00\x00stripped")
+        return _Proc()
+
+    def record_publish(pairs: list[tuple[Path, Path]]) -> None:
+        assert len(pairs) == 1
+        staged, final = pairs[0]
+        assert final == output_path
+        published_sources.append(staged)
+        original_publish(pairs)
+
+    monkeypatch.setattr(
+        mod.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    monkeypatch.setattr(
+        mod.artifact_publish,
+        "publish_validated_outputs",
+        record_publish,
+    )
+
+    class _Strippable:
+        strippable_imports = [object()]
+
+    assert mod.strip_imports(wasm_path, output_path, _Strippable()) == output_path
+
+    assert seen_commands
+    assert output_path.read_bytes() == b"\x00asm\x01\x00\x00\x00stripped"
+    assert len(published_sources) == 1
+    assert published_sources[0].name.startswith(".output.wasm.")
+    assert published_sources[0].name.endswith(".tmp")
+    assert list(tmp_path.glob(".*.tmp")) == []

@@ -20,6 +20,14 @@ def _load_wasm_link():
 wasm_link = _load_wasm_link()
 
 
+def _write_wasm_ld_output(cmd: list[str], data: bytes) -> Path | None:
+    if "-o" not in cmd:
+        return None
+    output_path = Path(cmd[cmd.index("-o") + 1])
+    output_path.write_bytes(data)
+    return output_path
+
+
 def test_wasm_link_external_tool_uses_memory_guard(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -723,7 +731,7 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
     output.write_bytes(output_bytes)
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
-        linked.write_bytes(output_bytes)
+        _write_wasm_ld_output(cmd, output_bytes)
 
         class Result:
             returncode = 0
@@ -741,6 +749,9 @@ def test_run_wasm_ld_split_runtime_falls_back_when_env_deploy_runtime_is_stale(
     monkeypatch.setattr(wasm_link, "_validate_elements", lambda data: (True, None))
     monkeypatch.setattr(wasm_link, "_collect_module_imports", lambda *_args: set())
     monkeypatch.setattr(wasm_link, "_post_link_optimize", lambda data, **_kwargs: data)
+    monkeypatch.setattr(
+        wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes
+    )
 
     rc = wasm_link._run_wasm_ld(
         "wasm-ld",
@@ -775,7 +786,7 @@ def test_run_wasm_ld_monolithic_prefers_relocatable_runtime_for_table_relocation
         del kwargs
         if cmd and cmd[0] == "wasm-ld":
             wasm_ld_inputs.extend(cmd)
-        linked.write_bytes(output_bytes)
+        _write_wasm_ld_output(cmd, output_bytes)
 
         class Result:
             returncode = 0
@@ -1673,7 +1684,7 @@ def test_run_wasm_ld_force_exports_user_module_exports(
 
     def fake_run(cmd, **kwargs):
         captured_cmds.append(list(cmd))
-        linked.write_bytes(output_bytes)
+        _write_wasm_ld_output(cmd, output_bytes)
 
         class Result:
             returncode = 0
@@ -1778,8 +1789,8 @@ def test_run_wasm_ld_repairs_linked_host_init_export(
     runtime.write_bytes(output_bytes)
     output.write_bytes(output_bytes)
 
-    def fake_run(_cmd, **_kwargs):
-        linked.write_bytes(linked_without_host_init)
+    def fake_run(cmd, **_kwargs):
+        _write_wasm_ld_output(cmd, linked_without_host_init)
 
         class Result:
             returncode = 0
@@ -1850,7 +1861,7 @@ def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
     )
 
 
-def test_run_wasm_ld_split_runtime_fails_if_linked_validation_fails_after_outputs(
+def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fails(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1862,9 +1873,13 @@ def test_run_wasm_ld_split_runtime_fails_if_linked_validation_fails_after_output
     split_dir = tmp_path / "split"
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
+    split_dir.mkdir()
+    linked.write_bytes(b"old-linked")
+    (split_dir / "app.wasm").write_bytes(b"old-app")
+    (split_dir / "molt_runtime.wasm").write_bytes(b"old-runtime")
 
     def fake_run(cmd, **kwargs):
-        linked.write_bytes(output_bytes)
+        _write_wasm_ld_output(cmd, output_bytes)
 
         class Result:
             returncode = 0
@@ -1906,8 +1921,141 @@ def test_run_wasm_ld_split_runtime_fails_if_linked_validation_fails_after_output
     )
 
     assert rc == 1
-    assert (split_dir / "app.wasm").exists()
-    assert (split_dir / "molt_runtime.wasm").exists()
+    assert linked.read_bytes() == b"old-linked"
+    assert (split_dir / "app.wasm").read_bytes() == b"old-app"
+    assert (split_dir / "molt_runtime.wasm").read_bytes() == b"old-runtime"
+
+
+def test_run_wasm_ld_preserves_old_output_if_linked_validation_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_bytes = _module_with_linking_symbols([])
+    output_bytes = _module_with_linking_symbols([])
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+    linked.write_bytes(b"old-linked")
+
+    def fake_run(cmd, **kwargs):
+        _write_wasm_ld_output(cmd, output_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", lambda _p: False)
+    monkeypatch.setattr(
+        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
+    )
+    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_collect_custom_names", lambda _data: [])
+    monkeypatch.setattr(wasm_link, "_collect_imports", lambda _data: [])
+    monkeypatch.setattr(
+        wasm_link, "_collect_exports", lambda _data: {"molt_memory", "molt_table"}
+    )
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+
+    rc = wasm_link._run_wasm_ld("wasm-ld", runtime, output, linked)
+
+    assert rc == 1
+    assert linked.read_bytes() == b"old-linked"
+
+
+def test_run_wasm_ld_split_runtime_publishes_only_after_staged_validation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_bytes = _module_with_linking_symbols([])
+    output_bytes = _module_with_linking_symbols([])
+    runtime = tmp_path / "molt_runtime_reloc.wasm"
+    output = tmp_path / "output.wasm"
+    linked = tmp_path / "output_linked.wasm"
+    split_dir = tmp_path / "split"
+    runtime.write_bytes(runtime_bytes)
+    output.write_bytes(output_bytes)
+    split_dir.mkdir()
+    linked.write_bytes(b"old-linked")
+    app_wasm = split_dir / "app.wasm"
+    rt_wasm = split_dir / "molt_runtime.wasm"
+    app_wasm.write_bytes(b"old-app")
+    rt_wasm.write_bytes(b"old-runtime")
+    validate_seen: list[Path] = []
+    split_validate_seen: list[tuple[Path, Path]] = []
+
+    def fake_run(cmd, **kwargs):
+        _write_wasm_ld_output(cmd, output_bytes)
+
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return Result()
+
+    def validate_linked(path: Path) -> bool:
+        validate_seen.append(path)
+        assert path != linked
+        assert linked.read_bytes() == b"old-linked"
+        assert app_wasm.read_bytes() == b"old-app"
+        assert rt_wasm.read_bytes() == b"old-runtime"
+        return True
+
+    def validate_split(app_stage: Path, rt_stage: Path) -> bool:
+        split_validate_seen.append((app_stage, rt_stage))
+        assert app_stage != app_wasm
+        assert rt_stage != rt_wasm
+        assert app_wasm.read_bytes() == b"old-app"
+        assert rt_wasm.read_bytes() == b"old-runtime"
+        return True
+
+    monkeypatch.setattr(wasm_link, "_run_external_tool", fake_run)
+    monkeypatch.setattr(wasm_link, "_validate_linked", validate_linked)
+    monkeypatch.setattr(wasm_link, "_validate_split_runtime_outputs", validate_split)
+    monkeypatch.setattr(
+        wasm_link, "_append_table_ref_elements", lambda data, **_kwargs: None
+    )
+    monkeypatch.setattr(wasm_link, "_declare_ref_func_elements", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_ensure_table_export", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_build_runtime_stub", lambda data: runtime_bytes)
+    monkeypatch.setattr(wasm_link, "_restore_output_export_aliases", lambda data: None)
+    monkeypatch.setattr(wasm_link, "_optimize_split_app_module", lambda data, **_: data)
+    monkeypatch.setattr(
+        wasm_link, "_collect_module_imports", lambda *_args, **_kwargs: set()
+    )
+    monkeypatch.setattr(
+        wasm_link, "_tree_shake_runtime", lambda *_args, **_kwargs: runtime_bytes
+    )
+    monkeypatch.setattr(wasm_link, "_collect_custom_names", lambda _data: [])
+    monkeypatch.setattr(wasm_link, "_collect_imports", lambda _data: [])
+    monkeypatch.setattr(
+        wasm_link, "_collect_exports", lambda _data: {"molt_memory", "molt_table"}
+    )
+    monkeypatch.setattr(wasm_link, "_validate_elements", lambda _data: (True, None))
+
+    rc = wasm_link._run_wasm_ld(
+        "wasm-ld",
+        runtime,
+        output,
+        linked,
+        split_runtime=True,
+        split_output_dir=split_dir,
+    )
+
+    assert rc == 0
+    assert validate_seen
+    assert split_validate_seen
+    assert linked.read_bytes() != b"old-linked"
+    assert app_wasm.read_bytes() == output_bytes
+    assert rt_wasm.read_bytes() == runtime_bytes
 
 
 def test_run_wasm_ld_fails_when_ref_func_declaration_cannot_be_materialized(
@@ -1923,8 +2071,8 @@ def test_run_wasm_ld_fails_when_ref_func_declaration_cannot_be_materialized(
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
 
-    def fake_run(_cmd, **_kwargs):
-        linked.write_bytes(output_bytes)
+    def fake_run(cmd, **_kwargs):
+        _write_wasm_ld_output(cmd, output_bytes)
 
         class Result:
             returncode = 0

@@ -171,10 +171,7 @@ fn copy_source(op: &crate::tir::ops::TirOp) -> Option<ValueId> {
     if op.opcode != OpCode::Copy || op.results.len() != 1 {
         return None;
     }
-    if NON_COPY_ATTR_KEYS
-        .iter()
-        .any(|k| op.attrs.contains_key(*k))
-    {
+    if NON_COPY_ATTR_KEYS.iter().any(|k| op.attrs.contains_key(*k)) {
         return None;
     }
     match op.operands.as_slice() {
@@ -277,7 +274,10 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
     // When the cond block is a separate block, it must not be a loop header
     // itself (which would mean we walked into a nested loop).
     if cond_block_id != header
-        && matches!(func.loop_roles.get(&cond_block_id), Some(&LoopRole::LoopHeader))
+        && matches!(
+            func.loop_roles.get(&cond_block_id),
+            Some(&LoopRole::LoopHeader)
+        )
     {
         return None;
     }
@@ -379,7 +379,10 @@ pub fn recognize_counted_loop(func: &TirFunction, header: BlockId) -> Option<Cou
     };
     let induction_var = header_block.args[iv_arg_index].id;
     let Some(&stop) = const_map.get(&resolve(&copy_of, cmp_op.operands[1])) else {
-        trace!("cmp rhs {:?} is not a ConstInt (runtime bound)", cmp_op.operands[1]);
+        trace!(
+            "cmp rhs {:?} is not a ConstInt (runtime bound)",
+            cmp_op.operands[1]
+        );
         return None;
     };
 

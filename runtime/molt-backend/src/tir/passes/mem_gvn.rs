@@ -249,7 +249,11 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, disabled: bool) ->
         for b in func.blocks.values() {
             for o in &b.ops {
                 if matches!(o.opcode, OpCode::LoadAttr | OpCode::StoreAttr) {
-                    if o.opcode == OpCode::LoadAttr { n_load += 1 } else { n_store += 1 }
+                    if o.opcode == OpCode::LoadAttr {
+                        n_load += 1
+                    } else {
+                        n_store += 1
+                    }
                     let k = match o.attrs.get("_original_kind") {
                         Some(AttrValue::Str(s)) => s.clone(),
                         _ => "<none>".into(),
@@ -553,7 +557,11 @@ mod tests {
         let ops = &func.blocks[&func.entry_block].ops;
         // store@0; the load@1 becomes IncRef(val)@1 + Copy(val)->r@2 (the
         // IncRef reproduces the owned-result +1 the load performed).
-        assert_eq!(ops[1].opcode, OpCode::IncRef, "owned-ref acquired before the Copy");
+        assert_eq!(
+            ops[1].opcode,
+            OpCode::IncRef,
+            "owned-ref acquired before the Copy"
+        );
         assert_eq!(ops[1].operands, vec![val], "IncRef of the forwarded value");
         assert_eq!(ops[2].opcode, OpCode::Copy, "load rewritten to Copy");
         assert_eq!(ops[2].operands, vec![val], "copies the stored value");
@@ -707,9 +715,16 @@ mod tests {
             },
         );
         let stats = run_fresh(&mut func);
-        assert_eq!(stats.values_changed, 1, "cross-block forward through linear chain");
+        assert_eq!(
+            stats.values_changed, 1,
+            "cross-block forward through linear chain"
+        );
         let bb2_ops = &func.blocks[&bb2].ops;
-        assert_eq!(bb2_ops[0].opcode, OpCode::IncRef, "owned-ref acquired in the use block");
+        assert_eq!(
+            bb2_ops[0].opcode,
+            OpCode::IncRef,
+            "owned-ref acquired in the use block"
+        );
         assert_eq!(bb2_ops[0].operands, vec![val]);
         assert_eq!(bb2_ops[1].opcode, OpCode::Copy);
         assert_eq!(bb2_ops[1].operands, vec![val]);
@@ -817,7 +832,11 @@ mod tests {
         // load@0 stays the leader; the redundant load@1 becomes IncRef(r1)@1 +
         // Copy(r1)->r2@2 (each owned load duplicates the +1, so r2 must too).
         assert_eq!(ops[0].opcode, OpCode::LoadAttr, "first load is the leader");
-        assert_eq!(ops[1].opcode, OpCode::IncRef, "second load's owned +1 is reacquired");
+        assert_eq!(
+            ops[1].opcode,
+            OpCode::IncRef,
+            "second load's owned +1 is reacquired"
+        );
         assert_eq!(ops[1].operands, vec![r1]);
         assert_eq!(ops[2].opcode, OpCode::Copy, "second load reuses the first");
         assert_eq!(ops[2].operands, vec![r1]);
@@ -1054,9 +1073,16 @@ mod tests {
             entry.terminator = Terminator::Return { values: vec![sum] };
         }
         let stats = run_fresh(&mut func);
-        assert_eq!(stats.values_changed, 1, "the second guarded load is redundant");
+        assert_eq!(
+            stats.values_changed, 1,
+            "the second guarded load is redundant"
+        );
         let ops = &func.blocks[&func.entry_block].ops;
-        assert_eq!(ops[0].opcode, OpCode::LoadAttr, "first guarded load is the leader");
+        assert_eq!(
+            ops[0].opcode,
+            OpCode::LoadAttr,
+            "first guarded load is the leader"
+        );
         assert_eq!(ops[1].opcode, OpCode::IncRef, "the duplicated owned +1");
         assert_eq!(ops[1].operands, vec![r1]);
         assert_eq!(ops[2].opcode, OpCode::Copy, "second collapses to a Copy");
@@ -1117,11 +1143,23 @@ mod tests {
         let ops = &func.blocks[&func.entry_block].ops;
         // gget@0; CheckException@1; the redundant gget@2 → IncRef(r1)@2 +
         // Copy(r1)->r2@3 (the check stays exactly where it was).
-        assert_eq!(ops[0].opcode, OpCode::LoadAttr, "first guarded load is the leader");
-        assert_eq!(ops[1].opcode, OpCode::CheckException, "the check is preserved");
+        assert_eq!(
+            ops[0].opcode,
+            OpCode::LoadAttr,
+            "first guarded load is the leader"
+        );
+        assert_eq!(
+            ops[1].opcode,
+            OpCode::CheckException,
+            "the check is preserved"
+        );
         assert_eq!(ops[2].opcode, OpCode::IncRef, "the duplicated owned +1");
         assert_eq!(ops[2].operands, vec![r1]);
-        assert_eq!(ops[3].opcode, OpCode::Copy, "the second load collapses across the check");
+        assert_eq!(
+            ops[3].opcode,
+            OpCode::Copy,
+            "the second load collapses across the check"
+        );
         assert_eq!(ops[3].operands, vec![r1]);
     }
 
@@ -1240,7 +1278,11 @@ mod tests {
         // the descending-index apply order is exercised too:
         //   store(obj,val,0); r1 = load(obj,0); r2 = load(obj,0); sum=r1+r2
         // r1 forwards from the store; r2 is redundant against r1.
-        let mut func = TirFunction::new("f".into(), vec![TirType::DynBox, TirType::DynBox], TirType::DynBox);
+        let mut func = TirFunction::new(
+            "f".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
         let obj = ValueId(0);
         let val = ValueId(1);
         let r1 = func.fresh_value();

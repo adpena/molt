@@ -11,9 +11,9 @@ It drives `cargo` directly (NOT `molt build`) because the thing being optimised
 is the cargo build of the backend crate(s) themselves. Each scenario is run N
 times; we report min/median/max so noise from other agents is visible.
 
-This tool is intentionally dependency-free (stdlib only) and never runs a
-compiled molt binary, so it carries no OOM risk of its own; the cargo builds it
-launches are memory-bounded by the host (and by the caller running few of them).
+The child cargo commands run through the shared harness memory guard so build
+timing remains under the same RSS/profile/repro custody as test and benchmark
+lanes.
 """
 
 from __future__ import annotations
@@ -23,12 +23,17 @@ import json
 import os
 import shutil
 import statistics
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+TOOLS_ROOT = REPO_ROOT / "tools"
+
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
 
 
 def _now() -> float:
@@ -53,8 +58,9 @@ def _touch(path: Path) -> None:
 
 def _run(cmd: list[str], env: dict[str, str], cwd: Path) -> tuple[int, float, str]:
     start = _now()
-    proc = subprocess.run(
+    proc = harness_memory_guard.guarded_completed_process(
         cmd,
+        prefix="MOLT_DX_BUILD",
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -63,6 +69,19 @@ def _run(cmd: list[str], env: dict[str, str], cwd: Path) -> tuple[int, float, st
     elapsed = _now() - start
     tail = "\n".join((proc.stderr or "").splitlines()[-8:])
     return proc.returncode, elapsed, tail
+
+
+def _cargo_version(env: dict[str, str]) -> str:
+    proc = harness_memory_guard.guarded_completed_process(
+        ["cargo", "--version"],
+        prefix="MOLT_DX_BUILD",
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return (proc.stdout or proc.stderr or "").strip()
 
 
 def _build_cmd(args: argparse.Namespace, extra: list[str] | None = None) -> list[str]:
@@ -168,7 +187,7 @@ def main() -> int:
             "features": args.features,
             "runs": args.runs,
             "target_dir": args.target_dir,
-            "cargo": subprocess.run(["cargo", "--version"], capture_output=True, text=True).stdout.strip(),
+            "cargo": _cargo_version(env),
         },
         "results": results,
     }
