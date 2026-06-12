@@ -320,6 +320,172 @@ def test_unpack_and_pattern_hashseed_independence(
     _assert_outcome_hashseed_stable(program, parse_codec)
 
 
+# ---------------------------------------------------------------------------
+# Tests: mid-end pass selection must be independent of wall-clock time (#73)
+#
+# The mid-end optimiser degraded its pass pipeline (capping rounds, shrinking
+# SCCP/CSE iteration caps, then disabling CSE / edge-threading / LICM) when a
+# per-function compile exceeded a *wall-clock time budget*.  That made the
+# emitted IR a function of how fast the machine happened to run: identical
+# source + identical PYTHONHASHSEED produced divergent IR across processes
+# whenever a compile ran slow enough to trip the budget and disable CSE — a
+# silent determinism-contract violation affecting the majority of programs.
+#
+# The degrade ladder now gates on a DETERMINISTIC work-unit budget (op counts),
+# so pass selection — and thus the IR — is a pure function of the input.  The
+# decisive, deterministic regression check: the compiled IR must be byte-
+# identical regardless of the wall-clock budget knob ``MOLT_MIDEND_BUDGET_MS``.
+# On the buggy compiler a tiny budget forced degradation and changed the IR; on
+# the fixed compiler the time budget influences telemetry only, never output.
+# These programs were verified to degrade under a tiny time budget on the buggy
+# compiler (so the assertion genuinely fails pre-fix).
+# ---------------------------------------------------------------------------
+
+_MIDEND_WALLTIME_SENSITIVE_PROGRAMS = [
+    "arith.py",
+    "args_kwargs.py",
+    "assignment_target_eval_order.py",
+    "assignment_unpack_error_propagation.py",
+    "pep634_pattern_matching_more.py",
+    "pattern_matching_core_matrix.py",
+    "comprehension_nested_walrus.py",
+    "pep572_walrus_edges.py",
+]
+
+
+def _midend_walltime_sensitive_programs() -> list[Path]:
+    if not BASIC_DIR.is_dir():
+        return []
+    return [BASIC_DIR / name for name in _MIDEND_WALLTIME_SENSITIVE_PROGRAMS]
+
+
+MIDEND_WALLTIME_SENSITIVE_PROGRAMS = _midend_walltime_sensitive_programs()
+
+
+def _compile_ir_subprocess_with_env(
+    source_text: str,
+    *,
+    parse_codec: str,
+    extra_env: dict[str, str],
+    pythonhashseed: str = "0",
+) -> str:
+    """Compile in a subprocess with *extra_env* applied; return canonical IR
+    (or a normalized ``COMPILE_ERROR::`` string)."""
+    wrapper = (
+        "import json, sys\n"
+        "sys.path.insert(0, {src!r})\n"
+        "src = sys.stdin.read()\n"
+        "try:\n"
+        "    from molt.frontend import compile_to_tir\n"
+        "    ir = compile_to_tir(src, parse_codec={codec!r})\n"
+        "    sys.stdout.write('IR::' + json.dumps(ir, sort_keys=True))\n"
+        "except BaseException as exc:\n"
+        "    sys.stdout.write("
+        "'COMPILE_ERROR::' + type(exc).__name__ + '::' + str(exc))\n"
+    ).format(src=str(ROOT / "src"), codec=parse_codec)
+
+    env = os.environ.copy()
+    env["PYTHONHASHSEED"] = pythonhashseed
+    env.update(extra_env)
+
+    result = run_native_test_process(
+        [sys.executable, "-c", wrapper],
+        input=source_text,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    return result.stdout
+
+
+# The spec's hash-seed sweep set for #73, plus the unpinned process-random
+# path.  The fixed seeds pin the regression to attributable values; ``random``
+# exercises a fresh process-chosen seed (the configuration that caught the #34
+# async-offset leak when a hand-picked fixed set happened to agree).
+_MIDEND_DETERMINISM_SEEDS = ("0", "1", "7", "42", "1337", "random")
+# Wall-clock budget knob values.  ``1``/``5`` ms are tiny enough that, on the
+# pre-fix *time*-gated compiler, the degrade ladder fired and disabled
+# CSE/LICM/edge-threading (changing the IR); ``None`` is the default budget and
+# the large value can never trip.  On the fixed compiler the knob feeds
+# telemetry only, so every value must yield byte-identical IR.
+_MIDEND_BUDGET_KNOBS: tuple[str | None, ...] = (None, "1", "5", "999999999")
+
+
+@pytest.mark.parametrize(
+    "program",
+    MIDEND_WALLTIME_SENSITIVE_PROGRAMS,
+    ids=[p.name for p in MIDEND_WALLTIME_SENSITIVE_PROGRAMS],
+)
+@pytest.mark.parametrize("parse_codec", ["msgpack", "json"])
+def test_midend_ir_independent_of_walltime_budget(
+    program: Path, parse_codec: str
+) -> None:
+    """Mid-end pass selection — and the emitted IR — must be a pure function of
+    the input: independent of the wall-clock time budget AND of PYTHONHASHSEED
+    (#73; #34 bug class).
+
+    The compiled IR must be byte-identical across the full cross-product of
+    {hash seed} x {wall-clock budget knob}:
+
+    * **Budget axis** (the decisive #73 regression): the mid-end's pass-degrade
+      ladder used to gate on ``time.perf_counter()``, so a compile that ran slow
+      enough — or was handed a tiny ``MOLT_MIDEND_BUDGET_MS`` — degraded the
+      pipeline and disabled CSE/const-dedup, changing the IR.  That made the
+      output a function of machine speed (a flaky, load-dependent determinism
+      violation).  Sweeping the budget knob *deterministically* forces the same
+      degraded path a slow machine would hit by chance, so this axis fails on
+      the pre-fix tree (three distinct IR hashes were observed for these
+      programs) and passes once the ladder gates on deterministic work units.
+    * **Seed axis** (#34 bug class, guarded defensively): any set-iteration that
+      reaches IR emission — e.g. the SCCP worklist's ``out_changed_keys`` set
+      union, whose order steers the fixed-point schedule and thus cap behaviour
+      — would make the IR depend on PYTHONHASHSEED.  Crossing the seeds with a
+      *tiny* budget is what makes this axis decisive: near the iteration cap, a
+      hash-ordered schedule change can flip whether the fixed point converges,
+      which a fixed-seed-only or default-budget-only sweep would miss.
+
+    Every checked (seed, budget) outcome is compared to a single
+    (seed=0, default-budget) reference; any divergence is a determinism-contract
+    regression.  We cover both axes decisively without an exhaustive (and largely
+    redundant) cross-product: the budget is swept across every knob at the
+    reference seed (the decisive #73 configuration), and the hash seed is swept
+    across the spec set at the *tightest* budget (the decisive #34 configuration,
+    where a hash-ordered worklist schedule is most able to flip cap behaviour).
+    """
+    source = program.read_text()
+    reference = _compile_ir_subprocess_with_env(
+        source, parse_codec=parse_codec, extra_env={}, pythonhashseed="0"
+    )
+    assert not reference.startswith("COMPILE_ERROR::"), (
+        f"{program.name} [{parse_codec}] unexpectedly failed to compile: "
+        f"{reference[:300]}"
+    )
+
+    def _check(seed: str, budget: str | None) -> None:
+        extra_env = {} if budget is None else {"MOLT_MIDEND_BUDGET_MS": budget}
+        outcome = _compile_ir_subprocess_with_env(
+            source, parse_codec=parse_codec, extra_env=extra_env, pythonhashseed=seed
+        )
+        assert outcome == reference, (
+            f"IR for {program.name} [{parse_codec}] changed with "
+            f"PYTHONHASHSEED={seed}, "
+            f"MOLT_MIDEND_BUDGET_MS={budget if budget is not None else '<default>'}"
+            f" vs the (seed=0, default-budget) reference — the mid-end degrade "
+            f"ladder is gating on wall-clock time or a set-iteration order is "
+            f"leaking into IR emission (regression of #73 / #34)"
+        )
+
+    # Budget axis at the reference seed: the decisive #73 regression check.
+    for budget in _MIDEND_BUDGET_KNOBS:
+        _check("0", budget)
+    # Seed axis at the tightest budget: the decisive #34-class check (a
+    # hash-ordered SCCP schedule near the iteration cap is most able to diverge).
+    tightest_budget = _MIDEND_BUDGET_KNOBS[1]
+    for seed in _MIDEND_DETERMINISM_SEEDS:
+        _check(seed, tightest_budget)
+
+
 def _random_seed() -> int:
     import random
 

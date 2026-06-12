@@ -29,6 +29,7 @@ from molt.frontend._types import (
     MethodInfo,
     MoltOp,
     MoltValue,
+    _ClassNsScope,
     _MOLT_CLOSURE_PARAM,
     _function_is_instance_method,
     _next_ic_index,
@@ -75,6 +76,137 @@ def _iter_slots_field_names(value: ast.expr | None) -> list[str]:
 
 
 class ClassDefVisitorMixin(_MixinBase):
+    # Statement node types a class body can hold and have lowered by the
+    # dedicated straight-line arms of ``visit_ClassDef`` (attribute bindings and
+    # method/nested-class definitions).  ANY other top-level body statement —
+    # control flow (For/AsyncFor/If/While/With/AsyncWith/Try/TryStar/Match),
+    # ``del`` (Delete), augmented assignment (AugAssign), import, etc. — requires
+    # executing the body as a normal block over the class namespace mapping
+    # (CPython semantics).  ``Pass`` is inert.  (P0 #50.)
+    _CLASS_BODY_SIMPLE_STMTS = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+        ast.Assign,
+        ast.AnnAssign,
+        ast.Expr,
+        ast.Pass,
+    )
+
+    @classmethod
+    def _class_body_needs_block_exec(cls, body: list[ast.stmt]) -> bool:
+        """True when a class body holds control flow / ``del`` (P0 #50).
+
+        Only the *top-level* class-body statements matter: control flow nested
+        inside a method body or a comprehension is the method's/comprehension's
+        own scope, not the class block.  An ``AnnAssign`` / ``Assign`` whose
+        target is not a bare ``Name`` (e.g. ``obj.attr = x`` or ``a, b = t`` —
+        a tuple-unpack the straight-line arms do not handle) also forces block
+        execution so it routes through the full assignment lowering.
+        """
+        for stmt in body:
+            if not isinstance(stmt, cls._CLASS_BODY_SIMPLE_STMTS):
+                return True
+            if isinstance(stmt, ast.Assign):
+                if any(not isinstance(t, ast.Name) for t in stmt.targets):
+                    return True
+            elif isinstance(stmt, ast.AnnAssign):
+                if not isinstance(stmt.target, ast.Name):
+                    return True
+        return False
+
+    def _emit_dataclass_application(
+        self,
+        node: ast.ClassDef,
+        class_info: ClassInfo,
+        class_val: MoltValue,
+    ) -> MoltValue:
+        """Emit the compile-time-recognized ``@dataclass`` runtime application.
+
+        The ``@dataclass`` transform is construction-method-agnostic: it operates
+        on a *finished* class object via ``setattr`` / ``cls.x = ...`` and reads
+        ``cls.__annotations__`` (gathered at compile time and published into the
+        class namespace).  It therefore applies identically whether ``class_val``
+        came from the static "outlined ``CLASS_DEF``" path or from the dynamic
+        metaclass-call path the #50 block-execution re-lower uses.  Centralizing
+        the emission here keeps exactly ONE code path that publishes the dataclass
+        transform, so a dataclass whose body needs block execution (control flow /
+        ``del`` / non-Name assign target) still gets its generated dunders.
+
+        When ``class_info`` is not a dataclass this is a no-op and returns
+        ``class_val`` unchanged.  Otherwise it emits the
+        ``dataclasses.dataclass(cls, init=..., repr=..., ...)`` call, rebinds the
+        class name to the (possibly rebuilt — e.g. ``slots=True``) result, and
+        returns that new value.
+        """
+        if not class_info.get("dataclass"):
+            return class_val
+
+        dataclass_params = class_info.get("dataclass_params", {})
+
+        def emit_bool(value: bool) -> MoltValue:
+            res = MoltValue(self.next_var(), type_hint="bool")
+            self.emit(MoltOp(kind="CONST_BOOL", args=[value], result=res))
+            return res
+
+        # Route the compile-time-recognized ``@dataclass`` path through the
+        # public ``dataclasses.dataclass`` wrapper rather than the internal
+        # ``_molt_apply_dataclass`` worker.  The wrapper performs the same work
+        # but its calling convention — single positional ``cls`` plus keyword-only
+        # options — matches the natural Python semantics, avoiding an 11-argument
+        # positional-only call into the worker that exposed an SSA/dominator
+        # interaction during module init (frontend bypass would intermittently
+        # corrupt the class binding before module attribute publication).
+        kw_specs = [
+            ("init", emit_bool(dataclass_params.get("init", True))),
+            ("repr", emit_bool(dataclass_params.get("repr", True))),
+            ("eq", emit_bool(dataclass_params.get("eq", True))),
+            ("order", emit_bool(dataclass_params.get("order", False))),
+            ("unsafe_hash", emit_bool(dataclass_params.get("unsafe_hash", False))),
+            ("frozen", emit_bool(dataclass_params.get("frozen", False))),
+            ("match_args", emit_bool(dataclass_params.get("match_args", True))),
+            ("kw_only", emit_bool(dataclass_params.get("kw_only", False))),
+            ("slots", emit_bool(dataclass_params.get("slots", False))),
+            ("weakref_slot", emit_bool(dataclass_params.get("weakref_slot", False))),
+        ]
+        helper_val = self._emit_module_attr_get_on("dataclasses", "dataclass")
+        callargs = MoltValue(self.next_var(), type_hint="callargs")
+        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+        # Single positional argument: the class itself.
+        self.emit(
+            MoltOp(
+                kind="CALLARGS_PUSH_POS",
+                args=[callargs, class_val],
+                result=MoltValue("none"),
+            )
+        )
+        # Keyword-only options matching CPython's dataclass signature.
+        for kw_name, kw_val in kw_specs:
+            key_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_PUSH_KW",
+                    args=[callargs, key_val, kw_val],
+                    result=MoltValue("none"),
+                )
+            )
+        # ``dataclass`` always returns the (possibly rebuilt) class object.
+        # Capture and rebind so that ``slots=True`` — which produces a brand-new
+        # class via ``_add_slots`` — and any future rebuild paths replace the
+        # original binding.  For the non-slots path the function mutates and
+        # returns the same object, so the rebind is a no-op.
+        applied_cls = MoltValue(self.next_var(), type_hint="type")
+        self.emit(
+            MoltOp(
+                kind="CALL_BIND",
+                args=[helper_val, callargs],
+                result=applied_cls,
+            )
+        )
+        self._publish_class_value(node.name, applied_cls)
+        return applied_cls
+
     def _property_field_from_method(self, node: ast.FunctionDef) -> str | None:
         if len(node.body) != 1:
             return None
@@ -646,6 +778,17 @@ class ClassDefVisitorMixin(_MixinBase):
                 dynamic_build = True
             if base_info and "__mro_entries__" in base_info.get("methods", {}):
                 dynamic_build = True
+        # A class body that contains anything beyond straight-line attribute
+        # bindings / method-and-nested-class definitions (i.e. control flow —
+        # for/if/while/try/with/match — or ``del``, or any augmented/looped
+        # rebind of a class-scope name) must execute as a NORMAL BLOCK whose
+        # mutable namespace is a real dict (CPython's class-body code object over
+        # ``f_locals``).  Forcing ``dynamic_build`` gives that body a heap-backed
+        # namespace mapping which is the loop-carried-correct store for its
+        # names; the straight-line static fast path is untouched.  (P0 #50.)
+        body_needs_block = self._class_body_needs_block_exec(node.body)
+        if body_needs_block:
+            dynamic_build = True
         if not has_explicit_bases:
             base_names = ["object"]
 
@@ -1587,6 +1730,32 @@ class ClassDefVisitorMixin(_MixinBase):
                     if (inline_return is not None or inline_init_assigns is not None)
                     else None
                 ),
+                # Module that defines this method, captured now (while compiling
+                # the owner class) so the inline site can compare it against the
+                # caller's module.  `inline_free_names` records the body's bare
+                # references to that module's globals; a non-empty set forbids a
+                # cross-module inline (the global would mis-resolve in the
+                # caller's scope).  __init__-style inline-assign bodies carry the
+                # same gate via the union over every assigned value-expression.
+                "inline_owner_module": (
+                    self.module_name
+                    if (inline_return is not None or inline_init_assigns is not None)
+                    else None
+                ),
+                "inline_free_names": (
+                    self._inline_body_external_names(inline_return, params)
+                    if inline_return is not None
+                    else (
+                        frozenset().union(
+                            *(
+                                self._inline_body_external_names(value_expr, params)
+                                for _attr, value_expr in inline_init_assigns
+                            )
+                        )
+                        if inline_init_assigns
+                        else frozenset()
+                    )
+                ),
                 "inline_init_assigns": inline_init_assigns,
             }
 
@@ -2511,6 +2680,43 @@ class ClassDefVisitorMixin(_MixinBase):
         saved_locals = self.locals
         self.locals = dict(class_scope)
         self._class_body_depth += 1
+        # Block-execution scope for the class body (P0 #50).  ``_store_local_value``
+        # / ``_load_local_value`` / ``_emit_delete_name`` consult the top of
+        # ``self._class_ns_stack`` so a class-scope name binds into / reads from
+        # the namespace mapping (when ``dynamic_namespace`` exists) instead of the
+        # enclosing function frame.  ``attr_values`` is shared with
+        # ``class_attr_values`` (the build path's view); ``names`` is seeded with
+        # the names already bound (methods + any class attrs harvested above) so
+        # in-body loads of those resolve to the class namespace, while an unbound
+        # Name still falls through to global/builtin resolution (CPython
+        # LOAD_NAME).  The straight-line arms below ALSO bind through
+        # ``_class_ns_store`` (via ``bind_class_name``) so there is exactly one
+        # code path that publishes a class-body name.
+        class_ns_scope = _ClassNsScope(
+            ns=dynamic_namespace,
+            attr_values=class_attr_values,
+            names=set(class_attr_values) | set(methods),
+        )
+        def bind_class_name(name: str, value: MoltValue) -> None:
+            # Single source of truth for "this straight-line arm bound a
+            # class-body attribute": update the SSA fast-path view, mirror into
+            # the namespace dict (when present), and keep the enclosing-frame
+            # ``self.locals`` cache coherent for the rare in-body load that
+            # predates control flow.
+            self._class_ns_store(class_ns_scope, name, value)
+            self.locals[name] = value
+
+        # The class-ns scope is pushed onto the stack ONLY for bodies that need
+        # block execution (control flow / ``del``).  A straight-line body keeps
+        # the original fast path: its name binds go through ``bind_class_name``
+        # (which updates ``class_attr_values`` / ``self.locals`` and, for a
+        # dynamic class, the namespace dict) but the ``_store_local_value`` /
+        # ``_load_local_value`` / ``_emit_delete_name`` hooks stay INERT (an
+        # empty stack), so emission of field defaults, method defaults, and the
+        # compile-time dataclass path is byte-for-byte unchanged.  (P0 #50.)
+        _push_scope = body_needs_block
+        if _push_scope:
+            self._class_ns_stack.append(class_ns_scope)
         try:
             for item in node.body:
                 if isinstance(item, ast.ClassDef):
@@ -2530,19 +2736,7 @@ class ClassDefVisitorMixin(_MixinBase):
                             "Nested class lowering produced no bound value for "
                             f"'{item.name}'"
                         )
-                    class_attr_values[item.name] = nested_val
-                    if dynamic_namespace is not None:
-                        key_val = MoltValue(self.next_var(), type_hint="str")
-                        self.emit(
-                            MoltOp(kind="CONST_STR", args=[item.name], result=key_val)
-                        )
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_INDEX",
-                                args=[dynamic_namespace, key_val, nested_val],
-                                result=MoltValue("none"),
-                            )
-                        )
+                    bind_class_name(item.name, nested_val)
                     continue
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     _, _, kwonly, _, _ = self._split_function_args(item.args)
@@ -2602,6 +2796,13 @@ class ClassDefVisitorMixin(_MixinBase):
                         )
                         class_scope[item.name] = res
                         self.locals[item.name] = res
+                        # A method/descriptor name is a class-body binding too:
+                        # register it so in-body loads (e.g. a later
+                        # ``@name.setter``) resolve via the class namespace
+                        # (P0 #50).  Methods publish into the build via
+                        # ``methods``/``class_attr_values`` below, not via
+                        # ``_class_ns_store``, so only the name set is updated.
+                        class_ns_scope.names.add(item.name)
                         # Keep the canonical method binding in sync so later
                         # class finalization does not overwrite descriptor
                         # updates (e.g. @name.setter / @name.deleter) with the
@@ -2779,6 +2980,10 @@ class ClassDefVisitorMixin(_MixinBase):
                         method_info["attr"] = method_attr
                         class_scope[item.name] = method_attr
                         self.locals[item.name] = method_attr
+                        # Register the method name as a class-body binding so an
+                        # in-body load resolves through the class namespace
+                        # (P0 #50); the build consumes ``methods`` directly.
+                        class_ns_scope.names.add(item.name)
                         if dynamic_namespace is not None:
                             key_val = MoltValue(self.next_var(), type_hint="str")
                             self.emit(
@@ -2806,30 +3011,15 @@ class ClassDefVisitorMixin(_MixinBase):
                     if self.visit(item.value) is None:
                         raise NotImplementedError("Unsupported class body expression")
                     continue
-                if isinstance(item, ast.Assign):
+                if isinstance(item, ast.Assign) and all(
+                    isinstance(t, ast.Name) for t in item.targets
+                ):
                     val = self.visit(item.value)
                     if val is None:
                         raise NotImplementedError("Unsupported class body assignment")
                     for target in item.targets:
-                        if isinstance(target, ast.Name):
-                            class_attr_values[target.id] = val
-                            self.locals[target.id] = val
-                            if dynamic_namespace is not None:
-                                key_val = MoltValue(self.next_var(), type_hint="str")
-                                self.emit(
-                                    MoltOp(
-                                        kind="CONST_STR",
-                                        args=[target.id],
-                                        result=key_val,
-                                    )
-                                )
-                                self.emit(
-                                    MoltOp(
-                                        kind="STORE_INDEX",
-                                        args=[dynamic_namespace, key_val, val],
-                                        result=MoltValue("none"),
-                                    )
-                                )
+                        assert isinstance(target, ast.Name)
+                        bind_class_name(target.id, val)
                     continue
                 if isinstance(item, ast.AnnAssign) and isinstance(
                     item.target, ast.Name
@@ -2851,25 +3041,27 @@ class ClassDefVisitorMixin(_MixinBase):
                     val = self.visit(item.value)
                     if val is None:
                         raise NotImplementedError("Unsupported class body assignment")
-                    class_attr_values[item.target.id] = val
-                    self.locals[item.target.id] = val
-                    if dynamic_namespace is not None:
-                        key_val = MoltValue(self.next_var(), type_hint="str")
-                        self.emit(
-                            MoltOp(
-                                kind="CONST_STR", args=[item.target.id], result=key_val
-                            )
-                        )
-                        self.emit(
-                            MoltOp(
-                                kind="STORE_INDEX",
-                                args=[dynamic_namespace, key_val, val],
-                                result=MoltValue("none"),
-                            )
-                        )
+                    bind_class_name(item.target.id, val)
+                    continue
+                if isinstance(item, ast.Pass):
+                    continue
+                # Any remaining class-body statement — control flow
+                # (for/if/while/try/with/match), ``del``, augmented assignment,
+                # tuple-unpack assignment, import, etc. — is lowered as an
+                # ORDINARY statement over the class namespace (P0 #50).  Because
+                # ``self._class_ns_stack`` is active, every name STORE/LOAD/DELETE
+                # inside ``self.visit(item)`` funnels through ``_store_local_value``
+                # / ``_load_local_value`` / ``_emit_delete_name`` and routes to the
+                # class namespace mapping, so the statement "just works" exactly as
+                # CPython executes the class-body code object.  ``body_needs_block``
+                # guaranteed a real ``dynamic_namespace`` exists for these.
+                self.visit(item)
         finally:
             self._class_body_depth -= 1
             self.locals = saved_locals
+            if _push_scope:
+                popped_scope = self._class_ns_stack.pop()
+                assert popped_scope is class_ns_scope, "class-ns scope stack imbalance"
 
         # __static_attributes__ (CPython 3.13+) — always emitted after class
         # body, even when empty.  Appears after methods in namespace event order.
@@ -3262,85 +3454,16 @@ class ClassDefVisitorMixin(_MixinBase):
                 )
             )
             self._publish_class_value(node.name, class_val)
-            if class_info.get("dataclass"):
-                dataclass_params = class_info.get("dataclass_params", {})
-
-                def emit_bool(value: bool) -> MoltValue:
-                    res = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="CONST_BOOL", args=[value], result=res))
-                    return res
-
-                # Route the compile-time-recognized ``@dataclass`` path
-                # through the public ``dataclasses.dataclass`` wrapper rather
-                # than the internal ``_molt_apply_dataclass`` worker.  The
-                # wrapper performs the same work but its calling convention
-                # — single positional ``cls`` plus keyword-only options —
-                # matches the natural Python semantics, avoiding an
-                # 11-argument positional-only call into the worker that
-                # exposed an SSA/dominator interaction during module init
-                # (frontend bypass would intermittently corrupt the class
-                # binding before module attribute publication).
-                init_val = emit_bool(dataclass_params.get("init", True))
-                repr_val = emit_bool(dataclass_params.get("repr", True))
-                eq_val = emit_bool(dataclass_params.get("eq", True))
-                order_val = emit_bool(dataclass_params.get("order", False))
-                unsafe_hash_val = emit_bool(dataclass_params.get("unsafe_hash", False))
-                frozen_val = emit_bool(dataclass_params.get("frozen", False))
-                match_args_val = emit_bool(dataclass_params.get("match_args", True))
-                kw_only_val = emit_bool(dataclass_params.get("kw_only", False))
-                slots_val = emit_bool(dataclass_params.get("slots", False))
-                weakref_slot_val = emit_bool(
-                    dataclass_params.get("weakref_slot", False)
-                )
-                helper_val = self._emit_module_attr_get_on("dataclasses", "dataclass")
-                callargs = MoltValue(self.next_var(), type_hint="callargs")
-                self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
-                # Single positional argument: the class itself.
-                self.emit(
-                    MoltOp(
-                        kind="CALLARGS_PUSH_POS",
-                        args=[callargs, class_val],
-                        result=MoltValue("none"),
-                    )
-                )
-                # Keyword-only options matching CPython's dataclass signature.
-                for kw_name, kw_val in [
-                    ("init", init_val),
-                    ("repr", repr_val),
-                    ("eq", eq_val),
-                    ("order", order_val),
-                    ("unsafe_hash", unsafe_hash_val),
-                    ("frozen", frozen_val),
-                    ("match_args", match_args_val),
-                    ("kw_only", kw_only_val),
-                    ("slots", slots_val),
-                    ("weakref_slot", weakref_slot_val),
-                ]:
-                    key_val = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[kw_name], result=key_val))
-                    self.emit(
-                        MoltOp(
-                            kind="CALLARGS_PUSH_KW",
-                            args=[callargs, key_val, kw_val],
-                            result=MoltValue("none"),
-                        )
-                    )
-                # ``dataclass`` always returns the (possibly rebuilt) class
-                # object.  Capture and rebind so that ``slots=True`` — which
-                # produces a brand-new class via ``_add_slots`` — and any
-                # future rebuild paths replace the original binding.  For
-                # the non-slots path the function mutates and returns the
-                # same object, so the rebind is a no-op.
-                applied_cls = MoltValue(self.next_var(), type_hint="type")
-                self.emit(
-                    MoltOp(
-                        kind="CALL_BIND",
-                        args=[helper_val, callargs],
-                        result=applied_cls,
-                    )
-                )
-                self._publish_class_value(node.name, applied_cls)
-                class_val = applied_cls
+            # ``@dataclass`` runtime application is construction-method-agnostic:
+            # it operates on the finished ``class_val`` via ``setattr`` /
+            # ``cls.x = ...`` and reads ``cls.__annotations__`` (published into the
+            # namespace at compile time).  Apply it here for the static-outlined
+            # path; the ``dynamic_build`` branch below applies the SAME helper, so
+            # a dataclass whose body needs block execution (P0 #50) still gets its
+            # generated dunders.
+            class_val = self._emit_dataclass_application(
+                node, class_info, class_val
+            )
         else:
             # Dynamic path
             self._publish_class_value(node.name, class_val)
@@ -3422,6 +3545,17 @@ class ClassDefVisitorMixin(_MixinBase):
                     args=[class_val, layout_val],
                     result=MoltValue("none"),
                 )
+            )
+            # ``@dataclass`` runtime application on the dynamic-build path (P0
+            # #50).  A dataclass whose body needs block execution (control flow /
+            # ``del`` / non-Name assign target) is routed through ``dynamic_build``
+            # and built via the metaclass call; the dataclass transform — which
+            # installs ``__init__`` / ``__repr__`` / ``__eq__`` / ``__hash__`` /
+            # frozen guards onto the finished class — must still run.  This is the
+            # SAME helper the static-outlined path calls: one code path publishes
+            # the dataclass transform regardless of how the class object was built.
+            class_val = self._emit_dataclass_application(
+                node, class_info, class_val
             )
         # Fill the ``__class__`` cell threaded into method closures with the
         # freshly built class object.  The ``dynamic_build`` (metaclass) path
@@ -3623,6 +3757,44 @@ class ClassDefVisitorMixin(_MixinBase):
                 return False
         return True
 
+    def _inline_body_external_names(
+        self, expr: "ast.expr", params: list[str]
+    ) -> "frozenset[str]":
+        """Collect the bare ``Name`` *loads* in an inline-body expression that
+        are neither substituted parameters nor builtins.
+
+        At inline time the body is spliced into the caller's scope and the
+        parameters are substituted (``self.locals = {param: arg_value}``).  A
+        bare ``Name`` that is NOT a parameter falls through ``visit_Name`` to
+        ``_emit_global_get`` and resolves against the **caller's** module
+        globals — which is only correct when the call site is compiled in the
+        method's *defining* module.  A reference to the defining module's own
+        global (a module-level constant, a sibling function, an intrinsic
+        binding such as ``_MOLT_ARRAY_TOLIST``) therefore silently mis-resolves
+        across a module boundary, yielding a ``NameError`` at runtime.
+
+        Builtins (``len``, ``super``, exception/type names, …) are excluded
+        because ``visit_Name`` materialises them statically and identically in
+        every scope, so they remain sound under cross-module splicing.
+
+        The returned set drives ``_try_inline_method_call``'s cross-module
+        refusal (the fail-closed soundness gate).
+        """
+        param_set = set(params)
+        external: set[str] = set()
+        for node in ast.walk(expr):
+            if not isinstance(node, ast.Name):
+                continue
+            if not isinstance(node.ctx, ast.Load):
+                continue
+            name = node.id
+            if name in param_set:
+                continue
+            if self._name_resolves_to_builtin(name):
+                continue
+            external.add(name)
+        return frozenset(external)
+
     def _extract_inline_return(
         self, item: "ast.FunctionDef", params: list[str]
     ) -> "ast.expr | None":
@@ -3630,12 +3802,15 @@ class ClassDefVisitorMixin(_MixinBase):
         trivially inlinable: body is a single Return statement (an
         optional leading docstring is allowed), the returned expression
         references only parameters, attributes-on-parameters,
-        constants, and pure operations (BinOp, UnaryOp, Compare,
-        BoolOp, IfExp, Tuple/List of inlinable elements).
+        constants, builtins, and pure operations (BinOp, UnaryOp,
+        Compare, BoolOp, IfExp, Tuple/List of inlinable elements), plus
+        nested Calls thereof.
 
-        No Calls, no Subscripts, no global references, no name
-        rebinding — those would require the full visitor with proper
-        scope handling and break the substitution model.
+        The returned expression MAY reference globals of the *defining*
+        module (e.g. ``_MOLT_ARRAY_TOLIST(self._handle)``); such bodies
+        are still inline-eligible but ``_try_inline_method_call`` refuses
+        to splice them across a module boundary (where the global would
+        mis-resolve).  See ``_inline_body_external_names``.
         """
         body = item.body
         # Skip docstring if present.

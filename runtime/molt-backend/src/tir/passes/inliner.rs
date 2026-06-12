@@ -86,6 +86,7 @@ use super::super::target_info::TargetInfo;
 use super::super::types::TirType;
 use super::super::values::{TirValue, ValueId};
 use super::ip_summary::ModuleSummaries;
+use super::super::call_facts::{InlineEligibility, InlineWhyNot};
 
 /// Statistics from one [`run_inliner`] invocation over a module.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -230,68 +231,171 @@ pub fn is_inlineable(
     summaries: &ModuleSummaries,
     tti: &TargetInfo,
 ) -> bool {
+    // The bool is exactly the eligibility verdict: `is_inlineable` is the
+    // single-point reduction of [`classify_inline_eligibility`] (which carries the
+    // typed why-not reason the CallFacts side-table records). Reducing here — not
+    // duplicating the gates — means the inliner and the CallFacts table can never
+    // disagree (doc 47 §7, single source of truth).
+    classify_inline_eligibility(callee, call_graph, summaries, tti).is_eligible()
+}
+
+/// Whether `callee` may be inlined, and if not, **why** — the typed
+/// [`InlineEligibility`] the [`CallFacts`](crate::tir::call_facts) side-table
+/// records on each static-direct call site. The single source of truth from which
+/// [`is_inlineable`]'s bool is derived (`is_inlineable ==
+/// classify_inline_eligibility(...).is_eligible()`).
+///
+/// Gate-evaluation order (the first failing gate is the reported reason, so the
+/// reason is deterministic): the [`inline_safety_gate`] correctness gates
+/// (recursion → handlers → generator → entry-predecessor → closure) first, then
+/// the cost-model op-count budget ([`InlineWhyNot::OverBudget`]). This matches the
+/// short-circuit order of the prior `is_inline_safe && within_budget` predicate
+/// exactly, so the bool is byte-identical at every call site.
+pub fn classify_inline_eligibility(
+    callee: &TirFunction,
+    call_graph: &CallGraph,
+    summaries: &ModuleSummaries,
+    tti: &TargetInfo,
+) -> InlineEligibility {
+    if let Some(reason) = inline_safety_gate(callee, call_graph) {
+        return InlineEligibility::WhyNot(reason);
+    }
+    if callee_op_count(callee, summaries) > tti.inline_budget(&callee.name) {
+        return InlineEligibility::WhyNot(InlineWhyNot::OverBudget);
+    }
+    InlineEligibility::Eligible
+}
+
+/// The callee's op count — the same metric [`ModuleSummaries`] records, with a
+/// direct fallback for callees without a summary.
+fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries) -> usize {
+    summaries
+        .get(&callee.name)
+        .map(|s| s.op_count)
+        .unwrap_or_else(|| callee.blocks.values().map(|b| b.ops.len()).sum())
+}
+
+/// The first failing **correctness** (safety) gate for inlining `callee`, or
+/// `None` if every safety gate passes. This is the single source of truth for the
+/// safety verdict, shared by [`is_inline_safe`] (the bool the split-field driver
+/// uses) and [`classify_inline_eligibility`] (the typed reason). It deliberately
+/// EXCLUDES the cost-model budget — that is [`InlineWhyNot::OverBudget`], applied
+/// only by [`classify_inline_eligibility`].
+///
+/// Gate order is the prior `is_inline_safe` order verbatim:
+/// 1. **recursive** — a member of the call graph's recursive set (cycle, self-edge,
+///    or opaque-call function). Inlining is unbounded.
+/// 2. **exception HANDLER region** — [`TirFunction::has_exception_handlers`]
+///    (`try`/`except` or generator/async state regions); the splice does not remap
+///    handler labels. Observation-only callees (`CheckException`, no handler) are
+///    NOT excluded.
+/// 3. **generator / async** — a state-machine opcode ([`is_generator_or_async_op`]).
+/// 4. **entry block has predecessors** — the direct param→argument binding splice
+///    clones the entry as an argument-less block, valid only when no branch targets
+///    the entry.
+/// 5. **closure** — the first param is the implicit captured-env param
+///    ([`is_closure`]); the direct param→operand splice would miscompile it.
+fn inline_safety_gate(callee: &TirFunction, call_graph: &CallGraph) -> Option<InlineWhyNot> {
     if call_graph.recursive_set().contains(&callee.name) {
-        return false;
+        return Some(InlineWhyNot::Recursive);
     }
     if callee.has_exception_handlers() {
-        // Real exception HANDLER regions (try/except via TryStart/TryEnd, or a
-        // generator/async StateBlock region): splicing across a handler boundary
-        // needs handler-label remapping + handler-edge re-targeting this arc does
-        // not perform. Conservative-correct exclusion.
-        //
-        // Observation-only callees (CheckException with NO handler — the common
-        // case after the universal exception-observation change) ARE inlinable:
-        // their CheckException ops merely propagate a pending exception to the
-        // function exit, and the splice routes every callee exit (normal Return
-        // AND exception-exit Return) through the caller's post-call CheckException
-        // (`B_cont`'s first op), re-observing the pending flag exactly as the
-        // un-inlined call/return/check sequence did. The clone remaps the callee's
-        // per-function exception labels to fresh ids so they cannot collide with
-        // the caller's label namespace (see `clone_function_body_with_fresh_ids`).
-        return false;
+        return Some(InlineWhyNot::HasHandlers);
     }
-    // Defensive re-scan: never inline a body that carries a state-machine op
-    // even if `has_exception_handlers` did not catch it (e.g. a bare `Yield`
-    // without a StateBlock). Cheap and fail-closed.
     if callee
         .blocks
         .values()
         .any(|b| b.ops.iter().any(|op| is_generator_or_async_op(op.opcode)))
     {
-        return false;
+        return Some(InlineWhyNot::Generator);
     }
     if entry_block_has_predecessor(callee) {
-        return false;
+        return Some(InlineWhyNot::EntryHasPredecessor);
     }
     if is_closure(callee) {
-        // A closure carries its captured environment as an implicit FIRST
-        // parameter (`__molt_closure__`, prepended by the frontend; see
-        // `crate::MOLT_CLOSURE_PARAM_NAME`). The direct param->operand splice in
-        // `splice_call_site` binds parameters 1:1 to the `Call`'s operands, and
-        // a `Call`'s operands are `[callee_function_value, args...]` — so it would
-        // bind the env-param to the LEADING FUNCTION-VALUE operand instead of the
-        // captured environment. The inlined body's `__molt_closure__[i]` then
-        // subscripts the function object ('function' object is not subscriptable).
-        //
-        // The arity guard (callee param count == operand count) does NOT catch
-        // this: a non-closure callee has N params while the `Call` carries N+1
-        // operands (mismatch -> refused), but a closure adds exactly one param,
-        // re-balancing the counts so the guard passes (false match). The only
-        // correct handling threads the real env — extract it from the function
-        // value's closure bits and bind THAT to param[0] — which is a separate
-        // perf arc (see the module-level "Optional follow-up"). Until then this is
-        // a conservative-correct exclusion: refusing to inline is always sound;
-        // inlining wrongly is a silent miscompile.
-        return false;
+        return Some(InlineWhyNot::Closure);
     }
-    let op_count = summaries
-        .get(&callee.name)
-        .map(|s| s.op_count)
-        .unwrap_or_else(|| callee.blocks.values().map(|b| b.ops.len()).sum());
-    if op_count > tti.inline_budget(&callee.name) {
-        return false;
+    None
+}
+
+/// Whether `callee` is SAFE to inline — every correctness gate of
+/// [`is_inlineable`] EXCEPT the cost-model op-count budget. Used by the driver to
+/// admit a callee that is over-budget but whose inlining UNLOCKS a structural
+/// optimization the budget alone cannot see (the split-field deforestation: a
+/// caller passes a non-escaping `string_split_field` result into `callee`, so
+/// inlining turns the callee's `len(field)`/`ord(field[i])` consumers into
+/// bounds-once reads that never materialize the field — see
+/// [`split_field_enabled_callees`]). Admitting an over-budget callee here is
+/// sound for exactly the same reason every other inline is: the splice is
+/// SSA/refcount/loop-metadata preserving regardless of size.
+///
+/// Delegates to [`inline_safety_gate`] (the single source of truth for the safety
+/// verdict) so it can never drift from the typed reason
+/// [`classify_inline_eligibility`] reports.
+fn is_inline_safe(callee: &TirFunction, call_graph: &CallGraph) -> bool {
+    inline_safety_gate(callee, call_graph).is_none()
+}
+
+/// True if `op` is the `string_split_field` field-access (a `Copy`-passthrough
+/// carrying `_original_kind = "string_split_field"`). Its single result is the
+/// materialized field — the value whose materialization the deforestation
+/// eliminates when every consumer is bounds-expressible.
+fn is_string_split_field_op(op: &TirOp) -> bool {
+    op.opcode == OpCode::Copy
+        && matches!(
+            op.attrs.get("_original_kind"),
+            Some(AttrValue::Str(k)) if k == "string_split_field"
+        )
+}
+
+/// The set of module-defined callee names that have at least one direct `Call`
+/// site (in any caller) receiving a `string_split_field` result as an argument.
+///
+/// Inlining such a callee unlocks the split-field deforestation: once the
+/// callee body is spliced in, its `len(field)` / `ord(field[i])` consumers read
+/// the field that the caller produced, and the SimpleIR deforestation pass
+/// rewrites them to bounds-once reads (`molt_string_split_field_*`) so the field
+/// never materializes. This is the TARGETED enabling signal the baton specifies
+/// — strictly narrower (and icache-cheaper) than a global budget bump, which was
+/// measured NOT to help and to regress code size. A callee is admitted only if
+/// it is ALSO [`is_inline_safe`]; the splice itself is unconditionally sound.
+fn split_field_enabled_callees(module: &TirModule, defined: &[String]) -> HashSet<String> {
+    let defined_set: HashSet<&str> = defined.iter().map(String::as_str).collect();
+    let mut enabled: HashSet<String> = HashSet::new();
+    for caller in &module.functions {
+        // ValueIds produced by a `string_split_field` op in THIS caller.
+        let mut field_values: HashSet<ValueId> = HashSet::new();
+        for block in caller.blocks.values() {
+            for op in &block.ops {
+                if is_string_split_field_op(op) {
+                    field_values.extend(op.results.iter().copied());
+                }
+            }
+        }
+        if field_values.is_empty() {
+            continue;
+        }
+        for block in caller.blocks.values() {
+            for op in &block.ops {
+                if op.opcode != OpCode::Call {
+                    continue;
+                }
+                let Some(AttrValue::Str(callee_name)) = op.attrs.get("s_value") else {
+                    continue;
+                };
+                if !defined_set.contains(callee_name.as_str()) {
+                    continue;
+                }
+                // Operands are `[args...]` for a resolved `Call` (the static
+                // target rides `s_value`, not operand 0); any operand that is a
+                // split-field result enables the callee.
+                if op.operands.iter().any(|v| field_values.contains(v)) {
+                    enabled.insert(callee_name.clone());
+                }
+            }
+        }
     }
-    true
+    enabled
 }
 
 /// True if any block's terminator branches to `callee`'s entry block. The direct
@@ -1174,6 +1278,12 @@ pub fn run_inliner(
     // the bottom-up contract (callees finalized before callers; a callee is not
     // re-inlined into after being snapshotted because the sweep visits each SCC
     // once).
+    // Callees that an in-budget inline misses but whose inlining unlocks the
+    // split-field deforestation (a caller hands them a non-escaping
+    // `string_split_field` result). These are admitted on the safety gate alone
+    // (over-budget but sound) — the targeted enabling the baton specifies.
+    let split_enabled = split_field_enabled_callees(module, &defined);
+
     let inlinable_bodies: HashMap<String, TirFunction> = module
         .functions
         .iter()
@@ -1184,7 +1294,10 @@ pub fn run_inliner(
         // unsound (it drops the external reference and forks the definition).
         // Refused unconditionally — the `Call` survives as an external reference.
         .filter(|f| !non_inlinable.contains(&f.name))
-        .filter(|f| is_inlineable(f, call_graph, summaries, tti))
+        .filter(|f| {
+            is_inlineable(f, call_graph, summaries, tti)
+                || (split_enabled.contains(&f.name) && is_inline_safe(f, call_graph))
+        })
         .map(|f| (f.name.clone(), f.clone()))
         .collect();
 

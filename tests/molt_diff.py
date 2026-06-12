@@ -28,13 +28,14 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-_SRC_ROOT = _REPO_ROOT / "src"
-if str(_SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SRC_ROOT))
 
-from tools.batch_compile_client import BatchCompileServerClient
-from tools import harness_memory_guard, memory_guard, process_sentinel, resource_pressure
-from molt import backend_daemon_custody as daemon_custody
+from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402  (must follow the sys.path self-bootstrap above)
+from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap above)
+    harness_memory_guard,
+    memory_guard,
+    process_sentinel,
+    resource_pressure,
+)
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
 _DIFF_RUN_LOCK_HANDLE: io.TextIOWrapper | None = None
@@ -835,17 +836,10 @@ def _pid_rss_age(pid: int) -> tuple[int | None, int | None]:
     return rss, age
 
 
-@dataclass(frozen=True)
-class _BackendDaemonProcess:
-    pid: int
-    socket_path: Path
-    command: str
-
-
-def _list_backend_daemon_processes() -> list[_BackendDaemonProcess]:
-    processes: list[_BackendDaemonProcess] = []
+def _list_backend_daemon_processes() -> dict[Path, list[int]]:
+    groups: dict[Path, list[int]] = {}
     if os.name != "posix":
-        return processes
+        return groups
     try:
         result = subprocess.run(
             ["ps", "-axo", "pid=,command="],
@@ -855,7 +849,7 @@ def _list_backend_daemon_processes() -> list[_BackendDaemonProcess]:
             timeout=2.0,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return processes
+        return groups
     pattern = re.compile(r"^\s*(\d+)\s+(.*)$")
     socket_pat = re.compile(r"--socket\s+(\S+)")
     for line in result.stdout.splitlines():
@@ -870,14 +864,8 @@ def _list_backend_daemon_processes() -> list[_BackendDaemonProcess]:
         if socket_match is None:
             continue
         socket_path = Path(socket_match.group(1)).expanduser()
-        processes.append(
-            _BackendDaemonProcess(
-                pid=pid,
-                socket_path=socket_path,
-                command=cmd,
-            )
-        )
-    return processes
+        groups.setdefault(socket_path, []).append(pid)
+    return groups
 
 
 def _list_orphan_diff_workers() -> list[int]:
@@ -1023,48 +1011,6 @@ def _prune_orphan_build_helpers() -> None:
     print(f"[INFO] Pruned {len(pids)} orphan build helper process(es)")
 
 
-def _current_session_backend_daemon_identity_records() -> dict[
-    int, daemon_custody.BackendDaemonIdentityRecord
-]:
-    session_id = os.environ.get("MOLT_SESSION_ID", "").strip()
-    if not session_id:
-        return {}
-    daemon_root = _diff_backend_daemon_root()
-    return {
-        record.identity.pid: record
-        for record in daemon_custody.iter_backend_daemon_identity_records(
-            daemon_root,
-            session_id=session_id,
-        )
-    }
-
-
-def _backend_daemon_process_command_from_snapshot(
-    processes_by_pid: dict[int, _BackendDaemonProcess],
-):
-    def process_command(pid: int) -> str | None:
-        process = processes_by_pid.get(pid)
-        return process.command if process is not None else None
-
-    return process_command
-
-
-def _terminate_verified_backend_daemon(
-    record: daemon_custody.BackendDaemonIdentityRecord,
-    *,
-    processes_by_pid: dict[int, _BackendDaemonProcess],
-    grace: float = 0.75,
-) -> bool:
-    return daemon_custody.terminate_backend_daemon_identity(
-        record.identity,
-        grace=grace,
-        process_command=_backend_daemon_process_command_from_snapshot(
-            processes_by_pid
-        ),
-        pid_alive=_pid_alive,
-    )
-
-
 def _prune_backend_daemons() -> None:
     if os.name != "posix":
         return
@@ -1072,82 +1018,69 @@ def _prune_backend_daemons() -> None:
     unresponsive_stale_sec = max(
         60, _parse_int_env("MOLT_DIFF_DAEMON_STALE_SEC", 10 * 60)
     )
-    processes = _list_backend_daemon_processes()
-    processes_by_pid = {process.pid: process for process in processes}
-    process_command = _backend_daemon_process_command_from_snapshot(processes_by_pid)
-    identity_records = _current_session_backend_daemon_identity_records()
-    verified_records: list[daemon_custody.BackendDaemonIdentityRecord] = []
-    for pid, record in identity_records.items():
-        if pid not in processes_by_pid:
+    groups = _list_backend_daemon_processes()
+    for socket_path, pids in groups.items():
+        live = sorted({pid for pid in pids if _pid_alive(pid)})
+        if not live:
             continue
-        if not daemon_custody.backend_daemon_identity_is_verified(
-            record.identity,
-            allow_health_probe=False,
-            process_command=process_command,
-            pid_alive=_pid_alive,
-        ):
-            continue
-        verified_records.append(record)
-
-    live_by_pid = {record.identity.pid: record for record in verified_records}
-    if max_rss_kb > 0:
-        for record in list(verified_records):
-            pid = record.identity.pid
-            rss_kb, _age_sec = _pid_rss_age(pid)
-            if rss_kb is None or rss_kb <= max_rss_kb:
+        if max_rss_kb > 0:
+            filtered: list[int] = []
+            for pid in live:
+                rss_kb, _age_sec = _pid_rss_age(pid)
+                if rss_kb is not None and rss_kb > max_rss_kb:
+                    _kill_pid(pid)
+                    print(
+                        "[INFO] Pruned backend daemon pid="
+                        f"{pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
+                    )
+                    continue
+                filtered.append(pid)
+            live = sorted({pid for pid in filtered if _pid_alive(pid)})
+            if not live:
                 continue
-            if _terminate_verified_backend_daemon(
-                record,
-                processes_by_pid=processes_by_pid,
-            ):
-                live_by_pid.pop(pid, None)
-                print(
-                    "[INFO] Pruned verified backend daemon pid="
-                    f"{pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
-                )
-
-    groups: dict[Path, list[daemon_custody.BackendDaemonIdentityRecord]] = {}
-    for record in live_by_pid.values():
-        groups.setdefault(record.identity.socket_path, []).append(record)
-
-    for socket_path, records in groups.items():
-        live_records = sorted(records, key=lambda record: record.identity.pid)
-        if not live_records:
-            continue
         if not socket_path.exists():
-            for record in live_records:
-                _terminate_verified_backend_daemon(
-                    record,
-                    processes_by_pid=processes_by_pid,
-                )
+            for pid in live:
+                _kill_pid(pid)
             continue
-        if len(live_records) > 1:
-            # Keep the newest pid; terminate verified duplicate daemons only.
-            for record in live_records[:-1]:
-                if _terminate_verified_backend_daemon(
-                    record,
-                    processes_by_pid=processes_by_pid,
-                ):
-                    live_by_pid.pop(record.identity.pid, None)
-            live_records = live_records[-1:]
+        if len(live) > 1:
+            # Keep the newest pid; terminate duplicate daemons bound to the same socket.
+            for pid in live[:-1]:
+                _kill_pid(pid)
+            live = live[-1:]
         ping_ok = _daemon_ping(socket_path)
         if not ping_ok:
-            record = live_records[0]
-            _rss_kb, age_sec = _pid_rss_age(record.identity.pid)
+            pid = live[0]
+            _rss_kb, age_sec = _pid_rss_age(pid)
             if age_sec is not None and age_sec >= unresponsive_stale_sec:
-                if _terminate_verified_backend_daemon(
-                    record,
-                    processes_by_pid=processes_by_pid,
-                ):
-                    print(
-                        "[INFO] Pruned stale unresponsive verified backend daemon "
-                        f"pid={record.identity.pid} age={age_sec}s socket={socket_path}"
-                    )
+                _kill_pid(pid)
+                print(
+                    "[INFO] Pruned stale unresponsive backend daemon pid="
+                    f"{pid} age={age_sec}s socket={socket_path}"
+                )
 
     daemon_root = _diff_backend_daemon_root()
     if not daemon_root.exists():
         return
-    daemon_custody.remove_legacy_pid_files(daemon_root)
+    for pid_path in daemon_root.glob("*.pid"):
+        stem = pid_path.stem
+        socket_path = pid_path.with_name(f"{stem}.sock")
+        try:
+            raw = pid_path.read_text().strip()
+        except OSError:
+            continue
+        if not raw.isdigit():
+            with contextlib.suppress(OSError):
+                pid_path.unlink()
+            continue
+        pid = int(raw)
+        if not _pid_alive(pid):
+            with contextlib.suppress(OSError):
+                pid_path.unlink()
+            continue
+        if not socket_path.exists():
+            _kill_pid(pid)
+            with contextlib.suppress(OSError):
+                pid_path.unlink()
 
 
 def _prune_stale_build_locks() -> None:
@@ -2544,9 +2477,7 @@ def _record_memory_guard_sentinel_violation(
             "reason": reason,
             "message": _memory_guard_message(
                 rss_violation,
-                limit_gb=limits.max_process_rss_gb
-                if limit_gb is None
-                else limit_gb,
+                limit_gb=limits.max_process_rss_gb if limit_gb is None else limit_gb,
                 phase=phase,
             ),
             "violation": _memory_guard_record(rss_violation),
@@ -2616,9 +2547,7 @@ def _run_subprocess(
                 "event": "subprocess_guard_tripped",
                 "message": guard_message,
                 "command": cmd,
-                "violation": _memory_guard_record(
-                    getattr(result, "violation", None)
-                ),
+                "violation": _memory_guard_record(getattr(result, "violation", None)),
             }
         )
         stderr = f"{stderr}{guard_message}\n"

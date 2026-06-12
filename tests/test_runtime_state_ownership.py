@@ -75,9 +75,9 @@ def test_importlib_platform_static_names_are_runtime_owned() -> None:
     cache_text = (ROOT / "runtime/molt-runtime/src/state/cache.rs").read_text(
         encoding="utf-8"
     )
-    lifecycle_text = (
-        ROOT / "runtime/molt-runtime/src/state/lifecycle.rs"
-    ).read_text(encoding="utf-8")
+    lifecycle_text = (ROOT / "runtime/molt-runtime/src/state/lifecycle.rs").read_text(
+        encoding="utf-8"
+    )
     assert "struct RuntimeStaticNames" in cache_text
     assert "intern_runtime_static_name" in cache_text
     assert "clear_runtime_static_names" in lifecycle_text

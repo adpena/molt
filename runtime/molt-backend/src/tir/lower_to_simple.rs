@@ -569,24 +569,73 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         else {
             continue;
         };
-        let break_kind = func
-            .loop_break_kinds
-            .get(bid)
-            .copied()
-            .unwrap_or(LoopBreakKind::BreakIfFalse);
-        let (body_entry, exit_block, body_args, exit_args) = match break_kind {
-            LoopBreakKind::BreakIfFalse => (
+        // ── Body/exit polarity from the CFG, not the stale break-kind hint ──
+        // The native structured loop emits `loop_break_if_false`/`_true` whose
+        // polarity decides which cond successor is the loop BODY (continue) vs
+        // the EXIT (after_block). The pre-TIR `loop_break_kinds` map records the
+        // polarity of the ORIGINAL `loop_break_if_*` op, but molt double-roundtrips
+        // through TIR (per-function pipeline → SimpleIR → relift for the drop
+        // module phase → SimpleIR), and the SSA terminator builder + drop-phase
+        // critical-edge reshaping can change which side of `cond_block`'s
+        // `CondBranch` is the back-edge body vs the loop exit. Trusting the stale
+        // map then swaps body_entry/exit_block: the EXIT (a Return block) becomes
+        // `body_entry`, and the back-edge CONTINUE becomes `exit_block`. Native
+        // codegen's `loop_start` materializes an `after_block`, the swapped
+        // `loop_break_if_*` marks it reachable + jumps to it from the cleanup
+        // edge, but the matching `loop_end` (which would switch-to/fill it) is
+        // never emitted for the degenerate shape — leaving a reachable-but-empty
+        // block that Cranelift's `unreachable_code` pass rejects
+        // (`while True: …; if c: break` → `rc_sites_loop_break.py`; round-10).
+        //
+        // The ground truth is reducibility: the loop BODY is the cond successor
+        // from which the loop HEADER (`*bid`, the back-edge target) is reachable
+        // through in-loop blocks; the EXIT is the successor that leaves the loop.
+        // Derive that here and emit a polarity consistent with it, so the
+        // reconstruction is correct regardless of `break_kind` staleness.
+        let then_reaches_header =
+            successor_reaches_header(func, *then_block, *bid, cond_bid);
+        let else_reaches_header =
+            successor_reaches_header(func, *else_block, *bid, cond_bid);
+        // Fall back to the recorded hint only when the CFG is ambiguous (both or
+        // neither successor reaches the header — e.g. an infinite loop with no
+        // exit, or an exit that re-enters). A reducible loop with a normal exit
+        // has exactly one body successor.
+        let body_is_then = match (then_reaches_header, else_reaches_header) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => {
+                let break_kind = func
+                    .loop_break_kinds
+                    .get(bid)
+                    .copied()
+                    .unwrap_or(LoopBreakKind::BreakIfFalse);
+                // BreakIfFalse: cond TRUE → body (then). BreakIfTrue: cond TRUE
+                // → break, so body is the else side.
+                matches!(break_kind, LoopBreakKind::BreakIfFalse)
+            }
+        };
+        // Native polarity that matches the chosen body side:
+        //   body == then  →  `loop_break_if_false` (cond TRUE continues to body)
+        //   body == else  →  `loop_break_if_true`  (cond TRUE breaks to exit)
+        let break_kind = if body_is_then {
+            LoopBreakKind::BreakIfFalse
+        } else {
+            LoopBreakKind::BreakIfTrue
+        };
+        let (body_entry, exit_block, body_args, exit_args) = if body_is_then {
+            (
                 *then_block,
                 *else_block,
                 then_args.clone(),
                 else_args.clone(),
-            ),
-            LoopBreakKind::BreakIfTrue => (
+            )
+        } else {
+            (
                 *else_block,
                 *then_block,
                 else_args.clone(),
                 then_args.clone(),
-            ),
+            )
         };
         if debug_loop_if_return {
             eprintln!(
@@ -631,26 +680,43 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         });
         guard_raise_blocks.retain(|b| !exception_handler_blocks.contains(b));
 
-        // ── External-reentry guard (state-machine soundness) ──
-        // The structured emission emits the cond block, header-chain, and
-        // guard-chain blocks INLINE without their own `label` op (only the
-        // header and body blocks keep labels).  That is valid ONLY when those
-        // inline-consumed blocks are entered exclusively from within the
-        // region: their merged-away labels then have no surviving referrers.
+        // ── Single-entry-region guard (structured-reconstruction soundness) ──
+        // Structured loop reconstruction merges the region's interior blocks
+        // (header-chain, cond, guard-chain, and body blocks) into one linear
+        // `loop_start … loop_continue/loop_break … loop_end` sequence. Several
+        // of those interior blocks are emitted INLINE without their own `label`
+        // op — the cond/header-chain/guard-chain blocks, the FIRST body block,
+        // and any body block whose terminator is the back-edge (emitted as a
+        // bare `loop_continue`) or the loop-exit edge (emitted as a bare
+        // `loop_break`). Reconstruction is therefore sound ONLY when the region
+        // is single-entry: the loop HEADER is the unique block reachable from
+        // outside the region. The header always keeps its label (it is the
+        // forward-jump / back-edge target), so an external edge into the header
+        // resolves; an external edge into any OTHER region block targets a block
+        // whose label may be merged away, leaving that `jump`/`br_if`/
+        // `check_exception` dangling — the
+        // "TIR roundtrip emitted invalid labels" panic (and the native
+        // `label_blocks[&target]` "no entry found for key" panic / WASM
+        // "unknown jump label" warning on the same SimpleIR).
         //
-        // In a coroutine/generator `_poll` state machine, however, a resume
-        // point after a yield/await re-enters the loop's CONDITION block by an
-        // explicit `jump <cond_label>` originating OUTSIDE the loop region.
-        // Consuming the cond block inline would drop its label while leaving
-        // those external jumps dangling — producing the
-        // "TIR roundtrip emitted invalid labels" panic.
+        // This single-entry invariant is exactly natural-loop reducibility: in a
+        // well-formed reducible loop only the header has predecessors outside
+        // the loop, so this guard never rejects a well-formed region. It DOES
+        // reject irreducible / multi-entry shapes such as:
+        //   * a coroutine/generator `_poll` resume edge that re-enters the loop's
+        //     COND block from outside the region (the historical case), and
+        //   * a shared pre-header/latch block: `entry → P → header` where the
+        //     back-edge also routes `latch → P → header`, so `P` is pulled into
+        //     `body_set` (it is the back-edge's source-side block) yet still
+        //     carries the external entry edge from `entry`. The drop-insertion
+        //     terminal phase (critical-edge splits + retain placement) reshapes
+        //     loop back-edges into exactly this funnel, which is why activating
+        //     native drops surfaced it (`_typing_strip_wrapping_parens`).
         //
-        // Detect any external predecessor of an inline-consumed block and, if
-        // present, decline structured reconstruction.  The generic
-        // block-by-block lowering below emits each block with its own label and
-        // resolves every `jump`/`br_if`/`check_exception` edge correctly (this
-        // mirrors the `loop_has_exception_break` bypass above and the
-        // single-predecessor requirement enforced for structured-if inlining).
+        // On rejection the generic block-by-block lowering below emits every
+        // block with its own label and resolves every edge correctly (mirroring
+        // the `loop_has_exception_break` bypass above and the single-predecessor
+        // requirement enforced for structured-if inlining).
         let region_block_set: HashSet<BlockId> = {
             let mut s = HashSet::new();
             s.insert(*bid);
@@ -661,27 +727,16 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             s.extend(body_set.iter().copied());
             s
         };
-        // Blocks that the structured emission consumes WITHOUT a label.
-        // (The header keeps its label at emit time, so it is excluded.  Body
-        // blocks past the first keep labels; the FIRST body block, however, is
-        // emitted inline without a label — so an external resume edge into it
-        // would dangle exactly like one into the cond block.)
-        let inline_consumed_without_label: Vec<BlockId> = {
-            let mut v: Vec<BlockId> = Vec::new();
-            if cond_bid != *bid {
-                v.push(cond_bid);
-            }
-            v.extend(header_chain.iter().copied());
-            v.extend(guard_chain.iter().copied());
-            if body_entry != *bid {
-                v.push(body_entry);
-            }
-            v
-        };
-        let has_external_reentry = inline_consumed_without_label.iter().any(|consumed| {
-            all_predecessors
-                .get(consumed)
-                .is_some_and(|preds| preds.iter().any(|p| !region_block_set.contains(p)))
+        // The header is the sole legal entry: every OTHER region block must be
+        // entered exclusively from within the region. `all_predecessors` covers
+        // both normal terminator edges and implicit exception edges, so this
+        // catches an external `check_exception`/`try_*` handler edge into the
+        // interior as well as plain `jump`/`br_if` reentry.
+        let has_external_reentry = region_block_set.iter().any(|member| {
+            *member != *bid
+                && all_predecessors
+                    .get(member)
+                    .is_some_and(|preds| preds.iter().any(|p| !region_block_set.contains(p)))
         });
         if has_external_reentry {
             // Leave this loop to the generic block-by-block lowering, which
@@ -1875,6 +1930,17 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // `loop_break_if_exception` CondBranch.
             kind: "exception_pending".to_string(),
             args: None,
+            out: out_var,
+            ..OpIR::default()
+        }),
+        OpCode::FunctionDefaultsVersion => Some(OpIR {
+            // Reads a function object's `__defaults__`/`__kwdefaults__`
+            // mutation version stamp as an inline int.  One operand (the
+            // function object); produces the value the defaults-devirt deopt
+            // guard compares against 0.  Non-foldable: it observes mutable
+            // runtime state (`side_effecting` in the op-kind registry).
+            kind: "function_defaults_version".to_string(),
+            args: Some(operand_args(op)),
             out: out_var,
             ..OpIR::default()
         }),
@@ -3127,6 +3193,49 @@ fn reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
     }
 
     postorder
+}
+
+/// Reducibility probe for structured-loop body/exit polarity.
+///
+/// Returns `true` when the loop `header` is reachable from `start` through the
+/// forward CFG WITHOUT re-entering the loop-controlling `cond_block`. For a
+/// reducible natural loop the BODY successor of `cond_block` reaches the header
+/// (it contains the back-edge), while the EXIT successor leaves the loop and
+/// does not — so this distinguishes which cond successor is the loop body
+/// independent of any (possibly stale, post-roundtrip) `break_kind` hint.
+///
+/// `cond_block` is excluded from traversal so the body→cond→{body,exit} cycle
+/// cannot make the exit side appear to reach the header through the cond block.
+/// `start == header` reaches trivially (a zero-body `while`-true backbone).
+fn successor_reaches_header(
+    func: &TirFunction,
+    start: BlockId,
+    header: BlockId,
+    cond_block: BlockId,
+) -> bool {
+    if start == header {
+        return true;
+    }
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut stack = vec![start];
+    while let Some(b) = stack.pop() {
+        if b == header {
+            return true;
+        }
+        // Do not traverse back through the loop-controlling cond block: the
+        // back-edge body reaches the header BEFORE returning to the cond, so a
+        // genuine body successor is found without this edge; allowing it would
+        // let the exit side reach the header via cond→body→header.
+        if b == cond_block || !visited.insert(b) {
+            continue;
+        }
+        if let Some(blk) = func.blocks.get(&b) {
+            for succ in successors_of(blk) {
+                stack.push(succ);
+            }
+        }
+    }
+    false
 }
 
 fn successors_of(block: &TirBlock) -> Vec<BlockId> {
@@ -6891,6 +7000,134 @@ mod tests {
                     && op.value == Some(36)),
             "loop cond label (36) must remain materialized when re-entered \
              from outside the region: {ops:?}"
+        );
+    }
+
+    /// Round-9: a body-interior block that is BOTH the loop's back-edge target
+    /// AND entered directly from outside the region (a shared pre-header/latch:
+    /// `entry → P → header`, with the back-edge also routing `body → P → header`).
+    /// `P` lands in the body DFS (it is reached from `body_entry` via the
+    /// back-edge), so it is consumed into the region, yet it still carries the
+    /// external entry edge from `entry`. The single-entry-region guard must
+    /// detect that `P` (≠ header) has an external predecessor and decline
+    /// structured reconstruction; the generic fallback then emits `P`'s label so
+    /// the entry's `jump P` resolves. Before the guard generalization this body
+    /// block's label was merged away and the entry jump dangled — the native
+    /// `label_blocks[&target]` "no entry found for key" panic and WASM
+    /// "unknown jump label" miscompile that blocked the native drop flip on
+    /// `typing._typing_strip_wrapping_parens`.
+    #[test]
+    fn loop_shared_preheader_latch_body_keeps_label_no_dangling() {
+        let mut func = TirFunction::new(
+            "shared_preheader_latch__keeps_label".into(),
+            vec![TirType::Bool],
+            TirType::None,
+        );
+        let entry = func.entry_block;
+        let latch = func.fresh_block(); // P: pre-header AND back-edge target
+        let header = func.fresh_block();
+        let cond = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.loop_break_kinds
+            .insert(header, LoopBreakKind::BreakIfFalse);
+        func.loop_cond_blocks.insert(header, cond);
+
+        // Record latch's label so the external entry edge references it by the
+        // same id the back-conversion will emit (label_id_map is keyed by raw
+        // block index) — mirroring the real entry `jump <latch_label>`.
+        func.label_id_map.insert(latch.0, 62);
+
+        // entry → latch (the external entry edge into the loop's pre-header).
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+            target: latch,
+            args: vec![],
+        };
+        // latch → header (both the pre-header path and the back-edge funnel
+        // through here).
+        func.blocks.insert(
+            latch,
+            TirBlock {
+                id: latch,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+        // header → cond.
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: cond,
+                    args: vec![],
+                },
+            },
+        );
+        // cond: BreakIfFalse → body on true, exit on false.
+        func.blocks.insert(
+            cond,
+            TirBlock {
+                id: cond,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: ValueId(0),
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        // body → latch (the back-edge routes through the shared pre-header/latch,
+        // pulling `latch` into the body DFS).
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: latch,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let ops = lower_to_simple_ir(&func);
+
+        assert!(
+            validate_labels(&ops),
+            "a shared pre-header/latch body block with an external entry edge \
+             must not leave a dangling jump label: {ops:?}"
+        );
+        // The latch's label (62) must survive: the generic fallback emits it so
+        // the entry `jump 62` resolves instead of dangling.
+        assert!(
+            ops.iter().any(|op| matches!(
+                op.kind.as_str(),
+                "label" | "state_label"
+            ) && op.value == Some(62)),
+            "shared pre-header/latch label (62) must remain materialized when \
+             entered from outside the loop region: {ops:?}"
         );
     }
 

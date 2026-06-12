@@ -45,7 +45,9 @@ def test_local_expected_uses_memory_guard(monkeypatch) -> None:
         fake_guarded_completed_process,
     )
 
-    assert cross_run._local_expected(cross_run.Case("sample", "print('ok')\n")) == "ok\n"
+    assert (
+        cross_run._local_expected(cross_run.Case("sample", "print('ok')\n")) == "ok\n"
+    )
     assert captured["cmd"] == [cross_run.sys.executable, "-c", "print('ok')\n"]
     assert captured["kwargs"]["prefix"] == "MOLT_CROSS"
     assert captured["kwargs"]["timeout"] == 15

@@ -301,7 +301,25 @@ def _compute_successors(
             target = str(op.args[0]) if op.args else ""
             add_succ(block_id, label_to_block.get(target))
             continue
-        if op.kind in {"RETURN", "RAISE", "RAISE_CAUSE", "RERAISE"}:
+        if op.kind == "RETURN":
+            continue
+        if op.kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
+            # molt's exception model lowers `raise` to "set the pending
+            # exception flag and CONTINUE" (the native/WASM/LLVM `raise` op calls
+            # `molt_raise` and falls through — it does NOT branch). The frontend
+            # always emits the routing immediately after a raise
+            # (`CHECK_EXCEPTION <handler>; JUMP <handler>` via `_emit_raise_exit`)
+            # and the backends transfer control to the handler THROUGH those ops,
+            # not through any implicit edge. Modelling `raise` as a hard CFG
+            # terminator (no successors) makes that routing unreachable, so SCCP/
+            # DCE prune it — orphaning a handler that the body can only reach
+            # after raising (e.g. a try body whose sole statement is `raise`) and
+            # silently dropping the `except` clause. The fall-through edge mirrors
+            # the real lowering and keeps the routing live. (Normal-vs-exceptional
+            # try-body behaviour is determined separately in
+            # `_compute_sccp.evaluate_try_behavior`, which still treats `raise` as
+            # not-completing-normally.)
+            add_succ(block_id, next_block)
             continue
         if op.kind == "STATE_YIELD":
             # STATE_YIELD suspends the generator (returns to caller).

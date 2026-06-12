@@ -33,7 +33,9 @@ use crate::builtins::types::{
     molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
     molt_types_resolve_bases, molt_types_simplenamespace_init,
 };
-use crate::object::layout::{function_set_call_target_ptr, function_set_code_bits};
+use crate::object::layout::{
+    function_defaults_version, function_set_call_target_ptr, function_set_code_bits,
+};
 use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
 use molt_obj_model::MoltObject;
 #[cfg(feature = "stdlib_ast")]
@@ -5014,6 +5016,32 @@ pub extern "C" fn molt_function_set_defaults(
         }
 
         MoltObject::none().bits()
+    })
+}
+
+/// Read a function object's `__defaults__`/`__kwdefaults__` mutation version
+/// stamp as an inline int.  The compile-time defaults-devirt deopt guard calls
+/// this once per direct call site and branches on `version == 0` (the baked
+/// literal default is still observably correct) vs `!= 0` (a runtime
+/// reassignment occurred → read the live tuple/dict).  A non-function or null
+/// argument yields 0 (treated as "pristine" — those call sites never bake a
+/// guarded default against a non-function, so the value is inert).
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_function_defaults_version(func_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let version = obj_from_bits(func_bits)
+            .as_ptr()
+            .map(|func_ptr| unsafe {
+                if object_type_id(func_ptr) == TYPE_ID_FUNCTION {
+                    function_defaults_version(func_ptr)
+                } else {
+                    0
+                }
+            })
+            .unwrap_or(0);
+        // The counter is a small monotonic value; an inline int is exact and
+        // the guard only ever compares it against 0.
+        MoltObject::from_int(version as i64).bits()
     })
 }
 

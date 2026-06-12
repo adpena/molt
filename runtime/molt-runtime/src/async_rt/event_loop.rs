@@ -34,9 +34,10 @@ use std::sync::atomic::AtomicI64;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 
+use super::asyncio_call_method0;
 use crate::{
-    MoltObject, call_callable0, dec_ref_bits, exception_pending, inc_ref_bits, monotonic_now_secs,
-    raise_exception, runtime_state,
+    MoltObject, dec_ref_bits, exception_pending, inc_ref_bits, monotonic_now_secs, raise_exception,
+    runtime_state,
 };
 
 // --- State constants ---
@@ -515,32 +516,45 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let mut callbacks_run: i64 = 0;
 
-        // Phase 1: Drain ready queue.
         let loop_key = unbox_loop_handle(loop_handle);
         let registry = event_loop_registry(_py);
-        let ready_batch: Vec<u64> = {
-            let mut map = registry.loops.lock().unwrap();
-            let Some(state) = map.get_mut(&loop_key) else {
+        {
+            let map = registry.loops.lock().unwrap();
+            let Some(state) = map.get(&loop_key) else {
                 return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
             };
             if state.is_closed() {
                 return MoltObject::from_int(0).bits();
             }
+        }
+
+        // Phase 0: Advance the coroutine scheduler by one drain so that tasks
+        // created via ``create_task``/``ensure_future`` make progress within the
+        // same run_forever turn that CPython's ``_run_once`` would give them.
+        runtime_state(_py).scheduler().drain_ready();
+
+        // Phase 1: Run the ready Handles scheduled via ``call_soon`` (snapshotting
+        // the current contents so callbacks scheduled by these handles run on the
+        // next turn, matching CPython's ``ntodo = len(self._ready)`` semantics).
+        let ready_batch: Vec<u64> = {
+            let mut map = registry.loops.lock().unwrap();
+            let Some(state) = map.get_mut(&loop_key) else {
+                return MoltObject::from_int(callbacks_run).bits();
+            };
+            if state.is_closed() {
+                return MoltObject::from_int(callbacks_run).bits();
+            }
             state.ready.drain(..).collect()
         };
-        for cb_bits in &ready_batch {
+        for handle_bits in &ready_batch {
             unsafe {
-                call_callable0(_py, *cb_bits);
+                run_event_loop_handle(_py, *handle_bits);
             }
-            if exception_pending(_py) {
-                // Swallow handler exceptions per asyncio contract; log in debug mode.
-                crate::builtins::exceptions::clear_exception(_py);
-            }
-            dec_ref_bits(_py, *cb_bits);
+            dec_ref_bits(_py, *handle_bits);
             callbacks_run += 1;
         }
 
-        // Phase 2: Pop expired timers.
+        // Phase 2: Pop expired timers and run their Handles.
         let now_ns = {
             let map = registry.loops.lock().unwrap();
             let Some(state) = map.get(&loop_key) else {
@@ -582,10 +596,7 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
                 continue;
             }
             unsafe {
-                call_callable0(_py, entry.callback_bits);
-            }
-            if exception_pending(_py) {
-                crate::builtins::exceptions::clear_exception(_py);
+                run_event_loop_handle(_py, entry.callback_bits);
             }
             dec_ref_bits(_py, entry.callback_bits);
             callbacks_run += 1;
@@ -599,6 +610,27 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
 
         MoltObject::from_int(callbacks_run).bits()
     })
+}
+
+/// Run a single ``call_soon``/timer ``Handle`` by invoking its ``_run`` method,
+/// matching CPython's ``Handle._run`` dispatch. Exceptions raised by the
+/// callback are reported through the loop's exception handler contract by the
+/// Python ``Handle._run`` wrapper; any that still propagate here are cleared so
+/// one bad callback cannot abort the whole event-loop turn.
+///
+/// # Safety
+/// - `handle_bits` must be a valid asyncio ``Handle`` object exposing ``_run``.
+unsafe fn run_event_loop_handle(_py: &crate::PyToken<'_>, handle_bits: u64) {
+    unsafe {
+        let result = asyncio_call_method0(_py, handle_bits, b"_run");
+        if exception_pending(_py) {
+            // Swallow handler exceptions per asyncio contract; log in debug mode.
+            crate::builtins::exceptions::clear_exception(_py);
+        }
+        if !crate::obj_from_bits(result).is_none() {
+            dec_ref_bits(_py, result);
+        }
+    }
 }
 
 /// Get the current monotonic time of the event loop (seconds, float).

@@ -1,0 +1,773 @@
+{
+  "schema_version": 3,
+  "kind": "hot_only_cycle_profile",
+  "generated_at": "2026-06-09T00:25:44.377380+00:00",
+  "git_rev": "794e325aafbe344533ddcde4aebda2e8ef0a2dcb",
+  "backend": "native",
+  "target": "native",
+  "profile": "release-fast",
+  "inner_loops": 40,
+  "symbolicated": true,
+  "symbolicate_mechanism": "MOLT_KEEP_SYMBOLS=1 (link-strip + post-link strip skipped)",
+  "launch_refusal_fraction": 0.4,
+  "cpython_baseline": "3.14.5",
+  "quiescence": {
+    "quiet": false,
+    "reasons": [
+      "1 active build process(es) (cargo/rustc/molt-backend/molt build): 84376:/tmp/wt_76/target/sessions/p76/release-fast/molt-backend"
+    ],
+    "active_molt_processes": [
+      {
+        "pid": 84376,
+        "cmd": "/tmp/wt_76/target/sessions/p76/release-fast/molt-backend --daemon --socket /tmp/claude-501/molt-backend-daemon/moltbd.3c0c2877ebdf5b3f.sock"
+      }
+    ],
+    "active_cargo_or_rustc_processes": [],
+    "active_build_processes": [
+      {
+        "pid": 84376,
+        "cmd": "/tmp/wt_76/target/sessions/p76/release-fast/molt-backend --daemon --socket /tmp/claude-501/molt-backend-daemon/moltbd.3c0c2877ebdf5b3f.sock"
+      }
+    ],
+    "loadavg_1m": 3.4,
+    "ncpu": 18,
+    "loadavg_threshold": 9.0,
+    "runnable_signal": 6,
+    "thermal_ok": true,
+    "thermal_note": "no thermal/performance warning recorded",
+    "probe_failed": false
+  },
+  "methodology": "Inner-repeat the benchmark main() N times in ONE process so launch/page-in (_dyld_start) amortizes; build with MOLT_KEEP_SYMBOLS=1 so the linker keeps molt user-fn/runtime symbols; /usr/bin/sample the steady state after a warmup delay. REFUSE a hot-path claim if launch/page-in >= 40% of leaf self-time.",
+  "cells": [
+    {
+      "benchmark": "tests/benchmarks/bench_etl_orders.py",
+      "target": "native",
+      "backend": "native",
+      "profile": "release-fast",
+      "inner_loops": 40,
+      "build": {
+        "inner_loops": 40,
+        "symbolicated": true,
+        "looped": true,
+        "refused": false,
+        "reason": null,
+        "looped_source_path": "/tmp/claude-501/perfscore_profiling/perfscore-loop-_yptsh_r/bench_etl_orders.py"
+      },
+      "profile_result": {
+        "available": true,
+        "mode": "hot-only",
+        "inner_loops": 40,
+        "top_symbols": [
+          {
+            "symbol": "__findenv_locked",
+            "self_samples": 164,
+            "lib": "libsystem_c.dylib"
+          },
+          {
+            "symbol": "_tlv_get_addr",
+            "self_samples": 118,
+            "lib": "libdyld.dylib"
+          },
+          {
+            "symbol": "molt_runtime::object::ops_string::split_field_bounds_at_index::hf8a41ebbc1869cb4",
+            "self_samples": 105,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_platform_memmove",
+            "self_samples": 94,
+            "lib": "libsystem_platform.dylib"
+          },
+          {
+            "symbol": "bench_etl_orders__molt_user_main",
+            "self_samples": 87,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvXs2_NtNtCs6sq8b9ugfBC_4core3str5lossyNtB5_10Utf8ChunksNtNtNtNtB9_4iter6traits8iterator8Iterator4next",
+            "self_samples": 79,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::state::runtime_state::runtime_state::ha54dbd31be1c5045",
+            "self_samples": 71,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::concurrency::gil::GilGuard::new::hecdfac0393cacdbc",
+            "self_samples": 69,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "mi_page_free_list_extend",
+            "self_samples": 65,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_pending::h2a5b598a29820a0f",
+            "self_samples": 55,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "mi_heap_malloc_zero_aligned_at",
+            "self_samples": 42,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_$LT$molt_runtime..concurrency..gil..GilGuard$u20$as$u20$core..ops..drop..Drop$GT$::drop::h25e1a24407e9519e",
+            "self_samples": 41,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::numbers::int_subclass_value_bits_raw::hddac21b3167ad4f5",
+            "self_samples": 25,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::builders::alloc_string::h7da5472e2dfae40d",
+            "self_samples": 23,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::h01de08c301342455",
+            "self_samples": 22,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_mi_page_malloc_zero",
+            "self_samples": 21,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops_string::validate_explicit_string_split_args::h032ac8e448f86196",
+            "self_samples": 21,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvNvNtCs8dnTdrJsiec_5alloc3fmt6format12format_inner",
+            "self_samples": 20,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::numbers::to_bigint::h4fb9ea3876867069",
+            "self_samples": 20,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops::obj_eq::hdd983140d3884803",
+            "self_samples": 20,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_string_split_field_len_from_bounds",
+            "self_samples": 20,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvNtCs6sq8b9ugfBC_4core3fmt5write",
+            "self_samples": 18,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::attr::attr_name_bits_from_bytes::h84851226851a4dc6",
+            "self_samples": 18,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops_slice::dataclass_new_from_value_slice::h05d4b2ccc382c271",
+            "self_samples": 18,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops_string::explicit_split_field_args::h3ae79f5567c69a08",
+            "self_samples": 18,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_inc_ref_obj",
+            "self_samples": 17,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_string_split_field_ord_at_bounds",
+            "self_samples": 14,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "OUTLINED_FUNCTION_0",
+            "self_samples": 13,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "pthread_mutex_lock",
+            "self_samples": 13,
+            "lib": "libsystem_pthread.dylib"
+          },
+          {
+            "symbol": "_RNvMNtCs8dnTdrJsiec_5alloc6stringNtB2_6String15from_utf8_lossy",
+            "self_samples": 12,
+            "lib": "bench_etl_orders_molt"
+          }
+        ],
+        "in_binary_top": [
+          {
+            "symbol": "molt_runtime::object::ops_string::split_field_bounds_at_index::hf8a41ebbc1869cb4",
+            "self_samples": 105,
+            "leaderboard_pct": 6.66,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "bench_etl_orders__molt_user_main",
+            "self_samples": 87,
+            "leaderboard_pct": 5.52,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvXs2_NtNtCs6sq8b9ugfBC_4core3str5lossyNtB5_10Utf8ChunksNtNtNtNtB9_4iter6traits8iterator8Iterator4next",
+            "self_samples": 79,
+            "leaderboard_pct": 5.01,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::state::runtime_state::runtime_state::ha54dbd31be1c5045",
+            "self_samples": 71,
+            "leaderboard_pct": 4.5,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::concurrency::gil::GilGuard::new::hecdfac0393cacdbc",
+            "self_samples": 69,
+            "leaderboard_pct": 4.38,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "mi_page_free_list_extend",
+            "self_samples": 65,
+            "leaderboard_pct": 4.12,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_pending::h2a5b598a29820a0f",
+            "self_samples": 55,
+            "leaderboard_pct": 3.49,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "mi_heap_malloc_zero_aligned_at",
+            "self_samples": 42,
+            "leaderboard_pct": 2.66,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_$LT$molt_runtime..concurrency..gil..GilGuard$u20$as$u20$core..ops..drop..Drop$GT$::drop::h25e1a24407e9519e",
+            "self_samples": 41,
+            "leaderboard_pct": 2.6,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::numbers::int_subclass_value_bits_raw::hddac21b3167ad4f5",
+            "self_samples": 25,
+            "leaderboard_pct": 1.59,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::builders::alloc_string::h7da5472e2dfae40d",
+            "self_samples": 23,
+            "leaderboard_pct": 1.46,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::h01de08c301342455",
+            "self_samples": 22,
+            "leaderboard_pct": 1.4,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_mi_page_malloc_zero",
+            "self_samples": 21,
+            "leaderboard_pct": 1.33,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops_string::validate_explicit_string_split_args::h032ac8e448f86196",
+            "self_samples": 21,
+            "leaderboard_pct": 1.33,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvNvNtCs8dnTdrJsiec_5alloc3fmt6format12format_inner",
+            "self_samples": 20,
+            "leaderboard_pct": 1.27,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::numbers::to_bigint::h4fb9ea3876867069",
+            "self_samples": 20,
+            "leaderboard_pct": 1.27,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops::obj_eq::hdd983140d3884803",
+            "self_samples": 20,
+            "leaderboard_pct": 1.27,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_string_split_field_len_from_bounds",
+            "self_samples": 20,
+            "leaderboard_pct": 1.27,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvNtCs6sq8b9ugfBC_4core3fmt5write",
+            "self_samples": 18,
+            "leaderboard_pct": 1.14,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::attr::attr_name_bits_from_bytes::h84851226851a4dc6",
+            "self_samples": 18,
+            "leaderboard_pct": 1.14,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops_slice::dataclass_new_from_value_slice::h05d4b2ccc382c271",
+            "self_samples": 18,
+            "leaderboard_pct": 1.14,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops_string::explicit_split_field_args::h3ae79f5567c69a08",
+            "self_samples": 18,
+            "leaderboard_pct": 1.14,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_inc_ref_obj",
+            "self_samples": 17,
+            "leaderboard_pct": 1.08,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_string_split_field_ord_at_bounds",
+            "self_samples": 14,
+            "leaderboard_pct": 0.89,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "OUTLINED_FUNCTION_0",
+            "self_samples": 13,
+            "leaderboard_pct": 0.82,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvMNtCs8dnTdrJsiec_5alloc6stringNtB2_6String15from_utf8_lossy",
+            "self_samples": 12,
+            "leaderboard_pct": 0.76,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvMs3_NtNtCs6sq8b9ugfBC_4core3ffi5c_strNtB5_4CStr19from_bytes_with_nul",
+            "self_samples": 12,
+            "leaderboard_pct": 0.76,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvNtNtCs6sq8b9ugfBC_4core3str8converts9from_utf8",
+            "self_samples": 12,
+            "leaderboard_pct": 0.76,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "_RNvXsZ_NtCs8dnTdrJsiec_5alloc6stringNtB5_6StringNtNtCs6sq8b9ugfBC_4core3fmt5Write9write_str",
+            "self_samples": 12,
+            "leaderboard_pct": 0.76,
+            "lib": "bench_etl_orders_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::numbers::index_bigint_integral_bits::h0342f5bbe6a5203f",
+            "self_samples": 12,
+            "leaderboard_pct": 0.76,
+            "lib": "bench_etl_orders_molt"
+          }
+        ],
+        "launch_breakdown": {
+          "total": 1577,
+          "launch_samples": 0,
+          "launch_fraction": 0.0,
+          "in_binary_samples": 1577,
+          "in_binary_fraction": 1.0,
+          "launch_dominates": false
+        },
+        "refused": false,
+        "refused_reason": null,
+        "note": "/usr/bin/sample 2.0s steady-state (after 0.6s warmup) of ONE looped(inner_loops=40) + symbolicated process; looped runtime 2.94s \u2014 CYCLES"
+      }
+    },
+    {
+      "benchmark": "tests/benchmarks/bench_exception_heavy.py",
+      "target": "native",
+      "backend": "native",
+      "profile": "release-fast",
+      "inner_loops": 40,
+      "build": {
+        "inner_loops": 40,
+        "symbolicated": true,
+        "looped": true,
+        "refused": false,
+        "reason": null,
+        "looped_source_path": "/tmp/claude-501/perfscore_profiling/perfscore-loop-9_4rvbwg/bench_exception_heavy.py"
+      },
+      "profile_result": {
+        "available": true,
+        "mode": "hot-only",
+        "inner_loops": 40,
+        "top_symbols": [
+          {
+            "symbol": "bench_exception_heavy__molt_user_main",
+            "self_samples": 542,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_inc_ref_obj",
+            "self_samples": 301,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "_tlv_get_addr",
+            "self_samples": 295,
+            "lib": "libdyld.dylib"
+          },
+          {
+            "symbol": "molt_dec_ref_obj",
+            "self_samples": 253,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::concurrency::gil::GilGuard::new::hecdfac0393cacdbc",
+            "self_samples": 157,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "_$LT$molt_runtime..concurrency..gil..GilGuard$u20$as$u20$core..ops..drop..Drop$GT$::drop::h25e1a24407e9519e",
+            "self_samples": 116,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::state::runtime_state::runtime_state::ha54dbd31be1c5045",
+            "self_samples": 81,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::alloc_object::h1df8ea09cb4dd48c",
+            "self_samples": 72,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::record_exception_with_caller_frame::h8ca64b88ab7c415c",
+            "self_samples": 70,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_context_set::he1e7e89cef83a52f",
+            "self_samples": 61,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_stack_pop::h6b85e6b58b49d011",
+            "self_samples": 61,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_stack_push::h6591b2712f2d225b",
+            "self_samples": 59,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "mi_page_free_list_extend",
+            "self_samples": 55,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::clear_exception::h08cfdc10775fbf06",
+            "self_samples": 42,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exceptions_state::h315ce96119aee9d8",
+            "self_samples": 34,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::dec_ref_ptr::h9f15a8efbd18f0ca",
+            "self_samples": 28,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops_format::exception_class_bits_uses_cached_message_str::h66e2cb7a594c1fe2",
+            "self_samples": 26,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_guard_type",
+            "self_samples": 24,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_raise",
+            "self_samples": 21,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::global_last_exception_valid_slot::h0025ffcd56c7126d",
+            "self_samples": 18,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "core::hash::BuildHasher::hash_one::h2785cd0612524a96",
+            "self_samples": 17,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_exception_last_pending",
+            "self_samples": 17,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::alloc_exception_obj_with_args_payload::h9ab5b3ecd09f38f2",
+            "self_samples": 17,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "pthread_mutex_lock",
+            "self_samples": 17,
+            "lib": "libsystem_pthread.dylib"
+          },
+          {
+            "symbol": "_$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::h01de08c301342455",
+            "self_samples": 16,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_exception_new_builtin_one",
+            "self_samples": 15,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "_platform_memset",
+            "self_samples": 14,
+            "lib": "libsystem_platform.dylib"
+          },
+          {
+            "symbol": "molt_exception_pop",
+            "self_samples": 12,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_context_active_bits::h02a58a2880fd9918",
+            "self_samples": 10,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "_mi_page_malloc_zero",
+            "self_samples": 9,
+            "lib": "bench_exception_heavy_molt"
+          }
+        ],
+        "in_binary_top": [
+          {
+            "symbol": "bench_exception_heavy__molt_user_main",
+            "self_samples": 542,
+            "leaderboard_pct": 21.46,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_inc_ref_obj",
+            "self_samples": 301,
+            "leaderboard_pct": 11.92,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_dec_ref_obj",
+            "self_samples": 253,
+            "leaderboard_pct": 10.02,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::concurrency::gil::GilGuard::new::hecdfac0393cacdbc",
+            "self_samples": 157,
+            "leaderboard_pct": 6.22,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "_$LT$molt_runtime..concurrency..gil..GilGuard$u20$as$u20$core..ops..drop..Drop$GT$::drop::h25e1a24407e9519e",
+            "self_samples": 116,
+            "leaderboard_pct": 4.59,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::state::runtime_state::runtime_state::ha54dbd31be1c5045",
+            "self_samples": 81,
+            "leaderboard_pct": 3.21,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::alloc_object::h1df8ea09cb4dd48c",
+            "self_samples": 72,
+            "leaderboard_pct": 2.85,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::record_exception_with_caller_frame::h8ca64b88ab7c415c",
+            "self_samples": 70,
+            "leaderboard_pct": 2.77,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_context_set::he1e7e89cef83a52f",
+            "self_samples": 61,
+            "leaderboard_pct": 2.41,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_stack_pop::h6b85e6b58b49d011",
+            "self_samples": 61,
+            "leaderboard_pct": 2.41,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_stack_push::h6591b2712f2d225b",
+            "self_samples": 59,
+            "leaderboard_pct": 2.34,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "mi_page_free_list_extend",
+            "self_samples": 55,
+            "leaderboard_pct": 2.18,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::clear_exception::h08cfdc10775fbf06",
+            "self_samples": 42,
+            "leaderboard_pct": 1.66,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exceptions_state::h315ce96119aee9d8",
+            "self_samples": 34,
+            "leaderboard_pct": 1.35,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::dec_ref_ptr::h9f15a8efbd18f0ca",
+            "self_samples": 28,
+            "leaderboard_pct": 1.11,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::object::ops_format::exception_class_bits_uses_cached_message_str::h66e2cb7a594c1fe2",
+            "self_samples": 26,
+            "leaderboard_pct": 1.03,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_guard_type",
+            "self_samples": 24,
+            "leaderboard_pct": 0.95,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_raise",
+            "self_samples": 21,
+            "leaderboard_pct": 0.83,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::global_last_exception_valid_slot::h0025ffcd56c7126d",
+            "self_samples": 18,
+            "leaderboard_pct": 0.71,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "core::hash::BuildHasher::hash_one::h2785cd0612524a96",
+            "self_samples": 17,
+            "leaderboard_pct": 0.67,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_exception_last_pending",
+            "self_samples": 17,
+            "leaderboard_pct": 0.67,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::alloc_exception_obj_with_args_payload::h9ab5b3ecd09f38f2",
+            "self_samples": 17,
+            "leaderboard_pct": 0.67,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "_$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::h01de08c301342455",
+            "self_samples": 16,
+            "leaderboard_pct": 0.63,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_exception_new_builtin_one",
+            "self_samples": 15,
+            "leaderboard_pct": 0.59,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_exception_pop",
+            "self_samples": 12,
+            "leaderboard_pct": 0.48,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::exception_context_active_bits::h02a58a2880fd9918",
+            "self_samples": 10,
+            "leaderboard_pct": 0.4,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "_mi_page_malloc_zero",
+            "self_samples": 9,
+            "leaderboard_pct": 0.36,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_exception_clear",
+            "self_samples": 9,
+            "leaderboard_pct": 0.36,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_runtime::builtins::exceptions::builtin_exception_class_bits_for_tag::hcd4d3ce2cf167f03",
+            "self_samples": 9,
+            "leaderboard_pct": 0.36,
+            "lib": "bench_exception_heavy_molt"
+          },
+          {
+            "symbol": "molt_exception_context_set",
+            "self_samples": 8,
+            "leaderboard_pct": 0.32,
+            "lib": "bench_exception_heavy_molt"
+          }
+        ],
+        "launch_breakdown": {
+          "total": 2526,
+          "launch_samples": 0,
+          "launch_fraction": 0.0,
+          "in_binary_samples": 2526,
+          "in_binary_fraction": 1.0,
+          "launch_dominates": false
+        },
+        "refused": false,
+        "refused_reason": null,
+        "note": "/usr/bin/sample 3.0s steady-state (after 0.6s warmup) of ONE looped(inner_loops=40) + symbolicated process; looped runtime 7.65s \u2014 CYCLES"
+      }
+    }
+  ]
+}

@@ -4,10 +4,11 @@
 // The single source of truth for the cross-component op-"kind"-string vocabulary
 // (docs/design/foundation/25_op_kind_registry.md). These tables back the
 // `kind_to_opcode` mapper (ssa.rs), the `CopyLowering` classifier
-// (alias_analysis.rs), and the per-OpCode effect oracle (effects.rs). A drift
-// between this file and op_kinds.toml is caught by tests/test_gen_op_kinds.py;
-// a new op kind that the frontend can emit but that is absent here is caught by
-// tools/audit_op_kinds.py --check.
+// (alias_analysis.rs), the per-OpCode effect oracle (effects.rs), and the
+// operand-ownership tables (design 27 §2.1/§2.3, consumed by drop_insertion.rs's
+// `op_consumed_operand_root`). A drift between this file and op_kinds.toml is
+// caught by tests/test_gen_op_kinds.py; a new op kind that the frontend can emit
+// but that is absent here is caught by tools/audit_op_kinds.py --check.
 
 use crate::tir::ops::OpCode;
 
@@ -55,34 +56,15 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "object_new_bound" => Some(OpCode::ObjectNewBound),
         "object_new_bound_stack" => Some(OpCode::ObjectNewBoundStack),
         "free" => Some(OpCode::Free),
-        "get_attr"
-        | "get_attr_generic_ptr"
-        | "get_attr_generic_obj"
-        | "get_attr_name"
-        | "guarded_field_get"
-        | "load"
-        | "load_attr" => Some(OpCode::LoadAttr),
-        "set_attr"
-        | "store_attr"
-        | "set_attr_name"
-        | "set_attr_generic_ptr"
-        | "set_attr_generic_obj"
-        | "guarded_field_set"
-        | "guarded_field_set_init"
-        | "store"
-        | "store_init" => Some(OpCode::StoreAttr),
-        "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => {
-            Some(OpCode::DelAttr)
-        }
+        "get_attr" | "get_attr_generic_ptr" | "get_attr_generic_obj" | "get_attr_name" | "guarded_field_get" | "load" | "load_attr" => Some(OpCode::LoadAttr),
+        "set_attr" | "store_attr" | "set_attr_name" | "set_attr_generic_ptr" | "set_attr_generic_obj" | "guarded_field_set" | "guarded_field_set_init" | "store" | "store_init" => Some(OpCode::StoreAttr),
+        "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => Some(OpCode::DelAttr),
         "index" => Some(OpCode::Index),
         "store_index" | "index_set" => Some(OpCode::StoreIndex),
         "del_index" => Some(OpCode::DelIndex),
-        "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind"
-        | "call_function" | "call_guarded" | "invoke_ffi" => Some(OpCode::Call),
+        "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind" | "call_function" | "call_guarded" | "invoke_ffi" => Some(OpCode::Call),
         // GPU offload primitives lower through the call machinery.
-        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => {
-            Some(OpCode::Call)
-        }
+        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => Some(OpCode::Call),
         "call_method" => Some(OpCode::CallMethod),
         "call_builtin" | "builtin_print" | "print" | "range_new" => Some(OpCode::CallBuiltin),
         "ord_at" => Some(OpCode::OrdAt),
@@ -114,6 +96,7 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "raise" => Some(OpCode::Raise),
         "check_exception" => Some(OpCode::CheckException),
         "exception_pending" => Some(OpCode::ExceptionPending),
+        "function_defaults_version" => Some(OpCode::FunctionDefaultsVersion),
         "try_start" => Some(OpCode::TryStart),
         "try_end" => Some(OpCode::TryEnd),
         "state_block_start" => Some(OpCode::StateBlockStart),
@@ -150,51 +133,54 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
 pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
     matches!(
         kind,
-        "aiter"
-            | "ascii_from_obj"
-            | "complex_from_obj"
-            | "contains"
-            | "dict_from_obj"
-            | "dict_items"
-            | "dict_keys"
-            | "dict_new"
-            | "dict_values"
-            | "enumerate"
-            | "float_from_obj"
-            | "inplace_bit_and"
-            | "inplace_bit_or"
-            | "inplace_bit_xor"
-            | "inplace_div"
-            | "inplace_floordiv"
-            | "inplace_lshift"
-            | "inplace_matmul"
-            | "inplace_mod"
-            | "inplace_pow"
-            | "inplace_rshift"
-            | "int_from_obj"
-            | "int_from_str_of_obj"
-            | "iter"
-            | "list_fill_new"
-            | "list_from_range"
-            | "list_new"
-            | "object_new"
-            | "range_new"
-            | "repr_from_obj"
-            | "set_new"
-            | "slice"
-            | "slice_new"
-            | "str_from_obj"
-            | "string_format"
-            | "string_join"
-            | "tuple_from_list"
-            | "tuple_new"
+        "aiter" |
+        "ascii_from_obj" |
+        "complex_from_obj" |
+        "contains" |
+        "dict_from_obj" |
+        "dict_items" |
+        "dict_keys" |
+        "dict_new" |
+        "dict_values" |
+        "enumerate" |
+        "float_from_obj" |
+        "inplace_bit_and" |
+        "inplace_bit_or" |
+        "inplace_bit_xor" |
+        "inplace_div" |
+        "inplace_floordiv" |
+        "inplace_lshift" |
+        "inplace_matmul" |
+        "inplace_mod" |
+        "inplace_pow" |
+        "inplace_rshift" |
+        "int_from_obj" |
+        "int_from_str_of_obj" |
+        "iter" |
+        "list_fill_new" |
+        "list_from_range" |
+        "list_new" |
+        "object_new" |
+        "range_new" |
+        "repr_from_obj" |
+        "set_new" |
+        "slice" |
+        "slice_new" |
+        "str_from_obj" |
+        "string_format" |
+        "string_join" |
+        "string_split_field_to_int" |
+        "tuple_from_list" |
+        "tuple_new"
     )
 }
 
 /// Prefix rules for `copy_kind_mints_fresh_owned_ref`: a kind starting
 /// with any of these mints a fresh owned reference (e.g. the `vec_*`
 /// vectorized-reduction family, each calling a dedicated `molt_vec_*`).
-pub(crate) const FRESH_VALUE_PREFIXES: &[&str] = &["vec_"];
+pub(crate) const FRESH_VALUE_PREFIXES: &[&str] = &[
+    "vec_",
+];
 
 /// EXACT-match arm of `classify_copy_kind`'s inert bucket: kinds with a
 /// dedicated RC-inert backend lowering and no surviving heap reference to
@@ -203,19 +189,19 @@ pub(crate) const FRESH_VALUE_PREFIXES: &[&str] = &["vec_"];
 pub(crate) fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
     matches!(
         kind,
-        "guard_bool"
-            | "guard_dict_shape"
-            | "guard_float"
-            | "guard_int"
-            | "guard_layout"
-            | "guard_layout_ptr"
-            | "guard_none"
-            | "guard_str"
-            | "line"
-            | "missing"
-            | "nop"
-            | "trace_enter_slot"
-            | "trace_exit"
+        "guard_bool" |
+        "guard_dict_shape" |
+        "guard_float" |
+        "guard_int" |
+        "guard_layout" |
+        "guard_layout_ptr" |
+        "guard_none" |
+        "guard_str" |
+        "line" |
+        "missing" |
+        "nop" |
+        "trace_enter_slot" |
+        "trace_exit"
     )
 }
 
@@ -227,13 +213,13 @@ pub(crate) fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
 pub(crate) fn copy_kind_is_explicit_no_heap_move_table(kind: &str) -> bool {
     matches!(
         kind,
-        "copy"
-            | "copy_var"
-            | "guard_tag"
-            | "guard_type"
-            | "identity_alias"
-            | "load_var"
-            | "store_var"
+        "copy" |
+        "copy_var" |
+        "guard_tag" |
+        "guard_type" |
+        "identity_alias" |
+        "load_var" |
+        "store_var"
     )
 }
 
@@ -318,6 +304,7 @@ pub(crate) fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => false,
         OpCode::ExceptionPending => false,
+        OpCode::FunctionDefaultsVersion => false,
         OpCode::TryStart => false,
         OpCode::TryEnd => false,
         OpCode::StateBlockStart => false,
@@ -431,6 +418,7 @@ pub(crate) fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::Raise => true,
         OpCode::CheckException => true,
         OpCode::ExceptionPending => true,
+        OpCode::FunctionDefaultsVersion => true,
         OpCode::TryStart => true,
         OpCode::TryEnd => true,
         OpCode::StateBlockStart => true,
@@ -557,6 +545,7 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
         OpCode::Raise => OpcodePurity::Impure,
         OpCode::CheckException => OpcodePurity::Impure,
         OpCode::ExceptionPending => OpcodePurity::Impure,
+        OpCode::FunctionDefaultsVersion => OpcodePurity::Impure,
         OpCode::TryStart => OpcodePurity::Impure,
         OpCode::TryEnd => OpcodePurity::Impure,
         OpCode::StateBlockStart => OpcodePurity::Impure,
@@ -588,4 +577,349 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
         OpCode::ScfYield => OpcodePurity::Impure,
         OpCode::Deopt => OpcodePurity::Impure,
     }
+}
+
+/// Operand-ownership leaf (design 27 §2.1): does an op release this
+/// operand internally (`Consumed` — the holder must NOT also drop it, a
+/// double-free otherwise) or merely borrow it (`Borrowed` — the holder
+/// keeps its obligation and drops at the value's true last use)? molt's
+/// `callee borrows all args` ABI (design 20 §1.2) makes `Borrowed` the
+/// universal default; `Consumed` is the CallArgs-builder / move-into class.
+/// The result-side lattice (Owned/Borrowed/Raw/MaybeUninit) is the
+/// classifier_* tables — a SEPARATE axis from this operand-side leaf.
+///
+/// The variant set models molt's FULL operand-ownership domain so the
+/// design-27 ownership-boundary lattice (#58) and the next consumer
+/// migrations are TABLE edits, not enum surgery. `Borrowed`/`Consumed`
+/// seed the per-OpCode + per-spelling tables; `InteriorBorrowKeepAlive`
+/// seeds the per-position borrow-of column (ladder #73); `Transferred`
+/// seeds the per-TERMINATOR table (design 27 §2.4 transfer sites — ladder
+/// #72). One variant still names an EXISTING molt fact whose hand-list
+/// migrates into ownership rows in a follow-up tranche:
+///   * `Transferred` — ownership moves OUT of the function/block: a
+///     `Return` value or a branch-arg passed into a successor block arg.
+///     LIVE: constructed by `terminator_operand_ownership_table` and read
+///     by drop_insertion's `terminator_uses_root` / `terminator_branch_args`.
+///   * `InteriorBorrowKeepAlive` — the round-6 interior-borrow keepalive:
+///     the operand must stay live because the result holds an INTERIOR
+///     reference into it (drop deferred to the interior ref's last use).
+///     LIVE: constructed by `opcode_operand_ownership_table` for the
+///     `LoadAttr`/`Index` source position and read by
+///     `opcode_borrows_source_operand` / `op_borrow_source` to build the
+///     `BorrowProvenance` relation (the `Counter._handle` UAF fix).
+///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:
+///     valid only on the not-exhausted edge, NEVER unconditionally
+///     droppable (stale stack garbage on the exhaustion edge). The LONE
+///     remaining `from_str`-only variant (its consumer hand-list —
+///     `iter_cond_value_results` — migrates in the iter-cond tranche, #74).
+///   * `NoOperandOwnership` — no ref-bearing operand in that category (a
+///     raw lane; a terminator category absent on a variant — `Branch` has
+///     no direct operand, `Return` forwards no branch arg).
+// `ConditionalValidOnlyOnEdge` is the only variant still seeded solely by
+// `from_str` (awaiting the iter-cond consumer migration). The schema is
+// kept ALIVE (not ornamental) by `ALL` + `from_str`/`as_str` below: every
+// variant is constructed and round-tripped, so a dropped or renamed
+// variant is a compile/test failure.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OperandOwnership {
+    Borrowed,
+    Consumed,
+    Transferred,
+    InteriorBorrowKeepAlive,
+    ConditionalValidOnlyOnEdge,
+    NoOperandOwnership,
+}
+
+// Parse/render path for the operand-ownership vocabulary. `Transferred`
+// is LIVE through `terminator_operand_ownership_table` (ladder #72) and
+// `InteriorBorrowKeepAlive` through `opcode_operand_ownership_table` /
+// `opcode_borrows_source_operand` (ladder #73); `from_str` remains the
+// toml-ingest path the LAST migration (the `conditional_valid_only_on_edge`
+// row, #74) reads and is not yet wired to a runtime caller, so
+// `from_str`/`as_str`/`ALL` keep allow(dead_code) — SCOPED to this
+// forward-compat parse API, never the enum (every variant is constructed)
+// nor the file. `ALL` + the round-trip test keep every variant constructed
+// and live today.
+#[allow(dead_code)]
+impl OperandOwnership {
+    pub(crate) const ALL: [OperandOwnership; 6] = [
+        OperandOwnership::Borrowed,
+        OperandOwnership::Consumed,
+        OperandOwnership::Transferred,
+        OperandOwnership::InteriorBorrowKeepAlive,
+        OperandOwnership::ConditionalValidOnlyOnEdge,
+        OperandOwnership::NoOperandOwnership,
+    ];
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            OperandOwnership::Borrowed => "borrowed",
+            OperandOwnership::Consumed => "consumed",
+            OperandOwnership::Transferred => "transferred",
+            OperandOwnership::InteriorBorrowKeepAlive => "interior_borrow_keepalive",
+            OperandOwnership::ConditionalValidOnlyOnEdge => "conditional_valid_only_on_edge",
+            OperandOwnership::NoOperandOwnership => "no_operand_ownership",
+        }
+    }
+    pub(crate) fn from_str(s: &str) -> Option<OperandOwnership> {
+        match s {
+            "borrowed" => Some(OperandOwnership::Borrowed),
+            "consumed" => Some(OperandOwnership::Consumed),
+            "transferred" => Some(OperandOwnership::Transferred),
+            "interior_borrow_keepalive" => Some(OperandOwnership::InteriorBorrowKeepAlive),
+            "conditional_valid_only_on_edge" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),
+            "no_operand_ownership" => Some(OperandOwnership::NoOperandOwnership),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod operand_ownership_schema_tests {
+    use super::OperandOwnership;
+    #[test]
+    fn every_variant_round_trips() {
+        // The schema is alive: every declared variant parses + renders +
+        // round-trips. Dropping or renaming a variant breaks this test.
+        for v in OperandOwnership::ALL {
+            assert_eq!(OperandOwnership::from_str(v.as_str()), Some(v));
+        }
+        assert_eq!(OperandOwnership::from_str("bogus"), None);
+    }
+}
+
+/// Per-OpCode operand-ownership DEFAULT: how `OpCode` treats the operand
+/// at `operand_idx`. EXHAUSTIVE over the enum — a new variant fails to
+/// compile until it is given an `operand_ownership` row in op_kinds.toml.
+/// A uniform opcode (`all_borrowed`/`all_consumed`) ignores the index; a
+/// per-position opcode dispatches on it (positions past the listed arity
+/// fall back to the LAST listed leaf — variadic tails inherit the final
+/// position's treatment). This is the per-OpCode floor; a finer
+/// per-`_original_kind` consume is `kind_consumed_operand_table`.
+#[inline]
+pub(crate) fn opcode_operand_ownership_table(
+    opcode: OpCode,
+    operand_idx: usize,
+) -> OperandOwnership {
+    match opcode {
+        OpCode::Add => OperandOwnership::Borrowed,
+        OpCode::Sub => OperandOwnership::Borrowed,
+        OpCode::Mul => OperandOwnership::Borrowed,
+        OpCode::CheckedAdd => OperandOwnership::Borrowed,
+        OpCode::InplaceAdd => OperandOwnership::Borrowed,
+        OpCode::InplaceSub => OperandOwnership::Borrowed,
+        OpCode::InplaceMul => OperandOwnership::Borrowed,
+        OpCode::Div => OperandOwnership::Borrowed,
+        OpCode::FloorDiv => OperandOwnership::Borrowed,
+        OpCode::Mod => OperandOwnership::Borrowed,
+        OpCode::Pow => OperandOwnership::Borrowed,
+        OpCode::Neg => OperandOwnership::Borrowed,
+        OpCode::Pos => OperandOwnership::Borrowed,
+        OpCode::Eq => OperandOwnership::Borrowed,
+        OpCode::Ne => OperandOwnership::Borrowed,
+        OpCode::Lt => OperandOwnership::Borrowed,
+        OpCode::Le => OperandOwnership::Borrowed,
+        OpCode::Gt => OperandOwnership::Borrowed,
+        OpCode::Ge => OperandOwnership::Borrowed,
+        OpCode::Is => OperandOwnership::Borrowed,
+        OpCode::IsNot => OperandOwnership::Borrowed,
+        OpCode::In => OperandOwnership::Borrowed,
+        OpCode::NotIn => OperandOwnership::Borrowed,
+        OpCode::BitAnd => OperandOwnership::Borrowed,
+        OpCode::BitOr => OperandOwnership::Borrowed,
+        OpCode::BitXor => OperandOwnership::Borrowed,
+        OpCode::BitNot => OperandOwnership::Borrowed,
+        OpCode::Shl => OperandOwnership::Borrowed,
+        OpCode::Shr => OperandOwnership::Borrowed,
+        OpCode::And => OperandOwnership::Borrowed,
+        OpCode::Or => OperandOwnership::Borrowed,
+        OpCode::Not => OperandOwnership::Borrowed,
+        OpCode::Bool => OperandOwnership::Borrowed,
+        OpCode::Alloc => OperandOwnership::Borrowed,
+        OpCode::StackAlloc => OperandOwnership::Borrowed,
+        OpCode::ObjectNewBound => OperandOwnership::Borrowed,
+        OpCode::ObjectNewBoundStack => OperandOwnership::Borrowed,
+        OpCode::Free => OperandOwnership::Borrowed,
+        OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,
+        OpCode::StoreAttr => OperandOwnership::Borrowed,
+        OpCode::DelAttr => OperandOwnership::Borrowed,
+        OpCode::Index => match operand_idx { 0 => OperandOwnership::InteriorBorrowKeepAlive, _ => OperandOwnership::Borrowed },
+        OpCode::StoreIndex => OperandOwnership::Borrowed,
+        OpCode::DelIndex => OperandOwnership::Borrowed,
+        OpCode::Call => OperandOwnership::Borrowed,
+        OpCode::CallMethod => OperandOwnership::Borrowed,
+        OpCode::CallBuiltin => OperandOwnership::Borrowed,
+        OpCode::OrdAt => OperandOwnership::Borrowed,
+        OpCode::BoxVal => OperandOwnership::Borrowed,
+        OpCode::UnboxVal => OperandOwnership::Borrowed,
+        OpCode::TypeGuard => OperandOwnership::Borrowed,
+        OpCode::IncRef => OperandOwnership::Borrowed,
+        OpCode::DecRef => OperandOwnership::Borrowed,
+        OpCode::BuildList => OperandOwnership::Borrowed,
+        OpCode::BuildDict => OperandOwnership::Borrowed,
+        OpCode::BuildTuple => OperandOwnership::Borrowed,
+        OpCode::BuildSet => OperandOwnership::Borrowed,
+        OpCode::BuildSlice => OperandOwnership::Borrowed,
+        OpCode::GetIter => OperandOwnership::Borrowed,
+        OpCode::IterNext => OperandOwnership::Borrowed,
+        OpCode::IterNextUnboxed => OperandOwnership::Borrowed,
+        OpCode::ForIter => OperandOwnership::Borrowed,
+        OpCode::AllocTask => OperandOwnership::Borrowed,
+        OpCode::StateSwitch => OperandOwnership::Borrowed,
+        OpCode::StateTransition => OperandOwnership::Borrowed,
+        OpCode::StateYield => OperandOwnership::Borrowed,
+        OpCode::ChanSendYield => OperandOwnership::Borrowed,
+        OpCode::ChanRecvYield => OperandOwnership::Borrowed,
+        OpCode::ClosureLoad => OperandOwnership::Borrowed,
+        OpCode::ClosureStore => OperandOwnership::Borrowed,
+        OpCode::Yield => OperandOwnership::Borrowed,
+        OpCode::YieldFrom => OperandOwnership::Borrowed,
+        OpCode::Raise => OperandOwnership::Borrowed,
+        OpCode::CheckException => OperandOwnership::Borrowed,
+        OpCode::ExceptionPending => OperandOwnership::Borrowed,
+        OpCode::FunctionDefaultsVersion => OperandOwnership::Borrowed,
+        OpCode::TryStart => OperandOwnership::Borrowed,
+        OpCode::TryEnd => OperandOwnership::Borrowed,
+        OpCode::StateBlockStart => OperandOwnership::Borrowed,
+        OpCode::StateBlockEnd => OperandOwnership::Borrowed,
+        OpCode::ConstInt => OperandOwnership::Borrowed,
+        OpCode::ConstBigInt => OperandOwnership::Borrowed,
+        OpCode::ConstFloat => OperandOwnership::Borrowed,
+        OpCode::ConstStr => OperandOwnership::Borrowed,
+        OpCode::ConstBool => OperandOwnership::Borrowed,
+        OpCode::ConstNone => OperandOwnership::Borrowed,
+        OpCode::ConstBytes => OperandOwnership::Borrowed,
+        OpCode::Copy => OperandOwnership::Borrowed,
+        OpCode::Import => OperandOwnership::Borrowed,
+        OpCode::ImportFrom => OperandOwnership::Borrowed,
+        OpCode::ModuleCacheGet => OperandOwnership::Borrowed,
+        OpCode::ModuleCacheSet => OperandOwnership::Borrowed,
+        OpCode::ModuleCacheDel => OperandOwnership::Borrowed,
+        OpCode::ModuleGetAttr => OperandOwnership::Borrowed,
+        OpCode::ModuleImportFrom => OperandOwnership::Borrowed,
+        OpCode::ModuleGetGlobal => OperandOwnership::Borrowed,
+        OpCode::ModuleGetName => OperandOwnership::Borrowed,
+        OpCode::ModuleSetAttr => OperandOwnership::Borrowed,
+        OpCode::ModuleDelGlobal => OperandOwnership::Borrowed,
+        OpCode::ModuleDelGlobalIfPresent => OperandOwnership::Borrowed,
+        OpCode::WarnStderr => OperandOwnership::Borrowed,
+        OpCode::ScfIf => OperandOwnership::Borrowed,
+        OpCode::ScfFor => OperandOwnership::Borrowed,
+        OpCode::ScfWhile => OperandOwnership::Borrowed,
+        OpCode::ScfYield => OperandOwnership::Borrowed,
+        OpCode::Deopt => OperandOwnership::Borrowed,
+    }
+}
+
+/// The operand index whose backing store this op's result interior-borrows
+/// (design 27 §1.5 borrow-of edge): the operand position classified
+/// `OperandOwnership::InteriorBorrowKeepAlive`, or `None` if the op's result
+/// borrows into no operand. Derived from the per-OpCode `operand_ownership`
+/// row — the SINGLE declarative authority `op_borrow_source`
+/// (alias_analysis.rs) reads to build the `BorrowProvenance` keepalive
+/// relation, REPLACING the hand-coded
+/// `LoadAttr | Index` match (the round-6 `Counter._handle` UAF fix). The
+/// source object's drop is deferred to the borrow result's last use, so a
+/// finalizer that owns the backing store cannot run while the borrow lives.
+/// EXHAUSTIVE over the enum — a new interior-borrowing op is classified by a
+/// table edit, not a pass edit. At most one interior-borrow operand exists in
+/// molt's lowering today (the container/object at position 0); the first such
+/// position is returned.
+#[inline]
+pub(crate) fn opcode_borrows_source_operand(opcode: OpCode) -> Option<usize> {
+    match opcode {
+        OpCode::LoadAttr => Some(0),
+        OpCode::Index => Some(0),
+        _ => None,
+    }
+}
+
+/// Per-SPELLING consume override (design 27 §2.3): for a `Copy`-lifted op
+/// carrying `_original_kind = kind`, the 0-based index of the operand the
+/// op CONSUMES (frees internally), or `None` if it consumes none. `arity`
+/// is the op's operand count, used to resolve a `"last"` selector. The
+/// drop pass treats a value whose last use is the consumed-operand
+/// position exactly like a `Return` transfer — no trailing `DecRef`.
+/// Replaces the hand-coded `op_consumed_operand_root` match.
+#[inline]
+pub(crate) fn kind_consumed_operand_table(kind: &str, arity: usize) -> Option<usize> {
+    match kind {
+        "call_bind" => arity.checked_sub(1),
+        "call_indirect" => arity.checked_sub(1),
+        _ => None,
+    }
+}
+
+/// Zero-cost discriminant of the `Terminator` enum (blocks.rs) the
+/// per-terminator operand-ownership table is keyed on. EXHAUSTIVE over the
+/// enum — a new `Terminator` variant fails to render until it is given a
+/// [[terminator]] row in op_kinds.toml (the transfer-carve-out kill: an
+/// unclassified terminator can't silently inherit a borrow/transfer
+/// assumption). The drop pass maps `&Terminator` -> `TerminatorKind` with
+/// one structural match; this keeps the ownership FACT declarative while
+/// the structural shape (which fields carry args) stays in the pass.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TerminatorKind {
+    Branch,
+    CondBranch,
+    Switch,
+    Return,
+    Unreachable,
+}
+
+/// Which operand CATEGORY of a terminator a query is about: the
+/// terminator's own `Direct` operands (a `Return` value, a `CondBranch`/
+/// `Switch` predicate) versus a `BranchArg` forwarded into a successor's
+/// block-arg (phi). The two have different ownership (a `Return` value
+/// transfers to the caller; a predicate is borrowed; a branch-arg transfers
+/// into the phi) so they are classified on separate axes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum OperandCategory {
+    Direct,
+    BranchArg,
+}
+
+/// Per-(terminator variant, operand category) ownership leaf (design 27
+/// §2.4). EXHAUSTIVE over both axes — a new `Terminator` variant fails to
+/// compile until classified. `Transferred` = ownership moves OUT (a
+/// `Return` value to the caller; a branch-arg into a successor phi);
+/// `Borrowed` = the predicate is read but not moved (drop relocated to the
+/// dying edge); `NoOperandOwnership` = the variant has no operand in that
+/// category. The consume axis is N/A for a terminator (nothing frees a
+/// terminator operand internally), so `Consumed` never appears here.
+#[inline]
+pub(crate) fn terminator_operand_ownership_table(
+    kind: TerminatorKind,
+    category: OperandCategory,
+) -> OperandOwnership {
+    match (kind, category) {
+        (TerminatorKind::Branch, OperandCategory::Direct) => OperandOwnership::NoOperandOwnership,
+        (TerminatorKind::Branch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
+        (TerminatorKind::CondBranch, OperandCategory::Direct) => OperandOwnership::Borrowed,
+        (TerminatorKind::CondBranch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
+        (TerminatorKind::Switch, OperandCategory::Direct) => OperandOwnership::Borrowed,
+        (TerminatorKind::Switch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
+        (TerminatorKind::Return, OperandCategory::Direct) => OperandOwnership::Transferred,
+        (TerminatorKind::Return, OperandCategory::BranchArg) => OperandOwnership::NoOperandOwnership,
+        (TerminatorKind::Unreachable, OperandCategory::Direct) => OperandOwnership::NoOperandOwnership,
+        (TerminatorKind::Unreachable, OperandCategory::BranchArg) => OperandOwnership::NoOperandOwnership,
+    }
+}
+
+/// Derived transfer predicate drop_insertion reads (design 27 §2.4): does
+/// the terminator TRANSFER ownership of an operand in `category`? `true`
+/// iff the leaf is `Transferred` — the drop pass must NOT emit a trailing
+/// `DecRef` at the transfer point (the caller / successor phi owns it).
+/// This single declarative authority REPLACES the hand-coded transfer
+/// carve-out (the `Return` arm of `terminator_uses_root` + the
+/// `terminator_branch_args` membership). A future terminator transfer fact
+/// is a [[terminator]] row edit, never a drop-pass edit.
+#[inline]
+pub(crate) fn terminator_operand_is_transferred(
+    kind: TerminatorKind,
+    category: OperandCategory,
+) -> bool {
+    matches!(
+        terminator_operand_ownership_table(kind, category),
+        OperandOwnership::Transferred
+    )
 }

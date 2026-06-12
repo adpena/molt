@@ -281,11 +281,7 @@ fn unbox_dynbox_to_param_ty_with_builder<'ctx>(
                 )
                 .unwrap();
             let extended = builder
-                .build_or(
-                    masked,
-                    i64_ty.const_int(!nanbox::INT_MASK, false),
-                    "sign_extend",
-                )
+                .build_or(masked, i64_ty.const_int(!nanbox::INT_MASK, false), "sign_extend")
                 .unwrap();
             builder
                 .build_select(is_neg, extended, masked, "unbox_i64")
@@ -1145,21 +1141,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 global.set_constant(true);
                 global.set_unnamed_addr(true);
 
-                let bfs_fn =
-                    if let Some(f) = self.backend.module.get_function("molt_bigint_from_str") {
-                        f
-                    } else {
-                        let ptr_ty = self
-                            .backend
-                            .context
-                            .ptr_type(inkwell::AddressSpace::default());
-                        let fn_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
-                        self.backend.module.add_function(
-                            "molt_bigint_from_str",
-                            fn_ty,
-                            Some(inkwell::module::Linkage::External),
-                        )
-                    };
+                let bfs_fn = if let Some(f) =
+                    self.backend.module.get_function("molt_bigint_from_str")
+                {
+                    f
+                } else {
+                    let ptr_ty = self
+                        .backend
+                        .context
+                        .ptr_type(inkwell::AddressSpace::default());
+                    let fn_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
+                    self.backend.module.add_function(
+                        "molt_bigint_from_str",
+                        fn_ty,
+                        Some(inkwell::module::Linkage::External),
+                    )
+                };
 
                 let ptr_val = global.as_pointer_value();
                 let len_val = i64_ty.const_int(digits.len() as u64, false);
@@ -2648,9 +2645,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         return;
                     }
                     let range_new_fn = self.ensure_runtime_i64_fn("molt_range_new", 3);
-                    let start = self.materialize_dynbox_operand(op.operands[0]).into();
-                    let stop = self.materialize_dynbox_operand(op.operands[1]).into();
-                    let step = self.materialize_dynbox_operand(op.operands[2]).into();
+                    let start = self
+                        .materialize_dynbox_operand(op.operands[0])
+                        .into();
+                    let stop = self
+                        .materialize_dynbox_operand(op.operands[1])
+                        .into();
+                    let step = self
+                        .materialize_dynbox_operand(op.operands[2])
+                        .into();
                     let result = self
                         .backend
                         .builder
@@ -3850,6 +3853,46 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             }
 
+            // ── FunctionDefaultsVersion: read a function object's
+            //    __defaults__/__kwdefaults__ mutation version stamp as a boxed
+            //    inline int (`molt_function_defaults_version(func)`).  Produced
+            //    by the compile-time defaults-devirt deopt guard and consumed by
+            //    its `== 0` compare (baked literal vs live read).  Non-foldable:
+            //    it observes mutable runtime state, so the read always survives.
+            OpCode::FunctionDefaultsVersion => {
+                let ver_fn = self
+                    .backend
+                    .module
+                    .get_function("molt_function_defaults_version")
+                    .unwrap_or_else(|| {
+                        let i64_ty = self.backend.context.i64_type();
+                        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+                        self.backend.module.add_function(
+                            "molt_function_defaults_version",
+                            fn_ty,
+                            Some(inkwell::module::Linkage::External),
+                        )
+                    });
+                let func_val = op
+                    .operands
+                    .first()
+                    .and_then(|id| self.values.get(id).copied())
+                    .expect("FunctionDefaultsVersion operand not materialized");
+                let raw = self
+                    .backend
+                    .builder
+                    .build_call(ver_fn, &[func_val.into()], "func_defaults_version")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, raw);
+                    // Returns a NaN-boxed inline int; the consuming `== 0`
+                    // compare routes through the boxed-int equality path.
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
+
             // ── CheckException: inspect the current exception state ──
             OpCode::CheckException => {
                 let check_fn = self
@@ -4912,12 +4955,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // A raw machine divide by zero is poison (LLVM) — route through a
                 // divisor-zero guard so a zero divisor raises ZeroDivisionError
                 // via the boxed runtime instead of silently yielding garbage.
-                self.emit_i64_divrem_zero_guarded(
-                    op,
-                    name,
-                    lhs.into_int_value(),
-                    rhs.into_int_value(),
-                )
+                self.emit_i64_divrem_zero_guarded(op, name, lhs.into_int_value(), rhs.into_int_value())
             }
 
             // F64 + F64 -> F64 (direct machine instruction).
@@ -9044,11 +9082,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
-                        int_fn,
-                        &[val.into(), base.into(), has_base.into()],
-                        "int_from_obj",
-                    )
+                    .build_call(int_fn, &[val.into(), base.into(), has_base.into()], "int_from_obj")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -9163,11 +9197,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let result = self
                     .backend
                     .builder
-                    .build_call(
-                        slice_new_fn,
-                        &[start.into(), stop.into(), step.into()],
-                        "slice_new",
-                    )
+                    .build_call(slice_new_fn, &[start.into(), stop.into(), step.into()], "slice_new")
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
@@ -9775,7 +9805,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_call(
                         get_fn,
-                        &[obj_bits.into(), name_ptr_bits.into(), name_len_bits.into()],
+                        &[
+                            obj_bits.into(),
+                            name_ptr_bits.into(),
+                            name_len_bits.into(),
+                        ],
                         "get_attr_special_obj",
                     )
                     .unwrap()
@@ -10888,7 +10922,9 @@ mod tests {
                 .repr_by_value
                 .insert(v, crate::representation_plan::Repr::RawI64Safe);
         }
-        backend.function_repr_facts.insert(func.name.clone(), facts);
+        backend
+            .function_repr_facts
+            .insert(func.name.clone(), facts);
 
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
@@ -11309,22 +11345,10 @@ mod tests {
         let cases: &[(&str, usize, bool, Option<&str>, &str)] = &[
             ("abs", 1, true, None, "molt_abs_builtin"),
             ("const_ellipsis", 0, true, None, "molt_ellipsis"),
-            (
-                "const_not_implemented",
-                0,
-                true,
-                None,
-                "molt_not_implemented",
-            ),
+            ("const_not_implemented", 0, true, None, "molt_not_implemented"),
             ("gen_throw", 2, true, None, "molt_generator_throw"),
             ("gen_close", 1, true, None, "molt_generator_close"),
-            (
-                "exception_set_cause",
-                2,
-                false,
-                None,
-                "molt_exception_set_cause",
-            ),
+            ("exception_set_cause", 2, false, None, "molt_exception_set_cause"),
             (
                 "get_attr_special_obj",
                 1,
@@ -11339,13 +11363,7 @@ mod tests {
             ("guard_layout", 3, true, None, "molt_guard_layout_ptr"),
             ("guard_dict_shape", 3, true, None, "molt_guard_layout_ptr"),
             ("json_parse", 1, true, None, "molt_json_parse_scalar_obj"),
-            (
-                "msgpack_parse",
-                1,
-                true,
-                None,
-                "molt_msgpack_parse_scalar_obj",
-            ),
+            ("msgpack_parse", 1, true, None, "molt_msgpack_parse_scalar_obj"),
             ("cbor_parse", 1, true, None, "molt_cbor_parse_scalar_obj"),
             (
                 "gen_locals_register",
@@ -11358,10 +11376,7 @@ mod tests {
         for &(kind, nops, with_result, s_value, sym) in cases {
             let ir = lower_preserved_kind_ir(&backend, kind, nops, with_result, s_value)
                 .unwrap_or_else(|e| {
-                    panic!(
-                        "preserved `{kind}` must lower, got error: {:?}",
-                        e.diagnostics()
-                    )
+                    panic!("preserved `{kind}` must lower, got error: {:?}", e.diagnostics())
                 });
             assert!(
                 ir.contains(sym),
@@ -11411,8 +11426,8 @@ mod tests {
             backend.runtime_intrinsic_symbols.insert(sym.to_string());
         }
         for &(kind, nops, sym) in cases {
-            let ir =
-                lower_preserved_kind_ir(&backend, kind, nops, false, None).unwrap_or_else(|e| {
+            let ir = lower_preserved_kind_ir(&backend, kind, nops, false, None)
+                .unwrap_or_else(|e| {
                     panic!(
                         "result-less preserved `{kind}` must lower, got error: {:?}",
                         e.diagnostics()
@@ -12169,10 +12184,7 @@ mod tests {
             header,
             TirBlock {
                 id: header,
-                args: vec![TirValue {
-                    id: s_phi,
-                    ty: TirType::DynBox,
-                }],
+                args: vec![TirValue { id: s_phi, ty: TirType::DynBox }],
                 ops: vec![],
                 terminator: Terminator::Branch {
                     target: body,

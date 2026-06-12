@@ -72,7 +72,9 @@ def test_native_link_command_uses_build_memory_guard(monkeypatch) -> None:
         memory_guard = FakeMemoryGuard()
 
     monkeypatch.setattr(cli, "_run_completed_command", fake_run)
-    monkeypatch.setattr(cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness())
+    monkeypatch.setattr(
+        cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
+    )
 
     result = cli._run_native_link_command(
         link_cmd=["cc", "main.o"],
@@ -115,7 +117,9 @@ def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
     output = tmp_path / "out.mlir"
     backend = tmp_path / "molt-backend-mlir"
 
-    def fake_tempfiles(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_tempfiles(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
         output.write_text("module {}\n")
@@ -212,9 +216,13 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         captured["popen_kwargs"] = kwargs
         return FakeProc()
 
-    monkeypatch.setattr(cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness())
+    monkeypatch.setattr(
+        cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
+    )
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", lambda *a, **k: (True, None))
+    monkeypatch.setattr(
+        cli, "_backend_daemon_wait_until_ready", lambda *a, **k: (True, None)
+    )
     monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
     monkeypatch.setattr(
         cli,
@@ -301,7 +309,9 @@ def test_backend_daemon_request_uses_request_scoped_sentinel(
             view[: len(payload)] = payload
             return len(payload)
 
-    monkeypatch.setattr(cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness())
+    monkeypatch.setattr(
+        cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
+    )
     monkeypatch.setattr(cli.socket, "socket", lambda *args, **kwargs: FakeSocket())
 
     daemon_identity = cli._BackendDaemonIdentity(

@@ -1,3 +1,25 @@
+# REFERENCE ARTIFACT (reverted) — #77 Component-A prototype: per_iter_exception_temps
+#
+# Value-tracking WIP that correctly releases the per-iteration-dead CREATION ref
+# (exception_new* result) at its true last-use (the `raise`) by excluding it from
+# the func_end Swift-ARC lifetime extension. LIFECYCLE-CORRECT (all exception slots
+# hold independent inc'd refs) but INCOMPLETE: does NOT release the HANDLER-MATCH
+# ref (exception_last* result), which leaks on the caught path (rc 2->1, still
+# unbounded). See project_exception_loop_leak_baton.md "Component B": the match
+# ref's SSA last-use is in the no-match ELSE branch; correct release is handler-
+# region exit (exception_pop) = exception-CFG liveness, the #58/#19 drop-pass arc.
+#
+# REVERTED from main per the no-partial-fixes policy (asymmetric: one of two owned
+# exception temps). PRESERVED so the next session lands Component A *together with*
+# Component B as ONE symmetric structural arc.
+#
+# NOTE: this captured diff still contains the `[EXC_TEMPS]` MOLT_DEBUG_EXC_TEMPS
+# eprintln probe (the +if std::env::var("MOLT_DEBUG_EXC_TEMPS")... block) — DELETE
+# that block before reusing; otherwise the WIP compiled clean (0 warn) on
+# molt-backend native + llvm features.
+#
+# Apply with: tail -n +21 <thisfile> | git apply
+# ---------------------------------------------------------------------------
 diff --git a/runtime/molt-backend/src/native_backend/function_compiler.rs b/runtime/molt-backend/src/native_backend/function_compiler.rs
 index be6f03ae4..06b3f2496 100644
 --- a/runtime/molt-backend/src/native_backend/function_compiler.rs

@@ -105,6 +105,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("func_new_closure", 7),
     ("function_closure_bits", 2),
     ("function_default_kind", 2),
+    ("function_defaults_version", 2),
     ("function_is_coroutine", 2),
     ("function_is_generator", 2),
     ("function_init_metadata_packed", 7),
@@ -872,7 +873,13 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("string_split", 3),
     ("string_split_field_eq", 7),
     ("string_split_field", 5),
+    ("string_split_field_end", 5),
+    ("string_split_field_is_ascii", 5),
     ("string_split_field_len", 5),
+    ("string_split_field_len_from_bounds", 7),
+    ("string_split_field_ord_at_bounds", 12),
+    ("string_split_field_start", 5),
+    ("string_split_field_to_int", 5),
     ("string_split_max", 5),
     ("string_split_sep_dict_inc", 7),
     ("string_split_validate", 3),
@@ -1182,6 +1189,8 @@ pub(crate) const OP_IMPORT_DEPS: &[(&str, &[&str])] = &[
     ("trace_set_line", &["trace_set_line"]),
     // ── On-demand: check_exception ──
     ("check_exception", &["exception_pending"]),
+    // ── Defaults-devirt deopt guard: reads the function defaults version ──
+    ("function_defaults_version", &["function_defaults_version"]),
     // ── Arithmetic ops ──
     // Auto-discovered by kind match, declared here for completeness
     // so the scanner has explicit dep table hits.
