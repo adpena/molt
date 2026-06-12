@@ -84,6 +84,7 @@ def _run_external_tool(
         )
     return result
 
+
 # SHA-256 integrity hashes for known runtime binaries.  When a filename appears
 # in this dict the linker will verify the on-disk file matches the expected hash
 # before passing it to wasm-ld.  Populate entries when cutting a release:
@@ -5577,8 +5578,8 @@ def _run_wasm_ld(
             full_rt_size = deploy_runtime.stat().st_size
             deploy_runtime_data = deploy_runtime.read_bytes()
             try:
-                canonical_required_exports = (
-                    _canonical_split_runtime_required_exports(deploy_runtime_data)
+                canonical_required_exports = _canonical_split_runtime_required_exports(
+                    deploy_runtime_data
                 )
                 app_imports = _collect_module_imports(
                     app_stage.read_bytes(), "molt_runtime"
@@ -5587,10 +5588,7 @@ def _run_wasm_ld(
                     name
                     for name in app_imports
                     if name not in canonical_required_exports
-                    and (
-                        name.removeprefix("molt_")
-                        not in canonical_required_exports
-                    )
+                    and (name.removeprefix("molt_") not in canonical_required_exports)
                     and name not in _ESSENTIAL_EXPORTS
                 )
                 if missing_runtime_imports:

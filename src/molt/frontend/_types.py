@@ -80,6 +80,36 @@ class MoltOp:
     end_col_offset: int | None = None
 
 
+@dataclass
+class _ClassNsScope:
+    """Active class-body namespace while the body is lowered as a block (P0 #50).
+
+    CPython executes a ``class`` body as a code object whose ``f_locals`` is the
+    (possibly custom) class namespace mapping: ``STORE_NAME`` writes ``ns[k]=v``,
+    ``LOAD_NAME`` reads ``ns[k]`` (falling through to globals/builtins on
+    KeyError), ``DELETE_NAME`` does ``del ns[k]``.  Because that mapping is the
+    single mutable home for every class-body name, arbitrary control flow
+    (for/if/while/try/with) and ``del`` work with no per-node special-casing.
+
+    Molt mirrors this: when ``ns`` is set (the class is built dynamically), each
+    class-body name store emits ``STORE_INDEX(ns, name, value)`` and each load
+    emits ``INDEX(ns, name)`` — the heap dict is loop-carried-correct without SSA
+    phi participation, the same way the module dict backs module-scope loops.
+    ``attr_values`` additionally snapshots name->MoltValue for the static
+    ``CLASS_DEF`` fast path (straight-line bodies that never need the dict).
+    ``names`` is the set of names bound in this class body; a Name not in it
+    resolves through the enclosing/global/builtin chain (CPython LOAD_NAME).
+
+    The instance is pushed/popped on ``SimpleTIRGenerator._class_ns_stack`` by
+    ``visit_ClassDef`` and consulted by ``_store_local_value`` /
+    ``_load_local_value`` / ``_emit_delete_name``.
+    """
+
+    ns: "MoltValue | None"
+    attr_values: dict[str, MoltValue]
+    names: set[str]
+
+
 @dataclass(frozen=True)
 class SCCPResult:
     in_values: dict[int, dict[str, Any]]
@@ -155,10 +185,10 @@ _MIDEND_ENV_KEYS = (
     "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
     "MOLT_MIDEND_HOT_TIER_PROMOTION",
     "MOLT_MIDEND_BUDGET_MS",
+    "MOLT_MIDEND_WORK_BUDGET",
     "MOLT_MIDEND_BUDGET_ALPHA",
     "MOLT_MIDEND_BUDGET_BETA",
     "MOLT_MIDEND_BUDGET_SCALE",
-    "MOLT_MIDEND_BUDGET_PREEMPT_RATIO",
     "MOLT_MIDEND_MAX_ROUNDS",
     "MOLT_SCCP_MAX_ITERS",
     "MOLT_CSE_MAX_ITERS",
@@ -170,6 +200,33 @@ class MidendTierClassification:
     tier: MidendTier
     source: str
     allow_hot_promotion: bool
+
+
+# --- Deterministic mid-end degrade-ladder work model (#73) ------------------
+# The mid-end's pass-degrade ladder used to gate on wall-clock elapsed time,
+# which made the compiled IR depend on machine speed (a determinism-contract
+# violation: identical source could emit different IR across processes).  The
+# ladder now charges a DETERMINISTIC work cost — the live op count — at each
+# inter-pass checkpoint and degrades when the running total exceeds a
+# deterministic per-function work budget.  These constants calibrate that
+# budget so non-pathological functions never degrade (preserving optimisation
+# quality) while a pass that pathologically grows the op count still trips the
+# ladder and bounds compile time.
+#
+# Number of degrade checkpoints reached per optimisation round on the
+# non-degraded path (the count of `maybe_apply_budget_degrade(...)` calls
+# inside the per-round body of `_canonicalize_control_aware_ops_impl`).  Used
+# only to size the budget headroom; an exact match is not required (the growth
+# headroom multiplier absorbs drift), but keep it in the right ballpark.
+_MIDEND_DEGRADE_CHECKPOINTS = 12
+# Multiplier applied to the nominal per-round work so a function whose op count
+# stays roughly stable across its permitted rounds never degrades.  Pathological
+# op-count explosion (a pass that balloons the IR) still exceeds the budget.
+_MIDEND_WORK_GROWTH_HEADROOM = 4.0
+# Conversion from the per-tier `budget_base_ms` constant into work-units of
+# base headroom, so the deterministic budget keeps the same relative ordering
+# across tiers that the old millisecond base provided.
+_MIDEND_WORK_BASE_UNITS_PER_MS = 50.0
 
 
 @dataclass(frozen=True)
@@ -189,6 +246,15 @@ class MidendFunctionPolicy:
     enable_licm: bool
     enable_guard_hoist: bool
     budget_ms: float
+    # Deterministic work-unit budget for the mid-end pass-degrade ladder.
+    # The degrade ladder MUST gate on this (a pure function of the IR — op and
+    # block counts), never on wall-clock elapsed time: a time-gated optimiser
+    # makes the compiled IR depend on machine speed / scheduling, which silently
+    # violated the determinism contract (#73 — identical source + seed produced
+    # divergent IR across processes whenever a compile happened to run slow
+    # enough to trip the old `time.perf_counter()` budget and disable CSE/LICM).
+    # `budget_ms` is retained for telemetry/logging only.
+    work_budget: float
     allow_hot_promotion: bool
     module_function_count: int
     module_total_ops: int
@@ -202,10 +268,15 @@ class MidendEnvConfig:
     monolith_total_ops_threshold: int
     hot_tier_promotion_enabled: bool
     budget_override_ms: float | None
+    # Deterministic work-unit budget override (env: MOLT_MIDEND_WORK_BUDGET).
+    # When set, replaces the computed per-function work budget the degrade
+    # ladder gates on.  This is the deterministic successor to the old
+    # `budget_override_ms` time escape-hatch; `budget_override_ms` now only
+    # affects the telemetry `budget_ms`, never pass selection.
+    work_budget_override: float | None
     budget_alpha: float
     budget_beta: float
     budget_scale: float
-    budget_preempt_ratio: float
     max_rounds_override: int | None
     sccp_iter_cap_override: int | None
     cse_iter_cap_override: int | None
@@ -1208,9 +1279,25 @@ class MethodInfo(TypedDict):
     has_closure: bool
     property_field: str | None
     property_update: Literal["setter", "deleter"] | None
+    # True when ``has_closure`` is purely the implicit ``__class__`` super cell
+    # (no real enclosing-local capture).  Set only by ``compile_method`` (the
+    # non-generator path that computes inline metadata); the generator/async
+    # method builders never populate it, so it is ``NotRequired`` and every
+    # reader accesses it via ``.get("inline_closure_ok")``.
+    inline_closure_ok: NotRequired[bool]
     inline_return: NotRequired[ast.expr | None]
     inline_params: NotRequired[list[str] | None]
     inline_owner_class: NotRequired[str | None]
+    # Module that *defines* the inlinable method.  An inline splices the body
+    # into the caller's scope; any bare-Name reference in the body that is not a
+    # substituted parameter or a builtin resolves against the *caller's* module
+    # globals (``visit_Name`` -> ``_emit_global_get``).  When the body reads one
+    # of the defining module's globals (recorded in ``inline_free_names``), the
+    # inline is therefore only sound when the call site is compiled in that same
+    # module.  ``_try_inline_method_call`` consults both to refuse a cross-module
+    # inline that would mis-resolve a defining-module global.
+    inline_owner_module: NotRequired[str | None]
+    inline_free_names: NotRequired[frozenset[str]]
     inline_init_assigns: NotRequired[list[tuple[str, ast.expr]] | None]
 
 

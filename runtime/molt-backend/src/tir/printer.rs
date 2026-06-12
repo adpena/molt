@@ -512,6 +512,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::Raise => "raise",
         OpCode::CheckException => "check_exception",
         OpCode::ExceptionPending => "exception_pending",
+        OpCode::FunctionDefaultsVersion => "function_defaults_version",
         OpCode::TryStart => "try_start",
         OpCode::TryEnd => "try_end",
         OpCode::StateBlockStart => "state_block_start",

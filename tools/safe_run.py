@@ -35,6 +35,7 @@ Exit codes:
     137      OOM      — killed for exceeding --rss-mb (128 + SIGKILL)
     125      could not start the command
 """
+
 from __future__ import annotations
 
 import argparse

@@ -149,7 +149,9 @@ def _ensure_default_probe(path: Path) -> None:
     path.write_text(DEFAULT_PROBE_SOURCE, encoding="utf-8")
 
 
-def _csv_values(raw: str, *, default: Iterable[str], all_values: Iterable[str]) -> tuple[str, ...]:
+def _csv_values(
+    raw: str, *, default: Iterable[str], all_values: Iterable[str]
+) -> tuple[str, ...]:
     text = raw.strip()
     if not text:
         return tuple(default)
@@ -296,7 +298,9 @@ def _artifact_map_from_payload(payload: dict[str, Any] | None) -> dict[str, Path
     return result
 
 
-def _fallback_artifact_candidates(case: MatrixCase, script: Path, out_dir: Path) -> list[Path]:
+def _fallback_artifact_candidates(
+    case: MatrixCase, script: Path, out_dir: Path
+) -> list[Path]:
     if case.target == "native":
         return [out_dir / f"{script.stem}_molt"]
     if case.target.startswith("wasm"):
@@ -313,7 +317,9 @@ def _fallback_artifact_candidates(case: MatrixCase, script: Path, out_dir: Path)
     return [*sorted(path for path in out_dir.iterdir() if path.is_file())]
 
 
-def _select_artifact(case: MatrixCase, script: Path, out_dir: Path, payload: dict[str, Any] | None) -> Path:
+def _select_artifact(
+    case: MatrixCase, script: Path, out_dir: Path, payload: dict[str, Any] | None
+) -> Path:
     candidates = [
         *(_artifact_candidates_from_payload(payload)),
         *(_fallback_artifact_candidates(case, script, out_dir)),
@@ -367,7 +373,9 @@ def _build_molt_artifact(
     if case.target == "native" and case.backend != "auto":
         command.extend(["--backend", case.backend])
     if case.target.startswith("wasm"):
-        command.extend(["--linked", "--require-linked", "--wasm-opt-level", case.wasm_opt_level])
+        command.extend(
+            ["--linked", "--require-linked", "--wasm-opt-level", case.wasm_opt_level]
+        )
     if case.stdlib_profile is not None:
         command.extend(["--stdlib-profile", case.stdlib_profile])
     command.extend(extra_molt_args)
@@ -495,7 +503,11 @@ def _resolve_node_binary(env: dict[str, str]) -> str | None:
     requested = env.get("MOLT_NODE_BIN", "").strip()
     if requested:
         return requested if Path(requested).exists() else None
-    for candidate in (shutil.which("node"), "/opt/homebrew/bin/node", "/usr/local/bin/node"):
+    for candidate in (
+        shutil.which("node"),
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+    ):
         if candidate and Path(candidate).exists():
             return candidate
     return None
@@ -890,10 +902,15 @@ def _build_case_row(
         max_fresh_start_ms=args.max_fresh_start_ms,
     )
     row_ok = bool(
-        _startup_ok(startup, require_runners=args.require_runners)
-        and budgets["passed"]
+        _startup_ok(startup, require_runners=args.require_runners) and budgets["passed"]
     )
-    status = "ok" if row_ok else "startup_skipped" if startup.get("skipped") else "run_failed"
+    status = (
+        "ok"
+        if row_ok
+        else "startup_skipped"
+        if startup.get("skipped")
+        else "run_failed"
+    )
     if not budgets["passed"]:
         status = "budget_failed"
     return {
@@ -908,7 +925,9 @@ def _build_case_row(
             "kb": round(artifact_bytes / 1024, 3),
             "mb": round(artifact_bytes / 1024 / 1024, 6),
         },
-        "artifacts": {key: str(value) for key, value in sorted(build.artifacts.items())},
+        "artifacts": {
+            key: str(value) for key, value in sorted(build.artifacts.items())
+        },
         "startup": startup,
         "budgets": budgets,
     }
@@ -932,8 +951,12 @@ def _summary(cases: list[dict[str, Any]]) -> dict[str, Any]:
         "built_cases": len(built),
         "startup_measured_cases": len(startup_measured),
         "startup_skipped_cases": len(startup_skipped),
-        "build_failed_cases": sum(1 for case in cases if case.get("status") == "build_failed"),
-        "budget_failed_cases": sum(1 for case in cases if case.get("status") == "budget_failed"),
+        "build_failed_cases": sum(
+            1 for case in cases if case.get("status") == "build_failed"
+        ),
+        "budget_failed_cases": sum(
+            1 for case in cases if case.get("status") == "budget_failed"
+        ),
     }
 
 
@@ -976,17 +999,25 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             )
         )
 
-    cpython = None if args.no_cpython_baseline else _measure_cpython(
-        script,
-        samples=args.samples,
-        env=env,
-        timeout=args.run_timeout_sec,
+    cpython = (
+        None
+        if args.no_cpython_baseline
+        else _measure_cpython(
+            script,
+            samples=args.samples,
+            env=env,
+            timeout=args.run_timeout_sec,
+        )
     )
-    c_baseline = None if args.no_c_baseline else _measure_c_baseline(
-        work_dir,
-        samples=args.samples,
-        env=env,
-        timeout=args.run_timeout_sec,
+    c_baseline = (
+        None
+        if args.no_c_baseline
+        else _measure_c_baseline(
+            work_dir,
+            samples=args.samples,
+            env=env,
+            timeout=args.run_timeout_sec,
+        )
     )
     summary = _summary(rows)
     strict_ok = all(bool(row.get("ok")) for row in rows)
@@ -1091,9 +1122,7 @@ def format_report(report: dict[str, Any]) -> str:
             f"{_format_optional_seconds(c_baseline['stats'].get('median_s'))}"
         )
     failed = [
-        f"{row['id']}={row['status']}"
-        for row in report["cases"]
-        if not row.get("ok")
+        f"{row['id']}={row['status']}" for row in report["cases"] if not row.get("ok")
     ]
     if failed:
         lines.append("  non-ok rows: " + ", ".join(failed))

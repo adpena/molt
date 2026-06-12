@@ -134,14 +134,8 @@ impl MemRegion {
             // Distinct typed fields (different class or offset) are disjoint;
             // same class+offset may-alias (object identity untracked, oblig. (b)).
             (
-                TypedField {
-                    class: c1,
-                    offset: o1,
-                },
-                TypedField {
-                    class: c2,
-                    offset: o2,
-                },
+                TypedField { class: c1, offset: o1 },
+                TypedField { class: c2, offset: o2 },
             ) => c1 == c2 && o1 == o2,
             // Distinct stack objects never overlap; the same root does.
             (StackObject { root: r1 }, StackObject { root: r2 }) => r1 == r2,
@@ -244,10 +238,26 @@ pub fn build_alias_union_find(func: &TirFunction) -> AliasUnionFind {
 // substrate, design 20).
 // ===========================================================================
 
-/// True if `op` is an attribute/element READ whose result may be a BORROW into —
-/// or an opaque HANDLE indexing — its source object's backing store. Such a
-/// result keeps its source object semantically alive: freeing the source (running
-/// its finalizer) can invalidate the result. The source is operand 0.
+/// The operand value `op`'s result interior-borrows (a BORROW into — or an opaque
+/// HANDLE indexing — that operand's backing store), or `None`. Such a result keeps
+/// its source object semantically alive: freeing the source (running its
+/// finalizer) can invalidate the result.
+///
+/// REGISTRY-DRIVEN (design 27 §1.5 / §2.1, op-semantics ladder #73): the borrow-of
+/// fact is no longer a hardcoded `LoadAttr | Index` match here — it is the
+/// per-position `operand_ownership = "interior_borrow_keepalive"` row in
+/// `op_kinds.toml`, generated into
+/// [`crate::tir::op_kinds_generated::opcode_borrows_source_operand`] (which returns
+/// the interior-borrowed operand INDEX, or `None`). The single declarative
+/// authority means a FUTURE op whose result borrows into an operand (a `memoryview`
+/// op, a slice-view intrinsic) gets correct keepalive by setting that operand's
+/// position in op_kinds.toml — never by editing this function — retiring the
+/// per-pass borrow-of hand list (the C4 interior-borrow-lifetime class).
+///
+/// The fact it encodes (byte-identical to the prior match): `LoadAttr` / `Index`
+/// interior-borrow operand 0. `Index`'s key operand and `OrdAt` (an `i64` code
+/// point copied out of the element, not a reference into the container) carry NO
+/// keepalive — they are classified `borrowed` / left off the table.
 ///
 /// This is DISTINCT from the transparent-alias relation (`copy_is_known_local_alias`):
 /// a borrow result is NOT bit-identical to the source and must NOT be unioned into
@@ -272,14 +282,9 @@ pub fn build_alias_union_find(func: &TirFunction) -> AliasUnionFind {
 /// > `get_attr`), the wrapper's finalizer destroys the registry entry BEFORE the
 /// > intrinsic call reads `h` → the call sees an empty/destroyed counter (the
 /// > round-6 BLOCKER-1 use-after-free: `len(Counter(...))` returned 0).
-///
-/// `OrdAt` is excluded: its result is an `i64` code point (a pure scalar copied out
-/// of the element), not a reference into the container, so no keepalive is owed.
 fn op_borrow_source(op: &TirOp) -> Option<ValueId> {
-    match op.opcode {
-        OpCode::LoadAttr | OpCode::Index => op.operands.first().copied(),
-        _ => None,
-    }
+    let idx = crate::tir::op_kinds_generated::opcode_borrows_source_operand(op.opcode)?;
+    op.operands.get(idx).copied()
 }
 
 /// The interior-borrow keepalive relation for a function: maps each borrowing-read
@@ -379,9 +384,7 @@ impl AliasUnionFind {
 
     /// True if any operand of `op` shares the alias root `root`.
     pub fn operand_aliases_root(&self, op: &TirOp, root: ValueId) -> bool {
-        op.operands
-            .iter()
-            .any(|operand| self.root(*operand) == root)
+        op.operands.iter().any(|operand| self.root(*operand) == root)
     }
 
     /// If `op` is a transparent alias-producing op, union its results into the
@@ -499,7 +502,7 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref(kind: &str) -> bool {
     // dedicated `molt_vec_*` runtime reduction returning a fresh boxed result),
     // then the exact set.
     use crate::tir::op_kinds_generated::{
-        FRESH_VALUE_PREFIXES, copy_kind_mints_fresh_owned_ref_table,
+        copy_kind_mints_fresh_owned_ref_table, FRESH_VALUE_PREFIXES,
     };
     if FRESH_VALUE_PREFIXES.iter().any(|p| kind.starts_with(p)) {
         return true;
@@ -715,11 +718,7 @@ fn transparent_alias_root(op: &TirOp, aliases: &AliasUnionFind) -> Option<ValueI
                 return None;
             }
             let root = aliases.root(op.operands[0]);
-            if op
-                .operands
-                .iter()
-                .all(|operand| aliases.root(*operand) == root)
-            {
+            if op.operands.iter().all(|operand| aliases.root(*operand) == root) {
                 Some(root)
             } else {
                 None
@@ -995,11 +994,7 @@ impl AliasAnalysisResult {
     pub fn is_barrier_for(&self, op: &TirOp, val: ValueId) -> bool {
         // (a) A direct (or aliased) use of `val` reads/escapes it.
         let root = self.aliases.root(val);
-        if op
-            .operands
-            .iter()
-            .any(|&o| o == val || self.aliases.root(o) == root)
-        {
+        if op.operands.iter().any(|&o| o == val || self.aliases.root(o) == root) {
             return true;
         }
         // (b) An opcode that can touch arbitrary heap memory is a barrier even
@@ -1052,9 +1047,7 @@ impl AliasAnalysisResult {
             | OpCode::BuildSlice
             | OpCode::AllocTask => true,
             // Transparent aliases and pure ref ops do not read slot values.
-            OpCode::Copy | OpCode::TypeGuard
-                if transparent_alias_root(op, &self.aliases).is_some() =>
-            {
+            OpCode::Copy | OpCode::TypeGuard if transparent_alias_root(op, &self.aliases).is_some() => {
                 false
             }
             OpCode::IncRef | OpCode::DecRef | OpCode::CheckException => false,
@@ -1257,6 +1250,15 @@ fn opcode_touches_memory(opcode: OpCode) -> bool {
             // starving store-to-load forwarding for no soundness gain.
             | OpCode::ExceptionPending
             | OpCode::CheckException
+            // Reads the function object's defaults version stamp slot. It never
+            // WRITES heap memory, so it is not a clobber; its ordering against a
+            // `__defaults__` mutation (always an opaque, side-effecting CALL) is
+            // preserved by its own `side_effecting`/`Impure` classification,
+            // which independently bars GVN-CSE and LICM hoisting. Treating it as
+            // memory-touching would make it a spurious `GenericHeap` clobber
+            // that starves store-to-load forwarding for no soundness gain
+            // (identical reasoning to `ExceptionPending`).
+            | OpCode::FunctionDefaultsVersion
     )
 }
 
@@ -1314,221 +1316,42 @@ mod tests {
     fn all_opcodes() -> Vec<OpCode> {
         use OpCode::*;
         vec![
-            Add,
-            CheckedAdd,
-            Sub,
-            Mul,
-            InplaceAdd,
-            InplaceSub,
-            InplaceMul,
-            Div,
-            FloorDiv,
-            Mod,
-            Pow,
-            Neg,
-            Pos,
-            Eq,
-            Ne,
-            Lt,
-            Le,
-            Gt,
-            Ge,
-            Is,
-            IsNot,
-            In,
-            NotIn,
-            BitAnd,
-            BitOr,
-            BitXor,
-            BitNot,
-            Shl,
-            Shr,
-            And,
-            Or,
-            Not,
-            Bool,
-            Alloc,
-            StackAlloc,
-            ObjectNewBound,
-            ObjectNewBoundStack,
-            Free,
-            LoadAttr,
-            StoreAttr,
-            DelAttr,
-            Index,
-            StoreIndex,
-            DelIndex,
-            Call,
-            CallMethod,
-            CallBuiltin,
-            OrdAt,
-            BoxVal,
-            UnboxVal,
-            TypeGuard,
-            IncRef,
-            DecRef,
-            BuildList,
-            BuildDict,
-            BuildTuple,
-            BuildSet,
-            BuildSlice,
-            GetIter,
-            IterNext,
-            IterNextUnboxed,
-            ForIter,
-            AllocTask,
-            StateSwitch,
-            StateTransition,
-            StateYield,
-            ChanSendYield,
-            ChanRecvYield,
-            ClosureLoad,
-            ClosureStore,
-            Yield,
-            YieldFrom,
-            Raise,
-            CheckException,
-            ExceptionPending,
-            TryStart,
-            TryEnd,
-            StateBlockStart,
-            StateBlockEnd,
-            ConstInt,
-            ConstBigInt,
-            ConstFloat,
-            ConstStr,
-            ConstBool,
-            ConstNone,
-            ConstBytes,
-            Copy,
-            Import,
-            ImportFrom,
-            ModuleCacheGet,
-            ModuleCacheSet,
-            ModuleCacheDel,
-            ModuleGetAttr,
-            ModuleImportFrom,
-            ModuleGetGlobal,
+            Add, CheckedAdd, Sub, Mul, InplaceAdd, InplaceSub, InplaceMul, Div, FloorDiv, Mod, Pow, Neg, Pos,
+            Eq, Ne, Lt, Le, Gt, Ge, Is, IsNot, In, NotIn, BitAnd, BitOr, BitXor, BitNot, Shl, Shr,
+            And, Or, Not, Bool, Alloc, StackAlloc, ObjectNewBound, ObjectNewBoundStack, Free,
+            LoadAttr, StoreAttr, DelAttr, Index, StoreIndex, DelIndex, Call, CallMethod,
+            CallBuiltin, OrdAt, BoxVal, UnboxVal, TypeGuard, IncRef, DecRef, BuildList, BuildDict,
+            BuildTuple, BuildSet, BuildSlice, GetIter, IterNext, IterNextUnboxed, ForIter,
+            AllocTask, StateSwitch, StateTransition, StateYield, ChanSendYield, ChanRecvYield,
+            ClosureLoad, ClosureStore, Yield, YieldFrom, Raise, CheckException, ExceptionPending,
+            FunctionDefaultsVersion,
+            TryStart, TryEnd, StateBlockStart, StateBlockEnd, ConstInt, ConstBigInt, ConstFloat, ConstStr,
+            ConstBool, ConstNone, ConstBytes, Copy, Import, ImportFrom, ModuleCacheGet,
+            ModuleCacheSet, ModuleCacheDel, ModuleGetAttr, ModuleImportFrom, ModuleGetGlobal,
             ModuleGetName,
-            ModuleSetAttr,
-            ModuleDelGlobal,
-            ModuleDelGlobalIfPresent,
-            WarnStderr,
-            ScfIf,
-            ScfFor,
-            ScfWhile,
-            ScfYield,
-            Deopt,
+            ModuleSetAttr, ModuleDelGlobal, ModuleDelGlobalIfPresent, WarnStderr, ScfIf, ScfFor,
+            ScfWhile, ScfYield, Deopt,
         ]
     }
 
     fn assert_opcode_listed(opcode: OpCode) {
         use OpCode::*;
         match opcode {
-            Add
-            | CheckedAdd
-            | Sub
-            | Mul
-            | InplaceAdd
-            | InplaceSub
-            | InplaceMul
-            | Div
-            | FloorDiv
-            | Mod
-            | Pow
-            | Neg
-            | Pos
-            | Eq
-            | Ne
-            | Lt
-            | Le
-            | Gt
-            | Ge
-            | Is
-            | IsNot
-            | In
-            | NotIn
-            | BitAnd
-            | BitOr
-            | BitXor
-            | BitNot
-            | Shl
-            | Shr
-            | And
-            | Or
-            | Not
-            | Bool
-            | Alloc
-            | StackAlloc
-            | ObjectNewBound
-            | ObjectNewBoundStack
-            | Free
-            | LoadAttr
-            | StoreAttr
-            | DelAttr
-            | Index
-            | StoreIndex
-            | DelIndex
-            | Call
-            | CallMethod
-            | CallBuiltin
-            | OrdAt
-            | BoxVal
-            | UnboxVal
-            | TypeGuard
-            | IncRef
-            | DecRef
-            | BuildList
-            | BuildDict
-            | BuildTuple
-            | BuildSet
-            | BuildSlice
-            | GetIter
-            | IterNext
-            | IterNextUnboxed
-            | ForIter
-            | AllocTask
-            | StateSwitch
-            | StateTransition
-            | StateYield
-            | ChanSendYield
-            | ChanRecvYield
-            | ClosureLoad
-            | ClosureStore
-            | Yield
-            | YieldFrom
-            | Raise
-            | CheckException
-            | ExceptionPending
-            | TryStart
-            | TryEnd
-            | StateBlockStart
-            | StateBlockEnd
-            | ConstInt
-            | ConstBigInt
-            | ConstFloat
-            | ConstStr
-            | ConstBool
-            | ConstNone
-            | ConstBytes
-            | Copy
-            | Import
-            | ImportFrom
-            | ModuleCacheGet
-            | ModuleCacheSet
-            | ModuleCacheDel
-            | ModuleGetAttr
-            | ModuleImportFrom
-            | ModuleGetGlobal
-            | ModuleGetName
-            | ModuleSetAttr
-            | ModuleDelGlobal
-            | ModuleDelGlobalIfPresent
-            | WarnStderr
-            | ScfIf
-            | ScfFor
-            | ScfWhile
-            | ScfYield
+            Add | CheckedAdd | Sub | Mul | InplaceAdd | InplaceSub | InplaceMul | Div | FloorDiv | Mod | Pow
+            | Neg | Pos | Eq | Ne | Lt | Le | Gt | Ge | Is | IsNot | In | NotIn | BitAnd | BitOr
+            | BitXor | BitNot | Shl | Shr | And | Or | Not | Bool | Alloc | StackAlloc
+            | ObjectNewBound | ObjectNewBoundStack | Free | LoadAttr | StoreAttr | DelAttr
+            | Index | StoreIndex | DelIndex | Call | CallMethod | CallBuiltin | OrdAt | BoxVal
+            | UnboxVal | TypeGuard | IncRef | DecRef | BuildList | BuildDict | BuildTuple
+            | BuildSet | BuildSlice | GetIter | IterNext | IterNextUnboxed | ForIter | AllocTask
+            | StateSwitch | StateTransition | StateYield | ChanSendYield | ChanRecvYield
+            | ClosureLoad | ClosureStore | Yield | YieldFrom | Raise | CheckException
+            | ExceptionPending | FunctionDefaultsVersion | TryStart | TryEnd | StateBlockStart
+            | StateBlockEnd | ConstInt
+            | ConstBigInt | ConstFloat | ConstStr | ConstBool | ConstNone | ConstBytes | Copy | Import
+            | ImportFrom | ModuleCacheGet | ModuleCacheSet | ModuleCacheDel | ModuleGetAttr
+            | ModuleImportFrom | ModuleGetGlobal | ModuleGetName | ModuleSetAttr | ModuleDelGlobal
+            | ModuleDelGlobalIfPresent | WarnStderr | ScfIf | ScfFor | ScfWhile | ScfYield
             | Deopt => {}
         }
     }
@@ -1711,16 +1534,11 @@ mod tests {
         store
             .attrs
             .insert("_original_kind".into(), AttrValue::Str("store".into()));
-        assert!(
-            !res.may_observe_slot(&store, root),
-            "same-root store is an overwrite"
-        );
+        assert!(!res.may_observe_slot(&store, root), "same-root store is an overwrite");
         // store that USES root as the stored value (target != root) observes it.
         let other = ValueId(8);
         let mut escape_store = op(OpCode::StoreAttr, vec![other, root], vec![]);
-        escape_store
-            .attrs
-            .insert("value".into(), AttrValue::Int(16));
+        escape_store.attrs.insert("value".into(), AttrValue::Int(16));
         escape_store
             .attrs
             .insert("_original_kind".into(), AttrValue::Str("store".into()));
@@ -1736,22 +1554,13 @@ mod tests {
     fn typed_slot_load_is_proven_pure() {
         for kind in ["guarded_field_get", "load"] {
             let o = op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], kind);
-            assert_eq!(
-                classify_load(&o),
-                LoadPurity::ProvenPure,
-                "{kind} is a typed slot"
-            );
+            assert_eq!(classify_load(&o), LoadPurity::ProvenPure, "{kind} is a typed slot");
         }
     }
 
     #[test]
     fn opaque_attr_load_may_dispatch() {
-        for kind in [
-            "get_attr",
-            "get_attr_name",
-            "get_attr_generic_ptr",
-            "get_attr_generic_obj",
-        ] {
+        for kind in ["get_attr", "get_attr_name", "get_attr_generic_ptr", "get_attr_generic_obj"] {
             let o = op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], kind);
             assert_eq!(
                 classify_load(&o),
@@ -1767,11 +1576,7 @@ mod tests {
     #[test]
     fn index_always_may_dispatch() {
         // Index can dispatch __getitem__ regardless of any attr.
-        let o = op(
-            OpCode::Index,
-            vec![ValueId(0), ValueId(1)],
-            vec![ValueId(2)],
-        );
+        let o = op(OpCode::Index, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]);
         assert_eq!(classify_load(&o), LoadPurity::MayDispatch);
     }
 
@@ -1784,10 +1589,7 @@ mod tests {
             MemRegion::GenericHeap,
             MemRegion::ContainerElement,
             MemRegion::ModuleDict,
-            MemRegion::TypedField {
-                class: "Point".into(),
-                offset: 0,
-            },
+            MemRegion::TypedField { class: "Point".into(), offset: 0 },
             MemRegion::StackObject { root: ValueId(1) },
             MemRegion::ScalarRegister,
         ] {
@@ -1798,18 +1600,9 @@ mod tests {
 
     #[test]
     fn distinct_typed_fields_are_disjoint() {
-        let f0 = MemRegion::TypedField {
-            class: "Point".into(),
-            offset: 0,
-        };
-        let f8 = MemRegion::TypedField {
-            class: "Point".into(),
-            offset: 8,
-        };
-        let g0 = MemRegion::TypedField {
-            class: "Line".into(),
-            offset: 0,
-        };
+        let f0 = MemRegion::TypedField { class: "Point".into(), offset: 0 };
+        let f8 = MemRegion::TypedField { class: "Point".into(), offset: 8 };
+        let g0 = MemRegion::TypedField { class: "Line".into(), offset: 0 };
         assert!(!f0.may_alias(&f8), "different offset ⇒ disjoint");
         assert!(!f0.may_alias(&g0), "different class ⇒ disjoint");
         assert!(f0.may_alias(&f0.clone()), "same class+offset ⇒ may alias");
@@ -1831,10 +1624,7 @@ mod tests {
         assert!(g.may_alias(&MemRegion::ContainerElement));
         assert!(g.may_alias(&MemRegion::ModuleDict));
         assert!(g.may_alias(&MemRegion::GenericHeap));
-        assert!(g.may_alias(&MemRegion::TypedField {
-            class: "P".into(),
-            offset: 0
-        }));
+        assert!(g.may_alias(&MemRegion::TypedField { class: "P".into(), offset: 0 }));
     }
 
     // ── AliasUnionFind ─────────────────────────────────────────────────────
@@ -1869,11 +1659,7 @@ mod tests {
         entry.terminator = Terminator::Return { values: vec![] };
 
         let res = AliasAnalysisResult::compute(&func);
-        assert_ne!(
-            res.root(lst),
-            obj,
-            "container builder result is not an alias of its element"
-        );
+        assert_ne!(res.root(lst), obj, "container builder result is not an alias of its element");
     }
 
     // ── The lowering-truth Copy-class contract (over-release keystone) ──────
@@ -1950,21 +1736,11 @@ mod tests {
                 CopyLowering::TransparentAlias,
                 "{k:?} must be a transparent alias"
             );
-            assert!(
-                copy_kind_reaches_no_incref_passthrough(k),
-                "{k:?} reaches passthrough"
-            );
+            assert!(copy_kind_reaches_no_incref_passthrough(k), "{k:?} reaches passthrough");
         }
         for k in inert {
-            assert_eq!(
-                classify_copy_kind(k),
-                CopyLowering::InertMarker,
-                "{k:?} is inert"
-            );
-            assert!(
-                copy_kind_reaches_no_incref_passthrough(k),
-                "{k:?} reaches passthrough"
-            );
+            assert_eq!(classify_copy_kind(k), CopyLowering::InertMarker, "{k:?} is inert");
+            assert!(copy_kind_reaches_no_incref_passthrough(k), "{k:?} reaches passthrough");
         }
         for k in fresh {
             assert_eq!(
@@ -2011,9 +1787,7 @@ mod tests {
             vec![sliced],
             "slice",
         ));
-        entry.terminator = Terminator::Return {
-            values: vec![sliced],
-        };
+        entry.terminator = Terminator::Return { values: vec![sliced] };
 
         let res = AliasAnalysisResult::compute(&func);
         assert_ne!(
@@ -2063,17 +1837,9 @@ mod tests {
             alloc_roots: HashSet::new(),
         };
         assert_eq!(res.region_of(&add), MemRegion::ScalarRegister);
-        let idx = op(
-            OpCode::Index,
-            vec![ValueId(0), ValueId(1)],
-            vec![ValueId(2)],
-        );
+        let idx = op(OpCode::Index, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]);
         assert_eq!(res.region_of(&idx), MemRegion::ContainerElement);
-        let mcg = op(
-            OpCode::ModuleGetGlobal,
-            vec![ValueId(0), ValueId(1)],
-            vec![ValueId(2)],
-        );
+        let mcg = op(OpCode::ModuleGetGlobal, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]);
         assert_eq!(res.region_of(&mcg), MemRegion::ModuleDict);
     }
 
@@ -2107,46 +1873,27 @@ mod tests {
         );
         assert_eq!(
             res.region_of(&load),
-            MemRegion::TypedField {
-                class: "Point".into(),
-                offset: 8
-            }
+            MemRegion::TypedField { class: "Point".into(), offset: 8 }
         );
         // `store obj.<16> = val` of class Line (operands [obj, val], offset 16).
         let store = with_field_attrs(
-            op_kind(
-                OpCode::StoreAttr,
-                vec![ValueId(0), ValueId(2)],
-                vec![],
-                "store",
-            ),
+            op_kind(OpCode::StoreAttr, vec![ValueId(0), ValueId(2)], vec![], "store"),
             16,
             Some("Line"),
         );
         assert_eq!(
             res.region_of(&store),
-            MemRegion::TypedField {
-                class: "Line".into(),
-                offset: 16
-            }
+            MemRegion::TypedField { class: "Line".into(), offset: 16 }
         );
         // `store_init` is also a typed-slot store.
         let init = with_field_attrs(
-            op_kind(
-                OpCode::StoreAttr,
-                vec![ValueId(0), ValueId(2)],
-                vec![],
-                "store_init",
-            ),
+            op_kind(OpCode::StoreAttr, vec![ValueId(0), ValueId(2)], vec![], "store_init"),
             0,
             Some("Point"),
         );
         assert_eq!(
             res.region_of(&init),
-            MemRegion::TypedField {
-                class: "Point".into(),
-                offset: 0
-            }
+            MemRegion::TypedField { class: "Point".into(), offset: 0 }
         );
     }
 
@@ -2165,13 +1912,7 @@ mod tests {
         assert_eq!(res.region_of(&pure_move), MemRegion::ScalarRegister);
 
         // Known-local-alias kinds are pure moves too.
-        for kind in [
-            "copy",
-            "copy_var",
-            "store_var",
-            "load_var",
-            "identity_alias",
-        ] {
+        for kind in ["copy", "copy_var", "store_var", "load_var", "identity_alias"] {
             let c = op_kind(OpCode::Copy, vec![ValueId(0)], vec![ValueId(1)], kind);
             assert_eq!(
                 res.region_of(&c),
@@ -2205,12 +1946,7 @@ mod tests {
 
         // An opaque passthrough carrier (an unmapped SimpleIR op with no proven
         // memory-inert kind) keeps the conservative GenericHeap classification.
-        let opaque = op_kind(
-            OpCode::Copy,
-            vec![ValueId(0)],
-            vec![ValueId(1)],
-            "list_append",
-        );
+        let opaque = op_kind(OpCode::Copy, vec![ValueId(0)], vec![ValueId(1)], "list_append");
         assert_eq!(res.region_of(&opaque), MemRegion::GenericHeap);
     }
 
@@ -2231,10 +1967,7 @@ mod tests {
         );
         assert_eq!(
             res.region_of(&get),
-            MemRegion::TypedField {
-                class: "Account".into(),
-                offset: 24
-            }
+            MemRegion::TypedField { class: "Account".into(), offset: 24 }
         );
     }
 
@@ -2256,10 +1989,7 @@ mod tests {
             );
             assert_eq!(
                 res.region_of(&set),
-                MemRegion::TypedField {
-                    class: "Account".into(),
-                    offset: 32
-                },
+                MemRegion::TypedField { class: "Account".into(), offset: 32 },
                 "{kind} on operand[0]=obj is a TypedField"
             );
         }
@@ -2277,12 +2007,7 @@ mod tests {
         );
         assert_eq!(res.region_of(&load), MemRegion::GenericHeap);
         let store = with_field_attrs(
-            op_kind(
-                OpCode::StoreAttr,
-                vec![ValueId(0), ValueId(2)],
-                vec![],
-                "store",
-            ),
+            op_kind(OpCode::StoreAttr, vec![ValueId(0), ValueId(2)], vec![], "store"),
             8,
             None,
         );
@@ -2297,23 +2022,13 @@ mod tests {
         // classification is robust to it.)
         let res = empty_res();
         let ga = with_field_attrs(
-            op_kind(
-                OpCode::LoadAttr,
-                vec![ValueId(0)],
-                vec![ValueId(1)],
-                "get_attr",
-            ),
+            op_kind(OpCode::LoadAttr, vec![ValueId(0)], vec![ValueId(1)], "get_attr"),
             8,
             Some("Point"),
         );
         assert_eq!(res.region_of(&ga), MemRegion::GenericHeap);
         let sa = with_field_attrs(
-            op_kind(
-                OpCode::StoreAttr,
-                vec![ValueId(0), ValueId(2)],
-                vec![],
-                "set_attr_generic_ptr",
-            ),
+            op_kind(OpCode::StoreAttr, vec![ValueId(0), ValueId(2)], vec![], "set_attr_generic_ptr"),
             8,
             Some("Point"),
         );
@@ -2354,18 +2069,9 @@ mod tests {
 
     #[test]
     fn typed_field_may_alias_matrix() {
-        let pt0 = MemRegion::TypedField {
-            class: "Point".into(),
-            offset: 0,
-        };
-        let pt8 = MemRegion::TypedField {
-            class: "Point".into(),
-            offset: 8,
-        };
-        let ln0 = MemRegion::TypedField {
-            class: "Line".into(),
-            offset: 0,
-        };
+        let pt0 = MemRegion::TypedField { class: "Point".into(), offset: 0 };
+        let pt8 = MemRegion::TypedField { class: "Point".into(), offset: 8 };
+        let ln0 = MemRegion::TypedField { class: "Line".into(), offset: 0 };
         // Same class+offset ⇒ may-alias (object identity untracked, oblig. (b)).
         assert!(pt0.may_alias(&pt0.clone()));
         // Different offset ⇒ disjoint.

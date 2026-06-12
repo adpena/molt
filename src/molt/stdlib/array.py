@@ -10,7 +10,6 @@ _MOLT_ARRAY_APPEND = _require_intrinsic("molt_array_append")
 _MOLT_ARRAY_BUFFER_INFO = _require_intrinsic("molt_array_buffer_info")
 _MOLT_ARRAY_COUNT = _require_intrinsic("molt_array_count")
 _MOLT_ARRAY_DELITEM = _require_intrinsic("molt_array_delitem")
-_MOLT_ARRAY_DROP = _require_intrinsic("molt_array_drop")
 _MOLT_ARRAY_EXTEND = _require_intrinsic("molt_array_extend")
 _MOLT_ARRAY_FROMBYTES = _require_intrinsic("molt_array_frombytes")
 _MOLT_ARRAY_GETITEM = _require_intrinsic("molt_array_getitem")
@@ -173,11 +172,6 @@ class array:
         if tc == "u":
             return f"array('{tc}', {items!r})"
         return f"array('{tc}', {items!r})"
-
-    def __del__(self) -> None:
-        handle = getattr(self, "_handle", None)
-        if handle is not None:
-            _MOLT_ARRAY_DROP(handle)
 
 
 ArrayType = array

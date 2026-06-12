@@ -69,7 +69,9 @@ def venv_env(
     bin_dir = venv_bin_dir(venv)
     old_path = merged.get("PATH", "")
     merged["VIRTUAL_ENV"] = str(venv)
-    merged["PATH"] = str(bin_dir) if not old_path else f"{bin_dir}{os.pathsep}{old_path}"
+    merged["PATH"] = (
+        str(bin_dir) if not old_path else f"{bin_dir}{os.pathsep}{old_path}"
+    )
     return merged
 
 

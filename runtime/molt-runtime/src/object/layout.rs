@@ -948,6 +948,30 @@ pub(crate) unsafe fn function_set_globals_bits(_py: &PyToken<'_>, ptr: *mut u8, 
     }
 }
 
+/// Read the `__defaults__`/`__kwdefaults__` mutation version stamp (slot 10).
+///
+/// 0 means the function's defaults have never been mutated since creation, so a
+/// compile-time-baked literal default is still observably correct. Any
+/// non-zero value means a `func.__defaults__ = ...` / `func.__kwdefaults__ = ...`
+/// reassignment has occurred and a call must read the LIVE tuple/dict instead.
+pub(crate) unsafe fn function_defaults_version(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(10 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+/// Bump the `__defaults__`/`__kwdefaults__` mutation version stamp (slot 10).
+///
+/// Called from the single user-reachable mutation site (the generic function
+/// attribute setter for `__defaults__`/`__kwdefaults__`). NOT called from the
+/// function-creation path, so a freshly-created function keeps version 0. The
+/// counter is a plain u64; wrap-around requires 2^64 mutations and is harmless
+/// (the guard only distinguishes 0 from non-0).
+pub(crate) unsafe fn function_bump_defaults_version(ptr: *mut u8) {
+    unsafe {
+        let slot = ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64;
+        *slot = (*slot).wrapping_add(1);
+    }
+}
+
 pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut u8) -> u64 {
     unsafe {
         let existing = function_code_bits(func_ptr);

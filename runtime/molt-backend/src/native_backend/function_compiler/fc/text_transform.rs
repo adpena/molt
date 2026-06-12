@@ -29,37 +29,84 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       int_primary_vars: &BTreeSet<String>,
-                                       float_primary_vars: &BTreeSet<String>,
-                                       box_int_mask_var: Variable,
-                                       box_int_tag_var: Variable|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            int_primary_vars,
-            float_primary_vars,
-            bool_primary_vars,
-            nbc,
-            box_int_mask_var,
-            box_int_tag_var,
-        )
-    };
+    let var_get_boxed_overflow_safe =
+        |module: &mut ObjectModule,
+         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+         builder: &mut FunctionBuilder<'_>,
+         import_refs: &mut BTreeMap<&'static str, FuncRef>,
+         sealed_blocks: &mut BTreeSet<Block>,
+         vars: &BTreeMap<String, Variable>,
+         name: &str,
+         int_primary_vars: &BTreeSet<String>,
+         float_primary_vars: &BTreeSet<String>,
+         box_int_mask_var: Variable,
+         box_int_tag_var: Variable|
+         -> Option<crate::VarValue> {
+            var_get_boxed_overflow_safe_fn(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                name,
+                int_primary_vars,
+                float_primary_vars,
+                bool_primary_vars,
+                nbc,
+                box_int_mask_var,
+                box_int_tag_var,
+            )
+        };
+    // Compact emitter for the split-field-deforestation runtime helpers
+    // (`string_split_field_bounds`/`..._start`/`..._end`/`..._is_ascii`/
+    // `..._len_from_bounds`/`..._ord_at_bounds`/`..._to_int`): each reads N boxed
+    // operands, calls the same-named `molt_` symbol with N `I64` args + one `I64`
+    // result, and binds the single result. Their arg-arities differ but the
+    // shape is identical, so one closure removes the ~30-line-per-op boilerplate.
+    let emit_split_field_op =
+        |module: &mut ObjectModule,
+         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+         builder: &mut FunctionBuilder<'_>,
+         import_refs: &mut BTreeMap<&'static str, FuncRef>,
+         sealed_blocks: &mut BTreeSet<Block>,
+         symbol: &'static str,
+         op: &OpIR| {
+            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+            let mut arg_vals = Vec::with_capacity(args.len());
+            let mut sig = Vec::with_capacity(args.len());
+            for name in args {
+                let v = var_get_boxed_overflow_safe(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    &mut *sealed_blocks,
+                    vars,
+                    name,
+                    int_primary_vars,
+                    float_primary_vars,
+                    box_int_mask_var,
+                    box_int_tag_var,
+                )
+                .expect("split-field deforestation operand not found");
+                arg_vals.push(*v);
+                sig.push(types::I64);
+            }
+            let callee = SimpleBackend::import_func_id_split(
+                &mut *module,
+                &mut *import_ids,
+                symbol,
+                &sig,
+                &[types::I64],
+            );
+            let local_callee = module.declare_func_in_func(callee, builder.func);
+            let call = builder.ins().call(local_callee, &arg_vals);
+            let res = builder.inst_results(call)[0];
+            if let Some(out__) = op.out.as_ref() {
+                def_var_named(&mut *builder, vars, out__, res);
+            }
+        };
     match op.kind.as_str() {
         "bytearray_fill_range" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -1213,6 +1260,60 @@ pub(in crate::native_backend::function_compiler) fn handle_text_transform(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
+        "string_split_field_start" => emit_split_field_op(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            &mut *sealed_blocks,
+            "molt_string_split_field_start",
+            op,
+        ),
+        "string_split_field_end" => emit_split_field_op(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            &mut *sealed_blocks,
+            "molt_string_split_field_end",
+            op,
+        ),
+        "string_split_field_is_ascii" => emit_split_field_op(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            &mut *sealed_blocks,
+            "molt_string_split_field_is_ascii",
+            op,
+        ),
+        "string_split_field_len_from_bounds" => emit_split_field_op(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            &mut *sealed_blocks,
+            "molt_string_split_field_len_from_bounds",
+            op,
+        ),
+        "string_split_field_ord_at_bounds" => emit_split_field_op(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            &mut *sealed_blocks,
+            "molt_string_split_field_ord_at_bounds",
+            op,
+        ),
+        "string_split_field_to_int" => emit_split_field_op(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            &mut *sealed_blocks,
+            "molt_string_split_field_to_int",
+            op,
+        ),
         _ => unreachable!("handler invoked with non-matching op.kind"),
     }
 }

@@ -176,7 +176,11 @@ def test_recursion_caught():
 
 def test_env_var_round_trip_edge_cases():
     """Verify env var values for edge-case resource limits."""
-    from molt.capability_manifest import CapabilityManifest, ManifestError, ResourceLimits
+    from molt.capability_manifest import (
+        CapabilityManifest,
+        ManifestError,
+        ResourceLimits,
+    )
 
     m = CapabilityManifest(resources=ResourceLimits(max_duration=0.0, max_memory=0))
     with pytest.raises(ManifestError, match="max_memory must be positive"):
