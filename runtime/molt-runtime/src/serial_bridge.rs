@@ -123,7 +123,11 @@ extern "C" fn bridge_ensure_hashable(bits: u64, ctx: i32) -> i32 {
             x if x == molt_runtime_core::HashContextCode::DictKey as i32 => HashContext::DictKey,
             _ => HashContext::Bare,
         };
-        if ensure_hashable(_py, bits, ctx) { 1 } else { 0 }
+        if ensure_hashable(_py, bits, ctx) {
+            1
+        } else {
+            0
+        }
     })
 }
 

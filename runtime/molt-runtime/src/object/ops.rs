@@ -3574,15 +3574,8 @@ pub(crate) fn value_supports_mp_subscript(_py: &PyToken<'_>, obj_bits: u64) -> b
     };
     let tid = unsafe { object_type_id(ptr) };
     match tid {
-        TYPE_ID_DICT
-        | TYPE_ID_LIST
-        | TYPE_ID_LIST_INT
-        | TYPE_ID_LIST_BOOL
-        | TYPE_ID_TUPLE
-        | TYPE_ID_STRING
-        | TYPE_ID_BYTES
-        | TYPE_ID_BYTEARRAY
-        | TYPE_ID_RANGE
+        TYPE_ID_DICT | TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL | TYPE_ID_TUPLE
+        | TYPE_ID_STRING | TYPE_ID_BYTES | TYPE_ID_BYTEARRAY | TYPE_ID_RANGE
         | TYPE_ID_MEMORYVIEW => true,
         TYPE_ID_OBJECT => {
             // Dict subclasses and arbitrary user mappings: a real `__getitem__`
@@ -4345,8 +4338,7 @@ pub extern "C" fn molt_index(obj_bits: u64, key_bits: u64) -> u64 {
                     if let Some(cgi_name_bits) =
                         attr_name_bits_from_bytes(_py, b"__class_getitem__")
                     {
-                        let present =
-                            class_attr_lookup_raw_mro(_py, ptr, cgi_name_bits).is_some();
+                        let present = class_attr_lookup_raw_mro(_py, ptr, cgi_name_bits).is_some();
                         dec_ref_bits(_py, cgi_name_bits);
                         if present {
                             return crate::builtins::types::molt_generic_alias_new(

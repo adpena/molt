@@ -219,3 +219,68 @@ def test_main_apply_accepts_sentinel_kill_report(monkeypatch) -> None:
         apply=True,
         pathspecs=module.default_pathspecs(),
     )
+
+
+def test_run_process_sentinel_uses_json_when_capturing(monkeypatch, tmp_path) -> None:
+    module = _load_artifact_cleanup()
+    calls: list[list[str]] = []
+
+    def fake_guarded_completed_process(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    module.run_process_sentinel(tmp_path, capture_output=True)
+
+    assert calls
+    assert calls[0][1].endswith("tools/process_sentinel.py")
+    assert "--json" in calls[0]
+
+
+def test_main_json_includes_sentinel_events_without_raw_logs(
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_artifact_cleanup()
+
+    sentinel_event = {
+        "event": "process_sentinel_violation",
+        "violation": {"pgid": 123, "process_samples": [{"pid": 123}]},
+        "repro": {"pytest": {"current_test": "unit"}},
+    }
+
+    def fake_guarded_completed_process(cmd, **_kwargs):
+        if "process_sentinel.py" in cmd[1]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout=module.json.dumps(sentinel_event) + "\n",
+                stderr="sentinel text stderr\n",
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout="Removing target/\n",
+            stderr="git text stderr\n",
+        )
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    rc = module.main(["--apply", "--kill-processes", "--json"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    data = payload["data"]
+    assert data["sentinel_returncode"] == 1
+    assert data["sentinel_events"] == [sentinel_event]
+    assert data["entries"] == [{"action": "removed", "path": "target/"}]
+    assert "sentinel_stdout" not in data
+    assert "sentinel_stderr" not in data

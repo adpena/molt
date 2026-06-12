@@ -13,7 +13,7 @@
 /// Describes how to access a region of a flat buffer via shape, strides,
 /// offset, and optional validity mask. Movement ops modify views rather
 /// than copying data.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct View {
     /// Logical shape of this view.
     pub shape: Vec<usize>,
@@ -255,7 +255,7 @@ impl View {
 }
 
 /// A stack of views that tracks how a contiguous buffer is accessed.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ShapeTracker {
     pub views: Vec<View>,
 }
@@ -411,13 +411,24 @@ impl ShapeTracker {
         for (i, &(start, _)) in bounds.iter().enumerate() {
             new_offset += start as i64 * current.strides[i];
         }
+        let new_mask = current.mask.as_ref().map(|mask| {
+            mask.iter()
+                .zip(bounds.iter())
+                .zip(new_shape.iter())
+                .map(|((&(lo, hi), &(start, _)), &len)| {
+                    let start = start as i64;
+                    let len = len as i64;
+                    ((lo - start).max(0), (hi - start).min(len))
+                })
+                .collect()
+        });
 
         Self {
             views: vec![View::new(
                 new_shape,
                 current.strides.clone(),
                 new_offset,
-                current.mask.clone(),
+                new_mask,
             )],
         }
     }
@@ -432,13 +443,20 @@ impl ShapeTracker {
 
         // Adjust offset: flip moves the start pointer to the last element
         let new_offset = current.offset + (current.shape[axis] as i64 - 1) * current.strides[axis];
+        let new_mask = current.mask.as_ref().map(|mask| {
+            let mut flipped_mask = mask.clone();
+            let (lo, hi) = flipped_mask[axis];
+            let axis_len = current.shape[axis] as i64;
+            flipped_mask[axis] = (axis_len - hi, axis_len - lo);
+            flipped_mask
+        });
 
         Self {
             views: vec![View::new(
                 current.shape.clone(),
                 new_strides,
                 new_offset,
-                current.mask.clone(),
+                new_mask,
             )],
         }
     }

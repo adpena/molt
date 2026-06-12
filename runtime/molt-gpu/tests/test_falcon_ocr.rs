@@ -12,7 +12,9 @@
 use molt_gpu::device::cpu::interpret;
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::PrimitiveOp;
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
@@ -33,6 +35,7 @@ fn run_chain(ops: Vec<FusedOp>, bufs: Vec<BufferBinding>, input_bufs: Vec<Vec<u8
     all_bufs.extend(input_bufs);
 
     let kernel = FusedKernel {
+        body: Default::default(),
         ops,
         bufs,
         grid: [n_out as u32, 1, 1],
@@ -62,11 +65,12 @@ fn test_falcon_rms_norm_unit_vector() {
 
     // Step 1: x^2
     let k1 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -92,11 +96,13 @@ fn test_falcon_rms_norm_unit_vector() {
 
     // Step 2: REDUCE_SUM(x^2)
     let k2 = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -125,17 +131,17 @@ fn test_falcon_rms_norm_unit_vector() {
     let rms = ((mean_sq as f64) + eps).sqrt();
     let inv_rms = 1.0 / rms;
 
-    let ops_norm = vec![FusedOp {
-        op: PrimitiveOp::Mul,
-        srcs: vec![
+    let ops_norm = vec![FusedOp::elementwise(
+        PrimitiveOp::Mul,
+        vec![
             FusedSrc::Buf(1),
             FusedSrc::Const {
                 val: inv_rms,
                 dtype: DType::Float32,
             },
         ],
-        dst_dtype: DType::Float32,
-    }];
+        DType::Float32,
+    )];
 
     let bufs_norm = vec![
         BufferBinding {
@@ -178,17 +184,17 @@ fn test_falcon_rms_norm_scaling() {
     let inv_rms = 1.0 / (mean_sq + eps).sqrt();
 
     let result = run_chain(
-        vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![
+        vec![FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![
                 FusedSrc::Buf(1),
                 FusedSrc::Const {
                     val: inv_rms,
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        }],
+            DType::Float32,
+        )],
         vec![
             BufferBinding {
                 buf_id: 0,
@@ -231,23 +237,23 @@ fn test_falcon_rope_identity_at_pos_zero() {
     // out_real = x_real * cos - x_imag * sin = x_real * 1 - x_imag * 0 = x_real
     let ops_real = vec![
         // x_real * cos
-        FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(3)],
-            dst_dtype: DType::Float32,
-        },
+        FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(3)],
+            DType::Float32,
+        ),
         // x_imag * sin
-        FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(2), FusedSrc::Buf(4)],
-            dst_dtype: DType::Float32,
-        },
+        FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(2), FusedSrc::Buf(4)],
+            DType::Float32,
+        ),
         // x_real * cos - x_imag * sin
-        FusedOp {
-            op: PrimitiveOp::Sub,
-            srcs: vec![FusedSrc::Op(0), FusedSrc::Op(1)],
-            dst_dtype: DType::Float32,
-        },
+        FusedOp::elementwise(
+            PrimitiveOp::Sub,
+            vec![FusedSrc::Op(0), FusedSrc::Op(1)],
+            DType::Float32,
+        ),
     ];
 
     let bufs = vec![
@@ -317,21 +323,21 @@ fn test_falcon_rope_90_degree_rotation() {
 
     // out_real = x_real * cos - x_imag * sin
     let ops = vec![
-        FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(3)],
-            dst_dtype: DType::Float32,
-        },
-        FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(2), FusedSrc::Buf(4)],
-            dst_dtype: DType::Float32,
-        },
-        FusedOp {
-            op: PrimitiveOp::Sub,
-            srcs: vec![FusedSrc::Op(0), FusedSrc::Op(1)],
-            dst_dtype: DType::Float32,
-        },
+        FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(3)],
+            DType::Float32,
+        ),
+        FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(2), FusedSrc::Buf(4)],
+            DType::Float32,
+        ),
+        FusedOp::elementwise(
+            PrimitiveOp::Sub,
+            vec![FusedSrc::Op(0), FusedSrc::Op(1)],
+            DType::Float32,
+        ),
     ];
 
     let bufs = vec![
@@ -413,16 +419,17 @@ fn test_falcon_attention_dot_scale() {
     let scale = 1.0 / (2.0f64).sqrt();
 
     let ops = vec![
-        FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        },
-        FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Op(0)],
-            dst_dtype: DType::Float32,
-        },
+        FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        ),
+        FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Op(0)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n], 0),
+        ),
     ];
 
     let bufs = vec![
@@ -470,11 +477,11 @@ fn test_falcon_attention_mask_application() {
     let mask = [0.0f32, -1.0e9, 0.0, 0.0]; // Block position 1
     let n = 4;
 
-    let ops = vec![FusedOp {
-        op: PrimitiveOp::Add,
-        srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-        dst_dtype: DType::Float32,
-    }];
+    let ops = vec![FusedOp::elementwise(
+        PrimitiveOp::Add,
+        vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+        DType::Float32,
+    )];
 
     let bufs = vec![
         BufferBinding {
@@ -519,17 +526,17 @@ fn test_falcon_squared_relu_gate_positive() {
     let up = 3.0f32;
 
     // Step 1: MAX(gate, 0) = 2.0
-    let ops1 = vec![FusedOp {
-        op: PrimitiveOp::Max,
-        srcs: vec![
+    let ops1 = vec![FusedOp::elementwise(
+        PrimitiveOp::Max,
+        vec![
             FusedSrc::Buf(1),
             FusedSrc::Const {
                 val: 0.0,
                 dtype: DType::Float32,
             },
         ],
-        dst_dtype: DType::Float32,
-    }];
+        DType::Float32,
+    )];
     let bufs1 = vec![
         BufferBinding {
             buf_id: 0,
@@ -548,11 +555,11 @@ fn test_falcon_squared_relu_gate_positive() {
     assert!((relu_result[0] - 2.0).abs() < 1e-6);
 
     // Step 2: gate^2
-    let ops2 = vec![FusedOp {
-        op: PrimitiveOp::Mul,
-        srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-        dst_dtype: DType::Float32,
-    }];
+    let ops2 = vec![FusedOp::elementwise(
+        PrimitiveOp::Mul,
+        vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+        DType::Float32,
+    )];
     let bufs2 = vec![
         BufferBinding {
             buf_id: 0,
@@ -571,11 +578,11 @@ fn test_falcon_squared_relu_gate_positive() {
     assert!((sq_result[0] - 4.0).abs() < 1e-6);
 
     // Step 3: gate^2 * up = 4.0 * 3.0 = 12.0
-    let ops3 = vec![FusedOp {
-        op: PrimitiveOp::Mul,
-        srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-        dst_dtype: DType::Float32,
-    }];
+    let ops3 = vec![FusedOp::elementwise(
+        PrimitiveOp::Mul,
+        vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+        DType::Float32,
+    )];
     let bufs3 = vec![
         BufferBinding {
             buf_id: 0,
@@ -612,17 +619,17 @@ fn test_falcon_squared_relu_gate_positive() {
 fn test_falcon_squared_relu_gate_negative() {
     // gate=-1.0 -> relu(-1.0) = 0.0 -> 0^2 * anything = 0.0
     let result = run_chain(
-        vec![FusedOp {
-            op: PrimitiveOp::Max,
-            srcs: vec![
+        vec![FusedOp::elementwise(
+            PrimitiveOp::Max,
+            vec![
                 FusedSrc::Buf(1),
                 FusedSrc::Const {
                     val: 0.0,
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        }],
+            DType::Float32,
+        )],
         vec![
             BufferBinding {
                 buf_id: 0,
@@ -657,11 +664,11 @@ fn test_falcon_residual_add() {
     let n = 4;
 
     let result = run_chain(
-        vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+        vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         vec![
             BufferBinding {
                 buf_id: 0,
@@ -712,11 +719,11 @@ fn test_falcon_softmax_with_causal_mask() {
     let n = scores.len();
 
     // Add mask to scores
-    let ops_add = vec![FusedOp {
-        op: PrimitiveOp::Add,
-        srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-        dst_dtype: DType::Float32,
-    }];
+    let ops_add = vec![FusedOp::elementwise(
+        PrimitiveOp::Add,
+        vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+        DType::Float32,
+    )];
     let bufs_add = vec![
         BufferBinding {
             buf_id: 0,
@@ -810,11 +817,12 @@ fn test_falcon_rms_norm_renders_wgsl() {
     use molt_gpu::render::Renderer;
 
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -850,11 +858,12 @@ fn test_falcon_rms_norm_renders_cuda() {
     use molt_gpu::render::Renderer;
 
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -890,11 +899,12 @@ fn test_falcon_rms_norm_renders_msl() {
     use molt_gpu::render::Renderer;
 
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mul,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,

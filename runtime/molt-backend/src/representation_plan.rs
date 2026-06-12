@@ -1,19 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ir::{FunctionIR, OpIR};
+use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
 use crate::tir::lower_from_simple::lower_to_tir;
 use crate::tir::lower_to_lir::lower_function_to_lir;
 use crate::tir::lower_to_simple::SimpleValueNames;
+use crate::tir::ops::OpCode;
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
-use crate::tir::blocks::{BlockId, Terminator};
-#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
-use crate::tir::ops::OpCode;
 
 /// Scalar lane derived from the backend-facing TIR/LIR contract.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -534,7 +532,6 @@ pub(crate) fn value_range_for(
 /// missed promotion is at worst a perf bail (a spurious-but-harmless DecRef on a
 /// value that turns out inline — the runtime `molt_dec_ref_obj` fast-paths
 /// non-pointer tags), never an unsound carrier.
-#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
 pub(crate) fn raw_i64_safe_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::passes::value_range::ValueRangeResult,
@@ -564,7 +561,6 @@ pub(crate) fn raw_i64_safe_values_for(
 /// all-incomings path. Excluding phis here loses no real promotion: the only
 /// phis the range analysis proves are AddRec IVs, whose incomings it also
 /// proves.
-#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
 fn raw_i64_safe_value_seed(
     tir_func: &TirFunction,
     vr: &crate::tir::passes::value_range::ValueRangeResult,
@@ -642,7 +638,6 @@ fn raw_i64_safe_value_seed(
 /// (the legacy name-keyed chain marked them unconditionally raw-safe; this
 /// reproduces exactly that population, and only that population — bounded GPU
 /// index intrinsics, never an arbitrary runtime call).
-#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
 fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::HashSet<ValueId> {
     let mut values = std::collections::HashSet::new();
     for block in tir_func.blocks.values() {
@@ -690,7 +685,6 @@ fn gpu_intrinsic_raw_i64_values(tir_func: &TirFunction) -> std::collections::Has
 /// subset of the values that genuinely fit i64 (each proven by value-range or a
 /// structurally-bounded GPU index), propagating across value-identity edges
 /// cannot introduce an unsound carrier.
-#[cfg(any(feature = "native-backend", feature = "llvm", feature = "wasm-backend", test))]
 fn propagate_raw_i64_safe_values(
     tir_func: &TirFunction,
     seed: std::collections::HashSet<ValueId>,
@@ -2979,8 +2973,9 @@ fn checked_loop_seed_names(
     let mut changed = true;
     while changed {
         changed = false;
-        let conforming_source =
-            |s: &str, members: &BTreeSet<&str>| members.contains(s) || bounded_i64_names.contains_key(s);
+        let conforming_source = |s: &str, members: &BTreeSet<&str>| {
+            members.contains(s) || bounded_i64_names.contains_key(s)
+        };
         let snapshot: Vec<&str> = members.iter().copied().collect();
         for m in snapshot {
             let ok = if let Some(args) = sum_args.get(m) {
@@ -3151,7 +3146,7 @@ fn integer_only_result_op(kind: &str) -> bool {
 fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
     matches!(
         kind,
-        "async_sleep_new"
+        "async_sleep"
             | "asyncgen_new"
             | "bound_method_new"
             | "build_dict"
@@ -3376,7 +3371,6 @@ pub(crate) mod test_fixtures {
             ],
         )
     }
-
 }
 
 #[cfg(test)]
@@ -4288,7 +4282,9 @@ mod tests {
 
     use crate::tir::blocks::{LoopRole, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
-    use crate::tir::ops::{AttrDict, AttrValue as TirAttrValue, Dialect, OpCode as TirOpCode, TirOp};
+    use crate::tir::ops::{
+        AttrDict, AttrValue as TirAttrValue, Dialect, OpCode as TirOpCode, TirOp,
+    };
     use crate::tir::types::TirType;
     use crate::tir::values::TirValue;
 
@@ -4417,9 +4413,16 @@ mod tests {
         let int_primary = plan.primary_name_sets().int;
 
         for name in [
-            "_bb1_arg0", "_bb1_arg1", "_bb1_arg3", "_bb1_arg4", // fast slots
-            "_v16", "_v17", "_v41", "_v42", // their loads
-            "_v22", "_v25", // checked sums
+            "_bb1_arg0",
+            "_bb1_arg1",
+            "_bb1_arg3",
+            "_bb1_arg4", // fast slots
+            "_v16",
+            "_v17",
+            "_v41",
+            "_v42", // their loads
+            "_v22",
+            "_v25", // checked sums
         ] {
             assert!(
                 int_primary.contains(name),
@@ -4427,9 +4430,17 @@ mod tests {
             );
         }
         for name in [
-            "_bb1_arg2", "_v40", "_v48", // overflow-flag lane (bool)
-            "_bb5_arg0", "_v51", // exit merge (fed by the boxed slow loop)
-            "_bb7_arg0", "_bb7_arg1", "_v29", "_v30", "v114", "v118", // slow loop
+            "_bb1_arg2",
+            "_v40",
+            "_v48", // overflow-flag lane (bool)
+            "_bb5_arg0",
+            "_v51", // exit merge (fed by the boxed slow loop)
+            "_bb7_arg0",
+            "_bb7_arg1",
+            "_v29",
+            "_v30",
+            "v114",
+            "v118", // slow loop
         ] {
             assert!(
                 !int_primary.contains(name),
@@ -4443,12 +4454,13 @@ mod tests {
         // loses its win.
         let bool_primary = plan.primary_name_sets().bool_;
         for name in [
-            "_v46", "_v47", // checked_add overflow flags
-            "_v48",  // or fan-in
-            "_v40",  // of-slot load
-            "_v44",  // not(of)
-            "_v45",  // and(cond, not_of) — the break condition
-            "v111",  // the guard compare
+            "_v46",
+            "_v47",      // checked_add overflow flags
+            "_v48",      // or fan-in
+            "_v40",      // of-slot load
+            "_v44",      // not(of)
+            "_v45",      // and(cond, not_of) — the break condition
+            "v111",      // the guard compare
             "_bb1_arg2", // the carried of slot
         ] {
             assert!(
@@ -4654,9 +4666,10 @@ mod tests {
         let r = func2.fresh_value();
         func2.value_types.insert(r, TirType::I64);
         let mut other = tir_op(TirOpCode::Call, vec![], vec![r]);
-        other
-            .attrs
-            .insert("s_value".into(), TirAttrValue::Str("molt_some_runtime".into()));
+        other.attrs.insert(
+            "s_value".into(),
+            TirAttrValue::Str("molt_some_runtime".into()),
+        );
         {
             let entry = func2.blocks.get_mut(&func2.entry_block).unwrap();
             entry.ops = vec![other];

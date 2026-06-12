@@ -112,7 +112,11 @@ fn bench_struct_pattern_removes_all_stores() {
     assert_eq!(n_stores(&func), 0, "no StoreAttr survives");
     // The alloc itself is left for DCE (it is now unreferenced and
     // ObjectNewBoundStack is not side-effecting).
-    assert_eq!(n_allocs(&func), 1, "SROA removes stores, DCE removes the alloc");
+    assert_eq!(
+        n_allocs(&func),
+        1,
+        "SROA removes stores, DCE removes the alloc"
+    );
 }
 
 /// Same pattern but the stored value is a function parameter typed `Bool` — an
@@ -207,7 +211,10 @@ fn blocked_when_object_passed_to_call() {
         entry.terminator = Terminator::Return { values: vec![] };
     }
     let stats = run_fresh(&mut func);
-    assert_eq!(stats.ops_removed, 0, "passing the object to a call blocks SROA");
+    assert_eq!(
+        stats.ops_removed, 0,
+        "passing the object to a call blocks SROA"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

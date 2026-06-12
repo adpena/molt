@@ -1,5 +1,52 @@
 # Repository Guidelines
 
+## HIGHEST GUIDING PRINCIPLES: 100-Year Optimal Engineering (Turn Blocker)
+
+These principles outrank every lower-level convenience rule. Read them before
+touching code, docs, tests, benchmarks, or roadmap state.
+
+- Build future technology, not short-lived scaffolding. Every landing point must
+  compound toward a 100-year production architecture: small binaries, fastest
+  startup, fastest compute, deterministic correctness, portable execution, and
+  a codebase that gets simpler as it grows.
+- Move fast and break the wrong abstractions. Speed is achieved by deleting
+  debt, collapsing layers, replacing accidental complexity with math-tight
+  primitives, and landing end-state structures early. Do not preserve broken
+  seams merely because existing tests or callers rely on them.
+- Take structural detours when they improve the system dynamics. Research the
+  whole codebase as needed to understand the pattern behind the local bug, then
+  fix the bug class, not the symptom. A detour is justified when it deletes a
+  source of churn, unifies authority, removes fragility, or opens a faster path
+  for future work.
+- Treat the whole system as math. Prefer the geometrically, algebraically, and
+  calculus-optimal structure: one authority per invariant, one storage home per
+  value, one import transaction per module-state transition, one guard owner per
+  process tree, one typed fact path through frontend, IR, optimizer, backend,
+  runtime, and tooling. If two paths can disagree, delete or unify one.
+- No legacy code as a compatibility crutch. No backward compatibility inside
+  Molt internals, no stale aliases, no duplicate dispatch surfaces, no opt-in
+  old behavior, no hidden fallbacks, no temporary wrappers. When a path is
+  touched, delete the legacy lane or structurally reconcile it in the same arc.
+- Maximize verified compatibility only inside Molt's AOT contract. Pursue full
+  Python 3.12+ stdlib and ecosystem compatibility where it does not require
+  unrestricted dynamic execution, runtime monkeypatching, reflection-heavy host
+  fallback, or behavior outside the verified subset contract. Unsupported
+  dynamism must fail closed with explicit diagnostics.
+- All OS, architecture, backend, and Python-version behavior must be explicit.
+  Gate semantics by Python 3.12/3.13/3.14, target, host OS, architecture, and
+  capability surface. Accidental ambient behavior is a bug.
+- Quality gates are non-negotiable: differential tests, conformance suites,
+  CPython regrtest lanes, native/WASM/LLVM/Luau target parity, memory custody,
+  sanitizer/runtime checks, and benchmarks must all become mandatory evidence
+  for claimed support. Do not claim completion until the relevant gates pass.
+- Performance is part of correctness. Molt must be faster than CPython on every
+  claimed benchmark and trend toward or beyond PyPy and Codon where comparable.
+  If a feature is correct but structurally slow, the task is not complete.
+- Accelerate developer velocity by deleting debt, collapsing duplicate
+  authorities, generating evidence, and making the correct path mechanical.
+  Documentation, AGENTS guidance, indexes, specs, matrices, tests, and tooling
+  are part of the compiler architecture and must move with the code.
+
 ## ABSOLUTE TOP PRIORITY: No Shortcuts, No Partial Implementations (Turn Blocker)
 
 **Engineer like Chris Lattner / Mojo / NASA. Never take a shortcut, workaround, or "simpler" implementation when the structurally correct fix is harder.** This rule overrides every comfort instinct.
@@ -39,7 +86,11 @@ These are real shortcuts caught and reversed in past sessions. Do not repeat the
 
 The unit of work is the *complete structural change*, not the smallest committable diff. When the design says "Phase 1 = 1a + 1b + 1c + 1d", Phase 1 is not done until 1d lands. Intermediate commits are acceptable only when each is itself a complete structural piece (not a partial fix toward the next piece) and a baton-pass note documents the remaining unfinished arc.
 
-If the structural change is too large for one session, the honest paths are: (a) do a smaller, fully-complete piece that delivers measurable value on its own, OR (b) leave a clean baton-pass note and stop. Splitting the same structural change into "I'll do half this session and the other half next session" is the shortcut this policy rejects.
+If a structural change is too large for one session, carve out a smaller
+complete structural primitive that moves the end-state forward and keep going.
+Leave a baton-pass note only for a genuine external blocker or a proof lane that
+cannot run in the current environment. Splitting the same structural change into
+"half now, half later" is the shortcut this policy rejects.
 
 ### Year-5 end-state architecture first
 
@@ -49,12 +100,123 @@ The shortest wall clock path is architectural convergence: typed IR coherence, r
 
 Intermediate commits are acceptable only when each one is itself a complete, end-state-compatible structural primitive with durable tests and documentation. Never use the roadmap's yearly ordering as permission to defer correctness, performance, cross-backend parity, memory safety, or developer-experience automation that the final architecture requires.
 
+### Codebase Authority, Documentation Routing, And Legacy Deletion
+
+- The live codebase plus executable tests are the sole source of truth. Roadmap,
+  status, design, spec, matrix, and memory documents are routing aids and stale
+  hypotheses until verified against current code, current tests, and current
+  generated artifacts.
+- Update documentation as you go. Any change that moves supported semantics,
+  backend contracts, compiler architecture, compatibility claims, validation
+  gates, or roadmap priority must update the relevant docs in the same change:
+  `ROADMAP.md`, `docs/spec/STATUS.md`, `docs/spec/README.md`, `docs/INDEX.md`,
+  and the relevant spec index/matrix listed below.
+- No backward compatibility ever inside Molt internals. Do not preserve legacy
+  code paths, compatibility aliases, opt-in old behavior, env-var fallback
+  gates, duplicated dispatch tables, stale shims, or "temporary" wrappers. If a
+  touched path has a legacy lane, delete or structurally reconcile it in the
+  same arc.
+- Streamline and refactor as you go. A structural fix is incomplete if it leaves
+  the old source of truth beside the new one. When migration is too large for
+  the current session, land a smaller complete structural primitive or fail
+  closed; baton-pass notes are for genuine external blockers, not for preserving
+  hybrid implementations.
+- Generated docs and matrices remain generated-only. Update their source data
+  and run the generator; never hand-edit generated semantic status.
+- When docs conflict, code/tests win. Resolve the docs before claiming the work
+  complete, and mark stale claims as stale instead of preserving ambiguity.
+
+### Source-Of-Information Map
+
+Read these first instead of rediscovering project structure:
+
+- Code authority:
+  - `runtime/molt-backend/src/tir/` for TIR, pass manager, analyses, lowering,
+    verification, and generated op-kind facts.
+  - `runtime/molt-backend/src/tir/pass_manager.rs`,
+    `runtime/molt-backend/src/tir/module_phase.rs`, and
+    `runtime/molt-backend/src/tir/drop_phase.rs` for pipeline order,
+    module-level transforms, and terminal RC drop insertion.
+  - `runtime/molt-backend/src/tir/op_kinds.toml` for the canonical op-kind
+    vocabulary, effect rows, ownership classifiers, and generated backend/
+    frontend tables.
+  - `runtime/molt-backend/src/tir/op_kinds_generated.rs` and
+    `src/molt/frontend/lowering/op_kinds_generated.py` for generated op-kind
+    tables; update `op_kinds.toml` plus `tools/gen_op_kinds.py`, not generated
+    outputs by hand.
+  - `runtime/molt-backend/src/representation_plan.rs` for scalar/container
+    representation authority shared by backends.
+  - `runtime/molt-backend/src/native_backend/`,
+    `runtime/molt-backend/src/llvm_backend/`, `runtime/molt-backend/src/wasm.rs`,
+    and `runtime/molt-backend/src/luau.rs` for backend-specific lowering.
+  - `runtime/molt-runtime/src/intrinsics/manifest.pyi`,
+    `runtime/molt-runtime/src/intrinsics/generated.rs`, and
+    `src/molt/_intrinsics.pyi` for intrinsic authority.
+  - `src/molt/frontend/` and `src/molt/frontend/lowering/` for frontend and
+    SimpleIR/TIR emission contracts.
+  - `src/molt/backend_daemon_custody.py` for backend-daemon identity sidecar
+    parsing, command verification, health-probe verification, legacy `.pid`
+    cleanup, and the only authorized daemon signal/escalation primitive used by
+    CLI and benchmark cleanup paths.
+  - `runtime/molt-gpu/src/` for tinygrad-conformant GPU primitives,
+    ShapeTracker, scheduling/fusion, CPU/Metal/WebGPU execution, MLIR/MIL/text
+    renderers, and materialization/view-lowering contracts.
+- Documentation entry points:
+  - `docs/CANONICALS.md`, `docs/INDEX.md`, and `docs/spec/README.md` are the
+    navigation roots.
+  - `docs/spec/STATUS.md` is a current-state summary, but must be refreshed
+    from code/tests whenever touched.
+  - `ROADMAP.md` is a forward plan, but must be refreshed from code/tests and
+    current benchmark/differential evidence whenever touched.
+  - `docs/design/foundation/00_integrated_parallel_program.md`,
+    `01_E1-activation.md`, `02_S5-memssa.md`, `03_E3-E5-ipo.md`,
+    `04_L4-loops.md`, `20_rc-ownership-drop-insertion.md`,
+    `21_decomposition_program.md`, `25_op_kind_registry.md`,
+    `27_perceus_borrow_inference.md`, `44_frontend-architecture-f2.md`, and
+    `45_exception_region_ownership.md` are foundation routing docs, not proof.
+	  - `docs/architecture/gpu-primitive-stack.md`,
+	    `docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md`, and
+	    `docs/design/foundation/16_cpython-surface-stdlib-gpu-gap-audit.md` route
+	    GPU primitive, MLIR, and tinygrad/DFlash-adjacent status.
+	  - `docs/BENCHMARKING.md`, `bench/friends/manifest.toml`,
+	    `bench/friends/README.md`, and `tools/bench_friends.py` route friend-suite
+	    benchmarking. The upstream tinygrad compatibility/perf lane is
+	    `tinygrad_off_the_shelf`, driven by `tools/tinygrad_off_shelf_adapter.py`;
+	    keep it pinned before enabling and use it to compile/profile unmodified
+	    tinygrad code for GPU, MLIR, and typed runtime upload/readback work.
+- Compatibility/spec matrices:
+  - `docs/spec/areas/compat/README.md` is the compatibility documentation root.
+  - `docs/spec/areas/compat/contracts/verified_subset_contract.md`,
+    `dynamic_execution_policy_contract.md`, `import_system_contract.md`,
+    `compatibility_fallback_contract.md`, `cpython_bridge_policy.md`,
+    `package_abi_contract.md`, and `libmolt_extension_abi_contract.md` define
+    compatibility policy.
+  - `docs/spec/areas/compat/surfaces/language/language_surface_matrix.md`,
+    `semantic_behavior_matrix.md`, `syntactic_features_matrix.md`,
+    `type_coverage_matrix.md`,
+    `core_language_pep_coverage.generated.md`, and
+    `generator_api_coverage.generated.md` route language coverage.
+  - `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md`,
+    `stdlib_surface_matrix.md`, `stdlib_intrinsics_backing.md`,
+    `stdlib_intrinsics_audit.generated.md`,
+    `stdlib_platform_availability.generated.md`, and
+    `asyncio_surface.generated.md` route stdlib coverage.
+  - `docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md`,
+    `c_api_symbol_matrix.md`, and `libmolt_c_api_surface.md` route C-API/
+    `libmolt` work.
+  - `docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md`
+    routes third-party ecosystem claims.
+  - `docs/spec/areas/compiler/backend_lir_representation.generated.md` and
+    `docs/spec/areas/compiler/luau_support_matrix.generated.md` route backend
+    representation and Luau support evidence.
+
 ## Top Priority: Tinygrad + DFlash Fidelity (Non-Negotiable, Turn Blocker)
 - Exact tinygrad semantics and API shape are the public ML contract. No drift is acceptable.
 - Exact DFlash algorithmic fidelity is non-negotiable when implementing DFlash support. Do not substitute generic speculative decoding and call it DFlash.
 - `molt.gpu` and `molt.gpu.dflash` may provide the implementation substrate, but user-facing tensor/model behavior must stay 1:1 with tinygrad where tinygrad is the source of truth.
 - DFlash implementations must remain faithful to the paper and official project requirements, including target-conditioned draft behavior, verifier/drafter separation, and any required conditioning/KV contracts. If a required trained drafter does not exist for a model, raise that limitation explicitly rather than faking support.
-- If current code drifts from tinygrad or DFlash source-of-truth behavior, stop and clean up the drift before adding more surface area.
+- If current code drifts from tinygrad or DFlash source-of-truth behavior,
+  prioritize cleaning up the drift before adding more surface area.
 
 ## ABSOLUTE NON-NEGOTIABLE: Zero Workarounds Policy (Turn Blocker)
 - This is an early alpha project. We are the sole users and developers.
@@ -64,7 +226,8 @@ Intermediate commits are acceptable only when each one is itself a complete, end
 - No `catch_unwind` to swallow panics. No `if has_loop { return original_ops }` bypasses. No "preserve original ops until Phase N". Implement Phase N now.
 - Full deterministic CPython >= 3.12 parity (except: no exec/eval/compile, no runtime monkeypatching, no unrestricted reflection).
 - All backends (native/Cranelift, WASM, LLVM) must have parity.
-- NEVER revert or discard unstaged partner changes. Pause and wait.
+- NEVER revert or discard unstaged partner changes. Integrate around them or
+  isolate your own changes; ask only when partner WIP makes the task impossible.
 - Always `git add` immediately after writing files (commit hooks are read-only by default; explicit staging keeps owned changes atomic).
 
 ## Top Priority: Chris Lattner Compiler Engineering Standards (Feb 18, 2026) (Non-Negotiable, Turn Blocker)
@@ -81,7 +244,9 @@ Intermediate commits are acceptable only when each one is itself a complete, end
 - Documentation is operational infrastructure: when architecture or semantics move, update design docs/spec notes/invariants in the same change so humans and AI can safely extend the system.
 - AI should be used aggressively for mechanical rewrites, migrations, and boilerplate implementation, while human/agent judgment is focused up-stack on design, abstraction choice, and system evolution.
 - Provenance and licensing hygiene are mandatory for generated/translated code: avoid uncertain lineage, document source inspiration when material, and prefer clean re-derivation over risky copying.
-- If any required quality bar above cannot be met in the current turn, stop immediately and raise a blocker with: specific missing guarantees, risk impact, and a concrete closure plan.
+- If any required quality bar above cannot be met in the current turn, record
+  the missing guarantee, risk impact, and concrete closure plan, then continue
+  with non-colliding structural work that improves the same end-state.
 
 ## Hard Gate: Canonical Artifact Locations And Cleanup (Non-Negotiable, Urgent)
 - Local development may use repo-local storage, but build artifacts, caches, tmp files, logs, benchmark outputs, and debugging outputs MUST live in canonical locations rather than ad hoc paths scattered across the tree.
@@ -120,14 +285,17 @@ Intermediate commits are acceptable only when each one is itself a complete, end
   - If a workflow would generate unusually large artifacts, put them under the canonical root for that class and clean them up once the evidence is no longer needed.
 
 ## Git Workflow Policy (Non-Negotiable)
-- Always develop on `main` and keep all local work based directly on `main`.
-- Always push directly to `main` (`origin/main`) by default.
-- Never create branches or worktrees without explicit user approval for that specific task.
-- If explicit approval is missing, stop and ask before running commands such as `git switch -c`, `git checkout -b`, `git branch`, or `git worktree add`.
+- Optimize for velocity on the live codebase. Develop from current `main` by
+  default and keep local changes staged by ownership slice.
+- Push directly to `main` (`origin/main`) by default when asked to publish.
+- Branches and worktrees are allowed when they accelerate non-colliding
+  implementation, recovery, or swarm work. Name them clearly, keep them based on
+  current `main`, and converge useful changes back without preserving legacy
+  compatibility lanes.
 
 ## Default Execution Mode (Non-Negotiable)
 - Default to multi-hour autonomous execution behavior: work in long uninterrupted bursts, batch multiple related product slices per turn, and use minimal worker orchestration.
-- Proactively clean stale Codex and `rbx-studio-mcp` processes when needed to keep execution stable and deterministic.
+- Proactively clean stale Molt-owned worker groups when needed to keep execution stable and deterministic, but never terminate the Codex app, app-server, renderer, node-repl, or ancestor/control-plane process group as cleanup collateral.
 - Do not stop at neat local checkpoints. Only stop for a real blocker, a safety constraint, or when remote proof on tertiary is the next required step.
 - Do not emit tranche summaries after every small fix. Keep going until a substantial bundled burndown is complete.
 
@@ -150,14 +318,18 @@ Intermediate commits are acceptable only when each one is itself a complete, end
 - Runtime-known module bootstrap has one authority: `MODULE_IMPORT` plus the runtime import path. Do not split ownership between frontend cache/init special cases and runtime import semantics.
 - Bootstrap-critical builtin type objects (`classmethod`, `staticmethod`, `property`, and similar descriptors) must come from explicit runtime bootstrap primitives/intrinsics. Do not probe-construct Python objects in stdlib bootstrap code to discover their types.
 - When touching `src/molt/stdlib/builtins.py`, `src/molt/stdlib/sys.py`, `src/molt/stdlib/importlib/**`, `src/molt/stdlib/_intrinsics.py`, or frontend import lowering, add/maintain native end-to-end regressions for the exact bootstrap shape.
-- If a bootstrap fix depends on control-flow quirks in a rapidly changing frontend/backend file, stop and factor the contract into a first-class primitive instead.
+- If a bootstrap fix depends on control-flow quirks in a rapidly changing
+  frontend/backend file, factor the contract into a first-class primitive first.
 
 ## Hard Gate: Rust-Only Stdlib Turn Blocker (Non-Negotiable)
 - If a change adds or modifies stdlib behavior in `src/molt/stdlib/**`, the behavior must be implemented in Rust intrinsics first; Python code may only wire arguments, errors, and capability checks.
 - Do not add Python-side fallback logic, compatibility emulation, or host-stdlib implementation paths to make tests pass.
 - For every stdlib behavior change, include an explicit intrinsic mapping in the same change:
 `runtime/molt-runtime/src/intrinsics/manifest.pyi` entry, Rust implementation, and regenerated `src/molt/_intrinsics.pyi` + `runtime/molt-runtime/src/intrinsics/generated.rs`.
-- If no intrinsic exists for required behavior, stop immediately and raise the missing intrinsic as the blocker; do not proceed with a Python implementation.
+- If no intrinsic exists for required behavior, add the intrinsic and Rust
+  lowering. If the intrinsic cannot be implemented in the current environment,
+  fail closed with a concrete blocker; do not proceed with a Python
+  implementation.
 - Before ending a turn, provide a short Rust-lowering audit for touched stdlib modules:
 module path, intrinsic names used, and confirmation that no host-Python fallback path was added.
 
@@ -167,7 +339,10 @@ module path, intrinsic names used, and confirmation that no host-Python fallback
 - If a stdlib module cannot execute under current runtime import execution limits, treat that as a runtime-lowering blocker; do not paper over it with Python-side API-shape shims.
 - Preserve Tier-0 constraints from `docs/spec/areas/core/0000-vision.md`: no `eval`/`exec`, no implicit dynamic module execution expansion, no reflection-heavy fallback lanes in compiled binaries.
 - Preserve `docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md`: breaking maximal Python dynamism is intentional. Do not reintroduce dynamism that undermines AOT size/perf/determinism.
-- Any proposal to widen compile/exec/eval or unrestricted source-execution behavior requires explicit performance evidence, spec updates, and user approval before implementation.
+- Any proposal to widen compile/exec/eval or unrestricted source-execution
+  behavior must first prove that it preserves the AOT contract, performance,
+  determinism, and capability model. Otherwise keep the fail-closed verified
+  subset behavior and continue with compatible stdlib/ecosystem work.
 - Treat dynamic execution (`eval`/`exec`/unrestricted code-object execution), runtime monkeypatching, and unrestricted reflection as policy-deferred work, not active burndown targets, unless the user explicitly re-prioritizes them.
 
 ## Rules Of Thumb For New Work (Non-Negotiable)
@@ -182,7 +357,9 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Senior engineering leadership for this project: Jeff Dean, Chris Lattner, Tibo, and Embirico.
 - Warning to every agent: remaining on this development team requires consistently delivering world-quality, production-hardened code; anything less fails role expectations.
 - Treat every change as production-critical: optimize for correctness, performance, determinism, security, and maintainability at the same time.
-- If you cannot prove a change is production-hardened (tests, benchmarks, and spec alignment), stop and raise a concrete gap list plus closure plan.
+- If you cannot yet prove a change is production-hardened, keep generating the
+  missing evidence or record the exact gap plus closure plan while continuing
+  non-colliding structural work.
 
 ## Strategic Target (Non-Negotiable)
 - Performance target: achieve parity with or superiority over Codon.
@@ -225,7 +402,8 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   6. `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
   7. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
   8. Sync docs in the same change: `docs/spec/STATUS.md`, `ROADMAP.md`, `docs/spec/README.md`, and `docs/INDEX.md`.
-- If documentation claims conflict across compat files, stop and resolve in the same change; conflicting compatibility claims are turn blockers.
+- If documentation claims conflict across compat files, resolve them in the same
+  change; conflicting compatibility claims are work items, not reasons to idle.
 
 ## Jeff Dean Protege Mode (Non-Negotiable)
 - Optimize for correctness, performance, and determinism before convenience. No shortcuts that degrade runtime guarantees.
@@ -239,7 +417,9 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `runtime/` hosts Rust crates for the runtime and object model (`molt-runtime`, `molt-obj-model`, `molt-backend`).
 - `tests/` holds Python tests, including differential suites in `tests/differential/` and smoke/compliance tests.
 - `examples/` contains small programs used in docs and manual validation.
-- `docs/spec/` is the architecture and runtime specification set; treat it as the source of truth for behavior.
+- `docs/spec/` is the architecture and runtime specification set; treat it as
+  routing that must be refreshed from live code, executable tests, and generated
+  evidence.
 - `tools/` includes developer scripts like `tools/dev.py`.
 - Keep Rust crate entrypoints (`lib.rs`) thin; place substantive runtime/backend logic in focused modules under `src/` and re-export from `lib.rs`.
 - Standardize naming: Python modules use `snake_case`, Rust crates use `kebab-case`, and paths reflect module names (avoid ad-hoc casing).
@@ -259,7 +439,8 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - [docs/spec/areas/core/0000-vision.md](docs/spec/areas/core/0000-vision.md) and [docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md): vision, scope, and explicit break policy.
 - [docs/spec/STATUS.md](docs/spec/STATUS.md) and [ROADMAP.md](ROADMAP.md): canonical current scope/limits and the active forward-looking plan.
 - [docs/ROADMAP.md](docs/ROADMAP.md): detailed archive/reference roadmap context.
-- [docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md](docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md): minimum must-pass gate matrix.
+- [docs/architecture/gpu-primitive-stack.md](docs/architecture/gpu-primitive-stack.md) and [docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md): GPU primitive, ShapeTracker, fusion, reduction-domain, MLIR/MIL, and renderer contracts.
+- [docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md](docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md): minimum must-pass gate matrix and mandatory memory-guard custody for test execution.
 - [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md): determinism/security enforcement checklist.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md): remote access, logging, benchmarks, progress reports, and multi-agent workflow.
 - [docs/BENCHMARKING.md](docs/BENCHMARKING.md): benchmarking overview.
@@ -283,10 +464,10 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Development profile routing: `--profile dev` maps to Cargo profile `dev-fast` by default (override with `MOLT_DEV_CARGO_PROFILE`; release uses `MOLT_RELEASE_CARGO_PROFILE`).
 - Runtime/backend Cargo rebuilds use lock files under `<CARGO_TARGET_DIR>/.molt_state/build_locks/` to prevent duplicate rebuild storms across concurrent agents.
 - Native backend compiles use a local backend daemon by default (`MOLT_BACKEND_DAEMON=1`) to amortize Cranelift startup; tune with `MOLT_BACKEND_DAEMON_START_TIMEOUT` and `MOLT_BACKEND_DAEMON_CACHE_MB`.
-- Build/daemon fingerprints + lock state live under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR` when set). Daemon sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`) to avoid external filesystems that do not support Unix sockets; logs/pid remain under build state.
+- Build/daemon fingerprints + lock state live under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR` when set). Daemon sockets default to a local temp dir (`MOLT_BACKEND_DAEMON_SOCKET_DIR`) to avoid external filesystems that do not support Unix sockets; identity sidecars and logs remain under build state, while legacy `.pid` files are cleanup debris and never signal authority.
 - `molt clean` dry-runs canonical ignored artifact cleanup; `molt clean --apply` deletes those ignored artifacts; add `--kill-processes` when stale repo-scoped Molt build/test/bench processes must be drained first.
 - `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` via `uv run` (Python 3.12).
-- `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14.
+- `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14; direct pytest invocations re-exec under `tools/memory_guard.py` before collection when not already guarded.
 - `python3 tools/cpython_regrtest.py --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run`.
 - `python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage`: run regrtest with uv-managed Python + coverage.
 - `cargo test`: run Rust unit tests for runtime crates.
@@ -321,8 +502,10 @@ cargo build --profile release-fast -p molt-backend --features native-backend --t
 ```
 
 **Daemon management:**
-- `pkill -9 -f "molt-backend"` kills ALL daemons across ALL sessions
-- To kill only YOUR session's daemon: `pkill -9 -f "moltbd.*<session-id>"`
+- Never use raw `pkill`/PID/socket heuristics for backend-daemon cleanup.
+- Use verified identity custody (`src/molt/backend_daemon_custody.py`) or the
+  guarded process sentinel (`molt clean --apply --kill-processes`) when cleanup
+  is required.
 - Each session's daemon has a unique socket path derived from the session ID
 
 **Without it:** All sessions share the canonical `target/` and the same daemon. One agent's `cargo build` can block others, and one agent's rebuild can delete artifacts that other sessions depend on.
@@ -526,7 +709,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - NON-NEGOTIABLE: Differential work MUST use canonical artifact roots (`CARGO_TARGET_DIR`, `MOLT_DIFF_ROOT`, `MOLT_DIFF_TMPDIR`, `MOLT_CACHE`) and must not spill ad hoc artifacts elsewhere in the repo.
 - NON-NEGOTIABLE: Differential memory profiling is default-on; set `MOLT_DIFF_MEASURE_RSS=0` only for an explicit local investigation.
 - NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in [tests/differential/INDEX.md](tests/differential/INDEX.md).
-- NON-NEGOTIABLE: Use the default-on adaptive diff memory guard and adaptive per-process OS rlimit; do not pin stale fixed caps in normal runs.
+- NON-NEGOTIABLE: Use the adaptive diff memory guard and adaptive per-process OS rlimit; direct pytest and harnessed test runs must not bypass RSS custody, and cleanup must never kill Codex/host control-plane process groups.
   - macOS/Linux: let `tests/molt_diff.py` apply its adaptive child limit by default; use `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` only for a deliberate narrower cap, or `MOLT_DIFF_RLIMIT_GB=0` only for an explicit local investigation.
   - If the adaptive limit is hit or memory pressure occurs, inspect the guard telemetry, reduce parallelism (`--jobs 2` or `--jobs 1`) only as a containment step, and fix the underlying allocation growth.
 - Differential artifacts can be redirected to an external volume to avoid local disk pressure.
@@ -553,7 +736,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   - Optional: set `MOLT_DIFF_QUARANTINE_ON_DYLD=1` to force cold target/state quarantine after a dyld incident. Default keeps shared target/cache and disables daemon only.
   - Optional: set `MOLT_DIFF_DYLD_LOCAL_FALLBACK=1|0` to enable/disable local `/tmp` retry + quarantine lanes for dyld incidents. Default is `1` on macOS (`0` elsewhere).
   - Optional: set `MOLT_DIFF_DYLD_LOCAL_ROOT=<abs path>` to override the local dyld quarantine root (default: `/tmp/molt_diff_dyld`).
-  - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache` in diff runs. Default is platform-safe auto (`1` on macOS, `0` elsewhere) and dyld guard/retry also enables it.
+  - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache` in diff runs. Default is cache-enabled on all platforms; dyld guard/retry can force no-cache for the incident-scoped retry.
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: `ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>` (and `kill -KILL <pid>` if needed). Keep one supervising diff run per shared target to minimize contention and memory spikes.
 - Example (configured artifact root + shared cache + temp root): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
 - Example (RSS metrics): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
@@ -585,7 +768,9 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - Keep semantic tests deterministic; update or add differential cases when changing runtime or lowering behavior.
 - For Rust changes that affect runtime semantics, add or update `cargo test` coverage.
 - Avoid excessive lint/test loops while implementing; validate once after a cohesive set of changes is complete unless debugging a failure.
-- If tests fail due to missing functionality, stop and call out the missing feature; ask for priority/plan before changing tests, then implement the correct behavior instead.
+- If tests fail due to missing functionality, implement the correct behavior or
+  preserve a clear fail-closed verified-subset gap; never change tests to hide
+  the missing feature.
 - **NEVER change Python semantics just to make a differential test pass.** This is a hard-stop rule; fix behavior to match CPython or document the genuine incompatibility in specs/tests.
 - Parity-first workflow: execute the ROADMAP parity plan before large optimizations; require parity gates (matrix updates + differential coverage + native/WASM parity checks) for changes that touch runtime semantics.
 - Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
@@ -607,8 +792,10 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - PRs should include a short summary, tests run, and any determinism or security impacts. Link issues when applicable.
 - Release tags start at `v0.0.001` and increment at the thousandth place (e.g., `v0.0.002`, `v0.0.003`).
 
-## Refactor-Only PR Rule
-- Refactor-only PRs must not change semantics. If behavior changes, split into a separate PR and update STATUS/ROADMAP/tests in that PR.
+## Refactor Rule
+- Refactors should delete debt and may change internals aggressively when the
+  public verified-subset contract, tests, docs, and evidence move together.
+  Do not split a structural refactor solely to preserve legacy semantics.
 
 ## Determinism & Reproducibility Notes
 - Treat `uv.lock` and Rust lockfiles as part of the build contract; update them only when dependency changes are intentional.
@@ -620,46 +807,70 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - Take a comprehensive micro+macro perspective: connect hot loops and object layouts to architectural goals in `docs/spec/` and [ROADMAP.md](ROADMAP.md).
 - Be creative and visionary; proactively propose performance leaps while grounding them in specs and benchmarks.
 - Provide extra handholding/step-by-step guidance when requested.
-- Prefer production-first implementations over quick hacks; prototype work must be clearly marked and scoped.
-- Use stubs only if absolutely necessary; prefer implementing lower-level primitives first and document any remaining gaps.
+- Prefer production-first implementations over quick hacks. Do not land
+  prototypes as product behavior.
+- Do not land behavior stubs as substitutes for implementation. Prefer
+  lower-level primitives first; unresolved gaps must fail closed and be routed
+  through docs/roadmap without masquerading as support.
 - Keep native and wasm feature sets in lockstep; treat wasm parity gaps as blockers and call them out immediately.
-- ABSOLUTE RULE: Do not "fix" tests by weakening or contorting coverage to hide missing, partial, or hacky behavior; surface the gap, ask for priority/plan if needed, and implement the correct behavior.
+- ABSOLUTE RULE: Do not "fix" tests by weakening or contorting coverage to hide
+  missing, partial, or hacky behavior; implement the correct behavior or record
+  the verified-subset incompatibility explicitly.
 - Proactively read and update [ROADMAP.md](ROADMAP.md) and relevant files under `docs/spec/` when behavior or scope changes.
-- Treat [docs/spec/STATUS.md](docs/spec/STATUS.md) as the canonical source of truth for current capabilities/limits; update README only for newcomer-facing framing changes and update ROADMAP only for forward-plan changes.
+- Treat [docs/spec/STATUS.md](docs/spec/STATUS.md) as a routing summary that
+  must be refreshed from live code, executable tests, and generated evidence;
+  update README only for newcomer-facing framing changes and update ROADMAP only
+  for forward-plan changes.
 - Proactively and aggressively plan for native support of popular and growing Python packages written in Rust, with a bias toward production-quality integrations.
 - Treat the long-term vision as full Python compatibility: all types, syntax, and dependencies.
 - Prioritize extending features; update existing implementations when needed to hit roadmap/spec goals, even if it requires refactors.
 - For major changes, ensure tight integration and compatibility across compiler, runtime, tooling, and tests.
-- NON-NEGOTIABLE: Document partial or interim implementations with grepable `TODO(area, owner:..., milestone:..., priority:..., status:...)` markers and mirror them in [ROADMAP.md](ROADMAP.md) in the same change.
-- NON-NEGOTIABLE: For any partial, hacky, or missing functionality (or any stub/workaround), add explicit inline TODO markers (e.g., `TODO(tooling, owner:tooling, milestone:TL2, priority:P2, status:planned): ...`) so follow-ups are discoverable and never deferred.
-- Whenever a stub, partial feature, or optimization candidate is added, update the relevant `docs/spec/` file(s), [docs/spec/STATUS.md](docs/spec/STATUS.md), and [ROADMAP.md](ROADMAP.md) in the same change when their owned facts move.
+- NON-NEGOTIABLE: Do not introduce partial, hacky, stubbed, or workaround
+  behavior. For genuinely missing functionality, fail closed and route the
+  missing structural primitive through specs/status/roadmap without pretending
+  the feature exists.
+- Whenever a missing feature, verified-subset incompatibility, or optimization
+  candidate changes the owned facts, update the relevant `docs/spec/` file(s),
+  [docs/spec/STATUS.md](docs/spec/STATUS.md), and [ROADMAP.md](ROADMAP.md) in
+  the same change.
 - When major features or optimizations land, run benchmarks with JSON output (`python3 tools/bench.py --json`) and update the generated benchmark surfaces rather than embedding benchmark summaries in README.
 - Follow [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md) for stdlib scope, tiers (core vs import vs gated), and promotion rules.
-- Keep stdlib modules import-only by default; only promote to core after updating the stdlib matrix and [ROADMAP.md](ROADMAP.md).
+- Promote stdlib modules aggressively once Rust-intrinsic/capability-gated
+  semantics and target/version evidence exist; update the stdlib matrix and
+  [ROADMAP.md](ROADMAP.md) with the promotion.
 - Treat I/O, OS, network, and process modules as capability-gated and document the required permissions in specs.
-- NON-NEGOTIABLE (TURN COMPLETION): After finishing everything else at the end of every single turn, run this exact command before responding to the user:
-  - `imsg send --to "+15128087500" --text “codex turn finished in molt” --service sms`
+## Fail-Closed Dynamism & Contract Conflicts (Non-Negotiable)
+If adding functionality, tests, or coverage would require "too much dynamism"
+that conflicts with the vision, break policy, runtime contract, or
+concurrency/GIL requirements, choose the verified-subset path, fail closed with
+clear diagnostics, and keep moving on compatible structural work. Ask for user
+direction only when the requested outcome truly requires changing the project
+contract.
 
-## Stop-and-Ask: Dynamism & Contract Conflicts (Non-Negotiable)
-If adding functionality, tests, or coverage would require "too much dynamism" that conflicts with the vision, break policy, runtime contract, or concurrency/GIL requirements, STOP and ask the user for explicit direction before proceeding. This is mandatory.
-
-Stop and ask if the change would require any of the following (examples are representative, not exhaustive):
+Do not implement a feature by:
 - Relaxing or bypassing constraints in [docs/spec/areas/core/0000-vision.md](docs/spec/areas/core/0000-vision.md) or [docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md](docs/spec/areas/core/0800_WHAT_MOLT_IS_WILLING_TO_BREAK.md) to accept CPython-style dynamism that the project explicitly rejects.
 - Introducing dynamic execution/compilation paths (e.g., enabling arbitrary `eval`/`exec`/`compile`, runtime codegen from strings, or fallback to a host interpreter) that are not covered by the runtime contract/specs.
 - Expanding dynamic import or reflection behavior beyond spec (e.g., import hooks, import-time monkeypatching, `__getattr__`-based module proxies, or dynamic module attribute creation) to make tests pass.
 - Weakening determinism or capability gating (e.g., implicit host I/O, network/process access, time-dependent behavior, or environment-dependent resolution) outside the documented security/capability model.
 - Changing runtime object layout/provenance/handle resolution rules or pointer registry behavior in ways that violate the runtime contract or provenance safety guarantees.
-- Introducing concurrency or parallel execution that bypasses the GIL token, allows unsynchronized mutation, or otherwise violates the runtime locking model in `docs/spec/` and runtime safety docs **unless** all of the following are true and explicitly approved by the user:
+- Introducing concurrency or parallel execution that bypasses the GIL token,
+  allows unsynchronized mutation, or otherwise violates the runtime locking
+  model in `docs/spec/` and runtime safety docs unless all of the following are
+  true:
   - The bypass is gated behind a spec-defined capability/flag that is **off by default**.
   - The gating mechanism, risk profile, and expected semantics are documented in `docs/spec/` and [docs/spec/STATUS.md](docs/spec/STATUS.md), and mirrored in [ROADMAP.md](ROADMAP.md).
   - The runtime safety plan is spelled out (e.g., provenance/aliasing guarantees, lock model changes, Miri or equivalent validation plan).
   - Tests explicitly cover both gated-on and gated-off behavior with determinism guarantees.
 - Adding "dynamic escape hatches" (feature flags, hidden toggles, or environment variables) that effectively bypass the contract or policy without an explicit spec change.
 
-When this triggers, do not implement a workaround. Instead: summarize the conflict, cite the specific docs/sections involved, propose options (e.g., scope reduction vs. spec change), and wait for explicit user approval.
+When this triggers, do not implement a workaround. Document the conflict,
+preserve the fail-closed behavior, and continue with structural work inside the
+verified subset.
 
 ## TODO Taxonomy (Required)
-Use a single, explicit TODO format everywhere (code + docs + tests). This is how we track gaps safely.
+TODOs are for external blockers, research leads, and explicit missing
+structural primitives only. They are never a license to land partial behavior,
+stubs, compatibility shims, or debt.
 
 **Format**
 - `TODO(area, owner:<team>, milestone:<tag>, priority:<P0-3>, status:<missing|partial|planned|divergent>): <action>`
@@ -672,7 +883,12 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - `status`: `missing`, `partial`, `planned`, or `divergent`.
 
 **Rules**
-- Any incomplete/partial/hacky/stubbed behavior must include a TODO in-line **and** be mirrored in [docs/spec/STATUS.md](docs/spec/STATUS.md) + [ROADMAP.md](ROADMAP.md).
+- Do not add incomplete, interim, partial, hacky, stubbed, stopgap, shim, or
+  workaround behavior. Delete it, implement the final structural primitive, or
+  fail closed.
+- If a true missing structural primitive remains, include a TODO in-line only
+  where it aids implementation and mirror the gap in
+  [docs/spec/STATUS.md](docs/spec/STATUS.md) + [ROADMAP.md](ROADMAP.md).
 - If you introduce a new `area` or `milestone`, add it to this list or the ROADMAP legend in the same change.
 
 ## Optimization Planning
@@ -695,8 +911,9 @@ Use a single, explicit TODO format everywhere (code + docs + tests). This is how
 - Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
-- Avoid infinite commit/push/CI loops: only repeat the cycle when there are new changes or an explicit user request to re-run; otherwise stop and ask before looping again.
-- If a user request implies repeating commit/push/CI without new changes, pause and ask before re-running.
+- Avoid empty commit/push/CI loops: repeat only when there are new changes,
+  changed external state, or a deliberate verification reason. Otherwise move to
+  the next non-colliding structural task.
 
 ## Runtime Module Ownership (Planned Layout)
 - `runtime/molt-runtime/src/state/*`: runtime

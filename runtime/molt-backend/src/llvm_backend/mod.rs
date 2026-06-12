@@ -68,8 +68,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             function_return_types: BTreeMap::new(),
             function_repr_facts: BTreeMap::new(),
             runtime_intrinsic_symbols:
-                crate::intrinsic_symbols::runtime_intrinsic_symbols_from_env()
-                    .unwrap_or_default(),
+                crate::intrinsic_symbols::runtime_intrinsic_symbols_from_env().unwrap_or_default(),
         }
     }
 
@@ -313,10 +312,7 @@ impl<'ctx> LlvmBackend<'ctx> {
     ///   over the sorted table, returning the intrinsic function pointer as a
     ///   `u64`, or 0 when the name is not in the manifest.
     #[cfg(feature = "llvm")]
-    pub fn emit_app_resolver_function(
-        &self,
-        manifest_names: &std::collections::BTreeSet<String>,
-    ) {
+    pub fn emit_app_resolver_function(&self, manifest_names: &std::collections::BTreeSet<String>) {
         use inkwell::AddressSpace;
         use inkwell::IntPredicate;
         use inkwell::module::Linkage;
@@ -343,7 +339,8 @@ impl<'ctx> LlvmBackend<'ctx> {
         // manifest is a `BTreeSet`, so iteration is already unsigned-byte
         // lexicographic — exactly the order the binary search requires.
         let mut names_blob: Vec<u8> = Vec::new();
-        let mut record_values: Vec<inkwell::values::StructValue> = Vec::with_capacity(manifest_names.len());
+        let mut record_values: Vec<inkwell::values::StructValue> =
+            Vec::with_capacity(manifest_names.len());
         for name in manifest_names {
             let off = names_blob.len();
             let bytes = name.as_bytes();
@@ -374,8 +371,7 @@ impl<'ctx> LlvmBackend<'ctx> {
         // Names blob global (immutable, private — dead-strippable when the
         // resolver itself is unreferenced).
         let names_array_ty = i8_ty.array_type(names_blob.len() as u32);
-        let names_global =
-            module.add_global(names_array_ty, None, "molt_app_intrinsic_names");
+        let names_global = module.add_global(names_array_ty, None, "molt_app_intrinsic_names");
         names_global.set_linkage(Linkage::Private);
         names_global.set_constant(true);
         names_global.set_unnamed_addr(true);
@@ -384,8 +380,7 @@ impl<'ctx> LlvmBackend<'ctx> {
         // Record table global. The `ptr` field initializers carry the pointer
         // relocations LLVM lowers for the linker.
         let table_array_ty = record_ty.array_type(count as u32);
-        let table_global =
-            module.add_global(table_array_ty, None, "molt_app_intrinsic_table");
+        let table_global = module.add_global(table_array_ty, None, "molt_app_intrinsic_table");
         table_global.set_linkage(Linkage::Private);
         table_global.set_constant(true);
         let table_init = record_ty.const_array(&record_values);
@@ -415,11 +410,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             builder.build_unconditional_branch(not_found_bb).unwrap();
         } else {
             let names_base = builder
-                .build_ptr_to_int(
-                    names_global.as_pointer_value(),
-                    i64_ty,
-                    "names_base",
-                )
+                .build_ptr_to_int(names_global.as_pointer_value(), i64_ty, "names_base")
                 .unwrap();
 
             // Binary search over [lo, hi). loop_head carries (lo, hi).
@@ -487,17 +478,13 @@ impl<'ctx> LlvmBackend<'ctx> {
             let cand_len = builder
                 .build_int_z_extend(cand_len32, i64_ty, "cand_len")
                 .unwrap();
-            let cand_addr = builder.build_int_add(names_base, cand_off, "cand_addr").unwrap();
+            let cand_addr = builder
+                .build_int_add(names_base, cand_off, "cand_addr")
+                .unwrap();
 
             // cmp = lexicographic_compare(query, candidate) in {-1, 0, 1}.
             let cmp = Self::emit_llvm_lexicographic_compare(
-                ctx,
-                &builder,
-                resolver,
-                name_addr,
-                name_len,
-                cand_addr,
-                cand_len,
+                ctx, &builder, resolver, name_addr, name_len, cand_addr, cand_len,
             );
 
             let is_eq = builder
@@ -623,8 +610,12 @@ impl<'ctx> LlvmBackend<'ctx> {
             .build_load(i8_ty, b_byte_ptr, "b_byte8")
             .unwrap()
             .into_int_value();
-        let a_byte = builder.build_int_z_extend(a_byte8, i64_ty, "a_byte").unwrap();
-        let b_byte = builder.build_int_z_extend(b_byte8, i64_ty, "b_byte").unwrap();
+        let a_byte = builder
+            .build_int_z_extend(a_byte8, i64_ty, "a_byte")
+            .unwrap();
+        let b_byte = builder
+            .build_int_z_extend(b_byte8, i64_ty, "b_byte")
+            .unwrap();
         let bytes_eq = builder
             .build_int_compare(IntPredicate::EQ, a_byte, b_byte, "bytes_eq")
             .unwrap();

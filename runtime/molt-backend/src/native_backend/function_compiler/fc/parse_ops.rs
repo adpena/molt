@@ -1,7 +1,6 @@
 use super::super::*;
 use super::var_get_boxed_overflow_safe_fn;
 
-
 /// Cranelift codegen handlers for in-process structured-data parsers: `json_parse`/`msgpack_parse`/`cbor_parse`.
 ///
 /// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
@@ -30,35 +29,37 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
     // bodies call it exactly as they did inline.
-    let var_get_boxed_overflow_safe =
-        |module: &mut ObjectModule,
-         import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
-         builder: &mut FunctionBuilder<'_>,
-         import_refs: &mut BTreeMap<&'static str, FuncRef>,
-         sealed_blocks: &mut BTreeSet<Block>,
-         vars: &BTreeMap<String, Variable>,
-         name: &str,
-         int_primary_vars: &BTreeSet<String>,
-         float_primary_vars: &BTreeSet<String>,
-         box_int_mask_var: Variable,
-         box_int_tag_var: Variable|
-         -> Option<crate::VarValue> {
-            var_get_boxed_overflow_safe_fn(
-                module,
-                import_ids,
-                builder,
-                import_refs,
-                sealed_blocks,
-                vars,
-                name,
-                int_primary_vars,
-                float_primary_vars,
-                bool_primary_vars,
-                nbc,
-                box_int_mask_var,
-                box_int_tag_var,
-            )
-        };
+    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
+                                       import_ids: &mut BTreeMap<
+        &'static str,
+        (cranelift_module::FuncId, ImportSignatureShape),
+    >,
+                                       builder: &mut FunctionBuilder<'_>,
+                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
+                                       sealed_blocks: &mut BTreeSet<Block>,
+                                       vars: &BTreeMap<String, Variable>,
+                                       name: &str,
+                                       int_primary_vars: &BTreeSet<String>,
+                                       float_primary_vars: &BTreeSet<String>,
+                                       box_int_mask_var: Variable,
+                                       box_int_tag_var: Variable|
+     -> Option<crate::VarValue> {
+        var_get_boxed_overflow_safe_fn(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            name,
+            int_primary_vars,
+            float_primary_vars,
+            bool_primary_vars,
+            nbc,
+            box_int_mask_var,
+            box_int_tag_var,
+        )
+    };
     match op.kind.as_str() {
         "json_parse" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -131,10 +132,9 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
 
                 switch_to_block_materialized(&mut *builder, ok_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, ok_block);
-                let ok_res =
-                    builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                let ok_res = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), out_ptr, 0);
                 jump_block(&mut *builder, merge_block, &[ok_res]);
 
                 switch_to_block_materialized(&mut *builder, err_block);
@@ -272,10 +272,9 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
 
                 switch_to_block_materialized(&mut *builder, ok_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, ok_block);
-                let ok_res =
-                    builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                let ok_res = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), out_ptr, 0);
                 jump_block(&mut *builder, merge_block, &[ok_res]);
 
                 switch_to_block_materialized(&mut *builder, err_block);
@@ -413,10 +412,9 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
 
                 switch_to_block_materialized(&mut *builder, ok_block);
                 seal_block_once(&mut *builder, &mut *sealed_blocks, ok_block);
-                let ok_res =
-                    builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
+                let ok_res = builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), out_ptr, 0);
                 jump_block(&mut *builder, merge_block, &[ok_res]);
 
                 switch_to_block_materialized(&mut *builder, err_block);
@@ -484,4 +482,5 @@ pub(in crate::native_backend::function_compiler) fn handle_parse_op(
             }
         }
         _ => unreachable!("handler invoked with non-matching op.kind"),
-    }}
+    }
+}

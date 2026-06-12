@@ -1,12 +1,13 @@
-<!-- Integrated parallel build program — master coordination artifact. Refreshed 2026-06-05 (wf_18b24759-006 lineage). Supersedes the 2026-06-04 synthesis: ledger landed, E1 activated on native+WASM, RC + LLVM-exception Tier-1 substrates added, L4 arc corrected. -->
+<!-- Integrated parallel build program — master coordination artifact. Refreshed 2026-06-10 from live code and recovery batons. Supersedes stale 2026-06-05 claims that treated DropInsertion as merely outstanding. -->
 
 # molt Compiler Foundation — Integrated Build Program
 
 This is the master coordination artifact for the multi-tier foundation program.
 It tracks what has landed, what is in flight, and the dependency edges that
-order the remaining work. Design docs `01`–`20` in this directory carry the
-full per-arc blueprints; this doc is the index and the schedule. Every claim
-below is grounded in a commit hash or a numbered design doc.
+order the remaining work. Design docs in this directory carry the full per-arc
+blueprints; this doc is the index and the schedule. Treat this file as routing:
+the live codebase, executable tests, and generated evidence are authoritative
+when a claim drifts.
 
 ## Status Legend
 
@@ -79,42 +80,50 @@ bytes_find 6.27×, sum 5.30×; remaining regressions led by `bench_struct` 0.04�
 
 ## 2. Tier-1 Correctness Substrates Still Open (highest priority)
 
-Two load-bearing Tier-1 substrates were discovered on 2026-06-05. Both are
-correctness blockers and outrank the remaining Tier-2/3 perf work.
+The active correctness front has moved from "build DropInsertion" to "converge
+ownership boundaries and delete the remaining legacy RC authority." The current
+code state is:
 
-### RC-1 — RC Ownership / Drop Insertion (design 20, `bc67f6406`) — **the #1 correctness blocker**
+- `runtime/molt-backend/src/tir/passes/drop_insertion.rs` exists and carries the
+  RC drop-insertion implementation.
+- `runtime/molt-backend/src/tir/passes/liveness.rs` is registered as
+  `AnalysisId::Liveness` and provides representation-filtered live sets.
+- `runtime/molt-backend/src/tir/drop_phase.rs` runs drop insertion as a terminal
+  phase after per-function and module transforms, preserving module-slot
+  promotion and final representation facts.
+- `target_uses_tir_drop_insertion` currently enables LLVM, WASM, and Luau. Native
+  Cranelift remains `false` until the loop-phi representation invariant is fixed.
 
-**The bug**: molt allocates every expression-result heap object with
-`ref_count = 1` and **never decrements it**. The runtime `dec_ref` machinery,
-the TIR `DecRef` opcode, and `molt_dec_ref_obj` all exist and are correct in
-isolation — what is missing is the compiler pass that *inserts* `DecRef` ops for
-expression temporaries. The result is a whole-program memory leak on every
-refcounting backend (native, LLVM, WASM; Luau is GC-managed, no-op).
+### RC-1 — DropInsertion convergence and native RC retirement
 
-**Evidence** (design 20 §Executive Summary): a 1M-iteration BigInt accumulator
-loop produces 3,000,635 allocations, **0 deallocations**, 297 MB RSS at exit;
-a 30M-iteration string concat OOMs at the 512 MB cap. The native backend has
-only a partial per-loop-variable dec-ref heuristic
-(`function_compiler.rs:3566-3628`) that fires on loop-body reassignment of one
-narrow shape — a symptom-suppressor, not an ownership model, and invisible to
-the TIR pipeline.
+The original whole-program expression-temporary leak is no longer a missing-pass
+problem on the activated lanes. The remaining RC blocker is structural
+convergence:
 
-**The fix** (design 20, 5 phases): a first-class TIR `DropInsertion` pass,
-post-optimization / pre-lowering, that inserts `DecRef` at every value's last
-use, with representation-aware filtering (raw scalar lanes carry no refcount —
-the overflow-peel fast loop gets **zero** RC ops, preserving the perf contract),
-exception-edge correctness (drop once on each of normal + handler paths),
-loop-carried ownership (drop the prior phi before the back-edge), and suspension
-survival (IncRef live-across-yield values into the coroutine frame). After
-insertion, the existing `refcount_elim` pass elides redundant ops.
+- **Native activation blocker:** drop-inserted loop phis can mix raw and heap
+  incoming representations. Variable-keyed backends reject that shape; the fix is
+  to keep one representation across all incoming block-arg edges or fail closed.
+- **Legacy deletion requirement:** once native is activated and the convergence
+  sweep is green, the native automatic temp-RC substrate and any duplicate
+  `rc_coalescing`/loop-reassign ownership lane must be deleted or structurally
+  reconciled in the same arc. No compatibility switch remains.
+- **Finalizer boundary blocker:** finalizer dispatch is present, but non-escaping
+  finalizer-bearing objects can still drop at SSA last read instead of Python
+  `del` / scope-exit, and standalone inline `__del__` exceptions can escape the
+  compiled frame instead of being written as unraisable.
 
-Phase map: **P1** runtime observability (`DEALLOC_COUNT`, `MOLT_ASSERT_NO_LEAK`,
-`tests/differential/memory/`); **P2** `TirLiveness` analysis (`AnalysisId::Liveness`);
-**P3** core `DropInsertion` pass + the `loop_reassign_old_val` double-drop guard;
-**P4** WASM `DecRef`/`IncRef` wiring (`lower_to_wasm.rs`) + Luau no-op; **P5**
-delete the legacy SimpleIR loop-reassign + `rc_coalescing` paths. Non-goals:
-reference-cycle collection (future design 21), immortal-constant interning,
-Perceus reuse-token emission (future design 22).
+### RC-1b — ExceptionRegion ownership (design 45)
+
+Exception ownership is region-scoped, not only value-scoped. Phase 1 must land as
+one complete A+B change:
+
+- **CreationRef:** the `exception_new*` result is released at the raise boundary,
+  not by a function-end last-use extension.
+- **MatchRef:** `exception_last*` / active-exception match refs are released at
+  `ExceptionPop` / handler-region exit on every exit path.
+
+Recovered WIP under `memory/recovery/stall_20260608/` is a baton, not accepted
+implementation. Do not land the CreationRef half without the MatchRef half.
 
 ### RC-2 — LLVM exception-CFG arc — **in flight, no numbered design doc yet**
 
@@ -151,10 +160,12 @@ LLVM coverage.
 
 ```
 TIER 1 (correctness — open)
-  RC-1 DropInsertion substrate     OUTSTANDING  (design 20; THE #1 blocker)
-    └─ P3-on-LLVM requires: RC-2
-  RC-2 LLVM exception-CFG arc      IN FLIGHT     (no numbered doc; §2)
-    └─ requires: nothing (LLVM-local)
+  RC-1 DropInsertion convergence   IN FLIGHT    (design 20; active LLVM/WASM/Luau, native gated)
+    ├─ loop-phi repr invariant      OUTSTANDING  (native activation blocker)
+    ├─ finalizer ordering/#65       OUTSTANDING  (Python lifetime boundary)
+    └─ delete legacy native RC      OUTSTANDING  (after convergence proof)
+  RC-1b ExceptionRegion Phase 1     OUTSTANDING  (design 45; CreationRef+MatchRef together)
+  RC-2 LLVM exception-CFG arc       IN FLIGHT     (exception handler reachability/dominance)
 
 TIER 2 (engine)
   E1-e  inliner activation
@@ -216,17 +227,18 @@ remain. Do not schedule a bare gate-flip as if it were a perf unlock.
 ### 4.1 Correctness gate (precedes all perf work)
 
 ```
-RC-2 (LLVM exception-CFG)  ──┐
-                             ├─→ RC-1 P3+ (LLVM drop coverage) → RC-1 P4 (WASM) → RC-1 P5 (delete legacy)
-RC-1 P1/P2/P3-native+WASM ──┘
+DropInsertion terminal phase landed
+        ├─→ loop-phi repr fix → native activation → delete legacy native RC
+        ├─→ finalizer lifetime boundary → standalone __del__ swallow parity
+        └─→ ExceptionRegion Phase 1 (CreationRef + MatchRef together)
 ```
 
-RC-1's native+WASM legs (P1 observability, P2 liveness, P3 core pass) are
-independent of RC-2 and can land first; they immediately stop the leak on the
-two activated targets. RC-1's LLVM coverage waits on RC-2. This is the unmovable
-front of the program: a whole-program memory leak outranks every perf arc, and
-the `MOLT_ASSERT_NO_LEAK` + `safe_run.py --rss-mb` gates from design 20 §5 make
-every subsequent arc continuously leak-checked.
+This is the unmovable front of the program. Ownership correctness outranks every
+perf arc: a benchmark win that preserves a second RC authority, drops a finalizer
+object at SSA last read, or accepts half of ExceptionRegion is not progress. The
+acceptance loop stays executable: `MOLT_ASSERT_NO_LEAK`, finalizer differentials,
+RC-balance memory corpus, backend parity smokes, and no legacy RC lane left in
+the touched path.
 
 ### 4.2 Perf keystone
 

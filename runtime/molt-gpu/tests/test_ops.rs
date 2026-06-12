@@ -1,7 +1,9 @@
 use molt_gpu::device::cpu::interpret;
 use molt_gpu::dtype::DType;
 use molt_gpu::ops::{OpType, PrimitiveOp};
-use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc};
+use molt_gpu::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain,
+};
 use molt_gpu::shapetracker::ShapeTracker;
 
 #[test]
@@ -47,14 +49,68 @@ fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+fn bytes_to_i32(bytes: &[u8]) -> Vec<i32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+fn u32_to_bytes(vals: &[u32]) -> Vec<u8> {
+    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+fn bytes_to_u32(bytes: &[u8]) -> Vec<u32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+fn run_unary_typed_raw(
+    op: PrimitiveOp,
+    src_dtype: DType,
+    dst_dtype: DType,
+    input: Vec<u8>,
+    n: usize,
+) -> Vec<u8> {
+    let kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(op, vec![FusedSrc::Buf(1)], dst_dtype)],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: dst_dtype,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: src_dtype,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n as u32, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+
+    let mut bufs = vec![vec![0u8; n * dst_dtype.size_bytes()], input];
+    interpret::execute_kernel(&kernel, &mut bufs);
+    bufs.remove(0)
+}
+
 fn run_binary_op_cpu(op: PrimitiveOp, a: &[f32], b: &[f32]) -> Vec<f32> {
     let n = a.len();
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
             op,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -93,11 +149,12 @@ fn run_binary_op_cpu(op: PrimitiveOp, a: &[f32], b: &[f32]) -> Vec<f32> {
 fn run_unary_op_cpu(op: PrimitiveOp, a: &[f32]) -> Vec<f32> {
     let n = a.len();
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
             op,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -202,20 +259,207 @@ fn test_cpu_sin() {
 }
 
 #[test]
+fn test_cpu_cast_float32_to_int32_writes_integer_values() {
+    let out = run_unary_typed_raw(
+        PrimitiveOp::Cast,
+        DType::Float32,
+        DType::Int32,
+        f32_to_bytes(&[1.25, -2.75, 0.0, 7.0]),
+        4,
+    );
+
+    assert_eq!(bytes_to_i32(&out), vec![1, -2, 0, 7]);
+}
+
+#[test]
+fn test_cpu_fused_intermediate_cast_uses_converted_value() {
+    let n = 2;
+    let kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![
+            FusedOp::elementwise(PrimitiveOp::Cast, vec![FusedSrc::Buf(1)], DType::Int32),
+            FusedOp::elementwise(PrimitiveOp::Cast, vec![FusedSrc::Buf(2)], DType::Int32),
+            FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Op(0), FusedSrc::Op(1)],
+                DType::Int32,
+            ),
+        ],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Int32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n as u32, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut bufs = vec![
+        vec![0u8; n * DType::Int32.size_bytes()],
+        f32_to_bytes(&[1.25, -2.75]),
+        f32_to_bytes(&[2.75, -3.25]),
+    ];
+
+    interpret::execute_kernel(&kernel, &mut bufs);
+
+    assert_eq!(bytes_to_i32(&bufs[0]), vec![3, -5]);
+}
+
+#[test]
+fn test_cpu_reduce_sum_uses_intermediate_cast_values() {
+    let n = 4;
+    let kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![
+            FusedOp::elementwise(PrimitiveOp::Cast, vec![FusedSrc::Buf(1)], DType::Int32),
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(0)],
+                DType::Int32,
+                ReductionDomain::from_axis(&[n], 0),
+            ),
+        ],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Int32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [1, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut bufs = vec![
+        vec![0u8; DType::Int32.size_bytes()],
+        f32_to_bytes(&[1.9, 1.9, 1.9, 1.9]),
+    ];
+
+    interpret::execute_kernel(&kernel, &mut bufs);
+
+    assert_eq!(bytes_to_i32(&bufs[0]), vec![4]);
+}
+
+#[test]
+fn test_cpu_cast_float32_to_bool_treats_nan_as_true() {
+    let out = run_unary_typed_raw(
+        PrimitiveOp::Cast,
+        DType::Float32,
+        DType::Bool,
+        f32_to_bytes(&[0.0, -0.0, f32::NAN, 2.0]),
+        4,
+    );
+
+    assert_eq!(out, vec![0, 0, 1, 1]);
+}
+
+#[test]
+fn test_cpu_cast_float32_to_uint8_preserves_numeric_byte() {
+    let out = run_unary_typed_raw(
+        PrimitiveOp::Cast,
+        DType::Float32,
+        DType::UInt8,
+        f32_to_bytes(&[0.0, 1.0, 2.0, 255.0]),
+        4,
+    );
+
+    assert_eq!(out, vec![0, 1, 2, 255]);
+}
+
+#[test]
+fn test_cpu_bitcast_float32_to_uint32_preserves_raw_bits() {
+    let values = [1.0f32, -0.0, f32::NAN, f32::NEG_INFINITY];
+    let out = run_unary_typed_raw(
+        PrimitiveOp::Bitcast,
+        DType::Float32,
+        DType::UInt32,
+        f32_to_bytes(&values),
+        values.len(),
+    );
+
+    assert_eq!(
+        bytes_to_u32(&out),
+        values.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_cpu_bitcast_uint32_to_float32_preserves_raw_bits() {
+    let bits = [
+        1.0f32.to_bits(),
+        (-0.0f32).to_bits(),
+        0x7fc0_0000,
+        0xff80_0000,
+    ];
+    let out = run_unary_typed_raw(
+        PrimitiveOp::Bitcast,
+        DType::UInt32,
+        DType::Float32,
+        u32_to_bytes(&bits),
+        bits.len(),
+    );
+
+    assert_eq!(
+        bytes_to_f32(&out)
+            .iter()
+            .map(|v| v.to_bits())
+            .collect::<Vec<_>>(),
+        bits
+    );
+}
+
+#[test]
+#[should_panic(expected = "CPU interpreter Bitcast requires equal-width")]
+fn test_cpu_bitcast_rejects_width_change() {
+    let _ = run_unary_typed_raw(
+        PrimitiveOp::Bitcast,
+        DType::Float32,
+        DType::UInt16,
+        f32_to_bytes(&[1.0, 2.0]),
+        2,
+    );
+}
+
+#[test]
 fn test_cpu_relu_composition() {
     let n = 4;
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Max,
-            srcs: vec![
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Max,
+            vec![
                 FusedSrc::Buf(1),
                 FusedSrc::Const {
                     val: 0.0,
                     dtype: DType::Float32,
                 },
             ],
-            dst_dtype: DType::Float32,
-        }],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -245,11 +489,12 @@ fn test_cpu_relu_composition() {
 fn test_cpu_where_ternary() {
     let n = 3;
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Where,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Where,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -295,11 +540,13 @@ fn test_cpu_where_ternary() {
 #[test]
 fn test_cpu_reduce_sum() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceSum,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[4], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -328,11 +575,13 @@ fn test_cpu_reduce_sum() {
 #[test]
 fn test_cpu_reduce_max() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::ReduceMax,
-            srcs: vec![FusedSrc::Buf(1)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceMax,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[4], 0),
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -358,17 +607,72 @@ fn test_cpu_reduce_max() {
     assert_eq!(result, vec![4.0]);
 }
 
+fn run_reduce_2d(op: PrimitiveOp, axis: usize, input: &[f32]) -> Vec<f32> {
+    let domain = ReductionDomain::from_axis(&[2, 3], axis);
+    let out_shape = domain.output_shape.clone();
+    let out_n = domain.output_numel();
+    let kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            op,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            domain,
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&out_shape),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[2, 3]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [out_n as u32, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut bufs = vec![vec![0u8; out_n * 4], f32_to_bytes(input)];
+    interpret::execute_kernel(&kernel, &mut bufs);
+    bytes_to_f32(&bufs[0])
+}
+
+#[test]
+fn test_cpu_reduce_sum_axis0_2d() {
+    let out = run_reduce_2d(PrimitiveOp::ReduceSum, 0, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    assert_eq!(out, vec![5.0, 7.0, 9.0]);
+}
+
+#[test]
+fn test_cpu_reduce_sum_axis1_2d() {
+    let out = run_reduce_2d(PrimitiveOp::ReduceSum, 1, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    assert_eq!(out, vec![6.0, 15.0]);
+}
+
+#[test]
+fn test_cpu_reduce_max_axis0_2d() {
+    let out = run_reduce_2d(PrimitiveOp::ReduceMax, 0, &[1.0, 8.0, 3.0, 4.0, 5.0, 9.0]);
+    assert_eq!(out, vec![4.0, 8.0, 9.0]);
+}
+
 // --- Task 12: Extended ops tests ---
 
 #[test]
 fn test_cpu_idiv() {
     let n = 4;
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Idiv,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Int32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Idiv,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Int32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -419,11 +723,12 @@ fn test_cpu_idiv() {
 fn test_cpu_mod() {
     let n = 4;
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Mod,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Int32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mod,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Int32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -496,11 +801,12 @@ fn test_cpu_cmpne_nan() {
 fn test_cpu_bitwise_and() {
     let n = 3;
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::And,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Int32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::And,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Int32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -551,23 +857,20 @@ fn test_cpu_bitwise_and() {
 fn test_cpu_fused_relu_chain() {
     let n = 4;
     let kernel = FusedKernel {
+        body: Default::default(),
         ops: vec![
-            FusedOp {
-                op: PrimitiveOp::Neg,
-                srcs: vec![FusedSrc::Buf(1)],
-                dst_dtype: DType::Float32,
-            },
-            FusedOp {
-                op: PrimitiveOp::Max,
-                srcs: vec![
+            FusedOp::elementwise(PrimitiveOp::Neg, vec![FusedSrc::Buf(1)], DType::Float32),
+            FusedOp::elementwise(
+                PrimitiveOp::Max,
+                vec![
                     FusedSrc::Op(0),
                     FusedSrc::Const {
                         val: 0.0,
                         dtype: DType::Float32,
                     },
                 ],
-                dst_dtype: DType::Float32,
-            },
+                DType::Float32,
+            ),
         ],
         bufs: vec![
             BufferBinding {
@@ -628,12 +931,17 @@ fn test_all_26_ops_covered() {
             ],
             _ => unreachable!(),
         };
-        let fused_op = FusedOp {
-            op,
-            srcs,
-            dst_dtype: DType::Float32,
+        let fused_op = if matches!(op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax) {
+            FusedOp::reduction(
+                op,
+                srcs,
+                DType::Float32,
+                ReductionDomain::from_axis(&[4], 0),
+            )
+        } else {
+            FusedOp::elementwise(op, srcs, DType::Float32)
         };
-        assert_eq!(fused_op.op, op);
+        assert_eq!(fused_op.op(), op);
     }
 }
 
@@ -659,11 +967,12 @@ mod metal_tests {
         device.copy_in(&b_buf, &b_data).unwrap();
 
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
-                op: PrimitiveOp::Add,
-                srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-                dst_dtype: DType::Float32,
-            }],
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Add,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            )],
             bufs: vec![
                 BufferBinding {
                     buf_id: 0,

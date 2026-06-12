@@ -379,10 +379,9 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
                 // with it every intrinsic address-of expression — alive against
                 // dead-strip. On native the resolver only knows the app's manifest
                 // intrinsics, which is sufficient for a best-effort debug name.
-                if let Some(spec) = crate::intrinsics::INTRINSICS
-                    .iter()
-                    .find(|spec| crate::intrinsics::try_app_resolve_symbol(spec.symbol) == Some(fn_ptr))
-                {
+                if let Some(spec) = crate::intrinsics::INTRINSICS.iter().find(|spec| {
+                    crate::intrinsics::try_app_resolve_symbol(spec.symbol) == Some(fn_ptr)
+                }) {
                     name = spec.symbol.to_string();
                 }
             }

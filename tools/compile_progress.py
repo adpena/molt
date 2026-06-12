@@ -5,7 +5,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import shlex
 import signal
 import shutil
 import subprocess
@@ -228,13 +227,11 @@ def _base_env(
     return env
 
 
-def _kill_run_scoped_processes(marker: str, *, include_daemon: bool) -> list[int]:
+def _kill_run_scoped_processes(marker: str) -> list[int]:
     if not marker or os.name == "nt":
         return []
     current_pid = os.getpid()
     match_tokens = ["molt.cli build", "cargo build", "rustc", "/sccache"]
-    if include_daemon:
-        match_tokens.append("molt-backend --daemon")
     killed: list[int] = []
     deadline = time.monotonic() + 3.0
     while True:
@@ -313,30 +310,6 @@ def _run_case(
         cmd.append("--cache-report")
     else:
         cmd.append("--no-cache")
-    wrapped_cmd = cmd
-    if os.name != "nt":
-        # Keep child builds from orphaning under PID 1 if the harness process
-        # itself is terminated externally; watcher kills the shell process group.
-        parent_pid = os.getpid()
-        cmd_joined = shlex.join(cmd)
-        marker_q = shlex.quote(target_marker)
-        wrapped_cmd = [
-            "/bin/bash",
-            "-lc",
-            (
-                f"parent_pid={parent_pid}; "
-                '(while kill -0 "$parent_pid" 2>/dev/null; do sleep 1; done; '
-                f"for _ in 1 2 3; do pkill -f -- {marker_q} >/dev/null 2>&1 || true; sleep 0.2; done; "
-                "kill -TERM -- -$$ >/dev/null 2>&1 || true) & "
-                "watcher=$!; "
-                f"{cmd_joined}; "
-                "rc=$?; "
-                'kill "$watcher" >/dev/null 2>&1 || true; '
-                'wait "$watcher" >/dev/null 2>&1 || true; '
-                'exit "$rc"'
-            ),
-        ]
-
     env = env_base.copy()
     env["MOLT_BACKEND_DAEMON"] = "1" if case.daemon else "0"
     env.pop("MOLT_RELEASE_CARGO_PROFILE", None)
@@ -349,7 +322,7 @@ def _run_case(
         started = time.perf_counter()
         try:
             result = harness_memory_guard.guarded_completed_process(
-                wrapped_cmd,
+                cmd,
                 prefix="MOLT_COMPILE_PROGRESS",
                 cwd=repo_root,
                 env=env,
@@ -372,10 +345,7 @@ def _run_case(
                 returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
             )
             if timed_out or guard_killed:
-                killed = _kill_run_scoped_processes(
-                    target_marker,
-                    include_daemon=False,
-                )
+                killed = _kill_run_scoped_processes(target_marker)
                 if killed:
                     stderr = (
                         stderr
@@ -412,7 +382,6 @@ def _run_case(
         retry_reason = reason
         if retry_backoff_sec > 0:
             time.sleep(retry_backoff_sec * attempts)
-    _kill_run_scoped_processes(target_marker, include_daemon=True)
 
     (logs_root / f"{case.name}.stdout.log").write_text(stdout)
     (logs_root / f"{case.name}.stderr.log").write_text(stderr)

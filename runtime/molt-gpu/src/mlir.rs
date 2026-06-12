@@ -6,8 +6,11 @@
 use std::fmt::Write;
 
 use crate::dtype::DType;
-use crate::ops::PrimitiveOp;
-use crate::render::{FusedKernel, FusedSrc};
+use crate::ops::{OpType, PrimitiveOp};
+use crate::render::{
+    BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, KernelBody, ReductionDomain,
+};
+use crate::shapetracker::{ShapeTracker, View};
 
 /// Serialize a FusedKernel to MLIR textual IR.
 pub fn to_mlir_text(kernel: &FusedKernel) -> String {
@@ -21,212 +24,1418 @@ pub fn to_mlir_text(kernel: &FusedKernel) -> String {
         kernel.bufs.len()
     )
     .unwrap();
-    writeln!(out, "func.func @molt_kernel() {{").unwrap();
 
-    // Declare buffer memrefs
-    for (i, binding) in kernel.bufs.iter().enumerate() {
-        let mlir_type = mlir_element_type(binding.dtype);
-        let shape = binding.st.shape();
-        let shape_str = shape
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>()
-            .join("x");
-        writeln!(out, "  // buf{}: memref<{}x{}>", i, shape_str, mlir_type).unwrap();
+    if kernel.body == KernelBody::MaterializeCopy {
+        let (dst, src, output_numel) = kernel.materialize_copy_contract();
+        render_materialize_copy(&mut out, dst, src, output_numel);
+        return out;
     }
 
-    // Emit ops
-    for (i, op) in kernel.ops.iter().enumerate() {
-        let mlir_type = mlir_element_type(op.dst_dtype);
-        let src_refs: Vec<String> = op.srcs.iter().map(mlir_src_ref).collect();
-
-        let mlir_op = match op.op {
-            PrimitiveOp::Add => {
-                if op.dst_dtype.is_float() {
-                    format!(
-                        "arith.addf {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                } else {
-                    format!(
-                        "arith.addi {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                }
-            }
-            PrimitiveOp::Sub => {
-                if op.dst_dtype.is_float() {
-                    format!(
-                        "arith.subf {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                } else {
-                    format!(
-                        "arith.subi {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                }
-            }
-            PrimitiveOp::Mul => {
-                if op.dst_dtype.is_float() {
-                    format!(
-                        "arith.mulf {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                } else {
-                    format!(
-                        "arith.muli {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                }
-            }
-            PrimitiveOp::Idiv => {
-                if op.dst_dtype.is_signed_int() {
-                    format!(
-                        "arith.divsi {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                } else {
-                    format!(
-                        "arith.divui {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                }
-            }
-            PrimitiveOp::Mod => {
-                if op.dst_dtype.is_signed_int() {
-                    format!(
-                        "arith.remsi {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                } else {
-                    format!(
-                        "arith.remui {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                }
-            }
-            PrimitiveOp::Neg => {
-                if op.dst_dtype.is_float() {
-                    format!("arith.negf {} : {}", src_refs[0], mlir_type)
-                } else {
-                    format!("arith.subi %zero , {} : {}", src_refs[0], mlir_type)
-                }
-            }
-            PrimitiveOp::Cmplt => format!(
-                "arith.cmpf \"olt\" , {} , {} : {}",
-                src_refs[0], src_refs[1], mlir_type
-            ),
-            PrimitiveOp::Cmpeq => format!(
-                "arith.cmpf \"oeq\" , {} , {} : {}",
-                src_refs[0], src_refs[1], mlir_type
-            ),
-            PrimitiveOp::Cmpne => format!(
-                "arith.cmpf \"une\" , {} , {} : {}",
-                src_refs[0], src_refs[1], mlir_type
-            ),
-            PrimitiveOp::And => format!(
-                "arith.andi {} , {} : {}",
-                src_refs[0], src_refs[1], mlir_type
-            ),
-            PrimitiveOp::Or => format!(
-                "arith.ori {} , {} : {}",
-                src_refs[0], src_refs[1], mlir_type
-            ),
-            PrimitiveOp::Xor => format!(
-                "arith.xori {} , {} : {}",
-                src_refs[0], src_refs[1], mlir_type
-            ),
-            PrimitiveOp::Shl => format!(
-                "arith.shli {} , {} : {}",
-                src_refs[0], src_refs[1], mlir_type
-            ),
-            PrimitiveOp::Shr => {
-                if op.dst_dtype.is_signed_int() {
-                    format!(
-                        "arith.shrsi {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                } else {
-                    format!(
-                        "arith.shrui {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                }
-            }
-            PrimitiveOp::Exp2 => format!("math.exp2 {} : {}", src_refs[0], mlir_type),
-            PrimitiveOp::Log2 => format!("math.log2 {} : {}", src_refs[0], mlir_type),
-            PrimitiveOp::Sin => format!("math.sin {} : {}", src_refs[0], mlir_type),
-            PrimitiveOp::Sqrt => format!("math.sqrt {} : {}", src_refs[0], mlir_type),
-            PrimitiveOp::Reciprocal => format!("arith.divf %one , {} : {}", src_refs[0], mlir_type),
-            PrimitiveOp::Trunc => format!("math.trunc {} : {}", src_refs[0], mlir_type),
-            PrimitiveOp::Max => {
-                if op.dst_dtype.is_float() {
-                    format!(
-                        "arith.maximumf {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                } else if op.dst_dtype.is_signed_int() {
-                    format!(
-                        "arith.maxsi {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                } else {
-                    format!(
-                        "arith.maxui {} , {} : {}",
-                        src_refs[0], src_refs[1], mlir_type
-                    )
-                }
-            }
-            PrimitiveOp::Where => format!(
-                "arith.select {} , {} , {} : {}",
-                src_refs[0], src_refs[1], src_refs[2], mlir_type
-            ),
-            PrimitiveOp::Cast => format!("// cast to {} : {}", mlir_type, src_refs[0]),
-            PrimitiveOp::Bitcast => format!(
-                "arith.bitcast {} : {} to {}",
-                src_refs[0], mlir_type, mlir_type
-            ),
-            PrimitiveOp::ReduceSum => {
-                if op.dst_dtype.is_float() {
-                    format!(
-                        "// linalg.reduce {{ arith.addf }} {} : {}",
-                        src_refs[0], mlir_type
-                    )
-                } else {
-                    format!(
-                        "// linalg.reduce {{ arith.addi }} {} : {}",
-                        src_refs[0], mlir_type
-                    )
-                }
-            }
-            PrimitiveOp::ReduceMax => {
-                if op.dst_dtype.is_float() {
-                    format!(
-                        "// linalg.reduce {{ arith.maximumf }} {} : {}",
-                        src_refs[0], mlir_type
-                    )
-                } else if op.dst_dtype.is_signed_int() {
-                    format!(
-                        "// linalg.reduce {{ arith.maxsi }} {} : {}",
-                        src_refs[0], mlir_type
-                    )
-                } else {
-                    format!(
-                        "// linalg.reduce {{ arith.maxui }} {} : {}",
-                        src_refs[0], mlir_type
-                    )
-                }
-            }
-        };
-
-        writeln!(out, "  %v{} = {}", i, mlir_op).unwrap();
+    if kernel
+        .ops
+        .iter()
+        .any(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+    {
+        render_reduction_compute(&mut out, kernel);
+    } else {
+        render_elementwise_compute(&mut out, kernel);
     }
-
-    writeln!(out, "  return").unwrap();
-    writeln!(out, "}}").unwrap();
 
     out
+}
+
+fn render_elementwise_compute(out: &mut String, kernel: &FusedKernel) {
+    kernel.compute_body_contract();
+    assert!(
+        kernel.vectorize_width == 1 || kernel.vectorize_width == 4,
+        "molt-gpu MLIR serializer: unsupported compute vectorize_width {}",
+        kernel.vectorize_width
+    );
+    assert!(
+        !kernel.bufs.is_empty(),
+        "molt-gpu MLIR serializer: compute kernel must have an output binding"
+    );
+    let output = &kernel.bufs[0];
+    assert_eq!(
+        output.access,
+        BufferAccess::Write,
+        "molt-gpu MLIR serializer: compute output binding must be Write"
+    );
+    assert!(
+        output.st.views.len() == 1 && output.st.view().is_contiguous(),
+        "molt-gpu MLIR serializer: compute output must be a single contiguous view"
+    );
+    for (binding_idx, binding) in kernel.bufs.iter().enumerate().skip(1) {
+        assert_eq!(
+            binding.access,
+            BufferAccess::Read,
+            "molt-gpu MLIR serializer: compute input binding {} must be Read",
+            binding_idx
+        );
+    }
+    assert_supported_buffer_storage_dtypes(kernel, "MLIR buffer storage");
+    for op in &kernel.ops {
+        assert!(
+            op.op().op_type() != OpType::Reduce,
+            "molt-gpu MLIR serializer: reduce compute lowering requires an explicit reduction loop"
+        );
+        assert_eq!(
+            op.srcs().len(),
+            op.op().arity(),
+            "molt-gpu MLIR serializer: {:?} expected {} sources, got {}",
+            op.op(),
+            op.op().arity(),
+            op.srcs().len()
+        );
+    }
+
+    write!(out, "func.func @molt_kernel(").unwrap();
+    for (binding_idx, binding) in kernel.bufs.iter().enumerate() {
+        if binding_idx > 0 {
+            write!(out, ", ").unwrap();
+        }
+        write!(
+            out,
+            "%buf{}: memref<?x{}>",
+            binding_idx,
+            mlir_element_type(binding.dtype)
+        )
+        .unwrap();
+    }
+    writeln!(out, ") {{").unwrap();
+    writeln!(out, "  %c0 = arith.constant 0 : index").unwrap();
+    writeln!(out, "  %c1 = arith.constant 1 : index").unwrap();
+    writeln!(
+        out,
+        "  %c_numel = arith.constant {} : index",
+        output.st.numel()
+    )
+    .unwrap();
+    if kernel.vectorize_width == 4 {
+        writeln!(
+            out,
+            "  // vectorize_width=4 is lowered through the scalar MLIR loop until vector memrefs land"
+        )
+        .unwrap();
+    }
+    writeln!(out, "  scf.for %gid = %c0 to %c_numel step %c1 {{").unwrap();
+
+    let mut namer = MlirNameGen::default();
+    let mut values = Vec::with_capacity(kernel.ops.len());
+    for (op_idx, op) in kernel.ops.iter().enumerate() {
+        let mut src_values = Vec::with_capacity(op.srcs().len());
+        for src in op.srcs() {
+            src_values.push(resolve_compute_src(
+                out, kernel, &values, src, op_idx, "%gid", &mut namer,
+            ));
+        }
+        values.push(render_compute_op(out, op_idx, op, &src_values, &mut namer));
+    }
+
+    let result = values
+        .last()
+        .expect("compute_body_contract requires at least one op");
+    assert_eq!(
+        result.dtype, output.dtype,
+        "molt-gpu MLIR serializer: final op dtype must match compute output dtype"
+    );
+    let out_ty = mlir_element_type(output.dtype);
+    writeln!(
+        out,
+        "    memref.store {}, %buf0[%gid] : memref<?x{}>",
+        result.name, out_ty
+    )
+    .unwrap();
+    writeln!(out, "  }}").unwrap();
+    writeln!(out, "  return").unwrap();
+    writeln!(out, "}}").unwrap();
+}
+
+fn render_reduction_compute(out: &mut String, kernel: &FusedKernel) {
+    kernel.compute_body_contract();
+    assert!(
+        kernel.vectorize_width == 1 || kernel.vectorize_width == 4,
+        "molt-gpu MLIR serializer: unsupported compute vectorize_width {}",
+        kernel.vectorize_width
+    );
+    assert!(
+        !kernel.bufs.is_empty(),
+        "molt-gpu MLIR serializer: compute kernel must have an output binding"
+    );
+    let output = &kernel.bufs[0];
+    assert_eq!(
+        output.access,
+        BufferAccess::Write,
+        "molt-gpu MLIR serializer: compute output binding must be Write"
+    );
+    assert!(
+        output.st.views.len() == 1 && output.st.view().is_contiguous(),
+        "molt-gpu MLIR serializer: compute output must be a single contiguous view"
+    );
+    for (binding_idx, binding) in kernel.bufs.iter().enumerate().skip(1) {
+        assert_eq!(
+            binding.access,
+            BufferAccess::Read,
+            "molt-gpu MLIR serializer: compute input binding {} must be Read",
+            binding_idx
+        );
+    }
+    assert_supported_buffer_storage_dtypes(kernel, "MLIR buffer storage");
+
+    let (reduce_idx, reduce_op) = kernel
+        .ops
+        .iter()
+        .enumerate()
+        .find(|(_, op)| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+        .expect("reduction dispatch requires a reduce op");
+    let domain = reduce_op.require_reduction_domain();
+    assert_eq!(
+        reduce_op.srcs().len(),
+        1,
+        "molt-gpu MLIR serializer: {:?} expected one source, got {}",
+        reduce_op.op(),
+        reduce_op.srcs().len()
+    );
+    assert_supported_reduce_dtype(reduce_op.dst_dtype(), reduce_op.op());
+    validate_reduction_compute_shapes(kernel, reduce_idx, domain);
+
+    write!(out, "func.func @molt_kernel(").unwrap();
+    for (binding_idx, binding) in kernel.bufs.iter().enumerate() {
+        if binding_idx > 0 {
+            write!(out, ", ").unwrap();
+        }
+        write!(
+            out,
+            "%buf{}: memref<?x{}>",
+            binding_idx,
+            mlir_element_type(binding.dtype)
+        )
+        .unwrap();
+    }
+    writeln!(out, ") {{").unwrap();
+    writeln!(out, "  %c0 = arith.constant 0 : index").unwrap();
+    writeln!(out, "  %c1 = arith.constant 1 : index").unwrap();
+    writeln!(
+        out,
+        "  %c_numel = arith.constant {} : index",
+        output.st.numel()
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "  %c_reduce = arith.constant {} : index",
+        domain.reduce_size
+    )
+    .unwrap();
+    if kernel.vectorize_width == 4 {
+        writeln!(
+            out,
+            "  // vectorize_width=4 is lowered through the scalar MLIR reduction loop until vector memrefs land"
+        )
+        .unwrap();
+    }
+    writeln!(out, "  scf.for %gid = %c0 to %c_numel step %c1 {{").unwrap();
+
+    let mut namer = MlirNameGen::default();
+    let init = namer.fresh(&format!("op{}_reduce_init", reduce_idx));
+    writeln!(
+        out,
+        "    {} = {}",
+        init,
+        mlir_reduce_identity_constant(reduce_op.op(), reduce_op.dst_dtype())
+    )
+    .unwrap();
+
+    let result_name = format!("%v{}", reduce_idx);
+    let reduce_ty = mlir_element_type(reduce_op.dst_dtype());
+    writeln!(
+        out,
+        "    {} = scf.for %rid = %c0 to %c_reduce step %c1 iter_args(%acc = {}) -> ({}) {{",
+        result_name, init, reduce_ty
+    )
+    .unwrap();
+
+    let input_idx =
+        lower_reduction_input_linear_index(out, domain, "%gid", "%rid", "reduce_idx", &mut namer);
+    let mut pre_values = Vec::with_capacity(reduce_idx);
+    for (op_idx, op) in kernel.ops[..reduce_idx].iter().enumerate() {
+        assert_eq!(
+            op.srcs().len(),
+            op.op().arity(),
+            "molt-gpu MLIR serializer: {:?} expected {} sources, got {}",
+            op.op(),
+            op.op().arity(),
+            op.srcs().len()
+        );
+        let mut src_values = Vec::with_capacity(op.srcs().len());
+        for src in op.srcs() {
+            src_values.push(resolve_compute_src(
+                out,
+                kernel,
+                &pre_values,
+                src,
+                op_idx,
+                &input_idx,
+                &mut namer,
+            ));
+        }
+        pre_values.push(render_compute_op(out, op_idx, op, &src_values, &mut namer));
+    }
+
+    let mut reduce_srcs = Vec::with_capacity(1);
+    for src in reduce_op.srcs() {
+        reduce_srcs.push(resolve_compute_src(
+            out,
+            kernel,
+            &pre_values,
+            src,
+            reduce_idx,
+            &input_idx,
+            &mut namer,
+        ));
+    }
+    let reduced_next = render_reduce_accumulate_op(
+        out,
+        reduce_idx,
+        reduce_op,
+        "%acc",
+        &reduce_srcs[0],
+        &mut namer,
+    );
+    writeln!(out, "      scf.yield {} : {}", reduced_next, reduce_ty).unwrap();
+    writeln!(out, "    }}").unwrap();
+
+    let mut values = Vec::with_capacity(kernel.ops.len());
+    for op_idx in 0..reduce_idx {
+        values.push(MlirValue {
+            name: format!("%pre_reduce_op{}_unavailable", op_idx),
+            dtype: kernel.ops[op_idx].dst_dtype(),
+        });
+    }
+    values.push(MlirValue {
+        name: result_name,
+        dtype: reduce_op.dst_dtype(),
+    });
+
+    for (op_idx, op) in kernel.ops.iter().enumerate().skip(reduce_idx + 1) {
+        assert_eq!(
+            op.srcs().len(),
+            op.op().arity(),
+            "molt-gpu MLIR serializer: {:?} expected {} sources, got {}",
+            op.op(),
+            op.op().arity(),
+            op.srcs().len()
+        );
+        for src in op.srcs() {
+            if let FusedSrc::Op(prior_idx) = src {
+                assert!(
+                    *prior_idx >= reduce_idx,
+                    "molt-gpu MLIR serializer: post-reduce op {} cannot reference pre-reduce op {}",
+                    op_idx,
+                    prior_idx
+                );
+            }
+        }
+        let mut src_values = Vec::with_capacity(op.srcs().len());
+        for src in op.srcs() {
+            src_values.push(resolve_compute_src(
+                out, kernel, &values, src, op_idx, "%gid", &mut namer,
+            ));
+        }
+        values.push(render_compute_op(out, op_idx, op, &src_values, &mut namer));
+    }
+
+    let result = values
+        .last()
+        .expect("compute_body_contract requires at least one op");
+    assert_eq!(
+        result.dtype, output.dtype,
+        "molt-gpu MLIR serializer: final op dtype must match compute output dtype"
+    );
+    let out_ty = mlir_element_type(output.dtype);
+    writeln!(
+        out,
+        "    memref.store {}, %buf0[%gid] : memref<?x{}>",
+        result.name, out_ty
+    )
+    .unwrap();
+    writeln!(out, "  }}").unwrap();
+    writeln!(out, "  return").unwrap();
+    writeln!(out, "}}").unwrap();
+}
+
+#[derive(Debug, Clone)]
+struct MlirValue {
+    name: String,
+    dtype: DType,
+}
+
+fn resolve_compute_src(
+    out: &mut String,
+    kernel: &FusedKernel,
+    values: &[MlirValue],
+    src: &FusedSrc,
+    op_idx: usize,
+    linear_idx: &str,
+    namer: &mut MlirNameGen,
+) -> MlirValue {
+    match src {
+        FusedSrc::Buf(binding_idx) => {
+            let binding = kernel.bufs.get(*binding_idx).unwrap_or_else(|| {
+                panic!(
+                    "molt-gpu MLIR serializer: op {} references missing buffer binding {}",
+                    op_idx, binding_idx
+                )
+            });
+            assert_eq!(
+                binding.access,
+                BufferAccess::Read,
+                "molt-gpu MLIR serializer: op {} buffer source {} must be a Read binding",
+                op_idx,
+                binding_idx
+            );
+            let ty = mlir_element_type(binding.dtype);
+            let lowered = lower_shapetracker_index(
+                out,
+                &binding.st,
+                linear_idx,
+                &format!("buf{}_idx", binding_idx),
+                namer,
+            );
+            let name = namer.fresh(&format!("buf{}_load", binding_idx));
+            if let Some(valid) = lowered.valid {
+                let zero = namer.fresh(&format!("buf{}_zero", binding_idx));
+                writeln!(out, "    {}", mlir_zero_constant(&zero, binding.dtype)).unwrap();
+                writeln!(out, "    {} = scf.if {} -> ({}) {{", name, valid, ty).unwrap();
+                let loaded = namer.fresh(&format!("buf{}_loaded", binding_idx));
+                writeln!(
+                    out,
+                    "      {} = memref.load %buf{}[{}] : memref<?x{}>",
+                    loaded, binding_idx, lowered.index, ty
+                )
+                .unwrap();
+                writeln!(out, "      scf.yield {} : {}", loaded, ty).unwrap();
+                writeln!(out, "    }} else {{").unwrap();
+                writeln!(out, "      scf.yield {} : {}", zero, ty).unwrap();
+                writeln!(out, "    }}").unwrap();
+            } else {
+                writeln!(
+                    out,
+                    "    {} = memref.load %buf{}[{}] : memref<?x{}>",
+                    name, binding_idx, lowered.index, ty
+                )
+                .unwrap();
+            }
+            MlirValue {
+                name,
+                dtype: binding.dtype,
+            }
+        }
+        FusedSrc::Op(prior_idx) => {
+            assert!(
+                *prior_idx < values.len(),
+                "molt-gpu MLIR serializer: op {} references non-prior op {}",
+                op_idx,
+                prior_idx
+            );
+            values[*prior_idx].clone()
+        }
+        FusedSrc::Const { val, dtype } => {
+            let name = namer.fresh(&format!("op{}_const", op_idx));
+            writeln!(out, "    {} = {}", name, mlir_scalar_constant(*val, *dtype)).unwrap();
+            MlirValue {
+                name,
+                dtype: *dtype,
+            }
+        }
+    }
+}
+
+fn render_reduce_accumulate_op(
+    out: &mut String,
+    op_idx: usize,
+    op: &FusedOp,
+    acc: &str,
+    value: &MlirValue,
+    namer: &mut MlirNameGen,
+) -> String {
+    assert_eq!(
+        value.dtype,
+        op.dst_dtype(),
+        "molt-gpu MLIR serializer: {:?} source dtype {:?} must match output dtype {:?}",
+        op.op(),
+        value.dtype,
+        op.dst_dtype()
+    );
+    let ty = mlir_element_type(op.dst_dtype());
+    let result = namer.fresh(&format!("op{}_reduce_next", op_idx));
+    let expr = match op.op() {
+        PrimitiveOp::ReduceSum => {
+            if is_mlir_float_dtype(op.dst_dtype()) {
+                format!("arith.addf {}, {} : {}", acc, value.name, ty)
+            } else {
+                assert_integer_like(op.dst_dtype(), op.op());
+                format!("arith.addi {}, {} : {}", acc, value.name, ty)
+            }
+        }
+        PrimitiveOp::ReduceMax => {
+            if is_mlir_float_dtype(op.dst_dtype()) {
+                format!("arith.maximumf {}, {} : {}", acc, value.name, ty)
+            } else {
+                assert_integer_like(op.dst_dtype(), op.op());
+                let mlir_op = if op.dst_dtype().is_signed_int() {
+                    "arith.maxsi"
+                } else {
+                    "arith.maxui"
+                };
+                format!("{} {}, {} : {}", mlir_op, acc, value.name, ty)
+            }
+        }
+        _ => unreachable!("render_reduce_accumulate_op requires a reduce op"),
+    };
+    writeln!(out, "      {} = {}", result, expr).unwrap();
+    result
+}
+
+fn validate_reduction_compute_shapes(
+    kernel: &FusedKernel,
+    reduce_idx: usize,
+    domain: &ReductionDomain,
+) {
+    let input_numel = domain.input_shape.iter().product::<usize>();
+    for (op_idx, op) in kernel.ops[..=reduce_idx].iter().enumerate() {
+        for src in op.srcs() {
+            if let FusedSrc::Buf(binding_idx) = src {
+                let binding = kernel.bufs.get(*binding_idx).unwrap_or_else(|| {
+                    panic!(
+                        "molt-gpu MLIR serializer: op {} references missing buffer binding {}",
+                        op_idx, binding_idx
+                    )
+                });
+                assert_eq!(
+                    binding.st.numel(),
+                    input_numel,
+                    "molt-gpu MLIR serializer: pre-reduce buffer source {} numel {} must match reduction input numel {}",
+                    binding_idx,
+                    binding.st.numel(),
+                    input_numel
+                );
+                if !(binding.st.views.len() == 1 && binding.st.view().is_contiguous()) {
+                    assert_eq!(
+                        binding.st.shape(),
+                        domain.input_shape.as_slice(),
+                        "molt-gpu MLIR serializer: non-contiguous pre-reduce buffer source {} shape {:?} must match reduction input shape {:?}",
+                        binding_idx,
+                        binding.st.shape(),
+                        domain.input_shape
+                    );
+                }
+            }
+        }
+    }
+
+    for (op_idx, op) in kernel.ops.iter().enumerate().skip(reduce_idx + 1) {
+        for src in op.srcs() {
+            if let FusedSrc::Buf(binding_idx) = src {
+                let binding = kernel.bufs.get(*binding_idx).unwrap_or_else(|| {
+                    panic!(
+                        "molt-gpu MLIR serializer: op {} references missing buffer binding {}",
+                        op_idx, binding_idx
+                    )
+                });
+                assert_eq!(
+                    binding.st.numel(),
+                    domain.output_numel(),
+                    "molt-gpu MLIR serializer: post-reduce buffer source {} numel {} must match reduction output numel {}",
+                    binding_idx,
+                    binding.st.numel(),
+                    domain.output_numel()
+                );
+            }
+        }
+    }
+}
+
+fn lower_reduction_input_linear_index(
+    out: &mut String,
+    domain: &ReductionDomain,
+    output_linear_idx: &str,
+    reduce_linear_idx: &str,
+    prefix: &str,
+    namer: &mut MlirNameGen,
+) -> String {
+    let mut coords = vec![String::new(); domain.input_shape.len()];
+    let mut out_tmp = output_linear_idx.to_string();
+    let mut red_tmp = reduce_linear_idx.to_string();
+
+    for dim in (0..domain.input_shape.len()).rev() {
+        if let Some(axis_pos) = domain.axes.iter().position(|&axis| axis == dim) {
+            let extent = domain.reduce_shape[axis_pos] as i64;
+            let extent_const = mlir_index_constant(out, extent, prefix, namer);
+            coords[dim] =
+                emit_binary_index_op(out, "arith.remui", &red_tmp, &extent_const, prefix, namer);
+            red_tmp =
+                emit_binary_index_op(out, "arith.divui", &red_tmp, &extent_const, prefix, namer);
+        } else {
+            let extent = domain.input_shape[dim] as i64;
+            let extent_const = mlir_index_constant(out, extent, prefix, namer);
+            coords[dim] =
+                emit_binary_index_op(out, "arith.remui", &out_tmp, &extent_const, prefix, namer);
+            out_tmp =
+                emit_binary_index_op(out, "arith.divui", &out_tmp, &extent_const, prefix, namer);
+        }
+    }
+
+    let mut index = mlir_index_constant(out, 0, prefix, namer);
+    for (coord, &stride) in coords.iter().zip(domain.input_strides.iter()) {
+        if stride == 0 {
+            continue;
+        }
+        let term = if stride == 1 {
+            coord.clone()
+        } else {
+            let stride_const = mlir_index_constant(out, stride as i64, prefix, namer);
+            emit_binary_index_op(out, "arith.muli", coord, &stride_const, prefix, namer)
+        };
+        index = emit_binary_index_op(out, "arith.addi", &index, &term, prefix, namer);
+    }
+    index
+}
+
+fn render_compute_op(
+    out: &mut String,
+    op_idx: usize,
+    op: &FusedOp,
+    srcs: &[MlirValue],
+    namer: &mut MlirNameGen,
+) -> MlirValue {
+    if op.op() == PrimitiveOp::Cast {
+        return render_cast_compute_op(out, op_idx, op, srcs, namer);
+    }
+
+    let result = format!("%v{}", op_idx);
+    let dst_ty = mlir_element_type(op.dst_dtype());
+    let expr = match op.op() {
+        PrimitiveOp::Add => {
+            assert_same_dtype(op, srcs);
+            if is_mlir_float_dtype(op.dst_dtype()) {
+                format!("arith.addf {}, {} : {}", srcs[0].name, srcs[1].name, dst_ty)
+            } else {
+                assert_integer_like(op.dst_dtype(), op.op());
+                format!("arith.addi {}, {} : {}", srcs[0].name, srcs[1].name, dst_ty)
+            }
+        }
+        PrimitiveOp::Sub => {
+            assert_same_dtype(op, srcs);
+            if is_mlir_float_dtype(op.dst_dtype()) {
+                format!("arith.subf {}, {} : {}", srcs[0].name, srcs[1].name, dst_ty)
+            } else {
+                assert_integer_like(op.dst_dtype(), op.op());
+                format!("arith.subi {}, {} : {}", srcs[0].name, srcs[1].name, dst_ty)
+            }
+        }
+        PrimitiveOp::Mul => {
+            assert_same_dtype(op, srcs);
+            if is_mlir_float_dtype(op.dst_dtype()) {
+                format!("arith.mulf {}, {} : {}", srcs[0].name, srcs[1].name, dst_ty)
+            } else {
+                assert_integer_like(op.dst_dtype(), op.op());
+                format!("arith.muli {}, {} : {}", srcs[0].name, srcs[1].name, dst_ty)
+            }
+        }
+        PrimitiveOp::Idiv => {
+            assert_same_dtype(op, srcs);
+            assert_int_numeric(op.dst_dtype(), op.op());
+            if op.dst_dtype().is_signed_int() {
+                format!(
+                    "arith.divsi {}, {} : {}",
+                    srcs[0].name, srcs[1].name, dst_ty
+                )
+            } else {
+                format!(
+                    "arith.divui {}, {} : {}",
+                    srcs[0].name, srcs[1].name, dst_ty
+                )
+            }
+        }
+        PrimitiveOp::Mod => {
+            assert_same_dtype(op, srcs);
+            assert_int_numeric(op.dst_dtype(), op.op());
+            if op.dst_dtype().is_signed_int() {
+                format!(
+                    "arith.remsi {}, {} : {}",
+                    srcs[0].name, srcs[1].name, dst_ty
+                )
+            } else {
+                format!(
+                    "arith.remui {}, {} : {}",
+                    srcs[0].name, srcs[1].name, dst_ty
+                )
+            }
+        }
+        PrimitiveOp::Neg => {
+            assert_same_dtype(op, srcs);
+            if is_mlir_float_dtype(op.dst_dtype()) {
+                format!("arith.negf {} : {}", srcs[0].name, dst_ty)
+            } else {
+                assert_int_numeric(op.dst_dtype(), op.op());
+                let zero = namer.fresh(&format!("op{}_zero", op_idx));
+                writeln!(out, "    {}", mlir_zero_constant(&zero, op.dst_dtype())).unwrap();
+                format!("arith.subi {}, {} : {}", zero, srcs[0].name, dst_ty)
+            }
+        }
+        PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne => {
+            assert_eq!(
+                op.dst_dtype(),
+                DType::Bool,
+                "molt-gpu MLIR serializer: comparison outputs must be Bool"
+            );
+            assert!(
+                srcs[0].dtype == srcs[1].dtype,
+                "molt-gpu MLIR serializer: comparison sources must have matching dtypes"
+            );
+            let src_ty = mlir_element_type(srcs[0].dtype);
+            if is_mlir_float_dtype(srcs[0].dtype) {
+                let pred = match op.op() {
+                    PrimitiveOp::Cmplt => "olt",
+                    PrimitiveOp::Cmpeq => "oeq",
+                    PrimitiveOp::Cmpne => "une",
+                    _ => unreachable!(),
+                };
+                format!(
+                    "arith.cmpf \"{}\", {}, {} : {}",
+                    pred, srcs[0].name, srcs[1].name, src_ty
+                )
+            } else {
+                assert_integer_like(srcs[0].dtype, op.op());
+                let pred = match op.op() {
+                    PrimitiveOp::Cmplt if srcs[0].dtype.is_signed_int() => "slt",
+                    PrimitiveOp::Cmplt => "ult",
+                    PrimitiveOp::Cmpeq => "eq",
+                    PrimitiveOp::Cmpne => "ne",
+                    _ => unreachable!(),
+                };
+                format!(
+                    "arith.cmpi {}, {}, {} : {}",
+                    pred, srcs[0].name, srcs[1].name, src_ty
+                )
+            }
+        }
+        PrimitiveOp::And | PrimitiveOp::Or | PrimitiveOp::Xor => {
+            assert_same_dtype(op, srcs);
+            assert_integer_like(op.dst_dtype(), op.op());
+            let mlir_op = match op.op() {
+                PrimitiveOp::And => "arith.andi",
+                PrimitiveOp::Or => "arith.ori",
+                PrimitiveOp::Xor => "arith.xori",
+                _ => unreachable!(),
+            };
+            format!(
+                "{} {}, {} : {}",
+                mlir_op, srcs[0].name, srcs[1].name, dst_ty
+            )
+        }
+        PrimitiveOp::Shl | PrimitiveOp::Shr => {
+            assert_same_dtype(op, srcs);
+            assert_int_numeric(op.dst_dtype(), op.op());
+            let mlir_op = match op.op() {
+                PrimitiveOp::Shl => "arith.shli",
+                PrimitiveOp::Shr if op.dst_dtype().is_signed_int() => "arith.shrsi",
+                PrimitiveOp::Shr => "arith.shrui",
+                _ => unreachable!(),
+            };
+            format!(
+                "{} {}, {} : {}",
+                mlir_op, srcs[0].name, srcs[1].name, dst_ty
+            )
+        }
+        PrimitiveOp::Exp2 | PrimitiveOp::Log2 | PrimitiveOp::Sin | PrimitiveOp::Sqrt => {
+            assert_same_dtype(op, srcs);
+            assert_float_numeric(op.dst_dtype(), op.op());
+            let mlir_op = match op.op() {
+                PrimitiveOp::Exp2 => "math.exp2",
+                PrimitiveOp::Log2 => "math.log2",
+                PrimitiveOp::Sin => "math.sin",
+                PrimitiveOp::Sqrt => "math.sqrt",
+                _ => unreachable!(),
+            };
+            format!("{} {} : {}", mlir_op, srcs[0].name, dst_ty)
+        }
+        PrimitiveOp::Reciprocal => {
+            assert_same_dtype(op, srcs);
+            assert_float_numeric(op.dst_dtype(), op.op());
+            let one = namer.fresh(&format!("op{}_one", op_idx));
+            writeln!(
+                out,
+                "    {} = {}",
+                one,
+                mlir_scalar_constant(1.0, op.dst_dtype())
+            )
+            .unwrap();
+            format!("arith.divf {}, {} : {}", one, srcs[0].name, dst_ty)
+        }
+        PrimitiveOp::Trunc => {
+            assert_same_dtype(op, srcs);
+            assert_float_numeric(op.dst_dtype(), op.op());
+            format!("math.trunc {} : {}", srcs[0].name, dst_ty)
+        }
+        PrimitiveOp::Max => {
+            assert_same_dtype(op, srcs);
+            if is_mlir_float_dtype(op.dst_dtype()) {
+                format!(
+                    "arith.maximumf {}, {} : {}",
+                    srcs[0].name, srcs[1].name, dst_ty
+                )
+            } else {
+                assert_int_numeric(op.dst_dtype(), op.op());
+                let mlir_op = if op.dst_dtype().is_signed_int() {
+                    "arith.maxsi"
+                } else {
+                    "arith.maxui"
+                };
+                format!(
+                    "{} {}, {} : {}",
+                    mlir_op, srcs[0].name, srcs[1].name, dst_ty
+                )
+            }
+        }
+        PrimitiveOp::Where => {
+            assert_eq!(
+                srcs[0].dtype,
+                DType::Bool,
+                "molt-gpu MLIR serializer: Where condition must be Bool"
+            );
+            assert!(
+                srcs[1].dtype == op.dst_dtype() && srcs[2].dtype == op.dst_dtype(),
+                "molt-gpu MLIR serializer: Where value sources must match output dtype"
+            );
+            format!(
+                "arith.select {}, {}, {} : {}",
+                srcs[0].name, srcs[1].name, srcs[2].name, dst_ty
+            )
+        }
+        PrimitiveOp::Cast => unreachable!(),
+        PrimitiveOp::Bitcast => {
+            assert_eq!(
+                srcs[0].dtype.size_bytes(),
+                op.dst_dtype().size_bytes(),
+                "molt-gpu MLIR serializer: Bitcast requires equal source/output element widths"
+            );
+            let src_ty = mlir_element_type(srcs[0].dtype);
+            format!("arith.bitcast {} : {} to {}", srcs[0].name, src_ty, dst_ty)
+        }
+        PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax => unreachable!(),
+    };
+
+    writeln!(out, "    {} = {}", result, expr).unwrap();
+    MlirValue {
+        name: result,
+        dtype: op.dst_dtype(),
+    }
+}
+
+fn render_cast_compute_op(
+    out: &mut String,
+    op_idx: usize,
+    op: &FusedOp,
+    srcs: &[MlirValue],
+    namer: &mut MlirNameGen,
+) -> MlirValue {
+    assert_eq!(
+        srcs.len(),
+        1,
+        "molt-gpu MLIR serializer: Cast expected 1 source, got {}",
+        srcs.len()
+    );
+    let src = &srcs[0];
+    assert!(
+        !src.dtype.is_mxfp() && !op.dst_dtype().is_mxfp(),
+        "molt-gpu MLIR serializer: Cast involving MXFP requires explicit quantized conversion lowering"
+    );
+    if src.dtype == op.dst_dtype() {
+        return MlirValue {
+            name: src.name.clone(),
+            dtype: op.dst_dtype(),
+        };
+    }
+
+    let result = format!("%v{}", op_idx);
+    let src_ty = mlir_element_type(src.dtype);
+    let dst_ty = mlir_element_type(op.dst_dtype());
+    let expr = if op.dst_dtype() == DType::Bool {
+        let zero = namer.fresh(&format!("op{}_zero", op_idx));
+        writeln!(out, "    {}", mlir_zero_constant(&zero, src.dtype)).unwrap();
+        if is_mlir_float_dtype(src.dtype) {
+            format!("arith.cmpf \"une\", {}, {} : {}", src.name, zero, src_ty)
+        } else {
+            assert_integer_like(src.dtype, op.op());
+            format!("arith.cmpi ne, {}, {} : {}", src.name, zero, src_ty)
+        }
+    } else if is_mlir_float_dtype(src.dtype) && is_mlir_float_dtype(op.dst_dtype()) {
+        match mlir_float_bit_width(src.dtype).cmp(&mlir_float_bit_width(op.dst_dtype())) {
+            std::cmp::Ordering::Less => {
+                format!("arith.extf {} : {} to {}", src.name, src_ty, dst_ty)
+            }
+            std::cmp::Ordering::Greater => {
+                format!("arith.truncf {} : {} to {}", src.name, src_ty, dst_ty)
+            }
+            std::cmp::Ordering::Equal => {
+                format!("arith.convertf {} : {} to {}", src.name, src_ty, dst_ty)
+            }
+        }
+    } else if is_mlir_float_dtype(src.dtype) && is_mlir_integer_dtype(op.dst_dtype()) {
+        let mlir_op = if op.dst_dtype().is_signed_int() {
+            "arith.fptosi"
+        } else {
+            "arith.fptoui"
+        };
+        format!("{} {} : {} to {}", mlir_op, src.name, src_ty, dst_ty)
+    } else if is_mlir_integer_dtype(src.dtype) && is_mlir_float_dtype(op.dst_dtype()) {
+        let mlir_op = if src.dtype.is_signed_int() {
+            "arith.sitofp"
+        } else {
+            "arith.uitofp"
+        };
+        format!("{} {} : {} to {}", mlir_op, src.name, src_ty, dst_ty)
+    } else if is_mlir_integer_dtype(src.dtype) && is_mlir_integer_dtype(op.dst_dtype()) {
+        match mlir_integer_bit_width(src.dtype).cmp(&mlir_integer_bit_width(op.dst_dtype())) {
+            std::cmp::Ordering::Less => {
+                let mlir_op = if src.dtype.is_signed_int() {
+                    "arith.extsi"
+                } else {
+                    "arith.extui"
+                };
+                format!("{} {} : {} to {}", mlir_op, src.name, src_ty, dst_ty)
+            }
+            std::cmp::Ordering::Greater => {
+                format!("arith.trunci {} : {} to {}", src.name, src_ty, dst_ty)
+            }
+            std::cmp::Ordering::Equal => {
+                format!("arith.bitcast {} : {} to {}", src.name, src_ty, dst_ty)
+            }
+        }
+    } else {
+        panic!(
+            "molt-gpu MLIR serializer: unsupported Cast from {:?} to {:?}",
+            src.dtype,
+            op.dst_dtype()
+        );
+    };
+
+    writeln!(out, "    {} = {}", result, expr).unwrap();
+    MlirValue {
+        name: result,
+        dtype: op.dst_dtype(),
+    }
+}
+
+fn render_materialize_copy(
+    out: &mut String,
+    dst: &BufferBinding,
+    src: &BufferBinding,
+    output_numel: usize,
+) {
+    assert_supported_buffer_storage_dtype(dst.dtype, "MaterializeCopy");
+    let ty = mlir_element_type(dst.dtype);
+    writeln!(
+        out,
+        "func.func @molt_kernel(%buf0: memref<?x{}>, %buf1: memref<?x{}>) {{",
+        ty, ty
+    )
+    .unwrap();
+    writeln!(out, "  %c0 = arith.constant 0 : index").unwrap();
+    writeln!(out, "  %c1 = arith.constant 1 : index").unwrap();
+    writeln!(out, "  %c_numel = arith.constant {} : index", output_numel).unwrap();
+    writeln!(out, "  {}", mlir_zero_constant("%copy_zero", dst.dtype)).unwrap();
+    writeln!(out, "  scf.for %gid = %c0 to %c_numel step %c1 {{").unwrap();
+
+    let mut namer = MlirNameGen::default();
+    let dst_index = lower_shapetracker_index(out, &dst.st, "%gid", "dst", &mut namer);
+    let src_index = lower_shapetracker_index(out, &src.st, "%gid", "src", &mut namer);
+    assert!(
+        dst_index.valid.is_none(),
+        "MaterializeCopy output must not require masked zero-fill"
+    );
+    let dst_ref = dst_index.index;
+    let src_ref = src_index.index;
+    if let Some(valid) = src_index.valid {
+        writeln!(out, "    %copy_value = scf.if {} -> ({}) {{", valid, ty).unwrap();
+        writeln!(
+            out,
+            "      %copy_loaded = memref.load %buf1[{}] : memref<?x{}>",
+            src_ref, ty
+        )
+        .unwrap();
+        writeln!(out, "      scf.yield %copy_loaded : {}", ty).unwrap();
+        writeln!(out, "    }} else {{").unwrap();
+        writeln!(out, "      scf.yield %copy_zero : {}", ty).unwrap();
+        writeln!(out, "    }}").unwrap();
+    } else {
+        writeln!(
+            out,
+            "    %copy_value = memref.load %buf1[{}] : memref<?x{}>",
+            src_ref, ty
+        )
+        .unwrap();
+    }
+    writeln!(
+        out,
+        "    memref.store %copy_value, %buf0[{}] : memref<?x{}>",
+        dst_ref, ty
+    )
+    .unwrap();
+    writeln!(out, "  }}").unwrap();
+    writeln!(out, "  return").unwrap();
+    writeln!(out, "}}").unwrap();
+}
+
+fn assert_supported_buffer_storage_dtypes(kernel: &FusedKernel, context: &str) {
+    for binding in &kernel.bufs {
+        assert_supported_buffer_storage_dtype(binding.dtype, context);
+    }
+}
+
+fn assert_supported_buffer_storage_dtype(dtype: DType, context: &str) {
+    assert!(
+        !dtype.is_mxfp(),
+        "molt-gpu MLIR serializer: {} for MXFP requires explicit block/exponent storage lowering ({:?})",
+        context,
+        dtype
+    );
+}
+
+#[derive(Debug)]
+struct MlirIndex {
+    index: String,
+    valid: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct MlirNameGen {
+    next: usize,
+}
+
+impl MlirNameGen {
+    fn fresh(&mut self, prefix: &str) -> String {
+        let name = format!("%{}_{}", prefix, self.next);
+        self.next += 1;
+        name
+    }
+}
+
+fn lower_shapetracker_index(
+    out: &mut String,
+    st: &ShapeTracker,
+    linear_idx: &str,
+    prefix: &str,
+    namer: &mut MlirNameGen,
+) -> MlirIndex {
+    if st.views.len() == 1 && st.views[0].is_contiguous() {
+        return MlirIndex {
+            index: linear_idx.to_string(),
+            valid: None,
+        };
+    }
+
+    let mut index = linear_idx.to_string();
+    let mut valid_terms = Vec::new();
+    for (view_idx, view) in st.views.iter().rev().enumerate() {
+        let lowered = lower_view_index(
+            out,
+            view,
+            &index,
+            &format!("{}_v{}", prefix, view_idx),
+            namer,
+        );
+        if let Some(valid) = lowered.valid {
+            valid_terms.push(valid);
+        }
+        index = lowered.index;
+    }
+
+    MlirIndex {
+        index,
+        valid: combine_mlir_valid_terms(out, valid_terms, prefix, namer),
+    }
+}
+
+fn lower_view_index(
+    out: &mut String,
+    view: &View,
+    linear_idx: &str,
+    prefix: &str,
+    namer: &mut MlirNameGen,
+) -> MlirIndex {
+    if view.shape.is_empty() {
+        return MlirIndex {
+            index: mlir_index_constant(out, 0, prefix, namer),
+            valid: None,
+        };
+    }
+
+    let mut dim_indices = Vec::with_capacity(view.shape.len());
+    for dim in 0..view.shape.len() {
+        dim_indices.push(lower_dim_index(out, view, linear_idx, dim, prefix, namer));
+    }
+
+    let mut idx_sum = mlir_index_constant(out, view.offset, prefix, namer);
+    for (dim_idx, &stride) in dim_indices.iter().zip(view.strides.iter()) {
+        if stride == 0 {
+            continue;
+        }
+        let term = if stride.abs() == 1 {
+            dim_idx.clone()
+        } else {
+            let stride_const = mlir_index_constant(out, stride.abs(), prefix, namer);
+            emit_binary_index_op(out, "arith.muli", dim_idx, &stride_const, prefix, namer)
+        };
+        idx_sum = if stride > 0 {
+            emit_binary_index_op(out, "arith.addi", &idx_sum, &term, prefix, namer)
+        } else {
+            emit_binary_index_op(out, "arith.subi", &idx_sum, &term, prefix, namer)
+        };
+    }
+
+    let mut valid_terms = Vec::new();
+    if let Some(mask) = &view.mask {
+        for (dim, &(lo, hi)) in mask.iter().enumerate() {
+            let lo_const = mlir_index_constant(out, lo, prefix, namer);
+            let hi_const = mlir_index_constant(out, hi, prefix, namer);
+            let ge_lo = emit_cmp_index_op(out, "sge", &dim_indices[dim], &lo_const, prefix, namer);
+            let lt_hi = emit_cmp_index_op(out, "slt", &dim_indices[dim], &hi_const, prefix, namer);
+            valid_terms.push(ge_lo);
+            valid_terms.push(lt_hi);
+        }
+    }
+
+    if min_physical_offset(view) < 0 {
+        let zero_const = mlir_index_constant(out, 0, prefix, namer);
+        valid_terms.push(emit_cmp_index_op(
+            out,
+            "sge",
+            &idx_sum,
+            &zero_const,
+            prefix,
+            namer,
+        ));
+    }
+
+    MlirIndex {
+        index: idx_sum,
+        valid: combine_mlir_valid_terms(out, valid_terms, prefix, namer),
+    }
+}
+
+fn lower_dim_index(
+    out: &mut String,
+    view: &View,
+    linear_idx: &str,
+    dim: usize,
+    prefix: &str,
+    namer: &mut MlirNameGen,
+) -> String {
+    if view.shape.len() == 1 {
+        return linear_idx.to_string();
+    }
+
+    let size_const = mlir_index_constant(out, view.shape[dim] as i64, prefix, namer);
+    let base = if dim == view.shape.len() - 1 {
+        linear_idx.to_string()
+    } else {
+        let divisor: usize = view.shape[dim + 1..].iter().product();
+        let divisor_const = mlir_index_constant(out, divisor as i64, prefix, namer);
+        emit_binary_index_op(
+            out,
+            "arith.divui",
+            linear_idx,
+            &divisor_const,
+            prefix,
+            namer,
+        )
+    };
+    emit_binary_index_op(out, "arith.remui", &base, &size_const, prefix, namer)
+}
+
+fn mlir_index_constant(
+    out: &mut String,
+    value: i64,
+    prefix: &str,
+    namer: &mut MlirNameGen,
+) -> String {
+    let name = namer.fresh(prefix);
+    writeln!(out, "    {} = arith.constant {} : index", name, value).unwrap();
+    name
+}
+
+fn emit_binary_index_op(
+    out: &mut String,
+    op: &str,
+    lhs: &str,
+    rhs: &str,
+    prefix: &str,
+    namer: &mut MlirNameGen,
+) -> String {
+    let name = namer.fresh(prefix);
+    writeln!(out, "    {} = {} {}, {} : index", name, op, lhs, rhs).unwrap();
+    name
+}
+
+fn emit_cmp_index_op(
+    out: &mut String,
+    predicate: &str,
+    lhs: &str,
+    rhs: &str,
+    prefix: &str,
+    namer: &mut MlirNameGen,
+) -> String {
+    let name = namer.fresh(prefix);
+    writeln!(
+        out,
+        "    {} = arith.cmpi {}, {}, {} : index",
+        name, predicate, lhs, rhs
+    )
+    .unwrap();
+    name
+}
+
+fn combine_mlir_valid_terms(
+    out: &mut String,
+    terms: Vec<String>,
+    prefix: &str,
+    namer: &mut MlirNameGen,
+) -> Option<String> {
+    let mut iter = terms.into_iter();
+    let mut combined = iter.next()?;
+    for term in iter {
+        combined = emit_bool_binary_op(out, "arith.andi", &combined, &term, prefix, namer);
+    }
+    Some(combined)
+}
+
+fn emit_bool_binary_op(
+    out: &mut String,
+    op: &str,
+    lhs: &str,
+    rhs: &str,
+    prefix: &str,
+    namer: &mut MlirNameGen,
+) -> String {
+    let name = namer.fresh(prefix);
+    writeln!(out, "    {} = {} {}, {} : i1", name, op, lhs, rhs).unwrap();
+    name
+}
+
+fn min_physical_offset(view: &View) -> i64 {
+    let mut min_offset = view.offset;
+    for (&shape, &stride) in view.shape.iter().zip(view.strides.iter()) {
+        if stride < 0 {
+            min_offset += (shape as i64 - 1) * stride;
+        }
+    }
+    min_offset
+}
+
+fn assert_same_dtype(op: &FusedOp, srcs: &[MlirValue]) {
+    for src in srcs {
+        assert_eq!(
+            src.dtype,
+            op.dst_dtype(),
+            "molt-gpu MLIR serializer: {:?} source dtype {:?} must match output dtype {:?}",
+            op.op(),
+            src.dtype,
+            op.dst_dtype()
+        );
+    }
+}
+
+fn assert_float_numeric(dtype: DType, op: PrimitiveOp) {
+    assert!(
+        is_mlir_float_dtype(dtype),
+        "molt-gpu MLIR serializer: {:?} requires a standard float dtype, got {:?}",
+        op,
+        dtype
+    );
+}
+
+fn assert_int_numeric(dtype: DType, op: PrimitiveOp) {
+    assert!(
+        dtype.is_signed_int()
+            || matches!(
+                dtype,
+                DType::UInt8 | DType::UInt16 | DType::UInt32 | DType::UInt64
+            ),
+        "molt-gpu MLIR serializer: {:?} requires an integer dtype, got {:?}",
+        op,
+        dtype
+    );
+}
+
+fn assert_integer_like(dtype: DType, op: PrimitiveOp) {
+    assert!(
+        dtype == DType::Bool
+            || dtype.is_signed_int()
+            || matches!(
+                dtype,
+                DType::UInt8 | DType::UInt16 | DType::UInt32 | DType::UInt64
+            ),
+        "molt-gpu MLIR serializer: {:?} requires a bool/integer dtype, got {:?}",
+        op,
+        dtype
+    );
+}
+
+fn assert_supported_reduce_dtype(dtype: DType, op: PrimitiveOp) {
+    match dtype {
+        DType::MxFP8 | DType::MxFP4 => {
+            panic!(
+                "molt-gpu MLIR serializer: {:?} over {:?} requires explicit quantized reduction lowering",
+                op, dtype
+            )
+        }
+        DType::Bool if op == PrimitiveOp::ReduceSum => {
+            panic!(
+                "molt-gpu MLIR serializer: ReduceSum over Bool requires an explicit widened accumulator"
+            )
+        }
+        _ => {
+            assert!(
+                is_mlir_float_dtype(dtype) || is_mlir_integer_dtype(dtype),
+                "molt-gpu MLIR serializer: {:?} requires an MLIR scalar dtype, got {:?}",
+                op,
+                dtype
+            );
+        }
+    }
+}
+
+fn is_mlir_float_dtype(dtype: DType) -> bool {
+    matches!(
+        dtype,
+        DType::Float16 | DType::BFloat16 | DType::Float32 | DType::Float64
+    )
+}
+
+fn is_mlir_integer_dtype(dtype: DType) -> bool {
+    dtype == DType::Bool
+        || dtype.is_signed_int()
+        || matches!(
+            dtype,
+            DType::UInt8 | DType::UInt16 | DType::UInt32 | DType::UInt64
+        )
+}
+
+fn mlir_integer_bit_width(dtype: DType) -> usize {
+    match dtype {
+        DType::Bool => 1,
+        DType::Int8 | DType::UInt8 => 8,
+        DType::Int16 | DType::UInt16 => 16,
+        DType::Int32 | DType::UInt32 => 32,
+        DType::Int64 | DType::UInt64 => 64,
+        _ => panic!(
+            "molt-gpu MLIR serializer: {:?} is not an MLIR integer dtype",
+            dtype
+        ),
+    }
+}
+
+fn mlir_float_bit_width(dtype: DType) -> usize {
+    match dtype {
+        DType::Float16 | DType::BFloat16 => 16,
+        DType::Float32 => 32,
+        DType::Float64 => 64,
+        _ => panic!(
+            "molt-gpu MLIR serializer: {:?} is not an MLIR float dtype",
+            dtype
+        ),
+    }
+}
+
+fn mlir_scalar_constant(value: f64, dtype: DType) -> String {
+    if dtype.is_mxfp() {
+        panic!(
+            "molt-gpu MLIR serializer: MXFP constants require explicit quantized storage lowering"
+        );
+    }
+    let ty = mlir_element_type(dtype);
+    let value = match dtype {
+        DType::Bool => {
+            if value != 0.0 {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        DType::Int8 | DType::Int16 | DType::Int32 | DType::Int64 => {
+            format!("{}", value as i64)
+        }
+        DType::UInt8 | DType::UInt16 | DType::UInt32 | DType::UInt64 => {
+            format!("{}", value as u64)
+        }
+        DType::Float16 | DType::BFloat16 | DType::Float32 | DType::Float64 => {
+            if value.is_nan() {
+                "nan".to_string()
+            } else if value == f64::INFINITY {
+                "inf".to_string()
+            } else if value == f64::NEG_INFINITY {
+                "-inf".to_string()
+            } else {
+                format!("{:e}", value)
+            }
+        }
+        DType::MxFP8 | DType::MxFP4 => unreachable!("MXFP constants fail before MLIR type lookup"),
+    };
+    format!("arith.constant {} : {}", value, ty)
+}
+
+fn mlir_reduce_identity_constant(op: PrimitiveOp, dtype: DType) -> String {
+    match op {
+        PrimitiveOp::ReduceSum => mlir_zero_constant_expr(dtype),
+        PrimitiveOp::ReduceMax => {
+            let literal = match dtype {
+                DType::Bool => "false".to_string(),
+                DType::Int8 => i8::MIN.to_string(),
+                DType::Int16 => i16::MIN.to_string(),
+                DType::Int32 => i32::MIN.to_string(),
+                DType::Int64 => i64::MIN.to_string(),
+                DType::UInt8 | DType::UInt16 | DType::UInt32 | DType::UInt64 => "0".to_string(),
+                DType::Float16 | DType::BFloat16 | DType::Float32 | DType::Float64 => {
+                    "-inf".to_string()
+                }
+                DType::MxFP8 | DType::MxFP4 => {
+                    panic!(
+                        "molt-gpu MLIR serializer: ReduceMax over {:?} requires explicit quantized reduction lowering",
+                        dtype
+                    )
+                }
+            };
+            let ty = mlir_element_type(dtype);
+            format!("arith.constant {} : {}", literal, ty)
+        }
+        _ => panic!("molt-gpu MLIR serializer: {:?} is not a reduction op", op),
+    }
+}
+
+fn mlir_zero_constant(name: &str, dtype: DType) -> String {
+    format!("{name} = {}", mlir_zero_constant_expr(dtype))
+}
+
+fn mlir_zero_constant_expr(dtype: DType) -> String {
+    if dtype.is_mxfp() {
+        panic!(
+            "molt-gpu MLIR serializer: MXFP zero constants require explicit quantized storage lowering"
+        );
+    }
+    let ty = mlir_element_type(dtype);
+    if dtype == DType::Bool {
+        format!("arith.constant false : {ty}")
+    } else if matches!(
+        dtype,
+        DType::Float16 | DType::BFloat16 | DType::Float32 | DType::Float64
+    ) {
+        format!("arith.constant 0.000000e+00 : {ty}")
+    } else {
+        format!("arith.constant 0 : {ty}")
+    }
 }
 
 fn mlir_element_type(dtype: DType) -> &'static str {
@@ -244,23 +1453,9 @@ fn mlir_element_type(dtype: DType) -> &'static str {
         DType::BFloat16 => "bf16",
         DType::Float32 => "f32",
         DType::Float64 => "f64",
-        // MXFP types map to i8 in MLIR (raw byte storage).
-        // Dequantization is expressed as explicit MLIR ops.
-        DType::MxFP8 | DType::MxFP4 => "i8",
-    }
-}
-
-fn mlir_src_ref(src: &FusedSrc) -> String {
-    match src {
-        FusedSrc::Buf(idx) => format!("%buf{}", idx),
-        FusedSrc::Op(idx) => format!("%v{}", idx),
-        FusedSrc::Const { val, dtype } => {
-            let ty = mlir_element_type(*dtype);
-            if dtype.is_float() {
-                format!("{}({} : {})", ty, val, ty)
-            } else {
-                format!("{}({} : {})", ty, *val as i64, ty)
-            }
-        }
+        DType::MxFP8 | DType::MxFP4 => panic!(
+            "molt-gpu MLIR serializer: MXFP element types require explicit block/exponent storage lowering ({:?})",
+            dtype
+        ),
     }
 }

@@ -239,8 +239,7 @@ impl CallGraph {
     /// rather than SimpleIR kind strings, and additionally computes SCC /
     /// bottom-up order / the recursive set the IPO tier needs.
     pub fn build(module: &TirModule) -> CallGraph {
-        let defined: BTreeSet<String> =
-            module.functions.iter().map(|f| f.name.clone()).collect();
+        let defined: BTreeSet<String> = module.functions.iter().map(|f| f.name.clone()).collect();
 
         let mut functions: Vec<String> = defined.iter().cloned().collect();
         functions.sort();
@@ -639,7 +638,10 @@ mod tests {
         let cg = CallGraph::build(&module(vec![g]));
         assert!(!cg.leaf_functions().contains("g"));
         assert!(cg.has_opaque_call("g"));
-        assert!(cg.callees("g").is_empty(), "extern callee is not a static edge");
+        assert!(
+            cg.callees("g").is_empty(),
+            "extern callee is not a static edge"
+        );
     }
 
     #[test]
@@ -682,7 +684,10 @@ mod tests {
         });
         block.terminator = Terminator::Return { values: vec![] };
         let cg = CallGraph::build(&module(vec![f]));
-        assert!(cg.leaf_functions().contains("f"), "builtin call ≠ user call");
+        assert!(
+            cg.leaf_functions().contains("f"),
+            "builtin call ≠ user call"
+        );
     }
 
     #[test]
@@ -723,10 +728,7 @@ mod tests {
         let entry = f.entry_block;
         let block = f.blocks.get_mut(&entry).unwrap();
         let mut attrs = AttrDict::new();
-        attrs.insert(
-            "_original_kind".into(),
-            AttrValue::Str("call_func".into()),
-        );
+        attrs.insert("_original_kind".into(), AttrValue::Str("call_func".into()));
         attrs.insert("s_value".into(), AttrValue::Str("g".into()));
         block.ops.push(TirOp {
             dialect: Dialect::Molt,
@@ -739,7 +741,10 @@ mod tests {
         block.terminator = Terminator::Return { values: vec![] };
         let g = func_calling("g", &[]);
         let cg = CallGraph::build(&module(vec![f, g]));
-        assert!(!cg.leaf_functions().contains("f"), "Copy[call_func] is a call");
+        assert!(
+            !cg.leaf_functions().contains("f"),
+            "Copy[call_func] is a call"
+        );
         assert_eq!(cg.callees("f"), &["g".to_string()]);
     }
 
@@ -841,11 +846,7 @@ mod tests {
         let b = func_calling("b", &[Some("c")]);
         let c = func_calling("c", &[]);
         let cg = CallGraph::build(&module(vec![a, b, c]));
-        let order: Vec<String> = cg
-            .bottom_up_order()
-            .into_iter()
-            .flatten()
-            .collect();
+        let order: Vec<String> = cg.bottom_up_order().into_iter().flatten().collect();
         let pos = |n: &str| order.iter().position(|x| x == n).unwrap();
         assert!(pos("c") < pos("b"));
         assert!(pos("b") < pos("a"));
@@ -876,7 +877,10 @@ mod tests {
         assert_eq!(cg.callees("g"), &["g_poll".to_string()]);
         // …but does NOT count as a "call out of g", so g (with only the
         // alloc_task) is still a leaf in the no-call sense.
-        assert!(cg.leaf_functions().contains("g"), "alloc_task ≠ call out of g");
+        assert!(
+            cg.leaf_functions().contains("g"),
+            "alloc_task ≠ call out of g"
+        );
         assert!(cg.leaf_functions().contains("g_poll"));
     }
 

@@ -595,9 +595,7 @@ fn terminator_uses(term: &Terminator, v: ValueId) -> bool {
             default_args,
             ..
         } => {
-            *value == v
-                || default_args.contains(&v)
-                || cases.iter().any(|(_, _, a)| a.contains(&v))
+            *value == v || default_args.contains(&v) || cases.iter().any(|(_, _, a)| a.contains(&v))
         }
         Terminator::Return { values } => values.contains(&v),
         Terminator::Unreachable => false,
@@ -804,7 +802,11 @@ fn apply_fusion(
         }
     }
     for b in consumer_region {
-        if caller.blocks.get(&b).is_some_and(|blk| !blk.args.is_empty()) {
+        if caller
+            .blocks
+            .get(&b)
+            .is_some_and(|blk| !blk.args.is_empty())
+        {
             return false;
         }
     }
@@ -913,7 +915,8 @@ fn local_slot_init_const(poll: &TirFunction, offset: i64) -> Option<LocalInit> {
             let def = &poll.blocks[&loc.0].ops[loc.1];
             result = if def.opcode == OpCode::ConstInt {
                 Some(LocalInit::Int(attr_value_int(def)?))
-            } else if def.opcode == OpCode::ConstNone || attr_original_kind(def) == Some("missing") {
+            } else if def.opcode == OpCode::ConstNone || attr_original_kind(def) == Some("missing")
+            {
                 Some(LocalInit::None_)
             } else {
                 return None;
@@ -1661,7 +1664,7 @@ fn wire_fused_loop(
 /// `CheckException` whose `value` label targets it fails LLVM lowering
 /// ("check_exception target label N is not present in label map").
 fn prune_unreachable_blocks(caller: &mut TirFunction) {
-    use super::super::dominators::{reachable_blocks_with, CfgEdgePolicy};
+    use super::super::dominators::{CfgEdgePolicy, reachable_blocks_with};
     let reachable = reachable_blocks_with(caller, CfgEdgePolicy::Full);
     let dead: Vec<BlockId> = caller
         .blocks
@@ -1679,8 +1682,12 @@ fn prune_unreachable_blocks(caller: &mut TirFunction) {
     }
     // Drop loop metadata whose VALUE (end / cond block) was pruned.
     let live: HashSet<BlockId> = caller.blocks.keys().copied().collect();
-    caller.loop_pairs.retain(|h, e| live.contains(h) && live.contains(e));
-    caller.loop_cond_blocks.retain(|h, c| live.contains(h) && live.contains(c));
+    caller
+        .loop_pairs
+        .retain(|h, e| live.contains(h) && live.contains(e));
+    caller
+        .loop_cond_blocks
+        .retain(|h, c| live.contains(h) && live.contains(c));
 }
 
 /// Detect the loop header + latch within the cloned subgraph via a DFS from the
@@ -1748,7 +1755,10 @@ fn detect_cloned_back_edge(
 /// The TirType to record for slot `i`'s phi — derived from the slot's init
 /// value's known type (param args carry their own type; const ints are I64).
 fn caller_ty_lookup(caller: &TirFunction, slot_infos: &[SlotInfo], i: usize) -> Option<TirType> {
-    caller.value_types.get(&slot_infos[i].init_caller_val).cloned()
+    caller
+        .value_types
+        .get(&slot_infos[i].init_caller_val)
+        .cloned()
 }
 
 fn caller_value_ty(t: Option<TirType>) -> TirType {
@@ -1772,12 +1782,7 @@ fn block_targets(caller: &TirFunction, block: BlockId, target: BlockId) -> bool 
 }
 
 /// Append `extra` args to `pred`'s branch terminator edge that targets `header`.
-fn append_branch_args(
-    caller: &mut TirFunction,
-    pred: BlockId,
-    header: BlockId,
-    extra: &[ValueId],
-) {
+fn append_branch_args(caller: &mut TirFunction, pred: BlockId, header: BlockId, extra: &[ValueId]) {
     let block = caller.blocks.get_mut(&pred).unwrap();
     match &mut block.terminator {
         Terminator::Branch { target, args } if *target == header => {
@@ -1840,7 +1845,11 @@ fn const_zero(caller: &mut TirFunction) -> ValueId {
 /// ids; `pre` keeps the original id, `post` is fresh and takes the original
 /// terminator + the ops `[idx..]`. `pre` is given a placeholder Branch to `post`
 /// (the caller rewrites it).
-fn split_block_at(caller: &mut TirFunction, bid: BlockId, idx: usize) -> Option<(BlockId, BlockId)> {
+fn split_block_at(
+    caller: &mut TirFunction,
+    bid: BlockId,
+    idx: usize,
+) -> Option<(BlockId, BlockId)> {
     let original = caller.blocks.remove(&bid)?;
     let TirBlock {
         id,
@@ -2038,7 +2047,11 @@ fn retarget_edges(caller: &mut TirFunction, block: BlockId, from: BlockId, to: B
 /// The set of blocks reachable from `start` via terminator edges WITHOUT
 /// entering any block in `barriers` (the barriers bound the search; `start`
 /// itself is included even if it is a barrier).
-fn reachable_avoiding(caller: &TirFunction, start: BlockId, barriers: &[BlockId]) -> HashSet<BlockId> {
+fn reachable_avoiding(
+    caller: &TirFunction,
+    start: BlockId,
+    barriers: &[BlockId],
+) -> HashSet<BlockId> {
     let barrier: HashSet<BlockId> = barriers.iter().copied().collect();
     let mut seen = HashSet::new();
     let mut stack = vec![start];
@@ -2123,9 +2136,17 @@ mod tests {
         {
             let e = f.blocks.get_mut(&f.entry_block).unwrap();
             e.ops.push(op_v(OpCode::ConstInt, vec![], vec![zero], 0));
-            e.ops.push(op_v(OpCode::ClosureStore, vec![ValueId(0), zero], vec![], 56));
+            e.ops.push(op_v(
+                OpCode::ClosureStore,
+                vec![ValueId(0), zero],
+                vec![],
+                56,
+            ));
             e.ops.push(op(OpCode::StateSwitch, vec![], vec![]));
-            e.terminator = Terminator::Branch { target: header, args: vec![] };
+            e.terminator = Terminator::Branch {
+                target: header,
+                args: vec![],
+            };
         }
         // header: load i, load n, cmp
         let i_h = f.fresh_value();
@@ -2136,30 +2157,39 @@ mod tests {
         f.value_types.insert(cond, TirType::Bool);
         let notc = f.fresh_value();
         f.value_types.insert(notc, TirType::Bool);
-        f.blocks.insert(header, TirBlock {
-            id: header,
-            args: vec![],
-            ops: vec![
-                op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![i_h], 56),
-                op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![n_h], 48),
-                op(OpCode::Lt, vec![i_h, n_h], vec![cond]),
-                op(OpCode::Not, vec![cond], vec![notc]),
-            ],
-            terminator: Terminator::Branch { target: test, args: vec![] },
-        });
-        // test: cond_br not -> exhausted : body
-        f.blocks.insert(test, TirBlock {
-            id: test,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::CondBranch {
-                cond: notc,
-                then_block: exhausted,
-                then_args: vec![],
-                else_block: body,
-                else_args: vec![],
+        f.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![
+                    op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![i_h], 56),
+                    op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![n_h], 48),
+                    op(OpCode::Lt, vec![i_h, n_h], vec![cond]),
+                    op(OpCode::Not, vec![cond], vec![notc]),
+                ],
+                terminator: Terminator::Branch {
+                    target: test,
+                    args: vec![],
+                },
             },
-        });
+        );
+        // test: cond_br not -> exhausted : body
+        f.blocks.insert(
+            test,
+            TirBlock {
+                id: test,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: notc,
+                    then_block: exhausted,
+                    then_args: vec![],
+                    else_block: body,
+                    else_args: vec![],
+                },
+            },
+        );
         // body: x=load56; pair=(x,false); yield; post: i2=load56+1; store56; br header
         let x = f.fresh_value();
         f.value_types.insert(x, TirType::DynBox);
@@ -2173,22 +2203,34 @@ mod tests {
         let i2 = f.fresh_value();
         f.value_types.insert(i2, TirType::DynBox);
         let mut pair_op = op(OpCode::Copy, vec![x, falsev], vec![pair]);
-        pair_op.attrs.insert("_original_kind".into(), AttrValue::Str("tuple_new".into()));
-        f.blocks.insert(body, TirBlock {
-            id: body,
-            args: vec![],
-            ops: vec![
-                op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![x], 56),
-                { let mut o = op(OpCode::ConstBool, vec![], vec![falsev]); o.attrs.insert("value".into(), AttrValue::Bool(false)); o },
-                pair_op,
-                op_v(OpCode::StateYield, vec![pair], vec![], 5),
-                op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![i_b], 56),
-                op_v(OpCode::ConstInt, vec![], vec![one], 1),
-                op(OpCode::Add, vec![i_b, one], vec![i2]),
-                op_v(OpCode::ClosureStore, vec![ValueId(0), i2], vec![], 56),
-            ],
-            terminator: Terminator::Branch { target: header, args: vec![] },
-        });
+        pair_op
+            .attrs
+            .insert("_original_kind".into(), AttrValue::Str("tuple_new".into()));
+        f.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![x], 56),
+                    {
+                        let mut o = op(OpCode::ConstBool, vec![], vec![falsev]);
+                        o.attrs.insert("value".into(), AttrValue::Bool(false));
+                        o
+                    },
+                    pair_op,
+                    op_v(OpCode::StateYield, vec![pair], vec![], 5),
+                    op_v(OpCode::ClosureLoad, vec![ValueId(0)], vec![i_b], 56),
+                    op_v(OpCode::ConstInt, vec![], vec![one], 1),
+                    op(OpCode::Add, vec![i_b, one], vec![i2]),
+                    op_v(OpCode::ClosureStore, vec![ValueId(0), i2], vec![], 56),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
         // exhausted: store closed; ret (None, True)
         let none_v = f.fresh_value();
         f.value_types.insert(none_v, TirType::None);
@@ -2197,18 +2239,28 @@ mod tests {
         let donepair = f.fresh_value();
         f.value_types.insert(donepair, TirType::DynBox);
         let mut dp = op(OpCode::Copy, vec![none_v, true_v], vec![donepair]);
-        dp.attrs.insert("_original_kind".into(), AttrValue::Str("tuple_new".into()));
-        f.blocks.insert(exhausted, TirBlock {
-            id: exhausted,
-            args: vec![],
-            ops: vec![
-                op(OpCode::ConstNone, vec![], vec![none_v]),
-                { let mut o = op(OpCode::ConstBool, vec![], vec![true_v]); o.attrs.insert("value".into(), AttrValue::Bool(true)); o },
-                op_v(OpCode::ClosureStore, vec![ValueId(0), true_v], vec![], 16),
-                dp,
-            ],
-            terminator: Terminator::Return { values: vec![donepair] },
-        });
+        dp.attrs
+            .insert("_original_kind".into(), AttrValue::Str("tuple_new".into()));
+        f.blocks.insert(
+            exhausted,
+            TirBlock {
+                id: exhausted,
+                args: vec![],
+                ops: vec![
+                    op(OpCode::ConstNone, vec![], vec![none_v]),
+                    {
+                        let mut o = op(OpCode::ConstBool, vec![], vec![true_v]);
+                        o.attrs.insert("value".into(), AttrValue::Bool(true));
+                        o
+                    },
+                    op_v(OpCode::ClosureStore, vec![ValueId(0), true_v], vec![], 16),
+                    dp,
+                ],
+                terminator: Terminator::Return {
+                    values: vec![donepair],
+                },
+            },
+        );
         f
     }
 
@@ -2242,65 +2294,119 @@ mod tests {
             let e = f.blocks.get_mut(&f.entry_block).unwrap();
             e.ops.push(op_v(OpCode::ConstInt, vec![], vec![n5], 5));
             let mut at = op(OpCode::AllocTask, vec![n5], vec![g]);
-            at.attrs.insert("s_value".into(), AttrValue::Str("counter_poll".into()));
-            at.attrs.insert("task_kind".into(), AttrValue::Str("generator".into()));
+            at.attrs
+                .insert("s_value".into(), AttrValue::Str("counter_poll".into()));
+            at.attrs
+                .insert("task_kind".into(), AttrValue::Str("generator".into()));
             at.attrs.insert("value".into(), AttrValue::Int(64));
             e.ops.push(at);
             let mut iter = op(OpCode::Copy, vec![g], vec![it]);
-            iter.attrs.insert("_original_kind".into(), AttrValue::Str("iter".into()));
+            iter.attrs
+                .insert("_original_kind".into(), AttrValue::Str("iter".into()));
             e.ops.push(iter);
             e.ops.push(op(OpCode::ConstNone, vec![], vec![nonev]));
             e.ops.push(op(OpCode::Is, vec![it, nonev], vec![isnone]));
-            e.terminator = Terminator::Branch { target: guard, args: vec![] };
+            e.terminator = Terminator::Branch {
+                target: guard,
+                args: vec![],
+            };
         }
-        f.blocks.insert(guard, TirBlock {
-            id: guard, args: vec![], ops: vec![],
-            terminator: Terminator::CondBranch {
-                cond: isnone, then_block: exit, then_args: vec![], else_block: loophdr, else_args: vec![],
+        f.blocks.insert(
+            guard,
+            TirBlock {
+                id: guard,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::CondBranch {
+                    cond: isnone,
+                    then_block: exit,
+                    then_args: vec![],
+                    else_block: loophdr,
+                    else_args: vec![],
+                },
             },
-        });
-        f.blocks.insert(loophdr, TirBlock {
-            id: loophdr, args: vec![], ops: vec![],
-            terminator: Terminator::Branch { target: condb, args: vec![] },
-        });
+        );
+        f.blocks.insert(
+            loophdr,
+            TirBlock {
+                id: loophdr,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: condb,
+                    args: vec![],
+                },
+            },
+        );
         let pair = f.fresh_value();
         f.value_types.insert(pair, TirType::DynBox);
         let one_c = const_int(&mut f, 1);
         let done = f.fresh_value();
         f.value_types.insert(done, TirType::Bool);
-        f.blocks.insert(condb, TirBlock {
-            id: condb, args: vec![],
-            ops: vec![
-                op(OpCode::IterNext, vec![it], vec![pair]),
-                op_v(OpCode::ConstInt, vec![], vec![one_c], 1),
-                { let mut o = op(OpCode::Index, vec![pair, one_c], vec![done]); o.attrs.insert("container_type".into(), AttrValue::Str("tuple".into())); o },
-            ],
-            terminator: Terminator::CondBranch {
-                cond: done, then_block: exit, then_args: vec![], else_block: body, else_args: vec![],
+        f.blocks.insert(
+            condb,
+            TirBlock {
+                id: condb,
+                args: vec![],
+                ops: vec![
+                    op(OpCode::IterNext, vec![it], vec![pair]),
+                    op_v(OpCode::ConstInt, vec![], vec![one_c], 1),
+                    {
+                        let mut o = op(OpCode::Index, vec![pair, one_c], vec![done]);
+                        o.attrs
+                            .insert("container_type".into(), AttrValue::Str("tuple".into()));
+                        o
+                    },
+                ],
+                terminator: Terminator::CondBranch {
+                    cond: done,
+                    then_block: exit,
+                    then_args: vec![],
+                    else_block: body,
+                    else_args: vec![],
+                },
             },
-        });
+        );
         let zero_c = const_int(&mut f, 0);
         let elem = f.fresh_value();
         f.value_types.insert(elem, TirType::DynBox);
         let elem_use = f.fresh_value();
         f.value_types.insert(elem_use, TirType::DynBox);
-        f.blocks.insert(body, TirBlock {
-            id: body, args: vec![],
-            ops: vec![
-                op_v(OpCode::ConstInt, vec![], vec![zero_c], 0),
-                { let mut o = op(OpCode::Index, vec![pair, zero_c], vec![elem]); o.attrs.insert("container_type".into(), AttrValue::Str("tuple".into())); o },
-                // a trivial use of elem
-                op(OpCode::Copy, vec![elem], vec![elem_use]),
-            ],
-            terminator: Terminator::Branch { target: loophdr, args: vec![] },
-        });
-        f.loop_roles.insert(loophdr, crate::tir::blocks::LoopRole::LoopHeader);
+        f.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    op_v(OpCode::ConstInt, vec![], vec![zero_c], 0),
+                    {
+                        let mut o = op(OpCode::Index, vec![pair, zero_c], vec![elem]);
+                        o.attrs
+                            .insert("container_type".into(), AttrValue::Str("tuple".into()));
+                        o
+                    },
+                    // a trivial use of elem
+                    op(OpCode::Copy, vec![elem], vec![elem_use]),
+                ],
+                terminator: Terminator::Branch {
+                    target: loophdr,
+                    args: vec![],
+                },
+            },
+        );
+        f.loop_roles
+            .insert(loophdr, crate::tir::blocks::LoopRole::LoopHeader);
         f.loop_cond_blocks.insert(loophdr, condb);
         f.loop_pairs.insert(loophdr, exit);
-        f.blocks.insert(exit, TirBlock {
-            id: exit, args: vec![], ops: vec![],
-            terminator: Terminator::Return { values: vec![] },
-        });
+        f.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         f
     }
 
@@ -2314,12 +2420,26 @@ mod tests {
         let tti = TargetInfo::native_release_fast();
         let stats = run_generator_fusion(&mut module, &cg, &tti);
         // Dump the consumer for inspection.
-        let cons = module.functions.iter().find(|f| f.name == "consumer").unwrap();
-        eprintln!("=== fused consumer ===\n{}", crate::tir::printer::print_function(cons));
+        let cons = module
+            .functions
+            .iter()
+            .find(|f| f.name == "consumer")
+            .unwrap();
+        eprintln!(
+            "=== fused consumer ===\n{}",
+            crate::tir::printer::print_function(cons)
+        );
         eprintln!("stats: {:?}", stats);
-        assert_eq!(stats.frames_elided, 1, "the single-yield-in-loop generator must fuse");
+        assert_eq!(
+            stats.frames_elided, 1,
+            "the single-yield-in-loop generator must fuse"
+        );
         // No AllocTask / StateYield / IterNext remain.
-        let has = |op: OpCode| cons.blocks.values().any(|b| b.ops.iter().any(|o| o.opcode == op));
+        let has = |op: OpCode| {
+            cons.blocks
+                .values()
+                .any(|b| b.ops.iter().any(|o| o.opcode == op))
+        };
         assert!(!has(OpCode::AllocTask), "AllocTask must be deleted");
         assert!(!has(OpCode::StateYield), "StateYield must be gone");
         assert!(!has(OpCode::IterNext), "IterNext must be deleted");

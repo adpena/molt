@@ -83,11 +83,7 @@ fn is_block_ender(kind: &str) -> bool {
 fn is_conditional_branch(kind: &str) -> bool {
     matches!(
         kind,
-        "br_if"
-            | "if"
-            | "loop_break_if_true"
-            | "loop_break_if_false"
-            | "loop_break_if_exception"
+        "br_if" | "if" | "loop_break_if_true" | "loop_break_if_false" | "loop_break_if_exception"
     )
 }
 

@@ -104,6 +104,7 @@ def run_completed_command(
     cwd: Path | None,
     capture_output: bool,
     memory_guard_prefix: str | None,
+    input: str | None = None,
     timeout: float | None = None,
     guard_loader: GuardLoader = load_harness_memory_guard,
 ) -> subprocess.CompletedProcess[str]:
@@ -113,6 +114,7 @@ def run_completed_command(
             command,
             env=dict(env) if env is not None else None,
             cwd=cwd,
+            input=input,
             capture_output=capture_output,
             text=True,
             timeout=timeout,
@@ -127,6 +129,7 @@ def run_completed_command(
     return guard_context.run(
         command,
         cwd=cwd,
+        input=input,
         capture_output=capture_output,
         text=True,
         timeout=timeout,

@@ -39,8 +39,9 @@ if False:  # TYPE_CHECKING
 _MOLT_BOOTSTRAP_DESCRIPTOR_TYPES = _require_intrinsic(
     "molt_bootstrap_descriptor_types", _NS
 )
-_MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import", _NS)
-_MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear", _NS)
+_MOLT_IMPORTLIB_IMPORT_TRANSACTION = _require_intrinsic(
+    "molt_importlib_import_transaction", _NS
+)
 
 # Provide `builtins.globals` / `builtins.locals` early during bootstrap. Other stdlib
 # modules may import `builtins` during their own initialization and expect these to
@@ -62,147 +63,8 @@ except Exception as _exc:  # noqa: BLE001
     ) from _exc
 
 
-def _resolve_import_name(name: str, globals_obj, level: int) -> str:
-    if level <= 0:
-        return name
-    package = None
-    if isinstance(globals_obj, dict):
-        package = globals_obj.get("__package__")
-        if not package and globals_obj.get("__path__") and globals_obj.get("__name__"):
-            package = globals_obj.get("__name__")
-    if not package:
-        raise ImportError("relative import requires package")
-    parts = package.split(".")
-    if level > len(parts):
-        raise ImportError("attempted relative import beyond top-level package")
-    cut = len(parts) - level + 1
-    base = ".".join(parts[:cut])
-    return f"{base}.{name}" if name and base else (name or base)
-
-
-def _is_placeholder_module(mod: object) -> bool:
-    module_dict = getattr(mod, "__dict__", None)
-    if not isinstance(module_dict, dict):
-        return False
-    if len(module_dict) == 1 and "__name__" in module_dict:
-        return True
-    if not module_dict or any(not key.startswith("_") for key in module_dict):
-        return False
-    return any(
-        key in module_dict
-        for key in (
-            "_molt_intrinsic_lookup",
-            "_molt_intrinsics",
-            "_molt_runtime",
-        )
-    )
-
-
-def _require_importlib_util_module() -> object:
-    modules = _modules_dict()
-    mod = modules.get("importlib.util")
-    if mod is None:
-        mod = _MOLT_MODULE_IMPORT("importlib.util")
-    if mod is None:
-        raise ImportError("No module named 'importlib.util'")
-    return mod
-
-
-def _recover_placeholder_module(resolved: str, placeholder: object):
-    modules = _modules_dict()
-    previous = modules.pop(resolved, None)
-    try:
-        importlib_util = _require_importlib_util_module()
-        find_spec = getattr(importlib_util, "find_spec", None)
-        module_from_spec = getattr(importlib_util, "module_from_spec", None)
-        if not callable(find_spec) or not callable(module_from_spec):
-            raise RuntimeError("importlib.util missing required loader helpers")
-        spec = find_spec(resolved, None)
-        if spec is None:
-            raise ImportError(f"No module named '{resolved}'")
-        module = module_from_spec(spec)
-        modules[resolved] = module
-        loader = getattr(spec, "loader", None)
-        if loader is not None:
-            if hasattr(loader, "exec_module"):
-                loader.exec_module(module)
-            elif hasattr(loader, "load_module"):
-                loaded = loader.load_module(resolved)
-                if loaded is not None:
-                    module = loaded
-        recovered = modules.get(resolved, module)
-        if _is_placeholder_module(recovered):
-            raise ImportError(f"import of {resolved} produced placeholder module")
-        return recovered
-    except Exception:
-        modules.pop(resolved, None)
-        if previous is not None and previous is not placeholder:
-            modules[resolved] = previous
-        raise
-
-
-def _load_via_spec(resolved: str):
-    modules = _modules_dict()
-    existing = modules.get(resolved)
-    if existing is not None and not _is_placeholder_module(existing):
-        return existing
-    importlib_util = _require_importlib_util_module()
-    find_spec = getattr(importlib_util, "find_spec", None)
-    module_from_spec = getattr(importlib_util, "module_from_spec", None)
-    if not callable(find_spec) or not callable(module_from_spec):
-        raise RuntimeError("importlib.util missing required loader helpers")
-    spec = find_spec(resolved, None)
-    if spec is None:
-        raise ImportError(f"No module named '{resolved}'")
-    module = module_from_spec(spec)
-    modules[resolved] = module
-    try:
-        loader = getattr(spec, "loader", None)
-        if loader is not None:
-            if hasattr(loader, "exec_module"):
-                loader.exec_module(module)
-            elif hasattr(loader, "load_module"):
-                loaded = loader.load_module(resolved)
-                if loaded is not None:
-                    module = loaded
-        loaded_module = modules.get(resolved, module)
-        if _is_placeholder_module(loaded_module):
-            raise ImportError(f"import of {resolved} produced placeholder module")
-        return loaded_module
-    except Exception:
-        modules.pop(resolved, None)
-        raise
-
-
 def _intrinsic_import(name, globals=None, locals=None, fromlist=(), level=0):
-    if not name:
-        raise ImportError("Empty module name")
-    resolved = _resolve_import_name(name, globals, level) if level else name
-    modules = _modules_dict()
-    if resolved in modules:
-        mod = modules[resolved]
-        if mod is None:
-            raise ImportError(f"import of {resolved} halted; None in sys.modules")
-        if _is_placeholder_module(mod):
-            mod = _recover_placeholder_module(resolved, mod)
-        if fromlist:
-            return mod
-        top = resolved.split(".", 1)[0]
-        return modules.get(top, mod)
-    try:
-        mod = _MOLT_MODULE_IMPORT(resolved)
-    except (ImportError, TypeError):
-        _MOLT_EXCEPTION_CLEAR()
-        mod = _load_via_spec(resolved)
-    if mod is None:
-        _MOLT_EXCEPTION_CLEAR()
-        mod = _load_via_spec(resolved)
-    if _is_placeholder_module(mod):
-        mod = _recover_placeholder_module(resolved, mod)
-    if fromlist:
-        return mod
-    top = resolved.split(".", 1)[0]
-    return modules.get(top, mod)
+    return _MOLT_IMPORTLIB_IMPORT_TRANSACTION(name, globals, locals, fromlist, level)
 
 
 __import__ = _intrinsic_import

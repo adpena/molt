@@ -3,11 +3,12 @@ import datetime as dt
 import json
 import os
 import platform
+import re
 import statistics
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -23,15 +24,7 @@ SUPPORTED_SEMANTIC_MODES = {
     "unsupported_by_molt",
 }
 
-SUPPORTED_RUNNER_NAMES = (
-    "cpython",
-    "pypy",
-    "molt",
-    "codon",
-    "friend",
-    "nuitka",
-    "pyodide",
-)
+RUNNER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 @dataclass(frozen=True)
@@ -41,6 +34,27 @@ class RunnerSpec:
     run_cmd: list[str] | None
     env: dict[str, str]
     skip_reason: str | None
+    json_stdout: bool
+
+
+@dataclass(frozen=True)
+class SourceCustody:
+    source: str
+    requested_ref: str | None
+    expected_ref: str | None
+    head_ref: str | None
+    ref_verified: bool | None
+    git_clean: bool | None
+    git_status_porcelain: str | None
+    suite_root_overridden: bool
+    verification: str
+
+
+@dataclass(frozen=True)
+class SuiteAcquisition:
+    suite_root: Path
+    suite_workdir: Path
+    custody: SourceCustody
 
 
 @dataclass(frozen=True)
@@ -72,6 +86,8 @@ class PhaseResult:
     timed_out: bool
     stdout_path: str
     stderr_path: str
+    stdout_json: Any | None = None
+    stdout_json_error: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -89,6 +105,9 @@ class RunnerResult:
     run_median_s: float | None = None
     run_mean_s: float | None = None
     run_stdev_s: float | None = None
+    structured_outputs: list[Any] = field(default_factory=list)
+    structured_samples_s: dict[str, list[float]] = field(default_factory=dict)
+    structured_median_s: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -101,6 +120,8 @@ class SuiteResult:
     suite_root: str
     suite_workdir: str
     resolved_ref: str | None
+    requested_ref: str | None
+    source_custody: SourceCustody
     status: str
     reason: str | None
     adapter_notes: str | None
@@ -237,10 +258,13 @@ def _parse_runners(suite_id: str, raw_runners: Any) -> dict[str, RunnerSpec]:
     if not isinstance(raw_runners, dict):
         raise ValueError(f"suite {suite_id}: runners must be a table/object")
     runners: dict[str, RunnerSpec] = {}
-    for runner_name in SUPPORTED_RUNNER_NAMES:
-        runner_raw = raw_runners.get(runner_name)
-        if runner_raw is None:
-            continue
+    for runner_name, runner_raw in raw_runners.items():
+        runner_name = str(runner_name)
+        if not RUNNER_NAME_RE.fullmatch(runner_name):
+            raise ValueError(
+                f"suite {suite_id}: invalid runner name {runner_name!r}; "
+                "use letters, digits, '_', '-', or '.'"
+            )
         if not isinstance(runner_raw, dict):
             raise ValueError(
                 f"suite {suite_id} runner {runner_name}: runner must be a table/object"
@@ -250,6 +274,15 @@ def _parse_runners(suite_id: str, raw_runners: Any) -> dict[str, RunnerSpec]:
         cmd = runner_raw.get("cmd")
         if run_cmd is None and cmd is not None:
             run_cmd = cmd
+        json_stdout = bool(runner_raw.get("json_stdout", False))
+        structured_stdout = _optional_str(runner_raw.get("structured_stdout"))
+        if structured_stdout is not None:
+            if structured_stdout != "json":
+                raise ValueError(
+                    f"suite {suite_id} runner {runner_name}: "
+                    "structured_stdout must be 'json'"
+                )
+            json_stdout = True
         parsed_build = _parse_single_command(build_cmd, "build_cmd")
         parsed_run = _parse_single_command(run_cmd, "run_cmd")
         runners[runner_name] = RunnerSpec(
@@ -258,6 +291,7 @@ def _parse_runners(suite_id: str, raw_runners: Any) -> dict[str, RunnerSpec]:
             run_cmd=parsed_run,
             env=_parse_env(runner_raw.get("env", {})),
             skip_reason=_optional_str(runner_raw.get("skip_reason")),
+            json_stdout=json_stdout,
         )
     return runners
 
@@ -278,6 +312,63 @@ def _resolve_env(raw_env: dict[str, str], tokens: dict[str, str]) -> dict[str, s
     return {key: value.format_map(tokens) for key, value in raw_env.items()}
 
 
+def _parse_stdout_json(stdout: str) -> tuple[Any | None, str | None]:
+    text = stdout.strip()
+    if not text:
+        return None, "stdout was empty"
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as exc:
+        return None, f"stdout was not valid JSON: {exc}"
+
+
+def _metric_slug(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_").lower()
+    return slug or "metric"
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _extract_structured_elapsed(payload: Any) -> dict[str, float]:
+    if not isinstance(payload, dict):
+        return {}
+
+    metrics: dict[str, float] = {}
+    workloads = payload.get("workloads")
+    if isinstance(workloads, dict):
+        for workload_name, entry in workloads.items():
+            if not isinstance(entry, dict):
+                continue
+            elapsed = _as_float(entry.get("elapsed_s"))
+            if elapsed is not None:
+                metrics[_metric_slug(str(workload_name))] = elapsed
+
+    results = payload.get("results")
+    if isinstance(results, list):
+        for idx, entry in enumerate(results, start=1):
+            if not isinstance(entry, dict):
+                continue
+            elapsed = _as_float(entry.get("elapsed_s"))
+            if elapsed is None:
+                continue
+            label = entry.get("benchmark") or entry.get("workload") or f"result_{idx}"
+            metrics[_metric_slug(str(label))] = elapsed
+
+    top_elapsed = _as_float(payload.get("elapsed_s"))
+    if top_elapsed is not None:
+        metrics.setdefault("total", top_elapsed)
+    total_elapsed = _as_float(payload.get("total_elapsed_s"))
+    if total_elapsed is not None:
+        metrics["total"] = total_elapsed
+    return metrics
+
+
 def _run_command(
     cmd: list[str],
     *,
@@ -288,6 +379,7 @@ def _run_command(
     stderr_path: Path,
     dry_run: bool,
     limits: harness_memory_guard.HarnessMemoryLimits,
+    parse_stdout_json: bool = False,
 ) -> PhaseResult:
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,6 +432,10 @@ def _run_command(
     )
     stdout_path.write_text(stdout, encoding="utf-8")
     stderr_path.write_text(stderr, encoding="utf-8")
+    stdout_json = None
+    stdout_json_error = None
+    if parse_stdout_json:
+        stdout_json, stdout_json_error = _parse_stdout_json(stdout)
     return PhaseResult(
         cmd=cmd,
         returncode=rc,
@@ -347,6 +443,8 @@ def _run_command(
         timed_out=timed_out,
         stdout_path=str(stdout_path),
         stderr_path=str(stderr_path),
+        stdout_json=stdout_json,
+        stdout_json_error=stdout_json_error,
     )
 
 
@@ -373,22 +471,123 @@ def _run_git(
     return res.returncode, res.stdout or "", res.stderr or ""
 
 
+def _is_placeholder_ref(ref: str) -> bool:
+    upper = ref.upper()
+    return "PINNED" in upper or "REQUIRED" in upper or "PLACEHOLDER" in upper
+
+
+def _verify_git_source_custody(
+    suite: SuiteSpec,
+    *,
+    repo_dir: Path,
+    requested_ref: str,
+    timeout_sec: int,
+    dry_run: bool,
+    limits: harness_memory_guard.HarnessMemoryLimits,
+    suite_root_overridden: bool,
+) -> SourceCustody:
+    if dry_run:
+        return SourceCustody(
+            source=suite.source,
+            requested_ref=requested_ref,
+            expected_ref=None,
+            head_ref=None,
+            ref_verified=None,
+            git_clean=None,
+            git_status_porcelain=None,
+            suite_root_overridden=suite_root_overridden,
+            verification="dry_run",
+        )
+
+    rc, out, err = _run_git(
+        ["rev-parse", "--is-inside-work-tree"],
+        cwd=repo_dir,
+        timeout_sec=timeout_sec,
+        dry_run=False,
+        limits=limits,
+    )
+    if rc != 0 or out.strip() != "true":
+        detail = err.strip() or out.strip()
+        raise RuntimeError(f"suite {suite.id}: suite root is not a git checkout: {detail}")
+
+    rc, head_out, err = _run_git(
+        ["rev-parse", "HEAD"],
+        cwd=repo_dir,
+        timeout_sec=timeout_sec,
+        dry_run=False,
+        limits=limits,
+    )
+    if rc != 0:
+        raise RuntimeError(f"suite {suite.id}: git rev-parse HEAD failed: {err.strip()}")
+    head_ref = head_out.strip()
+
+    rc, expected_out, err = _run_git(
+        ["rev-parse", "--verify", f"{requested_ref}^{{commit}}"],
+        cwd=repo_dir,
+        timeout_sec=timeout_sec,
+        dry_run=False,
+        limits=limits,
+    )
+    if rc != 0:
+        raise RuntimeError(
+            f"suite {suite.id}: requested repo_ref {requested_ref!r} does not resolve: "
+            f"{err.strip()}"
+        )
+    expected_ref = expected_out.strip()
+    ref_verified = bool(expected_ref and expected_ref == head_ref)
+    if not ref_verified:
+        raise RuntimeError(
+            f"suite {suite.id}: checked-out HEAD {head_ref} does not match "
+            f"requested repo_ref {requested_ref!r} ({expected_ref})"
+        )
+
+    rc, status_out, err = _run_git(
+        ["status", "--porcelain"],
+        cwd=repo_dir,
+        timeout_sec=timeout_sec,
+        dry_run=False,
+        limits=limits,
+    )
+    if rc != 0:
+        raise RuntimeError(f"suite {suite.id}: git status failed: {err.strip()}")
+    git_status = status_out.strip()
+    if git_status:
+        raise RuntimeError(
+            f"suite {suite.id}: git checkout is dirty; refusing off-the-shelf "
+            f"benchmark custody:\n{git_status}"
+        )
+
+    return SourceCustody(
+        source=suite.source,
+        requested_ref=requested_ref,
+        expected_ref=expected_ref,
+        head_ref=head_ref,
+        ref_verified=True,
+        git_clean=True,
+        git_status_porcelain="",
+        suite_root_overridden=suite_root_overridden,
+        verification="git_ref_and_clean_tree",
+    )
+
+
 def _acquire_suite(
     suite: SuiteSpec,
     *,
     repos_root: Path,
+    suite_root_override: Path | None,
     checkout: bool,
     fetch: bool,
     timeout_sec: int,
     dry_run: bool,
     limits: harness_memory_guard.HarnessMemoryLimits,
-) -> tuple[Path, Path, str | None]:
+) -> SuiteAcquisition:
     if suite.source == "local":
-        if not suite.local_path:
+        local_path = str(suite_root_override) if suite_root_override else suite.local_path
+        if not local_path:
             raise ValueError(
                 f"suite {suite.id}: local_path is required for source=local"
             )
-        suite_root = Path(suite.local_path).expanduser()
+        suite_root = Path(local_path).expanduser()
         if not dry_run and not suite_root.exists():
             raise FileNotFoundError(
                 f"suite {suite.id}: local path not found: {suite_root}"
@@ -398,7 +597,21 @@ def _acquire_suite(
             if suite.workdir
             else suite_root.resolve()
         )
-        return suite_root, suite_workdir, None
+        return SuiteAcquisition(
+            suite_root=suite_root,
+            suite_workdir=suite_workdir,
+            custody=SourceCustody(
+                source=suite.source,
+                requested_ref=None,
+                expected_ref=None,
+                head_ref=None,
+                ref_verified=None,
+                git_clean=None,
+                git_status_porcelain=None,
+                suite_root_overridden=suite_root_override is not None,
+                verification="local_path_exists" if not dry_run else "dry_run",
+            ),
+        )
 
     if suite.source != "git":
         raise ValueError(f"suite {suite.id}: unsupported source {suite.source}")
@@ -406,14 +619,18 @@ def _acquire_suite(
         raise ValueError(f"suite {suite.id}: repo_url is required for source=git")
     if not suite.repo_ref:
         raise ValueError(f"suite {suite.id}: repo_ref is required for source=git")
-    if "PINNED" in suite.repo_ref.upper() and not dry_run:
+    if _is_placeholder_ref(suite.repo_ref) and not dry_run:
         raise ValueError(
             f"suite {suite.id}: repo_ref must be set to a pinned commit/tag, "
             "not a placeholder"
         )
 
-    repo_dir = repos_root / suite.id
-    if checkout:
+    repo_dir = (
+        suite_root_override.expanduser()
+        if suite_root_override is not None
+        else repos_root / suite.id
+    )
+    if checkout and suite_root_override is None:
         if not repo_dir.exists():
             repo_dir.parent.mkdir(parents=True, exist_ok=True)
             rc, _out, err = _run_git(
@@ -450,24 +667,25 @@ def _acquire_suite(
     if not dry_run and not repo_dir.exists():
         raise FileNotFoundError(
             f"suite {suite.id}: repo checkout missing at {repo_dir}; "
-            "run with --checkout"
+            "run with --checkout or --suite-root <suite>=<path>"
         )
-    resolved_ref = None
-    if not dry_run:
-        rc, out, err = _run_git(
-            ["rev-parse", "HEAD"],
-            cwd=repo_dir,
-            timeout_sec=timeout_sec,
-            dry_run=False,
-            limits=limits,
-        )
-        if rc != 0:
-            raise RuntimeError(f"suite {suite.id}: git rev-parse failed: {err.strip()}")
-        resolved_ref = out.strip() or None
+    custody = _verify_git_source_custody(
+        suite,
+        repo_dir=repo_dir,
+        requested_ref=suite.repo_ref,
+        timeout_sec=timeout_sec,
+        dry_run=dry_run,
+        limits=limits,
+        suite_root_overridden=suite_root_override is not None,
+    )
     suite_workdir = (
         (repo_dir / suite.workdir).resolve() if suite.workdir else repo_dir.resolve()
     )
-    return repo_dir, suite_workdir, resolved_ref
+    return SuiteAcquisition(
+        suite_root=repo_dir,
+        suite_workdir=suite_workdir,
+        custody=custody,
+    )
 
 
 def _run_prepare_steps(
@@ -555,12 +773,39 @@ def _run_runner(
             stderr_path=logs_dir / f"{runner.name}.run{run_idx}.stderr.log",
             dry_run=dry_run,
             limits=limits,
+            parse_stdout_json=runner.json_stdout,
         )
         result.runs.append(phase)
         if not phase.ok:
             result.status = "failed"
             result.reason = f"run {run_idx} failed"
             return result
+        if runner.json_stdout and not dry_run:
+            if phase.stdout_json_error is not None:
+                result.status = "failed"
+                result.reason = f"run {run_idx} JSON parse failed: {phase.stdout_json_error}"
+                return result
+            if phase.stdout_json is None:
+                result.status = "failed"
+                result.reason = f"run {run_idx} did not emit JSON stdout"
+                return result
+            if (
+                isinstance(phase.stdout_json, dict)
+                and phase.stdout_json.get("status") not in (None, "ok")
+            ):
+                result.status = "failed"
+                result.reason = (
+                    f"run {run_idx} emitted non-ok JSON status: "
+                    f"{phase.stdout_json.get('status')!r}"
+                )
+                return result
+            result.structured_outputs.append(phase.stdout_json)
+            for metric_name, elapsed_s in _extract_structured_elapsed(
+                phase.stdout_json
+            ).items():
+                result.structured_samples_s.setdefault(metric_name, []).append(
+                    elapsed_s
+                )
         result.run_samples_s.append(phase.elapsed_s)
 
     if result.run_samples_s:
@@ -570,6 +815,9 @@ def _run_runner(
             result.run_stdev_s = statistics.stdev(result.run_samples_s)
         else:
             result.run_stdev_s = 0.0
+    for metric_name, samples in result.structured_samples_s.items():
+        if samples:
+            result.structured_median_s[metric_name] = statistics.median(samples)
     return result
 
 
@@ -597,9 +845,10 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
     friend_s = _runner_median("friend")
     nuitka_s = _runner_median("nuitka")
     pyodide_s = _runner_median("pyodide")
+    tinygrad_s = _runner_median("tinygrad")
 
     # Standardized lane keys align with tools/bench.py JSON naming.
-    return {
+    metrics: dict[str, float | None] = {
         "cpython_median_s": cp_s,
         "pypy_median_s": pp_s,
         "molt_median_s": mt_s,
@@ -607,12 +856,14 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         "friend_median_s": friend_s,
         "nuitka_median_s": nuitka_s,
         "pyodide_median_s": pyodide_s,
+        "tinygrad_median_s": tinygrad_s,
         "cpython_time_s": cp_s,
         "pypy_time_s": pp_s,
         "molt_time_s": mt_s,
         "codon_time_s": codon_s,
         "nuitka_time_s": nuitka_s,
         "pyodide_time_s": pyodide_s,
+        "tinygrad_time_s": tinygrad_s,
         "molt_vs_cpython_speedup": _speedup(cp_s, mt_s),
         "molt_vs_pypy_speedup": _speedup(pp_s, mt_s),
         "molt_vs_codon_speedup": _speedup(codon_s, mt_s),
@@ -622,13 +873,43 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         "nuitka_vs_molt_speedup": _speedup(mt_s, nuitka_s),
         "molt_vs_pyodide_speedup": _speedup(pyodide_s, mt_s),
         "pyodide_vs_molt_speedup": _speedup(mt_s, pyodide_s),
+        "molt_vs_tinygrad_speedup": _speedup(tinygrad_s, mt_s),
+        "tinygrad_vs_molt_speedup": _speedup(mt_s, tinygrad_s),
         "molt_speedup": _speedup(cp_s, mt_s),
         "molt_cpython_ratio": _speedup(mt_s, cp_s),
         "molt_pypy_ratio": _speedup(mt_s, pp_s),
         "molt_codon_ratio": _speedup(mt_s, codon_s),
         "molt_nuitka_ratio": _speedup(mt_s, nuitka_s),
         "molt_pyodide_ratio": _speedup(mt_s, pyodide_s),
+        "molt_tinygrad_ratio": _speedup(mt_s, tinygrad_s),
     }
+    structured_by_metric: dict[str, dict[str, float]] = {}
+    for runner_name, runner in runners.items():
+        if runner.status != "ok":
+            continue
+        runner_slug = _metric_slug(runner_name)
+        metrics[f"{runner_slug}_median_s"] = runner.run_median_s
+        metrics[f"{runner_slug}_time_s"] = runner.run_median_s
+        for metric_name, median_s in runner.structured_median_s.items():
+            metric_slug = _metric_slug(metric_name)
+            metrics[f"{runner_slug}_{metric_slug}_median_s"] = median_s
+            structured_by_metric.setdefault(metric_slug, {})[runner_name] = median_s
+
+    for metric_slug, by_runner in structured_by_metric.items():
+        molt_metric_s = by_runner.get("molt")
+        cpython_metric_s = by_runner.get("cpython")
+        friend_metric_s = by_runner.get("friend")
+        tinygrad_metric_s = by_runner.get("tinygrad")
+        metrics[f"molt_vs_cpython_{metric_slug}_speedup"] = _speedup(
+            cpython_metric_s, molt_metric_s
+        )
+        metrics[f"molt_vs_friend_{metric_slug}_speedup"] = _speedup(
+            friend_metric_s, molt_metric_s
+        )
+        metrics[f"molt_vs_tinygrad_{metric_slug}_speedup"] = _speedup(
+            tinygrad_metric_s, molt_metric_s
+        )
+    return metrics
 
 
 def _suite_status(runners: dict[str, RunnerResult]) -> tuple[str, str | None]:
@@ -728,6 +1009,9 @@ def _runner_to_dict(result: RunnerResult) -> dict[str, Any]:
         "run_median_s": result.run_median_s,
         "run_mean_s": result.run_mean_s,
         "run_stdev_s": result.run_stdev_s,
+        "structured_outputs": result.structured_outputs,
+        "structured_samples_s": result.structured_samples_s,
+        "structured_median_s": result.structured_median_s,
     }
 
 
@@ -739,6 +1023,22 @@ def _phase_to_dict(phase: PhaseResult) -> dict[str, Any]:
         "timed_out": phase.timed_out,
         "stdout_path": phase.stdout_path,
         "stderr_path": phase.stderr_path,
+        "stdout_json": phase.stdout_json,
+        "stdout_json_error": phase.stdout_json_error,
+    }
+
+
+def _source_custody_to_dict(custody: SourceCustody) -> dict[str, Any]:
+    return {
+        "source": custody.source,
+        "requested_ref": custody.requested_ref,
+        "expected_ref": custody.expected_ref,
+        "head_ref": custody.head_ref,
+        "ref_verified": custody.ref_verified,
+        "git_clean": custody.git_clean,
+        "git_status_porcelain": custody.git_status_porcelain,
+        "suite_root_overridden": custody.suite_root_overridden,
+        "verification": custody.verification,
     }
 
 
@@ -752,6 +1052,8 @@ def _suite_to_dict(suite: SuiteResult) -> dict[str, Any]:
         "suite_root": suite.suite_root,
         "suite_workdir": suite.suite_workdir,
         "resolved_ref": suite.resolved_ref,
+        "requested_ref": suite.requested_ref,
+        "source_custody": _source_custody_to_dict(suite.source_custody),
         "status": suite.status,
         "reason": suite.reason,
         "adapter_notes": suite.adapter_notes,
@@ -773,6 +1075,73 @@ def _select_suites(
     if include_disabled:
         return selected
     return [suite for suite in selected if suite.enabled]
+
+
+def _parse_keyed_path_overrides(values: list[str], option_name: str) -> dict[str, Path]:
+    overrides: dict[str, Path] = {}
+    for raw in values:
+        if "=" not in raw:
+            raise ValueError(f"{option_name} entries must be <suite-id>=<path>: {raw!r}")
+        suite_id, value = raw.split("=", 1)
+        suite_id = suite_id.strip()
+        value = value.strip()
+        if not suite_id or not value:
+            raise ValueError(f"{option_name} entries must be <suite-id>=<path>: {raw!r}")
+        if suite_id in overrides:
+            raise ValueError(f"{option_name} specified multiple times for {suite_id!r}")
+        overrides[suite_id] = Path(value).expanduser()
+    return overrides
+
+
+def _parse_keyed_str_overrides(values: list[str], option_name: str) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for raw in values:
+        if "=" not in raw:
+            raise ValueError(f"{option_name} entries must be <suite-id>=<value>: {raw!r}")
+        suite_id, value = raw.split("=", 1)
+        suite_id = suite_id.strip()
+        value = value.strip()
+        if not suite_id or not value:
+            raise ValueError(f"{option_name} entries must be <suite-id>=<value>: {raw!r}")
+        if suite_id in overrides:
+            raise ValueError(f"{option_name} specified multiple times for {suite_id!r}")
+        overrides[suite_id] = value
+    return overrides
+
+
+def _validate_override_targets(
+    *,
+    suites_by_id: dict[str, SuiteSpec],
+    suite_root_overrides: dict[str, Path],
+    repo_ref_overrides: dict[str, str],
+) -> None:
+    for option_name, values in (
+        ("--suite-root", suite_root_overrides),
+        ("--repo-ref", repo_ref_overrides),
+    ):
+        unknown = sorted(set(values) - set(suites_by_id))
+        if unknown:
+            raise ValueError(
+                f"{option_name} references unknown suite id(s): {', '.join(unknown)}"
+            )
+    for suite_id in repo_ref_overrides:
+        if suites_by_id[suite_id].source != "git":
+            raise ValueError(f"--repo-ref is only valid for git suites: {suite_id}")
+
+
+def _apply_runner_filter(suite: SuiteSpec, runner_filters: set[str]) -> SuiteSpec:
+    if not runner_filters:
+        return suite
+    runners = {
+        name: runner
+        for name, runner in suite.runners.items()
+        if name in runner_filters
+    }
+    if not runners:
+        raise ValueError(
+            f"suite {suite.id}: --runner filter selected no configured runners"
+        )
+    return replace(suite, runners=runners)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -800,6 +1169,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Include suites marked enabled=false in manifest.",
     )
     parser.add_argument(
+        "--runner",
+        action="append",
+        default=[],
+        help="Run only selected runner name (repeatable).",
+    )
+    parser.add_argument(
         "--output-root",
         type=Path,
         default=None,
@@ -810,6 +1185,26 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("bench/friends/repos"),
         help="Local cache root for git-based friend suites.",
+    )
+    parser.add_argument(
+        "--suite-root",
+        action="append",
+        default=[],
+        metavar="SUITE=PATH",
+        help=(
+            "Override a suite root with an explicit checkout/path. Repeatable; "
+            "git suites still require clean-tree and repo-ref verification."
+        ),
+    )
+    parser.add_argument(
+        "--repo-ref",
+        action="append",
+        default=[],
+        metavar="SUITE=REF",
+        help=(
+            "Override a git suite repo_ref without editing the manifest. Repeatable; "
+            "the resolved ref must match checked-out HEAD."
+        ),
     )
     parser.add_argument(
         "--repeat",
@@ -868,6 +1263,20 @@ def main() -> int:
     args = _parser().parse_args()
     manifest_path = args.manifest.resolve()
     metadata, suites = _load_manifest(manifest_path)
+    suites_by_id = {suite.id: suite for suite in suites}
+    try:
+        suite_root_overrides = _parse_keyed_path_overrides(
+            args.suite_root, "--suite-root"
+        )
+        repo_ref_overrides = _parse_keyed_str_overrides(args.repo_ref, "--repo-ref")
+        _validate_override_targets(
+            suites_by_id=suites_by_id,
+            suite_root_overrides=suite_root_overrides,
+            repo_ref_overrides=repo_ref_overrides,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     selected = _select_suites(
         suites,
         suite_filters=set(args.suite),
@@ -875,6 +1284,15 @@ def main() -> int:
     )
     if not selected:
         print("No suites selected. Use --include-disabled or --suite.", file=sys.stderr)
+        return 2
+    runner_filters = {runner.strip() for runner in args.runner if runner.strip()}
+    if any(not runner.strip() for runner in args.runner):
+        print("--runner must not be empty", file=sys.stderr)
+        return 2
+    try:
+        selected = [_apply_runner_filter(suite, runner_filters) for suite in selected]
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
     if args.repeat is not None and args.repeat <= 0:
@@ -912,22 +1330,30 @@ def main() -> int:
                     "repeat": suite_repeat,
                 }
             )
+            if suite.id in repo_ref_overrides:
+                suite = replace(suite, repo_ref=repo_ref_overrides[suite.id])
             try:
-                suite_root, suite_workdir, resolved_ref = _acquire_suite(
+                acquisition = _acquire_suite(
                     suite,
                     repos_root=repos_root,
+                    suite_root_override=suite_root_overrides.get(suite.id),
                     checkout=args.checkout,
                     fetch=args.fetch,
                     timeout_sec=suite.timeout_sec,
                     dry_run=args.dry_run,
                     limits=limits,
                 )
+                suite_root = acquisition.suite_root
+                suite_workdir = acquisition.suite_workdir
+                source_custody = acquisition.custody
+                resolved_ref = source_custody.head_ref
                 suite_logs = output_root / "logs" / suite.id
                 tokens = {
                     "repo_root": str(Path.cwd().resolve()),
                     "suite_root": str(suite_root.resolve()),
                     "suite_workdir": str(suite_workdir.resolve()),
                     "output_root": str(output_root),
+                    "python": sys.executable,
                 }
                 suite_env = run_env.copy()
                 suite_env.update(_resolve_env(suite.env, tokens))
@@ -974,6 +1400,8 @@ def main() -> int:
                     suite_root=str(suite_root),
                     suite_workdir=str(suite_workdir),
                     resolved_ref=resolved_ref,
+                    requested_ref=source_custody.requested_ref,
+                    source_custody=source_custody,
                     status=status,
                     reason=reason,
                     adapter_notes=suite.adapter_notes,
@@ -996,6 +1424,18 @@ def main() -> int:
                     suite_root="",
                     suite_workdir="",
                     resolved_ref=None,
+                    requested_ref=suite.repo_ref,
+                    source_custody=SourceCustody(
+                        source=suite.source,
+                        requested_ref=suite.repo_ref,
+                        expected_ref=None,
+                        head_ref=None,
+                        ref_verified=False if suite.source == "git" else None,
+                        git_clean=False if suite.source == "git" else None,
+                        git_status_porcelain=None,
+                        suite_root_overridden=suite.id in suite_root_overrides,
+                        verification="not_acquired",
+                    ),
                     status="failed",
                     reason=str(exc),
                     adapter_notes=suite.adapter_notes,
@@ -1030,6 +1470,11 @@ def main() -> int:
             "fetch": args.fetch,
             "repeat_override": args.repeat,
             "timeout_override": args.timeout_sec,
+            "runner_filter": sorted(runner_filters),
+            "suite_root_overrides": {
+                suite_id: str(path) for suite_id, path in sorted(suite_root_overrides.items())
+            },
+            "repo_ref_overrides": dict(sorted(repo_ref_overrides.items())),
         },
         "suites": [_suite_to_dict(suite) for suite in suite_results],
     }

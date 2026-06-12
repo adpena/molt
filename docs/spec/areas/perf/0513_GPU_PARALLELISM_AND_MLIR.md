@@ -1,6 +1,6 @@
 # 0513: GPU Parallelism and MLIR Integration
 
-Status: **Backlog** (ROADMAP item 16, no milestone assigned)
+Status: **Active** (runtime GPU primitive stack and typed tinygrad handle migration)
 Owner: runtime
 Prerequisites: TC2 (type coverage), SL2 (stdlib coverage), TL2 (tooling)
 
@@ -17,13 +17,76 @@ This crate provides:
   with O(1) reshape, permute, expand, pad, shrink, and flip.
 - **LazyOp DAG** (`runtime/molt-gpu/src/lazy.rs`): Deferred computation graph.
 - **Kernel fusion** (`runtime/molt-gpu/src/fuse.rs`): Elementwise-reduce-elementwise
-  chain fusion.
-- **4 renderers**: MSL (`render/msl.rs`), WGSL (`render/wgsl.rs`), CUDA (`render/cuda.rs`),
-  HIP (`render/hip.rs`) -- all implementing the full 26-op set.
+  chain fusion with a hard boundary when a post-reduce consumer expands the
+  output shape before broadcast-after-reduce has a first-class IR primitive.
+- **Primary shader renderers**: MSL (`render/msl.rs`), WGSL (`render/wgsl.rs`),
+  GLSL (`render/glsl.rs`), CUDA (`render/cuda.rs`), HIP (`render/hip.rs`),
+  OpenCL (`render/opencl.rs`), plus feature-gated MSL4 (`render/msl4.rs`) --
+  all implementing the full 26-op set for their supported dtype surfaces.
 - **3 device backends**: CPU interpreter (`device/cpu.rs`), Metal (`device/metal.rs`),
   WebGPU (`device/webgpu.rs`).
 - **MLIR serialization** (`runtime/molt-gpu/src/mlir.rs`): Textual MLIR IR generation
-  from FusedKernel (string output only, no C++ dependencies).
+  from FusedKernel (string output only, no C++ dependencies). The active
+  lowered paths are non-MXFP `MaterializeCopy` and pure elementwise compute:
+  both emit flat memref signatures and `scf.for` loops, with ShapeTracker index/mask
+	  lowering for movement views. Pure elementwise compute now includes explicit
+	  non-MXFP cast conversion selection, with target dtype carried from
+	  `LazyOp::Cast` through `FusedOp::dst_dtype()` and `molt_gpu_prim_cast`.
+	  Reductions carry first-class `ReductionDomain` metadata in the FusedKernel IR,
+	  and MLIR now lowers `ReduceSum`/`ReduceMax` to nested `scf.for` loops that
+	  consume that domain for row-major input indexing, pre-reduce prefixes, and
+		  same-output-shape suffixes. MXFP buffer storage and `MaterializeCopy` remain
+		  fail-closed until block/exponent storage lowering exists, and MXFP quantized
+		  casts remain fail-closed until they have real conversion lowering.
+- **Reduction-domain lowering** (`runtime/molt-gpu/src/render/mod.rs`,
+  `runtime/molt-gpu/src/render/indexing.rs`): `LazyOp::Reduce` now carries axes
+  into `ReductionDomain`, scheduler/fusion/kernel hashing preserve it, CPU
+  interpretation uses `domain.input_linear_index(...)`, MLIR emits equivalent
+  SSA `index` arithmetic, MIL restores ranked source tensors before rendering
+  the domain axes, and shader renderers emit affine row-major input-index
+  expressions instead of inferring `input_numel / output_numel`. Shader
+  renderers reduce the declared `reduce_op.srcs()[0]`, not the last pre-reduce
+  temporary. `FusedOp` construction is now constructor-only with private
+  op/src/dtype/domain fields and read-only accessors.
+- **CPU typed cast execution** (`runtime/molt-gpu/src/device/cpu.rs`):
+  Cast/Bitcast now use typed scalar storage for terminal, fused intermediate,
+	  and pre-reduce values; the SIMD fast path excludes Cast/Bitcast so it cannot
+	  bypass dtype conversion semantics. Runtime tensor lifecycle now includes
+	  `molt_gpu_prim_create_tensor_raw` and `molt_gpu_prim_zeros_dtype` for exact
+	  typed storage creation, with MXFP upload fail-closed until block/exponent
+	  storage is defined. Runtime readback separates the legacy f32 API, which fails
+	  closed on realized non-Float32 tensors, from `molt_gpu_prim_dtype`,
+	  `molt_gpu_prim_nbytes`, and `molt_gpu_prim_read_data_raw`, which copy exact
+	  realized storage bytes only after dtype and capacity validation. The Python
+	  tinygrad wrappers now use the same dtype codes for byte tensors, explicit
+	  integer/unsigned constructor upload, typed zeros, handle-only raw readback,
+	  elementwise unary/binary operations, ternary `where`, typed casts,
+	  explicit-axis reductions, and Rust-owned all-axis reductions through
+	  `molt_gpu_prim_reduce_all`.
+	  Movement-family view operations (`reshape`,
+	  `expand`, `permute`,
+	  zero-fill `pad`, `shrink`, `flip`, `contiguous`) now lower through GPU
+	  primitive intrinsics and preserve runtime handles; root movement realization
+	  schedules an explicit `MaterializeCopy` boundary, while empty non-buffer
+	  pipelines fail closed instead of synthesizing zeros. Tinygrad `matmul`
+	  composes runtime-backed reshape/expand/binary/reduce/reshape primitives.
+	  Convolution still needs a first-class runtime window/im2col view primitive
+	  before wrapper migration; nonzero-pad semantics remain fail-closed until
+	  typed pad-fill or mask/`where` semantics are defined across the runtime and
+	  backend renderers.
+- **Metal typed storage proof** (`runtime/molt-gpu/tests/test_e2e_metal.rs`):
+  Metal e2e tests now compare raw CPU-interpreter bytes against device output
+  for Float32->Int32/UInt16/UInt8 Cast and equal-width Float32<->UInt32
+  Bitcast. MSL renderer tests lock the matching `device int*`, `device
+  ushort*`, `device uchar*`, `device uint*`, `int(buf1[gid])`, and
+  `as_type<uint>(buf1[gid])` forms.
+- **MIL materialization** (`runtime/molt-gpu/src/render/mil.rs`):
+  `MaterializeCopy` has verified ShapeTracker gather/select lowering for Bool,
+  Int8/16/32, UInt8/16/32, Float16, and Float32 storage. BF16, 64-bit, MXFP, and
+  non-Float32 MIL compute view reads stay fail-closed until their Core ML
+  package compile/run byte-roundtrip or value-execution proofs exist. Float32
+  compute reductions now carry ranked MIL values, reshape flat gathered views to
+  `ReductionDomain.input_shape`, and return `ReductionDomain.output_shape`.
 
 The Python Tensor API is at `src/molt/stdlib/tinygrad/`. It includes the Tensor class,
 LazyBuffer, dtypes, TurboQuant (Remez-optimal quantization), DDTree (decision tree
@@ -116,7 +179,8 @@ Key rule: `poll()` must never block.
 1. **CPU kernelization**: TIR loop classifier (Map/Reduce) + KernelIR → scalar/SIMD/threaded CPU
 2. **Columnar runtime** (DF1/DF2): MoltTable/MoltColumn with Arrow-compatible buffers
 3. **libcudf backend**: Route DataFrame ops to libcudf via ArrowDeviceArray interop
-4. **GPU kernel backend**: Elementwise maps first, then reductions with determinism policy
+4. **GPU kernel backend**: Elementwise maps first, then domain-owned reductions
+   with determinism policy
 5. **Tight async integration**: GPU ops as first-class Molt futures
 
 ## Cancellation

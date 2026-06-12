@@ -216,6 +216,11 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(cli, "_backend_daemon_wait_until_ready", lambda *a, **k: (True, None))
     monkeypatch.setattr(cli, "_unix_socket_path_exceeds_limit", lambda path: False)
+    monkeypatch.setattr(
+        cli,
+        "_backend_daemon_process_command",
+        lambda pid: f"{backend} --daemon --socket {socket_path}",
+    )
 
     ok = cli._start_backend_daemon(
         backend,
@@ -223,6 +228,7 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         cargo_profile="dev-fast",
         project_root=tmp_path,
         target_triple=None,
+        config_digest=None,
         startup_timeout=1.0,
         json_output=True,
         warnings=[],
@@ -298,11 +304,21 @@ def test_backend_daemon_request_uses_request_scoped_sentinel(
     monkeypatch.setattr(cli, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness())
     monkeypatch.setattr(cli.socket, "socket", lambda *args, **kwargs: FakeSocket())
 
+    daemon_identity = cli._BackendDaemonIdentity(
+        pid=1234,
+        socket_path=tmp_path / "daemon.sock",
+        project_root=tmp_path,
+        cargo_profile="dev-fast",
+        config_digest=None,
+        backend_bin=tmp_path / "molt-backend",
+        created_at=1_700_000_000.0,
+    )
+
     response, err = cli._backend_daemon_request_bytes(
         tmp_path / "daemon.sock",
         b'{"version": 1}\n',
         timeout=None,
-        daemon_pid=1234,
+        daemon_identity=daemon_identity,
         project_root=tmp_path,
     )
 

@@ -4,12 +4,13 @@
 class DType:
     """A tinygrad-compatible data type descriptor."""
 
-    __slots__ = ("name", "itemsize", "fmt")
+    __slots__ = ("name", "itemsize", "fmt", "code")
 
-    def __init__(self, name: str, itemsize: int, fmt: str) -> None:
+    def __init__(self, name: str, itemsize: int, fmt: str, code: int | None = None) -> None:
         self.name = name
         self.itemsize = itemsize
         self.fmt = fmt
+        self.code = code
 
     def __repr__(self) -> str:
         return f"dtypes.{self.name}"
@@ -24,20 +25,20 @@ class DType:
 
 
 class _DTypes:
-    bool = DType("bool", 1, "?")
+    bool = DType("bool", 1, "?", 0)
     bool_ = bool
-    int8 = DType("int8", 1, "b")
-    int16 = DType("int16", 2, "h")
-    int32 = DType("int32", 4, "i")
-    int64 = DType("int64", 8, "q")
-    uint8 = DType("uint8", 1, "B")
-    uint16 = DType("uint16", 2, "H")
-    uint32 = DType("uint32", 4, "I")
-    uint64 = DType("uint64", 8, "Q")
-    float16 = DType("float16", 2, "e")
-    bfloat16 = DType("bfloat16", 2, "e")
-    float32 = DType("float32", 4, "f")
-    float64 = DType("float64", 8, "d")
+    int8 = DType("int8", 1, "b", 1)
+    int16 = DType("int16", 2, "h", 2)
+    int32 = DType("int32", 4, "i", 3)
+    int64 = DType("int64", 8, "q", 4)
+    uint8 = DType("uint8", 1, "B", 5)
+    uint16 = DType("uint16", 2, "H", 6)
+    uint32 = DType("uint32", 4, "I", 7)
+    uint64 = DType("uint64", 8, "Q", 8)
+    float16 = DType("float16", 2, "e", 9)
+    bfloat16 = DType("bfloat16", 2, "e", 10)
+    float32 = DType("float32", 4, "f", 11)
+    float64 = DType("float64", 8, "d", 12)
 
     half = float16
     float = float32

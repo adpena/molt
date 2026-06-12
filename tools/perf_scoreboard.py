@@ -214,11 +214,12 @@ def _safe_run_json(
         *cmd,
     ]
     try:
-        proc = subprocess.run(
+        proc = harness_memory_guard.guarded_completed_process(
             full,
+            prefix="MOLT_BENCH",
             env=env,
-            stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            cwd=REPO_ROOT,
+            capture_output=True,
             text=True,
             timeout=timeout_s + 30.0,
         )
@@ -1523,8 +1524,11 @@ def _resolve_system_cpython(explicit: str | None) -> str:
 
 def _probe_cpython_version(cpython_bin: str) -> str:
     try:
-        res = subprocess.run(
+        res = harness_memory_guard.guarded_completed_process(
             [cpython_bin, "--version"],
+            prefix="MOLT_BENCH",
+            env=os.environ,
+            cwd=REPO_ROOT,
             capture_output=True,
             text=True,
             timeout=30,

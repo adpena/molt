@@ -372,7 +372,8 @@ pub fn lower_tir_to_wasm_boxed_i64_abi_with_proof(
     repr: ReprOverride<'_>,
     inline_proof: Option<&crate::tir::passes::value_range::ValueRangeResult>,
 ) -> Option<WasmFunctionOutput> {
-    let lir = super::lower_to_lir::lower_function_to_lir_with_inline_proof(func, repr, inline_proof);
+    let lir =
+        super::lower_to_lir::lower_function_to_lir_with_inline_proof(func, repr, inline_proof);
     lower_lir_to_wasm_boxed_i64_abi(&lir)
 }
 

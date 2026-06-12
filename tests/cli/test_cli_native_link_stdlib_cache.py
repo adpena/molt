@@ -7,6 +7,27 @@ from pathlib import Path
 import molt.cli as cli
 
 
+def _write_complete_stdlib_contract(stdlib_obj: Path, cache_key: str) -> str:
+    manifest = cli._shared_stdlib_manifest(
+        cache_key=cache_key,
+        cache_variant="test",
+        target_triple=None,
+        compiler_fingerprint="test",
+    )
+    assert manifest is not None
+    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text(
+        f"{cache_key}\n", encoding="utf-8"
+    )
+    cli._stdlib_object_manifest_sidecar_path(stdlib_obj).write_text(
+        manifest + "\n", encoding="utf-8"
+    )
+    cli._stdlib_object_partition_manifest_sidecar_path(stdlib_obj).write_text(
+        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}\n',
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -22,9 +43,7 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
     output_binary = tmp_path / "app"
     stdlib_obj = tmp_path / "stdlib_shared.o"
     stdlib_obj.write_bytes(b"stdlib")
-    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text(
-        "stdlib-key\n", encoding="utf-8"
-    )
+    stdlib_manifest = _write_complete_stdlib_contract(stdlib_obj, "stdlib-key")
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
 
@@ -70,6 +89,7 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
         warnings=[],
         stdlib_obj_path=stdlib_obj,
         stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
     )
 
     assert error is None
@@ -96,9 +116,7 @@ def test_prepare_native_link_uses_pre_staged_stdlib_copy(
     artifacts_root.mkdir()
     stdlib_obj = artifacts_root / "stdlib_shared.o"
     stdlib_obj.write_bytes(b"stdlib")
-    cli._stdlib_object_key_sidecar_path(stdlib_obj).write_text(
-        "stdlib-key\n", encoding="utf-8"
-    )
+    stdlib_manifest = _write_complete_stdlib_contract(stdlib_obj, "stdlib-key")
 
     captured_link_cmd: list[str] = []
 
@@ -136,6 +154,7 @@ def test_prepare_native_link_uses_pre_staged_stdlib_copy(
         warnings=[],
         stdlib_obj_path=stdlib_obj,
         stdlib_object_cache_key="stdlib-key",
+        stdlib_object_manifest=stdlib_manifest,
     )
 
     assert error is None

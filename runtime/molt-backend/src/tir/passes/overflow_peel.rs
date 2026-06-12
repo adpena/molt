@@ -202,7 +202,13 @@ pub fn run(func: &mut TirFunction, _am: &mut crate::tir::analysis::AnalysisManag
         let sanitized: String = func
             .name
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let _ = crate::debug_artifacts::write_debug_artifact(
             format!("overflow_peel/{sanitized}.txt"),
@@ -653,7 +659,11 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
                     .iter()
                     .map(|&v| map_value(v, value_map))
                     .collect(),
-                results: op.results.iter().map(|&v| map_value(v, value_map)).collect(),
+                results: op
+                    .results
+                    .iter()
+                    .map(|&v| map_value(v, value_map))
+                    .collect(),
                 attrs: op.attrs.clone(),
                 source_span: op.source_span,
             })
@@ -671,13 +681,13 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
                 else_args,
             } => {
                 let mapped_else = *block_map.get(else_block).unwrap_or(else_block);
-                let mut mapped_else_args: Vec<ValueId> = else_args
-                    .iter()
-                    .map(|&v| map_value(v, value_map))
-                    .collect();
+                let mut mapped_else_args: Vec<ValueId> =
+                    else_args.iter().map(|&v| map_value(v, value_map)).collect();
                 // The slow guard's exit edge feeds the (new) exit arg with the
                 // slow accumulator phis.
-                if mapped_else == exit && let Some(arg) = exit_arg {
+                if mapped_else == exit
+                    && let Some(arg) = exit_arg
+                {
                     mapped_else_args.push(arg);
                 }
                 Terminator::CondBranch {
@@ -728,7 +738,8 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
         let src = &func.blocks[&body];
         clone_block(src, slow_body, &value_map, exit, None)
     };
-    ops_added += slow_header_block.ops.len() + slow_guard_block.ops.len() + slow_body_block.ops.len();
+    ops_added +=
+        slow_header_block.ops.len() + slow_guard_block.ops.len() + slow_body_block.ops.len();
     func.blocks.insert(slow_header, slow_header_block);
     func.blocks.insert(slow_guard, slow_guard_block);
     func.blocks.insert(slow_body, slow_body_block);
@@ -768,10 +779,7 @@ fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<usize, Refus
     {
         let pre = func.blocks.get_mut(&preheader).expect("preheader exists");
         let mut attrs = AttrDict::new();
-        attrs.insert(
-            "value".into(),
-            crate::tir::ops::AttrValue::Bool(false),
-        );
+        attrs.insert("value".into(), crate::tir::ops::AttrValue::Bool(false));
         pre.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::ConstBool,

@@ -21,9 +21,8 @@ use crate::bridge::{
     attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, dec_ref_bits,
     dict_del_in_place, dict_get_in_place, dict_like_bits_from_ptr, dict_order_clone,
     dict_set_in_place, ensure_key_hashable, exception_pending, inc_ref_bits,
-    index_i64_with_overflow, is_truthy, obj_eq,
-    object_type_id, raise_exception, raise_key_error_with_key, seq_vec_ref, string_data,
-    string_obj_to_owned, to_i64, type_name,
+    index_i64_with_overflow, is_truthy, obj_eq, object_type_id, raise_exception,
+    raise_key_error_with_key, seq_vec_ref, string_data, string_obj_to_owned, to_i64, type_name,
 };
 
 use std::collections::{HashMap, VecDeque};

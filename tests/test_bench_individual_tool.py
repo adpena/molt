@@ -129,13 +129,36 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
     foreign_socket = tmp_path / "foreign.sock"
     owned_socket.write_text("", encoding="utf-8")
     foreign_socket.write_text("", encoding="utf-8")
-    (daemon_root / "molt-backend.dev-fast.alpha-session.aaaa.pid").write_text(
-        "101\n",
-        encoding="utf-8",
+
+    def write_identity(name: str, *, pid: int, socket_path: Path) -> None:
+        (daemon_root / name).write_text(
+            json.dumps(
+                {
+                    "schema": "molt.backend_daemon.identity.v1",
+                    "pid": pid,
+                    "socket_path": str(socket_path),
+                    "project_root": str(ROOT),
+                    "cargo_profile": "dev-fast",
+                    "config_digest": None,
+                    "backend_bin": "/repo/target/molt-backend",
+                    "created_at": 1_700_000_000.0,
+                    "command": None,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    write_identity(
+        "molt-backend.dev-fast.alpha-session.aaaa.identity.json",
+        pid=101,
+        socket_path=owned_socket,
     )
-    (daemon_root / "molt-backend.dev-fast.beta-session.bbbb.pid").write_text(
-        "202\n",
-        encoding="utf-8",
+    write_identity(
+        "molt-backend.dev-fast.beta-session.bbbb.identity.json",
+        pid=202,
+        socket_path=foreign_socket,
     )
     killed: list[int] = []
 
@@ -155,14 +178,24 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
     monkeypatch.setattr(bench, "BENCH_TMP_ROOT", tmp_path / "bench-tmp")
     monkeypatch.setattr(bench, "_guarded_bench_process", fake_ps)
-    monkeypatch.setattr(bench, "_terminate_pid", lambda pid: killed.append(pid))
+
+    def fake_terminate(identity, *, grace: float = 0.75, health_probe=None) -> bool:
+        del grace, health_probe
+        killed.append(identity.pid)
+        return True
+
+    monkeypatch.setattr(
+        bench.daemon_custody,
+        "terminate_backend_daemon_identity",
+        fake_terminate,
+    )
 
     report = bench._cleanup_current_session_backend_daemons()
 
     assert killed == [101]
     assert report.killed_count == 1
     assert report.killed[0].pid == 101
-    assert report.killed[0].reason == "session_isolation"
+    assert report.killed[0].reason == "session_identity_verified"
     assert report.skipped_foreign == 1
     assert report.session_id == "alpha-session"
     assert report.killed_at is not None
@@ -171,6 +204,48 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
     assert payload["event"] == "bench_individual_backend_daemon_cleanup"
     assert payload["killed"][0]["pid"] == 101
     assert payload["skipped_foreign"] == 1
+
+
+def test_bench_individual_isolate_daemon_requires_identity_not_socket_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    bench = _load_bench_individual()
+    target = tmp_path / "target"
+    (target / ".molt_state" / "backend_daemon").mkdir(parents=True)
+    socket_path = tmp_path / "loose.sock"
+    socket_path.write_text("", encoding="utf-8")
+    killed: list[int] = []
+
+    def fake_ps(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        assert cmd == ["ps", "-axo", "pid=,etimes=,command="]
+        stdout = (
+            f" 404 120 /repo/target/molt-backend --daemon --socket {socket_path}\n"
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+    def fake_terminate(identity, *, grace: float = 0.75, health_probe=None) -> bool:
+        del grace, health_probe
+        killed.append(identity.pid)
+        return True
+
+    monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON_SOCKET", str(socket_path))
+    monkeypatch.setattr(bench, "BENCH_TMP_ROOT", tmp_path / "bench-tmp")
+    monkeypatch.setattr(bench, "_guarded_bench_process", fake_ps)
+    monkeypatch.setattr(
+        bench.daemon_custody,
+        "terminate_backend_daemon_identity",
+        fake_terminate,
+    )
+
+    report = bench._cleanup_current_session_backend_daemons()
+
+    assert killed == []
+    assert report.killed_count == 0
+    assert report.skipped_foreign == 1
+    assert report.artifact is None
 
 
 def test_bench_individual_rejects_partial_sample_failure(

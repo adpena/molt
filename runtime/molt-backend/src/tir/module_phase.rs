@@ -263,7 +263,7 @@ fn report_memgvn_producer_effect(module: &TirModule) {
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrValue, OpCode};
     use crate::tir::passes::alias_analysis::{AliasAnalysisResult, MemRegion};
-    use crate::tir::passes::memory_ssa::{compute_standalone, MemAccess};
+    use crate::tir::passes::memory_ssa::{MemAccess, compute_standalone};
 
     // BASELINE mode (`MOLT_MEMGVN_REPORT_BASELINE=1`): strip the `_class` attr
     // from every op before analysis, so every typed-slot field op fails closed
@@ -352,7 +352,10 @@ fn report_memgvn_producer_effect(module: &TirModule) {
         let mut typed_load_count = 0usize;
 
         for (&(block, op_idx), access) in &mem.uses {
-            let MemAccess::Use { def_ver, region, .. } = access else {
+            let MemAccess::Use {
+                def_ver, region, ..
+            } = access
+            else {
                 continue;
             };
             if !matches!(
@@ -403,7 +406,13 @@ fn report_memgvn_producer_effect(module: &TirModule) {
     let sanitized: String = module
         .name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let _ = crate::debug_artifacts::write_debug_artifact(
         format!("memgvn_report/{sanitized}.txt"),
@@ -453,10 +462,7 @@ mod tests {
         // rebuilt over the post-inline module: every function is summarized, and
         // because a's only call was to the inlined-away b, the post-inline graph
         // records no a→b edge (a is now a leaf).
-        let mut m = module(vec![
-            func_calling("a", &["b"]),
-            func_calling("b", &[]),
-        ]);
+        let mut m = module(vec![func_calling("a", &["b"]), func_calling("b", &[])]);
         let tti = TargetInfo::native_release_fast();
         let analysis = run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new());
 
@@ -487,7 +493,10 @@ mod tests {
             analysis.leaf_functions(),
             analysis.call_graph.leaf_functions()
         );
-        assert_eq!(analysis.summaries.leaf_functions(), analysis.leaf_functions());
+        assert_eq!(
+            analysis.summaries.leaf_functions(),
+            analysis.leaf_functions()
+        );
     }
 
     #[test]

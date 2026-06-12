@@ -165,6 +165,38 @@ def _dtype_cast_kind(dtype) -> str | None:
     return None
 
 
+def _tinygrad_dtype_for_storage(dtype, format_char: str):
+    from tinygrad.dtypes import dtypes
+
+    if format_char == "?":
+        return dtypes.bool_
+    if format_char == "b":
+        return dtypes.int8
+    if format_char == "h":
+        return dtypes.int16
+    if format_char == "i":
+        return dtypes.int32
+    if format_char == "q":
+        return dtypes.int64
+    if format_char == "B":
+        return dtypes.uint8
+    if format_char == "H":
+        return dtypes.uint16
+    if format_char == "I":
+        return dtypes.uint32
+    if format_char == "Q":
+        return dtypes.uint64
+    if format_char == "e":
+        return dtypes.float16
+    if format_char == "f":
+        return dtypes.float32
+    if format_char == "d":
+        return dtypes.float64
+    if dtype is int:
+        return dtypes.int64
+    return dtypes.float32
+
+
 def _u32(value):
     return (value or 0) & 0xFFFFFFFF
 
@@ -1082,6 +1114,10 @@ class Tensor:
     def shape(self) -> tuple:
         """Shape of the tensor as a tuple of ints."""
         return self._shape
+
+    @property
+    def dtype(self):
+        return _tinygrad_dtype_for_storage(self._dtype, self._buf.format_char)
 
     @property
     def ndim(self) -> int:

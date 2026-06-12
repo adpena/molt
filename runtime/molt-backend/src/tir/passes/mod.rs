@@ -33,8 +33,8 @@ pub mod range_devirt;
 mod reachability;
 pub mod refcount_elim;
 pub mod reuse_analysis;
-pub mod scev;
 pub mod sccp;
+pub mod scev;
 pub mod sroa;
 pub mod strength_reduction;
 pub mod type_guard_hoist;
@@ -157,7 +157,10 @@ mod tests {
     #[test]
     fn pipeline_records_every_pass_unconditionally() {
         let mut func = minimal_function();
-        let stats = run_pipeline(&mut func, &crate::tir::target_info::TargetInfo::native_release_fast());
+        let stats = run_pipeline(
+            &mut func,
+            &crate::tir::target_info::TargetInfo::native_release_fast(),
+        );
         let names: Vec<_> = stats.iter().map(|stat| stat.name).collect();
         assert_eq!(
             names,

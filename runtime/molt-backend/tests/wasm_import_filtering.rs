@@ -5,10 +5,41 @@
 //! and Full includes everything.
 
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 
 use molt_backend::wasm::{WasmBackend, WasmCompileOptions, WasmProfile};
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use wasmparser::{Parser, Payload, TypeRef};
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => unsafe {
+                std::env::set_var(self.key, value);
+            },
+            None => unsafe {
+                std::env::remove_var(self.key);
+            },
+        }
+    }
+}
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -39,14 +70,15 @@ fn hello_world_ir() -> SimpleIR {
 }
 
 fn ir_with_async_ops() -> SimpleIR {
-    let mut sleep = op("async_sleep");
-    sleep.args = Some(vec!["p0".to_string()]);
+    let mut sleep = op("call_async");
+    sleep.s_value = Some("molt_async_sleep_poll".to_string());
+    sleep.args = Some(vec!["p0".to_string(), "p1".to_string()]);
     sleep.out = Some("v0".to_string());
 
     SimpleIR {
         functions: vec![FunctionIR {
             name: "molt_main".to_string(),
-            params: vec!["p0".to_string()],
+            params: vec!["p0".to_string(), "p1".to_string()],
             ops: vec![sleep, op("ret_void")],
             param_types: None,
             source_file: None,
@@ -261,6 +293,41 @@ fn auto_reloc_preserves_reserved_runtime_callable_imports() {
 }
 
 #[test]
+fn auto_non_reloc_extra_required_imports_are_stripped_when_unemitted() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    let _extra = EnvVarGuard::set("MOLT_WASM_EXTRA_REQUIRED_IMPORTS", "socket_new");
+
+    let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Auto);
+    let names = import_names(&wasm);
+
+    assert!(
+        !names.contains("socket_new"),
+        "non-reloc Auto should retain imports from emitted-use tracking only; imports={names:?}"
+    );
+}
+
+#[test]
+fn auto_reloc_extra_required_imports_remain_declared_for_linker_gc() {
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+    let _extra = EnvVarGuard::set("MOLT_WASM_EXTRA_REQUIRED_IMPORTS", "socket_new");
+
+    let wasm = compile_with_options(
+        hello_world_ir(),
+        WasmCompileOptions {
+            wasm_profile: WasmProfile::Auto,
+            reloc_enabled: true,
+            ..WasmCompileOptions::default()
+        },
+    );
+    let names = import_names(&wasm);
+
+    assert!(
+        names.contains("socket_new"),
+        "reloc Auto should preserve extra required imports for the linker; imports={names:?}"
+    );
+}
+
+#[test]
 fn auto_hello_world_includes_string_from_bytes() {
     let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Auto);
     let names = import_names(&wasm);
@@ -271,12 +338,12 @@ fn auto_hello_world_includes_string_from_bytes() {
 }
 
 #[test]
-fn auto_profile_includes_async_sleep_when_ir_uses_it() {
+fn auto_profile_includes_async_sleep_poll_when_ir_uses_call_async() {
     let wasm = compile_with_profile(ir_with_async_ops(), WasmProfile::Auto);
     let names = import_names(&wasm);
     assert!(
-        names.contains("async_sleep"),
-        "async_sleep should be present when IR has async_sleep op"
+        names.contains("async_sleep_poll"),
+        "async_sleep_poll should be present when IR has async sleep call_async op"
     );
 }
 
@@ -489,6 +556,10 @@ fn full_profile_includes_async_imports() {
         "Full profile should include async_sleep"
     );
     assert!(
+        names.contains("async_sleep_poll"),
+        "Full profile should include async_sleep_poll"
+    );
+    assert!(
         names.contains("future_poll"),
         "Full profile should include future_poll"
     );
@@ -513,11 +584,10 @@ fn full_profile_includes_thread_imports() {
 // Post-compilation import stripping tests
 // -----------------------------------------------------------------------
 
-/// In Auto profile, the post-compilation strip should remove any imports that
-/// the pre-compilation heuristic (`collect_required_imports`) included but
-/// that codegen never actually referenced.  For hello_world, the final import
-/// count after stripping should be strictly less than or equal to the
-/// pre-strip count, and the module should still be valid WASM.
+/// In non-relocatable Auto profile, post-compilation stripping removes imports
+/// that the canonical registry declared but codegen never referenced. For
+/// hello_world, the final module should still be valid WASM after ledger-based
+/// import elimination.
 #[test]
 fn auto_hello_world_stripped_module_is_valid_wasm() {
     let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Auto);

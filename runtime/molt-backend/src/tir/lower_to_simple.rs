@@ -260,7 +260,8 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     // marker (`_ => {}` default arm). Emitted first so the preanalysis sees it
     // before scanning the body.
     if matches!(
-        func.attrs.get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+        func.attrs
+            .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
         Some(AttrValue::Bool(true))
     ) {
         out.push(OpIR {
@@ -439,13 +440,11 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
             let header_idx = bid.0 as usize;
             let end_idx = end_bid.map(|b| b.0 as usize).unwrap_or(header_idx);
             (header_idx..=end_idx.max(header_idx)).any(|i| {
-                func.blocks
-                    .get(&BlockId(i as u32))
-                    .is_some_and(|blk| {
-                        blk.ops
-                            .iter()
-                            .any(|op| op.opcode == OpCode::ExceptionPending)
-                    })
+                func.blocks.get(&BlockId(i as u32)).is_some_and(|blk| {
+                    blk.ops
+                        .iter()
+                        .any(|op| op.opcode == OpCode::ExceptionPending)
+                })
             })
         };
         if loop_has_exception_break {
@@ -6887,10 +6886,9 @@ mod tests {
         // The cond block's label (36) must survive: the generic fallback
         // emits it so the resume `jump` resolves.
         assert!(
-            ops.iter().any(|op| matches!(
-                op.kind.as_str(),
-                "label" | "state_label"
-            ) && op.value == Some(36)),
+            ops.iter()
+                .any(|op| matches!(op.kind.as_str(), "label" | "state_label")
+                    && op.value == Some(36)),
             "loop cond label (36) must remain materialized when re-entered \
              from outside the region: {ops:?}"
         );

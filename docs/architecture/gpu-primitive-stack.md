@@ -124,6 +124,7 @@ Every Tensor operation returns a new `LazyOp` node without executing anything. T
 The `LazyOp` variants:
 - `Buffer`: leaf node (realized data)
 - `Unary`: elementwise unary op
+- `Cast`: elementwise cast/bitcast with explicit target dtype
 - `Binary`: elementwise binary op
 - `Ternary`: ternary select (WHERE)
 - `Reduce`: reduction over an axis
@@ -136,10 +137,22 @@ The fusion engine (`fuse.rs`) merges chains of single-op kernels into fused mult
 
 1. Consecutive elementwise ops merge into a single kernel
 2. An elementwise chain followed by a reduce merges into one kernel
-3. A reduce followed by elementwise ops merges into one kernel (post-reduce)
-4. Reduce-to-reduce is a fusion boundary (must materialize between)
+3. A reduce followed by same-output-shape elementwise ops merges into one kernel
+   (post-reduce scalar/row suffix)
+4. Post-reduce output-shape expansion is a fusion boundary until
+   broadcast-after-reduce is represented by a first-class IR primitive
+5. Reduce-to-reduce is a fusion boundary (must materialize between)
 
 The fused kernel chain structure: `[elementwise prefix] -> [optional reduce] -> [elementwise suffix]`
+Reduction ops carry a `ReductionDomain` with input shape, output shape, axes,
+strides, and reduce extent; CPU and shader renderers consume that domain instead
+of inferring a flat `input_numel / output_numel` segment. The shared renderer
+index helper emits affine row-major input-index expressions for non-last-axis
+reductions across MSL, WGSL, GLSL, CUDA, HIP, OpenCL, and MSL4.
+`FusedOp` construction is also part of this contract: elementwise and reduction
+ops are created only through constructors, with private op/src/dtype/domain
+fields exposed through read-only accessors so a scheduled op cannot drift away
+from its semantic domain after construction.
 
 ## Backend Matrix
 
@@ -152,7 +165,7 @@ The fused kernel chain structure: `[elementwise prefix] -> [optional reduce] -> 
 | HIP | HIP C | Full (f64, i64, bf16 via hip_bfloat16) | AMD GPUs |
 | OpenCL | OpenCL C | f64 via cl_khr_fp64, i64 native, no bf16 | Cross-vendor GPUs, FPGAs, DSPs |
 | CPU | Rust | Full | All platforms (reference backend) |
-| MLIR | MLIR text | Full | Cross-compilation target |
+| MLIR | MLIR text | Standard scalar ops plus domain-owned reductions; MXFP storage/materialization/cast lowering fail-closed | Cross-compilation target |
 
 ### DType Narrowing
 
@@ -318,7 +331,69 @@ The MLIR serializer (`mlir.rs`) generates MLIR textual IR from FusedKernel. This
 - Cross-compilation to targets beyond direct GPU backends
 - Analysis and verification of kernel structure
 
-The MLIR output maps 1:1 to the 26 primitives using standard MLIR dialects:
+The current MLIR output has three real lowered paths:
+- Non-MXFP `KernelBody::MaterializeCopy` emits flat memref arguments, an
+  `scf.for` copy loop, ShapeTracker-derived source/destination indices, and
+  guarded zero-fill for masked/padded source reads.
+- Pure elementwise `KernelBody::Compute` emits flat memref arguments, an
+  `scf.for` loop, ShapeTracker-indexed input loads, masked-safe `scf.if`
+  zero-fill before loads, typed op SSA, and a final store.
+- Domain-owned reduction `KernelBody::Compute` emits an outer output `scf.for`,
+  an inner reduction `scf.for`, dtype-correct accumulator identities,
+  `ReductionDomain`-derived row-major input-index SSA, pre-reduce elementwise
+  prefixes, same-output-shape suffixes, and fail-closed invalid-reference
+  checks.
+
+Supported elementwise output maps standard numeric primitives through MLIR
+dialects:
 - `arith` dialect for arithmetic, comparison, bitwise ops
+- `arith` cast ops for explicit non-MXFP float, integer, unsigned, and bool
+  conversion selection; target dtype is carried by `LazyOp::Cast`,
+  `FusedOp::dst_dtype()`, and `molt_gpu_prim_cast`
 - `math` dialect for exp2, log2, sin, sqrt, trunc
-- Reduce ops map to `linalg.reduce` patterns
+
+The CPU interpreter mirrors that dtype custody with typed scalar Cast/Bitcast
+storage for terminal, fused intermediate, and pre-reduce values. Runtime tensor
+lifecycle is explicit: `molt_gpu_prim_create_tensor_raw` and
+`molt_gpu_prim_zeros_dtype` create exact typed storage bytes, with MXFP upload
+fail-closed until block/exponent storage is defined. The legacy f32 readback API
+is intentionally fail-closed for realized non-Float32 tensors, and
+`molt_gpu_prim_dtype`, `molt_gpu_prim_nbytes`, plus
+`molt_gpu_prim_read_data_raw` provide exact storage-byte readback only when the
+caller supplies the matching dtype and a large-enough output buffer. Metal e2e
+tests byte-compare non-f32 Cast/Bitcast storage against the CPU interpreter,
+covering Float32->Int32/UInt16/UInt8 and equal-width Float32<->UInt32.
+The Python tinygrad wrappers now share those dtype codes: byte tensors surface as
+`dtypes.uint8`, explicit integer/unsigned constructors upload exact
+little-endian bytes through `molt_gpu_prim_create_tensor_raw`, typed zeros call
+`molt_gpu_prim_zeros_dtype`, and handle-only readback decodes
+`molt_gpu_prim_read_data_raw` without routing through f32 lists. Elementwise
+unary/binary operations, ternary `where`, typed casts, explicit-axis reductions,
+and Rust-owned all-axis reductions through `molt_gpu_prim_reduce_all` now carry
+runtime handles through the same primitive stack. Movement-family view
+operations (`reshape`, `expand`, `permute`, zero-fill `pad`, `shrink`, `flip`,
+and `contiguous`) now stay on runtime handles through GPU primitive intrinsics,
+with root views crossing an explicit `MaterializeCopy` boundary. `matmul`
+composes reshape/expand/binary/reduce/reshape on those handles instead of
+forcing host values. Convolution needs a first-class window/im2col view
+primitive before the Python wrapper can stop materializing host data; nonzero
+pad remains fail-closed until typed pad-fill or mask/`where` semantics are
+defined across ShapeTracker, renderers, CPU, MIL/MLIR, and FFI.
+
+Reductions carry first-class `ReductionDomain` metadata in the FusedKernel IR.
+CPU, MLIR, and shader renderers consume its row-major input-index mapping;
+MIL carries ranked values through compute lowering, reshapes flat gathered
+ShapeTracker reads back to the domain input shape, and renders domain axes into
+`reduce(..., axes=[...])` against ranked tensors. Shader renderers also reduce
+the declared `reduce_op.srcs()[0]`, not the last pre-reduce temporary.
+MXFP buffer storage, `MaterializeCopy`, constants, element types, and casts remain
+fail-closed until the block/exponent storage and dequantization contracts are
+explicit. The serializer must not emit comment-shaped pseudo-lowering for
+unsupported compute paths.
+
+The Apple MIL renderer keeps the same fail-closed policy. `MaterializeCopy`
+has verified ShapeTracker gather/select lowering for Bool, Int8/16/32,
+UInt8/16/32, Float16, and Float32 storage, including dtype-correct zero-fill
+and int32-domain guardrails. MIL compute view reads remain Float32-only but now
+preserve logical rank for reductions; BF16, 64-bit, and MXFP materialization
+remain blocked until their storage roundtrip contracts are explicit.

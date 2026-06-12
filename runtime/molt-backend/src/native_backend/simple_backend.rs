@@ -512,7 +512,11 @@ pub(crate) fn unbox_int(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxC
 /// This is needed in `fast_int` arithmetic paths where the TIR optimizer may
 /// mark an op as `fast_int` even when one or both operands are booleans.
 #[cfg(feature = "native-backend")]
-pub(crate) fn unbox_int_or_bool(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+pub(crate) fn unbox_int_or_bool(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
     let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
     let bool_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_bool);
     let masked = builder.ins().band(val, mask);
@@ -609,7 +613,11 @@ pub(crate) fn fused_both_int_check(
 /// this to keep the raw-int fast path correct while still accepting `bool`
 /// operands (which are `int`-typed but tagged `TAG_BOOL`).
 #[cfg(feature = "native-backend")]
-pub(crate) fn fused_is_int_or_bool(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+pub(crate) fn fused_is_int_or_bool(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
     let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
     let masked = builder.ins().band(val, mask);
     let int_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
@@ -757,7 +765,11 @@ pub(crate) fn box_int_value_hoisted(
 }
 
 #[cfg(feature = "native-backend")]
-pub(crate) fn box_float_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+pub(crate) fn box_float_value(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
     // Canonicalize NaN: if the f64 value is NaN, replace with CANONICAL_NAN_BITS
     // to avoid collision with the QNAN tag prefix used by NaN-boxing.
     let raw_bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
@@ -801,7 +813,11 @@ pub(crate) fn int_value_fits_inline(builder: &mut FunctionBuilder, val: Value) -
 ///      overflow), AND
 ///   2. The 64-bit result fits in a 47-bit signed inline integer.
 #[cfg(feature = "native-backend")]
-pub(crate) fn imul_checked_inline(builder: &mut FunctionBuilder, lhs: Value, rhs: Value) -> (Value, Value) {
+pub(crate) fn imul_checked_inline(
+    builder: &mut FunctionBuilder,
+    lhs: Value,
+    rhs: Value,
+) -> (Value, Value) {
     let prod = builder.ins().imul(lhs, rhs);
     // smulhi gives the upper 64 bits of the signed 128-bit product.
     let hi = builder.ins().smulhi(lhs, rhs);
@@ -817,7 +833,11 @@ pub(crate) fn imul_checked_inline(builder: &mut FunctionBuilder, lhs: Value, rhs
 }
 
 #[cfg(feature = "native-backend")]
-pub(crate) fn box_bool_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+pub(crate) fn box_bool_value(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
     let one = builder.ins().iconst(types::I64, 1);
     let zero = builder.ins().iconst(types::I64, 0);
     let bool_val = builder.ins().select(val, one, zero);
@@ -826,7 +846,11 @@ pub(crate) fn box_bool_value(builder: &mut FunctionBuilder, val: Value, nbc: &Na
 }
 
 #[cfg(feature = "native-backend")]
-pub(crate) fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+pub(crate) fn unbox_ptr_value(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
     let mask = builder.ins().iconst(types::I64, nbc.pointer_mask);
     let masked = builder.ins().band(val, mask);
     let shift = builder.ins().iconst(types::I64, nbc.shift_16);
@@ -835,7 +859,11 @@ pub(crate) fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &N
 }
 
 #[cfg(feature = "native-backend")]
-pub(crate) fn box_ptr_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+pub(crate) fn box_ptr_value(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
     let mask = builder.ins().iconst(types::I64, nbc.pointer_mask);
     let masked = builder.ins().band(val, mask);
     let tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
@@ -2342,7 +2370,11 @@ impl SimpleBackend {
     /// Walk backwards from `before_idx` to find a `"const"` op whose `out`
     /// matches `var_name` and return its integer value.  Used by the
     /// iter_next peephole to resolve constant index arguments.
-    pub(crate) fn resolve_const_int(ops: &[OpIR], before_idx: usize, var_name: &str) -> Option<i64> {
+    pub(crate) fn resolve_const_int(
+        ops: &[OpIR],
+        before_idx: usize,
+        var_name: &str,
+    ) -> Option<i64> {
         for i in (0..before_idx).rev() {
             let op = &ops[i];
             if op.kind == "const"
@@ -2793,11 +2825,8 @@ impl SimpleBackend {
                 };
                 let non_inlinable: std::collections::HashSet<String> =
                     external_symbols.into_iter().collect();
-                let module_analysis = crate::tir::run_module_pipeline(
-                    &mut tir_module,
-                    &native_tti,
-                    &non_inlinable,
-                );
+                let module_analysis =
+                    crate::tir::run_module_pipeline(&mut tir_module, &native_tti, &non_inlinable);
                 let changed: std::collections::HashSet<&str> = module_analysis
                     .changed_functions
                     .iter()
@@ -3061,9 +3090,8 @@ impl SimpleBackend {
                 // module/SimpleIR finalizers (uniform refine + double-process guard).
                 for (is_extern, tir_func) in tir_funcs.iter_mut() {
                     if !*is_extern {
-                        let _ = crate::tir::drop_phase::finalize_function_drops(
-                            tir_func, &llvm_tti,
-                        );
+                        let _ =
+                            crate::tir::drop_phase::finalize_function_drops(tir_func, &llvm_tti);
                     }
                 }
             }
@@ -3091,11 +3119,8 @@ impl SimpleBackend {
             // ValueIds the splice introduced are classified by a value-range
             // computed on the merged body — a false `RawI64Safe` (the 2bf51b730
             // truncation bug-class) cannot be introduced by inlining.
-            let simple_by_name: std::collections::HashMap<&str, &FunctionIR> = ir
-                .functions
-                .iter()
-                .map(|f| (f.name.as_str(), f))
-                .collect();
+            let simple_by_name: std::collections::HashMap<&str, &FunctionIR> =
+                ir.functions.iter().map(|f| (f.name.as_str(), f)).collect();
             llvm.function_repr_facts = tir_funcs
                 .iter()
                 .filter(|(is_extern, _)| !*is_extern)
@@ -3301,8 +3326,10 @@ impl SimpleBackend {
         // the union that `merge_function_arities`/`merge_function_has_ret`
         // already do; the local scan is authoritative for this batch's own
         // definitions, the module context adds cross-batch knowledge.
-        let effective_closure_functions =
-            merge_closure_functions(module_context.as_ref(), ir_analysis.closure_functions.clone());
+        let effective_closure_functions = merge_closure_functions(
+            module_context.as_ref(),
+            ir_analysis.closure_functions.clone(),
+        );
         let effective_task_kinds =
             merge_task_kinds(module_context.as_ref(), ir_analysis.task_kinds.clone());
         let effective_task_closure_sizes = merge_task_closure_sizes(
@@ -3571,18 +3598,20 @@ impl SimpleBackend {
         let mut canonical_sig = self.module.make_signature();
         canonical_sig.params.push(AbiParam::new(types::I64));
         canonical_sig.returns.push(AbiParam::new(types::I64));
-        let mut entries: Vec<(&str, cranelift_module::FuncId)> = Vec::with_capacity(manifest_names.len());
+        let mut entries: Vec<(&str, cranelift_module::FuncId)> =
+            Vec::with_capacity(manifest_names.len());
         for name in manifest_names {
-            let func_id =
-                if let Some(cranelift_module::FuncOrDataId::Func(id)) = self.module.get_name(name) {
-                    id
-                } else {
-                    self.module
-                        .declare_function(name, Linkage::Import, &canonical_sig)
-                        .unwrap_or_else(|e| {
-                            panic!("app resolver: failed to declare intrinsic '{name}': {e:?}")
-                        })
-                };
+            let func_id = if let Some(cranelift_module::FuncOrDataId::Func(id)) =
+                self.module.get_name(name)
+            {
+                id
+            } else {
+                self.module
+                    .declare_function(name, Linkage::Import, &canonical_sig)
+                    .unwrap_or_else(|e| {
+                        panic!("app resolver: failed to declare intrinsic '{name}': {e:?}")
+                    })
+            };
             entries.push((name.as_str(), func_id));
         }
         let count = entries.len();
@@ -3664,9 +3693,13 @@ impl SimpleBackend {
             builder.ins().jump(not_found_block, &[]);
         } else {
             // Materialize the base addresses of the two data segments.
-            let names_gv = self.module.declare_data_in_func(names_data_id, builder.func);
+            let names_gv = self
+                .module
+                .declare_data_in_func(names_data_id, builder.func);
             let names_base = builder.ins().symbol_value(types::I64, names_gv);
-            let table_gv = self.module.declare_data_in_func(table_data_id, builder.func);
+            let table_gv = self
+                .module
+                .declare_data_in_func(table_data_id, builder.func);
             let table_base = builder.ins().symbol_value(types::I64, table_gv);
 
             // Binary-search loop: maintain a half-open range [lo, hi).
@@ -3798,7 +3831,9 @@ impl SimpleBackend {
         builder.switch_to_block(loop_head);
         let i = builder.block_params(loop_head)[0];
         let in_range = builder.ins().icmp(IntCC::UnsignedLessThan, i, min_len);
-        builder.ins().brif(in_range, body_block, &[], tail_block, &[]);
+        builder
+            .ins()
+            .brif(in_range, body_block, &[], tail_block, &[]);
 
         // body: compare bytes at offset i.
         builder.switch_to_block(body_block);
@@ -3810,7 +3845,9 @@ impl SimpleBackend {
         let bytes_eq = builder.ins().icmp(IntCC::Equal, a_byte, b_byte);
         let advance_block = builder.create_block();
         let diff_block = builder.create_block();
-        builder.ins().brif(bytes_eq, advance_block, &[], diff_block, &[]);
+        builder
+            .ins()
+            .brif(bytes_eq, advance_block, &[], diff_block, &[]);
 
         // advance: i += 1, continue.
         builder.switch_to_block(advance_block);
@@ -4207,11 +4244,11 @@ mod tests {
         compute_function_has_ret, drain_cleanup_entry_tracked, merge_closure_functions,
         merge_function_arities, merge_function_has_ret, merge_leaf_functions, merge_task_kinds,
     };
+    use crate::TrampolineKind;
     use crate::ir::{FunctionIR, OpIR, SimpleIR};
     use crate::ir_rewrites::{elide_useless_try_blocks, elide_useless_try_blocks_for_function};
     use crate::passes::ReturnAliasSummary;
     use crate::rewrite_phi_to_store_load;
-    use crate::TrampolineKind;
     use cranelift_codegen::ir::Value;
     use cranelift_codegen::ir::types;
     use std::collections::{BTreeMap, BTreeSet};
@@ -6566,4 +6603,3 @@ mod tests {
         assert!(!entry_vars.contains_key("other"));
     }
 }
-

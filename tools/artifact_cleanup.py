@@ -156,6 +156,8 @@ def run_process_sentinel(
         "--once",
         "--kill-all",
     ]
+    if capture_output:
+        cmd.append("--json")
     return _guarded_dev_cleanup_process(
         repo_root,
         cmd,
@@ -190,6 +192,36 @@ def _git_clean_entries(stdout: str) -> list[dict[str, str]]:
         elif line:
             entries.append({"action": "output", "line": line})
     return entries
+
+
+def _sentinel_events(stdout: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for line_no, line in enumerate(stdout.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            events.append(
+                {
+                    "event": "process_sentinel_json_parse_error",
+                    "line_no": line_no,
+                    "error": str(exc),
+                }
+            )
+            continue
+        if isinstance(payload, dict):
+            events.append(payload)
+        else:
+            events.append(
+                {
+                    "event": "process_sentinel_json_type_error",
+                    "line_no": line_no,
+                    "payload_type": type(payload).__name__,
+                }
+            )
+    return events
 
 
 def _emit_json(payload: dict[str, object]) -> None:
@@ -284,16 +316,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         sentinel_result = run_process_sentinel(repo_root, capture_output=args.json)
         if sentinel_result.returncode not in {0, 1}:
             if args.json:
+                sentinel_stdout = getattr(sentinel_result, "stdout", "") or ""
+                sentinel_stderr = getattr(sentinel_result, "stderr", "") or ""
+                data: dict[str, object] = {
+                    "mode": mode,
+                    "repo_root": str(repo_root),
+                    "pathspecs": pathspecs,
+                    "sentinel_returncode": sentinel_result.returncode,
+                    "sentinel_events": _sentinel_events(sentinel_stdout),
+                }
+                if args.verbose:
+                    data["sentinel_stdout"] = sentinel_stdout.splitlines()
+                    data["sentinel_stderr"] = sentinel_stderr.splitlines()
                 _emit_json(
                     {
                         "command": "artifact_cleanup",
                         "status": "error",
-                        "data": {
-                            "mode": mode,
-                            "repo_root": str(repo_root),
-                            "pathspecs": pathspecs,
-                            "sentinel_returncode": sentinel_result.returncode,
-                        },
+                        "data": data,
                         "errors": [
                             "process sentinel failed before artifact cleanup"
                         ],
@@ -318,6 +357,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         if sentinel_result is not None:
             data["sentinel_returncode"] = sentinel_result.returncode
+            data["sentinel_events"] = _sentinel_events(
+                getattr(sentinel_result, "stdout", "") or ""
+            )
         if args.verbose:
             data["stdout"] = stdout.splitlines()
             data["stderr"] = stderr.splitlines()
@@ -325,6 +367,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 apply=args.apply,
                 pathspecs=pathspecs,
             )
+            if sentinel_result is not None:
+                data["sentinel_stdout"] = (
+                    (getattr(sentinel_result, "stdout", "") or "").splitlines()
+                )
+                data["sentinel_stderr"] = (
+                    (getattr(sentinel_result, "stderr", "") or "").splitlines()
+                )
         _emit_json(
             {
                 "command": "artifact_cleanup",

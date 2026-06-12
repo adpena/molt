@@ -3,6 +3,9 @@
 This index groups specs by area so changes can anchor to the right contract.
 Spec numbers are listed first; unnumbered specs are labeled UNNUMBERED.
 Long-form topic docs live under `docs/spec/areas/`.
+For active compiler-foundation routing, also consult the design-doc pointers
+below. Those design docs are operational routing, while live code/tests remain
+authoritative when a design claim drifts.
 
 ## Status
 - STATUS: [docs/spec/STATUS.md](docs/spec/STATUS.md)
@@ -44,6 +47,19 @@ Long-form topic docs live under `docs/spec/areas/`.
 - Luau Backend Optimization: [docs/spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md](docs/spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md)
 - Luau Support Matrix (generated): [docs/spec/areas/compiler/luau_support_matrix.generated.md](docs/spec/areas/compiler/luau_support_matrix.generated.md)
 
+## Compiler Foundation Design Routing
+- Op-kind registry source: [runtime/molt-backend/src/tir/op_kinds.toml](../../runtime/molt-backend/src/tir/op_kinds.toml)
+- Backend generated op-kind table: [runtime/molt-backend/src/tir/op_kinds_generated.rs](../../runtime/molt-backend/src/tir/op_kinds_generated.rs)
+- Frontend generated op-kind table: [src/molt/frontend/lowering/op_kinds_generated.py](../../src/molt/frontend/lowering/op_kinds_generated.py)
+- Pipeline/module/drop phase authority: [runtime/molt-backend/src/tir/pass_manager.rs](../../runtime/molt-backend/src/tir/pass_manager.rs), [runtime/molt-backend/src/tir/module_phase.rs](../../runtime/molt-backend/src/tir/module_phase.rs), [runtime/molt-backend/src/tir/drop_phase.rs](../../runtime/molt-backend/src/tir/drop_phase.rs)
+- Representation plan authority: [runtime/molt-backend/src/representation_plan.rs](../../runtime/molt-backend/src/representation_plan.rs)
+- Integrated foundation program: [docs/design/foundation/00_integrated_parallel_program.md](../design/foundation/00_integrated_parallel_program.md)
+- RC ownership and drop insertion: [docs/design/foundation/20_rc-ownership-drop-insertion.md](../design/foundation/20_rc-ownership-drop-insertion.md)
+- Codebase decomposition program: [docs/design/foundation/21_decomposition_program.md](../design/foundation/21_decomposition_program.md)
+- Op-kind registry: [docs/design/foundation/25_op_kind_registry.md](../design/foundation/25_op_kind_registry.md)
+- Perceus-style borrow inference: [docs/design/foundation/27_perceus_borrow_inference.md](../design/foundation/27_perceus_borrow_inference.md)
+- ExceptionRegion ownership: [docs/design/foundation/45_exception_region_ownership.md](../design/foundation/45_exception_region_ownership.md)
+
 ## Compatibility And Contracts
 - Compatibility architecture index: [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md)
 - Language surface index: [docs/spec/areas/compat/surfaces/language/language_surface_matrix.md](docs/spec/areas/compat/surfaces/language/language_surface_matrix.md)
@@ -58,7 +74,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0210 CPython bridge policy: [docs/spec/areas/compat/contracts/cpython_bridge_policy.md](docs/spec/areas/compat/contracts/cpython_bridge_policy.md)
 - 0211 Compatibility + fallback contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
 - 0216 Dynamic execution + reflection policy contract: [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
-- 0213 Import system contract: [docs/spec/areas/compat/contracts/import_system_contract.md](docs/spec/areas/compat/contracts/import_system_contract.md)
+- 0213 Import system contract (module-init closure, immutable `ImportPlan`, external-root admission policy, shared-stdlib cache partitioning, public importlib transaction authority, and remaining package-context/fromlist/frontend-syntax seams): [docs/spec/areas/compat/contracts/import_system_contract.md](docs/spec/areas/compat/contracts/import_system_contract.md)
 - 0215 Verified subset contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 
 ## Security
@@ -72,6 +88,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0012 Molt Commands: [docs/spec/areas/tooling/0012_MOLT_COMMANDS.md](docs/spec/areas/tooling/0012_MOLT_COMMANDS.md)
 - 0013 Python Dependencies: [docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md](docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md)
 - 0014 Determinism And Security Enforcement Checklist: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md)
+- Backend daemon identity custody (`src/molt/backend_daemon_custody.py`) and memory-guard operations: [docs/OPERATIONS.md](../OPERATIONS.md)
 - 0200 Profile Artifact: [docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md](docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md)
 - 0215 Molt Extension Build Pipeline (runtime metadata enforcement + native/cross-host CI matrix + verify/wasm policy checks): [docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md](docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)
 - 0602 When To Write Extensions Or Binaries: [docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md](docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md)
@@ -86,6 +103,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0510 Loop Optimization And Vectorization: [docs/spec/areas/perf/0510_LOOP_OPTIMIZATION_AND_VECTORIZATION.md](docs/spec/areas/perf/0510_LOOP_OPTIMIZATION_AND_VECTORIZATION.md)
 - 0511 String Optimization And Text Kernels: [docs/spec/areas/perf/0511_STRING_OPTIMIZATION_AND_TEXT_KERNELS.md](docs/spec/areas/perf/0511_STRING_OPTIMIZATION_AND_TEXT_KERNELS.md)
 - 0512 Arch Optimization And SIMD: [docs/spec/areas/perf/0512_ARCH_OPTIMIZATION_AND_SIMD.md](docs/spec/areas/perf/0512_ARCH_OPTIMIZATION_AND_SIMD.md)
+- 0513 GPU Parallelism, MLIR, And Tinygrad Runtime Handles: [docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)
 - 0601 Benchmark Harness And CI Gates: [docs/spec/areas/perf/0601_BENCHMARK_HARNESS_AND_CI_GATES.md](docs/spec/areas/perf/0601_BENCHMARK_HARNESS_AND_CI_GATES.md)
 - 0603 Benchmarks: [docs/spec/areas/perf/0603_BENCHMARKS.md](docs/spec/areas/perf/0603_BENCHMARKS.md)
 - 0604 Binary Size And Cold Start: [docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md](docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md)
@@ -96,6 +114,7 @@ Long-form topic docs live under `docs/spec/areas/`.
 - 0005 WASM Interop: [docs/spec/areas/wasm/0005-wasm-interop.md](docs/spec/areas/wasm/0005-wasm-interop.md)
 - 0400 WASM Portable ABI: [docs/spec/areas/wasm/0400_WASM_PORTABLE_ABI.md](docs/spec/areas/wasm/0400_WASM_PORTABLE_ABI.md)
 - 0401 WASM Targets And Constraints: [docs/spec/areas/wasm/0401_WASM_TARGETS_AND_CONSTRAINTS.md](docs/spec/areas/wasm/0401_WASM_TARGETS_AND_CONSTRAINTS.md)
+- WASM Optimization Plan (Auto import retention, linker-frontier custody, binary-size pipeline): [docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md](docs/spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md)
 - 0963 Pyodide Lessons For Molt WASM: [docs/spec/areas/wasm/0963_PYODIDE_LESSONS_FOR_MOLT_WASM.md](docs/spec/areas/wasm/0963_PYODIDE_LESSONS_FOR_MOLT_WASM.md)
 - 0964 Molt WASM ABI Browser Demo And Constraints: [docs/spec/areas/wasm/0964_MOLT_WASM_ABI_BROWSER_DEMO_AND_CONSTRAINTS.md](docs/spec/areas/wasm/0964_MOLT_WASM_ABI_BROWSER_DEMO_AND_CONSTRAINTS.md)
 - 0965 Cloudflare Workers Lessons For Molt: [docs/spec/areas/wasm/0965_CLOUDFLARE_WORKERS_LESSONS_FOR_MOLT.md](docs/spec/areas/wasm/0965_CLOUDFLARE_WORKERS_LESSONS_FOR_MOLT.md)

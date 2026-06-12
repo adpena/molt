@@ -350,9 +350,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
     // Monotone escalation to a lattice point: never lowers an existing state
     // (the lattice order is NoEscape < ArgEscape < GlobalEscape, encoded by the
     // derived `Ord`). Fail-closed: a value only ever moves UP the lattice.
-    let escalate = |escapes: &mut HashMap<ValueId, EscapeState>,
-                    val: ValueId,
-                    to: EscapeState| {
+    let escalate = |escapes: &mut HashMap<ValueId, EscapeState>, val: ValueId, to: EscapeState| {
         let cur = escapes.get(&val).copied().unwrap_or(EscapeState::NoEscape);
         if to > cur {
             escapes.insert(val, to);
@@ -1395,9 +1393,11 @@ mod tests {
         entry
             .ops
             .push(make_op(OpCode::Copy, vec![inst_val], vec![moved_val]));
-        entry
-            .ops
-            .push(make_op(OpCode::LoadAttr, vec![moved_val], vec![load_result]));
+        entry.ops.push(make_op(
+            OpCode::LoadAttr,
+            vec![moved_val],
+            vec![load_result],
+        ));
         entry
             .ops
             .push(make_op(OpCode::ConstNone, vec![], vec![const_result]));

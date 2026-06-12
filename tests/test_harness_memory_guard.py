@@ -37,13 +37,13 @@ def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
     assert limits.child_rlimit_kb == 6 * 1024 * 1024
 
 
-def test_enabled_from_env_matches_family_override_semantics(monkeypatch) -> None:
+def test_enabled_from_env_ignores_legacy_disable_knobs(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_MEMORY_GUARD", "0")
     monkeypatch.delenv("MOLT_BENCH_MEMORY_GUARD", raising=False)
 
-    assert harness_memory_guard.enabled_from_env("MOLT_BENCH") is False
+    assert harness_memory_guard.enabled_from_env("MOLT_BENCH") is True
 
-    monkeypatch.setenv("MOLT_BENCH_MEMORY_GUARD", "1")
+    monkeypatch.setenv("MOLT_BENCH_MEMORY_GUARD", "0")
     assert harness_memory_guard.enabled_from_env("MOLT_BENCH") is True
 
 
@@ -437,6 +437,110 @@ def test_guarded_completed_process_writes_command_profile(
     assert event["memory_guard_enabled"] is True
     assert event["peak"]["rss_kb"] == 64 * 1024
     assert event["peak_total"]["scope"] == "process_tree"
+
+
+def test_guarded_completed_process_skips_success_profile_by_default(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    profile_log = tmp_path / "commands.jsonl"
+
+    def fake_run_guarded(command, **kwargs):
+        del command, kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="ok\n",
+            stderr="",
+            elapsed_s=0.1,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "command_profile_log_path",
+        lambda _env: profile_log,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_TEST",
+        limits=limits,
+    )
+
+    assert result.returncode == 0
+    assert not profile_log.exists()
+
+
+def test_guarded_completed_process_profiles_incident_by_default(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    profile_log = tmp_path / "commands.jsonl"
+
+    def fake_run_guarded(command, **kwargs):
+        del command, kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=harness_memory_guard.memory_guard.GUARD_RETURN_CODE,
+            violation=harness_memory_guard.memory_guard.RssViolation(
+                pid=123,
+                rss_kb=4 * 1024 * 1024,
+                command="python hungry.py",
+                scope="process_tree",
+            ),
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.25,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "command_profile_log_path",
+        lambda _env: profile_log,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: {},
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "print('ok')"],
+        prefix="MOLT_TEST",
+        env={"PYTEST_CURRENT_TEST": "tests/test_harness_memory_guard.py::unit (call)"},
+        limits=limits,
+    )
+
+    assert result.returncode == harness_memory_guard.memory_guard.GUARD_RETURN_CODE
+    assert "memory_guard: repro context:" in result.stderr
+    event = json.loads(profile_log.read_text(encoding="utf-8"))
+    assert event["status"] == "rss_limit_exceeded"
+    assert event["repro"]["pytest"]["current_test"].startswith(
+        "tests/test_harness_memory_guard.py::unit"
+    )
 
 
 def test_guarded_completed_process_rotates_command_profile(
@@ -1123,7 +1227,7 @@ def test_guarded_completed_process_to_tempfiles_refreshes_dynamic_limits(
     assert terminated == [4242]
 
 
-def test_guarded_completed_process_can_be_disabled(monkeypatch) -> None:
+def test_guarded_completed_process_ignores_legacy_disable_env(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_TEST_MEMORY_GUARD", "0")
 
     result = harness_memory_guard.guarded_completed_process(
@@ -1181,38 +1285,24 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     monkeypatch, tmp_path: Path
 ) -> None:
     harness_memory_guard._TERMINATED_PGIDS.clear()
-    violation = harness_memory_guard.process_sentinel.SentinelViolation(
-        pgid=12345,
-        reason="global_rss",
-        total_rss_kb=6 * 1024 * 1024,
-        peak_pid=12346,
-        peak_rss_kb=3 * 1024 * 1024,
-        pids=(12345, 12346),
-        command="molt-backend --daemon",
-    )
     monkeypatch.setattr(
         harness_memory_guard.process_sentinel,
         "process_groups",
         lambda *args, **kwargs: [
             harness_memory_guard.process_sentinel.ProcessGroup(
-                pgid=12345,
+                pgid=987654,
                 matched=True,
                 samples=(
                     harness_memory_guard.memory_guard.ProcessSample(
-                        pid=12346,
+                        pid=987655,
                         ppid=1,
-                        pgid=12345,
-                        rss_kb=3 * 1024 * 1024,
+                        pgid=987654,
+                        rss_kb=5 * 1024 * 1024,
                         command="molt-backend --daemon",
                     ),
                 ),
             )
         ],
-    )
-    monkeypatch.setattr(
-        harness_memory_guard.process_sentinel,
-        "find_violations",
-        lambda *args, **kwargs: [violation],
     )
     monkeypatch.setattr(
         harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
@@ -1225,8 +1315,8 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
-        max_process_rss_gb=2,
-        max_total_rss_gb=3,
+        max_process_rss_gb=10,
+        max_total_rss_gb=10,
         max_global_rss_gb=4,
         poll_interval=0.01,
     )
@@ -1248,11 +1338,11 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     sentinel.scan_once()
 
     assert sentinel.tripped is True
-    assert terminated == [12345]
+    assert terminated == [987654]
     assert scans == [(1, 4)]
     assert violations
-    assert violations[0]["global_total_kb"] == 3 * 1024 * 1024
-    assert violations[0]["active_pgids"] == [12345]
+    assert violations[0]["global_total_kb"] == 5 * 1024 * 1024
+    assert violations[0]["active_pgids"] == [987654]
     events = sentinel.events_path.read_text(encoding="utf-8")
     assert "repo_process_guard_tripped" in events
     assert "limits" in events
@@ -1261,6 +1351,12 @@ def test_repo_process_sentinel_records_and_terminates_violation(
     assert "elapsed_s" in events
     assert "global_rss" in events
     assert "terminated process group to prevent orphaned Molt subprocesses" in events
+    event = json.loads(events)
+    assert event["violation"]["external_parent_pids"] == [1]
+    assert event["violation"]["process_samples"][0]["pid"] == 987655
+    assert event["repro"]["cwd"] == str(tmp_path)
+    assert event["repro"]["limits"]["max_global_rss_kb"] == 4 * 1024 * 1024
+    assert event["repro"]["sentinel_label"] == "unit"
 
 
 def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
@@ -1341,6 +1437,69 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
     assert "guard_started_at" in events
     assert "elapsed_s" in events
     assert "terminated process group left behind by the guarded scope" in events
+    event = json.loads(events)
+    assert event["violation"]["external_parent_pids"] == [1]
+    assert event["violation"]["process_samples"][0]["pid"] == 222
+    assert event["repro"]["cwd"] == str(tmp_path)
+    assert event["repro"]["sentinel_label"] == "unit-drain"
+
+
+def test_repo_process_sentinel_drain_skips_protected_codex_group(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    samples = {
+        100: harness_memory_guard.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        101: harness_memory_guard.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=100,
+            rss_kb=250_000,
+            command=f"{tmp_path}/target/release-fast/molt-backend",
+        ),
+    }
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        lambda: samples,
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, *, grace: terminated.append(pgid),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.001,
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-protected-drain",
+        limits=limits,
+        drain_until_clean_sec=0,
+        drain_max_runtime_sec=0.1,
+    )
+    sentinel._baseline_pgids = set()
+    sentinel._observed_pgids = {100}
+
+    drained = sentinel.drain_new_processes()
+
+    assert drained == 0
+    assert terminated == []
+    events = sentinel.events_path.read_text(encoding="utf-8")
+    assert "repo_process_guard_protected_host_group" in events
+    assert "repo_process_guard_drained" not in events
 
 
 def test_auto_repo_sentinel_does_not_exit_drain(monkeypatch, tmp_path: Path) -> None:
@@ -1469,6 +1628,11 @@ def test_auto_repo_sentinel_prunes_stale_orphaned_groups(
     )
     assert "repo_process_guard_stale_preflight" in events
     assert "stale_orphan" in events
+    event = json.loads(events)
+    assert event["violation"]["external_parent_pids"] == [1]
+    assert event["violation"]["process_samples"][0]["pid"] == 555
+    assert event["repro"]["cwd"] == str(harness_memory_guard._REPO_ROOT)
+    assert event["repro"]["sentinel_label"] == "molt_build_stale_preflight"
 
 
 def test_repo_process_sentinel_remembers_observed_child_groups(
@@ -1626,11 +1790,11 @@ def test_relative_executable_resolved_against_parent_cwd_under_guard(
     sys.platform.startswith("win"),
     reason="relative venv interpreter symlink chain is a POSIX concern",
 )
-def test_relative_executable_resolved_when_guard_disabled(
+def test_relative_executable_resolved_when_explicit_disable_is_ignored(
     monkeypatch, tmp_path
 ) -> None:
-    # The disabled-guard fast path goes straight through `subprocess.run(cwd=...)`
-    # and must apply the same relative-executable resolution as the guarded path.
+    # Legacy explicit disabled limits are normalized back to guarded custody
+    # before the child process is spawned.
     _make_relative_interpreter(tmp_path)
     other_cwd = tmp_path / "elsewhere"
     other_cwd.mkdir()
@@ -1642,6 +1806,7 @@ def test_relative_executable_resolved_when_guard_disabled(
         max_global_rss_gb=4,
         poll_interval=0.01,
     )
+    assert limits.enabled is True
 
     result = harness_memory_guard.guarded_completed_process(
         ["relbin/python3", "-c", "print('relok-disabled')"],

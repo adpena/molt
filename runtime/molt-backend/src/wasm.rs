@@ -40,7 +40,7 @@ const RELOC_TABLE_BASE_DEFAULT: u32 = 4096;
 /// so the wrapper-generation loop, the index-lookup block, and the table
 /// element initialisation all stay in sync automatically.
 const POLL_TABLE_FUNCS: &[&str] = &[
-    "async_sleep",
+    "async_sleep_poll",
     "anext_default_poll",
     "asyncgen_poll",
     "promise_poll",
@@ -1841,11 +1841,13 @@ impl WasmBackend {
             .collect()
     }
 
-    /// Scan the IR to determine which host imports are actually referenced.
-    /// Uses OP_IMPORT_DEPS table so the codegen declares its own dependencies.
-    /// Returns a BTreeSet of import names. Used by `WasmProfile::Auto` to
-    /// skip unreferenced imports (sentinel u32::MAX).
-    fn collect_required_imports(ir: &SimpleIR) -> BTreeSet<String> {
+    /// Scan the IR for imports that must be declared before relocatable linking.
+    /// Non-relocatable Auto registers the canonical import registry and strips
+    /// from TrackedImportIds after codegen, because the emitted-use ledger is
+    /// the only exact authority for final import retention. Relocatable Auto
+    /// cannot use that post-serialization strip phase, so it still needs this
+    /// conservative pre-emission set for declarations handed to the linker.
+    fn collect_reloc_required_imports(ir: &SimpleIR) -> BTreeSet<String> {
         use crate::wasm_imports::OP_IMPORT_DEPS;
 
         let mut required: BTreeSet<String> = BTreeSet::new();
@@ -1948,6 +1950,14 @@ impl WasmBackend {
                 {
                     let import_name = name.strip_prefix("molt_").unwrap_or(name.as_str());
                     if name.starts_with("molt_") || known_imports.contains(import_name) {
+                        required.insert(import_name.to_string());
+                    }
+                }
+                if kind == "call_async"
+                    && let Some(name) = op.s_value.as_ref()
+                {
+                    let import_name = name.strip_prefix("molt_").unwrap_or(name.as_str());
+                    if known_imports.contains(import_name) {
                         required.insert(import_name.to_string());
                     }
                 }
@@ -2230,15 +2240,15 @@ impl WasmBackend {
         // callargs_push_pos + call_bind) into a single allocation-free
         // `call_method_ic` op, and `super().method(args)` into
         // `call_super_method_ic` (CPython LOAD_METHOD/CALL_METHOD parity).
-        // Run as the LAST SimpleIR transformation before import collection and
+        // Run as the LAST SimpleIR transformation before reloc import collection and
         // codegen — `call_method_ic` is a backend-only op with no TIR opcode,
         // so it must run AFTER the TIR roundtrip + module-phase inliner have
         // produced their final SimpleIR (identical placement contract to the
         // native backend, which fuses immediately before `compile_func`). The
         // fused op kinds are import dependencies via OP_IMPORT_DEPS, so this
-        // must precede `collect_required_imports`. The IC ops are recognized as
-        // non-removable by `eliminate_dead_ops` (method dispatch runs arbitrary
-        // user code), so the dead-op pass below preserves them.
+        // must precede `collect_reloc_required_imports`. The IC ops are
+        // recognized as non-removable by `eliminate_dead_ops` (method dispatch
+        // runs arbitrary user code), so the dead-op pass below preserves them.
         for func_ir in &mut ir.functions {
             crate::passes::fuse_method_dispatch(func_ir);
         }
@@ -2790,9 +2800,12 @@ impl WasmBackend {
         let is_pure = self.options.wasm_profile == WasmProfile::Pure;
         let is_auto = self.options.wasm_profile == WasmProfile::Auto;
 
-        // In Auto mode, scan the IR to determine which imports are actually used.
-        let auto_required: Option<BTreeSet<String>> = if is_auto {
-            let mut required = Self::collect_required_imports(&ir);
+        // Relocatable Auto must declare the conservative import frontier before
+        // wasm-ld sees the object. Non-relocatable Auto deliberately registers
+        // the full canonical registry here and lets TrackedImportIds plus
+        // strip_unused_imports decide final retention from actual codegen use.
+        let auto_required: Option<BTreeSet<String>> = if is_auto && self.options.reloc_enabled {
+            let mut required = Self::collect_reloc_required_imports(&ir);
             if !task_kinds.is_empty() {
                 required.insert("task_new".to_string());
             }
@@ -3645,7 +3658,11 @@ impl WasmBackend {
                 "importlib_frozen_payload",
                 2,
             ),
-            ("molt_importlib_import_module", "importlib_import_module", 3),
+            (
+                "molt_importlib_import_transaction",
+                "importlib_import_transaction",
+                5,
+            ),
             (
                 "molt_importlib_import_optional",
                 "importlib_import_optional",
@@ -4292,7 +4309,7 @@ impl WasmBackend {
             "molt_sys_set_version_info".to_string(),
             self.import_ids["sys_set_version_info"],
         );
-        func_to_table_idx.insert("molt_async_sleep".to_string(), 1);
+        func_to_table_idx.insert("molt_async_sleep_poll".to_string(), 1);
         func_to_table_idx.insert("molt_anext_default_poll".to_string(), 2);
         func_to_table_idx.insert("molt_asyncgen_poll".to_string(), 3);
         func_to_table_idx.insert("molt_promise_poll".to_string(), 4);
@@ -11353,8 +11370,10 @@ impl WasmBackend {
                         // value (site/recv/args/len) is i64.
                         let args_names = op.args.as_ref().unwrap();
                         let recv = locals[&args_names[0]];
-                        let method_name =
-                            op.s_value.as_ref().expect("call_method_ic missing method name");
+                        let method_name = op
+                            .s_value
+                            .as_ref()
+                            .expect("call_method_ic missing method name");
                         let bytes = method_name.as_bytes();
                         let data = self.add_data_segment(reloc_enabled, bytes);
                         let site_bits = box_int(stable_ic_site_id(

@@ -6,11 +6,12 @@ use molt_gpu::shapetracker::ShapeTracker;
 
 fn make_simple_binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
     FusedKernel {
-        ops: vec![FusedOp {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
             op,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float32,
-        }],
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -59,11 +60,12 @@ fn test_cuda_render_mul() {
 #[test]
 fn test_cuda_full_i64_support() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Int64,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Int64,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -100,11 +102,12 @@ fn test_cuda_full_i64_support() {
 #[test]
 fn test_cuda_full_f64_support() {
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Add,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
-            dst_dtype: DType::Float64,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::Float64,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -141,11 +144,12 @@ fn test_cuda_full_f64_support() {
 fn test_cuda_ternary_operator() {
     // CUDA uses standard C ternary, not select()
     let kernel = FusedKernel {
-        ops: vec![FusedOp {
-            op: PrimitiveOp::Where,
-            srcs: vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
-            dst_dtype: DType::Float32,
-        }],
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Where,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2), FusedSrc::Buf(3)],
+            DType::Float32,
+        )],
         bufs: vec![
             BufferBinding {
                 buf_id: 0,
@@ -185,10 +189,11 @@ fn test_cuda_ternary_operator() {
 fn test_cuda_all_26_ops_render() {
     let elementwise_ops = PrimitiveOp::ALL
         .iter()
+        .copied()
         .filter(|op| op.is_elementwise())
         .collect::<Vec<_>>();
 
-    for &&op in &elementwise_ops {
+    for op in elementwise_ops {
         let srcs = match op.arity() {
             1 => vec![FusedSrc::Buf(1)],
             2 => vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
@@ -210,10 +215,11 @@ fn test_cuda_all_26_ops_render() {
             });
         }
         let kernel = FusedKernel {
-            ops: vec![FusedOp {
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
                 op,
                 srcs,
-                dst_dtype: if matches!(
+                if matches!(
                     op,
                     PrimitiveOp::Cmplt | PrimitiveOp::Cmpeq | PrimitiveOp::Cmpne
                 ) {
@@ -221,7 +227,7 @@ fn test_cuda_all_26_ops_render() {
                 } else {
                     DType::Float32
                 },
-            }],
+            )],
             bufs,
             grid: [64, 1, 1],
             local: [64, 1, 1],

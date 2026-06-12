@@ -17,7 +17,10 @@ use std::fmt::Write;
 
 use crate::dtype::DType;
 use crate::ops::PrimitiveOp;
-use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, Renderer};
+use crate::render::indexing::{
+    render_reduction_input_index, render_shapetracker_index, zero_literal_for_dtype, IndexDialect,
+};
+use crate::render::{BufferAccess, FusedKernel, FusedOp, FusedSrc, KernelBody, Renderer};
 
 /// OpenCL C renderer for all 26 primitive ops.
 pub struct OpenClRenderer {
@@ -103,56 +106,29 @@ impl OpenClRenderer {
     }
 
     /// Render a buffer read expression at the given index.
-    fn render_buf_read(binding: &crate::render::BufferBinding, idx_var: &str) -> String {
-        let st = &binding.st;
-        let view = st.view();
-
-        let ndim = view.shape.len();
-        if ndim == 0 {
-            return format!("buf{}[0]", binding.buf_id);
-        }
-
-        if view.is_contiguous() && view.mask.is_none() {
-            return format!("buf{}[{}]", binding.buf_id, idx_var);
-        }
-
-        let mut parts = Vec::new();
-        for dim in 0..ndim {
-            let stride = view.strides[dim];
-            if stride == 0 {
-                continue;
-            }
-            let size = view.shape[dim];
-            let idx_expr = if dim == ndim - 1 {
-                format!("({} % {})", idx_var, size)
-            } else {
-                let divisor: usize = view.shape[dim + 1..].iter().product();
-                format!("({} / {} % {})", idx_var, divisor, size)
-            };
-            if stride == 1 {
-                parts.push(idx_expr);
-            } else if stride == -1 {
-                parts.push(format!("({} - {})", size - 1, idx_expr));
-            } else if stride > 0 {
-                parts.push(format!("{} * {}", idx_expr, stride));
-            } else {
-                parts.push(format!("({} - {}) * {}", size - 1, idx_expr, -stride));
-            }
-        }
-
-        let offset = if view.offset != 0 {
-            format!("{} + ", view.offset)
+    fn render_buf_read(
+        binding_idx: usize,
+        binding: &crate::render::BufferBinding,
+        idx_var: &str,
+    ) -> String {
+        let idx = render_shapetracker_index(&binding.st, idx_var, IndexDialect::CLike);
+        let read = format!("buf{}[{}]", binding_idx, idx.index);
+        if let Some(valid) = idx.valid {
+            let zero = zero_literal_for_dtype(binding.dtype.narrow_opencl(true), "0");
+            format!("({} ? {} : {})", valid, read, zero)
         } else {
-            String::new()
-        };
+            read
+        }
+    }
 
-        let idx_sum = if parts.is_empty() {
-            "0".to_string()
-        } else {
-            parts.join(" + ")
-        };
-
-        format!("buf{}[{}{}]", binding.buf_id, offset, idx_sum)
+    fn render_src(&self, src: &FusedSrc, kernel: &FusedKernel, idx_var: &str) -> String {
+        match src {
+            FusedSrc::Buf(buf_idx) => {
+                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
+            }
+            FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
+            FusedSrc::Const { val, dtype } => self.format_const(*val, *dtype),
+        }
     }
 
     /// Render a single op expression as OpenCL C.
@@ -163,18 +139,12 @@ impl OpenClRenderer {
         kernel: &FusedKernel,
         idx_var: &str,
     ) -> String {
-        let src = |i: usize| -> String {
-            match &op.srcs[i] {
-                FusedSrc::Buf(buf_idx) => Self::render_buf_read(&kernel.bufs[*buf_idx], idx_var),
-                FusedSrc::Op(prior_idx) => format!("v{}", prior_idx),
-                FusedSrc::Const { val, dtype } => self.format_const(*val, *dtype),
-            }
-        };
+        let src = |i: usize| -> String { self.render_src(&op.srcs()[i], kernel, idx_var) };
 
-        let dst_dtype = op.dst_dtype.narrow_opencl(self.has_fp64);
+        let dst_dtype = op.dst_dtype().narrow_opencl(self.has_fp64);
         let dst_type = dst_dtype.opencl_type();
 
-        match op.op {
+        match op.op() {
             PrimitiveOp::Add => format!("({} + {})", src(0), src(1)),
             PrimitiveOp::Sub => format!("({} - {})", src(0), src(1)),
             PrimitiveOp::Mul => format!("({} * {})", src(0), src(1)),
@@ -228,36 +198,37 @@ impl OpenClRenderer {
         op: &FusedOp,
         op_idx: usize,
         kernel: &FusedKernel,
+        idx_var: &str,
     ) -> Option<(String, String, String)> {
-        if op.op != PrimitiveOp::Add {
+        if op.op() != PrimitiveOp::Add {
             return None;
         }
-        if !op.dst_dtype.narrow_opencl(self.has_fp64).is_float() {
+        if !op.dst_dtype().narrow_opencl(self.has_fp64).is_float() {
             return None;
         }
 
         for (mul_src_pos, add_src_pos) in [(0, 1), (1, 0)] {
-            if let FusedSrc::Op(prior_idx) = &op.srcs[mul_src_pos] {
+            if let FusedSrc::Op(prior_idx) = &op.srcs()[mul_src_pos] {
                 if *prior_idx < op_idx {
                     let prior_op = &kernel.ops[*prior_idx];
-                    if prior_op.op == PrimitiveOp::Mul {
-                        let a = match &prior_op.srcs[0] {
+                    if prior_op.op() == PrimitiveOp::Mul {
+                        let a = match &prior_op.srcs()[0] {
                             FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
                             }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => self.format_const(*val, *dtype),
                         };
-                        let b = match &prior_op.srcs[1] {
+                        let b = match &prior_op.srcs()[1] {
                             FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
                             }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => self.format_const(*val, *dtype),
                         };
-                        let c = match &op.srcs[add_src_pos] {
+                        let c = match &op.srcs()[add_src_pos] {
                             FusedSrc::Buf(buf_idx) => {
-                                Self::render_buf_read(&kernel.bufs[*buf_idx], "gid")
+                                Self::render_buf_read(*buf_idx, &kernel.bufs[*buf_idx], idx_var)
                             }
                             FusedSrc::Op(p) => format!("v{}", p),
                             FusedSrc::Const { val, dtype } => self.format_const(*val, *dtype),
@@ -273,7 +244,7 @@ impl OpenClRenderer {
     /// Check whether any buffer in the kernel uses Float64 (pre-narrowing).
     fn needs_fp64(kernel: &FusedKernel) -> bool {
         kernel.bufs.iter().any(|b| b.dtype == DType::Float64)
-            || kernel.ops.iter().any(|op| op.dst_dtype == DType::Float64)
+            || kernel.ops.iter().any(|op| op.dst_dtype() == DType::Float64)
     }
 }
 
@@ -300,12 +271,7 @@ impl Renderer for OpenClRenderer {
             if i > 0 {
                 write!(out, ", ").unwrap();
             }
-            write!(
-                out,
-                "{}{} * restrict buf{}",
-                qualifier, dtype_str, binding.buf_id
-            )
-            .unwrap();
+            write!(out, "{}{} * restrict buf{}", qualifier, dtype_str, i).unwrap();
         }
         writeln!(out, ") {{").unwrap();
 
@@ -316,10 +282,25 @@ impl Renderer for OpenClRenderer {
         let output_numel = kernel.bufs[0].st.numel();
         writeln!(out, "    if (gid >= {}u) return;", output_numel).unwrap();
 
+        if kernel.body == KernelBody::MaterializeCopy {
+            let (_, src_binding, copy_numel) = kernel.materialize_copy_contract();
+            assert_eq!(copy_numel, output_numel);
+            assert_eq!(
+                src_binding.dtype,
+                src_binding.dtype.narrow_opencl(self.has_fp64),
+                "OpenCL MaterializeCopy requires a non-narrowed dtype"
+            );
+            let src = Self::render_buf_read(1, src_binding, "gid");
+            writeln!(out, "    buf0[gid] = {};", src).unwrap();
+            writeln!(out, "}}").unwrap();
+            return out;
+        }
+        kernel.compute_body_contract();
+
         let has_reduce = kernel
             .ops
             .iter()
-            .any(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
+            .any(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax));
 
         if kernel.vectorize_width == 4 && !has_reduce {
             // Vectorized 4-wide: each thread processes 4 elements via vload4/vstore4
@@ -336,8 +317,8 @@ impl Renderer for OpenClRenderer {
             writeln!(out, "        unsigned int eidx = base + lane;").unwrap();
 
             for (i, op) in kernel.ops.iter().enumerate() {
-                let dtype_str = op.dst_dtype.narrow_opencl(self.has_fp64).opencl_type();
-                let expr = if let Some((a, b, c)) = self.detect_fma(op, i, kernel) {
+                let dtype_str = op.dst_dtype().narrow_opencl(self.has_fp64).opencl_type();
+                let expr = if let Some((a, b, c)) = self.detect_fma(op, i, kernel, "eidx") {
                     format!("fma({}, {}, {})", a, b, c)
                 } else {
                     self.render_op(op, i, kernel, "eidx")
@@ -345,17 +326,12 @@ impl Renderer for OpenClRenderer {
                 writeln!(out, "        {} v{} = {};", dtype_str, i, expr).unwrap();
             }
             let last_op = kernel.ops.len() - 1;
-            writeln!(
-                out,
-                "        buf{}[eidx] = v{};",
-                kernel.bufs[0].buf_id, last_op
-            )
-            .unwrap();
+            writeln!(out, "        buf0[eidx] = v{};", last_op).unwrap();
             writeln!(out, "    }}").unwrap();
         } else if !has_reduce {
             for (i, op) in kernel.ops.iter().enumerate() {
-                let dtype_str = op.dst_dtype.narrow_opencl(self.has_fp64).opencl_type();
-                let expr = if let Some((a, b, c)) = self.detect_fma(op, i, kernel) {
+                let dtype_str = op.dst_dtype().narrow_opencl(self.has_fp64).opencl_type();
+                let expr = if let Some((a, b, c)) = self.detect_fma(op, i, kernel, "gid") {
                     format!("fma({}, {}, {})", a, b, c)
                 } else {
                     self.render_op(op, i, kernel, "gid")
@@ -363,27 +339,29 @@ impl Renderer for OpenClRenderer {
                 writeln!(out, "    {} v{} = {};", dtype_str, i, expr).unwrap();
             }
             let last_op = kernel.ops.len() - 1;
-            writeln!(out, "    buf{}[gid] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(out, "    buf0[gid] = v{};", last_op).unwrap();
         } else {
             let reduce_idx = kernel
                 .ops
                 .iter()
-                .position(|op| matches!(op.op, PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
+                .position(|op| matches!(op.op(), PrimitiveOp::ReduceSum | PrimitiveOp::ReduceMax))
                 .expect("has_reduce but no reduce op found");
 
             let reduce_op = &kernel.ops[reduce_idx];
-            let reduce_src = &reduce_op.srcs[0];
-            let reduce_dtype = reduce_op.dst_dtype.narrow_opencl(self.has_fp64);
+            let reduce_src = &reduce_op.srcs()[0];
+            let reduce_dtype = reduce_op.dst_dtype().narrow_opencl(self.has_fp64);
             let reduce_type = reduce_dtype.opencl_type();
+            let domain = reduce_op.require_reduction_domain();
+            assert_eq!(
+                domain.output_numel(),
+                output_numel,
+                "OpenCL reduction domain output shape must match kernel output"
+            );
+            let reduce_size = domain.reduce_size;
+            let reduce_index =
+                render_reduction_input_index(domain, "gid", "rid", IndexDialect::CLike);
 
-            let input_buf = match reduce_src {
-                FusedSrc::Buf(idx) => &kernel.bufs[*idx],
-                FusedSrc::Op(_) => &kernel.bufs[1],
-                FusedSrc::Const { .. } => unreachable!("reduce on constant"),
-            };
-            let reduce_size = input_buf.st.numel() / output_numel;
-
-            let init_val = match reduce_op.op {
+            let init_val = match reduce_op.op() {
                 PrimitiveOp::ReduceSum => format!("({})0", reduce_type),
                 PrimitiveOp::ReduceMax => "(-INFINITY)".to_string(),
                 _ => unreachable!(),
@@ -405,27 +383,24 @@ impl Renderer for OpenClRenderer {
                     reduce_size
                 )
                 .unwrap();
-                writeln!(
-                    out,
-                    "        unsigned int eidx = gid * {}u + rid;",
-                    reduce_size
-                )
-                .unwrap();
+                writeln!(out, "        unsigned int eidx = {};", reduce_index).unwrap();
 
                 for i in 0..reduce_idx {
                     let op = &kernel.ops[i];
-                    let dtype_str = op.dst_dtype.narrow_opencl(self.has_fp64).opencl_type();
+                    let dtype_str = op.dst_dtype().narrow_opencl(self.has_fp64).opencl_type();
                     let expr = self.render_op(op, i, kernel, "eidx");
                     writeln!(out, "        {} v{} = {};", dtype_str, i, expr).unwrap();
                 }
 
-                let src_var = format!("v{}", reduce_idx - 1);
-                match reduce_op.op {
-                    PrimitiveOp::ReduceSum => writeln!(out, "        acc += {};", src_var).unwrap(),
+                let src_expr = self.render_src(reduce_src, kernel, "eidx");
+                match reduce_op.op() {
+                    PrimitiveOp::ReduceSum => {
+                        writeln!(out, "        acc += {};", src_expr).unwrap()
+                    }
                     PrimitiveOp::ReduceMax => writeln!(
                         out,
                         "        acc = (isnan({v}) || isnan(acc)) ? NAN : fmax(acc, {v});",
-                        v = src_var
+                        v = src_expr
                     )
                     .unwrap(),
                     _ => unreachable!(),
@@ -441,17 +416,9 @@ impl Renderer for OpenClRenderer {
                     reduce_size
                 )
                 .unwrap();
-                writeln!(
-                    out,
-                    "        unsigned int eidx = gid * {}u + rid;",
-                    reduce_size
-                )
-                .unwrap();
-                let src_expr = match reduce_src {
-                    FusedSrc::Buf(idx) => Self::render_buf_read(&kernel.bufs[*idx], "eidx"),
-                    _ => unreachable!(),
-                };
-                match reduce_op.op {
+                writeln!(out, "        unsigned int eidx = {};", reduce_index).unwrap();
+                let src_expr = self.render_src(reduce_src, kernel, "eidx");
+                match reduce_op.op() {
                     PrimitiveOp::ReduceSum => {
                         writeln!(out, "        acc += {};", src_expr).unwrap()
                     }
@@ -475,7 +442,7 @@ impl Renderer for OpenClRenderer {
             )
             .unwrap();
             writeln!(out, "        if (lid < s) {{").unwrap();
-            match reduce_op.op {
+            match reduce_op.op() {
                 PrimitiveOp::ReduceSum => writeln!(out, "            sdata[lid] += sdata[lid + s];").unwrap(),
                 PrimitiveOp::ReduceMax => writeln!(out, "            sdata[lid] = (isnan(sdata[lid]) || isnan(sdata[lid + s])) ? NAN : fmax(sdata[lid], sdata[lid + s]);").unwrap(),
                 _ => unreachable!(),
@@ -488,13 +455,13 @@ impl Renderer for OpenClRenderer {
 
             for i in (reduce_idx + 1)..kernel.ops.len() {
                 let op = &kernel.ops[i];
-                let dtype_str = op.dst_dtype.narrow_opencl(self.has_fp64).opencl_type();
+                let dtype_str = op.dst_dtype().narrow_opencl(self.has_fp64).opencl_type();
                 let expr = self.render_op(op, i, kernel, "gid");
                 writeln!(out, "    {} v{} = {};", dtype_str, i, expr).unwrap();
             }
 
             let last_op = kernel.ops.len() - 1;
-            writeln!(out, "    buf{}[gid] = v{};", kernel.bufs[0].buf_id, last_op).unwrap();
+            writeln!(out, "    buf0[gid] = v{};", last_op).unwrap();
         }
 
         writeln!(out, "}}").unwrap();
