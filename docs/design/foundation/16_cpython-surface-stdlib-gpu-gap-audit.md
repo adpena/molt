@@ -280,7 +280,7 @@
 
 **Location:** `/Users/adpena/Projects/molt/runtime/molt-gpu/` (Rust implementation)
 **Python API:** `/Users/adpena/Projects/molt/src/molt/gpu/` (tensor.py, ops.py, etc.)
-**Tinygrad compat:** `/Users/adpena/Projects/molt/src/tinygrad/` (thin wrapper; delegates to molt.gpu.Tensor)
+**Tinygrad compat:** `/Users/adpena/Projects/molt/src/tinygrad/` (thin wrapper; delegates to `molt.gpu.Tensor` for module and from-import public API, with exact-case import graph custody)
 
 | Component | File | Status | Notes |
 |-----------|------|--------|-------|
@@ -309,7 +309,7 @@ All layers green under test: test_schedule_spec.rs, test_fusion.rs, test_constan
 
 **File:** `/Users/adpena/Projects/molt/src/molt/gpu/tensor.py` (90.2KB) — 80+ Tensor methods: creation (zeros/ones/full/eye/arange/linspace/normal/uniform/stack), shape ops, fancy indexing, arithmetic/comparison/bitwise, reductions (sum/mean/var/std/min/max/argmin/argmax), matmul (RESHAPE+EXPAND+MUL+REDUCE_SUM composition), activations (relu/sigmoid/tanh/softmax/log_softmax/gelu/silu), norms (layernorm/batchnorm/rmsnorm), scaled_dot_product_attention, conv2d/conv_transpose2d (im2col composition), pooling, 4-bit TurboQuant dequant, cat/split/chunk/flatten, KV-cache ops (take_rows, scatter_rows, linear_split_last_dim, scaled_relu_gate_interleaved).
 
-**Stdlib tinygrad wrapper:** `/Users/adpena/Projects/molt/src/molt/stdlib/tinygrad/tensor.py` now routes typed constructors, zeros, raw readback, unary/binary/ternary `where`/cast, explicit-axis reductions, Rust-owned all-axis reductions via `molt_gpu_prim_reduce_all`, movement-family views (`reshape`, `expand`, `permute`, zero-fill `pad`, `shrink`, `flip`, `contiguous`), and matmul composition through runtime GPU primitive handles. Remaining wrapper migration lanes are convolution, which needs a first-class window/im2col view primitive, and nonzero-pad semantics, which remain fail-closed until typed pad-fill or mask/`where` behavior is defined across runtime and backends.
+**Stdlib tinygrad wrapper:** `/Users/adpena/Projects/molt/src/molt/stdlib/tinygrad/tensor.py` now routes typed constructors, zeros, raw readback, unary/binary/ternary `where`/cast, explicit-axis reductions, Rust-owned all-axis reductions via `molt_gpu_prim_reduce_all`, movement-family views (`reshape`, `expand`, `permute`, zero-fill `pad`, `shrink`, `flip`, `contiguous`), and matmul composition through runtime GPU primitive handles. The public `src/tinygrad/` shim preserves `molt.gpu.Tensor` for `import tinygrad` and `from tinygrad import Tensor`, with `where_promotion` and `movement_views` in the off-the-shelf adapter as the current dtype/ternary and movement compatibility workloads. Remaining wrapper migration lanes are convolution, which needs a first-class window/im2col view primitive, and nonzero-pad semantics, which remain fail-closed until typed pad-fill or mask/`where` behavior is defined across runtime and backends.
 
 Falcon-OCR VLM e2e working (DFlash multi-head attention, RMSNorm, rotary embeddings, patch embeddings); quantized inference working.
 

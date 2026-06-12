@@ -8,9 +8,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
@@ -32,6 +32,9 @@ DEFAULT_STALE_PYTEST_SEC = process_sentinel.DEFAULT_STALE_PYTEST_SEC
 HARD_RSS_LIMIT_GB = memory_guard.DEFAULT_HARD_MAX_RSS_GB - 0.001
 HARD_GLOBAL_RSS_LIMIT_GB = memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB - 0.001
 HARD_CHILD_RLIMIT_GB = memory_guard.DEFAULT_HARD_MAX_CHILD_RLIMIT_GB - 0.001
+CODEX_INTERACTIVE_MAX_PROCESS_RSS_GB = 18.0
+CODEX_INTERACTIVE_MAX_TOTAL_RSS_GB = 24.0
+CODEX_INTERACTIVE_MAX_GLOBAL_RSS_GB = 36.0
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SRC_ROOT = _REPO_ROOT / "src"
 if _SRC_ROOT.exists() and str(_SRC_ROOT) not in sys.path:
@@ -81,19 +84,22 @@ def canonical_interpreter(executable: str) -> str:
     return str(abs_path)
 
 
-class GuardedCompletedProcess(subprocess.CompletedProcess[str]):
+class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
     def __init__(
         self,
         args: Sequence[str],
         returncode: int,
-        stdout: str | None,
-        stderr: str | None,
+        stdout: str | bytes | None,
+        stderr: str | bytes | None,
         *,
         elapsed_s: float | None,
         violation: memory_guard.RssViolation | None = None,
         timed_out: bool = False,
         limit_at_violation: memory_guard.ResolvedMemoryLimits | None = None,
         orphaned_process_groups: Sequence[int] = (),
+        cargo_incremental_quarantine: (
+            memory_guard.CargoIncrementalQuarantine | None
+        ) = None,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -103,6 +109,7 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[str]):
         self.timed_out = timed_out
         self.limit_at_violation = limit_at_violation
         self.orphaned_process_groups = tuple(orphaned_process_groups)
+        self.cargo_incremental_quarantine = cargo_incremental_quarantine
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -169,6 +176,7 @@ class HarnessMemoryLimits:
     dynamic_total_rss: bool = False
     dynamic_global_rss: bool = False
     dynamic_child_rlimit: bool = False
+    interactive_budget: bool = False
     max_process_rss_kb: int = field(init=False, repr=False)
     max_total_rss_kb: int = field(init=False, repr=False)
     max_global_rss_kb: int = field(init=False, repr=False)
@@ -346,6 +354,40 @@ def _clamp_hard_limit(value: float, hard_limit_gb: float) -> float:
     return min(value, hard_limit_gb)
 
 
+def _codex_interactive_shell(source: Mapping[str, str]) -> bool:
+    if source.get("CODEX_SHELL", "").strip() == "1":
+        return True
+    origin = source.get("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "")
+    if "Codex" in origin:
+        return True
+    return False
+
+
+def _cap_dynamic_interactive_budget(
+    *,
+    source: Mapping[str, str],
+    process_override: float | None,
+    total_override: float | None,
+    global_override: float | None,
+    process_gb: float,
+    total_gb: float,
+    global_gb: float,
+) -> tuple[float, float, float, bool]:
+    if not _codex_interactive_shell(source):
+        return process_gb, total_gb, global_gb, False
+    capped = False
+    if process_override is None:
+        process_gb = min(process_gb, CODEX_INTERACTIVE_MAX_PROCESS_RSS_GB)
+        capped = True
+    if total_override is None:
+        total_gb = min(total_gb, CODEX_INTERACTIVE_MAX_TOTAL_RSS_GB)
+        capped = True
+    if global_override is None:
+        global_gb = min(global_gb, CODEX_INTERACTIVE_MAX_GLOBAL_RSS_GB)
+        capped = True
+    return process_gb, total_gb, global_gb, capped
+
+
 def enabled_from_env(
     prefix: str,
     env: Mapping[str, str] | None = None,
@@ -401,6 +443,17 @@ def limits_from_env(
         if global_override is None
         else global_override
     )
+    process_gb, total_gb, global_gb, interactive_budget = (
+        _cap_dynamic_interactive_budget(
+            source=source,
+            process_override=process_override,
+            total_override=total_override,
+            global_override=global_override,
+            process_gb=process_gb,
+            total_gb=total_gb,
+            global_gb=global_gb,
+        )
+    )
     global_gb = _clamp_hard_limit(
         global_gb,
         min(HARD_GLOBAL_RSS_LIMIT_GB, adaptive_budget.max_global_rss_gb),
@@ -455,6 +508,7 @@ def limits_from_env(
         dynamic_total_rss=total_override is None,
         dynamic_global_rss=global_override is None,
         dynamic_child_rlimit=child_rlimit_override is None,
+        interactive_budget=interactive_budget,
     )
 
 
@@ -470,6 +524,7 @@ def limits_summary(limits: HarnessMemoryLimits) -> dict[str, object]:
         "dynamic_total_rss": limits.dynamic_total_rss,
         "dynamic_global_rss": limits.dynamic_global_rss,
         "dynamic_child_rlimit": limits.dynamic_child_rlimit,
+        "interactive_budget": limits.interactive_budget,
     }
 
 
@@ -480,6 +535,7 @@ def limits_status_line(limits: HarnessMemoryLimits) -> str:
         f"process={limits.max_process_rss_gb:.2f}GB "
         f"tree={limits.max_total_rss_gb:.2f}GB "
         f"global={limits.max_global_rss_gb:.2f}GB "
+        f"interactive={limits.interactive_budget} "
         f"dynamic={limits.dynamic_global_rss}"
     )
 
@@ -813,6 +869,9 @@ def _append_guarded_command_profile(
     orphaned_process_groups: Sequence[int],
     peak: memory_guard.RssViolation | None = None,
     peak_total: memory_guard.RssViolation | None = None,
+    cargo_incremental_quarantine: (
+        memory_guard.CargoIncrementalQuarantine | None
+    ) = None,
 ) -> tuple[Path, str | None]:
     source = _effective_env(env)
     path = command_profile_log_path(source)
@@ -855,6 +914,11 @@ def _append_guarded_command_profile(
         "peak": _rss_record_payload(peak),
         "peak_total": _rss_record_payload(peak_total),
         "orphaned_process_groups": list(orphaned_process_groups),
+        "cargo_incremental_quarantine": (
+            memory_guard._cargo_incremental_quarantine_payload(
+                cargo_incremental_quarantine
+            )
+        ),
         "limit_at_violation": (
             None
             if limit_at_violation is None
@@ -1048,6 +1112,22 @@ def _prune_stale_repo_processes(
                     accounted_rss_kb=accounted_rss_kb,
                 ),
                 "killed_at": killed_at,
+                "kill_scope": "repo",
+                "killer_label": label,
+                "killer_pid": os.getpid(),
+                "killer_session_id": os.environ.get("MOLT_SESSION_ID", ""),
+                "victim_pgid": violation.pgid,
+                "victim_command": violation.command,
+                "owner_match_reason": "stale_orphan_repo_scope",
+                "scope_to_current_tree": False,
+                "claim_status": "claimed",
+                "termination": {
+                    "attempted": True,
+                    "signal": {"signal": signal.SIGTERM, "name": "SIGTERM"},
+                    "fallback_signal": {"signal": signal.SIGKILL, "name": "SIGKILL"},
+                    "grace_sec": 0.25,
+                    "rss_triggered": False,
+                },
                 "action": (
                     "terminated stale orphaned repo-scoped Molt process group "
                     "before launching a guarded command"
@@ -1108,6 +1188,7 @@ def guarded_completed_process(
     encoding: str = "utf-8",
     errors: str = "replace",
 ) -> GuardedCompletedProcess:
+    env = memory_guard.test_custody_launch_env(command, environ=env, cwd=cwd)
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing interpreter against the parent cwd before
     # memory_guard.run_guarded hands it to the child spawn boundary.
@@ -1141,6 +1222,7 @@ def guarded_completed_process(
             child_rlimit_kb=resolved_limits.current_child_rlimit_kb(env),
             input=input,
             stream=stream,
+            text=text,
             adaptive_budget_provider=(
                 lambda accounted: memory_guard.adaptive_memory_budget(
                     resolved_limits.adaptive_prefix,
@@ -1160,35 +1242,51 @@ def guarded_completed_process(
             encoding=encoding,
             errors=errors,
         )
-    stderr = guarded.stderr or ""
+    stderr: str | bytes = guarded.stderr or ("" if text else b"")
     incident_at = _utc_timestamp()
     if guarded.violation is not None:
-        stderr += _guard_stderr_message(
-            guarded.violation,
-            resolved_limits,
-            guarded.limit_at_violation,
-            prefix=prefix,
-            elapsed_s=guarded.elapsed_s,
-            killed_at=incident_at,
+        stderr = memory_guard._append_guard_message(
+            stderr,
+            _guard_stderr_message(
+                guarded.violation,
+                resolved_limits,
+                guarded.limit_at_violation,
+                prefix=prefix,
+                elapsed_s=guarded.elapsed_s,
+                killed_at=incident_at,
+            ),
+            text=text,
         )
     elif guarded.timed_out:
-        stderr += _guard_timeout_message(
-            prefix=prefix,
-            timeout=timeout,
-            elapsed_s=guarded.elapsed_s,
-            killed_at=incident_at,
+        stderr = memory_guard._append_guard_message(
+            stderr,
+            _guard_timeout_message(
+                prefix=prefix,
+                timeout=timeout,
+                elapsed_s=guarded.elapsed_s,
+                killed_at=incident_at,
+            ),
+            text=text,
         )
     else:
-        stderr += _guard_exit_signal_message(
-            guarded.returncode,
-            elapsed_s=guarded.elapsed_s,
-            observed_at=incident_at,
+        stderr = memory_guard._append_guard_message(
+            stderr,
+            _guard_exit_signal_message(
+                guarded.returncode,
+                elapsed_s=guarded.elapsed_s,
+                observed_at=incident_at,
+            ),
+            text=text,
         )
     if guarded.orphaned_process_groups:
-        stderr += _guard_orphan_cleanup_message(
-            guarded.orphaned_process_groups,
-            elapsed_s=guarded.elapsed_s,
-            killed_at=incident_at,
+        stderr = memory_guard._append_guard_message(
+            stderr,
+            _guard_orphan_cleanup_message(
+                guarded.orphaned_process_groups,
+                elapsed_s=guarded.elapsed_s,
+                killed_at=incident_at,
+            ),
+            text=text,
         )
     if (
         guarded.violation is not None
@@ -1196,13 +1294,17 @@ def guarded_completed_process(
         or bool(guarded.orphaned_process_groups)
         or memory_guard.exit_signal_payload(guarded.returncode) is not None
     ):
-        stderr += _guard_repro_message(
-            command=command,
-            cwd=cwd,
-            env=env,
-            limits=resolved_limits,
-            timeout=timeout,
-            prefix=prefix,
+        stderr = memory_guard._append_guard_message(
+            stderr,
+            _guard_repro_message(
+                command=command,
+                cwd=cwd,
+                env=env,
+                limits=resolved_limits,
+                timeout=timeout,
+                prefix=prefix,
+            ),
+            text=text,
         )
     _profile_path, profile_error = _append_guarded_command_profile(
         command=command,
@@ -1219,9 +1321,10 @@ def guarded_completed_process(
         orphaned_process_groups=guarded.orphaned_process_groups,
         peak=guarded.peak,
         peak_total=guarded.peak_total,
+        cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
     )
     if profile_error:
-        stderr += profile_error
+        stderr = memory_guard._append_guard_message(stderr, profile_error, text=text)
     return GuardedCompletedProcess(
         list(command),
         guarded.returncode,
@@ -1232,33 +1335,8 @@ def guarded_completed_process(
         timed_out=guarded.timed_out,
         limit_at_violation=guarded.limit_at_violation,
         orphaned_process_groups=guarded.orphaned_process_groups,
+        cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
     )
-
-
-def _guard_violation_bytes_message(
-    violation: memory_guard.RssViolation,
-    limit_gb: float | None,
-    *,
-    elapsed_s: float | None,
-) -> bytes:
-    rss_gb = violation.rss_kb / (1024 * 1024)
-    scope = getattr(violation, "scope", "process")
-    limit = "unknown" if limit_gb is None else f"{limit_gb:.2f}GB"
-    command = str(getattr(violation, "command", "")).strip()
-    killed_at = _utc_timestamp()
-    message = (
-        "\n"
-        "molt memory guard: RSS limit exceeded; terminated the tracked process "
-        "tree to prevent orphaned Molt subprocesses: "
-        f"killed_at={killed_at} elapsed={_elapsed_text(elapsed_s)} "
-        f"scope={scope} pid={violation.pid} rss={rss_gb:.2f}GB limit={limit}"
-        + (f" command={command}" if command else "")
-        + "\n"
-        "molt memory guard: next action: inspect child logs and allocations; "
-        "lower parallelism/input size, or raise the relevant *_MAX_* RSS limit "
-        "if the workload is expected.\n"
-    )
-    return message.encode("utf-8", errors="replace")
 
 
 def _subprocess_keepalive_interval_secs(
@@ -1294,34 +1372,16 @@ def _subprocess_keepalive_interval_secs(
     return value if value > 0 else None
 
 
-def _terminate_guarded_bytes_process(
-    proc: subprocess.Popen[bytes],
-    tracker: memory_guard.ProcessTreeTracker | None,
-    *,
-    grace: float,
-) -> None:
-    if tracker is None:
-        proc.kill()
-        return
-    samples = memory_guard.sample_processes()
-    watched = tracker.update(samples)
-    memory_guard.terminate_watched_processes(
-        proc.pid,
-        samples=samples,
-        watched=watched,
-        grace=grace,
-    )
+def _guard_output_bytes(value: str | bytes | None) -> bytes:
+    if value is None:
+        return b""
+    if isinstance(value, bytes):
+        return value
+    return value.encode("utf-8", errors="replace")
 
 
-def _read_tempfile_bytes(handle: object) -> bytes:
-    if not hasattr(handle, "seek") or not hasattr(handle, "read"):
-        return b""
-    try:
-        handle.seek(0)  # type: ignore[attr-defined]
-        data = handle.read()  # type: ignore[attr-defined]
-    except (OSError, ValueError):
-        return b""
-    return data if isinstance(data, bytes) else bytes(str(data), "utf-8")
+def _append_guard_bytes(stderr: bytes, message: str) -> bytes:
+    return stderr + message.encode("utf-8", errors="replace")
 
 
 def guarded_completed_process_to_tempfiles(
@@ -1344,194 +1404,139 @@ def guarded_completed_process_to_tempfiles(
 
     resolved_limits = limits or limits_from_env(prefix, env)
     # Resolve a relative path-bearing executable against the parent cwd before
-    # Popen, which would otherwise exec it relative to the child `cwd=`.
+    # memory_guard.run_guarded hands it to the child spawn boundary.
     command = memory_guard._resolve_relative_executable(command)
-    popen_kwargs: dict[str, object] = {}
-    popen_kwargs.update(batch_process_group_kwargs(resolved_limits, env=env))
-
-    sentinel_scope = _auto_repo_sentinel(
+    sentinel_is_active = _sentinel_active() or _external_repo_sentinel_active(
+        prefix,
+        env,
+    )
+    cleanup_tracked_orphans = not sentinel_is_active
+    with _auto_repo_sentinel(
         prefix=prefix,
         env=env,
         limits=resolved_limits,
-    )
-    with sentinel_scope:
-        with (
-            tempfile.TemporaryFile() as stdout_file,
-            tempfile.TemporaryFile() as stderr_file,
-        ):
-            proc = subprocess.Popen(
-                list(command),
-                stdout=stdout_file,
-                stderr=stderr_file,
+    ):
+        keepalive_interval = (
+            _subprocess_keepalive_interval_secs(env, prefix=prefix)
+            if progress_label is not None
+            else None
+        )
+        guarded = memory_guard.run_guarded(
+            list(command),
+            max_rss_kb=resolved_limits.max_process_rss_kb,
+            max_total_rss_kb=resolved_limits.max_total_rss_kb,
+            poll_interval=resolved_limits.poll_interval,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            capture_output=True,
+            child_rlimit_kb=resolved_limits.current_child_rlimit_kb(env),
+            input=input,
+            adaptive_budget_provider=(
+                lambda accounted: memory_guard.adaptive_memory_budget(
+                    resolved_limits.adaptive_prefix,
+                    _effective_env(env),
+                    accounted_rss_kb=accounted,
+                )
+            ),
+            dynamic_process_rss=resolved_limits.dynamic_process_rss,
+            dynamic_total_rss=resolved_limits.dynamic_total_rss,
+            cleanup_orphans=cleanup_tracked_orphans,
+            progress_label=progress_label,
+            keepalive_interval=keepalive_interval,
+            text=False,
+        )
+    stdout = _guard_output_bytes(guarded.stdout)
+    stderr = _guard_output_bytes(guarded.stderr)
+    incident_at = _utc_timestamp()
+    if guarded.violation is not None:
+        stderr = _append_guard_bytes(
+            stderr,
+            _guard_stderr_message(
+                guarded.violation,
+                resolved_limits,
+                guarded.limit_at_violation,
+                prefix=prefix,
+                elapsed_s=guarded.elapsed_s,
+                killed_at=incident_at,
+            ),
+        )
+    elif guarded.timed_out:
+        stderr = _append_guard_bytes(
+            stderr,
+            _guard_timeout_message(
+                prefix=prefix,
+                timeout=timeout,
+                elapsed_s=guarded.elapsed_s,
+                killed_at=incident_at,
+            ),
+        )
+    else:
+        stderr = _append_guard_bytes(
+            stderr,
+            _guard_exit_signal_message(
+                guarded.returncode,
+                elapsed_s=guarded.elapsed_s,
+                observed_at=incident_at,
+            ),
+        )
+    if guarded.orphaned_process_groups:
+        stderr = _append_guard_bytes(
+            stderr,
+            _guard_orphan_cleanup_message(
+                guarded.orphaned_process_groups,
+                elapsed_s=guarded.elapsed_s,
+                killed_at=incident_at,
+            ),
+        )
+    if (
+        guarded.violation is not None
+        or guarded.timed_out
+        or bool(guarded.orphaned_process_groups)
+        or memory_guard.exit_signal_payload(guarded.returncode) is not None
+    ):
+        stderr = _append_guard_bytes(
+            stderr,
+            _guard_repro_message(
+                command=command,
                 cwd=cwd,
-                env=dict(env) if env is not None else None,
-                stdin=subprocess.PIPE if input is not None else None,
-                **popen_kwargs,
-            )
-            tracker = memory_guard.ProcessTreeTracker(proc.pid)
-            if input is not None and proc.stdin is not None:
-                try:
-                    proc.stdin.write(input)
-                finally:
-                    proc.stdin.close()
-            keepalive_interval = (
-                _subprocess_keepalive_interval_secs(env)
-                if progress_label is not None
-                else None
-            )
-            started = time.monotonic()
-            next_keepalive = (
-                started + keepalive_interval if keepalive_interval is not None else None
-            )
-            next_guard_sample = started + max(0.01, resolved_limits.poll_interval)
-            while True:
-                now = time.monotonic()
-                remaining = None if timeout is None else timeout - (now - started)
-                if remaining is not None and remaining <= 0:
-                    _terminate_guarded_bytes_process(proc, tracker, grace=0.0)
-                    assert timeout is not None
-                    wait_s = memory_guard.termination_wait_seconds(env)
-                    try:
-                        proc.wait(timeout=wait_s)
-                    except subprocess.TimeoutExpired as exc:
-                        stderr_file.write(
-                            (
-                                "\n"
-                                "molt memory guard: termination wait expired; "
-                                "tracked tempfile command did not fully exit "
-                                "after SIGTERM/SIGKILL: "
-                                f"killed_at={_utc_timestamp()} "
-                                f"elapsed={_elapsed_text(now - started)} "
-                                f"pid={proc.pid} wait={wait_s:.2f}s\n"
-                            ).encode("utf-8", errors="replace")
-                        )
-                        stderr_file.flush()
-                        exc.stderr = _read_tempfile_bytes(stderr_file)
-                        exc.stdout = _read_tempfile_bytes(stdout_file)
-                        raise exc
-                    exc = subprocess.TimeoutExpired(list(command), timeout)
-                    exc.stderr = _read_tempfile_bytes(stderr_file)
-                    exc.stdout = _read_tempfile_bytes(stdout_file)
-                    raise exc
-                wait_timeout = remaining
-                if next_keepalive is not None:
-                    keepalive_wait = max(0.0, next_keepalive - now)
-                    wait_timeout = (
-                        keepalive_wait
-                        if wait_timeout is None
-                        else min(wait_timeout, keepalive_wait)
-                    )
-                if next_guard_sample is not None:
-                    guard_wait = max(0.0, next_guard_sample - now)
-                    wait_timeout = (
-                        guard_wait
-                        if wait_timeout is None
-                        else min(wait_timeout, guard_wait)
-                    )
-                try:
-                    returncode = proc.wait(timeout=wait_timeout)
-                    break
-                except subprocess.TimeoutExpired:
-                    now = time.monotonic()
-                    if next_guard_sample is not None and now >= next_guard_sample:
-                        assert tracker is not None
-                        samples = memory_guard.sample_processes()
-                        watched = tracker.update(samples)
-                        observed_total = memory_guard.total_rss(
-                            samples,
-                            root_pid=proc.pid,
-                            watched=watched,
-                        )
-                        current_limits = resolved_limits.current_memory_limits(
-                            env,
-                            accounted_rss_kb=(
-                                0 if observed_total is None else observed_total.rss_kb
-                            ),
-                        )
-                        violation = memory_guard.find_rss_violation(
-                            samples,
-                            root_pid=proc.pid,
-                            max_rss_kb=current_limits.max_process_rss_kb,
-                            max_total_rss_kb=current_limits.max_total_rss_kb,
-                            watched=watched,
-                        )
-                        if violation is not None:
-                            limit_gb = (
-                                current_limits.max_total_rss_gb
-                                if getattr(violation, "scope", "") == "process_tree"
-                                else current_limits.max_process_rss_gb
-                            )
-                            stderr_file.write(
-                                _guard_violation_bytes_message(
-                                    violation,
-                                    limit_gb,
-                                    elapsed_s=now - started,
-                                )
-                            )
-                            stderr_file.write(
-                                _guard_repro_message(
-                                    command=command,
-                                    cwd=cwd,
-                                    env=env,
-                                    limits=resolved_limits,
-                                    timeout=timeout,
-                                    prefix=prefix,
-                                ).encode("utf-8", errors="replace")
-                            )
-                            stderr_file.flush()
-                            _terminate_guarded_bytes_process(
-                                proc,
-                                tracker,
-                                grace=0.25,
-                            )
-                            with contextlib.suppress(Exception):
-                                proc.wait(timeout=1.0)
-                            returncode = memory_guard.GUARD_RETURN_CODE
-                            break
-                        next_guard_sample = now + max(
-                            0.01,
-                            resolved_limits.poll_interval,
-                        )
-                        continue
-                    if next_keepalive is not None and now >= next_keepalive:
-                        assert keepalive_interval is not None
-                        elapsed = now - started
-                        print(
-                            f"{progress_label} still running... ({elapsed:.0f}s)",
-                            file=sys.stderr,
-                        )
-                        next_keepalive = now + keepalive_interval
-                        continue
-                    if timeout is not None and now - started >= timeout:
-                        _terminate_guarded_bytes_process(proc, tracker, grace=0.0)
-                        wait_s = memory_guard.termination_wait_seconds(env)
-                        try:
-                            proc.wait(timeout=wait_s)
-                        except subprocess.TimeoutExpired as exc:
-                            stderr_file.write(
-                                (
-                                    "\n"
-                                    "molt memory guard: termination wait expired; "
-                                    "tracked tempfile command did not fully exit "
-                                    "after SIGTERM/SIGKILL: "
-                                    f"killed_at={_utc_timestamp()} "
-                                    f"elapsed={_elapsed_text(now - started)} "
-                                    f"pid={proc.pid} wait={wait_s:.2f}s\n"
-                                ).encode("utf-8", errors="replace")
-                            )
-                            stderr_file.flush()
-                            exc.stderr = _read_tempfile_bytes(stderr_file)
-                            exc.stdout = _read_tempfile_bytes(stdout_file)
-                            raise exc
-                        exc = subprocess.TimeoutExpired(list(command), timeout)
-                        exc.stderr = _read_tempfile_bytes(stderr_file)
-                        exc.stdout = _read_tempfile_bytes(stdout_file)
-                        raise exc
-            stdout_file.seek(0)
-            stderr_file.seek(0)
-            stdout = stdout_file.read()
-            stderr = stderr_file.read()
-    return subprocess.CompletedProcess(list(command), returncode, stdout, stderr)
+                env=env,
+                limits=resolved_limits,
+                timeout=timeout,
+                prefix=prefix,
+            ),
+        )
+    _profile_path, profile_error = _append_guarded_command_profile(
+        command=command,
+        prefix=prefix,
+        cwd=cwd,
+        env=env,
+        limits=resolved_limits,
+        returncode=guarded.returncode,
+        elapsed_s=guarded.elapsed_s,
+        timeout_s=timeout,
+        violation=guarded.violation,
+        timed_out=guarded.timed_out,
+        limit_at_violation=guarded.limit_at_violation,
+        orphaned_process_groups=guarded.orphaned_process_groups,
+        peak=guarded.peak,
+        peak_total=guarded.peak_total,
+        cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
+    )
+    if profile_error:
+        stderr = _append_guard_bytes(stderr, profile_error)
+    return GuardedCompletedProcess(
+        list(command),
+        guarded.returncode,
+        stdout,
+        stderr,
+        elapsed_s=guarded.elapsed_s,
+        violation=guarded.violation,
+        timed_out=guarded.timed_out,
+        limit_at_violation=guarded.limit_at_violation,
+        orphaned_process_groups=guarded.orphaned_process_groups,
+        cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
+    )
 
 
 def batch_process_group_kwargs(
@@ -1610,6 +1615,7 @@ class RepoProcessMemorySentinel:
         drain_until_clean_sec: float = 0.3,
         drain_max_runtime_sec: float = 5.0,
         suppress_auto_guard: bool = True,
+        scope_to_current_tree: bool = True,
         on_scan: Callable[
             [
                 Sequence[process_sentinel.ProcessGroup],
@@ -1638,10 +1644,12 @@ class RepoProcessMemorySentinel:
         self._drain_until_clean_sec = max(0.0, drain_until_clean_sec)
         self._drain_max_runtime_sec = max(0.0, drain_max_runtime_sec)
         self._suppress_auto_guard = suppress_auto_guard
+        self._scope_to_current_tree = scope_to_current_tree
         self._on_scan = on_scan
         self._on_violation = on_violation
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._tree_tracker = memory_guard.ProcessTreeTracker(os.getpid())
         self._baseline_pgids: set[int] = set()
         self._observed_pgids: set[int] = set()
         self._terminated_pgids: set[int] = set()
@@ -1688,6 +1696,81 @@ class RepoProcessMemorySentinel:
 
     def _elapsed_s(self) -> float:
         return max(0.0, time.monotonic() - self._started_monotonic)
+
+    def _owned_pgids_from_samples(
+        self,
+        samples: Mapping[int, memory_guard.ProcessSample],
+    ) -> set[int]:
+        if not self._scope_to_current_tree:
+            return set()
+        self._tree_tracker.update(samples)
+        tracked_pgids = set(self._tree_tracker.known_pgids or set())
+        if not tracked_pgids:
+            return set()
+
+        owned: set[int] = set()
+        known_pids = set(self._tree_tracker.known_pids or set())
+        for sample in samples.values():
+            sample_pgid = sample.pgid if sample.pgid is not None else sample.pid
+            if sample_pgid not in tracked_pgids:
+                continue
+            if sample.ppid in known_pids:
+                owned.add(sample_pgid)
+                continue
+            if process_sentinel.is_molt_process(
+                sample,
+                root=self._repo_root,
+                self_pid=os.getpid(),
+            ):
+                owned.add(sample_pgid)
+        return owned
+
+    def _termination_attribution(
+        self,
+        *,
+        victim_pgid: int,
+        victim_command: str,
+        grace_sec: float,
+        rss_triggered: bool,
+        attempted: bool,
+        claim_status: str,
+    ) -> dict[str, object]:
+        kill_scope = "current-tree" if self._scope_to_current_tree else "repo"
+        payload: dict[str, object] = {
+            "kill_scope": kill_scope,
+            "victim_pgid": victim_pgid,
+            "victim_command": victim_command,
+            "owner_match_reason": (
+                "current_process_tree" if self._scope_to_current_tree else "repo_scope"
+            ),
+            "scope_to_current_tree": self._scope_to_current_tree,
+            "claim_status": claim_status,
+            "termination": {
+                "attempted": attempted,
+                "signal": {"signal": signal.SIGTERM, "name": "SIGTERM"},
+                "fallback_signal": {"signal": signal.SIGKILL, "name": "SIGKILL"},
+                "grace_sec": grace_sec,
+                "rss_triggered": rss_triggered,
+            },
+        }
+        session_id = os.environ.get("MOLT_SESSION_ID", "")
+        if attempted:
+            payload.update(
+                {
+                    "killer_label": self._label,
+                    "killer_pid": os.getpid(),
+                    "killer_session_id": session_id,
+                }
+            )
+        else:
+            payload.update(
+                {
+                    "observer_label": self._label,
+                    "observer_pid": os.getpid(),
+                    "observer_session_id": session_id,
+                }
+            )
+        return payload
 
     def _run(self) -> None:
         while not self._stop.wait(self._limits.poll_interval):
@@ -1737,12 +1820,16 @@ class RepoProcessMemorySentinel:
     ) -> list[process_sentinel.ProcessGroup]:
         samples = memory_guard.sample_processes()
         self._record_skipped_protected_groups(samples)
+        owned_pgids = self._owned_pgids_from_samples(samples)
+        known_pgids = set(self._observed_pgids)
+        known_pgids.update(owned_pgids)
         groups = process_sentinel.process_groups(
             samples,
             root=self._repo_root,
             self_pid=os.getpid(),
             self_pgid=os.getpgrp(),
-            known_pgids=self._observed_pgids,
+            known_pgids=known_pgids,
+            owned_pgids=owned_pgids if self._scope_to_current_tree else None,
         )
         if update_observed:
             self._observed_pgids.update(group.pgid for group in groups)
@@ -1824,6 +1911,8 @@ class RepoProcessMemorySentinel:
                 claimed = False
                 if violation.pgid not in self._terminated_pgids:
                     claimed = _claim_terminated_pgid(violation.pgid)
+                claim_status = "claimed" if claimed else "already_claimed"
+                observed_at = _utc_timestamp()
                 if claimed:
                     action = (
                         "terminated process group to prevent orphaned Molt "
@@ -1840,7 +1929,7 @@ class RepoProcessMemorySentinel:
                     "violation": process_sentinel.violation_payload(violation),
                     "limits": memory_guard.memory_limits_payload(current_limits),
                     "guard_started_at": self._started_at,
-                    "killed_at": _utc_timestamp(),
+                    "observed_at": observed_at,
                     "elapsed_s": self._elapsed_s(),
                     "global_total_kb": global_total_kb,
                     "global_total_gb": global_total_kb / (1024 * 1024),
@@ -1854,8 +1943,18 @@ class RepoProcessMemorySentinel:
                         label=self._label,
                         accounted_rss_kb=accounted_rss_kb,
                     ),
+                    **self._termination_attribution(
+                        victim_pgid=violation.pgid,
+                        victim_command=violation.command,
+                        grace_sec=0.25,
+                        rss_triggered=True,
+                        attempted=claimed,
+                        claim_status=claim_status,
+                    ),
                     "action": action,
                 }
+                if claimed:
+                    payload["killed_at"] = observed_at
                 self._record(payload)
                 self._notify_violation(violation, current_limits, payload)
                 if not claimed:
@@ -1936,6 +2035,14 @@ class RepoProcessMemorySentinel:
                                 accounted_rss_kb=accounted_rss_kb,
                                 timeout_s=self._drain_max_runtime_sec,
                             ),
+                            **self._termination_attribution(
+                                victim_pgid=violation.pgid,
+                                victim_command=violation.command,
+                                grace_sec=self._drain_grace_sec,
+                                rss_triggered=False,
+                                attempted=True,
+                                claim_status="claimed",
+                            ),
                             "action": (
                                 "terminated process group left behind by the guarded "
                                 "scope to prevent orphaned Molt subprocesses; inspect "
@@ -1985,6 +2092,7 @@ def repo_process_sentinel(
     drain_until_clean_sec: float = 0.3,
     drain_max_runtime_sec: float = 5.0,
     suppress_auto_guard: bool = True,
+    scope_to_current_tree: bool = True,
     on_scan: Callable[
         [
             Sequence[process_sentinel.ProcessGroup],
@@ -2014,6 +2122,7 @@ def repo_process_sentinel(
         drain_until_clean_sec=drain_until_clean_sec,
         drain_max_runtime_sec=drain_max_runtime_sec,
         suppress_auto_guard=suppress_auto_guard,
+        scope_to_current_tree=scope_to_current_tree,
         on_scan=on_scan,
         on_violation=on_violation,
     )

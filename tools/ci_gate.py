@@ -484,6 +484,7 @@ def _apply_canonical_env_defaults(env: dict[str, str]) -> None:
     ext_root = Path(env.setdefault("MOLT_EXT_ROOT", str(ROOT))).expanduser()
     cargo_target_dir = env.setdefault("CARGO_TARGET_DIR", str(ext_root / "target"))
     env.setdefault("MOLT_DIFF_CARGO_TARGET_DIR", cargo_target_dir)
+    env.setdefault("CARGO_INCREMENTAL", "0")
     env.setdefault("MOLT_CACHE", str(ext_root / ".molt_cache"))
     env.setdefault("MOLT_DIFF_ROOT", str(ext_root / "tmp" / "diff"))
     env.setdefault("MOLT_DIFF_TMPDIR", str(ext_root / "tmp"))

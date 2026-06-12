@@ -174,6 +174,12 @@ Read these first instead of rediscovering project structure:
     `21_decomposition_program.md`, `25_op_kind_registry.md`,
     `27_perceus_borrow_inference.md`, `44_frontend-architecture-f2.md`, and
     `45_exception_region_ownership.md` are foundation routing docs, not proof.
+  - `docs/design/parallel_build_architecture.md` and
+    `docs/architecture/compilation-model.md` route crate extraction,
+    compiler-throughput, incremental-build/cache, runtime leaf-crate, backend
+    native-crate, and god-file decomposition work. Use these before touching
+    crate boundaries, Cargo profiles, `molt-runtime` leaf crates, backend
+    extraction, or shared build-cache policy.
 	  - `docs/architecture/gpu-primitive-stack.md`,
 	    `docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md`, and
 	    `docs/design/foundation/16_cpython-surface-stdlib-gpu-gap-audit.md` route
@@ -280,6 +286,7 @@ Read these first instead of rediscovering project structure:
   - `tools/dev.py clean-artifacts --apply`: dev-wrapper alias for the same cleanup engine.
 - Notes:
   - `CARGO_TARGET_DIR` also relocates Molt’s shared build state under `<CARGO_TARGET_DIR>/.molt_state/` (locks, fingerprints, daemon state). Keep that state in the canonical target root rather than inventing parallel targets.
+  - Cargo incremental quarantine receipts under `target/.molt_state/quarantine/cargo_incremental/` are bounded ignored incident evidence: the guard writes and prunes them during normal retention, and explicit `molt clean --apply` removes them with other allowlisted target artifacts.
   - `molt clean` and `tools/dev.py clean-artifacts` both route through `tools/artifact_cleanup.py`; tracked files, dirty partner work, `.venv/`, `.omx/`, `third_party/`, fuzz corpora, and test corpora are excluded from default cleanup.
   - Keep `.gitignore` and `tools/artifact_cleanup.py` pathspecs in sync whenever a new canonical artifact root is added.
   - If a workflow would generate unusually large artifacts, put them under the canonical root for that class and clean them up once the evidence is no longer needed.
@@ -295,7 +302,10 @@ Read these first instead of rediscovering project structure:
 
 ## Default Execution Mode (Non-Negotiable)
 - Default to multi-hour autonomous execution behavior: work in long uninterrupted bursts, batch multiple related product slices per turn, and use minimal worker orchestration.
-- Proactively clean stale Molt-owned worker groups when needed to keep execution stable and deterministic, but never terminate the Codex app, app-server, renderer, node-repl, or ancestor/control-plane process group as cleanup collateral.
+- Proactively clean stale Molt-owned worker groups when needed to keep execution
+  stable and deterministic, but never terminate Claude, the Codex app,
+  app-server, renderer, node-repl, or any ancestor/host control-plane process
+  group as cleanup collateral.
 - Do not stop at neat local checkpoints. Only stop for a real blocker, a safety constraint, or when remote proof on tertiary is the next required step.
 - Do not emit tranche summaries after every small fix. Keep going until a substantial bundled burndown is complete.
 
@@ -709,7 +719,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - NON-NEGOTIABLE: Differential work MUST use canonical artifact roots (`CARGO_TARGET_DIR`, `MOLT_DIFF_ROOT`, `MOLT_DIFF_TMPDIR`, `MOLT_CACHE`) and must not spill ad hoc artifacts elsewhere in the repo.
 - NON-NEGOTIABLE: Differential memory profiling is default-on; set `MOLT_DIFF_MEASURE_RSS=0` only for an explicit local investigation.
 - NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in [tests/differential/INDEX.md](tests/differential/INDEX.md).
-- NON-NEGOTIABLE: Use the adaptive diff memory guard and adaptive per-process OS rlimit; direct pytest and harnessed test runs must not bypass RSS custody, and cleanup must never kill Codex/host control-plane process groups.
+- NON-NEGOTIABLE: Use the adaptive diff memory guard and adaptive per-process OS rlimit; direct pytest and harnessed test runs must not bypass RSS custody, and cleanup must never kill Claude, Codex, or other host control-plane process groups.
   - macOS/Linux: let `tests/molt_diff.py` apply its adaptive child limit by default; use `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` only for a deliberate narrower cap, or `MOLT_DIFF_RLIMIT_GB=0` only for an explicit local investigation.
   - If the adaptive limit is hit or memory pressure occurs, inspect the guard telemetry, reduce parallelism (`--jobs 2` or `--jobs 1`) only as a containment step, and fix the underlying allocation growth.
 - Differential artifacts can be redirected to an external volume to avoid local disk pressure.
@@ -737,11 +747,11 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   - Optional: set `MOLT_DIFF_DYLD_LOCAL_FALLBACK=1|0` to enable/disable local `/tmp` retry + quarantine lanes for dyld incidents. Default is `1` on macOS (`0` elsewhere).
   - Optional: set `MOLT_DIFF_DYLD_LOCAL_ROOT=<abs path>` to override the local dyld quarantine root (default: `/tmp/molt_diff_dyld`).
   - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache` in diff runs. Default is cache-enabled on all platforms; dyld guard/retry can force no-cache for the incident-scoped retry.
-  - Optional cleanup for interrupted/crashed sessions before starting a new long run: `ps -axo pid,command | rg "tests/molt_diff.py"` then `kill -TERM <pid>` (and `kill -KILL <pid>` if needed). Keep one supervising diff run per shared target to minimize contention and memory spikes.
+  - Optional cleanup for interrupted/crashed sessions before starting a new long run: use the custody-aware sentinel, for example `python3 tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`. Keep one supervising diff run per shared target to minimize contention and memory spikes.
 - Example (configured artifact root + shared cache + temp root): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
 - Example (RSS metrics): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
   - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in [tests/differential/INDEX.md](tests/differential/INDEX.md)).
-  - Example (kill on blowup): `kill -TERM <PID>` then `kill -KILL <PID>` if it does not exit quickly; log the abort + last-known RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md).
+  - Example (kill on blowup): stop the Molt-owned harness through the memory guard or custody-aware sentinel, then log the abort plus last-known RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md). Raw PID kills are last-resort triage only after proving the process is Molt-owned and outside Claude/Codex/host control-plane groups.
 - Example (multi-target list, auto-parallel): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
   - Example (parallel full sweep + live log + aggregate log + per-test logs):
     `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 8 --live --log-file ${ARTIFACT_ROOT}/tmp/diff_live.log --log-aggregate ${ARTIFACT_ROOT}/tmp/diff_full.log --log-dir ${ARTIFACT_ROOT}/tmp/diff_logs tests/differential`

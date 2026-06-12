@@ -1583,7 +1583,7 @@ impl ScalarRepresentationPlan {
         while changed {
             changed = propagate_store_var_targets_in(func_ir, &mut lane_outputs);
             for op in &func_ir.ops {
-                if op.kind == "store_var" {
+                if matches!(op.kind.as_str(), "store_var" | "delete_var") {
                     continue;
                 }
                 let Some(out) = op.out.as_ref() else {
@@ -1656,6 +1656,7 @@ impl ScalarRepresentationPlan {
         bool_like: &BTreeSet<String>,
         float_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
+        let delete_targets = delete_var_target_names(func_ir);
         let bounded_i64_names = compute_i64_interval_facts(func_ir);
         let int_unsafe_outputs: BTreeSet<String> = func_ir
             .ops
@@ -1702,6 +1703,7 @@ impl ScalarRepresentationPlan {
                 && !param_name_set.contains(name)
                 && !int_unsafe_outputs.contains(name)
                 && !vars_with_non_int_defs.contains(name)
+                && !delete_targets.contains(name)
                 && !float_like.contains(name)
         };
         let mut candidates: BTreeSet<String> =
@@ -1730,7 +1732,7 @@ impl ScalarRepresentationPlan {
                 }
             }
             for op in &func_ir.ops {
-                if op.kind == "store_var" {
+                if matches!(op.kind.as_str(), "store_var" | "delete_var") {
                     continue;
                 }
                 let Some(out) = op.out.as_ref() else {
@@ -1758,15 +1760,16 @@ impl ScalarRepresentationPlan {
     ) -> BTreeSet<String> {
         let mut non_int = BTreeSet::new();
         for op in &func_ir.ops {
-            if op.kind == "store_var" {
+            if matches!(op.kind.as_str(), "store_var" | "delete_var") {
                 let target = op.var.as_ref().or(op.out.as_ref());
                 let source = op.args.as_ref().and_then(|a| a.first());
-                if let (Some(t), Some(s)) = (target, source)
-                    && !int_like.contains(s)
-                    && !bool_like.contains(s)
-                    && !extra_int_like.contains(s)
-                {
-                    non_int.insert(t.clone());
+                if let Some(t) = target {
+                    let source_is_int = source.is_some_and(|s| {
+                        int_like.contains(s) || bool_like.contains(s) || extra_int_like.contains(s)
+                    });
+                    if !source_is_int {
+                        non_int.insert(t.clone());
+                    }
                 }
             }
             if let Some(out) = op.out.as_ref() {
@@ -1791,6 +1794,7 @@ impl ScalarRepresentationPlan {
         float_like: &BTreeSet<String>,
         str_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
+        let delete_targets = delete_var_target_names(func_ir);
         let bool_unsafe_outputs: BTreeSet<String> = func_ir
             .ops
             .iter()
@@ -1807,6 +1811,7 @@ impl ScalarRepresentationPlan {
                 && !param_name_set.contains(name)
                 && !bool_unsafe_outputs.contains(name)
                 && !vars_with_non_bool_defs.contains(name)
+                && !delete_targets.contains(name)
                 && !int_like.contains(name)
                 && !float_like.contains(name)
                 && !str_like.contains(name)
@@ -1822,7 +1827,7 @@ impl ScalarRepresentationPlan {
                 }
             }
             for op in &func_ir.ops {
-                if op.kind == "store_var" {
+                if matches!(op.kind.as_str(), "store_var" | "delete_var") {
                     continue;
                 }
                 let Some(out) = op.out.as_ref() else {
@@ -1849,13 +1854,14 @@ impl ScalarRepresentationPlan {
     ) -> BTreeSet<String> {
         let mut non_bool = BTreeSet::new();
         for op in &func_ir.ops {
-            if op.kind == "store_var" {
+            if matches!(op.kind.as_str(), "store_var" | "delete_var") {
                 let target = op.var.as_ref().or(op.out.as_ref());
                 let source = op.args.as_ref().and_then(|a| a.first());
-                if let (Some(t), Some(s)) = (target, source)
-                    && !bool_like.contains(s)
-                {
-                    non_bool.insert(t.clone());
+                if let Some(t) = target {
+                    let source_is_bool = source.is_some_and(|s| bool_like.contains(s));
+                    if !source_is_bool {
+                        non_bool.insert(t.clone());
+                    }
                 }
             }
             if let Some(out) = op.out.as_ref() {
@@ -1920,6 +1926,7 @@ impl ScalarRepresentationPlan {
         int_like: &BTreeSet<String>,
         float_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
+        let delete_targets = delete_var_target_names(func_ir);
         let float_unsafe_outputs: BTreeSet<String> = func_ir
             .ops
             .iter()
@@ -1955,6 +1962,7 @@ impl ScalarRepresentationPlan {
                     && !float_unsafe_outputs.contains(*name)
                     && !int_like.contains(*name)
                     && !vars_with_non_float_defs.contains(*name)
+                    && !delete_targets.contains(*name)
             })
             .cloned()
             .collect()
@@ -1967,13 +1975,14 @@ impl ScalarRepresentationPlan {
     ) -> BTreeSet<String> {
         let mut non_float = BTreeSet::new();
         for op in &func_ir.ops {
-            if op.kind == "store_var" {
+            if matches!(op.kind.as_str(), "store_var" | "delete_var") {
                 let target = op.var.as_ref().or(op.out.as_ref());
                 let source = op.args.as_ref().and_then(|a| a.first());
-                if let (Some(t), Some(s)) = (target, source)
-                    && !float_like.contains(s)
-                {
-                    non_float.insert(t.clone());
+                if let Some(t) = target {
+                    let source_is_float = source.is_some_and(|s| float_like.contains(s));
+                    if !source_is_float {
+                        non_float.insert(t.clone());
+                    }
                 }
             }
             if let Some(out) = op.out.as_ref() {
@@ -2040,6 +2049,13 @@ impl ScalarRepresentationPlan {
                         && self.name_is_slot_scalar(var)
                     {
                         unsafe_set.insert(var.clone());
+                    }
+                }
+                "delete_var" => {
+                    if let Some(target) = op.var.as_ref().or(op.out.as_ref())
+                        && self.name_is_slot_scalar(target)
+                    {
+                        unsafe_set.insert(target.clone());
                     }
                 }
                 _ => {}
@@ -2235,6 +2251,15 @@ fn store_var_targets_all_sources_in(
     targets
         .into_iter()
         .filter_map(|(target, all_sources_proven)| all_sources_proven.then_some(target))
+        .collect()
+}
+
+fn delete_var_target_names(func_ir: &FunctionIR) -> BTreeSet<String> {
+    func_ir
+        .ops
+        .iter()
+        .filter(|op| op.kind == "delete_var")
+        .filter_map(|op| op.var.as_ref().or(op.out.as_ref()).cloned())
         .collect()
 }
 
@@ -3242,7 +3267,7 @@ fn container_constructor_result_ty(kind: &str) -> Option<TirType> {
 }
 
 fn store_var_target_name(op: &OpIR) -> Option<&str> {
-    if op.kind == "store_var" {
+    if matches!(op.kind.as_str(), "store_var" | "delete_var") {
         op.var.as_deref().or(op.out.as_deref())
     } else {
         None
@@ -3250,6 +3275,9 @@ fn store_var_target_name(op: &OpIR) -> Option<&str> {
 }
 
 fn store_var_source_name(op: &OpIR) -> Option<&str> {
+    if op.kind == "delete_var" {
+        return None;
+    }
     op.args
         .as_ref()
         .and_then(|args| args.first().map(String::as_str))
@@ -4828,6 +4856,118 @@ mod tests {
         assert!(
             !is_raw(&repr, acc),
             "a REACHABLE None incoming must keep the phi boxed (MaybeBigInt floor)"
+        );
+    }
+
+    /// SOUNDNESS (native/WASM variable-keyed phi invariant): a loop-header phi
+    /// cannot be carried as raw i64 unless every reachable incoming uses the raw
+    /// carrier. A single reachable heap/DynBox incoming must force the phi to the
+    /// boxed lane, even when the ordinary entry and back-edge values are raw.
+    #[test]
+    fn reachable_heap_incoming_poisons_raw_loop_phi() {
+        let mut func = TirFunction::new("mixed_phi".into(), vec![], TirType::None);
+        let init = func.fresh_value();
+        let acc = func.fresh_value();
+        let cond = func.fresh_value();
+        let step = func.fresh_value();
+        let sum = func.fresh_value();
+        let overflow = func.fresh_value();
+        let heap_value = func.fresh_value();
+
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let heap_pred = func.fresh_block();
+        let exit = func.fresh_block();
+
+        for v in [init, acc, step, sum] {
+            func.value_types.insert(v, TirType::I64);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+        func.value_types.insert(overflow, TirType::Bool);
+        func.value_types.insert(heap_value, TirType::DynBox);
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![tir_cint(init, 0)];
+            entry.terminator = Terminator::CondBranch {
+                cond: init,
+                then_block: header,
+                then_args: vec![init],
+                else_block: heap_pred,
+                else_args: vec![],
+            };
+        }
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: acc,
+                    ty: TirType::I64,
+                }],
+                ops: vec![tir_op(TirOpCode::Lt, vec![acc, init], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    tir_cint(step, 1),
+                    tir_op(TirOpCode::CheckedAdd, vec![acc, step], vec![sum, overflow]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![sum],
+                },
+            },
+        );
+        func.blocks.insert(
+            heap_pred,
+            TirBlock {
+                id: heap_pred,
+                args: vec![],
+                ops: vec![tir_op(TirOpCode::Call, vec![], vec![heap_value])],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![heap_value],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let vr = value_range_for(&func);
+        let repr = repr_by_value_for(&empty_func_ir(), &func, Some(&vr));
+        assert!(
+            is_raw(&repr, sum),
+            "CheckedAdd's wrapping sum remains a valid raw carrier"
+        );
+        assert!(
+            !is_raw(&repr, heap_value),
+            "the heap incoming itself must not be raw"
+        );
+        assert_eq!(
+            repr.get(&acc),
+            Some(&Repr::MaybeBigInt),
+            "a reachable heap incoming must keep the loop phi boxed; otherwise \
+             native/WASM variable-keyed phis can receive raw and heap carriers"
         );
     }
 

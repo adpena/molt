@@ -1,5 +1,33 @@
 # Molt Compilation Model — Production Architecture
 
+Status: target architecture / partially landed (refreshed 2026-06-12).
+The live codebase, `Cargo.toml`, and guarded `cargo metadata` are authoritative;
+this document describes the production direction and calls out the current gaps.
+See [parallel_build_architecture.md](../design/parallel_build_architecture.md)
+for the crate-extraction and incremental-build routing plan.
+
+## Live State Snapshot (2026-06-12)
+
+- Runtime leaf crates already exist and are wired from
+  `runtime/molt-runtime/Cargo.toml`, including core, collections, math, text,
+  serial, crypto, compression, net, asyncio, regex, path, itertools, difflib,
+  logging, http, xml, ipaddress, zoneinfo, stringprep, and tk. `molt-runtime-protobuf`
+  exists as a workspace package, but is not yet a `molt-runtime` facade
+  dependency.
+- `stdlib_stringprep` is leaf-owned: the old in-facade `builtins/stringprep.rs`
+  fallback is deleted, `molt_stringprep_*` resolver arms are gated by
+  `stdlib_stringprep`, and feature-on/feature-off `molt-runtime` checks prove
+  the facade no longer carries a duplicate stringprep authority.
+- `molt-runtime` is not yet a pure facade. It still owns substantial runtime
+  implementation, so the precompiled-per-import library model below is the
+  target architecture rather than a completed current guarantee.
+- `release-fast` already uses thin LTO/high codegen-unit parallelism for
+  compiler iteration; shipped output profiles retain whole-program optimization
+  where runtime performance and size require it.
+- Remaining structural work: finish runtime facade composition, split per-crate
+  intrinsic registries, isolate native backend codegen into its own crate, and
+  preserve deterministic cache/build-state custody across concurrent agents.
+
 ## Overview
 
 Molt follows CPython's layered architecture, adapted for AOT compilation:
@@ -28,7 +56,7 @@ Molt follows CPython's layered architecture, adapted for AOT compilation:
 
 ## Compilation Flow
 
-### First Run (cold cache, ~60s)
+### Target First Run (cold cache)
 ```
 molt build app.py
   1. Compile molt-runtime-core → libmolt_core.a        (Layer 1-3, cached)
@@ -36,7 +64,7 @@ molt build app.py
   3. Link: user.o + libmolt_core.a → app               (~1s)
 ```
 
-### Subsequent Runs (warm cache, ~3s)
+### Target Subsequent Runs (warm cache)
 ```
 molt build app.py
   1. [cached] libmolt_core.a exists, skip
@@ -59,14 +87,17 @@ molt build app.py  # where app.py uses `import math`
 
 | Crate | CPython Equivalent | Contents | Size |
 |-------|-------------------|----------|------|
-| `molt-runtime-core` | `libpython3.*.a` core | Object model, GC, exceptions, module system, call dispatch, builtin types+functions | ~55K lines |
-| `molt-runtime-math` | `_math` module | math.floor, math.sqrt, math.sin, etc. | ~2K lines |
-| `molt-runtime-net` | `_socket`, `_ssl` | socket, http, websocket, TLS | ~15K lines |
-| `molt-runtime-asyncio` | `_asyncio` | Event loop, tasks, futures, streams | ~30K lines |
-| `molt-runtime-serial` | `_json`, `_csv`, `_struct` | Serialization/deserialization | ~5K lines |
-| `molt-runtime-crypto` | `_hashlib`, `_hmac` | Hashing, HMAC, PBKDF2 | ~3K lines |
-| `molt-runtime-compression` | `_bz2`, `_lzma`, `zlib` | Compression/decompression | ~2K lines |
-| `molt-runtime-tk` | `_tkinter` | GUI bindings | ~17K lines |
+| `molt-runtime-core` | `libpython3.*.a` core | Shared runtime core; not yet the complete object-model authority | live leaf |
+| `molt-runtime-collections` | list/dict/set/tuple clusters | Container helpers and collection-facing intrinsics | live leaf |
+| `molt-runtime-math` | `_math` module | math intrinsics and numeric helpers | live leaf |
+| `molt-runtime-text` | str/bytes/codecs clusters | Text and codec helpers | live leaf |
+| `molt-runtime-serial` | `_json`, `_csv`, `_struct` target area | Serialization/deserialization helpers | live leaf |
+| `molt-runtime-crypto` | `_hashlib`, `_hmac` target area | Hashing, HMAC, PBKDF2 helpers | live leaf |
+| `molt-runtime-compression` | `_bz2`, `_lzma`, `zlib` target area | Compression/decompression helpers | live leaf |
+| `molt-runtime-net` / `molt-runtime-http` | `_socket`, `_ssl`, HTTP target area | Network and HTTP helpers | live leaf |
+| `molt-runtime-asyncio` | `_asyncio` target area | Event loop, tasks, futures, streams | live leaf |
+| `molt-runtime-regex`, `-path`, `-xml`, `-ipaddress`, `-zoneinfo`, `-stringprep`, `-tk` | stdlib clusters | Feature-cohesive runtime leaves | live leaves |
+| `molt-runtime-protobuf` | protobuf target area | Workspace leaf candidate; not currently a `molt-runtime` facade dependency | workspace package |
 
 ### Compiled Per-Invocation
 
@@ -91,11 +122,12 @@ For WASM, the same layered approach applies:
 - `app.wasm`: Tiny user code module, imports from runtime
 - Worker.js: Instantiates both, stitches imports
 
-## Native Backend Changes Required
+## Native Backend Target Changes
 
 ### 1. Pre-compilation Infrastructure
 
-The `molt-runtime-core` crate compiles to `libmolt_core.a` via:
+The target model compiles runtime leaves such as `molt-runtime-core` to
+linkable libraries via:
 ```
 cargo build -p molt-runtime-core --release
 ```
@@ -105,14 +137,14 @@ The fingerprint includes: Rust toolchain version, target triple, feature flags.
 
 ### 2. Backend Split: User Code Only
 
-The native backend (`molt-backend`) should ONLY compile user code IR to `.o`.
-It should NOT re-compile the runtime. Instead:
+The native backend target is to compile only user code IR to `.o` and link
+runtime leaves from cached libraries instead of re-compiling runtime IR:
 
 ```rust
-// Current (broken): compile ALL 1000+ functions
+// Current target gap: compiling runtime/user code through one large plan.
 backend.compile(ir_with_everything)
 
-// Fixed: compile ONLY user functions
+// Target: compile ONLY user functions.
 let user_ir = ir.functions.retain(|f| !f.is_stdlib);
 backend.compile(user_ir)  // ~10 functions, ~2s
 ```
@@ -153,8 +185,8 @@ Only stdlib crates that the user imports are linked. The linker's
 - CLI links user.o against it
 
 ### Phase 3: Split stdlib into crates
-- Move builtins/math.rs → molt-runtime-math/src/lib.rs
-- Move builtins/json.rs → molt-runtime-serial/src/lib.rs
+- Continue moving runtime authority into existing leaf crates such as
+  `molt-runtime-math`, `molt-runtime-serial`, and `molt-runtime-text`
 - Each crate produces its own .a file
 - Linker only includes crates the user imports
 

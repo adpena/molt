@@ -45,6 +45,10 @@ def test_full_profile_includes_stdlib_ast() -> None:
     assert "stdlib_ast" in _full_features()
 
 
+def test_full_profile_includes_sqlite() -> None:
+    assert "sqlite" in _full_features()
+
+
 def test_ast_module_requires_stdlib_ast_gate() -> None:
     gap = cli._profile_feature_gap_for_module(STDLIB_ROOT / "ast.py", _micro_features())
     assert "stdlib_ast" in gap
@@ -71,6 +75,13 @@ def test_third_gated_module_sqlite_requires_sqlite_feature() -> None:
         STDLIB_ROOT / "_sqlite3.py", _micro_features()
     )
     assert set(gap) == {"sqlite"}
+
+
+def test_sqlite_module_buildable_on_full_profile() -> None:
+    gap = cli._profile_feature_gap_for_module(
+        STDLIB_ROOT / "_sqlite3.py", _full_features()
+    )
+    assert gap == {}
 
 
 def test_ungated_ssl_abi_is_never_refused() -> None:
@@ -222,6 +233,38 @@ def test_wasm_micro_uses_wasm_feature_surface_and_refuses_ast() -> None:
     assert rc is not None and rc != 0
     assert message is not None
     assert "stdlib_ast" in message
+
+
+def test_wasm_micro_excludes_sqlite_and_refuses_sqlite3() -> None:
+    wasm_micro = frozenset(
+        cli._runtime_builtin_features_for_profile(
+            "micro", target_triple="wasm32-wasip1"
+        )
+    )
+    assert "sqlite" not in wasm_micro
+    rc, message = _run_pass(
+        [("_sqlite3", STDLIB_ROOT / "_sqlite3.py")], "micro", "wasm"
+    )
+    assert rc is not None and rc != 0
+    assert message is not None
+    assert "sqlite" in message
+    assert "_sqlite3" in message
+
+
+def test_wasm_full_excludes_sqlite_and_refuses_sqlite3() -> None:
+    wasm_full = frozenset(
+        cli._runtime_builtin_features_for_profile(
+            "full", target_triple="wasm32-wasip1"
+        )
+    )
+    assert "sqlite" not in wasm_full
+    rc, message = _run_pass(
+        [("_sqlite3", STDLIB_ROOT / "_sqlite3.py")], "full", "wasm"
+    )
+    assert rc is not None and rc != 0
+    assert message is not None
+    assert "sqlite" in message
+    assert "_sqlite3" in message
 
 
 def test_wasm_micro_includes_crypto_so_hashlib_is_allowed() -> None:

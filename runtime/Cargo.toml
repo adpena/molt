@@ -19,6 +19,7 @@ members = [
     "molt-runtime-xml",
     "molt-runtime-ipaddress",
     "molt-runtime-zoneinfo",
+    "molt-runtime-protobuf",
     "molt-runtime",
     "molt-backend",
     "molt-wasm-host",

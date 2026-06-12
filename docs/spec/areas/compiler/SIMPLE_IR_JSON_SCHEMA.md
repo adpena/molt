@@ -279,7 +279,7 @@ Comparisons accept optional `fast_int` / `fast_float`.
 | `try_end`                   | --                    | Exit try block                       |
 | `raise`                     | `args` [exc], `out`   | Raise exception                      |
 | `exception_push`            | `out`                 | Push exception handler               |
-| `exception_pop`             | `out`                 | Pop exception handler                |
+| `exception_pop`             | `out`                 | Pop handler                         |
 | `exception_new`             | `args` [kind, msg], `out` | Create exception from kind+message |
 | `exception_new_from_class`  | `args` [cls, msg], `out` | Create exception from class+message |
 | `exception_last`            | `out`                 | Get current exception                |

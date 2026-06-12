@@ -384,6 +384,8 @@ class SimpleTIRGenerator(
         self.global_imported_attr_names: dict[str, str] = {}
         self.imported_modules: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
+        self.imported_module_attr_mutations: set[tuple[str, str]] = set()
+        self.global_imported_module_attr_mutations: set[tuple[str, str]] = set()
         self.local_intrinsic_wrappers: set[str] = set()
         self.gpu_kernel_symbols_by_name: dict[str, str] = {}
         self.current_gpu_kernel_context: bool = False
@@ -1980,6 +1982,9 @@ class SimpleTIRGenerator(
         self.imported_names = dict(self.global_imported_names)
         self.imported_attr_names = dict(self.global_imported_attr_names)
         self.imported_modules = dict(self.global_imported_modules)
+        self.imported_module_attr_mutations = set(
+            self.global_imported_module_attr_mutations
+        )
         self.async_locals = {}
         self.async_internal_locals = set()
         self.async_public_locals = set()
@@ -2602,6 +2607,7 @@ class SimpleTIRGenerator(
             "imported_names": self.imported_names,
             "imported_attr_names": self.imported_attr_names,
             "imported_modules": self.imported_modules,
+            "imported_module_attr_mutations": self.imported_module_attr_mutations,
             "class_definition_pending": self.class_definition_pending,
             "block_terminated": self.block_terminated,
             "_module_cache_values": self._module_cache_values,
@@ -2661,6 +2667,7 @@ class SimpleTIRGenerator(
         self.imported_names = state["imported_names"]
         self.imported_attr_names = state["imported_attr_names"]
         self.imported_modules = state["imported_modules"]
+        self.imported_module_attr_mutations = state["imported_module_attr_mutations"]
         self.class_definition_pending = state["class_definition_pending"]
         self.block_terminated = state["block_terminated"]
         self._module_cache_values = state["_module_cache_values"]
@@ -4779,17 +4786,59 @@ class SimpleTIRGenerator(
             self._record_module_override(target, value)
 
     def _is_known_project_module(self, module_name: str | None) -> bool:
-        """Return True if *module_name* (or its top-level package) was
-        discovered in the module graph — e.g. via ``--lib-path`` or the
-        project source tree.  This lets cross-module calls within
-        third-party packages pass the allowlist without requiring
-        ``--fallback bridge``."""
+        """Return True only when *module_name* was discovered in the graph.
+
+        Project/external module authority is exact: a discovered package does
+        not authorize arbitrary children. Child modules must be present in the
+        module graph with their own exact path/case proof.
+        """
         if not module_name or not self.known_modules:
             return False
-        if module_name in self.known_modules:
+        return module_name in self.known_modules
+
+    def _is_linkable_module_function_symbol(self, module_name: str | None) -> bool:
+        """Return whether a direct ``module__function`` symbol can be emitted.
+
+        The frontend may know defaults/signatures for many stdlib functions from
+        source indexes.  That metadata is not link authority.  Once the build
+        provides a closed module graph, cross-module direct calls are legal only
+        to modules in that graph; absent modules must go through import/bound
+        call lowering so missing optional paths do not leak undefined symbols
+        into shared stdlib partitions.
+        """
+        if not module_name:
+            return False
+        normalized = self._normalize_allowlist_module(module_name) or module_name
+        if normalized == self.module_name:
             return True
-        top_level = module_name.split(".", 1)[0]
-        return top_level in self.known_modules
+        if not self.known_modules:
+            return True
+        return normalized in self.known_modules
+
+    def _imported_module_binding_target(self, binding_name: str) -> str | None:
+        if self._local_name_shadows_import_binding(binding_name):
+            return None
+        module_name = self.imported_modules.get(binding_name)
+        if module_name is None:
+            module_name = self.global_imported_modules.get(binding_name)
+        return module_name
+
+    def _record_imported_module_attr_mutation(self, target: ast.Attribute) -> None:
+        if not isinstance(target.value, ast.Name):
+            return
+        module_name = self._imported_module_binding_target(target.value.id)
+        if module_name is None:
+            return
+        mutation = (module_name, target.attr)
+        self.imported_module_attr_mutations.add(mutation)
+        self.global_imported_module_attr_mutations.add(mutation)
+
+    def _imported_module_attr_is_stable(self, module_name: str, attr: str) -> bool:
+        mutation = (module_name, attr)
+        return (
+            mutation not in self.imported_module_attr_mutations
+            and mutation not in self.global_imported_module_attr_mutations
+        )
 
     def _emit_module_attr_set_runtime(self, name: str, value: MoltValue) -> None:
         name_val = MoltValue(self.next_var(), type_hint="str")
@@ -4807,23 +4856,89 @@ class SimpleTIRGenerator(
         )
 
     def _should_attempt_runtime_module_import(self, module_name: str) -> bool:
+        if module_name in self.known_modules:
+            return True
         if module_name in self.stdlib_allowlist:
             return True
         normalized_name = self._normalize_allowlist_module(module_name)
-        if normalized_name and normalized_name in self.stdlib_allowlist:
+        if normalized_name and (
+            normalized_name in self.stdlib_allowlist
+            or normalized_name in self.known_modules
+        ):
             return True
         if "." not in module_name:
             return False
         top_level = module_name.split(".", 1)[0]
-        if top_level in self.stdlib_allowlist or top_level in self.known_modules:
+        if top_level in self.stdlib_allowlist:
             return True
         normalized_top = self._normalize_allowlist_module(top_level)
-        return bool(
-            normalized_top
-            and (
-                normalized_top in self.stdlib_allowlist
-                or normalized_top in self.known_modules
+        return bool(normalized_top and normalized_top in self.stdlib_allowlist)
+
+    def _emit_import_transaction(
+        self,
+        module_name: str,
+        *,
+        fromlist_names: Sequence[str],
+        level: int = 0,
+        globals_val: MoltValue | None = None,
+    ) -> MoltValue:
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
+
+        if globals_val is None:
+            globals_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=globals_val))
+        locals_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=locals_val))
+
+        fromlist_items: list[MoltValue] = []
+        for name in fromlist_names:
+            item_val = MoltValue(self.next_var(), type_hint="str")
+            self.emit(MoltOp(kind="CONST_STR", args=[name], result=item_val))
+            fromlist_items.append(item_val)
+        fromlist_val = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="TUPLE_NEW", args=fromlist_items, result=fromlist_val))
+
+        level_val = MoltValue(self.next_var(), type_hint="int")
+        self.emit(MoltOp(kind="CONST", args=[level], result=level_val))
+
+        transaction_func = self._emit_intrinsic_function(
+            "molt_importlib_import_transaction"
+        )
+        imported_val = MoltValue(self.next_var(), type_hint="module")
+        self.emit(
+            MoltOp(
+                kind="CALL_FUNC",
+                args=[
+                    transaction_func,
+                    name_val,
+                    globals_val,
+                    locals_val,
+                    fromlist_val,
+                    level_val,
+                ],
+                result=imported_val,
             )
+        )
+        return imported_val
+
+    def _emit_importlib_import_module_transaction(self, module_name: str) -> MoltValue:
+        return self._emit_import_transaction(
+            module_name, fromlist_names=("*",), level=0
+        )
+
+    def _emit_source_import_transaction(
+        self,
+        module_name: str,
+        *,
+        fromlist_names: Sequence[str],
+        level: int = 0,
+    ) -> MoltValue:
+        return self._emit_import_transaction(
+            module_name,
+            fromlist_names=fromlist_names,
+            level=level,
+            globals_val=self._emit_globals_dict(),
         )
 
     def _emit_module_load(self, module_name: str) -> MoltValue:
@@ -4985,6 +5100,25 @@ class SimpleTIRGenerator(
         if current_val is None:
             raise NotImplementedError("Invalid module name")
         return current_val
+
+    def _emit_module_import_from_value(
+        self, module_val: MoltValue, attr_name: str
+    ) -> MoltValue:
+        attr_val = MoltValue(self.next_var(), type_hint="Any")
+        attr_name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[attr_name], result=attr_name_val))
+        # `from MODULE import name` has CPython IMPORT_FROM semantics: a
+        # missing attribute raises ImportError ("cannot import name ...") after
+        # a sys.modules submodule fallback, NOT the AttributeError that a plain
+        # `MODULE.name` (MODULE_GET_ATTR) read raises.
+        self.emit(
+            MoltOp(
+                kind="MODULE_IMPORT_FROM",
+                args=[module_val, attr_name_val],
+                result=attr_val,
+            )
+        )
+        return attr_val
 
     def _emit_import_guard(self, module_val: MoltValue, module_name: str) -> None:
         none_val = MoltValue(self.next_var(), type_hint="None")
@@ -6815,7 +6949,9 @@ class SimpleTIRGenerator(
         for name in self._collect_comp_walrus_shared_names(body):
             self._box_local(name)
 
-    def _emit_free_var_load(self, name: str) -> MoltValue | None:
+    def _emit_free_var_load(
+        self, name: str, *, guard_unbound: bool = True
+    ) -> MoltValue | None:
         cell = self._load_free_var_cell(name)
         if cell is None:
             return None
@@ -6824,7 +6960,8 @@ class SimpleTIRGenerator(
         hint = self.free_var_hints.get(name, "Any")
         res = MoltValue(self.next_var(), type_hint=hint)
         self.emit(MoltOp(kind="INDEX", args=[cell, zero], result=res))
-        self._emit_unbound_free_guard(res, name)
+        if guard_unbound:
+            self._emit_unbound_free_guard(res, name)
         return res
 
     def _emit_free_var_store(self, name: str, value: MoltValue) -> bool:
@@ -7353,7 +7490,9 @@ class SimpleTIRGenerator(
                 )
             )
 
-    def _load_local_value(self, name: str) -> MoltValue | None:
+    def _load_local_value(
+        self, name: str, *, guard_unbound: bool = True
+    ) -> MoltValue | None:
         # A class-body name resolves through the class namespace; but a name that
         # the class body has NOT bound (e.g. a parameter of a function inlined
         # into the body, like an inlined ``__init__``'s args, or an enclosing
@@ -7377,7 +7516,7 @@ class SimpleTIRGenerator(
                 res.type_hint = hint
             self.emit(MoltOp(kind="INDEX", args=[cell, idx], result=res))
             self._copy_container_hints_for_name_load(name, res.name)
-            if name in self.unbound_check_names:
+            if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
         if self.is_async() and name in self.async_locals:
@@ -7386,7 +7525,7 @@ class SimpleTIRGenerator(
                 self.next_var(), type_hint=self.async_local_hints.get(name, "Any")
             )
             self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
-            if name in self.unbound_check_names:
+            if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
         cached = self.locals.get(name)
@@ -7410,48 +7549,14 @@ class SimpleTIRGenerator(
                 )
             )
             self._copy_container_hints_for_name_load(name, res.name)
-            if name in self.unbound_check_names:
+            if guard_unbound and name in self.unbound_check_names:
                 self._emit_unbound_local_guard(res, name)
             return res
         return cached
 
     def _store_local_value(self, name: str, value: MoltValue) -> None:
         def update_locals_cache() -> None:
-            # Never include internal Molt scaffolding in `locals()`.
-            if (
-                name == _MOLT_LOCALS_CACHE
-                or name == _MOLT_CLOSURE_PARAM
-                or name.startswith("__molt_")
-            ):
-                return
-            # Only include Python-visible locals (params + assigned names). The compiler
-            # may introduce additional locals/temps for lowering; those must never leak
-            # into `locals()` (CPython parity).
-            params = self.funcs_map.get(self.current_func_name, {}).get("params", [])
-            if name not in self.scope_assigned and name not in params:
-                return
-            cache = self.locals_cache_val
-            if cache is None:
-                return
-            key = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
-            if value.type_hint == "missing":
-                # Keep the pinned frame-locals cache in sync for `del`/unbound transitions.
-                self.emit(
-                    MoltOp(
-                        kind="DICT_UPDATE_MISSING",
-                        args=[cache, key, value],
-                        result=MoltValue("none"),
-                    )
-                )
-                return
-            self.emit(
-                MoltOp(
-                    kind="DICT_SET",
-                    args=[cache, key, value],
-                    result=MoltValue("none"),
-                )
-            )
+            self._emit_locals_cache_update(name, value)
 
         self._invalidate_loop_guard(name)
         class_scope = self._active_class_ns_scope(name)
@@ -7568,6 +7673,59 @@ class SimpleTIRGenerator(
                 )
             )
         update_locals_cache()
+
+    def _emit_locals_cache_update(self, name: str, value: MoltValue) -> None:
+        # Never include internal Molt scaffolding in `locals()`.
+        if (
+            name == _MOLT_LOCALS_CACHE
+            or name == _MOLT_CLOSURE_PARAM
+            or name.startswith("__molt_")
+        ):
+            return
+        # Only include Python-visible locals (params + assigned names). The compiler
+        # may introduce additional locals/temps for lowering; those must never leak
+        # into `locals()` (CPython parity).
+        params = self.funcs_map.get(self.current_func_name, {}).get("params", [])
+        if name not in self.scope_assigned and name not in params:
+            return
+        cache = self.locals_cache_val
+        if cache is None:
+            return
+        key = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
+        if value.type_hint == "missing":
+            # Keep the pinned frame-locals cache in sync for `del`/unbound transitions.
+            self.emit(
+                MoltOp(
+                    kind="DICT_UPDATE_MISSING",
+                    args=[cache, key, value],
+                    result=MoltValue("none"),
+                )
+            )
+            return
+        self.emit(
+            MoltOp(
+                kind="DICT_SET",
+                args=[cache, key, value],
+                result=MoltValue("none"),
+            )
+        )
+
+    def _emit_delete_local_value(
+        self, name: str, missing: MoltValue, old_value: MoltValue
+    ) -> None:
+        self._invalidate_loop_guard(name)
+        self.bytearray_len_hints.pop(name, None)
+        self.locals[name] = missing
+        self.emit(
+                MoltOp(
+                    kind="DELETE_VAR",
+                    args=[missing, old_value],
+                    result=MoltValue("none"),
+                    metadata={"var": name},
+                )
+        )
+        self._emit_locals_cache_update(name, missing)
 
     def _store_comprehension_local_value(self, name: str, value: MoltValue) -> None:
         self._invalidate_loop_guard(name)
@@ -9771,6 +9929,11 @@ class SimpleTIRGenerator(
         self.emit(MoltOp(kind="DEC_REF", args=[value], result=res))
         return res
 
+    def _emit_drop_owned_value(self, value: MoltValue | None) -> None:
+        if value is None or value.name == "none":
+            return
+        self.emit(MoltOp(kind="DEC_REF", args=[value], result=MoltValue("none")))
+
     def _emit_borrow(self, value: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint=value.type_hint)
         self.emit(MoltOp(kind="BORROW", args=[value], result=res))
@@ -10207,6 +10370,14 @@ class SimpleTIRGenerator(
             return
         for name in sorted(names - module_backed):
             self._box_local(name)
+
+    def _evict_module_control_flow_bindings(self, names: set[str]) -> None:
+        if self.current_func_name != "molt_main" or self.is_async():
+            return
+        for name in names:
+            if name in self.module_global_mutations:
+                self.globals.pop(name, None)
+                self.locals.pop(name, None)
 
     def _emit_loop_orelse(self, break_name: str, orelse: list[ast.stmt]) -> None:
         break_val = self._load_local_value(break_name)
@@ -13119,6 +13290,7 @@ class SimpleTIRGenerator(
         if value_node is None:
             raise NotImplementedError("Unsupported assignment value")
         if isinstance(target, ast.Attribute):
+            self._record_imported_module_attr_mutation(target)
             obj = self.visit(target.value)
             obj_name = None
             exact_class = None
@@ -13826,10 +13998,7 @@ class SimpleTIRGenerator(
                         result=MoltValue("none"),
                     )
                 )
-                # Dec_ref the old value to balance the initial allocation ref.
-                self.emit(
-                    MoltOp(kind="DEC_REF", args=[old_val], result=MoltValue("none"))
-                )
+                self._emit_drop_owned_value(old_val)
                 self.unbound_check_names.add(name)
                 return
             # Module scope already has a canonical mutable store: the module
@@ -13845,10 +14014,7 @@ class SimpleTIRGenerator(
                 self._emit_module_global_del(name)
             # Emit dec_ref for the local SSA variable so refcount drops
             # to zero immediately, triggering __del__ (CPython parity).
-            if local_val is not None and local_val.name != "none":
-                self.emit(
-                    MoltOp(kind="DEC_REF", args=[local_val], result=MoltValue("none"))
-                )
+            self._emit_drop_owned_value(local_val)
             return
         if name in self.global_decls:
             if allow_missing:
@@ -13857,20 +14023,33 @@ class SimpleTIRGenerator(
                 self._emit_module_global_del(name)
             return
         if name in self.nonlocal_decls or name in self.free_vars:
-            if not allow_missing:
-                _ = self._emit_free_var_load(name)
+            old_val = self._emit_free_var_load(
+                name, guard_unbound=not allow_missing
+            )
             missing = self._emit_missing_value()
             if not self._emit_free_var_store(name, missing):
                 raise NotImplementedError("nonlocal binding not found")
+            self._emit_drop_owned_value(old_val)
             return
-        # Only box for closure-captured variables; non-closure locals use
-        # store_var/load_var and store the missing sentinel directly.
+        # Only box for closure-captured variables; non-closure locals use the
+        # first-class delete_var local-slot transition so the backend sees one
+        # atomic "mark unbound, then release old occupant" boundary.
         if name in self.closure_locals:
             self._box_local(name)
-        if not allow_missing:
-            _ = self._load_local_value(name)
+        old_val = self._load_local_value(name, guard_unbound=not allow_missing)
         missing = self._emit_missing_value()
-        self._store_local_value(name, missing)
+        if (
+            self.current_func_name != "molt_main"
+            and not self.is_async()
+            and name in self.scope_assigned
+            and name not in self.boxed_locals
+            and name not in self.free_vars
+            and name not in self.nonlocal_decls
+        ):
+            self._emit_delete_local_value(name, missing, old_val)
+        else:
+            self._store_local_value(name, missing)
+            self._emit_drop_owned_value(old_val)
         self.unbound_check_names.add(name)
         return
 
@@ -14518,6 +14697,7 @@ class SimpleTIRGenerator(
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         try_exc_label = self.next_label()
         try_done_label = self.next_label()
+        scope.handler_label = try_exc_label
         scope.done_label = try_done_label
         self.try_end_labels.append(try_exc_label)
         self.emit(
@@ -14559,6 +14739,7 @@ class SimpleTIRGenerator(
         self.emit(
             MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, none_exit], result=exit_ok)
         )
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending()
         self.emit(MoltOp(kind="JUMP", args=[try_done_label], result=MoltValue("none")))
         self.emit(MoltOp(kind="LABEL", args=[try_exc_label], result=MoltValue("none")))
@@ -14595,6 +14776,7 @@ class SimpleTIRGenerator(
         exit_res = MoltValue(self.next_var(), type_hint="Any")
         ctx_ref = self._load_local_value(ctx_name) or ctx_val
         self.emit(MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, exc_val], result=exit_res))
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending()
         not_res = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="NOT", args=[exit_res], result=not_res))
@@ -14604,12 +14786,14 @@ class SimpleTIRGenerator(
         self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="RAISE", args=[exc_val], result=MoltValue("none")))
+        self._emit_raise_if_pending()
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         exit_ok = MoltValue(self.next_var(), type_hint="Any")
         ctx_ref = self._load_local_value(ctx_name) or ctx_val
         self.emit(MoltOp(kind="CONTEXT_EXIT", args=[ctx_ref, none_val], result=exit_ok))
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending()
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
@@ -14617,8 +14801,6 @@ class SimpleTIRGenerator(
         self.try_handler_scopes.pop()
         self.try_scopes.pop()
         self.try_suppress_depth = prior_suppress
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending()
         return None
 
     def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
@@ -14756,6 +14938,7 @@ class SimpleTIRGenerator(
         aexit_call = self._emit_call_bound_or_func(
             aexit_fn, [exc_type, exc_val, tb_val]
         )
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending()
         aexit_res = self._emit_await_value(aexit_call, raise_pending=False)
         self._emit_raise_if_pending(emit_exit=True, force_exit=True)
@@ -14775,20 +14958,20 @@ class SimpleTIRGenerator(
             )
         )
         self.emit(MoltOp(kind="RAISE", args=[exc_reload], result=MoltValue("none")))
+        self._emit_raise_if_pending(emit_exit=True, force_exit=True)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         aexit_call = self._emit_call_bound_or_func(
             aexit_fn, [none_val, none_val, none_val]
         )
+        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self._emit_raise_if_pending()
         self._emit_await_value(aexit_call, raise_pending=False)
         self._emit_raise_if_pending(emit_exit=True, force_exit=True)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         self.try_suppress_depth = prior_suppress
-        self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        self._emit_raise_if_pending(emit_exit=True, force_exit=True)
         return None
 
     def visit_For(self, node: ast.For) -> None:
@@ -15587,10 +15770,10 @@ class SimpleTIRGenerator(
             )
         )
 
-    def _emit_control_flow_scope_unwind(self, scopes: Sequence[TryScope]) -> None:
+    def _emit_control_flow_scope_unwind(self, scopes: Sequence[TryScope]) -> list[int]:
         unwind_scopes = list(scopes)
         if not unwind_scopes:
-            return
+            return []
         none_exc = None
         if self.context_depth > 0 and any(
             scope.needs_context_unwind for scope in unwind_scopes
@@ -15602,6 +15785,7 @@ class SimpleTIRGenerator(
             skip_pops = self.return_unwind_popped_scopes[-1]
         popped_scopes = 0
         skip_finalbody = self.return_unwind_depth
+        popped_labels: list[int] = []
         for scope in reversed(unwind_scopes):
             if skip_pops > 0:
                 skip_pops -= 1
@@ -15618,6 +15802,16 @@ class SimpleTIRGenerator(
                     result=MoltValue("none"),
                 )
             )
+            if scope.handler_label is not None:
+                if scope.handler_label not in self.try_end_labels:
+                    pass
+                elif self.try_end_labels[-1] != scope.handler_label:
+                    raise AssertionError(
+                        "control-flow unwind tried to pop handler label "
+                        f"{scope.handler_label}, active labels={self.try_end_labels}"
+                    )
+                else:
+                    popped_labels.append(self.try_end_labels.pop())
             popped_scopes += 1
             if scope.finalbody:
                 if skip_finalbody > 0:
@@ -15629,6 +15823,11 @@ class SimpleTIRGenerator(
                         scope.finalbody, None, popped_scopes=popped_scopes
                     )
                     self.active_exceptions = prior_active
+        return popped_labels
+
+    def _restore_control_flow_unwind_labels(self, popped_labels: Sequence[int]) -> None:
+        for label in reversed(popped_labels):
+            self.try_end_labels.append(label)
 
     def _emit_raise_exit(self) -> None:
         if self.try_end_labels:
@@ -15747,6 +15946,7 @@ class SimpleTIRGenerator(
         try_clean_cleanup_label = self.next_label()
         try_pending_cleanup_label = self.next_label()
         try_done_label = self.next_label()
+        scope.handler_label = try_exc_label
         scope.done_label = try_pending_cleanup_label
         self.try_end_labels.append(try_exc_label)
         self.emit(
@@ -15922,11 +16122,15 @@ class SimpleTIRGenerator(
                 detail="try/else requires an except handler",
             )
             return None
+        assigned: set[str] = set()
         if not self.is_async() and self.current_func_name != "molt_main":
             assigned = self._collect_assigned_names([node])
             for name in sorted(assigned):
                 if name not in self.scope_assigned or name in self.closure_locals:
                     self._box_local(name)
+        elif not self.is_async() and self.current_func_name == "molt_main":
+            assigned = self._collect_assigned_names([node])
+            self._prepare_mutable_control_flow_bindings(assigned)
         prior_terminated = self.block_terminated
         self.block_terminated = False
         self.control_flow_depth += 1
@@ -15967,12 +16171,14 @@ class SimpleTIRGenerator(
                 unbound_snapshot_try,
                 prior_terminated,
             )
+            self._evict_module_control_flow_bindings(assigned)
             return None
 
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         try_exc_label = self.next_label()
         try_join_label = self.next_label()
         try_done_label = self.next_label()
+        scope.handler_label = try_exc_label
         scope.done_label = try_done_label
         self.try_end_labels.append(try_exc_label)
         self.emit(
@@ -16286,6 +16492,7 @@ class SimpleTIRGenerator(
         self.unbound_check_names = unbound_snapshot_try
         self.control_flow_depth -= 1
         self.block_terminated = prior_terminated
+        self._evict_module_control_flow_bindings(assigned)
         return None
 
     def visit_TryStar(self, node: ast.TryStar) -> None:
@@ -16345,6 +16552,7 @@ class SimpleTIRGenerator(
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         try_exc_label = self.next_label()
         try_done_label = self.next_label()
+        scope.handler_label = try_exc_label
         scope.done_label = try_done_label
         self.try_end_labels.append(try_exc_label)
         self.emit(
@@ -17262,14 +17470,16 @@ class SimpleTIRGenerator(
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         return None
 
-    def _emit_loop_unwind(self) -> None:
+    def _emit_loop_unwind(self) -> list[int]:
         if not self.loop_try_depths:
-            return
+            return []
         max_scopes = len(self.try_scopes)
         loop_depth = self.loop_try_depths[-1]
         if loop_depth >= max_scopes:
-            return
-        self._emit_control_flow_scope_unwind(self.try_scopes[loop_depth:max_scopes])
+            return []
+        return self._emit_control_flow_scope_unwind(
+            self.try_scopes[loop_depth:max_scopes]
+        )
 
     def visit_Break(self, node: ast.Break) -> None:
         if self.finally_depth > 0:
@@ -17293,8 +17503,11 @@ class SimpleTIRGenerator(
                 else:
                     self._store_local_value(break_slot, break_val)
         self._emit_exception_handler_exit_cleanup()
-        self._emit_loop_unwind()
-        self.emit(MoltOp(kind="LOOP_BREAK", args=[], result=MoltValue("none")))
+        popped_labels = self._emit_loop_unwind()
+        try:
+            self.emit(MoltOp(kind="LOOP_BREAK", args=[], result=MoltValue("none")))
+        finally:
+            self._restore_control_flow_unwind_labels(popped_labels)
         self.block_terminated = True
         return None
 
@@ -17305,34 +17518,39 @@ class SimpleTIRGenerator(
             raise SyntaxError(f"'continue' not properly in loop (line {node.lineno})")
         del node
         self._emit_exception_handler_exit_cleanup()
-        self._emit_loop_unwind()
-        if self.async_index_loop_stack:
-            idx_slot = self.async_index_loop_stack[-1]
-            idx_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", idx_slot],
-                    result=idx_val,
+        popped_labels = self._emit_loop_unwind()
+        try:
+            if self.async_index_loop_stack:
+                idx_slot = self.async_index_loop_stack[-1]
+                idx_val = MoltValue(self.next_var(), type_hint="int")
+                self.emit(
+                    MoltOp(
+                        kind="LOAD_CLOSURE",
+                        args=["self", idx_slot],
+                        result=idx_val,
+                    )
                 )
-            )
-            one = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-            next_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="ADD", args=[idx_val, one], result=next_idx))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", idx_slot, next_idx],
-                    result=MoltValue("none"),
+                one = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="CONST", args=[1], result=one))
+                next_idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="ADD", args=[idx_val, one], result=next_idx))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_CLOSURE",
+                        args=["self", idx_slot, next_idx],
+                        result=MoltValue("none"),
+                    )
                 )
-            )
-        elif self.range_loop_stack:
-            idx, step = self.range_loop_stack[-1]
-            next_idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
-            self.emit(MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=next_idx))
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+            elif self.range_loop_stack:
+                idx, step = self.range_loop_stack[-1]
+                next_idx = MoltValue(self.next_var(), type_hint="int")
+                self.emit(MoltOp(kind="ADD", args=[idx, step], result=next_idx))
+                self.emit(
+                    MoltOp(kind="LOOP_INDEX_NEXT", args=[next_idx], result=next_idx)
+                )
+            self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
+        finally:
+            self._restore_control_flow_unwind_labels(popped_labels)
         self.block_terminated = True
         return None
 
@@ -17352,26 +17570,30 @@ class SimpleTIRGenerator(
                 self.emit(
                     MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none"))
                 )
+            popped_labels: list[int] = []
             if self.try_scopes:
-                self._emit_control_flow_scope_unwind(self.try_scopes)
-            # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
-            # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
-            self._emit_restore_exception_stack_depth(exit_baseline=False)
-            self._emit_raise_if_pending()
-            closed = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", GEN_CLOSED_OFFSET, closed],
-                    result=MoltValue("none"),
+                popped_labels = self._emit_control_flow_scope_unwind(self.try_scopes)
+            try:
+                # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
+                # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
+                self._emit_restore_exception_stack_depth(exit_baseline=False)
+                self._emit_raise_if_pending()
+                closed = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
+                self.emit(
+                    MoltOp(
+                        kind="STORE_CLOSURE",
+                        args=["self", GEN_CLOSED_OFFSET, closed],
+                        result=MoltValue("none"),
+                    )
                 )
-            )
-            done = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
-            pair = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=[val, done], result=pair))
-            self._emit_return_value(pair)
+                done = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
+                pair = MoltValue(self.next_var(), type_hint="tuple")
+                self.emit(MoltOp(kind="TUPLE_NEW", args=[val, done], result=pair))
+                self._emit_return_value(pair)
+            finally:
+                self._restore_control_flow_unwind_labels(popped_labels)
             return None
         val = self.visit(node.value) if node.value else None
         if val is None:
@@ -17383,14 +17605,18 @@ class SimpleTIRGenerator(
             self._emit_raise_if_pending(emit_exit=True)
         if _has_exc_stack and self.return_unwind_depth > 0:
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+        popped_labels = []
         if self.try_scopes:
-            self._emit_control_flow_scope_unwind(self.try_scopes)
-        # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
-        # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
-        if _has_exc_stack:
-            self._emit_restore_exception_stack_depth(exit_baseline=False)
-            self._emit_raise_if_pending()
-        self._emit_return_value(val)
+            popped_labels = self._emit_control_flow_scope_unwind(self.try_scopes)
+        try:
+            # Return-time context cleanup is handled by per-scope CONTEXT_UNWIND_TO
+            # above. A full CONTEXT_UNWIND here can incorrectly unwind caller frames.
+            if _has_exc_stack:
+                self._emit_restore_exception_stack_depth(exit_baseline=False)
+                self._emit_raise_if_pending()
+            self._emit_return_value(val)
+        finally:
+            self._restore_control_flow_unwind_labels(popped_labels)
         return None
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
@@ -19028,6 +19254,16 @@ class SimpleTIRGenerator(
     _STUB_IMPORT_MODULES: frozenset[str] = frozenset(
         {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
     )
+    _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str] = frozenset(
+        {"builtins", "_molt_importer"}
+    )
+
+    def _source_imports_use_transaction(self) -> bool:
+        return not (
+            self.module_name in self._IMPORT_TRANSACTION_BOOTSTRAP_MODULES
+            or self.module_name == "importlib"
+            or self.module_name.startswith("importlib.")
+        )
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -19040,12 +19276,26 @@ class SimpleTIRGenerator(
             if module_name in self._STUB_IMPORT_MODULES:
                 continue
             bind_name = alias.asname or module_name.split(".")[0]
-            module_val = self._emit_module_load_with_parents(module_name)
-            if alias.asname:
-                bound_val = module_val
+            if self._source_imports_use_transaction():
+                if alias.asname:
+                    bound_val = self._emit_source_import_transaction(
+                        module_name,
+                        fromlist_names=("*",),
+                        level=0,
+                    )
+                else:
+                    bound_val = self._emit_source_import_transaction(
+                        module_name,
+                        fromlist_names=(),
+                        level=0,
+                    )
             else:
-                top_name = module_name.split(".")[0]
-                bound_val = self._emit_module_load(top_name)
+                module_val = self._emit_module_load_with_parents(module_name)
+                if alias.asname:
+                    bound_val = module_val
+                else:
+                    top_name = module_name.split(".")[0]
+                    bound_val = self._emit_module_load(top_name)
             self.exact_locals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.module_global_mutations.add(bind_name)
@@ -19065,6 +19315,8 @@ class SimpleTIRGenerator(
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module_name = node.module
+        transaction_name = node.module or ""
+        transaction_level = node.level
         if node.level:
             resolved, error_kind = self._resolve_relative_import(
                 node.module, node.level
@@ -19073,6 +19325,8 @@ class SimpleTIRGenerator(
                 self._emit_relative_import_error(error_kind)
                 return None
             module_name = resolved
+        else:
+            transaction_level = 0
         if module_name is None:
             raise self.compat.unsupported(
                 node,
@@ -19145,7 +19399,15 @@ class SimpleTIRGenerator(
             return None
         if module_name in self._STUB_IMPORT_MODULES:
             return None
-        module_val = self._emit_module_load_with_parents(module_name)
+        fromlist_names = tuple(alias.name for alias in node.names)
+        if self._source_imports_use_transaction():
+            module_val = self._emit_source_import_transaction(
+                transaction_name,
+                fromlist_names=fromlist_names,
+                level=transaction_level,
+            )
+        else:
+            module_val = self._emit_module_load_with_parents(module_name)
         for alias in node.names:
             if alias.name == "*":
                 if self.current_func_name != "molt_main":
@@ -19171,51 +19433,7 @@ class SimpleTIRGenerator(
                 return None
             attr_name = alias.name
             bind_name = alias.asname or attr_name
-            submodule_name = f"{module_name}.{attr_name}"
-            if (
-                self.known_modules
-                and module_name == "molt.stdlib"
-                and attr_name in self.known_modules
-            ):
-                attr_val = self._emit_module_load_with_parents(attr_name)
-                self._emit_module_attr_set_on(module_val, attr_name, attr_val)
-            elif self.known_modules and submodule_name in self.known_modules:
-                attr_val = self._emit_module_load_with_parents(submodule_name)
-            elif (
-                self.known_modules
-                and module_name == "tinygrad.examples.falcon_ocr"
-                and attr_name in {"init", "ocr_tokens"}
-                and self._lookup_func_defaults(module_name, attr_name) is not None
-            ):
-                info = self._lookup_func_defaults(module_name, attr_name) or {}
-                total_params = info.get("params")
-                arity = total_params if isinstance(total_params, int) else 0
-                func_symbol = f"{self._sanitize_module_name(module_name)}__{attr_name}"
-                attr_val = MoltValue(self.next_var(), type_hint=f"Func:{func_symbol}")
-                self.emit(
-                    MoltOp(
-                        kind="FUNC_NEW",
-                        args=[func_symbol, arity],
-                        result=attr_val,
-                    )
-                )
-            else:
-                attr_val = MoltValue(self.next_var(), type_hint="Any")
-                attr_name_val = MoltValue(self.next_var(), type_hint="str")
-                self.emit(
-                    MoltOp(kind="CONST_STR", args=[attr_name], result=attr_name_val)
-                )
-                # `from MODULE import name` has CPython IMPORT_FROM semantics: a
-                # missing attribute raises ImportError ("cannot import name ...")
-                # after a sys.modules submodule fallback, NOT the AttributeError
-                # that a plain `MODULE.name` (MODULE_GET_ATTR) read raises.
-                self.emit(
-                    MoltOp(
-                        kind="MODULE_IMPORT_FROM",
-                        args=[module_val, attr_name_val],
-                        result=attr_val,
-                    )
-                )
+            attr_val = self._emit_module_import_from_value(module_val, attr_name)
             if module_name == "asyncio" and attr_name in {"run", "sleep"}:
                 module_prefix = f"{self._sanitize_module_name(module_name)}__"
                 attr_val.type_hint = f"Func:{module_prefix}{attr_name}"
@@ -19253,16 +19471,6 @@ class SimpleTIRGenerator(
             else:
                 self._store_local_value(bind_name, attr_val)
             self._emit_module_attr_set(bind_name, attr_val)
-            if self.known_modules:
-                if submodule_name in self.known_modules:
-                    self.imported_modules[bind_name] = submodule_name
-                    if self.current_func_name == "molt_main":
-                        self.global_imported_modules[bind_name] = submodule_name
-                elif module_name == "molt.stdlib" and attr_name in self.known_modules:
-                    stdlib_name = f"{module_name}.{attr_name}"
-                    self.imported_modules[bind_name] = stdlib_name
-                    if self.current_func_name == "molt_main":
-                        self.global_imported_modules[bind_name] = stdlib_name
         return None
 
     def _emit_await_anext(
@@ -21118,6 +21326,7 @@ class SimpleTIRGenerator(
             "DELATTR_NAME",
             "DEL_INDEX",
             "STORE_VAR",
+            "DELETE_VAR",
         }:
             return "writes_heap"
         if op_kind in {
@@ -22891,6 +23100,7 @@ class SimpleTIRGenerator(
             "EXCEPTION_NEW_BUILTIN_ONE",
             "EXCEPTION_MATCH_BUILTIN",
             "STORE_VAR",
+            "DELETE_VAR",
             "LOAD_VAR",
         }
         if op_kind in non_raising:

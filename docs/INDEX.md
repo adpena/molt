@@ -18,13 +18,13 @@ the source of truth.
 - Operations: [OPERATIONS.md](OPERATIONS.md)
 - Spec index: [spec/README.md](spec/README.md)
 - Compatibility architecture: [spec/areas/compat/README.md](spec/areas/compat/README.md)
-- Import/bootstrap, external package admission, shared-stdlib cache, and public importlib transaction authority: [spec/areas/compat/contracts/import_system_contract.md](spec/areas/compat/contracts/import_system_contract.md)
+- Import/bootstrap, external package admission, native extension sidecar custody, backend-IR direct-call closure, shared-stdlib cache, and public importlib transaction authority: [spec/areas/compat/contracts/import_system_contract.md](spec/areas/compat/contracts/import_system_contract.md)
 - WASM optimization and import-retention authority: [spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md](spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md)
 
 ## Debugging
 
 - Canonical debug operations and artifact roots: [OPERATIONS.md](OPERATIONS.md)
-- Memory-guard custody for tests and cleanup diagnostics: [OPERATIONS.md](OPERATIONS.md)
+- Memory-guard custody for tests, current-test incident diagnostics, and cleanup diagnostics: [OPERATIONS.md](OPERATIONS.md)
 - Backend daemon identity custody and verified signal authority (`src/molt/backend_daemon_custody.py`): [OPERATIONS.md](OPERATIONS.md)
 - Architecture and ownership map for the debug surface: [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)
 - Public debug command family: `molt debug repro|ir|verify|trace|reduce|bisect|diff|perf`
@@ -35,8 +35,9 @@ the source of truth.
 - Standalone binary proof workflow: [proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 - Benchmarking guide: [BENCHMARKING.md](BENCHMARKING.md)
 - Detailed benchmark report: [benchmarks/bench_summary.md](benchmarks/bench_summary.md)
-- GPU primitive stack architecture and tinygrad runtime-handle surface: [architecture/gpu-primitive-stack.md](architecture/gpu-primitive-stack.md)
-- Active GPU parallelism, MLIR, and runtime-handle integration spec: [spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)
+- Ecosystem compatibility matrix and NumPy source-recompiled extension package/native artifact publication custody: [spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md](spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md)
+- GPU primitive stack architecture, public tinygrad shim custody, and runtime-handle surface: [architecture/gpu-primitive-stack.md](architecture/gpu-primitive-stack.md)
+- Active GPU parallelism, MLIR, runtime-handle integration, and tinygrad off-the-shelf friend-suite driver: [spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)
 - Backend LIR representation evidence: [spec/areas/compiler/backend_lir_representation.generated.md](spec/areas/compiler/backend_lir_representation.generated.md)
 - Luau backend optimization and generated support: [spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md](spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md), [spec/areas/compiler/luau_support_matrix.generated.md](spec/areas/compiler/luau_support_matrix.generated.md)
 - Stdlib intrinsic audit and platform availability: [spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md), [spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md)
@@ -46,7 +47,7 @@ the source of truth.
 - Integrated foundation program: [design/foundation/00_integrated_parallel_program.md](design/foundation/00_integrated_parallel_program.md)
 - RC ownership and drop insertion: [design/foundation/20_rc-ownership-drop-insertion.md](design/foundation/20_rc-ownership-drop-insertion.md)
 - Perceus-style borrow inference: [design/foundation/27_perceus_borrow_inference.md](design/foundation/27_perceus_borrow_inference.md)
-- ExceptionRegion ownership: [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
+- ExceptionRegion ownership, shared TIR facts, SimpleIR release transport, and native handler MatchRef release custody: [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
 - Current module-scope control-flow binding status: [spec/STATUS.md](spec/STATUS.md)
 - Codebase decomposition program: [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md)
 - Op-kind registry and generated dispatch direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)

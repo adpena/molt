@@ -1,6 +1,9 @@
 // Type conversion operations.
 // Split from ops.rs for compilation-unit size reduction.
 
+use crate::const_data_cache::{
+    ConstDataLiteralKind, const_data_literal_insert, const_data_literal_lookup,
+};
 use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::inc_ref_ptr;
 use crate::object::ops::{as_float_extended, float_result_bits, is_float_extended};
@@ -461,6 +464,13 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> 
             if ptr.is_null() {
                 return MoltObject::none().bits();
             }
+            let data_key = ptr as usize;
+            if let Some(bits) =
+                const_data_literal_lookup(ConstDataLiteralKind::BigInt, data_key, len)
+            {
+                inc_ref_bits(_py, bits);
+                return bits;
+            }
             let bytes = std::slice::from_raw_parts(ptr, len);
             let text = match std::str::from_utf8(bytes) {
                 Ok(val) => val,
@@ -468,19 +478,29 @@ pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> 
                     return raise_exception::<_>(_py, "ValueError", "invalid literal for int()");
                 }
             };
-            if let Some(i) = parse_simple_ascii_decimal_i64(text) {
-                return int_bits_from_i64(_py, i);
-            }
-            let (parsed, _base_used) = match parse_int_from_str(text, 10) {
-                Ok(val) => val,
-                Err(_) => {
-                    return raise_exception::<_>(_py, "ValueError", "invalid literal for int()");
+            let bits = if let Some(i) = parse_simple_ascii_decimal_i64(text) {
+                int_bits_from_i64(_py, i)
+            } else {
+                let (parsed, _base_used) = match parse_int_from_str(text, 10) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        return raise_exception::<_>(
+                            _py,
+                            "ValueError",
+                            "invalid literal for int()",
+                        );
+                    }
+                };
+                if let Some(i) = bigint_to_inline(&parsed) {
+                    MoltObject::from_int(i).bits()
+                } else {
+                    bigint_bits(_py, parsed)
                 }
             };
-            if let Some(i) = bigint_to_inline(&parsed) {
-                return MoltObject::from_int(i).bits();
+            if !obj_from_bits(bits).is_none() {
+                const_data_literal_insert(_py, ConstDataLiteralKind::BigInt, data_key, len, bits);
             }
-            bigint_bits(_py, parsed)
+            bits
         })
     }
 }

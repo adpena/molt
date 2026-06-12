@@ -28,6 +28,9 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+_SRC_ROOT = _REPO_ROOT / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402  (must follow the sys.path self-bootstrap above)
 from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap above)
@@ -36,6 +39,7 @@ from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap abov
     process_sentinel,
     resource_pressure,
 )
+from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
 _DIFF_RUN_LOCK_HANDLE: io.TextIOWrapper | None = None
@@ -836,10 +840,17 @@ def _pid_rss_age(pid: int) -> tuple[int | None, int | None]:
     return rss, age
 
 
-def _list_backend_daemon_processes() -> dict[Path, list[int]]:
-    groups: dict[Path, list[int]] = {}
+@dataclass(frozen=True)
+class _BackendDaemonProcess:
+    pid: int
+    socket_path: Path
+    command: str
+
+
+def _list_backend_daemon_processes() -> list[_BackendDaemonProcess]:
+    processes: list[_BackendDaemonProcess] = []
     if os.name != "posix":
-        return groups
+        return processes
     try:
         result = subprocess.run(
             ["ps", "-axo", "pid=,command="],
@@ -849,7 +860,7 @@ def _list_backend_daemon_processes() -> dict[Path, list[int]]:
             timeout=2.0,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return groups
+        return processes
     pattern = re.compile(r"^\s*(\d+)\s+(.*)$")
     socket_pat = re.compile(r"--socket\s+(\S+)")
     for line in result.stdout.splitlines():
@@ -864,8 +875,68 @@ def _list_backend_daemon_processes() -> dict[Path, list[int]]:
         if socket_match is None:
             continue
         socket_path = Path(socket_match.group(1)).expanduser()
-        groups.setdefault(socket_path, []).append(pid)
-    return groups
+        processes.append(
+            _BackendDaemonProcess(pid=pid, socket_path=socket_path, command=cmd)
+        )
+    return sorted(processes, key=lambda process: process.pid)
+
+
+def _current_session_backend_daemon_records_by_pid() -> dict[
+    int, daemon_custody.BackendDaemonIdentityRecord
+]:
+    session_id = os.environ.get("MOLT_SESSION_ID", "").strip()
+    if not session_id:
+        return {}
+    return {
+        record.identity.pid: record
+        for record in daemon_custody.iter_backend_daemon_identity_records(
+            _diff_backend_daemon_root(),
+            session_id=session_id,
+        )
+    }
+
+
+def _verified_backend_daemon_record(
+    process: _BackendDaemonProcess,
+    records_by_pid: Mapping[int, daemon_custody.BackendDaemonIdentityRecord],
+) -> daemon_custody.BackendDaemonIdentityRecord | None:
+    record = records_by_pid.get(process.pid)
+    if record is None:
+        return None
+    identity = record.identity
+    if identity.socket_path != process.socket_path:
+        return None
+    if not daemon_custody.backend_daemon_command_matches_identity(
+        process.command,
+        backend_bin=identity.backend_bin,
+        socket_path=identity.socket_path,
+    ):
+        return None
+    return record
+
+
+def _terminate_verified_backend_daemon(
+    process: _BackendDaemonProcess,
+    records_by_pid: Mapping[int, daemon_custody.BackendDaemonIdentityRecord],
+    *,
+    grace: float = 0.75,
+) -> bool:
+    record = _verified_backend_daemon_record(process, records_by_pid)
+    if record is None:
+        return False
+
+    def process_command(pid: int) -> str | None:
+        return process.command if pid == process.pid else None
+
+    if not daemon_custody.terminate_backend_daemon_identity(
+        record.identity,
+        grace=grace,
+        process_command=process_command,
+        pid_alive=_pid_alive,
+    ):
+        return False
+    daemon_custody.remove_backend_daemon_identity(record.path)
+    return True
 
 
 def _list_orphan_diff_workers() -> list[int]:
@@ -1018,69 +1089,59 @@ def _prune_backend_daemons() -> None:
     unresponsive_stale_sec = max(
         60, _parse_int_env("MOLT_DIFF_DAEMON_STALE_SEC", 10 * 60)
     )
-    groups = _list_backend_daemon_processes()
-    for socket_path, pids in groups.items():
-        live = sorted({pid for pid in pids if _pid_alive(pid)})
-        if not live:
+    processes_by_socket: dict[Path, list[_BackendDaemonProcess]] = {}
+    for process in _list_backend_daemon_processes():
+        if not _pid_alive(process.pid):
+            continue
+        processes_by_socket.setdefault(process.socket_path, []).append(process)
+    records_by_pid = _current_session_backend_daemon_records_by_pid()
+    for socket_path, processes in processes_by_socket.items():
+        verified = [
+            process
+            for process in processes
+            if _verified_backend_daemon_record(process, records_by_pid) is not None
+        ]
+        if not verified:
             continue
         if max_rss_kb > 0:
-            filtered: list[int] = []
-            for pid in live:
-                rss_kb, _age_sec = _pid_rss_age(pid)
+            filtered: list[_BackendDaemonProcess] = []
+            for process in verified:
+                rss_kb, _age_sec = _pid_rss_age(process.pid)
                 if rss_kb is not None and rss_kb > max_rss_kb:
-                    _kill_pid(pid)
-                    print(
-                        "[INFO] Pruned backend daemon pid="
-                        f"{pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
-                    )
+                    if _terminate_verified_backend_daemon(process, records_by_pid):
+                        print(
+                            "[INFO] Pruned backend daemon pid="
+                            f"{process.pid} rss={rss_kb}KB (> {max_rss_kb}KB)"
+                        )
                     continue
-                filtered.append(pid)
-            live = sorted({pid for pid in filtered if _pid_alive(pid)})
-            if not live:
+                filtered.append(process)
+            verified = [process for process in filtered if _pid_alive(process.pid)]
+            if not verified:
                 continue
         if not socket_path.exists():
-            for pid in live:
-                _kill_pid(pid)
+            for process in verified:
+                _terminate_verified_backend_daemon(process, records_by_pid)
             continue
-        if len(live) > 1:
+        if len(verified) > 1:
             # Keep the newest pid; terminate duplicate daemons bound to the same socket.
-            for pid in live[:-1]:
-                _kill_pid(pid)
-            live = live[-1:]
+            for process in verified[:-1]:
+                _terminate_verified_backend_daemon(process, records_by_pid)
+            verified = verified[-1:]
         ping_ok = _daemon_ping(socket_path)
         if not ping_ok:
-            pid = live[0]
-            _rss_kb, age_sec = _pid_rss_age(pid)
+            process = verified[0]
+            _rss_kb, age_sec = _pid_rss_age(process.pid)
             if age_sec is not None and age_sec >= unresponsive_stale_sec:
-                _kill_pid(pid)
-                print(
-                    "[INFO] Pruned stale unresponsive backend daemon pid="
-                    f"{pid} age={age_sec}s socket={socket_path}"
-                )
+                if _terminate_verified_backend_daemon(process, records_by_pid):
+                    print(
+                        "[INFO] Pruned stale unresponsive backend daemon pid="
+                        f"{process.pid} age={age_sec}s socket={socket_path}"
+                    )
 
     daemon_root = _diff_backend_daemon_root()
     if not daemon_root.exists():
         return
-    for pid_path in daemon_root.glob("*.pid"):
-        stem = pid_path.stem
-        socket_path = pid_path.with_name(f"{stem}.sock")
-        try:
-            raw = pid_path.read_text().strip()
-        except OSError:
-            continue
-        if not raw.isdigit():
-            with contextlib.suppress(OSError):
-                pid_path.unlink()
-            continue
-        pid = int(raw)
-        if not _pid_alive(pid):
-            with contextlib.suppress(OSError):
-                pid_path.unlink()
-            continue
-        if not socket_path.exists():
-            _kill_pid(pid)
-            with contextlib.suppress(OSError):
-                pid_path.unlink()
+    daemon_custody.remove_legacy_pid_files(daemon_root)
 
 
 def _prune_stale_build_locks() -> None:
@@ -2966,9 +3027,7 @@ def _run_molt(
 ) -> tuple[str | None, str, int]:
     _apply_memory_limit()
     output_root = Path(tempfile.mkdtemp(prefix="molt_diff_", dir=_diff_tmp_root()))
-    cache_root = output_root / "cache"
     tmp_root = output_root / "tmp"
-    cache_root.mkdir(parents=True, exist_ok=True)
     tmp_root.mkdir(parents=True, exist_ok=True)
     output_binary = output_root / f"{Path(file_path).stem}_molt"
     metrics_dir = output_root / "metrics" if _diff_measure_rss() else None
@@ -2994,6 +3053,8 @@ def _run_molt(
     if shared_cache:
         Path(shared_cache).mkdir(parents=True, exist_ok=True)
     else:
+        cache_root = _diff_cache_root()
+        cache_root.mkdir(parents=True, exist_ok=True)
         env["MOLT_CACHE"] = str(cache_root)
     env["TMPDIR"] = str(tmp_root)
     env["TEMP"] = str(tmp_root)
@@ -4174,6 +4235,7 @@ def run_diff(
             "order": os.environ.get("MOLT_DIFF_ORDER", "auto"),
             "cargo_target_dir": os.environ.get("CARGO_TARGET_DIR", ""),
             "build_profile": build_profile,
+            "stdlib_profile": _diff_stdlib_profile(os.environ)[0] or "",
             "warm_cache": warm_cache,
             "retry_oom": retry_oom,
             "batch_compile_server": _diff_batch_compile_server_enabled(),
@@ -4268,6 +4330,15 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--stdlib-profile",
+        choices=["micro", "full"],
+        default=None,
+        help=(
+            "Stdlib profile forwarded to `molt build` for the Molt side "
+            "(default: MOLT_DIFF_STDLIB_PROFILE or build default)."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit JSON summary to stdout.",
@@ -4329,6 +4400,8 @@ if __name__ == "__main__":
     python_exe = sys.executable
     if args.python_version:
         python_exe = f"python{args.python_version}"
+    if args.stdlib_profile is not None:
+        os.environ["MOLT_DIFF_STDLIB_PROFILE"] = args.stdlib_profile
     build_profile = args.build_profile or _diff_build_profile()
 
     log_dir = Path(args.log_dir).expanduser() if args.log_dir else None

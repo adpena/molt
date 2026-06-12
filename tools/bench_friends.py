@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import re
+import signal
 import statistics
 import subprocess
 import sys
@@ -12,10 +13,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-import harness_memory_guard
-
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_SRC_ROOT = REPO_ROOT / "src"
+if _SRC_ROOT.exists() and str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+import harness_memory_guard
+from molt import backend_daemon_custody as daemon_custody
 
 
 SUPPORTED_SEMANTIC_MODES = {
@@ -24,12 +28,43 @@ SUPPORTED_SEMANTIC_MODES = {
     "unsupported_by_molt",
 }
 
+SUPPORTED_RUNNER_ROLES = {
+    "workload",
+    "custody_audit",
+    "c_api_scan",
+}
+
 RUNNER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+_PASSTHROUGH_ENV_KEYS = {
+    "CC",
+    "CFLAGS",
+    "CXX",
+    "CXXFLAGS",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LD_LIBRARY_PATH",
+    "LIBRARY_PATH",
+    "PATH",
+    "REQUESTS_CA_BUNDLE",
+    "SDKROOT",
+    "SHELL",
+    "SSL_CERT_FILE",
+    "TERM",
+    "USER",
+}
+
+_PASSTHROUGH_ENV_PREFIXES = (
+    "MOLT_BENCH_",
+    "MOLT_MEMORY_GUARD_",
+)
 
 
 @dataclass(frozen=True)
 class RunnerSpec:
     name: str
+    role: str
     build_cmd: list[str] | None
     run_cmd: list[str] | None
     env: dict[str, str]
@@ -88,6 +123,12 @@ class PhaseResult:
     stderr_path: str
     stdout_json: Any | None = None
     stdout_json_error: str | None = None
+    guard_status: str | None = None
+    guard_violation: dict[str, Any] | None = None
+    guard_limit_at_violation: dict[str, Any] | None = None
+    guard_orphaned_process_groups: list[int] = field(default_factory=list)
+    guard_exit_signal: dict[str, Any] | None = None
+    guard_cargo_incremental_quarantine: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -97,6 +138,7 @@ class PhaseResult:
 @dataclass
 class RunnerResult:
     name: str
+    role: str
     status: str
     reason: str | None = None
     build: PhaseResult | None = None
@@ -128,6 +170,32 @@ class SuiteResult:
     tags: list[str]
     runners: dict[str, RunnerResult]
     metrics: dict[str, float | None]
+
+
+class BenchInterrupted(BaseException):
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        self.signame = signal.Signals(signum).name
+        super().__init__(f"interrupted by {self.signame}")
+
+
+class BenchSignalScope:
+    def __init__(self, signals: tuple[int, ...] = (signal.SIGTERM, signal.SIGINT)):
+        self._signals = signals
+        self._previous: dict[int, Any] = {}
+
+    def __enter__(self) -> "BenchSignalScope":
+        for signum in self._signals:
+            self._previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, self._handle_signal)
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        for signum, previous in self._previous.items():
+            signal.signal(signum, previous)
+
+    def _handle_signal(self, signum: int, _frame: object) -> None:
+        raise BenchInterrupted(signum)
 
 
 def _git_rev() -> str | None:
@@ -283,10 +351,17 @@ def _parse_runners(suite_id: str, raw_runners: Any) -> dict[str, RunnerSpec]:
                     "structured_stdout must be 'json'"
                 )
             json_stdout = True
+        role = str(runner_raw.get("role", "workload")).strip()
+        if role not in SUPPORTED_RUNNER_ROLES:
+            raise ValueError(
+                f"suite {suite_id} runner {runner_name}: role must be one of "
+                f"{sorted(SUPPORTED_RUNNER_ROLES)}"
+            )
         parsed_build = _parse_single_command(build_cmd, "build_cmd")
         parsed_run = _parse_single_command(run_cmd, "run_cmd")
         runners[runner_name] = RunnerSpec(
             name=runner_name,
+            role=role,
             build_cmd=parsed_build,
             run_cmd=parsed_run,
             env=_parse_env(runner_raw.get("env", {})),
@@ -369,6 +444,79 @@ def _extract_structured_elapsed(payload: Any) -> dict[str, float]:
     return metrics
 
 
+def _rss_record_payload(record: Any | None) -> dict[str, Any] | None:
+    if record is None:
+        return None
+    return {
+        "pid": getattr(record, "pid", None),
+        "rss_kb": getattr(record, "rss_kb", None),
+        "rss_gb": getattr(record, "rss_gb", None),
+        "command": getattr(record, "command", None),
+        "scope": getattr(record, "scope", None),
+    }
+
+
+def _guard_status(
+    *,
+    returncode: int,
+    violation: Any | None,
+    timed_out: bool,
+    orphaned_process_groups: list[int],
+) -> str:
+    if violation is not None:
+        return "rss_limit_exceeded"
+    if timed_out:
+        return "timeout"
+    if harness_memory_guard.memory_guard.exit_signal_payload(returncode) is not None:
+        return "signal_exit"
+    if returncode != 0:
+        return "failed"
+    if orphaned_process_groups:
+        return "pass_with_orphan_cleanup"
+    return "pass"
+
+
+def _guarded_phase_diagnostics(
+    res: subprocess.CompletedProcess[str],
+) -> dict[str, Any]:
+    orphaned_process_groups = [
+        int(pgid) for pgid in getattr(res, "orphaned_process_groups", ()) or ()
+    ]
+    violation = getattr(res, "violation", None)
+    timed_out = bool(getattr(res, "timed_out", False))
+    limit_at_violation = getattr(res, "limit_at_violation", None)
+    cargo_quarantine = getattr(res, "cargo_incremental_quarantine", None)
+    return {
+        "guard_status": _guard_status(
+            returncode=res.returncode,
+            violation=violation,
+            timed_out=timed_out,
+            orphaned_process_groups=orphaned_process_groups,
+        ),
+        "guard_violation": _rss_record_payload(violation),
+        "guard_limit_at_violation": (
+            None
+            if limit_at_violation is None
+            else harness_memory_guard.memory_guard.memory_limits_payload(
+                limit_at_violation
+            )
+        ),
+        "guard_orphaned_process_groups": orphaned_process_groups,
+        "guard_exit_signal": (
+            None
+            if violation is not None or timed_out
+            else harness_memory_guard.memory_guard.exit_signal_payload(res.returncode)
+        ),
+        "guard_cargo_incremental_quarantine": (
+            None
+            if cargo_quarantine is None
+            else harness_memory_guard.memory_guard._cargo_incremental_quarantine_payload(
+                cargo_quarantine
+            )
+        ),
+    }
+
+
 def _run_command(
     cmd: list[str],
     *,
@@ -400,6 +548,7 @@ def _run_command(
     start = dt.datetime.now(dt.timezone.utc)
     timed_out = False
     guard_elapsed_s: float | None = None
+    diagnostics: dict[str, Any] = {}
     try:
         res = harness_memory_guard.guarded_completed_process(
             cmd,
@@ -418,12 +567,21 @@ def _run_command(
         rc = -9 if timed_out else res.returncode
         stdout = res.stdout or ""
         stderr = res.stderr or ""
+        diagnostics = _guarded_phase_diagnostics(res)
     except subprocess.TimeoutExpired as exc:
         timed_out = True
         rc = -9
         stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
         stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
         stderr = f"{stderr}\n[timeout] command exceeded {timeout_sec}s\n"
+        diagnostics = {
+            "guard_status": "timeout",
+            "guard_violation": None,
+            "guard_limit_at_violation": None,
+            "guard_orphaned_process_groups": [],
+            "guard_exit_signal": None,
+            "guard_cargo_incremental_quarantine": None,
+        }
     end = dt.datetime.now(dt.timezone.utc)
     elapsed = (
         guard_elapsed_s
@@ -445,7 +603,27 @@ def _run_command(
         stderr_path=str(stderr_path),
         stdout_json=stdout_json,
         stdout_json_error=stdout_json_error,
+        **diagnostics,
     )
+
+
+def _base_run_env() -> dict[str, str]:
+    inherited = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _PASSTHROUGH_ENV_KEYS
+        or key in harness_memory_guard.CANONICAL_RUN_ENV_KEYS
+        or any(key.startswith(prefix) for prefix in _PASSTHROUGH_ENV_PREFIXES)
+    }
+    env = harness_memory_guard.canonical_harness_env(
+        inherited,
+        repo_root=REPO_ROOT,
+    )
+    env["PYTHONHASHSEED"] = "0"
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONNOUSERSITE"] = "1"
+    env.pop("PYTHONPATH", None)
+    return env
 
 
 def _run_git(
@@ -555,6 +733,24 @@ def _verify_git_source_custody(
         raise RuntimeError(
             f"suite {suite.id}: git checkout is dirty; refusing off-the-shelf "
             f"benchmark custody:\n{git_status}"
+        )
+
+    rc, ignored_out, err = _run_git(
+        ["ls-files", "--others", "--ignored", "--exclude-standard"],
+        cwd=repo_dir,
+        timeout_sec=timeout_sec,
+        dry_run=False,
+        limits=limits,
+    )
+    if rc != 0:
+        raise RuntimeError(
+            f"suite {suite.id}: git ignored-file custody scan failed: {err.strip()}"
+        )
+    ignored_files = ignored_out.strip()
+    if ignored_files:
+        raise RuntimeError(
+            f"suite {suite.id}: git checkout contains ignored artifacts; refusing "
+            f"off-the-shelf benchmark custody:\n{ignored_files}"
         )
 
     return SourceCustody(
@@ -731,18 +927,22 @@ def _run_runner(
 ) -> RunnerResult:
     if runner.skip_reason:
         return RunnerResult(
-            name=runner.name, status="skipped", reason=runner.skip_reason
+            name=runner.name,
+            role=runner.role,
+            status="skipped",
+            reason=runner.skip_reason,
         )
     if not runner.run_cmd:
         return RunnerResult(
             name=runner.name,
+            role=runner.role,
             status="skipped",
             reason="run_cmd not configured",
         )
 
     env = suite_env.copy()
     env.update(_resolve_env(runner.env, tokens))
-    result = RunnerResult(name=runner.name, status="ok")
+    result = RunnerResult(name=runner.name, role=runner.role, status="ok")
 
     if runner.build_cmd:
         build_cmd = _resolve_tokenized(runner.build_cmd, tokens)
@@ -824,7 +1024,7 @@ def _run_runner(
 def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
     def _runner_median(name: str) -> float | None:
         runner = runners.get(name)
-        if runner and runner.status == "ok":
+        if runner and runner.status == "ok" and runner.role == "workload":
             return runner.run_median_s
         return None
 
@@ -846,6 +1046,7 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
     nuitka_s = _runner_median("nuitka")
     pyodide_s = _runner_median("pyodide")
     tinygrad_s = _runner_median("tinygrad")
+    numpy_s = _runner_median("numpy")
 
     # Standardized lane keys align with tools/bench.py JSON naming.
     metrics: dict[str, float | None] = {
@@ -857,6 +1058,7 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         "nuitka_median_s": nuitka_s,
         "pyodide_median_s": pyodide_s,
         "tinygrad_median_s": tinygrad_s,
+        "numpy_median_s": numpy_s,
         "cpython_time_s": cp_s,
         "pypy_time_s": pp_s,
         "molt_time_s": mt_s,
@@ -864,6 +1066,7 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         "nuitka_time_s": nuitka_s,
         "pyodide_time_s": pyodide_s,
         "tinygrad_time_s": tinygrad_s,
+        "numpy_time_s": numpy_s,
         "molt_vs_cpython_speedup": _speedup(cp_s, mt_s),
         "molt_vs_pypy_speedup": _speedup(pp_s, mt_s),
         "molt_vs_codon_speedup": _speedup(codon_s, mt_s),
@@ -875,6 +1078,8 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         "pyodide_vs_molt_speedup": _speedup(mt_s, pyodide_s),
         "molt_vs_tinygrad_speedup": _speedup(tinygrad_s, mt_s),
         "tinygrad_vs_molt_speedup": _speedup(mt_s, tinygrad_s),
+        "molt_vs_numpy_speedup": _speedup(numpy_s, mt_s),
+        "numpy_vs_molt_speedup": _speedup(mt_s, numpy_s),
         "molt_speedup": _speedup(cp_s, mt_s),
         "molt_cpython_ratio": _speedup(mt_s, cp_s),
         "molt_pypy_ratio": _speedup(mt_s, pp_s),
@@ -882,10 +1087,11 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         "molt_nuitka_ratio": _speedup(mt_s, nuitka_s),
         "molt_pyodide_ratio": _speedup(mt_s, pyodide_s),
         "molt_tinygrad_ratio": _speedup(mt_s, tinygrad_s),
+        "molt_numpy_ratio": _speedup(mt_s, numpy_s),
     }
     structured_by_metric: dict[str, dict[str, float]] = {}
     for runner_name, runner in runners.items():
-        if runner.status != "ok":
+        if runner.status != "ok" or runner.role != "workload":
             continue
         runner_slug = _metric_slug(runner_name)
         metrics[f"{runner_slug}_median_s"] = runner.run_median_s
@@ -900,6 +1106,7 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         cpython_metric_s = by_runner.get("cpython")
         friend_metric_s = by_runner.get("friend")
         tinygrad_metric_s = by_runner.get("tinygrad")
+        numpy_metric_s = by_runner.get("numpy")
         metrics[f"molt_vs_cpython_{metric_slug}_speedup"] = _speedup(
             cpython_metric_s, molt_metric_s
         )
@@ -908,6 +1115,9 @@ def _suite_metrics(runners: dict[str, RunnerResult]) -> dict[str, float | None]:
         )
         metrics[f"molt_vs_tinygrad_{metric_slug}_speedup"] = _speedup(
             tinygrad_metric_s, molt_metric_s
+        )
+        metrics[f"molt_vs_numpy_{metric_slug}_speedup"] = _speedup(
+            numpy_metric_s, molt_metric_s
         )
     return metrics
 
@@ -934,6 +1144,8 @@ def _render_summary_markdown(
     manifest_path: Path,
     json_rel: str,
     suites: list[SuiteResult],
+    interrupted: dict[str, Any] | None = None,
+    backend_daemon_cleanup: list[dict[str, Any]] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append("# Friend Benchmark Summary")
@@ -944,12 +1156,13 @@ def _render_summary_markdown(
     lines.append("")
     lines.append(
         "| Suite | Semantic Mode | Status | CPython s | PyPy s | Codon s | "
-        "Nuitka s | Pyodide s | Friend s | Molt s | Molt/CPython | Molt/PyPy | "
-        "Molt/Codon | Molt/Nuitka | Molt/Pyodide | Molt/Friend |"
+        "Nuitka s | Pyodide s | Friend s | Tinygrad s | NumPy s | Molt s | "
+        "Molt/CPython | Molt/PyPy | Molt/Codon | Molt/Nuitka | Molt/Pyodide | "
+        "Molt/Friend | Molt/NumPy |"
     )
     lines.append(
         "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-        "---: | ---: | ---: | ---: | ---: | ---: |"
+        "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
     )
     for suite in suites:
         m = suite.metrics
@@ -962,6 +1175,8 @@ def _render_summary_markdown(
             f"{_format_optional(m.get('nuitka_median_s'))} | "
             f"{_format_optional(m.get('pyodide_median_s'))} | "
             f"{_format_optional(m.get('friend_median_s'))} | "
+            f"{_format_optional(m.get('tinygrad_median_s'))} | "
+            f"{_format_optional(m.get('numpy_median_s'))} | "
             f"{_format_optional(m.get('molt_median_s'))} | "
             f"{_format_optional(m.get('molt_cpython_ratio'))} | "
             f"{_format_optional(m.get('molt_pypy_ratio'))} | "
@@ -969,6 +1184,7 @@ def _render_summary_markdown(
             f"{_format_optional(m.get('molt_nuitka_ratio'))} | "
             f"{_format_optional(m.get('molt_pyodide_ratio'))} | "
             f"{_format_optional(m.get('molt_vs_friend_speedup'))} |"
+            f"{_format_optional(m.get('molt_vs_numpy_speedup'))} |"
         )
 
     lines.append("")
@@ -995,12 +1211,32 @@ def _render_summary_markdown(
 
     lines.append("")
     lines.append("Generated by `tools/bench_friends.py`.")
+    if interrupted is not None:
+        lines.append("")
+        lines.append("## Interruption")
+        lines.append(
+            f"- Signal: `{interrupted['signame']}` "
+            f"({interrupted['signum']}); partial results were written."
+        )
+    cleanup_events = backend_daemon_cleanup or []
+    if cleanup_events:
+        lines.append("")
+        lines.append("## Backend Daemon Cleanup")
+        for event in cleanup_events:
+            status = event.get("status", "unknown")
+            reason = event.get("reason", "unknown")
+            terminated = event.get("terminated_count", 0)
+            lines.append(
+                f"- `{status}` reason=`{reason}` terminated={terminated} "
+                f"session=`{event.get('session_id', '')}`"
+            )
     return "\n".join(lines) + "\n"
 
 
 def _runner_to_dict(result: RunnerResult) -> dict[str, Any]:
     return {
         "name": result.name,
+        "role": result.role,
         "status": result.status,
         "reason": result.reason,
         "build": _phase_to_dict(result.build) if result.build else None,
@@ -1025,6 +1261,12 @@ def _phase_to_dict(phase: PhaseResult) -> dict[str, Any]:
         "stderr_path": phase.stderr_path,
         "stdout_json": phase.stdout_json,
         "stdout_json_error": phase.stdout_json_error,
+        "guard_status": phase.guard_status,
+        "guard_violation": phase.guard_violation,
+        "guard_limit_at_violation": phase.guard_limit_at_violation,
+        "guard_orphaned_process_groups": phase.guard_orphaned_process_groups,
+        "guard_exit_signal": phase.guard_exit_signal,
+        "guard_cargo_incremental_quarantine": phase.guard_cargo_incremental_quarantine,
     }
 
 
@@ -1063,6 +1305,149 @@ def _suite_to_dict(suite: SuiteResult) -> dict[str, Any]:
             name: _runner_to_dict(result) for name, result in suite.runners.items()
         },
     }
+
+
+def _append_event_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def _daemon_record_to_dict(
+    record: daemon_custody.BackendDaemonIdentityRecord,
+) -> dict[str, Any]:
+    identity = record.identity
+    return {
+        "identity_path": str(record.path),
+        "pid": identity.pid,
+        "socket_path": str(identity.socket_path),
+        "project_root": str(identity.project_root),
+        "cargo_profile": identity.cargo_profile,
+        "config_digest": identity.config_digest,
+        "backend_bin": str(identity.backend_bin),
+        "created_at": identity.created_at,
+        "command": identity.command,
+    }
+
+
+def _cleanup_backend_daemons(
+    *,
+    run_env: dict[str, str],
+    output_root: Path,
+    reason: str,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "schema_version": 1,
+        "event": "bench_friends_backend_daemon_cleanup",
+        "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "reason": reason,
+        "session_id": run_env.get("MOLT_SESSION_ID", ""),
+        "project_root": str(REPO_ROOT),
+        "status": "ok",
+        "terminated": [],
+        "terminated_count": 0,
+    }
+    try:
+        terminated = daemon_custody.terminate_backend_daemons_for_session(
+            run_env,
+            project_root=REPO_ROOT,
+            grace=1.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        event["status"] = "failed"
+        event["error"] = str(exc)
+        print(
+            "bench_friends: backend daemon cleanup failed: "
+            f"reason={reason} error={exc}",
+            file=sys.stderr,
+        )
+    else:
+        event["terminated"] = [_daemon_record_to_dict(record) for record in terminated]
+        event["terminated_count"] = len(terminated)
+        if terminated:
+            pids = ",".join(str(record.identity.pid) for record in terminated)
+            print(
+                "bench_friends: cleaned backend daemons: "
+                f"reason={reason} count={len(terminated)} pids={pids}",
+                file=sys.stderr,
+            )
+    _append_event_jsonl(output_root / "memory_guard" / "backend_daemon_cleanup.jsonl", event)
+    return event
+
+
+def _interrupted_payload(interrupted: BenchInterrupted | None) -> dict[str, Any] | None:
+    if interrupted is None:
+        return None
+    return {
+        "signum": interrupted.signum,
+        "signame": interrupted.signame,
+        "returncode": 128 + interrupted.signum,
+        "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+
+
+def _write_run_outputs(
+    *,
+    output_root: Path,
+    args: argparse.Namespace,
+    metadata: dict[str, Any],
+    manifest_path: Path,
+    run_started: dt.datetime,
+    runner_filters: set[str],
+    suite_root_overrides: dict[str, Path],
+    repo_ref_overrides: dict[str, str],
+    suite_results: list[SuiteResult],
+    limits: harness_memory_guard.HarnessMemoryLimits,
+    interrupted: BenchInterrupted | None,
+    backend_daemon_cleanup: list[dict[str, Any]],
+) -> tuple[Path, Path, str]:
+    json_out = (args.json_out or (output_root / "results.json")).resolve()
+    json_out.parent.mkdir(parents=True, exist_ok=True)
+    interrupt_payload = _interrupted_payload(interrupted)
+    payload = {
+        "schema_version": 1,
+        "manifest_schema_version": metadata["schema_version"],
+        "generated_at": run_started.isoformat(),
+        "manifest_path": str(manifest_path),
+        "git_rev": _git_rev(),
+        "dry_run": args.dry_run,
+        "interrupted": interrupt_payload,
+        "backend_daemon_cleanup": backend_daemon_cleanup,
+        "memory_guard": harness_memory_guard.limits_summary(limits),
+        "host": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+            "cpu_count": os.cpu_count(),
+        },
+        "options": {
+            "include_disabled": args.include_disabled,
+            "checkout": args.checkout,
+            "fetch": args.fetch,
+            "repeat_override": args.repeat,
+            "timeout_override": args.timeout_sec,
+            "runner_filter": sorted(runner_filters),
+            "suite_root_overrides": {
+                suite_id: str(path) for suite_id, path in sorted(suite_root_overrides.items())
+            },
+            "repo_ref_overrides": dict(sorted(repo_ref_overrides.items())),
+        },
+        "suites": [_suite_to_dict(suite) for suite in suite_results],
+    }
+    json_out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    summary_out = (args.summary_out or (output_root / "summary.md")).resolve()
+    summary_out.parent.mkdir(parents=True, exist_ok=True)
+    summary_text = _render_summary_markdown(
+        run_started_at=run_started.isoformat(),
+        manifest_path=manifest_path,
+        json_rel=str(json_out),
+        suites=suite_results,
+        interrupted=interrupt_payload,
+        backend_daemon_cleanup=backend_daemon_cleanup,
+    )
+    summary_out.write_text(summary_text, encoding="utf-8")
+    return json_out, summary_out, summary_text
 
 
 def _select_suites(
@@ -1307,188 +1692,186 @@ def main() -> int:
     output_root.mkdir(parents=True, exist_ok=True)
     repos_root = args.repos_root.resolve()
 
-    run_env = os.environ.copy()
-    run_env.setdefault("PYTHONHASHSEED", "0")
-    run_env.setdefault("PYTHONUNBUFFERED", "1")
+    run_env = _base_run_env()
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", run_env)
 
     suite_results: list[SuiteResult] = []
+    backend_daemon_cleanup: list[dict[str, Any]] = []
+    interrupted: BenchInterrupted | None = None
     overall_rc = 0
-    with harness_memory_guard.repo_process_sentinel(
-        repo_root=REPO_ROOT,
-        artifact_root=output_root,
-        label="bench_friends",
-        limits=limits,
-    ):
-        for suite in selected:
-            suite_timeout = args.timeout_sec or suite.timeout_sec
-            suite_repeat = args.repeat or suite.repeat
-            suite = SuiteSpec(
-                **{
-                    **suite.__dict__,
-                    "timeout_sec": suite_timeout,
-                    "repeat": suite_repeat,
-                }
-            )
-            if suite.id in repo_ref_overrides:
-                suite = replace(suite, repo_ref=repo_ref_overrides[suite.id])
-            try:
-                acquisition = _acquire_suite(
-                    suite,
-                    repos_root=repos_root,
-                    suite_root_override=suite_root_overrides.get(suite.id),
-                    checkout=args.checkout,
-                    fetch=args.fetch,
-                    timeout_sec=suite.timeout_sec,
-                    dry_run=args.dry_run,
-                    limits=limits,
-                )
-                suite_root = acquisition.suite_root
-                suite_workdir = acquisition.suite_workdir
-                source_custody = acquisition.custody
-                resolved_ref = source_custody.head_ref
-                suite_logs = output_root / "logs" / suite.id
-                tokens = {
-                    "repo_root": str(Path.cwd().resolve()),
-                    "suite_root": str(suite_root.resolve()),
-                    "suite_workdir": str(suite_workdir.resolve()),
-                    "output_root": str(output_root),
-                    "python": sys.executable,
-                }
-                suite_env = run_env.copy()
-                suite_env.update(_resolve_env(suite.env, tokens))
-                prep_ok, prep_reason = _run_prepare_steps(
-                    suite,
-                    suite_workdir=suite_workdir,
-                    suite_env=suite_env,
-                    tokens=tokens,
-                    timeout_sec=suite.timeout_sec,
-                    logs_dir=suite_logs,
-                    dry_run=args.dry_run,
-                    limits=limits,
-                )
-                runners: dict[str, RunnerResult] = {}
-                if prep_ok:
-                    for runner_name, runner_spec in suite.runners.items():
-                        runners[runner_name] = _run_runner(
-                            runner_spec,
-                            suite=suite,
-                            suite_workdir=suite_workdir,
-                            suite_env=suite_env,
-                            tokens=tokens,
-                            logs_dir=suite_logs,
-                            dry_run=args.dry_run,
-                            limits=limits,
+    try:
+        with BenchSignalScope():
+            with harness_memory_guard.repo_process_sentinel(
+                repo_root=REPO_ROOT,
+                artifact_root=output_root,
+                label="bench_friends",
+                limits=limits,
+            ):
+                try:
+                    for suite in selected:
+                        suite_timeout = args.timeout_sec or suite.timeout_sec
+                        suite_repeat = args.repeat or suite.repeat
+                        suite = SuiteSpec(
+                            **{
+                                **suite.__dict__,
+                                "timeout_sec": suite_timeout,
+                                "repeat": suite_repeat,
+                            }
                         )
-                else:
-                    for runner_name in suite.runners:
-                        runners[runner_name] = RunnerResult(
-                            name=runner_name,
-                            status="failed",
-                            reason=prep_reason,
+                        if suite.id in repo_ref_overrides:
+                            suite = replace(suite, repo_ref=repo_ref_overrides[suite.id])
+                        try:
+                            acquisition = _acquire_suite(
+                                suite,
+                                repos_root=repos_root,
+                                suite_root_override=suite_root_overrides.get(suite.id),
+                                checkout=args.checkout,
+                                fetch=args.fetch,
+                                timeout_sec=suite.timeout_sec,
+                                dry_run=args.dry_run,
+                                limits=limits,
+                            )
+                            suite_root = acquisition.suite_root
+                            suite_workdir = acquisition.suite_workdir
+                            source_custody = acquisition.custody
+                            resolved_ref = source_custody.head_ref
+                            suite_logs = output_root / "logs" / suite.id
+                            tokens = {
+                                "repo_root": str(Path.cwd().resolve()),
+                                "suite_root": str(suite_root.resolve()),
+                                "suite_workdir": str(suite_workdir.resolve()),
+                                "output_root": str(output_root),
+                                "python": sys.executable,
+                            }
+                            suite_env = run_env.copy()
+                            suite_env.update(_resolve_env(suite.env, tokens))
+                            prep_ok, prep_reason = _run_prepare_steps(
+                                suite,
+                                suite_workdir=suite_workdir,
+                                suite_env=suite_env,
+                                tokens=tokens,
+                                timeout_sec=suite.timeout_sec,
+                                logs_dir=suite_logs,
+                                dry_run=args.dry_run,
+                                limits=limits,
+                            )
+                            runners: dict[str, RunnerResult] = {}
+                            if prep_ok:
+                                for runner_name, runner_spec in suite.runners.items():
+                                    runners[runner_name] = _run_runner(
+                                        runner_spec,
+                                        suite=suite,
+                                        suite_workdir=suite_workdir,
+                                        suite_env=suite_env,
+                                        tokens=tokens,
+                                        logs_dir=suite_logs,
+                                        dry_run=args.dry_run,
+                                        limits=limits,
+                                    )
+                            else:
+                                for runner_name in suite.runners:
+                                    runners[runner_name] = RunnerResult(
+                                        name=runner_name,
+                                        role=suite.runners[runner_name].role,
+                                        status="failed",
+                                        reason=prep_reason,
+                                    )
+                            status, reason = _suite_status(runners)
+                            if prep_reason and not reason:
+                                reason = prep_reason
+                            metrics = _suite_metrics(runners)
+                            suite_result = SuiteResult(
+                                id=suite.id,
+                                friend=suite.friend,
+                                display_name=suite.display_name,
+                                semantic_mode=suite.semantic_mode,
+                                source=suite.source,
+                                suite_root=str(suite_root),
+                                suite_workdir=str(suite_workdir),
+                                resolved_ref=resolved_ref,
+                                requested_ref=source_custody.requested_ref,
+                                source_custody=source_custody,
+                                status=status,
+                                reason=reason,
+                                adapter_notes=suite.adapter_notes,
+                                tags=suite.tags,
+                                runners=runners,
+                                metrics=metrics,
+                            )
+                            suite_results.append(suite_result)
+                            if status == "failed":
+                                overall_rc = 1
+                                if args.fail_fast:
+                                    break
+                        except Exception as exc:  # noqa: BLE001
+                            suite_result = SuiteResult(
+                                id=suite.id,
+                                friend=suite.friend,
+                                display_name=suite.display_name,
+                                semantic_mode=suite.semantic_mode,
+                                source=suite.source,
+                                suite_root="",
+                                suite_workdir="",
+                                resolved_ref=None,
+                                requested_ref=suite.repo_ref,
+                                source_custody=SourceCustody(
+                                    source=suite.source,
+                                    requested_ref=suite.repo_ref,
+                                    expected_ref=None,
+                                    head_ref=None,
+                                    ref_verified=False if suite.source == "git" else None,
+                                    git_clean=False if suite.source == "git" else None,
+                                    git_status_porcelain=None,
+                                    suite_root_overridden=suite.id in suite_root_overrides,
+                                    verification="not_acquired",
+                                ),
+                                status="failed",
+                                reason=str(exc),
+                                adapter_notes=suite.adapter_notes,
+                                tags=suite.tags,
+                                runners={},
+                                metrics=_suite_metrics({}),
+                            )
+                            suite_results.append(suite_result)
+                            overall_rc = 1
+                            if args.fail_fast:
+                                break
+                except BenchInterrupted as exc:
+                    interrupted = exc
+                    raise
+                finally:
+                    cleanup_reason = (
+                        "interrupted" if interrupted is not None else "harness_exit"
+                    )
+                    backend_daemon_cleanup.append(
+                        _cleanup_backend_daemons(
+                            run_env=run_env,
+                            output_root=output_root,
+                            reason=cleanup_reason,
                         )
-                status, reason = _suite_status(runners)
-                if prep_reason and not reason:
-                    reason = prep_reason
-                metrics = _suite_metrics(runners)
-                suite_result = SuiteResult(
-                    id=suite.id,
-                    friend=suite.friend,
-                    display_name=suite.display_name,
-                    semantic_mode=suite.semantic_mode,
-                    source=suite.source,
-                    suite_root=str(suite_root),
-                    suite_workdir=str(suite_workdir),
-                    resolved_ref=resolved_ref,
-                    requested_ref=source_custody.requested_ref,
-                    source_custody=source_custody,
-                    status=status,
-                    reason=reason,
-                    adapter_notes=suite.adapter_notes,
-                    tags=suite.tags,
-                    runners=runners,
-                    metrics=metrics,
-                )
-                suite_results.append(suite_result)
-                if status == "failed":
-                    overall_rc = 1
-                    if args.fail_fast:
-                        break
-            except Exception as exc:  # noqa: BLE001
-                suite_result = SuiteResult(
-                    id=suite.id,
-                    friend=suite.friend,
-                    display_name=suite.display_name,
-                    semantic_mode=suite.semantic_mode,
-                    source=suite.source,
-                    suite_root="",
-                    suite_workdir="",
-                    resolved_ref=None,
-                    requested_ref=suite.repo_ref,
-                    source_custody=SourceCustody(
-                        source=suite.source,
-                        requested_ref=suite.repo_ref,
-                        expected_ref=None,
-                        head_ref=None,
-                        ref_verified=False if suite.source == "git" else None,
-                        git_clean=False if suite.source == "git" else None,
-                        git_status_porcelain=None,
-                        suite_root_overridden=suite.id in suite_root_overrides,
-                        verification="not_acquired",
-                    ),
-                    status="failed",
-                    reason=str(exc),
-                    adapter_notes=suite.adapter_notes,
-                    tags=suite.tags,
-                    runners={},
-                    metrics=_suite_metrics({}),
-                )
-                suite_results.append(suite_result)
-                overall_rc = 1
-                if args.fail_fast:
-                    break
+                    )
+    except BenchInterrupted as exc:
+        interrupted = exc
+        overall_rc = 128 + exc.signum
+        print(f"bench_friends: interrupted by {exc.signame}", file=sys.stderr)
 
-    json_out = (args.json_out or (output_root / "results.json")).resolve()
-    json_out.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schema_version": 1,
-        "manifest_schema_version": metadata["schema_version"],
-        "generated_at": run_started.isoformat(),
-        "manifest_path": str(manifest_path),
-        "git_rev": _git_rev(),
-        "dry_run": args.dry_run,
-        "memory_guard": harness_memory_guard.limits_summary(limits),
-        "host": {
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-            "python": platform.python_version(),
-            "cpu_count": os.cpu_count(),
-        },
-        "options": {
-            "include_disabled": args.include_disabled,
-            "checkout": args.checkout,
-            "fetch": args.fetch,
-            "repeat_override": args.repeat,
-            "timeout_override": args.timeout_sec,
-            "runner_filter": sorted(runner_filters),
-            "suite_root_overrides": {
-                suite_id: str(path) for suite_id, path in sorted(suite_root_overrides.items())
-            },
-            "repo_ref_overrides": dict(sorted(repo_ref_overrides.items())),
-        },
-        "suites": [_suite_to_dict(suite) for suite in suite_results],
-    }
-    json_out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    if any(event.get("status") == "failed" for event in backend_daemon_cleanup):
+        overall_rc = overall_rc or 1
 
-    summary_out = (args.summary_out or (output_root / "summary.md")).resolve()
-    summary_out.parent.mkdir(parents=True, exist_ok=True)
-    summary_text = _render_summary_markdown(
-        run_started_at=run_started.isoformat(),
+    json_out, summary_out, summary_text = _write_run_outputs(
+        output_root=output_root,
+        args=args,
+        metadata=metadata,
         manifest_path=manifest_path,
-        json_rel=str(json_out),
-        suites=suite_results,
+        run_started=run_started,
+        runner_filters=runner_filters,
+        suite_root_overrides=suite_root_overrides,
+        repo_ref_overrides=repo_ref_overrides,
+        suite_results=suite_results,
+        limits=limits,
+        interrupted=interrupted,
+        backend_daemon_cleanup=backend_daemon_cleanup,
     )
-    summary_out.write_text(summary_text, encoding="utf-8")
 
     if args.update_doc:
         doc_out = Path("docs/benchmarks/friend_summary.md").resolve()

@@ -27,8 +27,9 @@ document the chosen target in specs/tests and keep the differential suite aligne
   it; recursive RSS polling remains authoritative. The lineage tracker keeps
   reparented/session-changing descendants inside RSS accounting, while teardown
   stays scoped to the guarded root process group plus exact escaped descendant
-  PIDs; repo sentinels must exclude ancestor and Codex/control-plane process
-  groups from kill sets even when those groups contain repo-looking children.
+  PIDs; repo sentinels must exclude ancestor and Claude/Codex/control-plane
+  process groups from kill sets even when those groups contain repo-looking
+  children.
 - **OOM retry**: OOM failures are retried once with `--jobs 1` (disable via `--no-retry-oom` or `MOLT_DIFF_RETRY_OOM=0`).
 - **Warm cache**: `--warm-cache` or `MOLT_DIFF_WARM_CACHE=1` prebuilds all tests to seed `MOLT_CACHE`.
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `--failures-output` or `MOLT_DIFF_FAILURES`).

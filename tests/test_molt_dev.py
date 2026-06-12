@@ -50,13 +50,18 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TOOLS_ROOT = REPO_ROOT / "tools"
+if str(TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOLS_ROOT))
+
+import harness_memory_guard  # noqa: E402
+
 SCRIPT_PATH = REPO_ROOT / "tools" / "molt_dev.py"
 COMMITTED_GATES = REPO_ROOT / "tools" / "molt_dev_gates.toml"
 
@@ -81,11 +86,14 @@ def drv():
 
 
 def _git(repo: Path, *args: str, check: bool = True, input_text: str | None = None):
-    proc = subprocess.run(
+    proc = harness_memory_guard.guarded_completed_process(
         ["git", "-C", str(repo), *args],
+        prefix="MOLT_TEST",
+        cwd=REPO_ROOT,
+        input=input_text,
         capture_output=True,
         text=True,
-        input=input_text,
+        timeout=30.0,
     )
     if check and proc.returncode != 0:
         raise AssertionError(
@@ -1120,11 +1128,7 @@ def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path):
 
 def test_detached_verify_detects_died_silent(drv, tmp_path, capsys):
     # Fabricate the hazard-11 signature: a pid that is GONE and no rc file.
-    proc = subprocess.run([sys.executable, "-c", "pass"], capture_output=True)
-    assert proc.returncode == 0
-    dead = subprocess.Popen([sys.executable, "-c", "pass"])
-    dead_pid = dead.pid
-    dead.wait()
+    dead_pid = 999_999_999
     state = tmp_path / "detached" / "ghost"
     state.mkdir(parents=True)
     (state / "pid").write_text(str(dead_pid))

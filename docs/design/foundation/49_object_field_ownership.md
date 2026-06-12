@@ -55,4 +55,8 @@ swallowed — doc 48 / #65) → **field release (this doc / #86)** → child fin
 leak gauge → ordering (#58). Layer-1 placement (#87, #63) is UPSTREAM: if an instance
 never reaches the free path, this release never runs (and cannot leak or double-free —
 it simply does not execute). Do not add a placement-era field release to "compensate";
-fix placement so the instance reaches the one runtime authority here.
+fix placement so the instance reaches the one runtime authority here. The current
+placement authority for TIR-managed functions is the finalizer-sensitive ownership
+lattice in `tir/passes/ownership_lattice_min.rs` consumed by
+`tir/passes/drop_insertion.rs`: explicit `DEC_REF` owns the Python `del` boundary,
+and otherwise dominated finalizer-sensitive roots are released at return boundary.

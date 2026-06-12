@@ -8,6 +8,7 @@ pub mod cfg;
 pub mod deopt;
 pub mod dominators;
 pub mod drop_phase;
+pub mod exception_regions;
 pub mod function;
 pub mod lir;
 pub mod lower_from_simple;
@@ -80,6 +81,11 @@ pub use self::call_facts::{
     InlineWhyNot,
 };
 pub use self::call_graph::{CallEdge, CallGraph};
+pub use self::exception_regions::{
+    ExceptionMatchRefFact, ExceptionOpPosition, ExceptionRegionDiagnostic,
+    ExceptionRegionDiagnosticKind, ExceptionRegionFacts, ExceptionRegions,
+    verify_exception_regions,
+};
 pub use self::function::{TirFunction, TirModule};
 pub use self::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
 pub use self::module_phase::{ModuleAnalysis, run_module_pipeline};

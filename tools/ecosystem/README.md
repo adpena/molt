@@ -10,7 +10,7 @@ never asserted**.
 | File | Role |
 |---|---|
 | `dynamism_features.json` | **Single source of truth** for every dynamism feature's `status` (Lane B taxonomy as data), each with `evidence` (file:line from doc 24). |
-| `package_triage.json` | The 25 audited packages, each with the features it **requires** on its import + commonly-used path. Verdicts here are *cached derivations*, re-checked by the tool. |
+| `package_triage.json` | The audited packages, each with the features it **requires** on its import + commonly-used path. Verdicts here are *cached derivations*, re-checked by the tool. |
 | `ecosystem_compat_baseline.json` | The committed one-way ratchet: per-package `{verdict, hardest_feature, sha256_of_evidence}` + `compatible_floor` / `incompatible_ceiling` / `partial_ceiling`. |
 | `../check_ecosystem_compat.py` | The guard. Re-derives every verdict and fails on any drift/regression. |
 | `../../docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md` | Generated, never hand-edited; `--update-matrix` regenerates it. |
@@ -47,9 +47,12 @@ The guard exits non-zero when any of these hold (run `check_ecosystem_compat.py`
 - versus the baseline: a package's verdict **regressed** (moved down the
   lattice), its **evidence SHA changed** while the verdict was unchanged
   (re-verify), or it has **no baseline entry**;
-- the distribution regressed: `compatible_floor` fell, or `incompatible_ceiling`
-  / `partial_ceiling` rose. These move **one way only** (good metric up, bad
-  metrics down) — the same asymmetry as the satellite ratchet ceiling.
+- the distribution regressed across the package universe that already exists in
+  the committed baseline: `compatible_floor` fell, or `incompatible_ceiling` /
+  `partial_ceiling` rose. Existing packages move **one way only** (good metric
+  up, bad metrics down) — the same asymmetry as the satellite ratchet ceiling.
+  New audited packages may expand the universe with honest fail-closed verdicts;
+  they must still be explicit baseline entries.
 
 ## How to add a package
 
@@ -57,9 +60,10 @@ The guard exits non-zero when any of these hold (run `check_ecosystem_compat.py`
    - `required_features`: the feature ids it needs on the import + commonly-used
      path (Lane B scope). `optional_features`: ids doc 24 names but that are
      path-avoidable / optional.
-   - `source` (e.g. `"doc-24 paper triage"`), `compile_probe_status` (`"pending"`
-     until a real `molt build` verifies it), and a `source_basis` justifying the
-     required/optional split against doc 24 text.
+   - `source` (e.g. `"doc-24 paper triage"` or an explicit priority lane),
+     `compile_probe_status` (`"pending"` until a real `molt build` verifies it),
+     and a `source_basis` justifying the required/optional split against the
+     source evidence.
    - You *may* pre-fill `verdict`/`hardest_feature`, but they are **checked
      against the derivation** — if you guess wrong the guard tells you the
      derived value. Easiest: leave them out, run `--show <pkg>`, then fill them.

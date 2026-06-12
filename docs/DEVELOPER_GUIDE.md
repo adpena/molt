@@ -195,7 +195,12 @@ Use this workflow for high-velocity multi-agent iteration:
 
 Key controls:
 - `--profile dev` defaults to Cargo `dev-fast` (override via `MOLT_DEV_CARGO_PROFILE`).
-- Native codegen uses a backend daemon (`MOLT_BACKEND_DAEMON=1`) with restart/retry fallback for robustness.
+- Native codegen uses a backend daemon (`MOLT_BACKEND_DAEMON=1`). If an
+  attempted daemon compile fails, the CLI retries only classified lightweight
+  probe/connect failures before a full IR compile request is admitted. Once a
+  full request crosses the daemon socket, outcome ownership belongs to that
+  daemon and the CLI fails closed instead of restarting or launching a hidden
+  one-shot compile that duplicates backend memory.
 - Cacheable daemon compiles use a probe-first request path: full IR is only encoded and sent after a daemon-declared cache miss.
 - Native runtime verification/build starts asynchronously after cache/setup and is joined at the native link boundary; `emit=obj` intentionally skips that overlap because it never links a binary.
 - Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents when you want maximum reuse; lock/fingerprint state is under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR`), so explicit shared roots also share Cargo rebuild locks. Daemon sockets default to `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp path).

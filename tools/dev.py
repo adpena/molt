@@ -254,6 +254,7 @@ def _print_canonical_env(env: dict[str, str]) -> None:
         "MOLT_EXT_ROOT",
         "CARGO_TARGET_DIR",
         "MOLT_DIFF_CARGO_TARGET_DIR",
+        "CARGO_INCREMENTAL",
         "MOLT_CACHE",
         "MOLT_DIFF_ROOT",
         "MOLT_DIFF_TMPDIR",

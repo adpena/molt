@@ -66,17 +66,7 @@ def _canonical_codecs_file(path: object) -> object:
     return path
 
 
-def import_module(name: str, package: str | None = None):
-    # CPython parity: importlib.import_module('.x', non_str_package) raises
-    # TypeError("__package__ not set to a string").
-    if (
-        isinstance(name, str)
-        and name.startswith(".")
-        and package is not None
-        and not isinstance(package, str)
-    ):
-        raise TypeError("__package__ not set to a string")
-
+def import_module(name: str, package: object = None):
     resolved = _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)
     # `encodings.oem` is intentionally unavailable on non-Windows when codecs
     # does not expose OEM helpers; raise at the importlib boundary so callers
@@ -95,10 +85,13 @@ def import_module(name: str, package: str | None = None):
         raise ModuleNotFoundError(f"No module named '{missing_name}'")
     mod = _MOLT_IMPORTLIB_IMPORT_TRANSACTION(resolved, globals(), locals(), ("*",), 0)
     modules = _runtime_modules()
-    if resolved in modules:
-        return modules[resolved]
+    cached = modules.get(resolved)
+    if cached is not None:
+        return cached
     if mod is not None:
         return mod
+    if resolved in modules:
+        raise ImportError(f"import of {resolved} halted; None in sys.modules")
     raise ModuleNotFoundError(f"No module named '{resolved}'")
 
 

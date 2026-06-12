@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from functools import cache
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "tools" / "process_sentinel.py"
 
 
+@cache
 def _load_process_sentinel():
     spec = importlib.util.spec_from_file_location(
         "molt_tools_process_sentinel", SCRIPT_PATH
@@ -283,6 +285,38 @@ def test_process_groups_keep_observed_child_group_after_reparenting() -> None:
     assert groups[0].total_rss_kb == 300
 
 
+def test_process_groups_owned_filter_excludes_repo_matching_peer() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        20: module.memory_guard.ProcessSample(
+            pid=20,
+            ppid=10,
+            pgid=20,
+            rss_kb=100,
+            command="/repo/molt/target/dev-fast/molt-backend --owned",
+        ),
+        30: module.memory_guard.ProcessSample(
+            pid=30,
+            ppid=1,
+            pgid=30,
+            rss_kb=200,
+            command="/repo/molt/target/dev-fast/molt-backend --peer",
+        ),
+    }
+
+    groups = module.process_groups(
+        samples,
+        root=root,
+        self_pid=9999,
+        known_pgids={20, 30},
+        owned_pgids={20},
+    )
+
+    assert [group.pgid for group in groups] == [20]
+    assert groups[0].command_text.endswith("--owned")
+
+
 def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
     module = _load_process_sentinel()
     root = Path("/repo/molt")
@@ -293,6 +327,69 @@ def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
             pgid=100,
             rss_kb=500_000,
             command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=100,
+            rss_kb=250_000,
+            command="/usr/bin/python /repo/molt/tests/molt_diff.py",
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=200,
+            rss_kb=100,
+            command="/repo/molt/target/release-fast/molt-backend",
+        ),
+        300: module.memory_guard.ProcessSample(
+            pid=300,
+            ppid=1,
+            pgid=300,
+            rss_kb=500_000,
+            command=(
+                "node /opt/homebrew/lib/node_modules/"
+                "@anthropic-ai/claude-code/cli.js"
+            ),
+        ),
+        301: module.memory_guard.ProcessSample(
+            pid=301,
+            ppid=300,
+            pgid=300,
+            rss_kb=250_000,
+            command="/usr/bin/python /repo/molt/tests/molt_diff.py",
+        ),
+    }
+
+    groups = module.process_groups(
+        samples,
+        root=root,
+        self_pid=9999,
+        known_pgids={100, 300},
+    )
+    skipped = module.skipped_protected_process_groups(
+        samples,
+        root=root,
+        self_pid=9999,
+        known_pgids={100, 300},
+    )
+
+    assert [group.pgid for group in groups] == [200]
+    assert [group.pgid for group in skipped] == [100, 300]
+    assert skipped[0].pids == [100, 101]
+    assert skipped[1].pids == [300, 301]
+
+
+def test_process_groups_exclude_claude_group_even_with_repo_child() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="claude --dangerously-skip-permissions",
         ),
         101: module.memory_guard.ProcessSample(
             pid=101,
@@ -326,6 +423,126 @@ def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
     assert [group.pgid for group in groups] == [200]
     assert [group.pgid for group in skipped] == [100]
     assert skipped[0].pids == [100, 101]
+
+
+def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=101,
+            rss_kb=10_000,
+            command="/bin/zsh -l",
+        ),
+        777: module.memory_guard.ProcessSample(
+            pid=777,
+            ppid=101,
+            pgid=777,
+            rss_kb=250_000,
+            command="/repo/molt/target/dev-fast/molt-backend --daemon",
+        ),
+        999: module.memory_guard.ProcessSample(
+            pid=999,
+            ppid=100,
+            pgid=999,
+            rss_kb=30_000,
+            command="/repo/molt/tools/process_sentinel.py --once --kill-all",
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=200,
+            rss_kb=250_000,
+            command="/repo/molt/target/dev-fast/molt-backend --owned",
+        ),
+    }
+
+    groups = module.process_groups(
+        samples,
+        root=root,
+        self_pid=999,
+        self_pgid=999,
+    )
+    skipped = module.skipped_protected_process_groups(
+        samples,
+        root=root,
+        self_pid=999,
+        self_pgid=999,
+    )
+
+    assert [group.pgid for group in groups] == [200]
+    assert groups[0].pids == [200]
+    assert [group.pgid for group in skipped] == [777]
+    assert skipped[0].pids == [777]
+
+
+def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="claude --dangerously-skip-permissions",
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=101,
+            rss_kb=10_000,
+            command="/bin/zsh -c source /Users/adpena/.claude/shell-snapshots/snapshot-zsh",
+        ),
+        777: module.memory_guard.ProcessSample(
+            pid=777,
+            ppid=101,
+            pgid=777,
+            rss_kb=250_000,
+            command="/repo/molt/target/dev-fast/molt-backend --daemon",
+        ),
+        999: module.memory_guard.ProcessSample(
+            pid=999,
+            ppid=1,
+            pgid=999,
+            rss_kb=30_000,
+            command="/repo/molt/tools/process_sentinel.py --once --kill-all",
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=200,
+            rss_kb=250_000,
+            command="/repo/molt/target/dev-fast/molt-backend --owned",
+        ),
+    }
+
+    groups = module.process_groups(
+        samples,
+        root=root,
+        self_pid=999,
+        self_pgid=999,
+    )
+    skipped = module.skipped_protected_process_groups(
+        samples,
+        root=root,
+        self_pid=999,
+        self_pgid=999,
+    )
+
+    assert [group.pgid for group in groups] == [200]
+    assert groups[0].pids == [200]
+    assert [group.pgid for group in skipped] == [777]
+    assert skipped[0].pids == [777]
 
 
 def test_process_groups_exclude_ancestor_process_group() -> None:
@@ -371,6 +588,39 @@ def test_process_groups_exclude_ancestor_process_group() -> None:
 
     assert groups == []
     assert [group.pgid for group in skipped] == [10]
+
+
+def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=100,
+            rss_kb=250_000,
+            command="/repo/molt/target/release-fast/molt-backend",
+        ),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(
+        module.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    )
+
+    module.terminate_group(100, grace=0.001)
+
+    assert sent_groups == []
 
 
 def test_find_violations_can_kill_all_or_threshold() -> None:
@@ -750,6 +1000,17 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
     assert payload["observed_at"] == "2026-05-24T10:00:00Z"
     assert payload["elapsed_s"] == 0.0
     assert payload["grace_sec"] == module.DEFAULT_GRACE_SEC
+    assert payload["kill_scope"] == "repo"
+    assert payload["killer_label"] == "tools/process_sentinel.py"
+    assert payload["killer_pid"] == module.os.getpid()
+    assert payload["killer_session_id"] == "sentinel-unit"
+    assert payload["victim_pgid"] == 10
+    assert payload["victim_command"].endswith("molt-backend")
+    assert payload["owner_match_reason"] == "repo_scope"
+    assert payload["termination"]["signal"]["name"] == "SIGTERM"
+    assert payload["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert payload["termination"]["grace_sec"] == module.DEFAULT_GRACE_SEC
+    assert payload["termination"]["rss_triggered"] is False
     assert payload["violation"]["reason"] == "kill_all"
     assert payload["violation"]["pgid"] == 10
     assert payload["violation"]["external_parent_pids"] == [1]
@@ -772,24 +1033,38 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
 def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
     module = _load_process_sentinel()
     calls = 0
+    clock = 0.0
     terminated: list[int] = []
+    first_pgid = 1_000_011
+    second_pgid = 1_000_013
 
     def fake_sample_processes():
         nonlocal calls
         calls += 1
+        pgid_by_call = {1: first_pgid, 3: second_pgid}
         if calls in {1, 3}:
+            pgid = pgid_by_call[calls]
             return {
-                10 + calls: module.memory_guard.ProcessSample(
-                    pid=10 + calls,
+                pgid: module.memory_guard.ProcessSample(
+                    pid=pgid,
                     ppid=1,
-                    pgid=10 + calls,
+                    pgid=pgid,
                     rss_kb=100,
                     command=f"{module.repo_root()}/target/release-fast/molt-backend",
                 )
             }
         return {}
 
+    def fake_monotonic():
+        return clock
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
     monkeypatch.setattr(module.memory_guard, "sample_processes", fake_sample_processes)
+    monkeypatch.setattr(module.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(module.time, "sleep", fake_sleep)
     monkeypatch.setattr(
         module,
         "terminate_group",
@@ -809,23 +1084,24 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
     )
 
     assert rc == 0
-    assert terminated == [11, 13]
+    assert terminated == [first_pgid, second_pgid]
 
 
 def test_main_until_clean_waits_for_no_matched_groups(monkeypatch) -> None:
     module = _load_process_sentinel()
     calls = 0
     clock = 0.0
+    matched_pgid = 1_000_021
 
     def fake_sample_processes():
         nonlocal calls
         calls += 1
         if calls <= 4:
             return {
-                10: module.memory_guard.ProcessSample(
-                    pid=10,
+                matched_pgid: module.memory_guard.ProcessSample(
+                    pid=matched_pgid,
                     ppid=1,
-                    pgid=10,
+                    pgid=matched_pgid,
                     rss_kb=100,
                     command=f"{module.repo_root()}/target/release-fast/molt-backend",
                 )

@@ -10,6 +10,8 @@ import json
 import os
 import platform
 from pathlib import Path
+import shutil
+import shlex
 import signal
 import subprocess
 import sys
@@ -36,7 +38,10 @@ DEFAULT_MEMORY_RESERVE_MAX_GB = 12.0
 DEFAULT_GLOBAL_FRACTION_OF_USABLE = 0.97
 DEFAULT_TOTAL_FRACTION_OF_GLOBAL = 0.60
 DEFAULT_PROCESS_FRACTION_OF_TOTAL = 0.90
+DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP = 5
 _RSS_HARD_MARGIN_GB = 0.001
+ROOT = Path(__file__).resolve().parents[1]
+PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
 INTERNAL_COMMAND_ENV = "MOLT_MEMORY_GUARD_COMMAND_JSON"
@@ -54,6 +59,27 @@ _INTERNAL_ENV_KEYS = (
     INTERNAL_CHILD_COMMAND_ENV,
     INTERNAL_CHILD_RLIMIT_KB_ENV,
     INTERNAL_CHILD_STARTED_FD_ENV,
+)
+HOST_CONTROL_PLANE_TOKENS = (
+    "/Applications/Codex.app/",
+    "Codex.app/Contents/",
+    "Codex (Renderer)",
+    "Codex Helper",
+    "codex app-server",
+    "codex_chronicle",
+    "/cua_node/bin/node_repl",
+    "/Applications/Claude.app/",
+    "claude --",
+    "Claude.app/Contents/",
+    "/.claude/",
+    "@anthropic-ai/claude-code",
+    "CLAUDE_PLUGIN_DATA=",
+)
+HOST_CONTROL_PLANE_EXECUTABLE_NAMES = frozenset(
+    {
+        "claude",
+        "claude-code",
+    }
 )
 
 
@@ -115,10 +141,11 @@ class ProcessTreeTracker:
     def update(self, samples: Mapping[int, ProcessSample]) -> set[int]:
         """Return currently observed members of this process tree.
 
-        Children can briefly remain visible under the original parent before
-        reparenting or starting a new session. Once observed, keep both their
-        PID and process group in the tracked lineage so later samples do not
-        lose escaped descendants that are still part of the guarded launch.
+        PID lineage is the only authority for discovering new descendants.
+        Process groups are custody metadata for already-proven descendants:
+        they keep orphaned group members terminable after reparenting, but they
+        must not make unrelated siblings part of the lineage just because they
+        share an ambient launcher PGID.
         """
 
         assert self.known_pids is not None
@@ -128,18 +155,21 @@ class ProcessTreeTracker:
             changed = False
             for sample in samples.values():
                 sample_pgid = sample.pgid if sample.pgid is not None else sample.pid
-                if (
-                    sample.pid in self.known_pids
-                    or sample.ppid in self.known_pids
-                    or sample_pgid in self.known_pgids
-                ):
+                if sample.pid in self.known_pids or sample.ppid in self.known_pids:
                     if sample.pid not in self.known_pids:
                         self.known_pids.add(sample.pid)
                         changed = True
-                    if sample_pgid not in self.known_pgids:
+                    if (
+                        sample.pid != self.root_pid or sample_pgid == self.root_pid
+                    ) and sample_pgid not in self.known_pgids:
                         self.known_pgids.add(sample_pgid)
                         changed = True
-        return {pid for pid in self.known_pids if pid in samples}
+        watched = {pid for pid in self.known_pids if pid in samples}
+        for sample in samples.values():
+            sample_pgid = sample.pgid if sample.pgid is not None else sample.pid
+            if sample_pgid in self.known_pgids:
+                watched.add(sample.pid)
+        return watched
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,17 +185,38 @@ class RssViolation:
 
 
 @dataclass(frozen=True, slots=True)
+class CargoIncrementalQuarantineMove:
+    original_path: str
+    quarantined_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class CargoIncrementalQuarantine:
+    reason: str
+    recorded_at: str
+    target_dir: str
+    quarantine_dir: str | None
+    command: tuple[str, ...]
+    cwd: str
+    moved_paths: tuple[CargoIncrementalQuarantineMove, ...] = ()
+    pruned_quarantine_dirs: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+    receipt_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class GuardResult:
     returncode: int
     violation: RssViolation | None
     peak: RssViolation | None
     peak_total: RssViolation | None
-    stdout: str
-    stderr: str
+    stdout: str | bytes
+    stderr: str | bytes
     timed_out: bool = False
     elapsed_s: float | None = None
     limit_at_violation: ResolvedMemoryLimits | None = None
     orphaned_process_groups: tuple[int, ...] = ()
+    cargo_incremental_quarantine: CargoIncrementalQuarantine | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,8 +348,57 @@ def _darwin_physical_memory_bytes() -> int | None:
     return None
 
 
+def _parse_darwin_vm_stat_available_bytes(text: str) -> int | None:
+    page_size: int | None = None
+    pages: dict[str, int] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("Mach Virtual Memory Statistics:"):
+            marker = "page size of "
+            if marker in line:
+                suffix = line.split(marker, 1)[1]
+                digits = "".join(ch for ch in suffix if ch.isdigit())
+                if digits:
+                    page_size = int(digits)
+            continue
+        if ":" not in line:
+            continue
+        name, raw_value = line.split(":", 1)
+        digits = "".join(ch for ch in raw_value if ch.isdigit())
+        if digits:
+            pages[name.strip().strip('"')] = int(digits)
+    if page_size is None or page_size <= 0:
+        return None
+    available_pages = sum(
+        pages.get(name, 0)
+        for name in (
+            "Pages free",
+            "Pages inactive",
+            "Pages speculative",
+            "Pages purgeable",
+        )
+    )
+    if available_pages <= 0:
+        return None
+    return available_pages * page_size
+
+
 def _darwin_available_memory_bytes() -> int | None:
-    return None
+    try:
+        result = subprocess.run(
+            ["vm_stat"],
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, TypeError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_darwin_vm_stat_available_bytes(result.stdout)
 
 
 def physical_memory_bytes(
@@ -586,6 +686,98 @@ def sample_processes() -> dict[int, ProcessSample]:
     return parse_process_table(result.stdout)
 
 
+def _sample_pgid(sample: ProcessSample) -> int:
+    return sample.pgid if sample.pgid is not None else sample.pid
+
+
+def _command_executable_name(command: str) -> str:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+    if not parts:
+        return ""
+    return Path(parts[0]).name.casefold()
+
+
+def is_host_control_plane_process(sample: ProcessSample) -> bool:
+    command = sample.command.casefold()
+    return (
+        any(token.casefold() in command for token in HOST_CONTROL_PLANE_TOKENS)
+        or _command_executable_name(sample.command) in HOST_CONTROL_PLANE_EXECUTABLE_NAMES
+    )
+
+
+def _ancestor_pids(
+    samples: Mapping[int, ProcessSample],
+    pid: int | None,
+) -> set[int]:
+    if pid is None or pid <= 0:
+        return set()
+    ancestors: set[int] = set()
+    current = pid
+    while current > 0 and current not in ancestors:
+        ancestors.add(current)
+        sample = samples.get(current)
+        if sample is None or sample.ppid <= 0 or sample.ppid == current:
+            break
+        current = sample.ppid
+    return ancestors
+
+
+def protected_process_group_ids(
+    samples: Mapping[int, ProcessSample],
+    *,
+    self_pid: int | None = None,
+    self_pgid: int | None = None,
+) -> set[int]:
+    protected: set[int] = set()
+    if self_pgid is not None and self_pgid > 0:
+        protected.add(self_pgid)
+    ancestor_ids = _ancestor_pids(samples, self_pid)
+    self_descendant_ids = descendant_pids(samples, self_pid) if self_pid else set()
+    host_control_plane_pids = {
+        sample.pid for sample in samples.values() if is_host_control_plane_process(sample)
+    }
+    for sample in samples.values():
+        if sample.pid in ancestor_ids or is_host_control_plane_process(sample):
+            protected.add(_sample_pgid(sample))
+            continue
+        sample_ancestors = _ancestor_pids(samples, sample.pid)
+        if (
+            host_control_plane_pids.intersection(sample_ancestors)
+            and sample.pid not in self_descendant_ids
+        ):
+            protected.add(_sample_pgid(sample))
+    return protected
+
+
+def _current_protected_process_group_ids(
+    samples: Mapping[int, ProcessSample],
+) -> set[int]:
+    return protected_process_group_ids(
+        samples,
+        self_pid=os.getpid(),
+        self_pgid=_safe_getpgrp(),
+    )
+
+
+def _filter_protected_watched_pids(
+    samples: Mapping[int, ProcessSample],
+    watched: set[int],
+) -> set[int]:
+    protected_pgids = _current_protected_process_group_ids(samples)
+    if not protected_pgids:
+        return watched
+    filtered: set[int] = set()
+    for pid in watched:
+        sample = samples.get(pid)
+        if sample is not None and _sample_pgid(sample) in protected_pgids:
+            continue
+        filtered.add(pid)
+    return filtered
+
+
 def descendant_pids(samples: Mapping[int, ProcessSample], root_pid: int) -> set[int]:
     descendants = {root_pid}
     changed = True
@@ -607,12 +799,12 @@ def watched_pids(
     tracker: ProcessTreeTracker | None = None,
 ) -> set[int]:
     if tracker is not None:
-        return tracker.update(samples)
+        return _filter_protected_watched_pids(samples, tracker.update(samples))
     watched = descendant_pids(samples, root_pid)
     for sample in samples.values():
         if sample.pgid == root_pid:
             watched.add(sample.pid)
-    return watched
+    return _filter_protected_watched_pids(samples, watched)
 
 
 def peak_rss(
@@ -883,8 +1075,14 @@ def _record_sample(
 
 
 def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
-    if pgid <= 0 or (os.name == "posix" and pgid == os.getpgrp()):
+    if pgid <= 0:
         return True
+    if os.name == "posix":
+        if pgid == os.getpgrp():
+            return True
+        samples = sample_processes()
+        if pgid in _current_protected_process_group_ids(samples):
+            return True
     try:
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
@@ -949,8 +1147,17 @@ def terminate_watched_processes(
         if watched is not None
         else watched_pids(observed_samples, root_pid, tracker=tracker)
     )
-    pids: set[int] = {root_pid}
-    root_group_pgid = root_pid
+    protected_pgids = _current_protected_process_group_ids(observed_samples)
+    root_sample = observed_samples.get(root_pid)
+    root_group_pgid = (
+        _sample_pgid(root_sample)
+        if root_sample is not None
+        else _safe_getpgid(root_pid) or root_pid
+    )
+    observed = _filter_protected_watched_pids(observed_samples, set(observed))
+    pids: set[int] = set()
+    if root_group_pgid not in protected_pgids:
+        pids.add(root_pid)
     escaped_pids: set[int] = set()
     for pid in observed:
         if pid <= 0:
@@ -958,11 +1165,17 @@ def terminate_watched_processes(
         sample = observed_samples.get(pid)
         pids.add(pid)
         if sample is not None:
-            sample_pgid = sample.pgid if sample.pgid is not None else sample.pid
+            sample_pgid = _sample_pgid(sample)
+            if sample_pgid in protected_pgids:
+                pids.discard(pid)
+                continue
             if sample_pgid != root_group_pgid:
                 escaped_pids.add(pid)
     remaining_pgids: set[int] = set()
-    if not _terminate_single_process_group(root_group_pgid, grace=grace):
+    if root_group_pgid not in protected_pgids and not _terminate_single_process_group(
+        root_group_pgid,
+        grace=grace,
+    ):
         remaining_pgids.add(root_group_pgid)
     remaining_pids: set[int] = set()
     for pid in sorted(escaped_pids):
@@ -990,7 +1203,7 @@ def cleanup_tracked_orphans(
     if root_pid <= 0:
         return ()
     samples = sampler()
-    watched = tracker.update(samples)
+    watched = _filter_protected_watched_pids(samples, tracker.update(samples))
     live_pgids: set[int] = set()
     for pid in watched:
         sample = samples.get(pid)
@@ -1231,6 +1444,331 @@ def _read_child_started_at(fd: int | None) -> float | None:
         return None
 
 
+_CARGO_BUILD_STATE_EXECUTABLES = frozenset({"cargo", "rustc", "rustdoc"})
+
+
+def _command_tokens(fragment: str) -> list[str]:
+    try:
+        return shlex.split(fragment)
+    except ValueError:
+        return fragment.split()
+
+
+def _token_executable_name(token: str) -> str:
+    return Path(token).name
+
+
+def _command_invokes_cargo_build_state(command: Sequence[str]) -> bool:
+    for item in command:
+        for token in _command_tokens(item):
+            if _token_executable_name(token) in _CARGO_BUILD_STATE_EXECUTABLES:
+                return True
+    return False
+
+
+def _samples_include_cargo_build_state(
+    samples: Mapping[int, ProcessSample],
+    watched: set[int],
+) -> bool:
+    for pid in watched:
+        sample = samples.get(pid)
+        if sample is None:
+            continue
+        if _command_invokes_cargo_build_state(_command_tokens(sample.command)):
+            return True
+    return False
+
+
+def _effective_guard_cwd(
+    cwd: str | Path | None,
+    environ: Mapping[str, str],
+) -> Path:
+    if cwd is not None:
+        cwd_path = Path(cwd).expanduser()
+        if cwd_path.is_absolute():
+            return cwd_path.resolve(strict=False)
+        return (Path.cwd() / cwd_path).resolve(strict=False)
+    pwd = environ.get("PWD", "")
+    if pwd:
+        pwd_path = Path(pwd).expanduser()
+        if pwd_path.is_absolute():
+            return pwd_path.resolve(strict=False)
+    return Path.cwd().resolve(strict=False)
+
+
+def _cargo_target_dir(
+    environ: Mapping[str, str],
+    cwd: str | Path | None,
+) -> Path:
+    base = _effective_guard_cwd(cwd, environ)
+    raw_target = environ.get("CARGO_TARGET_DIR", "").strip()
+    if raw_target:
+        target = Path(raw_target).expanduser()
+        if target.is_absolute():
+            return target.resolve(strict=False)
+        return (base / target).resolve(strict=False)
+    return (base / "target").resolve(strict=False)
+
+
+def _cargo_incremental_dirs(target_dir: Path) -> tuple[Path, ...]:
+    if not target_dir.exists():
+        return ()
+    state_root = target_dir / ".molt_state"
+    found: list[Path] = []
+    try:
+        candidates = tuple(target_dir.rglob("incremental"))
+    except OSError:
+        raise
+    for candidate in candidates:
+        if not candidate.is_dir():
+            continue
+        with contextlib.suppress(ValueError):
+            if candidate.is_relative_to(state_root):
+                continue
+        found.append(candidate)
+    return tuple(sorted(found, key=lambda p: p.relative_to(target_dir).parts))
+
+
+def _cargo_quarantine_parent(target_dir: Path) -> Path:
+    return target_dir / ".molt_state" / "quarantine" / "cargo_incremental"
+
+
+def _cargo_quarantine_id(recorded_at: str, pid: int, reason: str) -> str:
+    safe_time = (
+        recorded_at.replace(":", "")
+        .replace("-", "")
+        .replace("T", "-")
+        .replace("Z", "")
+    )
+    safe_reason = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in reason)
+    return f"{safe_time}-pid{pid}-{safe_reason}"
+
+
+def _prune_cargo_incremental_quarantine(
+    parent: Path,
+    *,
+    keep: int = DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if keep <= 0 or not parent.exists():
+        return (), ()
+
+    def mtime_ns(path: Path) -> int:
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    try:
+        roots = sorted(
+            (path for path in parent.iterdir() if path.is_dir()),
+            key=mtime_ns,
+            reverse=True,
+        )
+    except OSError as exc:
+        return (), (f"{parent}: {exc}",)
+    pruned: list[str] = []
+    errors: list[str] = []
+    for stale in roots[keep:]:
+        try:
+            shutil.rmtree(stale)
+        except OSError as exc:
+            errors.append(f"{stale}: {exc}")
+            continue
+        pruned.append(str(stale))
+    return tuple(pruned), tuple(errors)
+
+
+def _cargo_incremental_quarantine_payload(
+    receipt: CargoIncrementalQuarantine | None,
+) -> dict[str, object] | None:
+    if receipt is None:
+        return None
+    return {
+        "reason": receipt.reason,
+        "recorded_at": receipt.recorded_at,
+        "target_dir": receipt.target_dir,
+        "quarantine_dir": receipt.quarantine_dir,
+        "command": list(receipt.command),
+        "cwd": receipt.cwd,
+        "moved_paths": [
+            {
+                "original_path": move.original_path,
+                "quarantined_path": move.quarantined_path,
+            }
+            for move in receipt.moved_paths
+        ],
+        "pruned_quarantine_dirs": list(receipt.pruned_quarantine_dirs),
+        "errors": list(receipt.errors),
+        "receipt_path": receipt.receipt_path,
+    }
+
+
+def _write_cargo_quarantine_receipt(
+    *,
+    receipt_path: Path,
+    payload: Mapping[str, object],
+) -> None:
+    receipt_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _quarantine_cargo_incremental_state(
+    *,
+    reason: str,
+    target_dir: Path,
+    command: Sequence[str],
+    cwd: str | Path,
+    retention_keep: int = DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
+) -> CargoIncrementalQuarantine:
+    recorded_at = _utc_timestamp()
+    errors: list[str] = []
+    try:
+        incremental_dirs = _cargo_incremental_dirs(target_dir)
+    except OSError as exc:
+        incremental_dirs = ()
+        errors.append(f"{target_dir}: failed to scan Cargo incremental dirs: {exc}")
+    quarantine_dir: Path | None = None
+    moved: list[CargoIncrementalQuarantineMove] = []
+    receipt_path: Path | None = None
+
+    if incremental_dirs:
+        parent = _cargo_quarantine_parent(target_dir)
+        quarantine_dir = parent / _cargo_quarantine_id(
+            recorded_at,
+            os.getpid(),
+            reason,
+        )
+        for source in incremental_dirs:
+            try:
+                destination = quarantine_dir / source.relative_to(target_dir)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source.rename(destination)
+            except OSError as exc:
+                errors.append(f"{source}: {exc}")
+                continue
+            moved.append(
+                CargoIncrementalQuarantineMove(
+                    original_path=str(source),
+                    quarantined_path=str(destination),
+                )
+            )
+        if quarantine_dir.exists():
+            receipt_path = quarantine_dir / "receipt.json"
+
+    pruned, prune_errors = _prune_cargo_incremental_quarantine(
+        _cargo_quarantine_parent(target_dir),
+        keep=retention_keep,
+    )
+    errors.extend(prune_errors)
+    receipt = CargoIncrementalQuarantine(
+        reason=reason,
+        recorded_at=recorded_at,
+        target_dir=str(target_dir),
+        quarantine_dir=None if quarantine_dir is None else str(quarantine_dir),
+        command=tuple(command),
+        cwd=str(cwd),
+        moved_paths=tuple(moved),
+        pruned_quarantine_dirs=pruned,
+        errors=tuple(errors),
+        receipt_path=None if receipt_path is None else str(receipt_path),
+    )
+    if receipt_path is not None:
+        try:
+            _write_cargo_quarantine_receipt(
+                receipt_path=receipt_path,
+                payload=_cargo_quarantine_payload_required(receipt),
+            )
+        except OSError as exc:
+            receipt = CargoIncrementalQuarantine(
+                reason=receipt.reason,
+                recorded_at=receipt.recorded_at,
+                target_dir=receipt.target_dir,
+                quarantine_dir=receipt.quarantine_dir,
+                command=receipt.command,
+                cwd=receipt.cwd,
+                moved_paths=receipt.moved_paths,
+                pruned_quarantine_dirs=receipt.pruned_quarantine_dirs,
+                errors=(*receipt.errors, f"{receipt_path}: {exc}"),
+                receipt_path=receipt.receipt_path,
+            )
+    return receipt
+
+
+def _cargo_quarantine_payload_required(
+    receipt: CargoIncrementalQuarantine,
+) -> dict[str, object]:
+    payload = _cargo_incremental_quarantine_payload(receipt)
+    assert payload is not None
+    return payload
+
+
+def _cargo_incremental_quarantine_message(
+    receipt: CargoIncrementalQuarantine,
+) -> str:
+    moved_count = len(receipt.moved_paths)
+    error_count = len(receipt.errors)
+    if moved_count:
+        base = (
+            "memory_guard: quarantined Cargo incremental state after "
+            f"{receipt.reason}: moved={moved_count} target_dir={receipt.target_dir} "
+            f"quarantine_dir={receipt.quarantine_dir}"
+        )
+    else:
+        base = (
+            "memory_guard: checked Cargo incremental state after "
+            f"{receipt.reason}: moved=0 target_dir={receipt.target_dir}"
+        )
+    if receipt.pruned_quarantine_dirs:
+        base = f"{base} pruned={len(receipt.pruned_quarantine_dirs)}"
+    if receipt.receipt_path:
+        base = f"{base} receipt={receipt.receipt_path}"
+    if error_count:
+        base = f"{base} errors={error_count}"
+    return base
+
+
+def _cargo_interruption_reason(
+    *,
+    violation: RssViolation | None,
+    timed_out: bool,
+    termination_wait_expired: bool,
+    orphaned_process_groups: tuple[int, ...],
+    returncode: int | None,
+) -> str | None:
+    if violation is not None:
+        return "rss_limit_exceeded"
+    if termination_wait_expired:
+        return "termination_wait_expired"
+    if timed_out:
+        return "timeout"
+    if orphaned_process_groups:
+        return "orphaned_processes_cleaned"
+    if returncode is not None and _returncode_looks_signal(returncode):
+        return "signal_exit"
+    return None
+
+
+def _returncode_looks_signal(returncode: int) -> bool:
+    return returncode < 0 or 129 <= returncode <= 192
+
+
+def _append_guard_message(
+    output: str | bytes,
+    message: str,
+    *,
+    text: bool,
+) -> str | bytes:
+    if text:
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        return f"{output or ''}{message}"
+    if isinstance(output, str):
+        output = output.encode("utf-8", errors="replace")
+    return bytes(output or b"") + message.encode("utf-8", errors="replace")
+
+
 def run_guarded(
     command: Sequence[str],
     *,
@@ -1246,13 +1784,14 @@ def run_guarded(
     samples_jsonl_max_bytes: int | None = None,
     stream: str = "",
     child_rlimit_kb: int | None = None,
-    input: str | None = None,
+    input: str | bytes | None = None,
     adaptive_budget_provider: Callable[[int], AdaptiveMemoryBudget] | None = None,
     dynamic_process_rss: bool = False,
     dynamic_total_rss: bool = False,
     cleanup_orphans: bool = True,
     progress_label: str | None = None,
     keepalive_interval: float | None = None,
+    text: bool = True,
     encoding: str = "utf-8",
     errors: str = "replace",
 ) -> GuardResult:
@@ -1264,6 +1803,10 @@ def run_guarded(
         raise ValueError("timeout must be greater than 0")
     if keepalive_interval is not None and keepalive_interval <= 0:
         keepalive_interval = None
+    if text and isinstance(input, bytes):
+        raise TypeError("bytes input requires text=False")
+    if not text and isinstance(input, str):
+        raise TypeError("str input requires text=True")
     child_env = dict(os.environ) if env is None else dict(env)
     child_env[ACTIVE_ENV] = "1"
     child_env[ACTIVE_GUARD_PID_ENV] = str(os.getpid())
@@ -1276,23 +1819,27 @@ def run_guarded(
     stdout_capture = None
     stderr_capture = None
     if capture_output:
-        stdout_capture = tempfile.TemporaryFile(
-            mode="w+t",
-            encoding=encoding,
-            errors=errors,
-        )
-        stderr_capture = tempfile.TemporaryFile(
-            mode="w+t",
-            encoding=encoding,
-            errors=errors,
-        )
+        if text:
+            stdout_capture = tempfile.TemporaryFile(
+                mode="w+t",
+                encoding=encoding,
+                errors=errors,
+            )
+            stderr_capture = tempfile.TemporaryFile(
+                mode="w+t",
+                encoding=encoding,
+                errors=errors,
+            )
+        else:
+            stdout_capture = tempfile.TemporaryFile(mode="w+b")
+            stderr_capture = tempfile.TemporaryFile(mode="w+b")
     popen_kwargs: dict[str, object] = {
         "cwd": cwd,
         "env": dict(launch.env) if launch.env is not None else None,
         "stdout": stdout_capture if capture_output else None,
         "stderr": stderr_capture if capture_output else None,
         "stdin": subprocess.PIPE if input is not None else None,
-        "text": True,
+        "text": text,
         "start_new_session": True,
     }
     if launch.pass_fds:
@@ -1338,6 +1885,7 @@ def run_guarded(
     last_limits: ResolvedMemoryLimits | None = None
     termination_wait_expired = False
     termination_wait_s = termination_wait_seconds(env)
+    saw_cargo_build_state = _command_invokes_cargo_build_state(command)
     next_keepalive = (
         start + keepalive_interval
         if progress_label is not None and keepalive_interval is not None
@@ -1349,6 +1897,10 @@ def run_guarded(
             timed_out = True
             samples = sampler()
             watched = tracker.update(samples)
+            saw_cargo_build_state = (
+                saw_cargo_build_state
+                or _samples_include_cargo_build_state(samples, watched)
+            )
             terminate_watched_processes(
                 proc.pid,
                 samples=samples,
@@ -1368,6 +1920,10 @@ def run_guarded(
             next_keepalive = now + keepalive_interval
         samples = sampler()
         watched = tracker.update(samples)
+        saw_cargo_build_state = (
+            saw_cargo_build_state
+            or _samples_include_cargo_build_state(samples, watched)
+        )
         observed_peak = peak_rss(samples, root_pid=proc.pid, watched=watched)
         if observed_peak is not None and (
             peak is None or observed_peak.rss_kb > peak.rss_kb
@@ -1481,8 +2037,8 @@ def run_guarded(
         if child_exit_usage.max_rss_kb > current_limits.max_process_rss_kb:
             violation = rusage_peak
             limit_at_violation = current_limits
-    stdout = ""
-    stderr = ""
+    stdout: str | bytes = "" if text else b""
+    stderr: str | bytes = "" if text else b""
     orphaned_process_groups: tuple[int, ...] = ()
     try:
         if proc.returncode is None:
@@ -1530,22 +2086,54 @@ def run_guarded(
     if timed_out:
         returncode = TIMEOUT_RETURN_CODE
         timeout_msg = f"memory_guard: timeout after {timeout:.2f}s\n"
-        stderr = f"{stderr or ''}{timeout_msg}"
+        stderr = _append_guard_message(stderr, timeout_msg, text=text)
     if termination_wait_expired:
         if returncode is None:
             returncode = TIMEOUT_RETURN_CODE if timed_out else GUARD_RETURN_CODE
-        stderr = (
-            f"{stderr or ''}"
+        stderr = _append_guard_message(
+            stderr,
             "memory_guard: termination wait expired; tracked process tree did "
             "not fully exit after SIGTERM/SIGKILL: "
             f"observed_at={_utc_timestamp()} "
             f"elapsed={elapsed_s:.2f}s pid={proc.pid} wait={termination_wait_s:.2f}s\n"
             "memory_guard: next action: inspect host process state and child "
             "logs for uninterruptible work; the guard returned without waiting "
-            "forever so CI can surface the failure instead of hanging.\n"
+            "forever so CI can surface the failure instead of hanging.\n",
+            text=text,
         )
+    final_returncode = GUARD_RETURN_CODE if returncode is None else returncode
+    cargo_incremental_quarantine: CargoIncrementalQuarantine | None = None
+    cargo_interruption_reason = _cargo_interruption_reason(
+        violation=violation,
+        timed_out=timed_out,
+        termination_wait_expired=termination_wait_expired,
+        orphaned_process_groups=orphaned_process_groups,
+        returncode=final_returncode,
+    )
+    if saw_cargo_build_state and cargo_interruption_reason is not None:
+        effective_cwd = _effective_guard_cwd(cwd, child_env)
+        cargo_incremental_quarantine = _quarantine_cargo_incremental_state(
+            reason=cargo_interruption_reason,
+            target_dir=_cargo_target_dir(child_env, effective_cwd),
+            command=command,
+            cwd=effective_cwd,
+        )
+        stderr = _append_guard_message(
+            stderr,
+            f"{_cargo_incremental_quarantine_message(cargo_incremental_quarantine)}\n",
+            text=text,
+        )
+        if cargo_incremental_quarantine.errors:
+            stderr = _append_guard_message(
+                stderr,
+                "memory_guard: cargo incremental quarantine errors: "
+                f"{'; '.join(cargo_incremental_quarantine.errors)}\n"
+                "memory_guard: next action: run `molt clean --apply "
+                "--kill-processes` if stale Cargo state still blocks rebuilds.\n",
+                text=text,
+            )
     return GuardResult(
-        returncode=GUARD_RETURN_CODE if returncode is None else returncode,
+        returncode=final_returncode,
         violation=violation,
         peak=peak,
         peak_total=peak_total,
@@ -1555,6 +2143,7 @@ def run_guarded(
         elapsed_s=elapsed_s,
         limit_at_violation=limit_at_violation,
         orphaned_process_groups=orphaned_process_groups,
+        cargo_incremental_quarantine=cargo_incremental_quarantine,
     )
 
 
@@ -1625,6 +2214,10 @@ _SECRET_ENV_TOKENS = (
     "SECRET",
     "TOKEN",
 )
+_PYTEST_CURRENT_TEST_FILE_ENV = "MOLT_PYTEST_CURRENT_TEST_FILE"
+_PYTEST_CURRENT_TEST_FILE_MAX_BYTES = 16 * 1024
+_PYTEST_CURRENT_TEST_WORKER_MAX_FILES = 128
+_PYTEST_COMMAND_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
 
 
 def _safe_repro_env(environ: Mapping[str, str]) -> dict[str, str]:
@@ -1684,6 +2277,49 @@ def process_sample_payload(sample: ProcessSample) -> dict[str, object]:
     return _process_sample_payload(sample)
 
 
+def _bounded_process_sample_payload(
+    sample: ProcessSample,
+    *,
+    max_command_chars: int = 512,
+) -> dict[str, object]:
+    payload = _process_sample_payload(sample)
+    command = str(payload["command"])
+    if len(command) > max_command_chars:
+        payload["command"] = f"{command[:max_command_chars]}...<truncated>"
+    return payload
+
+
+def _host_control_plane_payload(
+    samples: Mapping[int, ProcessSample],
+    *,
+    max_samples: int = 32,
+) -> dict[str, object] | None:
+    host_pgids = {
+        _sample_pgid(sample)
+        for sample in samples.values()
+        if is_host_control_plane_process(sample)
+    }
+    protected_pgids = _current_protected_process_group_ids(samples)
+    if not host_pgids and not protected_pgids:
+        return None
+    host_samples = [
+        sample
+        for sample in sorted(samples.values(), key=lambda item: item.pid)
+        if _sample_pgid(sample) in host_pgids
+    ]
+    payload: dict[str, object] = {
+        "protected_pgids": sorted(protected_pgids),
+        "host_pgids": sorted(host_pgids),
+        "samples": [
+            _bounded_process_sample_payload(sample)
+            for sample in host_samples[:max_samples]
+        ],
+    }
+    if len(host_samples) > max_samples:
+        payload["truncated_samples"] = len(host_samples) - max_samples
+    return payload
+
+
 def _process_lineage_payload(
     samples: Mapping[int, ProcessSample],
     *,
@@ -1708,6 +2344,210 @@ def _process_lineage_payload(
     return lineage
 
 
+def _path_is_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+    except ValueError:
+        return False
+    return True
+
+
+def _pytest_custody_artifact_path(
+    kind: str,
+    suffix: str,
+    *,
+    pid: int | None = None,
+) -> Path:
+    safe_kind = "".join(ch if ch.isalnum() else "-" for ch in kind.lower()).strip("-")
+    safe_suffix = "".join(ch if ch.isalnum() else "-" for ch in suffix.lower()).strip(
+        "-"
+    )
+    return PYTEST_OUTER_GUARD_SUMMARY_DIR / (
+        f"{safe_kind or 'pytest'}-{os.getpid() if pid is None else pid}_"
+        f"{safe_suffix}.json"
+    )
+
+
+def _canonical_pytest_current_test_file_path(raw_path: str | None = None) -> Path:
+    path = Path(raw_path).expanduser() if raw_path else None
+    if path is None:
+        return _pytest_custody_artifact_path("test-custody", "current-test")
+    if not path.is_absolute():
+        path = ROOT / path
+    path = path.resolve(strict=False)
+    if not _path_is_under(path, PYTEST_OUTER_GUARD_SUMMARY_DIR):
+        return _pytest_custody_artifact_path("test-custody", "current-test")
+    return path
+
+
+def _looks_like_repo_test_path(raw: str, cwd: str | Path | None) -> bool:
+    if not raw or raw == "-" or raw.startswith("-") or not raw.endswith(".py"):
+        return False
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        root = Path.cwd() if cwd is None else Path(cwd).expanduser()
+        path = root / path
+    try:
+        path.resolve(strict=False).relative_to((ROOT / "tests").resolve(strict=False))
+    except ValueError:
+        return False
+    return True
+
+
+def _command_requests_test_custody(
+    command: Sequence[str],
+    *,
+    cwd: str | Path | None = None,
+) -> bool:
+    args = tuple(str(arg) for arg in command)
+    for idx, arg in enumerate(args):
+        if Path(arg).name in _PYTEST_COMMAND_NAMES:
+            return True
+        if _looks_like_repo_test_path(arg, cwd):
+            return True
+        if arg == "-m" and idx + 1 < len(args):
+            module = args[idx + 1]
+            if module == "pytest" or module == "tests" or module.startswith("tests."):
+                return True
+    return False
+
+
+def test_custody_launch_env(
+    command: Sequence[str],
+    *,
+    environ: Mapping[str, str] | None = None,
+    cwd: str | Path | None = None,
+) -> dict[str, str]:
+    env = dict(os.environ if environ is None else environ)
+    if not _command_requests_test_custody(command, cwd=cwd):
+        return env
+    PYTEST_OUTER_GUARD_SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
+    env[_PYTEST_CURRENT_TEST_FILE_ENV] = str(
+        _canonical_pytest_current_test_file_path(
+            env.get(_PYTEST_CURRENT_TEST_FILE_ENV)
+        )
+    )
+    return env
+
+
+def _read_pytest_current_test_json(path: Path) -> dict[str, object]:
+    payload: dict[str, object] = {"path": str(path)}
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        payload["missing"] = True
+        return payload
+    except OSError as exc:
+        payload["read_error"] = str(exc)
+        return payload
+    if len(data) > _PYTEST_CURRENT_TEST_FILE_MAX_BYTES:
+        payload["truncated"] = True
+        data = data[:_PYTEST_CURRENT_TEST_FILE_MAX_BYTES]
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception as exc:
+        payload["decode_error"] = str(exc)
+        return payload
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        payload["raw"] = text[:_PYTEST_CURRENT_TEST_FILE_MAX_BYTES]
+    else:
+        payload["payload"] = decoded
+    return payload
+
+
+def _lineage_pid_set(
+    samples: Mapping[int, ProcessSample],
+    *,
+    pid: int,
+    max_depth: int = 16,
+) -> set[int]:
+    lineage: set[int] = set()
+    seen: set[int] = set()
+    current = pid
+    for _ in range(max_depth):
+        if current <= 0 or current in seen:
+            break
+        seen.add(current)
+        lineage.add(current)
+        sample = samples.get(current)
+        if sample is None or sample.ppid <= 0 or sample.ppid == current:
+            break
+        current = sample.ppid
+    return lineage
+
+
+def _pytest_worker_record_payloads(
+    aggregate_path: Path,
+    *,
+    samples: Mapping[int, ProcessSample],
+    incident_pid: int | None,
+) -> list[dict[str, object]]:
+    worker_dir = aggregate_path.with_name(f"{aggregate_path.name}.d")
+    try:
+        paths = sorted(
+            (path for path in worker_dir.glob("*.json") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return []
+    incident_lineage = (
+        _lineage_pid_set(samples, pid=incident_pid) if incident_pid is not None else set()
+    )
+    records: list[dict[str, object]] = []
+    for path in paths[:_PYTEST_CURRENT_TEST_WORKER_MAX_FILES]:
+        record = _read_pytest_current_test_json(path)
+        decoded = record.get("payload")
+        if isinstance(decoded, dict) and incident_lineage:
+            try:
+                record_pid = int(decoded.get("pid", 0) or 0)
+            except (TypeError, ValueError):
+                record_pid = 0
+            if record_pid in incident_lineage:
+                record["incident_match"] = "pid_lineage"
+        records.append(record)
+    if len(paths) > _PYTEST_CURRENT_TEST_WORKER_MAX_FILES:
+        records.append(
+            {
+                "truncated_worker_records": len(paths)
+                - _PYTEST_CURRENT_TEST_WORKER_MAX_FILES
+            }
+        )
+    return records
+
+
+def _pytest_current_test_file_payload(
+    environ: Mapping[str, str],
+    *,
+    samples: Mapping[int, ProcessSample],
+    incident_pid: int | None = None,
+) -> dict[str, object] | None:
+    raw_path = environ.get(_PYTEST_CURRENT_TEST_FILE_ENV, "").strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    path = path.resolve(strict=False)
+    if not _path_is_under(path, PYTEST_OUTER_GUARD_SUMMARY_DIR):
+        return {
+            "path": str(path),
+            "rejected": "noncanonical",
+            "canonical_root": str(PYTEST_OUTER_GUARD_SUMMARY_DIR),
+        }
+    payload = _read_pytest_current_test_json(path)
+    worker_records = _pytest_worker_record_payloads(
+        path,
+        samples=samples,
+        incident_pid=incident_pid,
+    )
+    if worker_records:
+        payload["worker_records"] = worker_records
+    return payload
+
+
 def repro_context_payload(
     *,
     command: Sequence[str],
@@ -1720,12 +2560,24 @@ def repro_context_payload(
     timeout_s: float | None = None,
     poll_interval_s: float | None = None,
     summary_json: str | None = None,
+    incident_pid: int | None = None,
 ) -> dict[str, object]:
     source = os.environ if environ is None else environ
     cwd_path = Path.cwd() if cwd is None else Path(cwd).expanduser()
     samples = sample_processes()
     pid = os.getpid()
     parent_pid = os.getppid()
+    pytest_payload: dict[str, object] = {
+        "current_test": source.get("PYTEST_CURRENT_TEST", ""),
+        "xdist_worker": source.get("PYTEST_XDIST_WORKER", ""),
+    }
+    current_test_file = _pytest_current_test_file_payload(
+        source,
+        samples=samples,
+        incident_pid=incident_pid,
+    )
+    if current_test_file is not None:
+        pytest_payload["current_test_file"] = current_test_file
     payload: dict[str, object] = {
         "command": list(command),
         "cwd": str(cwd_path.resolve(strict=False)),
@@ -1769,11 +2621,11 @@ def repro_context_payload(
             "poll_interval_s": poll_interval_s,
         },
         "parent_lineage": _process_lineage_payload(samples, pid=pid),
-        "pytest": {
-            "current_test": source.get("PYTEST_CURRENT_TEST", ""),
-            "xdist_worker": source.get("PYTEST_XDIST_WORKER", ""),
-        },
+        "pytest": pytest_payload,
     }
+    host_control_plane = _host_control_plane_payload(samples)
+    if host_control_plane is not None:
+        payload["host_control_plane"] = host_control_plane
     if summary_json:
         payload["summary_json"] = str(Path(summary_json).expanduser())
     parent_sample = samples.get(parent_pid)
@@ -1881,9 +2733,15 @@ def _incident_payload(result: GuardResult) -> dict[str, object] | None:
         }
     exit_signal = _exit_signal_payload(result.returncode)
     if exit_signal is not None:
+        cleanup = (
+            "quarantined Cargo incremental state"
+            if result.cargo_incremental_quarantine is not None
+            and result.cargo_incremental_quarantine.moved_paths
+            else "none_by_guard"
+        )
         return {
             "reason": "signal_exit",
-            "cleanup": "none_by_guard",
+            "cleanup": cleanup,
             "recorded_at": _utc_timestamp(),
             "elapsed_s": result.elapsed_s,
             "signal": exit_signal,
@@ -1932,6 +2790,9 @@ def _write_summary_json(
         "peak_total": _rss_record_payload(result.peak_total),
         "timed_out": result.timed_out,
         "orphaned_process_groups": list(result.orphaned_process_groups),
+        "cargo_incremental_quarantine": _cargo_incremental_quarantine_payload(
+            result.cargo_incremental_quarantine
+        ),
         "limit_at_violation": (
             None
             if result.limit_at_violation is None
@@ -1956,6 +2817,7 @@ def _write_summary_json(
             timeout_s=timeout_s,
             poll_interval_s=poll_interval_s,
             summary_json=path,
+            incident_pid=result.violation.pid if result.violation is not None else None,
         )
     summary_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -2112,6 +2974,7 @@ def main(
             print("memory_guard: command is required", file=sys.stderr)
             return 2
         command = internal_command
+    current_env = test_custody_launch_env(command, environ=current_env)
     try:
         budget = adaptive_memory_budget(environ=current_env)
         max_rss_gb = (
@@ -2195,6 +3058,7 @@ def main(
             timeout_s=args.timeout,
             poll_interval_s=poll_interval,
             summary_json=args.summary_json,
+            incident_pid=result.violation.pid if result.violation is not None else None,
         )
     if args.summary_json:
         try:
@@ -2303,6 +3167,24 @@ def main(
             "the guard did not classify this as an RSS limit trip.",
             file=sys.stderr,
         )
+    if result.cargo_incremental_quarantine is not None:
+        print(
+            _cargo_incremental_quarantine_message(
+                result.cargo_incremental_quarantine
+            ),
+            file=sys.stderr,
+        )
+        if result.cargo_incremental_quarantine.errors:
+            print(
+                "memory_guard: cargo incremental quarantine errors: "
+                f"{'; '.join(result.cargo_incremental_quarantine.errors)}",
+                file=sys.stderr,
+            )
+            print(
+                "memory_guard: next action: run `molt clean --apply "
+                "--kill-processes` if stale Cargo state still blocks rebuilds.",
+                file=sys.stderr,
+            )
     if repro_payload is not None:
         print(
             "memory_guard: repro context: "

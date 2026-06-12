@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import struct
 import sys
@@ -61,7 +63,7 @@ def _build_and_run(
     )
 
 
-def _build_and_run_with_env(
+def _build_native_binary_with_env(
     tmp_path: Path,
     source: str,
     name: str,
@@ -73,8 +75,7 @@ def _build_and_run_with_env(
     extra_files: dict[str, str] | None = None,
     extra_env: dict[str, str] | None = None,
     extra_build_args: list[str] | None = None,
-    run_timeout_secs: int = 60,
-) -> subprocess.CompletedProcess[str]:
+) -> tuple[Path, dict[str, str]]:
     src_path = (
         tmp_path / source_relpath
         if source_relpath is not None
@@ -133,6 +134,35 @@ def _build_and_run_with_env(
         timeout=NATIVE_BUILD_TIMEOUT_SECS,
     )
     assert build.returncode == 0, build.stdout + build.stderr
+    return out_path, env
+
+
+def _build_and_run_with_env(
+    tmp_path: Path,
+    source: str,
+    name: str,
+    *,
+    session_id: str,
+    cache_dir: Path,
+    backend: str,
+    source_relpath: str | None = None,
+    extra_files: dict[str, str] | None = None,
+    extra_env: dict[str, str] | None = None,
+    extra_build_args: list[str] | None = None,
+    run_timeout_secs: int = 60,
+) -> subprocess.CompletedProcess[str]:
+    out_path, env = _build_native_binary_with_env(
+        tmp_path,
+        source,
+        name,
+        session_id=session_id,
+        cache_dir=cache_dir,
+        backend=backend,
+        source_relpath=source_relpath,
+        extra_files=extra_files,
+        extra_env=extra_env,
+        extra_build_args=extra_build_args,
+    )
 
     run = run_native_test_process(
         [str(out_path)],
@@ -143,6 +173,95 @@ def _build_and_run_with_env(
         timeout=run_timeout_secs,
     )
     return run
+
+
+def _write_external_static_native_package_fixture(
+    tmp_path: Path,
+    *,
+    shim_source: str,
+    init_source: str,
+) -> Path:
+    external_root = tmp_path / "external_site"
+    package_dir = external_root / "nativepkg"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text(init_source, encoding="utf-8")
+    artifact_bytes = b"native-extension"
+    artifact_path = package_dir / "_native.so"
+    artifact_path.write_bytes(artifact_bytes)
+    manifest = {
+        "schema_version": 1,
+        "module": "nativepkg._native",
+        "molt_c_api_version": "1",
+        "abi_tag": "molt_abi1",
+        "python_tag": "py3",
+        "target_triple": "x86_64-unknown-linux-gnu",
+        "platform_tag": "x86_64_unknown_linux_gnu",
+        "capabilities": ["module.extension.exec"],
+        "extension": "_native.so",
+        "extension_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+    }
+    (package_dir / "extension_manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (package_dir / "_native.so.molt.py").write_text(
+        shim_source,
+        encoding="utf-8",
+    )
+    return external_root
+
+
+def test_native_external_static_package_import_uses_staged_runtime_root_after_source_root_removed(
+    tmp_path: Path,
+) -> None:
+    external_root = _write_external_static_native_package_fixture(
+        tmp_path,
+        shim_source="VALUE = 911\n",
+        init_source="import nativepkg._native\nVALUE = nativepkg._native.VALUE\n",
+    )
+
+    out_path, build_env = _build_native_binary_with_env(
+        tmp_path,
+        "import nativepkg\nprint(nativepkg.VALUE)\n",
+        "external_static_runtime_root",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-external-static-runtime-root",
+        cache_dir=ROOT / ".molt_cache-external-static-runtime-root",
+        backend="cranelift",
+        extra_env={"MOLT_EXTERNAL_STATIC_PACKAGES": "nativepkg"},
+        extra_build_args=[
+            "--no-trusted",
+            "--capabilities",
+            "fs.read,module.extension.exec",
+            "--lib-path",
+            str(external_root),
+            "--rebuild",
+        ],
+    )
+
+    shutil.rmtree(external_root)
+    run_env = build_env.copy()
+    for key in (
+        "MOLT_MODULE_ROOTS",
+        "MOLT_EXTERNAL_STATIC_PACKAGES",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "MOLT_CAPABILITIES",
+        "MOLT_TRUSTED",
+    ):
+        run_env.pop(key, None)
+
+    run = run_native_test_process(
+        [str(out_path)],
+        cwd=ROOT,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "911"
 
 
 def _write_safetensors_fixture(path: Path, *, count: int) -> None:
@@ -415,6 +534,7 @@ def test_native_importlib_import_module_tkinter_after_find_spec_is_clean(
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-importlib-tkinter",
         cache_dir=ROOT / ".molt_cache-importlib-tkinter",
         backend="cranelift",
+        extra_build_args=["--stdlib-profile", "full"],
         run_timeout_secs=20,
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -437,6 +557,7 @@ def test_native_builtin_import_tkinter_after_find_spec_is_clean(tmp_path: Path) 
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-builtin-tkinter",
         cache_dir=ROOT / ".molt_cache-builtin-tkinter",
         backend="cranelift",
+        extra_build_args=["--stdlib-profile", "full"],
         run_timeout_secs=20,
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -472,6 +593,62 @@ def test_native_imported_module_dunder_getattr_handles_missing_attr(
         "AttributeError",
         "HOOK::sentinel_missing",
     ]
+
+
+def test_native_module_attr_dunder_getattr_preserves_raised_attribute_error(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import probe_mod\n"
+            "try:\n"
+            "    probe_mod.sentinel_missing\n"
+            "except BaseException as exc:\n"
+            "    print(type(exc).__name__)\n"
+            "    print(str(exc))\n"
+        ),
+        "module_attr_dunder_getattr_missing_attr",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-attr-dunder-getattr",
+        cache_dir=ROOT / ".molt_cache-module-attr-dunder-getattr",
+        backend="cranelift",
+        extra_files={
+            "probe_mod.py": (
+                "def __getattr__(name):\n    raise AttributeError(f'HOOK::{name}')\n"
+            )
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "AttributeError",
+        "HOOK::sentinel_missing",
+    ]
+
+
+def test_native_getattr_default_suppresses_module_dunder_attribute_error(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import probe_mod\n"
+            "print(getattr(probe_mod, 'sentinel_missing', 'fallback'))\n"
+            "print('after')\n"
+        ),
+        "module_dunder_getattr_default",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-dunder-getattr-default",
+        cache_dir=ROOT / ".molt_cache-module-dunder-getattr-default",
+        backend="cranelift",
+        extra_files={
+            "probe_mod.py": (
+                "def __getattr__(name):\n    raise AttributeError(f'HOOK::{name}')\n"
+            )
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["fallback", "after"]
 
 
 def test_native_local_function_raise_is_caught_by_try_except(tmp_path: Path) -> None:
@@ -906,6 +1083,109 @@ def test_native_package_entry_direct_import_and_from_import_bindings_are_resolve
         "pkg.helper",
         "pkg",
         "sibling-ok",
+    ]
+
+
+def test_native_from_import_package_export_wins_over_same_named_child_module(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "from pkg import value\n"
+            "print(value)\n"
+        ),
+        "package_export_wins_over_child",
+        session_id="pytest-native-bootstrap-from-export-vs-child",
+        cache_dir=ROOT / ".molt_cache-package-from-export-vs-child",
+        backend="cranelift",
+        source_relpath="main.py",
+        extra_files={
+            "pkg/__init__.py": "value = 'public-export'\n__all__ = ['value']\n",
+            "pkg/value.py": "value = 'child-module'\n",
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "public-export"
+
+
+def test_native_from_import_auto_imports_child_module_and_binds_parent_attr(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_package_bootstrap(
+        tmp_path,
+        (
+            "import sys\n"
+            "from pkg import helper\n"
+            "print(helper.__name__)\n"
+            "print(helper is sys.modules['pkg.helper'])\n"
+            "print(getattr(sys.modules['pkg'], 'helper') is helper)\n"
+        ),
+        "package_from_import_child_binding",
+        cache_suffix="from-child-binding",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "pkg.helper",
+        "True",
+        "True",
+    ]
+
+
+def test_native_from_import_missing_child_reports_import_from_error(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "try:\n"
+            "    from pkg import missing_child\n"
+            "except BaseException as exc:\n"
+            "    print(type(exc).__name__)\n"
+            "    print(str(exc))\n"
+        ),
+        "package_from_import_missing_child",
+        session_id="pytest-native-bootstrap-from-missing-child",
+        cache_dir=ROOT / ".molt_cache-package-from-missing-child",
+        backend="cranelift",
+        source_relpath="main.py",
+        extra_files={"pkg/__init__.py": "VALUE = 1\n"},
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = run.stdout.strip().splitlines()
+    assert lines[0] == "ImportError"
+    assert "cannot import name 'missing_child' from 'pkg'" in lines[1]
+
+
+def test_native_from_import_child_dependency_error_propagates(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "try:\n"
+            "    from pkg import child\n"
+            "except BaseException as exc:\n"
+            "    print(type(exc).__name__)\n"
+            "    print(str(exc))\n"
+        ),
+        "package_from_import_child_dependency_error",
+        session_id="pytest-native-bootstrap-from-child-dependency-error",
+        cache_dir=ROOT / ".molt_cache-package-from-child-dependency-error",
+        backend="cranelift",
+        source_relpath="main.py",
+        extra_files={
+            "pkg/__init__.py": "VALUE = 1\n",
+            "pkg/child.py": "import definitely_missing_dependency\n",
+        },
+        extra_env={"MOLT_MODULE_ROOTS": str(tmp_path)},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "ModuleNotFoundError",
+        "No module named 'definitely_missing_dependency'",
     ]
 
 

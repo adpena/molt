@@ -115,24 +115,23 @@ fn build_heap_exposed_set(func: &TirFunction) -> HashSet<ValueId> {
 /// non-heap-exposed removal (Step 5), and the unique-ownership DecRef→Free
 /// promotion (Step 6).
 ///
-/// EXCEPTION (RC drop-insertion substrate, design 20 §3.1): if the function is
-/// already `drop_inserted` (the TIR drop pass made it the sole RC authority),
-/// Steps 5/6 are UNSOUND on it — they would delete the lone ownership-release
-/// `DecRef`s the drop pass placed (re-introducing the whole-program leak). This
-/// pass runs at pipeline slot 12 (before drop insertion) on the FIRST pass over a
-/// function, so it normally sees no drops; but the LLVM/native module phase
-/// RE-RUNS the whole pipeline on already-drop-inserted functions (post-inline
-/// rebuild / module-slot promotion). On that re-run the marker is set, so this
-/// pass must fall back to the balance-preserving subset — exactly what
-/// [`run_post_drop`] does. The drop pass itself is idempotent (it bails on the
-/// marker), so the only remaining hazard is THIS pass stripping the drops; the
-/// marker check closes it.
+/// EXCEPTION (RC drop-insertion substrate, design 20 §3.1): if the function
+/// already carries TIR-inserted drops, Steps 5/6 are UNSOUND on it — they would
+/// delete lone ownership-release `DecRef`s and re-introduce leaks. The full
+/// `drop_inserted` marker means the TIR drop pass made the whole function's RC
+/// the sole authority. The narrower exception-region marker means only the
+/// handler-safe CreationRef/MatchRef pre-bail slice has been inserted; native
+/// still needs legacy value tracking for that function, but this optimizer must
+/// still protect those already-inserted `DecRef`s on re-runs. Either marker falls
+/// back to the balance-preserving subset — exactly what [`run_post_drop`] does.
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
-    let already_drop_inserted = matches!(
-        func.attrs.get(super::drop_insertion::DROP_INSERTED_ATTR),
-        Some(crate::tir::ops::AttrValue::Bool(true))
-    );
-    run_with(func, am, already_drop_inserted)
+    let has_tir_inserted_drops =
+        super::drop_insertion::attr_is_true(func, super::drop_insertion::DROP_INSERTED_ATTR)
+            || super::drop_insertion::attr_is_true(
+                func,
+                super::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR,
+            );
+    run_with(func, am, has_tir_inserted_drops)
 }
 
 /// Post-drop-insertion elision (the `refcount_elim_post` invocation, design 20
@@ -1347,6 +1346,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exception_region_drop_marker_protects_lone_decref_without_full_drop_gate() {
+        let mut func = make_func();
+        let v = func.fresh_value();
+
+        func.attrs.insert(
+            crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR.to_string(),
+            crate::tir::ops::AttrValue::Bool(true),
+        );
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_op(OpCode::DecRef, vec![v], vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+
+        assert_eq!(
+            stats.ops_removed, 0,
+            "exception-only pre-bail drops must receive post-drop protection in refcount_elim"
+        );
+        assert!(
+            !func
+                .attrs
+                .contains_key(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+            "exception-only protection must not set native's full drop_inserted gate"
+        );
+        assert_eq!(func.blocks[&func.entry_block].ops.len(), 1);
+        assert_eq!(func.blocks[&func.entry_block].ops[0].opcode, OpCode::DecRef);
+    }
+
     // -----------------------------------------------------------------------
     // Test 20: ClosureStore causes heap exposure
     // -----------------------------------------------------------------------
@@ -1476,18 +1504,22 @@ mod tests {
             AttrValue::Bool(true),
         ));
         // Heap-expose `del_obj` (Call may capture) so Step 5 keeps its DecRef.
+        entry.ops.push(make_op(
+            OpCode::Call,
+            vec![callee, del_obj],
+            vec![call_result],
+        ));
         entry
             .ops
-            .push(make_op(OpCode::Call, vec![callee, del_obj], vec![call_result]));
-        entry.ops.push(make_op(OpCode::DecRef, vec![del_obj], vec![]));
+            .push(make_op(OpCode::DecRef, vec![del_obj], vec![]));
         entry.terminator = Terminator::Return { values: vec![] };
 
         run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
 
         let ops = &func.blocks[&func.entry_block].ops;
         assert!(
-            ops.iter().any(|op| op.opcode == OpCode::DecRef
-                && op.operands.first() == Some(&del_obj)),
+            ops.iter()
+                .any(|op| op.opcode == OpCode::DecRef && op.operands.first() == Some(&del_obj)),
             "finalizer DecRef must survive as a DecRef"
         );
         assert!(

@@ -156,10 +156,11 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "marker-scoped compile-child cleanup; backend daemon commands are excluded",
     ),
     AllowedRawSubprocessUse(
-        "tools/harness_memory_guard.py",
-        "guarded_completed_process_to_tempfiles",
-        "Popen",
-        "shared guard implementation for tempfile-backed subprocess capture",
+        "tools/molt_dev.py",
+        "probe_pid",
+        "os.kill",
+        "bounded pid-liveness probe only; detached-run and gate children avoid raw "
+        "subprocess launchers",
     ),
     AllowedRawSubprocessUse(
         "tools/linear_workspace.py",
@@ -172,6 +173,12 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_darwin_physical_memory_bytes",
         "run",
         "memory guard platform probe for adaptive host budgets",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "_darwin_available_memory_bytes",
+        "run",
+        "memory guard vm_stat platform probe for adaptive host budgets",
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
@@ -223,6 +230,20 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_git_rev",
         "run",
         "bounded git metadata probe; profiling commands use MOLT_BENCH guard",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/perf_scoreboard.py",
+        "_metadata_probe",
+        "run",
+        "single bounded read-only host metadata probe for pgrep/sysctl/ps/pmset/"
+        "git/version checks; workload and profiling children use guard custody",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/perf_scoreboard.py",
+        "_profiling_popen",
+        "Popen",
+        "single interactive profiling child launcher with MOLT_BENCH process-group "
+        "custody and shared force-close cleanup",
     ),
     AllowedRawSubprocessUse(
         "tools/secret_guard.py",

@@ -505,19 +505,17 @@ fn exception_label_to_block(func: &LirFunction) -> HashMap<i64, BlockId> {
 }
 
 /// Return the implicit successors of `block` that are reached only via
-/// exception flow — encoded by `CheckException`/`TryStart`/`TryEnd` ops
-/// with a `value` attr giving the target label_id. The LIR verifier needs
-/// to follow these edges so that exception handler blocks are considered
-/// reachable from the function entry; otherwise their value uses appear to
-/// violate dominance even though at runtime control flow correctly reaches
-/// them via the runtime exception path.
+/// exception flow — encoded by `CheckException`/`TryStart` ops with a `value`
+/// attr giving the target label_id. `TryEnd` carries pairing metadata, not a
+/// handler-transfer edge. The LIR verifier needs to follow real transfer edges
+/// so that exception handler blocks are considered reachable from the function
+/// entry; otherwise their value uses appear to violate dominance even though at
+/// runtime control flow correctly reaches them via the runtime exception path.
 fn exception_successors(block: &LirBlock, label_to_block: &HashMap<i64, BlockId>) -> Vec<BlockId> {
     let mut successors = Vec::new();
     for op in &block.ops {
-        if matches!(
-            op.tir_op.opcode,
-            OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
-        ) && let Some(AttrValue::Int(target_label)) = op.tir_op.attrs.get("value")
+        if crate::tir::dominators::is_exception_transfer_edge(op.tir_op.opcode)
+            && let Some(AttrValue::Int(target_label)) = op.tir_op.attrs.get("value")
             && let Some(&target) = label_to_block.get(target_label)
         {
             successors.push(target);

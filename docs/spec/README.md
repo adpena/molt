@@ -58,13 +58,14 @@ authoritative when a design claim drifts.
 - Codebase decomposition program: [docs/design/foundation/21_decomposition_program.md](../design/foundation/21_decomposition_program.md)
 - Op-kind registry: [docs/design/foundation/25_op_kind_registry.md](../design/foundation/25_op_kind_registry.md)
 - Perceus-style borrow inference: [docs/design/foundation/27_perceus_borrow_inference.md](../design/foundation/27_perceus_borrow_inference.md)
-- ExceptionRegion ownership: [docs/design/foundation/45_exception_region_ownership.md](../design/foundation/45_exception_region_ownership.md)
+- ExceptionRegion ownership, shared TIR facts, SimpleIR release transport, and native handler MatchRef release custody: [docs/design/foundation/45_exception_region_ownership.md](../design/foundation/45_exception_region_ownership.md)
 
 ## Compatibility And Contracts
 - Compatibility architecture index: [docs/spec/areas/compat/README.md](docs/spec/areas/compat/README.md)
 - Language surface index: [docs/spec/areas/compat/surfaces/language/language_surface_matrix.md](docs/spec/areas/compat/surfaces/language/language_surface_matrix.md)
 - Stdlib surface index: [docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_index.md)
 - C-API surface index: [docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md](docs/spec/areas/compat/surfaces/c_api/c_api_surface_index.md)
+- Ecosystem compatibility matrix (generated, includes NumPy `D28` source-recompiled extension package/native artifact publication custody): [docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md](docs/spec/areas/compat/surfaces/ecosystem/ecosystem_compat_matrix.generated.md)
 - Stdlib lowering execution plan: [docs/spec/areas/compat/plans/stdlib_lowering_plan.md](docs/spec/areas/compat/plans/stdlib_lowering_plan.md)
 - Tkinter lowering execution plan: [docs/spec/areas/compat/plans/tkinter_lowering_plan.md](docs/spec/areas/compat/plans/tkinter_lowering_plan.md)
 - C-API v0 bootstrap symbol list (including scalar/object-bytes/array constructors, type/module parity wrappers, runtime-owned module-state registries, and expanded scan-driven CPython-compat shim coverage via `include/Python.h` for parse/call/memory/thread/type helpers, selected `PyType_Spec` slot lowering + `METH_STATIC` support, and `PyType_FromModuleAndSpec`/`PyType_GetModule*`): [docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md](docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md)
@@ -74,7 +75,7 @@ authoritative when a design claim drifts.
 - 0210 CPython bridge policy: [docs/spec/areas/compat/contracts/cpython_bridge_policy.md](docs/spec/areas/compat/contracts/cpython_bridge_policy.md)
 - 0211 Compatibility + fallback contract: [docs/spec/areas/compat/contracts/compatibility_fallback_contract.md](docs/spec/areas/compat/contracts/compatibility_fallback_contract.md)
 - 0216 Dynamic execution + reflection policy contract: [docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md](docs/spec/areas/compat/contracts/dynamic_execution_policy_contract.md)
-- 0213 Import system contract (module-init closure, immutable `ImportPlan`, external-root admission policy, shared-stdlib cache partitioning, public importlib transaction authority, and remaining package-context/fromlist/frontend-syntax seams): [docs/spec/areas/compat/contracts/import_system_contract.md](docs/spec/areas/compat/contracts/import_system_contract.md)
+- 0213 Import system contract (module-init closure, immutable `ImportPlan`, external-root admission policy, native extension sidecar custody, backend-IR direct-call closure, shared-stdlib cache partitioning, public importlib transaction authority, and remaining package-context/fromlist/frontend-syntax seams): [docs/spec/areas/compat/contracts/import_system_contract.md](docs/spec/areas/compat/contracts/import_system_contract.md)
 - 0215 Verified subset contract: [docs/spec/areas/compat/contracts/verified_subset_contract.md](docs/spec/areas/compat/contracts/verified_subset_contract.md)
 
 ## Security
@@ -88,7 +89,7 @@ authoritative when a design claim drifts.
 - 0012 Molt Commands: [docs/spec/areas/tooling/0012_MOLT_COMMANDS.md](docs/spec/areas/tooling/0012_MOLT_COMMANDS.md)
 - 0013 Python Dependencies: [docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md](docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md)
 - 0014 Determinism And Security Enforcement Checklist: [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md)
-- Backend daemon identity custody (`src/molt/backend_daemon_custody.py`) and memory-guard operations: [docs/OPERATIONS.md](../OPERATIONS.md)
+- Backend daemon identity custody (`src/molt/backend_daemon_custody.py`) and memory-guard/current-test operations: [docs/OPERATIONS.md](../OPERATIONS.md)
 - 0200 Profile Artifact: [docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md](docs/spec/areas/tooling/0200_PROFILE_ARTIFACT.md)
 - 0215 Molt Extension Build Pipeline (runtime metadata enforcement + native/cross-host CI matrix + verify/wasm policy checks): [docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md](docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md)
 - 0602 When To Write Extensions Or Binaries: [docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md](docs/spec/areas/tooling/0602_WHEN_TO_WRITE_EXTENSIONS_OR_BINARIES.md)
@@ -103,7 +104,7 @@ authoritative when a design claim drifts.
 - 0510 Loop Optimization And Vectorization: [docs/spec/areas/perf/0510_LOOP_OPTIMIZATION_AND_VECTORIZATION.md](docs/spec/areas/perf/0510_LOOP_OPTIMIZATION_AND_VECTORIZATION.md)
 - 0511 String Optimization And Text Kernels: [docs/spec/areas/perf/0511_STRING_OPTIMIZATION_AND_TEXT_KERNELS.md](docs/spec/areas/perf/0511_STRING_OPTIMIZATION_AND_TEXT_KERNELS.md)
 - 0512 Arch Optimization And SIMD: [docs/spec/areas/perf/0512_ARCH_OPTIMIZATION_AND_SIMD.md](docs/spec/areas/perf/0512_ARCH_OPTIMIZATION_AND_SIMD.md)
-- 0513 GPU Parallelism, MLIR, And Tinygrad Runtime Handles: [docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)
+- 0513 GPU Parallelism, MLIR, Tinygrad Runtime Handles, And Off-The-Shelf Friend Suite: [docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](docs/spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)
 - 0601 Benchmark Harness And CI Gates: [docs/spec/areas/perf/0601_BENCHMARK_HARNESS_AND_CI_GATES.md](docs/spec/areas/perf/0601_BENCHMARK_HARNESS_AND_CI_GATES.md)
 - 0603 Benchmarks: [docs/spec/areas/perf/0603_BENCHMARKS.md](docs/spec/areas/perf/0603_BENCHMARKS.md)
 - 0604 Binary Size And Cold Start: [docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md](docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md)

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import signal
 import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,7 @@ from tests.native_process_guard import run_native_test_process
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOL_PATH = REPO_ROOT / "tools" / "bench_friends.py"
 ADAPTER_PATH = REPO_ROOT / "tools" / "tinygrad_off_shelf_adapter.py"
+NUMPY_ADAPTER_PATH = REPO_ROOT / "tools" / "numpy_off_shelf_adapter.py"
 
 
 def _load_tool_module():
@@ -30,6 +33,18 @@ def _load_tool_module():
 def _load_tinygrad_adapter_module():
     spec = importlib.util.spec_from_file_location(
         "tinygrad_off_shelf_adapter_under_test", ADAPTER_PATH
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_numpy_adapter_module():
+    spec = importlib.util.spec_from_file_location(
+        "numpy_off_shelf_adapter_under_test", NUMPY_ADAPTER_PATH
     )
     assert spec is not None
     assert spec.loader is not None
@@ -183,6 +198,137 @@ def test_bench_friends_include_disabled_with_dry_run(tmp_path: Path) -> None:
     assert payload["suites"][0]["status"] == "skipped"
 
 
+def test_bench_friends_interrupt_writes_partial_results_and_cleans_daemon(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_tool_module()
+    manifest = tmp_path / "manifest.toml"
+    output_root = tmp_path / "interrupted_out"
+    suite_root = tmp_path / "suite"
+    suite_root.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        textwrap.dedent(
+            f"""
+            schema_version = 1
+
+            [[suite]]
+            id = "interrupt_suite"
+            enabled = true
+            friend = "local"
+            source = "local"
+            local_path = "{suite_root.as_posix()}"
+            semantic_mode = "runs_unmodified"
+            repeat = 1
+            timeout_sec = 30
+
+            [suite.runners.molt]
+            run_cmd = ["{{python}}", "-c", "print('never reaches runner')"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class DummySignalScope:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    cleanup_calls: list[dict[str, object]] = []
+
+    def fake_run_runner(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise module.BenchInterrupted(signal.SIGTERM)
+
+    def fake_cleanup_backend_daemons(**kwargs):  # noqa: ANN003
+        cleanup_calls.append(kwargs)
+        return {
+            "status": "ok",
+            "reason": kwargs["reason"],
+            "session_id": kwargs["run_env"].get("MOLT_SESSION_ID", ""),
+            "terminated_count": 1,
+            "terminated": [{"pid": 1234}],
+        }
+
+    monkeypatch.setattr(module, "BenchSignalScope", DummySignalScope)
+    monkeypatch.setattr(module, "_run_runner", fake_run_runner)
+    monkeypatch.setattr(module, "_cleanup_backend_daemons", fake_cleanup_backend_daemons)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_friends.py",
+            "--manifest",
+            str(manifest),
+            "--output-root",
+            str(output_root),
+        ],
+    )
+
+    assert module.main() == 143
+
+    assert cleanup_calls
+    assert cleanup_calls[0]["reason"] == "interrupted"
+    payload = json.loads((output_root / "results.json").read_text(encoding="utf-8"))
+    assert payload["interrupted"]["signame"] == "SIGTERM"
+    assert payload["backend_daemon_cleanup"][0]["reason"] == "interrupted"
+    assert payload["backend_daemon_cleanup"][0]["terminated_count"] == 1
+    summary = (output_root / "summary.md").read_text(encoding="utf-8")
+    assert "## Interruption" in summary
+    assert "## Backend Daemon Cleanup" in summary
+
+
+def test_bench_friends_phase_result_preserves_memory_guard_diagnostics(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_tool_module()
+    stdout_path = tmp_path / "phase.stdout.log"
+    stderr_path = tmp_path / "phase.stderr.log"
+
+    class GuardedResult(subprocess.CompletedProcess):
+        elapsed_s = 1.25
+        violation = None
+        timed_out = False
+        limit_at_violation = None
+        orphaned_process_groups = (2345,)
+        cargo_incremental_quarantine = None
+
+    def fake_guarded_completed_process(*args, **kwargs):  # noqa: ANN002, ANN003
+        return GuardedResult(
+            args=["python3", "-c", "raise SystemExit"],
+            returncode=143,
+            stdout="",
+            stderr="terminated\n",
+        )
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    phase = module._run_command(
+        ["python3", "-c", "raise SystemExit"],
+        cwd=tmp_path,
+        env={},
+        timeout_sec=30,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        dry_run=False,
+        limits=module.harness_memory_guard.limits_from_env("MOLT_BENCH", {}),
+    )
+
+    payload = module._phase_to_dict(phase)
+    assert payload["returncode"] == 143
+    assert payload["guard_status"] == "signal_exit"
+    assert payload["guard_orphaned_process_groups"] == [2345]
+    assert payload["guard_exit_signal"]["name"] == "SIGTERM"
+    assert payload["guard_violation"] is None
+
+
 def test_bench_friends_nuitka_pyodide_runners(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.toml"
     output_root = tmp_path / "out_ext"
@@ -242,6 +388,7 @@ def test_bench_friends_nuitka_pyodide_runners(tmp_path: Path) -> None:
     summary_text = (output_root / "summary.md").read_text(encoding="utf-8")
     assert "Nuitka s" in summary_text
     assert "Pyodide s" in summary_text
+    assert "NumPy s" in summary_text
 
 
 def test_bench_friends_dynamic_runner_keys_are_manifest_authority() -> None:
@@ -266,6 +413,7 @@ def test_bench_friends_dynamic_runner_keys_are_manifest_authority() -> None:
     )
 
     assert suite.runners["tinygrad"].json_stdout is True
+    assert suite.runners["tinygrad"].role == "workload"
     assert suite.runners["tinygrad"].run_cmd == ["{python}", "-c", "print('ok')"]
 
     with pytest.raises(ValueError, match="invalid runner name"):
@@ -281,6 +429,54 @@ def test_bench_friends_dynamic_runner_keys_are_manifest_authority() -> None:
             },
             {},
         )
+    with pytest.raises(ValueError, match="role must be one of"):
+        module._parse_suite(
+            {
+                "id": "bad_role",
+                "enabled": True,
+                "friend": "local",
+                "source": "local",
+                "local_path": ".",
+                "semantic_mode": "runs_unmodified",
+                "runners": {
+                    "audit": {
+                        "role": "timed_audit",
+                        "run_cmd": ["python3", "-c", "pass"],
+                    }
+                },
+            },
+            {},
+        )
+
+
+def test_bench_friends_non_workload_runner_excluded_from_speed_metrics() -> None:
+    module = _load_tool_module()
+    runners = {
+        "molt": module.RunnerResult(
+            name="molt",
+            role="workload",
+            status="ok",
+            run_samples_s=[0.10],
+            run_median_s=0.10,
+            structured_median_s={"kernel": 0.10},
+        ),
+        "numpy": module.RunnerResult(
+            name="numpy",
+            role="custody_audit",
+            status="ok",
+            run_samples_s=[0.01],
+            run_median_s=0.01,
+            structured_median_s={"kernel": 0.01},
+        ),
+    }
+
+    metrics = module._suite_metrics(runners)
+
+    assert metrics["numpy_median_s"] is None
+    assert metrics["numpy_time_s"] is None
+    assert metrics["molt_vs_numpy_speedup"] is None
+    assert "numpy_kernel_median_s" not in metrics
+    assert metrics["molt_kernel_median_s"] == 0.10
 
 
 def test_bench_friends_suite_root_override_and_structured_json_metrics(
@@ -512,33 +708,218 @@ def test_bench_friends_git_suite_rejects_dirty_override_checkout(
     assert suite["source_custody"]["suite_root_overridden"] is True
 
 
+def test_bench_friends_git_suite_rejects_ignored_override_artifacts(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "ignored_checkout"
+    _init_git_repo(checkout)
+    (checkout / ".gitignore").write_text("build/\n", encoding="utf-8")
+    _git(checkout, "add", ".gitignore")
+    _git(
+        checkout,
+        "-c",
+        "user.email=molt@example.invalid",
+        "-c",
+        "user.name=Molt Test",
+        "commit",
+        "-m",
+        "ignore build artifacts",
+    )
+    commit = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    (checkout / "build").mkdir()
+    (checkout / "build" / "ignored.so").write_bytes(b"not a real extension")
+    manifest = tmp_path / "manifest.toml"
+    output_root = tmp_path / "out_ignored"
+    manifest.write_text(
+        textwrap.dedent(
+            """
+            schema_version = 1
+
+            [[suite]]
+            id = "ignored_git"
+            enabled = true
+            friend = "local"
+            source = "git"
+            repo_url = "unused"
+            repo_ref = "PINNED_COMMIT_REQUIRED"
+            semantic_mode = "runs_unmodified"
+
+            [suite.runners.cpython]
+            run_cmd = ["{python}", "script.py"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    res = _run_tool(
+        "--manifest",
+        str(manifest),
+        "--suite",
+        "ignored_git",
+        "--output-root",
+        str(output_root),
+        "--suite-root",
+        f"ignored_git={checkout}",
+        "--repo-ref",
+        f"ignored_git={commit}",
+        "--no-checkout",
+    )
+
+    assert res.returncode == 1
+    payload = json.loads((output_root / "results.json").read_text(encoding="utf-8"))
+    suite = payload["suites"][0]
+    assert suite["status"] == "failed"
+    assert "ignored artifacts" in suite["reason"]
+    assert "build/ignored.so" in suite["reason"]
+
+
 def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
     module = _load_tool_module()
     _meta, suites = module._load_manifest(REPO_ROOT / "bench/friends/manifest.toml")
     suite = next(s for s in suites if s.id == "tinygrad_off_the_shelf")
 
-    assert suite.enabled is False
+    assert suite.enabled is True
     assert suite.friend == "tinygrad"
     assert suite.source == "git"
     assert suite.repo_url == "https://github.com/tinygrad/tinygrad.git"
     assert suite.repo_ref == "a83710396c991272241e40da94489747c2393851"
     assert suite.semantic_mode == "runs_unmodified"
+    assert suite.env == {}
     assert {"gpu", "mlir", "tinygrad", "compatibility", "benchmark-suite"} <= set(
         suite.tags
     )
 
     cpython = suite.runners["cpython"]
     molt = suite.runners["molt"]
+    tinygrad = suite.runners["tinygrad"]
     assert cpython.json_stdout is True
     assert molt.json_stdout is True
-    assert cpython.run_cmd[0] == "{python}"
     assert cpython.run_cmd is not None
+    assert cpython.run_cmd[:7] == [
+        "uv",
+        "run",
+        "--isolated",
+        "--python",
+        "{python}",
+        "--with",
+        "typeguard",
+    ]
+    assert any(
+        part.endswith("tools/tinygrad_off_shelf_adapter.py")
+        for part in cpython.run_cmd
+    )
+    assert "--suite-root" in cpython.run_cmd
+    assert "{suite_root}" in cpython.run_cmd
+    assert cpython.env == {"PYTHONDONTWRITEBYTECODE": "1"}
     assert molt.run_cmd is not None
-    assert "tools/tinygrad_off_shelf_adapter.py" in cpython.run_cmd[1]
-    assert "tools/tinygrad_off_shelf_adapter.py" in molt.run_cmd[4]
+    assert molt.skip_reason is None
+    assert molt.run_cmd[:4] == ["{python}", "-m", "molt.cli", "run"]
+    assert "--build-arg=--stdlib-profile" in molt.run_cmd
+    assert "--build-arg=full" in molt.run_cmd
+    assert any(
+        part.endswith("tools/tinygrad_off_shelf_adapter.py")
+        for part in molt.run_cmd
+    )
     assert molt.env["MOLT_MODULE_ROOTS"] == "{suite_root}"
     assert molt.env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "tinygrad"
-    assert suite.runners["friend"].skip_reason
+    assert molt.env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert molt.env["PYTHONPATH"] == "{repo_root}/src:{suite_root}"
+    assert tinygrad.skip_reason is None
+    assert tinygrad.run_cmd == [
+        "uv",
+        "run",
+        "--isolated",
+        "--python",
+        "{python}",
+        "--with",
+        "typeguard",
+        "python",
+        "test/test_tiny.py",
+    ]
+    assert tinygrad.env == {
+        "CHECK_OOB": "0",
+        "DEV": "CPU",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPATH": "{suite_root}",
+        "TYPED": "1",
+    }
+
+
+def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
+    module = _load_tool_module()
+    _meta, suites = module._load_manifest(REPO_ROOT / "bench/friends/manifest.toml")
+    suite = next(s for s in suites if s.id == "numpy_off_the_shelf")
+
+    assert suite.enabled is True
+    assert suite.friend == "numpy"
+    assert suite.source == "git"
+    assert suite.repo_url == "https://github.com/numpy/numpy.git"
+    assert suite.repo_ref == "c81c49f77451340651a751e76bca607d85e4fd55"
+    assert suite.semantic_mode == "runs_unmodified"
+    assert {"ecosystem", "numpy", "c-api", "scientific-python", "compile-time"} <= set(
+        suite.tags
+    )
+
+    cpython = suite.runners["cpython"]
+    molt = suite.runners["molt"]
+    c_api_scan = suite.runners["c_api_scan"]
+    source_audit = suite.runners["source_audit"]
+    assert cpython.skip_reason is None
+    assert cpython.role == "workload"
+    assert cpython.json_stdout is True
+    assert cpython.run_cmd[:7] == [
+        "uv",
+        "run",
+        "--isolated",
+        "--python",
+        "{python}",
+        "--with",
+        "numpy==2.4.2",
+    ]
+    assert any(part.endswith("tools/numpy_off_shelf_adapter.py") for part in cpython.run_cmd)
+    assert "--require-version" in cpython.run_cmd
+    assert "2.4.2" in cpython.run_cmd
+    assert molt.skip_reason is None
+    assert molt.role == "workload"
+    assert molt.json_stdout is True
+    assert molt.run_cmd[:4] == ["{python}", "-m", "molt.cli", "run"]
+    assert any(part.endswith("tools/numpy_off_shelf_adapter.py") for part in molt.run_cmd)
+    assert "--capabilities" in molt.run_cmd
+    assert "module.extension.exec" in molt.run_cmd
+    assert "--require-module-under" in molt.run_cmd
+    assert molt.env["MOLT_MODULE_ROOTS"] == "{suite_root}"
+    assert molt.env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "numpy"
+    assert molt.env["PYTHONPATH"] == "{repo_root}/src:{suite_root}"
+    assert c_api_scan.skip_reason is None
+    assert c_api_scan.role == "c_api_scan"
+    assert c_api_scan.json_stdout is True
+    assert c_api_scan.run_cmd == [
+        "{python}",
+        "-m",
+        "molt.cli",
+        "extension",
+        "scan",
+        "--project",
+        "{suite_root}",
+        "--source",
+        "{suite_root}/numpy",
+        "--fail-on-missing",
+        "--json",
+    ]
+    assert source_audit.skip_reason is None
+    assert source_audit.role == "custody_audit"
+    assert source_audit.json_stdout is True
+    assert source_audit.run_cmd == [
+        "{python}",
+        "{repo_root}/tools/numpy_off_shelf_adapter.py",
+        "--suite-root",
+        "{suite_root}",
+        "--source-tree-audit",
+        "--workload",
+        "none",
+        "--json",
+    ]
 
 
 def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) -> None:
@@ -571,6 +952,46 @@ def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) ->
                     for row in self.data:
                         rows.append([sum(a * b for a, b in zip(row, col)) for col in cols])
                     return Tensor(rows)
+
+                def where(self, x, y):
+                    x_data = x.data if isinstance(x, Tensor) else x
+                    y_data = y.data if isinstance(y, Tensor) else y
+                    return Tensor([
+                        (x_data[idx] if isinstance(x_data, list) else x_data)
+                        if cond
+                        else (y_data[idx] if isinstance(y_data, list) else y_data)
+                        for idx, cond in enumerate(self.data)
+                    ])
+
+                def pad(self, padding):
+                    row_pad, col_pad = list(reversed([
+                        tuple(padding[idx:idx + 2])
+                        for idx in range(0, len(padding), 2)
+                    ]))
+                    top, bottom = row_pad
+                    left, right = col_pad
+                    width = len(self.data[0])
+                    padded = [[0.0] * (width + left + right) for _ in range(top)]
+                    padded.extend(
+                        [[0.0] * left + row + [0.0] * right for row in self.data]
+                    )
+                    padded.extend([[0.0] * (width + left + right) for _ in range(bottom)])
+                    return Tensor(padded)
+
+                def shrink(self, bounds):
+                    (row_start, row_end), (col_start, col_end) = bounds
+                    return Tensor([
+                        row[col_start:col_end]
+                        for row in self.data[row_start:row_end]
+                    ])
+
+                def flip(self, axis):
+                    if axis == 1:
+                        return Tensor([list(reversed(row)) for row in self.data])
+                    return Tensor(list(reversed(self.data)))
+
+                def contiguous(self):
+                    return Tensor([list(row) for row in self.data])
 
                 def realize(self):
                     return self
@@ -606,7 +1027,12 @@ def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) ->
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
     assert payload["status"] == "ok"
-    assert sorted(payload["workloads"]) == ["elementwise_chain", "matmul_2x2"]
+    assert sorted(payload["workloads"]) == [
+        "elementwise_chain",
+        "matmul_2x2",
+        "movement_views",
+        "where_promotion",
+    ]
     assert payload["workloads"]["elementwise_chain"]["result"] == [
         5.0,
         10.0,
@@ -616,6 +1042,16 @@ def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) ->
     assert payload["workloads"]["matmul_2x2"]["result"] == [
         [19.0, 22.0],
         [43.0, 50.0],
+    ]
+    assert payload["workloads"]["where_promotion"]["result"] == [
+        5,
+        2.5,
+        5,
+        4.5,
+    ]
+    assert payload["workloads"]["movement_views"]["result"] == [
+        [5.0, 4.0],
+        [0.0, 0.0],
     ]
 
 
@@ -630,3 +1066,92 @@ def test_tinygrad_off_shelf_adapter_prefers_tolist_without_numpy() -> None:
             raise AssertionError("adapter should not require numpy when tolist exists")
 
     assert module._as_nested_list(TinygradLikeTensor()) == [1.0, 2.0]
+
+
+def test_numpy_off_shelf_adapter_source_tree_audit(tmp_path: Path, capsys) -> None:
+    module = _load_numpy_adapter_module()
+    suite_root = tmp_path / "numpy_src"
+    (suite_root / "numpy" / "_core").mkdir(parents=True)
+    (suite_root / "numpy" / "__init__.py").write_text("__version__ = '2.4.2'\n")
+    (suite_root / "pyproject.toml").write_text("[project]\nname = 'numpy'\n")
+
+    rc = module.main(
+        [
+            "--suite-root",
+            str(suite_root),
+            "--source-tree-audit",
+            "--workload",
+            "none",
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["source_tree"]["required_paths"] == [
+        "pyproject.toml",
+        "numpy/__init__.py",
+        "numpy/_core",
+    ]
+
+
+def test_numpy_off_shelf_adapter_rejects_loaded_submodule_origin_escape(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_numpy_adapter_module()
+    suite_root = tmp_path / "numpy_src"
+    outside_root = tmp_path / "outside"
+    (suite_root / "numpy").mkdir(parents=True)
+    (outside_root / "numpy").mkdir(parents=True)
+    top_level = suite_root / "numpy" / "__init__.py"
+    escaped = outside_root / "numpy" / "_core.py"
+    top_level.write_text("__version__ = '2.4.2'\n", encoding="utf-8")
+    escaped.write_text("VALUE = 1\n", encoding="utf-8")
+    for name in list(sys.modules):
+        if name == "numpy" or name.startswith("numpy."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "numpy",
+        types.SimpleNamespace(__file__=str(top_level)),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "numpy._core",
+        types.SimpleNamespace(__file__=str(escaped)),
+    )
+
+    with pytest.raises(RuntimeError, match="numpy._core"):
+        module._audit_loaded_numpy_modules(require_module_under=suite_root)
+
+
+def test_numpy_off_shelf_adapter_runs_public_api_workloads(capsys) -> None:
+    np = pytest.importorskip("numpy")
+    module = _load_numpy_adapter_module()
+
+    rc = module.main(
+        [
+            "--workload",
+            "all",
+            "--iterations",
+            "1",
+            "--json",
+            "--require-version",
+            np.__version__,
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["numpy_version"] == np.__version__
+    assert payload["numpy_modules"]["modules"]
+    assert payload["numpy_modules"]["required_root"] is None
+    assert sorted(payload["workloads"]) == [
+        "array_dtype_shape_tolist",
+        "broadcast_where",
+        "matmul_2x2",
+        "sum_reshape",
+    ]

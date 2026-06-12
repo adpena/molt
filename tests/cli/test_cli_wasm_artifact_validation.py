@@ -345,6 +345,10 @@ def test_ensure_runtime_wasm_rebuilds_when_feature_shape_changes_even_if_artifac
         resolved_modules={"ssl"},
     )
     assert build_calls, "feature-shape changes must force a wasm runtime rebuild"
+    cmd = build_calls[0][0]
+    assert "--no-default-features" in cmd
+    cmd_features = set(cmd[cmd.index("--features") + 1].split(","))
+    assert "sqlite" not in cmd_features
     assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00rebuilt"
 
 
@@ -537,6 +541,8 @@ def test_ensure_runtime_wasm_full_profile_fingerprint_matches_cargo_features(
         "builtin_contextvars",
     } <= cmd_features
     assert "stdlib_micro" not in cmd_features
+    assert "sqlite" not in cmd_features
+    assert "sqlite" not in fingerprint_features
 
 
 def test_ensure_runtime_wasm_skip_rebuild_still_requires_requested_exports(
@@ -773,6 +779,97 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00reloc"
 
 
+def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    target_root = tmp_path / "target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: True, raising=True
+    )
+    monkeypatch.setattr(
+        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_runtime_wasm_missing_exports", lambda path, required: set(), raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda path: True,
+        raising=True,
+    )
+    captured_envs: list[dict[str, str]] = []
+
+    def fake_run_runtime_wasm_cargo_build(
+        *,
+        cmd: list[str],
+        root: Path,
+        env: dict[str, str],
+        cargo_timeout: float | None,
+        profile_dir: str,
+        target_root_override: Path | None = None,
+        json_output: bool,
+        artifact_kind: str = "cdylib",
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        del cargo_timeout, json_output, artifact_kind
+        captured_envs.append(dict(env))
+        effective_target_root = target_root_override or cli._cargo_target_root(root)
+        artifact = (
+            effective_target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
+        )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x00asm\x01\x00\x00\x00ok")
+        return subprocess.CompletedProcess(cmd, 0, "", ""), artifact
+
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        fake_run_runtime_wasm_cargo_build,
+        raising=True,
+    )
+
+    assert cli._ensure_runtime_wasm(
+        tmp_path / "wasm" / "default" / "molt_runtime.wasm",
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+    )
+    assert captured_envs[-1]["CARGO_INCREMENTAL"] == "0"
+
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    assert cli._ensure_runtime_wasm(
+        tmp_path / "wasm" / "explicit" / "molt_runtime.wasm",
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+    )
+    assert captured_envs[-1]["CARGO_INCREMENTAL"] == "1"
+
+
 def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -786,7 +883,8 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         captured["cmd"] = list(cmd)
         captured["kwargs"] = dict(kwargs)
-        runtime_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
+        output = Path(cmd[cmd.index("-o") + 1])
+        output.write_bytes(b"\0asm\x01\0\0\0reloc")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/wasm-ld")

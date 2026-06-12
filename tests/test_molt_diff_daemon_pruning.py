@@ -56,6 +56,17 @@ def _write_session_identity(
     return identity_path
 
 
+def test_molt_diff_backend_daemon_scan_failure_fails_closed(monkeypatch) -> None:
+    module = _load_diff_module()
+
+    def raise_timeout(*args, **kwargs):
+        raise module.subprocess.TimeoutExpired(cmd=["ps"], timeout=2.0)
+
+    monkeypatch.setattr(module.subprocess, "run", raise_timeout)
+
+    assert module._list_backend_daemon_processes() == []
+
+
 def test_molt_diff_legacy_pid_cleanup_unlinks_without_signaling(
     tmp_path: Path,
     monkeypatch,

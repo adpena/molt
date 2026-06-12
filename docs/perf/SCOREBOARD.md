@@ -169,7 +169,7 @@ do not optimize from this red list"* naming WHICH check failed:
 
 | check | signal | threshold / rule |
 |-------|--------|------------------|
-| active build processes | `pgrep -fl 'cargo\|rustc\|molt-backend\|molt build'` | **any** match (other than this tool's own tree) ⇒ not quiet. **`codex` is excluded by name** — never counted, never killed (project policy). |
+| active build processes | `pgrep -fl 'cargo\|rustc\|molt-backend\|molt build'` | **any** match (other than this tool's own tree) ⇒ not quiet. **Claude/Codex host-control processes are excluded by name** — never counted, never killed (project policy). |
 | 1-min load average | `sysctl -n vm.loadavg` vs `sysctl -n hw.ncpu` | `load > ncpu × 0.5` ⇒ not quiet (18-core host ⇒ load > 9.0). Permissive enough that a quiet desktop still measures; an active build always trips this AND the process check. |
 | runnable-thread storm | runnable thread count | `> max(2, ncpu × 0.5)` ⇒ contended (catches a build storm before the 1-min EWMA does). |
 | thermal / frequency throttle | `pmset -g therm` (best-effort) | throttle active ⇒ not quiet. Skipped if the probe is unavailable (never invents a result). |

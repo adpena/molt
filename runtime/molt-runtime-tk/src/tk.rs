@@ -3457,11 +3457,12 @@ fn tcl_obj_alloc_typed_from_bits(
         }
         // bytes / bytearray -> Tcl byte array object.
         if (type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY)
-            && let Some(slice) = rt_bytes_as_slice(bits) {
-                let len = slice.len() as c_int;
-                let o = unsafe { (api.new_byte_array_obj)(slice.as_ptr(), len) };
-                return non_null_obj(o, "Tcl_NewByteArrayObj returned null");
-            }
+            && let Some(slice) = rt_bytes_as_slice(bits)
+        {
+            let len = slice.len() as c_int;
+            let o = unsafe { (api.new_byte_array_obj)(slice.as_ptr(), len) };
+            return non_null_obj(o, "Tcl_NewByteArrayObj returned null");
+        }
     }
     // tuple / list -> Tcl list of typed elements (font tuples, coordinate lists).
     if let Some(elements) = decode_value_list(obj) {

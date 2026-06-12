@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MOLT_STDLIB_ROOT = str(ROOT / "src" / "molt" / "stdlib")
@@ -46,8 +48,30 @@ def _ensure_pytest_process_scope() -> None:
         os.environ.setdefault("MOLT_SESSION_ID", f"pytest-{os.getpid()}")
 
 
+def _assert_pytest_memory_guard_active() -> None:
+    from tools import pytest_memory_guard_bootstrap
+
+    pytest_args = pytest_memory_guard_bootstrap.pytest_invocation_args()
+    try:
+        pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
+            os.environ,
+            args=pytest_args if pytest_args is not None else tuple(sys.argv[1:]),
+        )
+    except SystemExit as exc:
+        raise pytest.UsageError(str(exc)) from exc
+    if pytest_memory_guard_bootstrap.outer_memory_guard_active():
+        return
+    raise RuntimeError(
+        "Molt pytest custody requires a live ancestor tools/memory_guard.py "
+        "process before collection; run pytest from the repo root so "
+        "sitecustomize.py or the configured pytest plugins can re-exec under "
+        "the memory guard."
+    )
+
+
 def pytest_configure() -> None:
     _ensure_src_on_path()
+    _assert_pytest_memory_guard_active()
     _ensure_pytest_process_scope()
 
 
@@ -68,17 +92,12 @@ def _is_xdist_run(session) -> bool:  # type: ignore[no-untyped-def]
 def pytest_sessionstart(session) -> None:  # type: ignore[no-untyped-def]
     _ensure_src_on_path()
     _ensure_pytest_process_scope()
-    # The repo memory-guard sentinel drains (SIGTERMs) repo-scoped processes on
-    # exit, which is fundamentally incompatible with pytest-xdist: a per-worker
-    # sentinel SIGTERMs molt builds still running in OTHER workers when one
-    # worker finishes first ("Compilation failed: SIGTERM (-15); no RSS
-    # violation observed" → silently SKIPPED tests), and the controller-side
-    # drain races xdist's worker-channel teardown ("OSError: cannot send
-    # (already closed?)" in pytest_sessionfinish → nonzero exit even when every
-    # test passed). Under xdist, skip the session sentinel entirely: each
+    # Automatic repo sentinels now scope violation/drain kills to the current
+    # process tree, but xdist still has many independent worker controllers and
+    # its own channel teardown. Keep the session sentinel serial-only: each xdist
     # compliance build is already bounded by the per-build memory guard in
-    # tests/compliance/process_guard.run_compliance_process, and the worker
-    # count caps aggregate concurrency. Serial runs keep the full sentinel.
+    # tests/compliance/process_guard.run_compliance_process, and the worker count
+    # caps aggregate concurrency. Serial runs keep the full sentinel.
     if _is_xdist_run(session):
         return
     from tools import harness_memory_guard

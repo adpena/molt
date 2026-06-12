@@ -1,23 +1,57 @@
 # Parallel-Build Architecture: maximizing dev velocity + incremental throughput
 
-Status: design / proposal (2026-06-03). Author: autonomous session.
+Status: live routing doc / partially landed (refreshed 2026-06-12).
+The live codebase and executable Cargo metadata remain authoritative.
 
-## TL;DR — the two structural bottlenecks (measured)
+## Live State Snapshot (2026-06-12)
 
-1. **`molt-runtime` is a 344K-line monolith** (2× the next crate `molt-backend` at
-   162K; the long tail of 20+ runtime crates is ≤19K each). **26 crates depend on
+- The build-iteration profile fix from this document has already landed in the
+  root `Cargo.toml`: `release-fast` uses thin LTO with high codegen-unit
+  parallelism, while shipped output profiles retain fat LTO where binary
+  size/runtime performance need whole-program optimization.
+- Runtime leaf crates exist and are wired as path dependencies from
+  `runtime/molt-runtime/Cargo.toml`: `molt-runtime-core`, `-math`, `-text`,
+  `-collections`, `-serial`, `-crypto`, `-compression`, `-net`, `-asyncio`,
+  `-regex`, `-path`, `-itertools`, `-difflib`, `-logging`, `-http`, `-xml`,
+  `-ipaddress`, `-zoneinfo`, `-stringprep`, and `-tk`. Guarded
+  `cargo metadata --no-deps` reports these as workspace packages.
+- `molt-runtime-stringprep` is now a completed leaf-ownership example:
+  the in-facade fallback module was deleted, `molt_stringprep_*` is a
+  `stdlib_stringprep` link-affecting gate, and checks pass with the feature
+  both enabled and disabled.
+- The extraction is not complete. `molt-runtime` is still the facade plus a
+  large implementation owner, `runtime/molt-backend/src/native_backend/function_compiler.rs`
+  remains a ~28K-line codegen lock, and `src/molt/frontend/__init__.py` remains
+  a ~27K-line frontend lock. Native Cranelift is nevertheless decomposing by
+  complete op-family handlers under `native_backend/function_compiler/fc/`;
+  indexing plus scalar builtins (`id`, `ord`, fused `ord_at`, `chr`) now live
+  outside `compile_func_inner` while `len` stays inline because it owns
+  representation-plan specialization.
+- Native backend TIR optimization no longer constructs one whole-program
+  uncached result wave for large user closures. Uncached user functions are
+  partitioned by function count and op budget, optimized in one bounded
+  parallel batch at a time, then applied and cache-written before the next batch
+  is materialized. This is the current backend compile-memory response for the
+  enabled off-the-shelf tinygrad runner.
+- The next throughput work is therefore extraction/composition, not another
+  profile-only LTO fix.
+
+## TL;DR — current structural bottlenecks
+
+1. **`molt-runtime` is still a ~352K-line crate** (the next crate,
+   `molt-backend`, is ~208K; the long tail of 20+ runtime leaves is ≤20K each).
+   **Multiple product crates depend on
    it**, so it sits on the critical path AND cannot parallelize internally beyond
    `codegen-units`. Editing ANY of its 116 `builtins/*.rs` or 38 `object/*.rs`
-   files recompiles the whole 344K-line crate.
-2. **`release-fast` (the build-iteration profile, used by the backend daemon) sets
-   `lto = "fat"`.** Fat LTO re-merges every crate's bitcode into ONE module and
-   re-optimizes/codegens the whole program in a **single-threaded serial phase** —
-   it deletes the cross-crate parallelism `codegen-units` would give. The profile
-   comment already concedes "cgu count has negligible effect on the final binary"
-   under fat LTO; that's exactly the problem for an *iteration* profile.
-
-Everything else (no default fast linker, no default `sccache`, per-worktree
-`target/` in the multi-agent model) compounds these two.
+   files recompiles the whole ~352K-line crate.
+2. **The backend-native and frontend god-file locks still serialize multi-agent
+   development.** The backend module split landed, but native codegen is still
+   centered on `function_compiler.rs`; frontend F1 split files, but F2 semantic
+   authority split is still active work.
+3. **Shared-cache policy is still more important than raw local target size.**
+   Per-worktree `target/` roots isolate agents correctly, but the system still
+   needs more shared, deterministic cache surfaces so the Nth agent does not
+   rebuild what the first agent already proved.
 
 ## Prioritized levers (highest leverage first)
 
@@ -44,10 +78,13 @@ relink"; (c) cargo **pipelining** starts dependents as soon as a crate's *metada
 unit.
 
 Hard constraints / watch-items:
-- The crates share the MoltObject `u64` bit ABI + the intrinsic registry. The split
-  MUST route all shared types through `molt-runtime-core` (no duplicated `MoltObject`
-  definitions). Cyclic deps are illegal in cargo — design the layering as a DAG
-  (core ← text/num/collections ← exceptions/iter ← facade).
+- The crates share the MoltObject `u64` bit ABI + the intrinsic registry. The
+  target split MUST route all shared types through `molt-runtime-core`, but live
+  `molt-runtime-core` still has copied type IDs and a `PyToken` stub while the
+  real object-model/GIL authority remains in `molt-runtime`; deleting that
+  duplicate authority is part of the extraction work. Cyclic deps are illegal in
+  cargo — design the layering as a DAG (core ← text/num/collections ←
+  exceptions/iter ← facade).
 - **`intrinsics/generated.rs` (24K lines) is a hub**: `resolve_core_symbol`
   address-takes every intrinsic, creating an artificial all-to-one dependency that
   also defeats `-dead_strip` (see the binary-size baton). Generate **per-crate
@@ -57,17 +94,19 @@ Hard constraints / watch-items:
 - Do it as a real structural arc (one cohesive crate at a time, each landing
   green), not a half-split that leaves two sources of truth.
 
-### 2. Stop fat-LTO'ing the build-ITERATION profile; reserve fat LTO for shipped artifacts
+### 2. Keep build-iteration LTO split from shipped-artifact LTO (LANDED; preserve)
 Distinguish two link products:
 - **The backend daemon** (`molt-backend` + deps): a *compiler*; its hot path is
   Cranelift codegen, NOT whole-program-optimized runtime. It does not need fat LTO.
-  Set `release-fast` → `lto = "thin"` (parallel, ~90% of fat's perf) or `"off"`.
+  `release-fast` is already thin-LTO in the root `Cargo.toml`; keep it that way
+  unless new measurements prove another profile is better.
 - **The shipped user-binary runtime** (statically linked into the AOT output):
   fat LTO matters here for end-user runtime perf. Keep fat LTO on the *artifact*
   link step (`release`/published), not on the daemon's iteration builds.
 These are different link steps — separating them removes the single-threaded LTO
 tax from every dev rebuild while preserving the perf contract for shipped binaries.
-Measure first: time the LTO phase of a `release-fast` daemon build to quantify.
+Root `Cargo.toml` records the measured fat→thin `release-fast` delta; future work
+should extend the measurement to crate extraction and cache-hit rebuild cases.
 
 ### 3. Default-on `sccache` + a fast linker (lld/mac, mold/Linux)
 - **`sccache`**: caches compiled rlibs across sessions AND worktrees. The repo
@@ -80,10 +119,13 @@ Measure first: time the LTO phase of a `release-fast` daemon build to quantify.
   `.cargo/config.toml`; flip on for dev profiles (keep the portable baseline for CI).
 
 ### 4. Feature-graph hygiene (avoid rebuild thrash)
-With 26 dependents on `molt-runtime`, any feature-unification mismatch (a crate
-built with different feature sets per consumer) forces duplicate compiles. Audit
-`native-backend`, `stdlib_path`, wasm features for accidental thrash; prefer
-additive features resolved once.
+Guarded live metadata currently shows three direct workspace reverse-dependencies
+on `molt-runtime`: `molt-wasm-host`, `molt-embed`, and `molt-ffi`. Treat that as
+the live critical path, not the older over-broad dependent count. Any
+feature-unification mismatch across those consumers, backend features, or WASM
+profiles can still force duplicate compiles; audit `native-backend`,
+`stdlib_path`, wasm features, and leaf stdlib gates for accidental thrash, and
+prefer additive features resolved once.
 
 ### 5. Multi-agent worktree throughput
 The heavy worktree-per-agent model (currently many `worktree-agent-*`) maximally
@@ -93,15 +135,18 @@ cache + a shared sccache dir across worktrees (the session-scoped `target/` stay
 per-agent for isolation; the *cache* is shared).
 
 ## Sequencing (each step lands green; no half-states)
-1. **Now / low-risk, config-only:** default-on sccache + fast linker for dev
-   profiles; split `release-fast` LTO (thin for daemon, fat for shipped artifact).
-   Measure the wall-time delta on a touch-one-file incremental daemon build.
-2. **Structural, highest-leverage:** carve `molt-runtime-core` out first (object
-   model + GIL + alloc), make the monolith depend on it; verify all gates green.
-   Then peel one builtins cluster at a time (text → num → exceptions → iter → …),
-   each as a complete crate with its own tests, landing green before the next.
+1. **Structural runtime composition:** continue turning `molt-runtime` into a
+   facade over the existing leaf crates. For each cluster, move the authority
+   once, delete the old in-crate duplicate, and prove the feature gate builds
+   both standalone and through the facade.
+2. **Backend-native extraction:** create the `molt-backend-native` crate only
+   when `native_backend/*` plus `llvm_backend/*` can move as one authority over
+   native lowering. Keep TIR/passes/representation facts in backend core.
 3. **Intrinsic registry:** per-crate intrinsic sub-registries + thin composing
    resolver (co-designed with the binary-size per-app resolver work).
+4. **Frontend F2:** replace the F1 move-only mixin split with semantic authority
+   surfaces so frontend changes stop serializing through one shared class/state
+   owner.
 
 ## Cross-cutting wins
 - Decomposition (#1) + per-crate intrinsic registries (#3-structural) ALSO advance
@@ -110,6 +155,9 @@ per-agent for isolation; the *cache* is shared).
   roadmap goals.
 - Keep the perf contract intact: shipped artifacts retain fat LTO; only the dev
   iteration loop trades whole-program re-opt for parallelism + incrementality.
+- Keep docs honest: when a profile or crate boundary lands, update this file
+  from `Cargo.toml`, `cargo metadata`, and targeted build timings before using
+  old design text as a work plan.
 
 ## Addendum (2026-06-03): backend god-file split landed; crate-extraction boundary scoped
 

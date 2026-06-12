@@ -9981,6 +9981,13 @@ pub unsafe extern "C" fn molt_guarded_class_def(
     if debug_class_def {
         eprintln!("molt class_def after apply_set_name");
     }
+    crate::with_gil_entry_nopanic!(_py, {
+        if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
+            unsafe {
+                crate::object::class_finish_definition(_py, class_ptr);
+            }
+        }
+    });
 
     if (flags & 1) != 0 && nb > 0 {
         let init_subclass_ok = crate::with_gil_entry_nopanic!(_py, {

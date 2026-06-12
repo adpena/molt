@@ -2,9 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::blocks::{BlockId, Terminator};
+use crate::tir::dominators;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, OpCode};
 
 fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
     match term {
@@ -21,21 +21,6 @@ fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
         }
         Terminator::Return { .. } | Terminator::Unreachable => vec![],
     }
-}
-
-fn exception_successors(block: &TirBlock, label_to_block: &HashMap<i64, BlockId>) -> Vec<BlockId> {
-    let mut successors = Vec::new();
-    for op in &block.ops {
-        if matches!(
-            op.opcode,
-            OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
-        ) && let Some(AttrValue::Int(target_label)) = op.attrs.get("value")
-            && let Some(&target) = label_to_block.get(target_label)
-        {
-            successors.push(target);
-        }
-    }
-    successors
 }
 
 /// Collect the blocks that must survive a block-removing pass.
@@ -67,7 +52,7 @@ pub(super) fn metadata_preserving_reachable_blocks(func: &TirFunction) -> HashSe
             continue;
         };
         stack.extend(terminator_successors(&block.terminator));
-        stack.extend(exception_successors(block, &label_to_block));
+        stack.extend(dominators::exception_successors(block, &label_to_block));
     }
 
     visited

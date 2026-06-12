@@ -86,15 +86,7 @@ PYTEST_PROCESS_TOKENS = (
     "python3 -m pytest",
 )
 
-HOST_CONTROL_PLANE_TOKENS = (
-    "/Applications/Codex.app/",
-    "Codex.app/Contents/",
-    "Codex (Renderer)",
-    "Codex Helper",
-    "codex app-server",
-    "codex_chronicle",
-    "/cua_node/bin/node_repl",
-)
+HOST_CONTROL_PLANE_TOKENS = memory_guard.HOST_CONTROL_PLANE_TOKENS
 
 INSPECTION_COMMAND_TOKENS = (
     "tools/process_sentinel.py",
@@ -224,24 +216,7 @@ def _sample_pgid(sample: memory_guard.ProcessSample) -> int:
 
 
 def is_host_control_plane_process(sample: memory_guard.ProcessSample) -> bool:
-    return any(token in sample.command for token in HOST_CONTROL_PLANE_TOKENS)
-
-
-def _ancestor_pids(
-    samples: Mapping[int, memory_guard.ProcessSample],
-    pid: int | None,
-) -> set[int]:
-    if pid is None or pid <= 0:
-        return set()
-    ancestors: set[int] = set()
-    current = pid
-    while current > 0 and current not in ancestors:
-        ancestors.add(current)
-        sample = samples.get(current)
-        if sample is None or sample.ppid <= 0 or sample.ppid == current:
-            break
-        current = sample.ppid
-    return ancestors
+    return memory_guard.is_host_control_plane_process(sample)
 
 
 def protected_process_group_ids(
@@ -250,14 +225,11 @@ def protected_process_group_ids(
     self_pid: int | None = None,
     self_pgid: int | None = None,
 ) -> set[int]:
-    protected: set[int] = set()
-    if self_pgid is not None and self_pgid > 0:
-        protected.add(self_pgid)
-    ancestor_ids = _ancestor_pids(samples, self_pid)
-    for sample in samples.values():
-        if sample.pid in ancestor_ids or is_host_control_plane_process(sample):
-            protected.add(_sample_pgid(sample))
-    return protected
+    return memory_guard.protected_process_group_ids(
+        samples,
+        self_pid=self_pid,
+        self_pgid=self_pgid,
+    )
 
 
 def _group_samples_by_pgid(
@@ -325,6 +297,7 @@ def process_groups(
     self_pid: int | None = None,
     self_pgid: int | None = None,
     known_pgids: set[int] | None = None,
+    owned_pgids: set[int] | None = None,
 ) -> list[ProcessGroup]:
     grouped = _group_samples_by_pgid(samples)
     protected_pgids = protected_process_group_ids(
@@ -346,7 +319,9 @@ def process_groups(
             matched=pgid in matched,
         )
         for pgid, group in grouped.items()
-        if pgid in matched and pgid not in protected_pgids
+        if pgid in matched
+        and pgid not in protected_pgids
+        and (owned_pgids is None or pgid in owned_pgids)
     ]
     return sorted(groups, key=lambda group: group.pgid)
 
@@ -565,6 +540,20 @@ def _incident_payload(
         timestamp_key: incident_at,
         "elapsed_s": elapsed_s,
         "grace_sec": grace_sec,
+        "kill_scope": "repo",
+        "killer_label": "tools/process_sentinel.py",
+        "killer_pid": os.getpid(),
+        "killer_session_id": os.environ.get("MOLT_SESSION_ID", ""),
+        "victim_pgid": violation.pgid,
+        "victim_command": violation.command,
+        "owner_match_reason": "repo_scope",
+        "termination": {
+            "signal": {"signal": signal.SIGTERM, "name": "SIGTERM"},
+            "fallback_signal": {"signal": signal.SIGKILL, "name": "SIGKILL"},
+            "grace_sec": grace_sec,
+            "rss_triggered": violation.reason
+            in {"process_rss", "group_rss", "global_rss"},
+        },
         "next_action": _next_action_for_violation(violation),
         "violation": _violation_payload(violation),
     }
@@ -647,6 +636,14 @@ def emit_violations(
 
 def terminate_group(pgid: int, *, grace: float) -> None:
     if pgid <= 0 or pgid == os.getpgrp():
+        return
+    samples = memory_guard.sample_processes()
+    protected_pgids = protected_process_group_ids(
+        samples,
+        self_pid=os.getpid(),
+        self_pgid=os.getpgrp(),
+    )
+    if pgid in protected_pgids:
         return
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(pgid, signal.SIGTERM)
@@ -861,7 +858,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     started = time.monotonic()
     clean_since: float | None = None
     known_pgids: set[int] = set()
-    while True:
+
+    def scan_groups() -> list[ProcessGroup]:
         groups = process_groups(
             memory_guard.sample_processes(),
             root=root,
@@ -870,6 +868,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             known_pgids=known_pgids,
         )
         known_pgids.update(group.pgid for group in groups)
+        return groups
+
+    def process_observed_groups(
+        groups: Sequence[ProcessGroup],
+        *,
+        observed_at: float,
+    ) -> list[SentinelViolation]:
         current_limits = _resolved_limits_from_args(
             args,
             accounted_rss_kb=sum(group.total_rss_kb for group in groups),
@@ -887,7 +892,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             stale_orphan_sec=args.stale_orphan_sec,
             stale_pytest_sec=args.stale_pytest_sec,
         )
-        now = time.monotonic()
         repro_payloads = (
             {
                 violation.pgid: _process_sentinel_repro_payload(
@@ -907,7 +911,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             json_mode=args.json,
             stream=stream,
             incident_at=_utc_timestamp(),
-            elapsed_s=now - started,
+            elapsed_s=observed_at - started,
             dry_run=args.dry_run,
             grace_sec=args.grace_sec,
             repro_payloads=repro_payloads,
@@ -915,6 +919,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.dry_run:
             for violation in violations:
                 terminate_group(violation.pgid, grace=args.grace_sec)
+        return violations
+
+    while True:
+        groups = scan_groups()
+        now = time.monotonic()
+        violations = process_observed_groups(groups, observed_at=now)
         if args.once:
             return 1 if violations else 0
         if args.until_clean_sec is not None:
@@ -924,7 +934,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if clean_since is None:
                     clean_since = now
                 if now - clean_since >= args.until_clean_sec:
-                    return 0
+                    final_groups = scan_groups()
+                    if final_groups:
+                        final_now = time.monotonic()
+                        process_observed_groups(final_groups, observed_at=final_now)
+                        clean_since = None
+                    else:
+                        return 0
             if (
                 args.max_runtime_sec is not None
                 and now - started >= args.max_runtime_sec

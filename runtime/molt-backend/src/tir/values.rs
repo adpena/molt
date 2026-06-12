@@ -1,7 +1,7 @@
 use super::types::TirType;
 
 /// Unique identifier for an SSA value within a function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueId(pub u32);
 
 /// A typed SSA value.

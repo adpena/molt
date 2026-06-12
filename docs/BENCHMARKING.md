@@ -287,7 +287,6 @@ Upstream tinygrad lane:
 uv run --python 3.12 python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite tinygrad_off_the_shelf \
-  --include-disabled \
   --dry-run
 ```
 
@@ -298,25 +297,98 @@ override both the suite root and the expected ref:
 uv run --python 3.12 python3 tools/bench_friends.py \
   --manifest bench/friends/manifest.toml \
   --suite tinygrad_off_the_shelf \
-  --include-disabled \
   --suite-root tinygrad_off_the_shelf=/path/to/tinygrad \
   --repo-ref tinygrad_off_the_shelf=<commit-sha> \
   --no-checkout
 ```
 
-Before enabling it, replace `PINNED_COMMIT_REQUIRED` with an immutable tinygrad
-commit. The CPython runner and Molt runner both execute
-`tools/tinygrad_off_shelf_adapter.py` against the checked-out upstream package;
-the adapter is only a public-API workload driver. Do not patch, vendor, or
-translate tinygrad sources for this lane. Its output is intended to drive GPU
-primitive, typed runtime upload/readback, MLIR/MIL lowering, and profiler work.
+The manifest pins `tinygrad_off_the_shelf` to immutable upstream commit
+`a83710396c991272241e40da94489747c2393851` and enables the suite for the real
+CPython adapter plus upstream-owned tinygrad contract. The `tinygrad` runner
+executes `CHECK_OOB=0 DEV=CPU TYPED=1 python test/test_tiny.py` through
+`uv run --isolated --with typeguard` because the pinned upstream package imports
+its typeguard hook at module import time; runner-local `PYTHONPATH={suite_root}`
+and `PYTHONDONTWRITEBYTECODE=1` let `test/test_tiny.py` import the checked-out
+package without installing or modifying it, so source custody stays clean. The
+CPython runner executes
+`tools/tinygrad_off_shelf_adapter.py` against the checked-out upstream package
+through the same isolated `typeguard` dependency and bytecode-write ban; the
+adapter is only a public-API workload driver. The Molt runner is executable by
+default and uses the harness interpreter (`{python} -m molt.cli run`) while
+forwarding the required full-stdlib build profile with
+`--build-arg=--stdlib-profile --build-arg=full`; do not replace it with ambient
+`molt` from `PATH` or a micro-profile build. Current evidence reaches
+`molt-backend --daemon` and then trips the process RSS guard at 12.005 GB after
+435.5s (`tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`), proving
+the blocker is backend-daemon compile memory before adapter workload execution.
+Native TIR optimization now processes uncached user functions in bounded
+op/count batches and applies/cache-writes each batch immediately; the next Molt
+runner proof (`bench/results/friends/20260612T184515Z/`) reached `2602`
+uncached user functions in `41` bounded batches and moved the single backend
+peak to 9.77 GB, then failed on aggregate process-tree RSS from overlapping
+daemon plus hidden one-shot fallback. CLI daemon failure now fails closed after
+full-request admission instead of restarting the daemon or launching that hidden
+second backend compile. The follow-up Molt runner proof
+(`bench/results/friends/20260612T203111Z/`,
+`tmp/memory_guard/friends_tinygrad_molt_daemon_custody.json`) no longer trips
+the outer memory guard (`violation=null`, no orphaned process groups, 4.92 GB
+peak process-tree RSS); it fails closed with `Backend daemon compile failed:
+backend daemon died while request was in flight` after stdlib batch `35/35` and
+user-function TIR batch `8/41`. A later guarded Molt-only rerun
+(`bench/results/friends/20260612T205850Z/`) used 10 GB process / 18 GB aggregate
+bench caps, recorded no memory violation, preserved host/control-plane process
+groups in `memory_guard/bench_friends_sentinel.jsonl`, and failed after 208.19s
+with `Backend daemon compile failed: backend daemon returned empty response`.
+The current Molt blocker for this lane is daemon crash provenance plus
+daemon-side large-user-compile memory custody. Do not patch, vendor, or
+translate tinygrad sources for this lane.
+Its output is intended to drive GPU primitive, typed runtime upload/readback,
+MLIR/MIL lowering, and profiler work.
+
+NumPy off-the-shelf lane:
+
+```bash
+uv run --python 3.12 python3 tools/bench_friends.py \
+  --manifest bench/friends/manifest.toml \
+  --suite numpy_off_the_shelf \
+  --dry-run
+```
+
+`numpy_off_the_shelf` is enabled and pinned to upstream NumPy commit
+`c81c49f77451340651a751e76bca607d85e4fd55` (the peeled `v2.4.2` commit). The
+`source_audit` runner verifies pinned source-tree custody, the `cpython` runner
+executes an isolated `numpy==2.4.2` baseline through
+`tools/numpy_off_shelf_adapter.py`, the `c_api_scan` runner executes
+`molt extension scan --source {suite_root}/numpy --fail-on-missing`, and the
+`molt` runner attempts the same public workloads through
+`MOLT_EXTERNAL_STATIC_PACKAGES=numpy`, explicit `module.extension.exec`
+capability, and all-loaded-`numpy.*` module-origin custody. Its purpose is to
+prove off-the-shelf NumPy source compile/import through Molt-owned headers,
+source-recompiled native extension package build/staging/runtime custody, and
+NumPy C-API symbol closure. Build admission already fails closed for admitted
+package-local `.so`/`.pyd` artifacts without valid sidecar manifests and
+fingerprints artifact/manifest hashes in graph, wrapper, and backend
+object-cache inputs; native builds also publish validated artifacts, sidecars,
+package `__init__.py` files, and runtime shim candidates under a deterministic
+`external_static_packages/<plan-digest>/` runtime root and inject that staged
+root into generated native binaries before runtime startup. The lane remains red
+until the source-recompiled package build, NumPy C-API closure, and no-host NumPy
+runtime load proof pass.
+Do not satisfy it through CPython wheel fallback, ambient host Python imports,
+or patched NumPy sources.
+`molt extension scan` reports each required C-API token as `runtime_backed`,
+`source_compile_only`, `fail_fast`, or `missing`; `--fail-on-missing` fails for
+both missing and fail-fast symbols so header stubs cannot overclaim NumPy C-API
+support.
 For `source = "git"` suites, `tools/bench_friends.py` now records source
 custody in `results.json`: requested ref, resolved commit, checked-out `HEAD`,
 ref verification, clean-tree status, and whether `--suite-root` overrode the
-manifest checkout path. A mismatch or dirty checkout is a hard failure. Runners
-that declare `json_stdout = true` must emit valid JSON; the harness preserves
-the raw payloads and folds per-workload `elapsed_s` values into runner
-`structured_median_s` fields plus flattened suite metrics.
+manifest checkout path. A mismatch, dirty checkout, or ignored checkout artifact
+is a hard failure. Runners that declare `json_stdout = true` must emit valid
+JSON; the harness preserves the raw payloads and folds per-workload `elapsed_s`
+values into runner `structured_median_s` fields plus flattened suite metrics
+only for runners with `role = "workload"`. Custody and scan roles remain
+suite-failing when non-green, but never feed speedup math.
 
 Artifacts:
 - machine-readable: `results.json`
@@ -325,11 +397,15 @@ Artifacts:
 
 Rules:
 - Pin friend repos to immutable `repo_ref` values before enabling suites.
+- Clean stale friend checkout caches with `molt clean --apply` or
+  `tools/dev.py clean-artifacts --apply`; `bench/friends/repos/` is canonical
+  ignored artifact state, not durable evidence.
 - Record compile and run phases separately when friends compile ahead of run.
 - Classify cases as `runs_unmodified`, `requires_adapter`, or `unsupported_by_molt`.
 - Use explicit runner lanes (`pypy`, `codon`, `nuitka`, `pyodide`, `tinygrad`,
-  or another manifest-declared runner name); invalid runner names are rejected
-  rather than silently ignored. `friend` is kept only as a legacy generic lane.
+  `numpy`, or another manifest-declared runner name); invalid runner names are
+  rejected rather than silently ignored. `friend` is kept only as a legacy
+  generic lane.
 
 ## Binary Size & Cold-Start (Optional)
 
@@ -531,6 +607,9 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
   - `CARGO_TARGET_DIR=$MOLT_EXT_ROOT/target`
 - Keep diff runs on the same shared target:
   - `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` (set automatically by `tools/throughput_env.sh --apply`)
+- One-file import/stdlib regression loops should use the first-class diff
+  stdlib-profile flag and the persistent diff cache root:
+  - `uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 1 --stdlib-profile full --json tests/differential/stdlib/importlib_import_module_basic.py`
 - For differential throughput, wrappers are disabled by default for portability; opt in only on stable hosts:
   - `MOLT_DIFF_ALLOW_RUSTC_WRAPPER=1`
 

@@ -91,11 +91,15 @@ pub enum AnalysisId {
     /// interprocedurally in the module phase and prepopulated; the cached
     /// [`Analysis::compute`] path is the fail-closed intraprocedural floor.
     CallFacts,
+    /// Backend-neutral exception handler ownership facts: match-ref producers,
+    /// reachable path-depth `exception_pop` release boundaries, and diagnostics
+    /// for missing/ambiguous/too-early release (foundation design 45).
+    ExceptionRegions,
 }
 
 impl AnalysisId {
     /// All analyses, for iteration in the debug self-check.
-    pub const ALL: [AnalysisId; 13] = [
+    pub const ALL: [AnalysisId; 14] = [
         AnalysisId::PredMap,
         AnalysisId::ImmediateDoms,
         AnalysisId::DomChildren,
@@ -109,6 +113,7 @@ impl AnalysisId {
         AnalysisId::MemorySSA,
         AnalysisId::Liveness,
         AnalysisId::CallFacts,
+        AnalysisId::ExceptionRegions,
     ];
 }
 
@@ -380,6 +385,7 @@ impl AnalysisManager {
 /// `AnalysisId` variant without classifying it fails to compile.
 fn cfg_sensitive(id: AnalysisId) -> bool {
     use super::call_facts::CallFactsAnalysis;
+    use super::exception_regions::ExceptionRegions;
     use super::passes::alias_analysis::AliasAnalysis;
     use super::passes::liveness::TirLiveness;
     use super::passes::memory_ssa::MemorySSA;
@@ -399,12 +405,14 @@ fn cfg_sensitive(id: AnalysisId) -> bool {
         AnalysisId::MemorySSA => MemorySSA::CFG_SENSITIVE,
         AnalysisId::Liveness => TirLiveness::CFG_SENSITIVE,
         AnalysisId::CallFacts => CallFactsAnalysis::CFG_SENSITIVE,
+        AnalysisId::ExceptionRegions => ExceptionRegions::CFG_SENSITIVE,
     }
 }
 
 /// Ops-sensitivity by id — mirrors each analysis's `OPS_SENSITIVE` const.
 fn ops_sensitive(id: AnalysisId) -> bool {
     use super::call_facts::CallFactsAnalysis;
+    use super::exception_regions::ExceptionRegions;
     use super::passes::alias_analysis::AliasAnalysis;
     use super::passes::liveness::TirLiveness;
     use super::passes::memory_ssa::MemorySSA;
@@ -424,6 +432,7 @@ fn ops_sensitive(id: AnalysisId) -> bool {
         AnalysisId::MemorySSA => MemorySSA::OPS_SENSITIVE,
         AnalysisId::Liveness => TirLiveness::OPS_SENSITIVE,
         AnalysisId::CallFacts => CallFactsAnalysis::OPS_SENSITIVE,
+        AnalysisId::ExceptionRegions => ExceptionRegions::OPS_SENSITIVE,
     }
 }
 

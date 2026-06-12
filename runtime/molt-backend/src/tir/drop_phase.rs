@@ -47,9 +47,13 @@
 //!   applied after it, post-cache. It lifts each function to TIR, runs the drop
 //!   phase, and back-converts the changed ones to SimpleIR.
 //!
-//! Both honor the same per-function invariants: idempotency (the drop pass bails
-//! on the `drop_inserted` marker, so a re-processed function is a no-op) and the
-//! debug double-process guard (a function must not arrive already drop-inserted).
+//! Both honor the same per-function invariants: full-function idempotency (the
+//! drop pass bails on the `drop_inserted` marker, so a re-processed
+//! fully-owned-RC function is a no-op), exception-only pre-bail idempotency (the
+//! narrower `exception_region_drops_inserted` marker protects handler-safe
+//! CreationRef/MatchRef releases without suppressing native legacy RC), and the
+//! debug double-process guard (a function must not arrive already fully
+//! drop-inserted).
 
 use super::function::{TirFunction, TirModule};
 use super::ops::AttrValue;
@@ -60,10 +64,13 @@ use super::target_info::TargetInfo;
 /// every terminal-phase caller funnels through (the TIR-module finalizer, the
 /// SimpleIR finalizer, and the LLVM `skip_ir_passes` branch). Returns `true` iff
 /// the phase actually changed the body (drops were inserted / elided) — i.e. the
-/// function now carries `DecRef`/`IncRef` ops and the `drop_inserted` marker that
-/// native codegen reads to suppress its competing automatic temp-RC. A function
-/// with no droppable temporaries reports `false` (the pass restores its pre-drop
-/// snapshot) and needs no back-conversion.
+/// function now carries `DecRef`/`IncRef` ops and/or one of the drop fact markers
+/// that must be back-converted for SimpleIR consumers. `drop_inserted` is the
+/// full-function RC authority marker that native codegen reads to suppress its
+/// competing automatic temp-RC; `exception_region_drops_inserted` is only the
+/// handler-safe exception transport slice and must not suppress native legacy RC.
+/// A function with no droppable temporaries reports `false` (the pass restores
+/// its pre-drop snapshot) and needs no back-conversion.
 ///
 /// `debug_assert`s that the function is not ALREADY drop-inserted on entry: the
 /// only marker producers are this phase and the round-trip that preserves it, so
@@ -120,9 +127,9 @@ pub fn finalize_module_drops(module: &mut TirModule, tti: &TargetInfo) -> Vec<St
 /// build paths: stdlib-cache object + per-batch application codegen). For each
 /// non-extern function it lifts to TIR (type-refined), runs the drop phase, and —
 /// if the phase changed the body — back-converts the drop-inserted TIR to
-/// SimpleIR in place (which re-emits the `drop_inserted` marker op the native
-/// backend reads). Functions the phase did not change keep their existing
-/// (post-per-function-pipeline) SimpleIR untouched.
+/// SimpleIR in place (which re-emits the drop fact marker ops). Functions the
+/// phase did not change keep their existing (post-per-function-pipeline)
+/// SimpleIR untouched.
 ///
 /// Extern functions (shared-stdlib-partition symbols with cleared bodies) are
 /// skipped: they have no body to drop and lifting one would fail the TIR
@@ -203,5 +210,139 @@ mod tests {
         // Must not panic (no lift of the empty extern body).
         finalize_simple_ir_drops(&mut funcs, &TargetInfo::native_release_fast());
         assert!(funcs[0].ops.is_empty());
+    }
+
+    #[test]
+    fn native_roundtrip_preserves_call_bind_finalizer_fact_for_terminal_drops() {
+        let func_ir = FunctionIR {
+            name: "call_bind_finalizer_roundtrip".into(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const_none".into(),
+                    out: Some("cls".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "callargs_new".into(),
+                    out: Some("callargs".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_bind".into(),
+                    args: Some(vec!["cls".into(), "callargs".into()]),
+                    out: Some("item".into()),
+                    defines_del: Some(true),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "list_new".into(),
+                    args: Some(vec!["item".into()]),
+                    out: Some("bag".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_str".into(),
+                    s_value: Some("inside".into()),
+                    out: Some("msg".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "warn_stderr".into(),
+                    args: Some(vec!["msg".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tti = TargetInfo::native_release_fast();
+        let mut optimized_tir = crate::tir::lower_from_simple::lower_to_tir(&func_ir);
+        crate::tir::type_refine::refine_types(&mut optimized_tir);
+        crate::tir::passes::run_pipeline(&mut optimized_tir, &tti);
+        crate::tir::type_refine::refine_types(&mut optimized_tir);
+        let optimized_ops = crate::tir::lower_to_simple::lower_to_simple_ir(&optimized_tir);
+
+        let roundtripped_call = optimized_ops
+            .iter()
+            .find(|op| op.kind == "call_bind")
+            .expect("native per-function roundtrip must preserve call_bind");
+        let item_name = roundtripped_call
+            .out
+            .clone()
+            .expect("call_bind finalizer result must keep an output name");
+        let bag_name = optimized_ops
+            .iter()
+            .find(|op| op.kind == "list_new")
+            .and_then(|op| op.out.clone())
+            .expect("absorbing list_new result must keep an output name");
+        assert_eq!(
+            roundtripped_call.defines_del,
+            Some(true),
+            "defines_del is a result-lifetime fact and must survive native's \
+             optimize-roundtrip before terminal drop insertion"
+        );
+
+        let mut funcs = vec![FunctionIR {
+            name: func_ir.name.clone(),
+            params: func_ir.params.clone(),
+            ops: optimized_ops,
+            param_types: func_ir.param_types.clone(),
+            source_file: None,
+            is_extern: false,
+        }];
+        finalize_simple_ir_drops(&mut funcs, &tti);
+        let ops = &funcs[0].ops;
+        let warn_idx = ops
+            .iter()
+            .position(|op| op.kind == "warn_stderr")
+            .expect("side effect must remain in the lowered body");
+        let ret_idx = ops
+            .iter()
+            .position(|op| op.kind == "ret_void")
+            .expect("function must still return");
+
+        let early_dec_refs: Vec<_> = ops[..warn_idx]
+            .iter()
+            .filter(|op| {
+                op.kind == "dec_ref"
+                    && op.args.as_ref().is_some_and(|args| {
+                        args.iter().any(|arg| arg == &item_name || arg == &bag_name)
+                    })
+            })
+            .collect();
+        assert!(
+            early_dec_refs.is_empty(),
+            "finalizer-sensitive call/list roots must release at the return \
+             boundary, after later side effects; ops={ops:?}"
+        );
+        assert!(
+            ops[warn_idx + 1..ret_idx]
+                .iter()
+                .any(|op| op.kind == "dec_ref"
+                    && op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args.iter().any(|arg| arg == &item_name))),
+            "terminal drop insertion must release the original call-owned \
+             finalizer root before returning; ops={ops:?}"
+        );
+        assert!(
+            ops[warn_idx + 1..ret_idx]
+                .iter()
+                .any(|op| op.kind == "dec_ref"
+                    && op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args.iter().any(|arg| arg == &bag_name))),
+            "terminal drop insertion must still release the finalizer-sensitive \
+             container root before returning; ops={ops:?}"
+        );
     }
 }

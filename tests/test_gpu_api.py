@@ -544,6 +544,93 @@ def test_tensor_cast_accepts_tinygrad_dtype_aliases():
     assert as_int.to_list() == [1, 2]
 
 
+def test_tinygrad_tensor_explicit_dtype_uses_matching_storage():
+    from tinygrad import Tensor
+    from tinygrad.dtypes import dtypes
+
+    int_tensor = Tensor([1, 2], dtype=dtypes.int32)
+    bool_tensor = Tensor([True, False], dtype=dtypes.bool)
+
+    assert int_tensor.to_list() == [1, 2]
+    assert int_tensor._buf.element_type is int
+    assert int_tensor._buf.format_char == "i"
+    assert int_tensor.dtype == dtypes.int32
+    assert bool_tensor.to_list() == [True, False]
+    assert bool_tensor._buf.element_type is int
+    assert bool_tensor._buf.format_char == "?"
+    assert bool_tensor.dtype == dtypes.bool
+
+
+def test_tinygrad_tensor_where_broadcasts_and_promotes_branch_storage():
+    from tinygrad import Tensor
+    from tinygrad.dtypes import dtypes
+
+    cond = Tensor([1, 0], shape=(2, 1), dtype=dtypes.int32)
+    branch = Tensor([1.5, 2.5, 3.5], shape=(1, 3))
+
+    out = cond.where(5, branch)
+
+    assert out.shape == (2, 3)
+    assert out.to_list() == [[5.0, 5.0, 5.0], [1.5, 2.5, 3.5]]
+    assert out._buf.element_type is float
+    assert out._buf.format_char == "d"
+    assert out.dtype == dtypes.float64
+
+
+def test_tinygrad_tensor_where_descriptor_preserves_integer_storage():
+    from tinygrad import Tensor
+    from tinygrad.dtypes import dtypes
+
+    cond = Tensor([2, 0], shape=(2, 1), dtype=dtypes.int32)
+    out = Tensor.where(
+        cond,
+        Tensor([7], dtype=dtypes.int32),
+        Tensor([1, 2, 3], shape=(1, 3), dtype=dtypes.int32),
+    )
+
+    assert out.shape == (2, 3)
+    assert out.to_list() == [[7, 7, 7], [1, 2, 3]]
+    assert out._buf.element_type is int
+    assert out._buf.format_char == "i"
+    assert out.dtype == dtypes.int32
+
+
+def test_tinygrad_tensor_movement_views_match_upstream_and_preserve_storage():
+    import array
+    from tinygrad import Tensor
+    from tinygrad.dtypes import dtypes
+    from molt.gpu import to_device
+
+    base = Tensor(
+        to_device(array.array("f", [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])),
+        shape=(2, 3),
+    )
+
+    out = base.pad((1, 0, 0, 1)).shrink(((1, 3), (1, 3))).flip(1).contiguous()
+
+    assert out.shape == (2, 2)
+    assert out.to_list() == [[5.0, 4.0], [0.0, 0.0]]
+    assert out.dtype == dtypes.float32
+    assert out._buf.format_char == "f"
+    assert out._buf.itemsize == 4
+    assert out._buf is not base._buf
+
+
+def test_tinygrad_tensor_integer_binary_promotion_uses_widest_branch_storage():
+    from tinygrad import Tensor
+    from tinygrad.dtypes import dtypes
+
+    left = Tensor([1, 2], dtype=dtypes.int32)
+    right = Tensor([3, 4], dtype=dtypes.int64)
+
+    out = left + right
+
+    assert out.to_list() == [4, 6]
+    assert out._buf.element_type is int
+    assert out._buf.format_char == "q"
+    assert out.dtype == dtypes.int64
+
+
 def test_zeros_uses_intrinsic_when_available(monkeypatch):
     import molt.gpu.tensor as tensor_mod
     from molt.gpu.tensor import Tensor, zeros

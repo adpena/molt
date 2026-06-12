@@ -1641,6 +1641,7 @@ unsafe fn build_class_from_args(
             }
             return MoltObject::none().bits();
         }
+        crate::object::class_finish_definition(_py, class_ptr);
 
         if !dispatch_init_subclass_hooks(_py, &bases_vec, class_bits, kw_names, kw_values) {
             if bases_owned {

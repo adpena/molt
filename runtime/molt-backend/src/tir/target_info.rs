@@ -320,6 +320,18 @@ impl TargetInfo {
         }
     }
 
+    /// Luau `release-fast`. Luau is GC-managed, so shared ownership/drop facts
+    /// lower to no-ops in the backend, but the terminal drop phase still runs so
+    /// backend-neutral ownership invariants are proven on the same fact plane as
+    /// native, LLVM, and WASM.
+    pub fn luau_release_fast() -> TargetInfo {
+        TargetInfo {
+            target: TargetKind::Luau,
+            optimize_for_size: true,
+            ..TargetInfo::native_release_fast()
+        }
+    }
+
     /// LLVM `release-fast`, deriving the vectorizer lane width from an LLVM host
     /// CPU feature string (the `+avx2,+sse4.2,…` form returned by
     /// `TargetMachine::get_host_cpu_features`). Recognizes `+avx`, `+avx2`, and

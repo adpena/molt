@@ -138,6 +138,7 @@ class _GeneratorProtocol(Protocol):
     global_dict_value_hints: dict[str, str]
     global_elem_hints: dict[str, str]
     global_imported_attr_names: dict[str, str]
+    global_imported_module_attr_mutations: set[tuple[str, str]]
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
@@ -145,6 +146,7 @@ class _GeneratorProtocol(Protocol):
     globals_builtin_val: MoltValue | None
     gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
+    imported_module_attr_mutations: set[tuple[str, str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
     module_attr_overrides: set[tuple[str, str]]
@@ -836,6 +838,10 @@ class _GeneratorProtocol(Protocol):
     def _is_internal_module(module_name: str | None) -> bool: ...
 
     def _is_known_project_module(self, module_name: str | None) -> bool: ...
+
+    def _is_linkable_module_function_symbol(self, module_name: str | None) -> bool: ...
+
+    def _imported_module_attr_is_stable(self, module_name: str, attr: str) -> bool: ...
 
     @staticmethod
     def _display_allowlist_module(module_name: str) -> str: ...
@@ -1880,7 +1886,9 @@ class _GeneratorProtocol(Protocol):
 
     def _emit_context_unwind_to(self, scope: TryScope, exc_val: MoltValue) -> None: ...
 
-    def _emit_control_flow_scope_unwind(self, scopes: Sequence[TryScope]) -> None: ...
+    def _emit_control_flow_scope_unwind(self, scopes: Sequence[TryScope]) -> list[int]: ...
+
+    def _restore_control_flow_unwind_labels(self, popped_labels: Sequence[int]) -> None: ...
 
     def _emit_raise_exit(self) -> None: ...
 
@@ -1914,7 +1922,7 @@ class _GeneratorProtocol(Protocol):
 
     def visit_Assert(self, node: ast.Assert) -> None: ...
 
-    def _emit_loop_unwind(self) -> None: ...
+    def _emit_loop_unwind(self) -> list[int]: ...
 
     def visit_Break(self, node: ast.Break) -> None: ...
 

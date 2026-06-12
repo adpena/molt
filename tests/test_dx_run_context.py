@@ -15,6 +15,7 @@ def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
     assert env["MOLT_EXT_ROOT"] == str(tmp_path.resolve())
     assert env["CARGO_TARGET_DIR"] == str(tmp_path.resolve() / "target")
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
+    assert env["CARGO_INCREMENTAL"] == "0"
     assert env["MOLT_CACHE"] == str(tmp_path.resolve() / ".molt_cache")
     assert env["MOLT_DIFF_ROOT"] == str(tmp_path.resolve() / "tmp" / "diff")
     assert env["MOLT_DIFF_TMPDIR"] == str(tmp_path.resolve() / "tmp")
@@ -30,6 +31,7 @@ def test_run_context_preserves_explicit_root_and_session(tmp_path: Path) -> None
         {
             "MOLT_EXT_ROOT": str(explicit_root),
             "CARGO_TARGET_DIR": str(explicit_target),
+            "CARGO_INCREMENTAL": "1",
             "MOLT_SESSION_ID": "caller-session",
         },
         create_dirs=False,
@@ -38,6 +40,7 @@ def test_run_context_preserves_explicit_root_and_session(tmp_path: Path) -> None
     assert env["MOLT_EXT_ROOT"] == str(explicit_root.resolve())
     assert env["CARGO_TARGET_DIR"] == str(explicit_target)
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == str(explicit_target)
+    assert env["CARGO_INCREMENTAL"] == "1"
     assert env["MOLT_SESSION_ID"] == "caller-session"
 
 

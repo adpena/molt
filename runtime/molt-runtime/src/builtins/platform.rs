@@ -15,7 +15,7 @@ use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_capability_decisi
 use crate::builtins::io::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
 };
-use crate::builtins::modules::runpy_exec_restricted_source;
+use crate::builtins::modules::{runpy_exec_restricted_source, sys_modules_dict_bits};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::object::ops_sys::runtime_target_minor;
@@ -1457,6 +1457,47 @@ fn importlib_search_paths(search_paths: &[String], module_file: Option<String>) 
     out
 }
 
+fn importlib_module_root_package_context_paths(
+    fullname: &str,
+    module_file: Option<String>,
+) -> Vec<String> {
+    let parts: Vec<&str> = fullname.split('.').collect();
+    if parts.len() <= 1 {
+        return Vec::new();
+    }
+    let sep = bootstrap_path_sep();
+    let state = sys_bootstrap_state_from_module_file(module_file);
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for root in state.module_roots_entries {
+        let mut package_path = root;
+        for part in &parts[..parts.len() - 1] {
+            package_path = path_join_text(package_path, part, sep);
+        }
+        append_unique_path_hashed(&mut out, &mut seen, &package_path);
+    }
+    out
+}
+
+fn importlib_find_spec_search_paths(
+    fullname: &str,
+    search_paths: &[String],
+    module_file: Option<String>,
+    package_context: bool,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    if package_context {
+        for entry in importlib_module_root_package_context_paths(fullname, module_file.clone()) {
+            append_unique_path_hashed(&mut out, &mut seen, &entry);
+        }
+    }
+    for entry in importlib_search_paths(search_paths, module_file) {
+        append_unique_path_hashed(&mut out, &mut seen, &entry);
+    }
+    out
+}
+
 fn importlib_bootstrap_payload(
     search_paths: &[String],
     module_file: Option<String>,
@@ -1706,7 +1747,8 @@ fn importlib_find_spec_payload(
     path_hooks_count: i64,
     package_context: bool,
 ) -> Result<Option<ImportlibFindSpecPayload>, u64> {
-    let resolved = importlib_search_paths(search_paths, module_file);
+    let resolved =
+        importlib_find_spec_search_paths(fullname, search_paths, module_file, package_context);
     let Some(resolution) = importlib_find_in_path(fullname, &resolved, package_context) else {
         return Ok(None);
     };
@@ -3035,15 +3077,19 @@ struct LoadedExtensionManifest {
     wheel_path: Option<String>,
 }
 
-fn importlib_sha256_hex(bytes: &[u8]) -> String {
+fn importlib_hex_lower(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         out.push(HEX[(byte >> 4) as usize] as char);
         out.push(HEX[(byte & 0x0F) as usize] as char);
     }
     out
+}
+
+fn importlib_sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    importlib_hex_lower(digest.as_ref())
 }
 
 fn importlib_sha256_file(path: &str) -> Result<String, std::io::Error> {
@@ -3058,7 +3104,7 @@ fn importlib_sha256_file(path: &str) -> Result<String, std::io::Error> {
         hasher.update(&buf[..read]);
     }
     let digest = hasher.finalize();
-    Ok(importlib_sha256_hex(digest.as_ref()))
+    Ok(importlib_hex_lower(digest.as_ref()))
 }
 
 fn importlib_metadata_timestamp_nanos(meta: &std::fs::Metadata) -> u128 {
@@ -3352,8 +3398,8 @@ fn importlib_validate_extension_metadata(
             _py,
             "ImportError",
             &format!(
-                "extension checksum mismatch for {:?}: expected {}, got {}",
-                module_name, expected_extension_sha, extension_sha256
+                "extension checksum mismatch for {:?} at {:?} using metadata {}: expected {}, got {}",
+                module_name, path, loaded.source, expected_extension_sha, extension_sha256
             ),
         ));
     }
@@ -5365,23 +5411,38 @@ fn importlib_modules_runtime_error(_py: &PyToken<'_>) -> u64 {
 }
 
 fn importlib_runtime_modules_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
-    let sys_bits = {
+    let cached_sys_bits = {
         let cache = crate::builtins::exceptions::internals::module_cache(_py);
         let guard = cache.lock().unwrap();
         guard.get("sys").copied()
     };
-    let Some(sys_bits) = sys_bits else {
-        return Err(importlib_modules_runtime_error(_py));
+    let sys_bits = if let Some(sys_bits) = cached_sys_bits {
+        inc_ref_bits(_py, sys_bits);
+        sys_bits
+    } else {
+        let sys_name_bits = alloc_str_bits(_py, "sys")?;
+        let imported_bits = crate::molt_module_import(sys_name_bits);
+        dec_ref_bits(_py, sys_name_bits);
+        if exception_pending(_py) {
+            if !obj_from_bits(imported_bits).is_none() {
+                dec_ref_bits(_py, imported_bits);
+            }
+            return Err(MoltObject::none().bits());
+        }
+        if obj_from_bits(imported_bits).is_none() {
+            return Err(importlib_modules_runtime_error(_py));
+        }
+        imported_bits
     };
     if obj_from_bits(sys_bits).is_none() {
+        dec_ref_bits(_py, sys_bits);
         return Err(importlib_modules_runtime_error(_py));
     }
-    let modules_bits = importlib_runtime_state_attr_bits(
-        _py,
-        sys_bits,
-        runtime_static_name_slot(_py, b"modules"),
-        b"modules",
-    )?;
+    let Some(modules_bits) = sys_modules_dict_bits(_py, sys_bits) else {
+        dec_ref_bits(_py, sys_bits);
+        return Err(importlib_modules_runtime_error(_py));
+    };
+    dec_ref_bits(_py, sys_bits);
     let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
         if !obj_from_bits(modules_bits).is_none() {
             dec_ref_bits(_py, modules_bits);
@@ -7067,7 +7128,19 @@ fn importlib_bind_submodule_on_parent(
         dec_ref_bits(_py, parent_key_bits);
     }
     let child_name_bits = alloc_str_bits(_py, child_name)?;
-    let _ = molt_object_setattr(parent_bits, child_name_bits, module_bits);
+    let set_result = match obj_from_bits(parent_bits).as_ptr() {
+        Some(parent_ptr) if unsafe { object_type_id(parent_ptr) } == TYPE_ID_MODULE => {
+            crate::builtins::modules::molt_module_set_attr(
+                parent_bits,
+                child_name_bits,
+                module_bits,
+            )
+        }
+        _ => molt_object_setattr(parent_bits, child_name_bits, module_bits),
+    };
+    if !obj_from_bits(set_result).is_none() {
+        dec_ref_bits(_py, set_result);
+    }
     if !obj_from_bits(child_name_bits).is_none() {
         dec_ref_bits(_py, child_name_bits);
     }

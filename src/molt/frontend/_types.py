@@ -1255,6 +1255,7 @@ class TryScope:
     finalbody: list[ast.stmt] | None
     ctx_mark_offset: int | None = None
     done_label: int | None = None
+    handler_label: int | None = None
     needs_context_unwind: bool = True
 
 

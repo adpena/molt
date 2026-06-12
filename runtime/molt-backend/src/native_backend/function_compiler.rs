@@ -13,6 +13,17 @@ mod fc;
 static EMPTY_VEC_STRING: Vec<String> = Vec::new();
 
 #[cfg(feature = "native-backend")]
+const NATIVE_INLINE_INT_MIN: i64 = -(1_i64 << 46);
+#[cfg(feature = "native-backend")]
+const NATIVE_INLINE_INT_MAX: i64 = (1_i64 << 46) - 1;
+
+#[cfg(feature = "native-backend")]
+#[inline]
+fn native_int_literal_fits_inline(val: i64) -> bool {
+    (NATIVE_INLINE_INT_MIN..=NATIVE_INLINE_INT_MAX).contains(&val)
+}
+
+#[cfg(feature = "native-backend")]
 #[inline]
 fn is_cold_module_chunk_function(name: &str) -> bool {
     name.contains("__molt_module_chunk_")
@@ -1184,7 +1195,7 @@ fn collect_slot_backed_join_names(
     // path so later label materialization does not try to reinterpret them as
     // structured phi joins.
     for op in ops {
-        if op.kind == "store_var"
+        if matches!(op.kind.as_str(), "store_var" | "delete_var")
             && let Some(name) = op.var.as_ref().or(op.out.as_ref())
             && is_join_slot_name(name)
         {
@@ -1210,7 +1221,7 @@ fn collect_slot_backed_join_names(
     let mut first_seen_join_in_exception: BTreeMap<String, bool> = BTreeMap::new();
     let mut exception_written_locals: BTreeSet<String> = BTreeSet::new();
 
-    // Collect ALL store_var targets that appear anywhere in a function with
+    // Collect ALL local-slot mutation targets that appear anywhere in a function with
     // exception handling or stateful resume points. When the function defers
     // block sealing to seal_all_blocks(), Cranelift must resolve SSA phi
     // nodes for every variable that has definitions reaching from different
@@ -1232,7 +1243,7 @@ fn collect_slot_backed_join_names(
     // exception handling: keep values in memory across EH boundaries.
     let mut all_store_var_targets: BTreeSet<String> = BTreeSet::new();
     for op in ops {
-        if op.kind == "store_var"
+        if matches!(op.kind.as_str(), "store_var" | "delete_var")
             && let Some(name) = op.var.as_ref().or(op.out.as_ref())
         {
             all_store_var_targets.insert(name.clone());
@@ -1250,7 +1261,7 @@ fn collect_slot_backed_join_names(
             "exception_pop" => {
                 exception_region_depth = (exception_region_depth - 1).max(0);
             }
-            "store_var" if exception_region_depth > 0 => {
+            "store_var" | "delete_var" if exception_region_depth > 0 => {
                 if let Some(name) = op.var.as_ref().or(op.out.as_ref()) {
                     exception_written_locals.insert(name.clone());
                     if is_join_slot_name(name) {
@@ -1413,22 +1424,6 @@ struct FunctionPreanalysis {
     /// loop-carried DecRef, and running both would double-drop (refcount
     /// underflow → use-after-free / abort).
     drop_inserted: bool,
-    /// ExceptionRegion Phase 1 (foundation design 45 §7 `ExceptionPop`): the
-    /// owned handler-match SSA temps (`exception_last*` / `exception_active` /
-    /// `exception_current` / `exceptiongroup_*`) whose release is bound to their
-    /// enclosing handler region's `exception_pop` op rather than to an SSA last
-    /// use. These names are SUPPRESSED from native value-tracking registration —
-    /// the `exception_pop` op is the SOLE owner of their dec_ref — so the
-    /// value-tracking drains never touch them (no double-free, no strand). Empty
-    /// for `drop_inserted` functions (the drop pass owns RC there).
-    exception_match_release_temps: BTreeSet<String>,
-    /// Map from an `exception_pop` op index to the handler-match SSA temps whose
-    /// owned reference must be released at that region exit (the inverse of the
-    /// per-name region-exit binding). The `exception_pop` handler reads each
-    /// temp's definition-time Value (captured at its producing op) and emits one
-    /// `dec_ref` — the merged post-handler release reached on EVERY exit path
-    /// (matched fallthrough AND re-raise/propagate).
-    exception_match_release_at_pop: BTreeMap<usize, Vec<String>>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -1572,6 +1567,7 @@ fn direct_field_store_passthrough(kind: &str) -> bool {
             | "copy_var"
             | "load_var"
             | "store_var"
+            | "delete_var"
             | "identity_alias"
             | "const"
             | "const_bool"
@@ -1750,7 +1746,7 @@ fn preanalyze_function_ir(
         }
 
         let logical_out = op.out.as_ref().or_else(|| {
-            if op.kind == "store_var" {
+            if matches!(op.kind.as_str(), "store_var" | "delete_var") {
                 op.var.as_ref()
             } else {
                 None
@@ -1774,7 +1770,14 @@ fn preanalyze_function_ir(
                     .entry(out.clone())
                     .or_insert_with(|| out.clone());
             }
-            if op.kind == "const_str" || op.kind == "const_bytes" {
+            let heap_literal_uses_data_segment = match op.kind.as_str() {
+                "const_str" | "const_bytes" | "const_bigint" => true,
+                "const" => op
+                    .value
+                    .is_some_and(|val| !native_int_literal_fits_inline(val)),
+                _ => false,
+            };
+            if heap_literal_uses_data_segment {
                 var_names.insert(format!("{}_ptr", out));
                 var_names.insert(format!("{}_len", out));
             }
@@ -1880,39 +1883,6 @@ fn preanalyze_function_ir(
     // inside the unconditional block below — so the later alias-group last_use
     // unification can also keep them un-extended.
     let stateful_per_iter_temps: BTreeSet<String>;
-    // ── ExceptionRegion Phase 1 (foundation design 45) — two owned exception
-    // temporaries whose value-tracking release the blanket func_end Swift-ARC
-    // extension below misplaces, so a raise/catch loop leaks ~1 exception object
-    // per iteration (`bench_exception_heavy` 0.68× + OOM root). Assigned exactly
-    // once in the same unconditional block (so the alias-group unification can
-    // also keep them un-extended), `!drop_inserted`-gated so they go INERT when
-    // the round-13 RC flip activates the TIR drop pass over exception CFG (the
-    // drop pass then owns these temps' RC and the native value-tracking
-    // registration is already suppressed for drop-inserted functions).
-    //
-    //   • Component A — CreationRef: the `exception_new*` SSA result (the `raise`
-    //     argument). Its true last use is the `raise`; the func_end extension
-    //     over-extends it so the per-raise jump-drain never fires. FIX: exclude it
-    //     from the func_end extension so its real last use drives release. (The
-    //     raise has already recorded its own independent slot reference by then —
-    //     `record_exception` / `exception_context_set` inc their own refs — so the
-    //     SSA temp release can never dangle a slot or `sys.exc_info()`.)
-    let exception_creation_temps: BTreeSet<String>;
-    //   • Component B — MatchRef: the `exception_last*` / `exception_active` /
-    //     `exception_current` / `exceptiongroup_*` SSA result (a FRESH owned
-    //     handler-match reference, rc inc'd by the runtime accessor). Its SSA last
-    //     use is the re-raise in the no-match ELSE branch (which never executes on
-    //     the caught path), so the single-global-last-use model never releases it
-    //     on the matched path. FIX: bind its release to the enclosing handler
-    //     region's `exception_pop` op (CPython's implicit clear of the caught
-    //     exception at handler-region exit, reached on every exit path) — the
-    //     `exception_pop` handler emits the dec_ref directly, and the match ref is
-    //     suppressed from value-tracking registration so nothing else touches it.
-    //     `exception_match_release_temps` is the suppression set;
-    //     `exception_match_release_at_pop` maps each `exception_pop` op index to the
-    //     match refs released there.
-    let exception_match_release_temps: BTreeSet<String>;
-    let exception_match_release_at_pop: BTreeMap<usize, Vec<String>>;
     {
         let mut loop_stack_post: Vec<usize> = Vec::new(); // stack of loop start indices
         let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
@@ -1973,9 +1943,8 @@ fn preanalyze_function_ir(
         //
         // Computed unconditionally (cheap linear scans) so BOTH the generator/async
         // `_poll` per-iteration analysis (`stateful_per_iter_temps`) AND the
-        // ExceptionRegion Phase 1 owned-exception-temp analyses
-        // (`exception_creation_temps` / `exception_match_release_temps`) reuse them. Each is
-        // a single pass over `func_ir.ops`.
+        // ExceptionRegion creation-ref analysis. Each is a single pass over
+        // `func_ir.ops`.
         //
         // First definition site of every name (min index over defining ops).
         let mut first_def: BTreeMap<&str, usize> = BTreeMap::new();
@@ -1990,15 +1959,15 @@ fn preanalyze_function_ir(
             {
                 first_def.entry(out).or_insert(idx);
             }
-            // `store_var` logically (re)defines its destination variable.
-            if op.kind == "store_var"
+            // Local slot mutations logically (re)define their destination variable.
+            if matches!(op.kind.as_str(), "store_var" | "delete_var")
                 && let Some(var) = op.var.as_deref()
                 && var != "none"
             {
                 first_def.entry(var).or_insert(idx);
             }
         }
-        // Names that are ever a `store_var` target carry loop/handler state in a
+        // Names that are ever a local-slot mutation target carry loop/handler state in a
         // slot (they are slot-backed and balanced by the store_var retain-new/
         // release-old path); never treat them as per-iteration temps. For a stored
         // exception `saved = e`, the slot `saved` is the store TARGET (and stays
@@ -2007,7 +1976,7 @@ fn preanalyze_function_ir(
         // releasing it at its last use cannot free the stored object.
         let mut store_var_targets: BTreeSet<&str> = BTreeSet::new();
         for op in &func_ir.ops {
-            if op.kind == "store_var"
+            if matches!(op.kind.as_str(), "store_var" | "delete_var")
                 && let Some(name) = op.var.as_deref().or(op.out.as_deref())
                 && name != "none"
             {
@@ -2043,11 +2012,9 @@ fn preanalyze_function_ir(
         //      not straddle any loop header — N is recomputed each iteration (a
         //      fresh SSA temporary), not threaded around the loop.  This admits both
         //      in-body temporaries (the `(value, done)` pair built right before a
-        //      `state_yield`, OR the `exception_new*` creation ref / the
-        //      `exception_last*` handler-match ref built and consumed within one
-        //      `try`/`except` iteration) AND resume-prologue temporaries (the
-        //      `yield from` delegation pair from `iter_next`, defined before the
-        //      loop header and dead before it).
+        //      `state_yield`) AND resume-prologue temporaries (the `yield from`
+        //      delegation pair from `iter_next`, defined before the loop header
+        //      and dead before it).
         //
         //   2. No suspend op lies STRICTLY INSIDE `(first_def(N), last_use(N))`.
         //      If a yield/await sat between N's definition and its last read, N would
@@ -2119,193 +2086,6 @@ fn preanalyze_function_ir(
             BTreeSet::new()
         };
 
-        // ── ExceptionRegion Phase 1 — Component A: CreationRef temporaries ──
-        //
-        // The SSA result of an `exception_new*` op is the OWNED reference the `raise`
-        // borrows: `molt_raise` records its own independent slot references
-        // (`record_exception` / `exception_context_set` each inc their own ref that
-        // keeps the exception alive THROUGH the handler and is released at handler
-        // exit by `exception_clear` / `exception_context_set(None)`), so the creation
-        // ref's true last use is the `raise` itself.  The func_end Swift-ARC
-        // extension over-extends it to func_end, so the per-raise jump-drain never
-        // fires within the iteration → every raised exception strands and the loop
-        // leaks one exception object per iteration.  FIX: exclude the creation ref
-        // (when per-iteration-dead) from the func_end extension so its real last use
-        // — the raise — drives release via the existing control-flow drain.
-        exception_creation_temps = if !drop_inserted {
-            let creation_outs: BTreeSet<&str> = func_ir
-                .ops
-                .iter()
-                .filter(|op| {
-                    matches!(
-                        op.kind.as_str(),
-                        "exception_new"
-                            | "exception_new_builtin"
-                            | "exception_new_builtin_empty"
-                            | "exception_new_builtin_one"
-                            | "exception_new_from_class"
-                    )
-                })
-                .filter_map(|op| op.out.as_deref())
-                .filter(|out| *out != "none")
-                .collect();
-            last_use
-                .iter()
-                .filter(|(name, _)| creation_outs.contains(name.as_str()))
-                .filter(|(name, last)| is_per_iter_dead(name.as_str(), **last))
-                .map(|(name, _)| name.clone())
-                .collect()
-        } else {
-            BTreeSet::new()
-        };
-
-        // ── ExceptionRegion Phase 1 — Component B: MatchRef temporaries ──
-        //
-        // The SSA result of `exception_last` / `exception_last_pending` /
-        // `exception_active` / `exception_current` / `exceptiongroup_match` /
-        // `exceptiongroup_combine` is a FRESH owned handler-match reference (the
-        // runtime accessor inc's its own ref).  Its SSA last use is the `raise <e>`
-        // re-raise on the no-match ELSE branch — which never executes on the caught
-        // path — so the single-global-last-use model never releases it when the
-        // exception IS caught.  Its CORRECT release point is handler-region exit:
-        // CPython implicitly clears the caught exception when the `except` block
-        // completes (the active-exception reset on leaving the handler), marked in
-        // the IR by `exception_pop` — foundation design 45 §7 `ExceptionPop(h)`
-        // ("leave handler: restore prior sys.exception, RELEASE match ref"), reached
-        // on EVERY exit path (matched fallthrough AND re-raise/propagate).
-        //
-        // FIX (the design's event model, not the SSA-last-use drain): the
-        // `exception_pop` op is the SOLE owner of each handler-match ref's dec_ref.
-        // These names are SUPPRESSED from native value-tracking registration (see
-        // the registration tail) so no drain site ever touches them, and the
-        // `exception_pop` handler emits exactly one `dec_ref` per match ref at the
-        // region exit.  This is robust where the value-tracking carry is not: an
-        // SSA-last-use redirect to the pop would require threading the match ref
-        // through the handler's if/else diamond and the end_if→label fallthrough,
-        // where the merge-block tracked-carry does not reach the post-handler drain
-        // (the match ref strands).  Binding the release to the region-exit op
-        // instead of to a control-flow drain site sidesteps that carry gap entirely.
-        // On the no-match path this is still sound: the re-raise recorded an
-        // independent propagating slot reference, so releasing the handler-match ref
-        // at the pop does not free the still-propagating exception.
-        //
-        // Region nesting: `try_start` opens a region and `exception_pop` closes it
-        // (LIFO), matching the existing `exception_region_depth` model.  Each match
-        // ref binds to the `exception_pop` of the region it was acquired in — the
-        // FIRST `exception_pop` after its definition whose pop reduces the region
-        // depth to the depth that was active at the definition (i.e. the matching
-        // close of the innermost region open at the match ref's def site).
-        {
-            // Region-depth timeline: for each op index, the open-region depth BEFORE
-            // executing it (depth increments on `try_start`, decrements on
-            // `exception_pop`).  Used to pair each match-ref def with the
-            // `exception_pop` that closes its enclosing region.
-            let match_outs: BTreeSet<&str> = func_ir
-                .ops
-                .iter()
-                .filter(|op| {
-                    matches!(
-                        op.kind.as_str(),
-                        "exception_last"
-                            | "exception_last_pending"
-                            | "exception_active"
-                            | "exception_current"
-                            | "exceptiongroup_match"
-                            | "exceptiongroup_combine"
-                    )
-                })
-                .filter_map(|op| op.out.as_deref())
-                .filter(|out| *out != "none")
-                .collect();
-
-            let mut release_at_pop: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-            let mut temps: BTreeSet<String> = BTreeSet::new();
-            if !drop_inserted && !match_outs.is_empty() {
-                // Precompute, for each op index, the open-region depth BEFORE it.
-                let mut depth_before: Vec<usize> = Vec::with_capacity(func_ir.ops.len());
-                let mut depth: usize = 0;
-                for op in &func_ir.ops {
-                    depth_before.push(depth);
-                    match op.kind.as_str() {
-                        "try_start" => depth += 1,
-                        "exception_pop" => depth = depth.saturating_sub(1),
-                        _ => {}
-                    }
-                }
-                // For a match ref defined at op `d` with region depth `depth_before[d]`,
-                // its enclosing `exception_pop` is the first pop at index > d that
-                // closes a region down to `depth_before[d] - 1` (the pop whose
-                // post-state depth is `depth_before[d] - 1`). Because pops are LIFO
-                // and a match ref is acquired strictly inside an open region
-                // (`depth_before[d] >= 1`), that is the matching close of the
-                // innermost region live at the definition.
-                for (name, &def) in &first_def {
-                    if !match_outs.contains(name) {
-                        continue;
-                    }
-                    let region_depth = depth_before[def];
-                    if region_depth == 0 {
-                        // Defensive: a match ref outside any open region has no
-                        // handler-exit boundary to bind to; leave it on its SSA
-                        // last_use (func_end-extended) rather than guess.
-                        continue;
-                    }
-                    let mut pop_for: Option<usize> = None;
-                    for (idx, op) in func_ir.ops.iter().enumerate().skip(def + 1) {
-                        if op.kind == "exception_pop" && depth_before[idx] == region_depth {
-                            // depth_before[idx] == region_depth means this pop is
-                            // about to close the region that was innermost-open at the
-                            // definition (its post-state depth is region_depth - 1).
-                            pop_for = Some(idx);
-                            break;
-                        }
-                    }
-                    let Some(pop) = pop_for else {
-                        // No matching pop found (malformed/foreign region): do not
-                        // bind a release point — fall back to value-tracking.
-                        continue;
-                    };
-                    // Safety criteria measured against the release point (the pop),
-                    // since the match ref lives until the pop: it must not be a
-                    // store_var target (a stored `saved = e` keeps the slot's own
-                    // independent reference), must not be loop-carried across a
-                    // back-edge between its def and the pop, and must not straddle a
-                    // suspend up to the pop.
-                    if store_var_targets.contains(*name) {
-                        continue;
-                    }
-                    if back_edge_ranges
-                        .iter()
-                        .any(|&(s, _e)| def < s && s <= pop)
-                    {
-                        continue; // loop-carried up to the pop
-                    }
-                    if suspend_ops.iter().any(|&sx| def < sx && sx < pop) {
-                        continue; // a suspend lies between def and the pop
-                    }
-                    release_at_pop.entry(pop).or_default().push((*name).to_string());
-                    temps.insert((*name).to_string());
-                }
-            }
-            exception_match_release_temps = temps;
-            exception_match_release_at_pop = release_at_pop;
-        }
-
-        if std::env::var("MOLT_DEBUG_EXC_TEMPS").is_ok()
-            && std::env::var("MOLT_DEBUG_FUNC_FILTER")
-                .ok()
-                .is_none_or(|f| func_ir.name.contains(&f))
-        {
-            eprintln!(
-                "[EXC_TEMPS] func={} creation={:?} match_release={:?} release_at_pop={:?} back_edges={:?}",
-                func_ir.name,
-                exception_creation_temps,
-                exception_match_release_temps,
-                exception_match_release_at_pop,
-                back_edge_ranges
-            );
-        }
-
         // Extend ALL variable lifetimes to function end for ANY function
         // that has loops (structured or TIR-generated). This prevents
         // drain_cleanup_tracked from emitting premature dec_ref for values
@@ -2334,18 +2114,11 @@ fn preanalyze_function_ir(
         //
         // `stateful_per_iter_temps` are excluded: their release belongs INSIDE the
         // loop body (at the suspend boundary), not at the per-yield return — see the
-        // generator-`_poll` analysis above. `exception_creation_temps` /
-        // `exception_match_release_temps` are excluded for the structurally identical reason
-        // (ExceptionRegion Phase 1): the creation ref must release at the raise and
-        // the match ref at its redirected handler-exit `exception_pop`, not be
-        // deferred to func_end where the raise/catch loop leaks them.
+        // generator-`_poll` analysis above.
         if !loop_ranges.is_empty() && !drop_inserted {
             let func_end = func_ir.ops.len().saturating_sub(1);
             for (name, entry) in last_use.iter_mut() {
-                if stateful_per_iter_temps.contains(name)
-                    || exception_creation_temps.contains(name)
-                    || exception_match_release_temps.contains(name)
-                {
+                if stateful_per_iter_temps.contains(name) {
                     continue;
                 }
                 if *entry < func_end {
@@ -2370,17 +2143,10 @@ fn preanalyze_function_ir(
         // structured-loop extension: a generator/async `_poll`'s per-iteration
         // heap temporaries are released at the suspend boundary, not deferred to
         // the per-yield return (which would orphan them on every resume).
-        // `exception_creation_temps` / `exception_match_release_temps` excluded identically
-        // (ExceptionRegion Phase 1) so the per-raise owned exception temporaries
-        // release at their raise / handler-exit `exception_pop` boundary rather than
-        // stranding at func_end (the raise/catch-loop leak fix).
         if !back_edge_ranges.is_empty() && !drop_inserted {
             let func_end = func_ir.ops.len().saturating_sub(1);
             for (name, entry) in last_use.iter_mut() {
-                if stateful_per_iter_temps.contains(name)
-                    || exception_creation_temps.contains(name)
-                    || exception_match_release_temps.contains(name)
-                {
+                if stateful_per_iter_temps.contains(name) {
                     continue;
                 }
                 if *entry < func_end {
@@ -2388,42 +2154,6 @@ fn preanalyze_function_ir(
                 }
             }
         }
-        // Original per-range extension (kept for reference):
-        let _skip = true;
-        if !_skip {
-            for &(start, end) in &back_edge_ranges {
-                for idx in start..=end {
-                    let op = &func_ir.ops[idx];
-                    if let Some(args) = &op.args {
-                        for name in args {
-                            if name != "none" {
-                                let entry = last_use.entry(name.clone()).or_insert(end);
-                                if *entry < end {
-                                    *entry = end;
-                                }
-                            }
-                        }
-                    }
-                    if let Some(var) = &op.var
-                        && var != "none"
-                    {
-                        let entry = last_use.entry(var.clone()).or_insert(end);
-                        if *entry < end {
-                            *entry = end;
-                        }
-                    }
-                    if let Some(out) = &op.out
-                        && out != "none"
-                    {
-                        let entry = last_use.entry(out.clone()).or_insert(end);
-                        if *entry < end {
-                            *entry = end;
-                        }
-                    }
-                }
-            }
-        } // end !_skip
-
         // Collect loop-carried slot assignments inside each loop body.
         // Only named storage slots (`store_var`) need CPython-style
         // "old slot occupant" handling across iterations. SSA temporaries are
@@ -2457,7 +2187,7 @@ fn preanalyze_function_ir(
             };
             for idx in (start + 1)..end {
                 let op = &func_ir.ops[idx];
-                if op.kind != "store_var" {
+                if !matches!(op.kind.as_str(), "store_var" | "delete_var") {
                     continue;
                 }
                 if let Some(name) = &op.var
@@ -2467,7 +2197,8 @@ fn preanalyze_function_ir(
                 {
                     assigned.push(name.clone());
                     let has_pre_loop_store = func_ir.ops[..start].iter().any(|prior| {
-                        prior.kind == "store_var" && prior.var.as_deref() == Some(name.as_str())
+                        matches!(prior.kind.as_str(), "store_var" | "delete_var")
+                            && prior.var.as_deref() == Some(name.as_str())
                     });
                     if !has_pre_loop_store {
                         init_needed.push(name.clone());
@@ -2492,14 +2223,6 @@ fn preanalyze_function_ir(
     {
         let mut max_last_use_by_root: BTreeMap<String, usize> = BTreeMap::new();
         for (name, root) in &alias_roots {
-            // ExceptionRegion Phase 1: an owned exception temp keeps its own precise
-            // release point (the raise for a creation ref, the redirected
-            // `exception_pop` for a match ref); it must neither pull a group-mate's
-            // last_use nor be pulled by one. Exclude it from the group max so its
-            // redirected/raise last_use cannot drag an aliased value to func_end.
-            if exception_creation_temps.contains(name) || exception_match_release_temps.contains(name) {
-                continue;
-            }
             let Some(last) = last_use.get(name).copied() else {
                 continue;
             };
@@ -2515,14 +2238,8 @@ fn preanalyze_function_ir(
         for (name, root) in &alias_roots {
             // A per-iteration `_poll` temporary must keep its real last use so the
             // suspend-boundary drain releases it each iteration; do not let the
-            // alias-group unification re-extend it to a group-mate's later use. The
-            // owned exception temps (ExceptionRegion Phase 1) must likewise keep
-            // their precise release point (the raise / the redirected
-            // `exception_pop`) rather than the alias group pulling them to func_end.
-            if stateful_per_iter_temps.contains(name)
-                || exception_creation_temps.contains(name)
-                || exception_match_release_temps.contains(name)
-            {
+            // alias-group unification re-extend it to a group-mate's later use.
+            if stateful_per_iter_temps.contains(name) {
                 continue;
             }
             let Some(group_last) = max_last_use_by_root.get(root).copied() else {
@@ -2635,8 +2352,6 @@ fn preanalyze_function_ir(
         scalar_slot_exclusion_unsafe,
         direct_field_store_ops,
         drop_inserted,
-        exception_match_release_temps,
-        exception_match_release_at_pop,
     }
 }
 
@@ -2911,8 +2626,6 @@ impl SimpleBackend {
             scalar_slot_exclusion_unsafe,
             direct_field_store_ops,
             drop_inserted,
-            exception_match_release_temps,
-            exception_match_release_at_pop,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries, &representation_plan);
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the SimpleIR-level
         // inc/dec coalescer (`rc_coalescing`) elides matched inc_ref/dec_ref PAIRS
@@ -2959,15 +2672,6 @@ impl SimpleBackend {
         let mut vars: BTreeMap<String, Variable> = BTreeMap::new();
         let mut hoisted_str_slot: BTreeMap<String, cranelift_codegen::ir::StackSlot> =
             BTreeMap::new();
-        // const_str outputs are stored in dedicated stack slots instead of
-        // relying on Cranelift SSA variables. SSA variables get reset to None
-        // by various loop and exception handler initialization paths, corrupting
-        // the string pointer across loop iterations. Stack slots are immune to
-        // SSA phi merging and persist correctly across all control flow.
-        let mut const_str_slots: BTreeMap<
-            cranelift_module::DataId,
-            cranelift_codegen::ir::StackSlot,
-        > = BTreeMap::new();
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         let primary_names = representation_plan.primary_name_sets();
         let int_primary_vars = primary_names.int;
@@ -2992,7 +2696,7 @@ impl SimpleBackend {
             {
                 first_defined_at.entry(out.clone()).or_insert(idx);
             }
-            if op.kind == "store_var"
+            if matches!(op.kind.as_str(), "store_var" | "delete_var")
                 && let Some(name) = op.var.as_ref().or(op.out.as_ref())
                 && name != "none"
             {
@@ -3696,9 +3400,7 @@ impl SimpleBackend {
                                 if int_primary_vars.contains(out) {
                                     return Some((out.clone(), val));
                                 }
-                                const INLINE_MAX: i64 = (1_i64 << 46) - 1;
-                                const INLINE_MIN: i64 = -(1_i64 << 46);
-                                if (INLINE_MIN..=INLINE_MAX).contains(&val) {
+                                if native_int_literal_fits_inline(val) {
                                     Some((out.clone(), box_int(val)))
                                 } else {
                                     None // bigints handled separately
@@ -3749,42 +3451,96 @@ impl SimpleBackend {
             }
         }
 
-        // ── Const-string prologue hoisting ──────────────────────────────
+        // ── Heap-literal prologue hoisting ──────────────────────────────
         //
-        // Hoist ALL const_str allocations to the entry block. Each unique
-        // string is allocated once via molt_string_from_bytes and stored in
-        // a dedicated stack slot. Subsequent const_str ops with the same
+        // Hoist ALL immutable heap literals to the entry block. Each unique
+        // string/bytes payload is allocated once and stored in a dedicated
+        // stack slot. Subsequent const_str/const_bytes ops with the same
         // content load from the slot instead of re-allocating.
         //
-        // This is the correct fix for the while-loop module-scope bug:
-        // Cranelift SSA variables for string constants are corrupted to
+        // This is the correct fix for loop-carried heap literals:
+        // Cranelift SSA variables for heap constants can be corrupted to
         // None by loop-header phi merges (entry-block None init vs
         // back-edge value). Stack slots are immune to SSA phi because
         // they are physical memory, not SSA values. By allocating all
-        // strings before the entry block is sealed, the string pointers
-        // are valid for the entire function lifetime.
+        // immutable heap literals before the entry block is sealed, their
+        // object pointers are valid for the entire function lifetime.
         let mut const_str_hoisted_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> =
             BTreeMap::new();
+        let mut const_bytes_hoisted_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> =
+            BTreeMap::new();
+        let mut const_bigint_hoisted_slots: BTreeMap<Vec<u8>, cranelift_codegen::ir::StackSlot> =
+            BTreeMap::new();
         {
-            // Collect unique (bytes, first_out_name) pairs.
+            // Collect unique (bytes, first_out_name) pairs for each heap-literal
+            // constructor. Literal kinds intentionally use separate maps even
+            // when their payload bytes match because they lower to different
+            // runtime object types.
             let mut unique_strs: Vec<(Vec<u8>, String)> = Vec::new();
-            let mut seen_bytes: std::collections::HashSet<Vec<u8>> =
+            let mut unique_bytes: Vec<(Vec<u8>, String)> = Vec::new();
+            let mut unique_bigints: Vec<(Vec<u8>, String)> = Vec::new();
+            let mut seen_str_bytes: std::collections::HashSet<Vec<u8>> =
+                std::collections::HashSet::new();
+            let mut seen_bytes_bytes: std::collections::HashSet<Vec<u8>> =
+                std::collections::HashSet::new();
+            let mut seen_bigint_bytes: std::collections::HashSet<Vec<u8>> =
                 std::collections::HashSet::new();
             for op in &func_ir.ops {
-                if op.kind != "const_str" {
-                    continue;
-                }
-                let bytes = op
-                    .bytes
-                    .as_deref()
-                    .unwrap_or_else(|| op.s_value.as_deref().unwrap_or("").as_bytes())
-                    .to_vec();
-                let out_name = match &op.out {
-                    Some(n) => n.clone(),
-                    None => continue,
-                };
-                if seen_bytes.insert(bytes.clone()) {
-                    unique_strs.push((bytes, out_name));
+                match op.kind.as_str() {
+                    "const_str" => {
+                        let bytes = op
+                            .bytes
+                            .as_deref()
+                            .unwrap_or_else(|| op.s_value.as_deref().unwrap_or("").as_bytes())
+                            .to_vec();
+                        let out_name = match &op.out {
+                            Some(n) => n.clone(),
+                            None => continue,
+                        };
+                        if seen_str_bytes.insert(bytes.clone()) {
+                            unique_strs.push((bytes, out_name));
+                        }
+                    }
+                    "const_bytes" => {
+                        let bytes = op.bytes.as_ref().expect("Bytes not found").clone();
+                        let out_name = match &op.out {
+                            Some(n) => n.clone(),
+                            None => continue,
+                        };
+                        if seen_bytes_bytes.insert(bytes.clone()) {
+                            unique_bytes.push((bytes, out_name));
+                        }
+                    }
+                    "const_bigint" => {
+                        let bytes = op
+                            .s_value
+                            .as_ref()
+                            .expect("BigInt string not found")
+                            .as_bytes()
+                            .to_vec();
+                        let out_name = match &op.out {
+                            Some(n) => n.clone(),
+                            None => continue,
+                        };
+                        if seen_bigint_bytes.insert(bytes.clone()) {
+                            unique_bigints.push((bytes, out_name));
+                        }
+                    }
+                    "const" => {
+                        let val = op.value.unwrap_or(0);
+                        let out_name = match &op.out {
+                            Some(n) if !int_primary_vars.contains(n) => n.clone(),
+                            _ => continue,
+                        };
+                        if native_int_literal_fits_inline(val) {
+                            continue;
+                        }
+                        let bytes = val.to_string().into_bytes();
+                        if seen_bigint_bytes.insert(bytes.clone()) {
+                            unique_bigints.push((bytes, out_name));
+                        }
+                    }
+                    _ => {}
                 }
             }
 
@@ -3828,6 +3584,82 @@ impl SimpleBackend {
                 builder.ins().stack_store(val, hoisted_slot, 0);
 
                 const_str_hoisted_slots.insert(bytes.clone(), hoisted_slot);
+            }
+
+            for (bytes, ref_name) in &unique_bytes {
+                let data_id = Self::intern_data_segment(
+                    &mut self.module,
+                    &mut self.data_pool,
+                    &mut self.next_data_id,
+                    bytes,
+                );
+                let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                let ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+
+                def_var_named(&mut builder, &vars, format!("{}_ptr", ref_name), ptr);
+                def_var_named(&mut builder, &vars, format!("{}_len", ref_name), len);
+
+                let callee = Self::import_func_id_split(
+                    &mut self.module,
+                    &mut self.import_ids,
+                    "molt_bytes_from_bytes",
+                    &[types::I64, types::I64, types::I64],
+                    &[types::I32],
+                );
+                let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let tmp_ptr = builder.ins().stack_addr(types::I64, tmp_slot, 0);
+                let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                builder.ins().call(local_callee, &[ptr, len, tmp_ptr]);
+
+                let hoisted_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let val = builder.ins().stack_load(types::I64, tmp_slot, 0);
+                builder.ins().stack_store(val, hoisted_slot, 0);
+
+                const_bytes_hoisted_slots.insert(bytes.clone(), hoisted_slot);
+            }
+
+            for (bytes, ref_name) in &unique_bigints {
+                let data_id = Self::intern_data_segment(
+                    &mut self.module,
+                    &mut self.data_pool,
+                    &mut self.next_data_id,
+                    bytes,
+                );
+                let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                let ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+
+                def_var_named(&mut builder, &vars, format!("{}_ptr", ref_name), ptr);
+                def_var_named(&mut builder, &vars, format!("{}_len", ref_name), len);
+
+                let callee = Self::import_func_id_split(
+                    &mut self.module,
+                    &mut self.import_ids,
+                    "molt_bigint_from_str",
+                    &[types::I64, types::I64],
+                    &[types::I64],
+                );
+                let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                let call = builder.ins().call(local_callee, &[ptr, len]);
+                let val = builder.inst_results(call)[0];
+
+                let hoisted_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                builder.ins().stack_store(val, hoisted_slot, 0);
+
+                const_bigint_hoisted_slots.insert(bytes.clone(), hoisted_slot);
             }
         }
 
@@ -4051,7 +3883,7 @@ impl SimpleBackend {
             // logical definition site so RC/liveness tracking preserves values
             // across structured joins emitted by the TIR roundtrip.
             let out_name = op.out.clone().or_else(|| {
-                if op.kind == "store_var" {
+                if matches!(op.kind.as_str(), "store_var" | "delete_var") {
                     op.var.clone()
                 } else {
                     None
@@ -4105,6 +3937,7 @@ impl SimpleBackend {
                         | "load_var"
                         | "copy_var"
                         | "store_var"
+                        | "delete_var"
                         | "label"
                         | "state_label"
                         | "state_switch"
@@ -4132,36 +3965,79 @@ impl SimpleBackend {
             match op.kind.as_str() {
                 "const" => {
                     let val = op.value.unwrap_or(0);
-                    const INLINE_MIN: i64 = -(1_i64 << 46);
-                    const INLINE_MAX: i64 = (1_i64 << 46) - 1;
-                    if (INLINE_MIN..=INLINE_MAX).contains(&val) {
-                        if let Some(ref out__) = op.out {
-                            let raw_val = builder.ins().iconst(types::I64, val);
-                            def_inline_int_value(
-                                &mut builder,
-                                &vars,
-                                &int_primary_vars,
-                                out__,
-                                raw_val,
-                                box_int(val),
-                            );
-                        }
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
+                    if int_primary_vars.contains(out_name.as_str()) {
+                        let raw_val = builder.ins().iconst(types::I64, val);
+                        def_var_named(&mut builder, &vars, out_name, raw_val);
+                    } else if native_int_literal_fits_inline(val) {
+                        let raw_val = builder.ins().iconst(types::I64, val);
+                        def_inline_int_value(
+                            &mut builder,
+                            &vars,
+                            &int_primary_vars,
+                            &out_name,
+                            raw_val,
+                            box_int(val),
+                        );
                     } else {
                         // Value exceeds 47-bit signed inline range — use bigint path.
                         let s = val.to_string();
                         let bytes = s.as_bytes();
+                        let boxed = if let Some(slot) = const_bigint_hoisted_slots.get(bytes) {
+                            builder.ins().stack_load(types::I64, *slot, 0)
+                        } else {
+                            let data_id = Self::intern_data_segment(
+                                &mut self.module,
+                                &mut self.data_pool,
+                                &mut self.next_data_id,
+                                bytes,
+                            );
+                            let global_ptr =
+                                self.module.declare_data_in_func(data_id, builder.func);
+                            let ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                            let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+                            def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
+                            def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
+                            let callee = Self::import_func_id_split(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                "molt_bigint_from_str",
+                                &[types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee =
+                                self.module.declare_func_in_func(callee, builder.func);
+                            let call = builder.ins().call(local_callee, &[ptr, len]);
+                            builder.inst_results(call)[0]
+                        };
+                        let out_name_clone = out_name.clone();
+                        def_var_named(&mut builder, &vars, out_name, boxed);
+                        rc_skip_dec.insert(out_name_clone);
+                    }
+                }
+                "const_bigint" => {
+                    let s = op.s_value.as_ref().expect("BigInt string not found");
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
+                    let bytes = s.as_bytes();
+                    let boxed = if let Some(slot) = const_bigint_hoisted_slots.get(bytes) {
+                        builder.ins().stack_load(types::I64, *slot, 0)
+                    } else {
                         let data_id = Self::intern_data_segment(
                             &mut self.module,
                             &mut self.data_pool,
                             &mut self.next_data_id,
                             bytes,
                         );
-                        let Some(out_name) = op.out else {
-                            continue;
-                        };
                         let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                         let ptr = builder.ins().symbol_value(types::I64, global_ptr);
                         let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+                        def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
+                        def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
+
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
@@ -4171,39 +4047,11 @@ impl SimpleBackend {
                         );
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         let call = builder.ins().call(local_callee, &[ptr, len]);
-                        let res = builder.inst_results(call)[0];
-                        def_var_named(&mut builder, &vars, out_name, res);
-                        output_is_ptr = true;
-                    }
-                }
-                "const_bigint" => {
-                    let s = op.s_value.as_ref().expect("BigInt string not found");
-                    let Some(out_name) = op.out else {
-                        continue;
+                        builder.inst_results(call)[0]
                     };
-                    let bytes = s.as_bytes();
-                    let data_id = Self::intern_data_segment(
-                        &mut self.module,
-                        &mut self.data_pool,
-                        &mut self.next_data_id,
-                        bytes,
-                    );
-                    let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                    let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                    let len = builder.ins().iconst(types::I64, bytes.len() as i64);
-
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_bigint_from_str",
-                        &[types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[ptr, len]);
-                    let res = builder.inst_results(call)[0];
-                    def_var_named(&mut builder, &vars, out_name, res);
-                    output_is_ptr = true;
+                    let out_name_clone = out_name.clone();
+                    def_var_named(&mut builder, &vars, out_name, boxed);
+                    rc_skip_dec.insert(out_name_clone);
                 }
                 "const_bool" => {
                     let val = op.value.unwrap_or(0);
@@ -4281,23 +4129,20 @@ impl SimpleBackend {
                     let Some(out_name) = op.out else {
                         continue;
                     };
-                    let data_id = Self::intern_data_segment(
-                        &mut self.module,
-                        &mut self.data_pool,
-                        &mut self.next_data_id,
-                        bytes,
-                    );
-
                     // Cache const_str NaN-boxed results in a stack slot keyed by
-                    // DataId. Stack slots persist across exception handler
+                    // payload bytes. Stack slots persist across exception handler
                     // boundaries, unlike Cranelift variables which can be reset
                     // by check_exception cleanup. This fixes the while-loop
                     // module-scope bug where const_str attr names were corrupted.
                     let boxed = if let Some(slot) = const_str_hoisted_slots.get(bytes) {
                         builder.ins().stack_load(types::I64, *slot, 0)
-                    } else if let Some(&slot) = const_str_slots.get(&data_id) {
-                        builder.ins().stack_load(types::I64, slot, 0)
                     } else {
+                        let data_id = Self::intern_data_segment(
+                            &mut self.module,
+                            &mut self.data_pool,
+                            &mut self.next_data_id,
+                            bytes,
+                        );
                         let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                         let ptr = builder.ins().symbol_value(types::I64, global_ptr);
                         let len = builder.ins().iconst(types::I64, bytes.len() as i64);
@@ -4320,17 +4165,7 @@ impl SimpleBackend {
                         let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
                         let local_callee = self.module.declare_func_in_func(callee, builder.func);
                         builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                        let val = builder.ins().stack_load(types::I64, out_slot, 0);
-
-                        // Store in a dedicated cache slot for reuse.
-                        let cache_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot,
-                            8,
-                            3,
-                        ));
-                        builder.ins().stack_store(val, cache_slot, 0);
-                        const_str_slots.insert(data_id, cache_slot);
-                        val
+                        builder.ins().stack_load(types::I64, out_slot, 0)
                     };
 
                     let out_name_clone = out_name.clone();
@@ -4342,40 +4177,43 @@ impl SimpleBackend {
                     let Some(out_name) = op.out else {
                         continue;
                     };
-                    let data_id = Self::intern_data_segment(
-                        &mut self.module,
-                        &mut self.data_pool,
-                        &mut self.next_data_id,
-                        bytes,
-                    );
+                    let boxed = if let Some(slot) = const_bytes_hoisted_slots.get(bytes) {
+                        builder.ins().stack_load(types::I64, *slot, 0)
+                    } else {
+                        let data_id = Self::intern_data_segment(
+                            &mut self.module,
+                            &mut self.data_pool,
+                            &mut self.next_data_id,
+                            bytes,
+                        );
+                        let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
+                        let ptr = builder.ins().symbol_value(types::I64, global_ptr);
+                        let len = builder.ins().iconst(types::I64, bytes.len() as i64);
 
-                    let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
-                    let ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                    let len = builder.ins().iconst(types::I64, bytes.len() as i64);
+                        def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
+                        def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
 
-                    def_var_named(&mut builder, &vars, format!("{}_ptr", out_name), ptr);
-                    def_var_named(&mut builder, &vars, format!("{}_len", out_name), len);
+                        let callee = Self::import_func_id_split(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            "molt_bytes_from_bytes",
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I32],
+                        );
+                        let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot,
+                            8,
+                            3,
+                        ));
+                        let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
+                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
+                        builder.ins().call(local_callee, &[ptr, len, out_ptr]);
+                        builder.ins().stack_load(types::I64, out_slot, 0)
+                    };
 
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_bytes_from_bytes",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I32],
-                    );
-                    let out_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        8,
-                        3,
-                    ));
-                    let out_ptr = builder.ins().stack_addr(types::I64, out_slot, 0);
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[ptr, len, out_ptr]);
-                    let boxed = builder
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), out_ptr, 0);
-
+                    let out_name_clone = out_name.clone();
                     def_var_named(&mut builder, &vars, out_name, boxed);
+                    rc_skip_dec.insert(out_name_clone);
                 }
                 "add" => {
                     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -5024,7 +4862,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
                         let fast_res = box_int_value_hoisted(
                             &mut builder,
@@ -5164,17 +5003,29 @@ impl SimpleBackend {
                 // _trusted / _range / _range_iter variants. Extracted to
                 // fc::vec_reductions (M1 phase 1) so the handler is its own
                 // codegen unit lifted out of this monolith.
-                "vec_sum_int" | "vec_sum_int_trusted" | "vec_sum_int_range"
-                | "vec_sum_int_range_trusted" | "vec_sum_int_range_iter"
-                | "vec_sum_int_range_iter_trusted" | "vec_sum_float"
-                | "vec_sum_float_trusted" | "vec_sum_float_range"
-                | "vec_sum_float_range_trusted" | "vec_sum_float_range_iter"
-                | "vec_sum_float_range_iter_trusted" | "vec_prod_int"
-                | "vec_prod_int_trusted" | "vec_prod_int_range"
-                | "vec_prod_int_range_trusted" | "vec_min_int"
-                | "vec_min_int_trusted" | "vec_min_int_range"
-                | "vec_min_int_range_trusted" | "vec_max_int"
-                | "vec_max_int_trusted" | "vec_max_int_range"
+                "vec_sum_int"
+                | "vec_sum_int_trusted"
+                | "vec_sum_int_range"
+                | "vec_sum_int_range_trusted"
+                | "vec_sum_int_range_iter"
+                | "vec_sum_int_range_iter_trusted"
+                | "vec_sum_float"
+                | "vec_sum_float_trusted"
+                | "vec_sum_float_range"
+                | "vec_sum_float_range_trusted"
+                | "vec_sum_float_range_iter"
+                | "vec_sum_float_range_iter_trusted"
+                | "vec_prod_int"
+                | "vec_prod_int_trusted"
+                | "vec_prod_int_range"
+                | "vec_prod_int_range_trusted"
+                | "vec_min_int"
+                | "vec_min_int_trusted"
+                | "vec_min_int_range"
+                | "vec_min_int_range_trusted"
+                | "vec_max_int"
+                | "vec_max_int_trusted"
+                | "vec_max_int_range"
                 | "vec_max_int_range_trusted" => {
                     fc::vec_reductions::handle_vec_reduction(
                         &op,
@@ -5335,7 +5186,8 @@ impl SimpleBackend {
                                 fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                             let (rhs_xored, rhs_val) =
                                 fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                            let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                            let both_int =
+                                fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let diff = builder.ins().isub(lhs_val, rhs_val);
                             let fast_res = box_int_value_hoisted(
                                 &mut builder,
@@ -5598,7 +5450,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
                         let fast_res = box_int_value_hoisted(
                             &mut builder,
@@ -5872,7 +5725,8 @@ impl SimpleBackend {
                                 fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                             let (rhs_xored, rhs_val) =
                                 fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                            let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                            let both_int =
+                                fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                             let fast_res = box_int_value_hoisted(
                                 &mut builder,
@@ -5881,7 +5735,9 @@ impl SimpleBackend {
                                 box_int_tag_var,
                             );
                             let take_fast = builder.ins().band(both_int, fits);
-                            builder.ins().brif(take_fast, fast_block, &[], slow_block, &[]);
+                            builder
+                                .ins()
+                                .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -6126,7 +5982,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
                         let fast_res = box_int_value_hoisted(
                             &mut builder,
@@ -6135,7 +5992,9 @@ impl SimpleBackend {
                             box_int_tag_var,
                         );
                         let take_fast = builder.ins().band(both_int, fits);
-                        builder.ins().brif(take_fast, fast_block, &[], slow_block, &[]);
+                        builder
+                            .ins()
+                            .brif(take_fast, fast_block, &[], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -7362,7 +7221,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         // Check for zero divisor using the NaN-boxed representation.
                         // box_int(0) = QNAN | TAG_INT = 0x7ff9000000000000.
                         let boxed_zero = builder.ins().iconst(types::I64, box_int(0));
@@ -7670,7 +7530,8 @@ impl SimpleBackend {
                                 fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                             let (rhs_xored, rhs_val) =
                                 fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                            let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                            let both_int =
+                                fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let zero = builder.ins().iconst(types::I64, 0);
                             let one = builder.ins().iconst(types::I64, 1);
                             let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
@@ -7964,7 +7825,8 @@ impl SimpleBackend {
                                 fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                             let (rhs_xored, rhs_val) =
                                 fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                            let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                            let both_int =
+                                fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let zero = builder.ins().iconst(types::I64, 0);
                             let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
                             let take_div = builder.ins().band(both_int, rhs_nonzero);
@@ -8161,7 +8023,8 @@ impl SimpleBackend {
                             fused_tag_check_and_unbox_int(&mut builder, *lhs, &nbc);
                         let (rhs_xored, rhs_val) =
                             fused_tag_check_and_unbox_int(&mut builder, *rhs, &nbc);
-                        let both_int = fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
+                        let both_int =
+                            fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
                         let rhs_nonzero = builder.ins().icmp(IntCC::NotEqual, rhs_val, zero);
                         let take_div = builder.ins().band(both_int, rhs_nonzero);
@@ -8721,143 +8584,29 @@ impl SimpleBackend {
                         }
                     }
                 }
-                "id" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed_overflow_safe(
+                "id" | "ord" | "ord_at" | "chr" => {
+                    fc::scalar_builtins::handle_scalar_builtin(
+                        &op,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
+                        &bool_primary_vars,
+                        &nbc,
                         box_int_mask_var,
                         box_int_tag_var,
-                    )
-                    .expect("Id arg not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_id",
-                        &[types::I64],
-                        &[types::I64],
                     );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*val]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
-                }
-                "ord" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Ord arg not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_ord",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*val]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
-                }
-                "ord_at" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Ord-at object not found");
-                    let index = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[1],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Ord-at index not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_ord_at",
-                        &[types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, *index]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
-                }
-                "chr" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Chr arg not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_chr",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*val]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
                 }
                 // handle_callargs_op family — extracted to fc::callargs (M1)
-                "callargs_new" | "callargs_push_pos" | "callargs_push_kw" |
-                "callargs_expand_star" | "callargs_expand_kwstar" => {
+                "callargs_new"
+                | "callargs_push_pos"
+                | "callargs_push_kw"
+                | "callargs_expand_star"
+                | "callargs_expand_kwstar" => {
                     let __flow = fc::callargs::handle_callargs_op(
                         &op,
                         &mut self.module,
@@ -8879,10 +8628,10 @@ impl SimpleBackend {
                     }
                 }
                 // handle_list_op family — extracted to fc::list_ops (M1)
-                "list_new" | "list_int_new" | "list_fill_new" | "list_from_range" |
-                "list_append" | "list_pop" | "list_extend" | "list_insert" | "list_remove" |
-                "list_clear" | "list_copy" | "list_reverse" | "list_count" | "list_index" |
-                "list_index_range" | "tuple_from_list" => {
+                "list_new" | "list_int_new" | "list_fill_new" | "list_from_range"
+                | "list_append" | "list_pop" | "list_extend" | "list_insert" | "list_remove"
+                | "list_clear" | "list_copy" | "list_reverse" | "list_count" | "list_index"
+                | "list_index_range" | "tuple_from_list" => {
                     let __flow = fc::list_ops::handle_list_op(
                         &op,
                         op_idx,
@@ -9100,11 +8849,25 @@ impl SimpleBackend {
                     }
                 }
                 // handle_dict_op family — extracted to fc::dict_ops (M1)
-                "dict_new" | "dict_from_obj" | "dict_get" | "dict_inc" | "dict_str_int_inc" |
-                "string_split_ws_dict_inc" | "taq_ingest_line" | "string_split_sep_dict_inc" |
-                "dict_pop" | "dict_setdefault" | "dict_setdefault_empty_list" |
-                "dict_update" | "dict_clear" | "dict_copy" | "dict_popitem" |
-                "dict_update_kwstar" | "dict_keys" | "dict_values" | "dict_items" => {
+                "dict_new"
+                | "dict_from_obj"
+                | "dict_get"
+                | "dict_inc"
+                | "dict_str_int_inc"
+                | "string_split_ws_dict_inc"
+                | "taq_ingest_line"
+                | "string_split_sep_dict_inc"
+                | "dict_pop"
+                | "dict_setdefault"
+                | "dict_setdefault_empty_list"
+                | "dict_update"
+                | "dict_clear"
+                | "dict_copy"
+                | "dict_popitem"
+                | "dict_update_kwstar"
+                | "dict_keys"
+                | "dict_values"
+                | "dict_items" => {
                     let __flow = fc::dict_ops::handle_dict_op(
                         &op,
                         &mut self.module,
@@ -9126,9 +8889,18 @@ impl SimpleBackend {
                     }
                 }
                 // handle_set_op family — extracted to fc::set_ops (M1)
-                "set_new" | "frozenset_new" | "set_add" | "set_add_probe" | "frozenset_add" |
-                "set_discard" | "set_remove" | "set_pop" | "set_update" |
-                "set_intersection_update" | "set_difference_update" | "set_symdiff_update" => {
+                "set_new"
+                | "frozenset_new"
+                | "set_add"
+                | "set_add_probe"
+                | "frozenset_add"
+                | "set_discard"
+                | "set_remove"
+                | "set_pop"
+                | "set_update"
+                | "set_intersection_update"
+                | "set_difference_update"
+                | "set_symdiff_update" => {
                     let __flow = fc::set_ops::handle_set_op(
                         &op,
                         op_idx,
@@ -9330,9 +9102,9 @@ impl SimpleBackend {
                     }
                 }
                 // handle_generator_op family — extracted to fc::generators (M1)
-                "aiter" | "anext" | "asyncgen_new" | "asyncgen_shutdown" | "gen_send" |
-                "gen_throw" | "gen_close" | "is_generator" | "is_bound_method" |
-                "is_callable" => {
+                "aiter" | "anext" | "asyncgen_new" | "asyncgen_shutdown" | "gen_send"
+                | "gen_throw" | "gen_close" | "is_generator" | "is_bound_method"
+                | "is_callable" => {
                     fc::generators::handle_generator_op(
                         &op,
                         &mut self.module,
@@ -11298,176 +11070,51 @@ impl SimpleBackend {
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
-                "del_index" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let obj = var_get_boxed_overflow_safe(
+                // handle_indexing_op family — extracted to fc::indexing (M1)
+                "del_index" | "slice" | "slice_new" => {
+                    fc::indexing::handle_indexing_op(
+                        &op,
+                        op_idx,
+                        &func_ir.name,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
+                        &bool_primary_vars,
+                        &nbc,
                         box_int_mask_var,
                         box_int_tag_var,
-                    )
-                    .unwrap_or_else(|| panic!("Obj not found in {} op {}", func_ir.name, op_idx));
-                    let idx = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[1],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .unwrap_or_else(|| panic!("Index not found in {} op {}", func_ir.name, op_idx));
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_del_index",
-                        &[types::I64, types::I64],
-                        &[types::I64],
                     );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*obj, *idx]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
-                }
-                "slice" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let target = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Slice target not found");
-                    let start = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[1],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Slice start not found");
-                    let end = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[2],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Slice end not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_slice",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*target, *start, *end]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
-                }
-                "slice_new" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let start = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Slice start not found");
-                    let stop = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[1],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Slice stop not found");
-                    let step = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[2],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
-                    )
-                    .expect("Slice step not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_slice_new",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*start, *stop, *step]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
                 }
                 // handle_text_predicate family — extracted to fc::text_predicates (M1)
-                "bytes_find" | "bytes_find_slice" | "bytearray_find" |
-                "bytearray_find_slice" | "string_find" | "string_find_slice" |
-                "string_startswith" | "string_startswith_slice" | "bytes_startswith" |
-                "bytes_startswith_slice" | "bytearray_startswith" |
-                "bytearray_startswith_slice" | "string_endswith" | "string_endswith_slice" |
-                "bytes_endswith" | "bytes_endswith_slice" | "bytearray_endswith" |
-                "bytearray_endswith_slice" | "string_count" | "bytes_count" |
-                "bytearray_count" | "string_count_slice" | "bytes_count_slice" |
-                "bytearray_count_slice" => {
+                "bytes_find"
+                | "bytes_find_slice"
+                | "bytearray_find"
+                | "bytearray_find_slice"
+                | "string_find"
+                | "string_find_slice"
+                | "string_startswith"
+                | "string_startswith_slice"
+                | "bytes_startswith"
+                | "bytes_startswith_slice"
+                | "bytearray_startswith"
+                | "bytearray_startswith_slice"
+                | "string_endswith"
+                | "string_endswith_slice"
+                | "bytes_endswith"
+                | "bytes_endswith_slice"
+                | "bytearray_endswith"
+                | "bytearray_endswith_slice"
+                | "string_count"
+                | "bytes_count"
+                | "bytearray_count"
+                | "string_count_slice"
+                | "bytes_count_slice"
+                | "bytearray_count_slice" => {
                     fc::text_predicates::handle_text_predicate(
                         &op,
                         &mut self.module,
@@ -11485,16 +11132,34 @@ impl SimpleBackend {
                     );
                 }
                 // handle_text_transform family — extracted to fc::text_transform (M1)
-                "bytearray_fill_range" | "string_format" | "string_join" | "string_split" |
-                "string_split_validate" | "string_split_field" | "string_split_field_len" |
-                "string_split_field_eq" | "string_split_field_start" |
-                "string_split_field_end" | "string_split_field_is_ascii" |
-                "string_split_field_len_from_bounds" | "string_split_field_ord_at_bounds" |
-                "string_split_field_to_int" | "string_split_max" | "string_lower" |
-                "string_upper" | "string_capitalize" | "string_strip" | "string_lstrip" |
-                "string_rstrip" | "string_replace" | "bytes_split" | "bytes_split_max" |
-                "bytearray_split" | "bytearray_split_max" | "bytes_replace" |
-                "bytearray_replace" => {
+                "bytearray_fill_range"
+                | "string_format"
+                | "string_join"
+                | "string_split"
+                | "string_split_validate"
+                | "string_split_field"
+                | "string_split_field_len"
+                | "string_split_field_eq"
+                | "string_split_field_start"
+                | "string_split_field_end"
+                | "string_split_field_is_ascii"
+                | "string_split_field_len_from_bounds"
+                | "string_split_field_ord_at_bounds"
+                | "string_split_field_to_int"
+                | "string_split_max"
+                | "string_lower"
+                | "string_upper"
+                | "string_capitalize"
+                | "string_strip"
+                | "string_lstrip"
+                | "string_rstrip"
+                | "string_replace"
+                | "bytes_split"
+                | "bytes_split_max"
+                | "bytearray_split"
+                | "bytearray_split_max"
+                | "bytes_replace"
+                | "bytearray_replace" => {
                     fc::text_transform::handle_text_transform(
                         &op,
                         &mut self.module,
@@ -11574,10 +11239,18 @@ impl SimpleBackend {
                     );
                 }
                 // handle_type_conversion family — extracted to fc::type_conversions (M1)
-                "bytes_from_obj" | "bytes_from_str" | "bytearray_from_obj" |
-                "bytearray_from_str" | "float_from_obj" | "int_from_obj" |
-                "int_from_str_of_obj" | "complex_from_obj" | "intarray_from_seq" |
-                "str_from_obj" | "repr_from_obj" | "ascii_from_obj" => {
+                "bytes_from_obj"
+                | "bytes_from_str"
+                | "bytearray_from_obj"
+                | "bytearray_from_str"
+                | "float_from_obj"
+                | "int_from_obj"
+                | "int_from_str_of_obj"
+                | "complex_from_obj"
+                | "intarray_from_seq"
+                | "str_from_obj"
+                | "repr_from_obj"
+                | "ascii_from_obj" => {
                     fc::type_conversions::handle_type_conversion(
                         &op,
                         &mut self.module,
@@ -11595,8 +11268,8 @@ impl SimpleBackend {
                     );
                 }
                 // handle_memoryview_buffer_op family — extracted to fc::memoryview_buffer (M1)
-                "memoryview_new" | "memoryview_tobytes" | "memoryview_cast" | "buffer2d_new" |
-                "buffer2d_get" | "buffer2d_set" | "buffer2d_matmul" => {
+                "memoryview_new" | "memoryview_tobytes" | "memoryview_cast" | "buffer2d_new"
+                | "buffer2d_get" | "buffer2d_set" | "buffer2d_matmul" => {
                     fc::memoryview_buffer::handle_memoryview_buffer_op(
                         &op,
                         &mut self.module,
@@ -11614,8 +11287,11 @@ impl SimpleBackend {
                     );
                 }
                 // handle_dataclass_op family — extracted to fc::dataclass (M1)
-                "dataclass_new" | "dataclass_new_values" | "dataclass_get" | "dataclass_set" |
-                "dataclass_set_class" => {
+                "dataclass_new"
+                | "dataclass_new_values"
+                | "dataclass_get"
+                | "dataclass_set"
+                | "dataclass_set_class" => {
                     fc::dataclass::handle_dataclass_op(
                         &op,
                         &mut self.module,
@@ -13355,8 +13031,9 @@ impl SimpleBackend {
                                 &[types::I64],
                                 &[types::I64],
                             );
-                            let invert_local_callee =
-                                self.module.declare_func_in_func(invert_callee, builder.func);
+                            let invert_local_callee = self
+                                .module
+                                .declare_func_in_func(invert_callee, builder.func);
                             let (val_xored, int_val) =
                                 fused_tag_check_and_unbox_int(&mut builder, *val, &nbc);
                             let is_int =
@@ -13366,9 +13043,7 @@ impl SimpleBackend {
                             builder.set_cold_block(slow_block);
                             let merge_block = builder.create_block();
                             builder.append_block_param(merge_block, types::I64);
-                            builder
-                                .ins()
-                                .brif(is_int, fast_block, &[], slow_block, &[]);
+                            builder.ins().brif(is_int, fast_block, &[], slow_block, &[]);
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
@@ -13469,13 +13144,14 @@ impl SimpleBackend {
                         )
                         .expect("Value not found");
                         let int_val = unbox_int_or_bool(&mut builder, *val, &nbc);
-                        let is_inline_int =
-                            fused_is_int_or_bool(&mut builder, *val, &nbc);
+                        let is_inline_int = fused_is_int_or_bool(&mut builder, *val, &nbc);
                         let zero = builder.ins().iconst(types::I64, 0);
                         let inline_nonzero = builder.ins().icmp(IntCC::NotEqual, int_val, zero);
                         let true_val = builder.ins().iconst(types::I8, 1);
                         let is_nonzero =
-                            builder.ins().select(is_inline_int, inline_nonzero, true_val);
+                            builder
+                                .ins()
+                                .select(is_inline_int, inline_nonzero, true_val);
                         let raw_bool = builder.ins().uextend(types::I64, is_nonzero);
                         (
                             box_bool_value(&mut builder, is_nonzero, &nbc),
@@ -14782,9 +14458,14 @@ impl SimpleBackend {
                     builder.ins().call(local_callee, &[*token]);
                 }
                 // handle_future_promise_op family — extracted to fc::future_promise (M1)
-                "future_cancel" | "future_cancel_msg" | "future_cancel_clear" |
-                "promise_new" | "promise_set_result" | "promise_set_exception" |
-                "thread_submit" | "task_register_token_owned" => {
+                "future_cancel"
+                | "future_cancel_msg"
+                | "future_cancel_clear"
+                | "promise_new"
+                | "promise_set_result"
+                | "promise_set_exception"
+                | "thread_submit"
+                | "task_register_token_owned" => {
                     fc::future_promise::handle_future_promise_op(
                         &op,
                         &mut self.module,
@@ -14949,7 +14630,7 @@ impl SimpleBackend {
                         let callee = Self::import_func_id_split(
                             &mut self.module,
                             &mut self.import_ids,
-                            "molt_async_sleep_new",
+                            "molt_async_sleep",
                             &[types::I64, types::I64],
                             &[types::I64],
                         );
@@ -15934,9 +15615,14 @@ impl SimpleBackend {
                     }
                 }
                 // handle_object_construct_op family — extracted to fc::object_construct (M1)
-                "bound_method_new" | "object_new" | "object_new_bound" |
-                "object_new_bound_stack" | "super_new" | "classmethod_new" |
-                "staticmethod_new" | "property_new" => {
+                "bound_method_new"
+                | "object_new"
+                | "object_new_bound"
+                | "object_new_bound_stack"
+                | "super_new"
+                | "classmethod_new"
+                | "staticmethod_new"
+                | "property_new" => {
                     fc::object_construct::handle_object_construct_op(
                         &op,
                         &mut self.module,
@@ -17773,9 +17459,7 @@ impl SimpleBackend {
                     self.module.define_data(data_id, &data_ctx).unwrap();
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                    let name_len = builder
-                        .ins()
-                        .iconst(types::I64, method_name.len() as i64);
+                    let name_len = builder.ins().iconst(types::I64, method_name.len() as i64);
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
@@ -17881,9 +17565,7 @@ impl SimpleBackend {
                     self.module.define_data(data_id, &data_ctx).unwrap();
                     let global_ptr = self.module.declare_data_in_func(data_id, builder.func);
                     let name_ptr = builder.ins().symbol_value(types::I64, global_ptr);
-                    let name_len = builder
-                        .ins()
-                        .iconst(types::I64, method_name.len() as i64);
+                    let name_len = builder.ins().iconst(types::I64, method_name.len() as i64);
                     let site_bits = builder.ins().iconst(
                         types::I64,
                         box_int(stable_ic_site_id(
@@ -17909,8 +17591,7 @@ impl SimpleBackend {
                         &[types::I64],
                     );
                     let local = self.module.declare_func_in_func(callee, builder.func);
-                    let mut call_args =
-                        vec![site_bits, class_bits, self_bits, name_ptr, name_len];
+                    let mut call_args = vec![site_bits, class_bits, self_bits, name_ptr, name_len];
                     call_args.extend_from_slice(&extra_args);
                     let call = builder.ins().call(local, &call_args);
                     let res = builder.inst_results(call)[0];
@@ -18121,10 +17802,19 @@ impl SimpleBackend {
                     }
                 }
                 // handle_module_op family — extracted to fc::modules (M1)
-                "module_new" | "module_cache_get" | "module_import" | "module_cache_set" |
-                "module_cache_del" | "module_get_attr" | "module_import_from" |
-                "module_get_global" | "module_del_global" | "module_del_global_if_present" |
-                "module_get_name" | "module_set_attr" | "module_import_star" => {
+                "module_new"
+                | "module_cache_get"
+                | "module_import"
+                | "module_cache_set"
+                | "module_cache_del"
+                | "module_get_attr"
+                | "module_import_from"
+                | "module_get_global"
+                | "module_del_global"
+                | "module_del_global_if_present"
+                | "module_get_name"
+                | "module_set_attr"
+                | "module_import_star" => {
                     fc::modules::handle_module_op(
                         &op,
                         op_idx,
@@ -18146,9 +17836,14 @@ impl SimpleBackend {
                     );
                 }
                 // handle_class_op family — extracted to fc::class_ops (M1)
-                "class_new" | "class_def" | "class_layout_version" |
-                "class_set_layout_version" | "class_merge_layout" | "class_set_base" |
-                "class_apply_set_name" | "object_set_class" => {
+                "class_new"
+                | "class_def"
+                | "class_layout_version"
+                | "class_set_layout_version"
+                | "class_merge_layout"
+                | "class_set_base"
+                | "class_apply_set_name"
+                | "object_set_class" => {
                     fc::class_ops::handle_class_op(
                         &op,
                         &mut self.module,
@@ -18167,8 +17862,11 @@ impl SimpleBackend {
                 }
                 // Outlined class definition via molt_guarded_class_def
                 // handle_type_check_op family — extracted to fc::type_checks (M1)
-                "builtin_type" | "type_of" | "is_native_awaitable" | "isinstance" |
-                "issubclass" => {
+                "builtin_type"
+                | "type_of"
+                | "is_native_awaitable"
+                | "isinstance"
+                | "issubclass" => {
                     fc::type_checks::handle_type_check_op(
                         &op,
                         &mut self.module,
@@ -18186,14 +17884,26 @@ impl SimpleBackend {
                     );
                 }
                 // handle_exception_op family — extracted to fc::exceptions (M1)
-                "exception_match_builtin" | "exception_last" | "exception_last_pending" |
-                "exception_active" | "exception_current" | "exception_new" |
-                "exception_new_builtin" | "exception_new_builtin_empty" |
-                "exception_new_builtin_one" | "exception_new_from_class" |
-                "exceptiongroup_match" | "exceptiongroup_combine" | "exception_clear" |
-                "exception_kind" | "exception_class" | "exception_message" |
-                "exception_set_cause" | "exception_set_last" | "exception_set_value" |
-                "exception_context_set" => {
+                "exception_match_builtin"
+                | "exception_last"
+                | "exception_last_pending"
+                | "exception_active"
+                | "exception_current"
+                | "exception_new"
+                | "exception_new_builtin"
+                | "exception_new_builtin_empty"
+                | "exception_new_builtin_one"
+                | "exception_new_from_class"
+                | "exceptiongroup_match"
+                | "exceptiongroup_combine"
+                | "exception_clear"
+                | "exception_kind"
+                | "exception_class"
+                | "exception_message"
+                | "exception_set_cause"
+                | "exception_set_last"
+                | "exception_set_value"
+                | "exception_context_set" => {
                     fc::exceptions::handle_exception_op(
                         &op,
                         &mut self.module,
@@ -18211,8 +17921,8 @@ impl SimpleBackend {
                     );
                 }
                 // handle_context_op family — extracted to fc::context_mgmt (M1)
-                "context_null" | "context_enter" | "context_exit" | "context_closing" |
-                "context_unwind" | "context_depth" | "context_unwind_to" => {
+                "context_null" | "context_enter" | "context_exit" | "context_closing"
+                | "context_unwind" | "context_depth" | "context_unwind_to" => {
                     fc::context_mgmt::handle_context_op(
                         &op,
                         &mut self.module,
@@ -18230,10 +17940,15 @@ impl SimpleBackend {
                     );
                 }
                 // handle_exception_stack_op family — extracted to fc::exception_stack (M1)
-                "exception_push" | "exception_pop" | "exception_stack_clear" |
-                "exception_stack_depth" | "exception_stack_enter" | "exception_stack_exit" |
-                "exception_stack_set_depth" | "exception_enter_handler" |
-                "exception_resolve_captured" => {
+                "exception_push"
+                | "exception_pop"
+                | "exception_stack_clear"
+                | "exception_stack_depth"
+                | "exception_stack_enter"
+                | "exception_stack_exit"
+                | "exception_stack_set_depth"
+                | "exception_enter_handler"
+                | "exception_resolve_captured" => {
                     fc::exception_stack::handle_exception_stack_op(
                         &op,
                         &mut self.module,
@@ -18249,45 +17964,6 @@ impl SimpleBackend {
                         box_int_mask_var,
                         box_int_tag_var,
                     );
-                    // ExceptionRegion Phase 1 (foundation design 45 §7 `ExceptionPop`):
-                    // release the owned handler-match ref(s) bound to THIS region exit.
-                    // Emitted AFTER `molt_exception_pop` so the active-exception-stack
-                    // restore completes first, then we drop the local match handle.
-                    // The match ref's Value is read via its Variable (`use_var`,
-                    // phi-correct across the handler's if/else diamond), since it was
-                    // suppressed from value-tracking registration; the def at the
-                    // producing op dominates this pop (the pop is reached only through
-                    // the handler that acquired the ref). On BOTH the matched and the
-                    // re-raise/propagate path this is the merged release reached once.
-                    if op.kind == "exception_pop"
-                        && !is_block_filled
-                        && let Some(names) = exception_match_release_at_pop.get(&op_idx)
-                    {
-                        for name in names {
-                            // Dedup against any other release authority (defensive:
-                            // these names are registration-suppressed, so no drain
-                            // site can have released them — but a single region exit
-                            // must still emit exactly one dec_ref per match ref).
-                            if !mark_cleanup_root_once(&alias_roots, &mut already_decrefed, name) {
-                                continue;
-                            }
-                            if let Some(val) = var_get_boxed_overflow_safe(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                &mut builder,
-                                &mut import_refs,
-                                &mut sealed_blocks,
-                                &vars,
-                                name,
-                                &int_primary_vars,
-                                &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            ) {
-                                emit_dec_ref_obj(&mut builder, *val, local_dec_ref_obj, &nbc);
-                            }
-                        }
-                    }
                 }
                 "getargv" => {
                     let callee = Self::import_func_id_split(
@@ -18564,15 +18240,14 @@ impl SimpleBackend {
                         exc_flag_ptr_slot,
                     );
                     brif_block(&mut builder, cond, target_block, &[], fallthrough, &[]);
-                    // The fallthrough block is always fresh and both of its
-                    // predecessors are emitted here. Seal it now so later
+                    // The fallthrough block is always fresh and has its only
+                    // predecessor emitted here. Seal it immediately so later
                     // `use_var` calls in the fallthrough block cannot
                     // synthesize placeholder predecessors with zero-valued
-                    // block params.
-                    if exception_label_ids.is_empty() && sealed_blocks.insert(fallthrough) {
-                        maybe_debug_seal("check_exception_fallthrough", op_idx, fallthrough);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fallthrough);
-                    }
+                    // block params. This remains true in exception-bearing
+                    // functions; exception labels are separate target blocks.
+                    maybe_debug_seal("check_exception_fallthrough", op_idx, fallthrough);
+                    seal_block_once(&mut builder, &mut sealed_blocks, fallthrough);
                     switch_to_block_with_rebind(
                         &mut builder,
                         fallthrough,
@@ -18726,14 +18401,10 @@ impl SimpleBackend {
                         )
                         .expect("Cond not found");
                         let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
-                        let is_inline_int =
-                            fused_is_int_or_bool(&mut builder, *cond, &nbc);
-                        let inline_truthy =
-                            builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                        let is_inline_int = fused_is_int_or_bool(&mut builder, *cond, &nbc);
+                        let inline_truthy = builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
                         let true_val = builder.ins().iconst(types::I8, 1);
-                        builder
-                            .ins()
-                            .select(is_inline_int, inline_truthy, true_val)
+                        builder.ins().select(is_inline_int, inline_truthy, true_val)
                     } else {
                         let cond = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -19013,7 +18684,7 @@ impl SimpleBackend {
                             let mut seen_merge_rebind: BTreeSet<String> = BTreeSet::new();
                             for branch_idx in (op_idx + 1)..end_if_idx {
                                 let branch_op = &ops[branch_idx];
-                                if branch_op.kind != "store_var" {
+                                if !matches!(branch_op.kind.as_str(), "store_var" | "delete_var") {
                                     continue;
                                 }
                                 let Some(name) = branch_op.var.as_ref() else {
@@ -21070,11 +20741,7 @@ impl SimpleBackend {
                             false,
                         );
                         if exception_label_ids.is_empty() && sealed_blocks.insert(cleanup_block) {
-                            maybe_debug_seal(
-                                "loop_break_exception_cleanup",
-                                op_idx,
-                                cleanup_block,
-                            );
+                            maybe_debug_seal("loop_break_exception_cleanup", op_idx, cleanup_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, cleanup_block);
                         }
                         for name in tracked_obj_snapshot {
@@ -21109,8 +20776,7 @@ impl SimpleBackend {
                             false,
                         );
                         // Seal body_block now — its only predecessor is the brif above.
-                        if exception_label_ids.is_empty()
-                            && sealed_blocks.insert(frame.body_block)
+                        if exception_label_ids.is_empty() && sealed_blocks.insert(frame.body_block)
                         {
                             maybe_debug_seal("loop_break_exception_body", op_idx, frame.body_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, frame.body_block);
@@ -21213,14 +20879,11 @@ impl SimpleBackend {
                             )
                             .expect("Loop break cond not found");
                             let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
-                            let is_inline_int =
-                                fused_is_int_or_bool(&mut builder, *cond, &nbc);
+                            let is_inline_int = fused_is_int_or_bool(&mut builder, *cond, &nbc);
                             let inline_truthy =
                                 builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
                             let true_val = builder.ins().iconst(types::I8, 1);
-                            builder
-                                .ins()
-                                .select(is_inline_int, inline_truthy, true_val)
+                            builder.ins().select(is_inline_int, inline_truthy, true_val)
                         } else {
                             let cond = var_get_boxed_overflow_safe(
                                 &mut self.module,
@@ -21429,14 +21092,11 @@ impl SimpleBackend {
                             )
                             .expect("Loop break cond not found");
                             let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
-                            let is_inline_int =
-                                fused_is_int_or_bool(&mut builder, *cond, &nbc);
+                            let is_inline_int = fused_is_int_or_bool(&mut builder, *cond, &nbc);
                             let inline_truthy =
                                 builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
                             let true_val = builder.ins().iconst(types::I8, 1);
-                            builder
-                                .ins()
-                                .select(is_inline_int, inline_truthy, true_val)
+                            builder.ins().select(is_inline_int, inline_truthy, true_val)
                         } else {
                             let cond = var_get_boxed_overflow_safe(
                                 &mut self.module,
@@ -23484,10 +23144,18 @@ impl SimpleBackend {
                     }
                 }
                 // handle_attr_op family — extracted to fc::attrs (M1)
-                "get_attr_generic_ptr" | "get_attr_generic_obj" | "get_attr_special_obj" |
-                "get_attr_name" | "get_attr_name_default" | "has_attr_name" |
-                "set_attr_name" | "set_attr_generic_ptr" | "set_attr_generic_obj" |
-                "del_attr_generic_ptr" | "del_attr_generic_obj" | "del_attr_name" => {
+                "get_attr_generic_ptr"
+                | "get_attr_generic_obj"
+                | "get_attr_special_obj"
+                | "get_attr_name"
+                | "get_attr_name_default"
+                | "has_attr_name"
+                | "set_attr_name"
+                | "set_attr_generic_ptr"
+                | "set_attr_generic_obj"
+                | "del_attr_generic_ptr"
+                | "del_attr_generic_obj"
+                | "del_attr_name" => {
                     let __flow = fc::attrs::handle_attr_op(
                         &op,
                         op_idx,
@@ -24048,7 +23716,8 @@ impl SimpleBackend {
                             func_ir.name, op_idx, target_id, target_block, fallthrough_block
                         );
                     }
-                    // cond is NaN-boxed — dispatch based on type hint to avoid
+                    // cond is NaN-boxed unless representation facts prove a raw
+                    // bool-primary value; dispatch from bool_primary_vars to avoid
                     // unnecessary GIL-wrapped molt_is_truthy calls.
                     let cond_name = &args[0];
                     let cond_bool = if let Some(raw_val) =
@@ -24103,14 +23772,10 @@ impl SimpleBackend {
                         )
                         .expect("Cond not found");
                         let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
-                        let is_inline_int =
-                            fused_is_int_or_bool(&mut builder, *cond, &nbc);
-                        let inline_truthy =
-                            builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                        let is_inline_int = fused_is_int_or_bool(&mut builder, *cond, &nbc);
+                        let inline_truthy = builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
                         let true_val = builder.ins().iconst(types::I8, 1);
-                        builder
-                            .ins()
-                            .select(is_inline_int, inline_truthy, true_val)
+                        builder.ins().select(is_inline_int, inline_truthy, true_val)
                     } else {
                         let cond = var_get_boxed_overflow_safe(
                             &mut self.module,
@@ -24271,10 +23936,8 @@ impl SimpleBackend {
                         &mut is_block_filled,
                         false,
                     );
-                    if exception_label_ids.is_empty() && sealed_blocks.insert(fallthrough_block) {
-                        maybe_debug_seal("br_if_fallthrough", op_idx, fallthrough_block);
-                        seal_block_once(&mut builder, &mut sealed_blocks, fallthrough_block);
-                    }
+                    maybe_debug_seal("br_if_fallthrough", op_idx, fallthrough_block);
+                    seal_block_once(&mut builder, &mut sealed_blocks, fallthrough_block);
                 }
                 "label" | "state_label" => {
                     let label_id = op.value.unwrap_or(0);
@@ -24655,6 +24318,85 @@ impl SimpleBackend {
                             box_int_tag_var,
                         );
                     }
+                }
+                "delete_var" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let Some(name) = op.var.as_deref().or(op.out.as_deref()) else {
+                        panic!("delete_var missing target local");
+                    };
+                    if raw_backed_slot_names.contains(name) {
+                        panic!(
+                            "delete_var target '{name}' was admitted to a raw-backed slot; missing sentinel requires boxed local storage"
+                        );
+                    }
+                    let Some(missing_name) = args.first() else {
+                        panic!("delete_var missing sentinel operand");
+                    };
+                    let Some(old_name) = args.get(1) else {
+                        panic!("delete_var missing old-slot operand");
+                    };
+                    let missing_val = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        missing_name,
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("delete_var: missing sentinel not found");
+                    let old_val = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        old_name,
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("delete_var: old local operand not found");
+                    if let Some(&slot) = slot_backed_join_slots.get(name) {
+                        builder.ins().stack_store(missing_val, slot, 0);
+                    } else {
+                        def_var_from_boxed_transport(
+                            &mut self.module,
+                            &mut self.import_ids,
+                            &mut builder,
+                            &mut import_refs,
+                            &vars,
+                            &int_primary_vars,
+                            &bool_primary_vars,
+                            &float_primary_vars,
+                            &nbc,
+                            name,
+                            missing_val,
+                        );
+                    }
+                    remove_tracked_name(&mut tracked_vars, name);
+                    tracked_vars_set.remove(name);
+                    remove_tracked_name(&mut tracked_obj_vars, name);
+                    tracked_obj_vars_set.remove(name);
+                    entry_vars.remove(name);
+                    if let Some(block) = builder.current_block() {
+                        if let Some(tracked) = block_tracked_ptr.get_mut(&block) {
+                            remove_tracked_name(tracked, name);
+                        }
+                        if let Some(tracked) = block_tracked_obj.get_mut(&block) {
+                            remove_tracked_name(tracked, name);
+                        }
+                    }
+                    if !drop_inserted {
+                        builder.ins().call(local_dec_ref_obj, &[old_val]);
+                    }
+                    continue;
                 }
                 "load_var" | "copy_var" => {
                     // Load a named variable into an output (block arg receiving / copy).
@@ -25192,6 +24934,7 @@ impl SimpleBackend {
                 // accumulators and the TIR `DecRef(old)` only takes rc 2→1, never
                 // freeing it (the O(n) residual leak the activation must close).
                 && !drop_inserted
+                && op.kind != "delete_var"
                 && !slot_backed_join_slots.contains_key(name.as_str())
                 && let Some(block) = builder.current_block()
                 // RC coalescing: skip tracking for variables whose dec_ref
@@ -25200,14 +24943,6 @@ impl SimpleBackend {
                 // Parameters are borrowed from the caller — never track them
                 // for cleanup dec_ref. The caller owns the reference.
                 && !param_name_set.contains(name.as_str())
-                // ExceptionRegion Phase 1 (foundation design 45 §7): an owned
-                // handler-match ref's RC is owned SOLELY by its bound `exception_pop`
-                // (emitted in the `exception_pop` handler). Suppress its value-
-                // tracking registration so no drain site ever touches it — this is
-                // what makes the region-exit release the single authority (no double-
-                // free, and no strand in the post-handler merge block where the
-                // tracked-carry does not reach).
-                && !exception_match_release_temps.contains(name.as_str())
             {
                 if block == entry_block && loop_depth == 0 {
                     if output_is_ptr {
@@ -25677,8 +25412,8 @@ mod tests {
         generic_list_int_lane_eligible, index_fallback_import_name, is_cold_module_chunk_function,
         jump_block, live_exception_rebind_vars_for_op, mark_cleanup_root_once,
         materialize_label_block, preanalyze_function_ir, protect_cleanup_names,
-        scan_loop_int_sum_reduction, store_index_fallback_import_name, switch_to_block_materialized,
-        switch_to_block_with_rebind,
+        scan_loop_int_sum_reduction, store_index_fallback_import_name,
+        switch_to_block_materialized, switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
     use cranelift_codegen::isa::CallConv;

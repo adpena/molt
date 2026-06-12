@@ -72,6 +72,8 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_zipfile_", "stdlib_archive"),
     # tk: tkinter GUI bindings
     ("molt_tk_", "stdlib_tk"),
+    # stringprep: RFC 3454 table helpers live in the extracted leaf crate.
+    ("molt_stringprep_", "stdlib_stringprep"),
     # networking: http, urllib. SSL keeps an always-linkable ABI because
     # asyncio imports ssl eagerly even in micro profiles; runtime operations
     # without net support raise from the Rust intrinsic implementation.
@@ -182,6 +184,7 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_logging_ext",
         "stdlib_net",
         "stdlib_serialization",
+        "stdlib_stringprep",
         "stdlib_tk",
     }
 )

@@ -2,9 +2,10 @@
 //!
 //! Standard backward dataflow liveness over the final-SSA TIR, with one
 //! domain-specific twist: **representation-filtered live sets**. A value whose
-//! physical carrier holds no heap reference — a bare `i64` (`Repr::RawI64Safe`),
-//! an inline bool (`Repr::Bool`), a bare `f64` (`Repr::FloatUnboxed`), or an
-//! unreachable `Repr::Never` — is excluded from the live sets. The drop pass
+//! physical carrier holds no refcounted heap obligation — a bare `i64`
+//! (`Repr::RawI64Safe`), an inline bool (`Repr::Bool`), a bare `f64`
+//! (`Repr::FloatUnboxed`), the `None` singleton/sentinel, or an unreachable
+//! `Repr::Never` — is excluded from the live sets. The drop pass
 //! consumes these sets to place `DecRef`s; a raw scalar carries no refcount, so
 //! including it would lead the drop pass to emit a `DecRef` on a register that is
 //! not a NaN-boxed pointer (a type confusion). Filtering here keeps the drop
@@ -60,8 +61,9 @@ pub struct TirLivenessResult {
     /// block → set of heap-carrying values live on exit (union of successors'
     /// live-in, minus successor block args supplied by this block's edges).
     pub live_out: HashMap<BlockId, HashSet<ValueId>>,
-    /// Values whose physical carrier holds no heap reference (RawI64Safe / Bool /
-    /// FloatUnboxed / Never). Excluded from `live_in`/`live_out`; exposed so the
+    /// Values whose physical carrier holds no refcounted heap obligation
+    /// (RawI64Safe / Bool / FloatUnboxed / None / Never). Excluded from
+    /// `live_in`/`live_out`; exposed so the
     /// drop pass can apply the identical filter to last-use candidates without
     /// recomputing the value-range proof.
     pub raw_scalars: HashSet<ValueId>,
@@ -82,8 +84,8 @@ impl TirLivenessResult {
             .is_some_and(|set| set.contains(&val))
     }
 
-    /// True iff `val`'s carrier holds no heap reference (a raw scalar). Such
-    /// values are never dropped.
+    /// True iff `val`'s carrier holds no refcounted heap obligation. Such values
+    /// are never dropped.
     pub fn is_raw_scalar(&self, val: ValueId) -> bool {
         self.raw_scalars.contains(&val)
     }
@@ -249,25 +251,26 @@ impl Analysis for TirLiveness {
 }
 
 /// Floor a value's `TirType` to its representation and test whether that carrier
-/// holds no heap reference (Bool / FloatUnboxed / Never). Values with no type
-/// fact floor to `DynBox` (heap-carrying) — conservative: at worst a redundant
-/// drop that the runtime fast-paths.
+/// holds no refcounted heap obligation (Bool / FloatUnboxed / None / Never).
+/// Values with no type fact floor to `DynBox` (heap-carrying) — conservative: at
+/// worst a redundant drop that the runtime fast-paths.
 fn carrier_is_non_heap_by_type(ty: &TirType) -> bool {
-    matches!(
-        Repr::default_for(ty),
-        Repr::Bool | Repr::FloatUnboxed | Repr::Never
-    )
+    matches!(ty, TirType::None)
+        || matches!(
+            Repr::default_for(ty),
+            Repr::Bool | Repr::FloatUnboxed | Repr::Never
+        )
 }
 
-/// The set of values whose carrier holds no heap reference: the value-range /
-/// CheckedAdd / GPU-index RawI64Safe set, plus every value whose `TirType` floors
-/// to Bool / FloatUnboxed / Never.
+/// The set of values whose carrier holds no refcounted heap obligation: the
+/// value-range / CheckedAdd / GPU-index RawI64Safe set, plus every value whose
+/// `TirType` floors to Bool / FloatUnboxed / None / Never.
 fn compute_raw_scalars(func: &TirFunction) -> HashSet<ValueId> {
     let scev = crate::tir::passes::scev::compute_scev(func);
     let vr = crate::tir::passes::value_range::compute_value_range(func, &scev);
     let mut raw = raw_i64_safe_values_for(func, &vr);
 
-    // Add the by-type non-heap carriers (bool / float / never). We must visit
+    // Add the by-type non-heap carriers (bool / float / None / never). We must visit
     // every value the function defines (block args and op results).
     let type_of = |id: ValueId| -> Option<&TirType> { func.value_types.get(&id) };
     for block in func.blocks.values() {
@@ -722,5 +725,23 @@ mod tests {
         let res = compute_liveness(&func);
         assert!(res.is_raw_scalar(c));
         assert!(!res.live_in[&entry].contains(&c));
+    }
+
+    /// A None sentinel uses the generic i64 transport carrier but has no
+    /// refcounted heap ownership obligation, so RC placement must ignore it.
+    #[test]
+    fn none_excluded_from_live_sets() {
+        let mut func = TirFunction::new("none".into(), vec![], TirType::None);
+        let n = func.fresh_value();
+        func.value_types.insert(n, TirType::None);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(op(OpCode::ConstNone, vec![], vec![n]));
+            b.terminator = Terminator::Return { values: vec![n] };
+        }
+        let res = compute_liveness(&func);
+        assert!(res.is_raw_scalar(n));
+        assert!(!res.live_in[&entry].contains(&n));
     }
 }

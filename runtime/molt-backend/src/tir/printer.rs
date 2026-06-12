@@ -481,6 +481,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::Index => "index",
         OpCode::StoreIndex => "store_index",
         OpCode::DelIndex => "del_index",
+        OpCode::DeleteVar => "delete_var",
         OpCode::Call => "call",
         OpCode::CallMethod => "call_method",
         OpCode::CallBuiltin => "call_builtin",
