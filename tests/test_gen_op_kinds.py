@@ -1006,8 +1006,9 @@ def test_render_detects_operand_ownership_mutation() -> None:
 def test_terminator_table_renders_transferred_and_borrowed() -> None:
     """The `[[terminator]]` rows render into `terminator_operand_ownership_table`
     with the design-27 §2.4 transfer set: `Return` value + every branch-arg are
-    `Transferred`; the `CondBranch`/`Switch` predicate is `Borrowed`; absent
-    categories are `NoOperandOwnership`. This is the behavior-preserving seed of
+    `Transferred`; the `CondBranch`/`Switch` predicate is `Borrowed`;
+    `StateDispatch` has no direct SSA predicate; absent categories are
+    `NoOperandOwnership`. This is the behavior-preserving seed of
     the migrated transfer carve-out — and the first construction of the
     `Transferred` variant by a generated table (not just `from_str`)."""
     gen = _gen()
@@ -1024,12 +1025,14 @@ def test_terminator_table_renders_transferred_and_borrowed() -> None:
     }
     # The behavior-preserving seed (matches the prior hand-coded carve-out
     # exactly): branch-arg forwarders transfer; Return value transfers; the
-    # cond/switch predicate is borrowed; Branch/Return/Unreachable have an absent
+    # cond/switch predicate is borrowed; StateDispatch reads frame state outside
+    # SSA but forwards args like Switch; Branch/Return/Unreachable have an absent
     # category each.
     expected = {
         "Branch": {"direct": "none", "branch_arg": "transferred"},
         "CondBranch": {"direct": "borrowed", "branch_arg": "transferred"},
         "Switch": {"direct": "borrowed", "branch_arg": "transferred"},
+        "StateDispatch": {"direct": "none", "branch_arg": "transferred"},
         "Return": {"direct": "transferred", "branch_arg": "none"},
         "Unreachable": {"direct": "none", "branch_arg": "none"},
     }
