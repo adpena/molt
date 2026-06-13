@@ -48,6 +48,23 @@ pub struct CFG {
     /// A `try_start` creates an implicit edge from every block in the try region
     /// to the handler (the block containing `check_exception` / `state_block_start`).
     pub exception_edges: Vec<(usize, usize)>,
+    /// State-machine resume edges: implicit control-flow from the `state_switch`
+    /// dispatch block to every suspend op's resume-continuation block.  Each
+    /// entry is `(state_switch_block, resume_block, resume_state_id)` — the
+    /// `resume_state_id` is the suspend op's saved-state value, used by the
+    /// `StateDispatch` terminator's switch cases.
+    ///
+    /// A `_poll` function re-enters at a saved state via the `state_switch`
+    /// dispatch: control jumps from the entry block's `state_switch` straight to
+    /// the op *after* the suspend op (`state_yield` / `state_transition` /
+    /// `chan_*_yield`) that established that state, OR — for the re-poll ops
+    /// (`state_transition` / `chan_*_yield`) — back to the suspend op itself (a
+    /// pending re-poll re-entry).  These edges are otherwise invisible to the
+    /// regular successor relation (a suspend op `ret`s, so its continuation has
+    /// no ordinary predecessor — exactly like an exception handler block).  They
+    /// are folded into the SSA pass's augmented CFG so dominance, phi placement,
+    /// and liveness are computed on the *real* re-entrant control flow.
+    pub state_resume_edges: Vec<(usize, usize, i64)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,19 +80,58 @@ fn is_terminator(kind: &str) -> bool {
     )
 }
 
+/// Returns `true` if the op is a generator/coroutine *suspend* op: it `ret`s
+/// from the `_poll` function and the suspended continuation (the op immediately
+/// after it) is reached ONLY via the `state_switch` dispatch on resume — never
+/// by ordinary fall-through.  `state_yield` is a pure suspend (the post-yield
+/// continuation runs on the next resume); `state_transition` / `chan_*_yield`
+/// suspend on the pending path but also fall through on the ready path, so they
+/// are *also* re-poll ops (see `is_repoll_op`).
+fn is_suspend_op(kind: &str) -> bool {
+    matches!(
+        kind,
+        "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield"
+    )
+}
+
+/// Returns `true` if the op re-polls from its *own* position on resume — i.e.
+/// the `state_switch` dispatch may re-enter at the op itself (not the op after
+/// it).  `state_transition` / `chan_*_yield` register a wakeup and `ret` on the
+/// pending path; when resumed they re-poll the awaitable/channel from the same
+/// op.  `state_yield` does NOT re-poll (its continuation is strictly the op
+/// after it), so it is a suspend op but not a re-poll op.
+fn is_repoll_op(kind: &str) -> bool {
+    matches!(
+        kind,
+        "state_transition" | "chan_send_yield" | "chan_recv_yield"
+    )
+}
+
 /// Returns `true` if the op starts a new block boundary (the op itself is the
 /// first instruction of the new block).
 fn is_block_leader(kind: &str) -> bool {
-    matches!(
-        kind,
-        "label" | "state_label" | "if" | "else" | "end_if" | "loop_start" | "loop_end"
-    )
+    // Re-poll ops are block leaders: the `state_switch` dispatch can re-enter at
+    // the op itself, so it must begin its own block to receive the dispatch edge.
+    is_repoll_op(kind)
+        || matches!(
+            kind,
+            "label" | "state_label" | "if" | "else" | "end_if" | "loop_start" | "loop_end"
+        )
 }
 
 /// Returns `true` if the op ends a block and the next instruction should start
 /// a new block (even if it's not itself a leader type).
 fn is_block_ender(kind: &str) -> bool {
-    matches!(kind, "loop_start" | "loop_end")
+    // A suspend op ends its block: it `ret`s, and the op after it is a resume
+    // continuation reached only via the `state_switch` dispatch (modeled by
+    // `state_resume_edges`), never by fall-through from the suspend op.
+    //
+    // `state_switch` ends its block: the op after it is the state=0 initial-entry
+    // continuation (the `StateDispatch` terminator's default target), and the
+    // resume continuations are the dispatch cases.  Without this split, the
+    // `state_switch` would be a mid-block op and could not become a first-class
+    // multi-target dispatch terminator.
+    is_suspend_op(kind) || matches!(kind, "loop_start" | "loop_end" | "state_switch")
 }
 
 /// Returns `true` if the op is a conditional branch that causes a block split
@@ -296,6 +352,26 @@ fn build_edges(
 
             // Return — no successors.
             "ret" | "ret_void" | "return" => {}
+
+            // `state_yield` is a pure suspend: it `ret`s the yielded pair and
+            // has NO regular successor.  Its post-yield continuation (the op
+            // after it) is reached only via the `state_switch` dispatch, modeled
+            // by `state_resume_edges` and folded into the SSA augmented CFG —
+            // NOT by ordinary fall-through.
+            "state_yield" => {}
+
+            // `state_transition` / `chan_*_yield` suspend on the pending path
+            // (register a wakeup + `ret`) but fall through on the ready path to
+            // the next op (the post-await/recv continuation).  Model the ready
+            // path as ordinary fall-through; the pending re-poll re-entry is a
+            // `state_resume_edge` back to the op itself.
+            "state_transition" | "chan_send_yield" | "chan_recv_yield" => {
+                if let Some(target_bid) =
+                    structured_fallthrough_target(ops, blocks, &else_end_if_map, bid)
+                {
+                    add_edge(&mut successors, &mut predecessors, bid, target_bid);
+                }
+            }
 
             // Loop break — terminates block and transfers control to the
             // block immediately after the enclosing loop. Without this edge,
@@ -735,6 +811,120 @@ fn compute_exception_edges(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 6: state-machine resume edge computation
+// ---------------------------------------------------------------------------
+
+/// Compute the implicit `state_switch` dispatch edges.
+///
+/// A `_poll` function's entry block contains exactly one `state_switch` op.  On
+/// resume, the runtime restores the saved state and the `state_switch` jumps to
+/// the resume continuation that established that state.  ONLY states that are
+/// actually *saved* at a suspend point are dispatch targets:
+///
+/// 1. `state_yield value=N` at op K → the continuation is the block of op K+1
+///    (the post-yield throw-check / send-value read).  This block has NO regular
+///    predecessor (the yield `ret`s), so the dispatch edge is essential.  The
+///    saved state is `N`.
+/// 2. A re-poll suspend (`state_transition` / `chan_*_yield`) saves a *pending*
+///    state (an operand that is a `const` equal to some `state_label`'s id) and
+///    `ret`s on the pending path; on resume the `state_switch` dispatches that
+///    pending state to the matching `state_label` block (the re-poll re-entry).
+///    The saved state is the pending-state const.
+///
+/// Internal `state_label`s that are ONLY jump targets — loop-body continue
+/// targets and after-loop break targets from `rewrite_stateful_loops`, and the
+/// frontend's `try`/`jump` labels — are NOT dispatch targets: the runtime never
+/// saves their id as the resume state, and they already have a regular `jump`
+/// predecessor.  Adding a (dead) dispatch edge to them would pollute the loop
+/// header's phis with an undef incoming on a path that is never taken at runtime.
+///
+/// These edges are otherwise invisible to the regular successor relation, so
+/// folding them into the SSA pass's augmented CFG (mirroring `exception_edges`)
+/// is what makes dominance, phi placement, and liveness correct over the
+/// re-entrant `_poll` control flow, and the `StateDispatch` terminator built
+/// from them dispatches LLVM to the real resume blocks.
+fn compute_state_resume_edges(ops: &[OpIR], blocks: &[BasicBlock]) -> Vec<(usize, usize, i64)> {
+    // Find the single `state_switch` block (the dispatch site).  If the function
+    // has no `state_switch`, it is not a state machine and has no resume edges.
+    let Some(switch_op_idx) = ops.iter().position(|op| op.kind == "state_switch") else {
+        return Vec::new();
+    };
+    let Some(switch_bid) = block_containing(blocks, switch_op_idx) else {
+        return Vec::new();
+    };
+
+    // Map each `state_label` id → the block it leads (the re-poll re-entry target
+    // for a pending state).
+    let mut state_label_block: HashMap<i64, usize> = HashMap::new();
+    // Map each SSA value name (a `const` output) → its integer value, so a
+    // re-poll op's pending-state operand can be resolved to a concrete state id.
+    let mut const_values: HashMap<&str, i64> = HashMap::new();
+    for (idx, op) in ops.iter().enumerate() {
+        match op.kind.as_str() {
+            "state_label" => {
+                if let Some(state_id) = op.value
+                    && let Some(bid) = block_containing(blocks, idx)
+                {
+                    state_label_block.insert(state_id, bid);
+                }
+            }
+            "const" => {
+                if let (Some(out), Some(v)) = (op.out.as_deref(), op.value) {
+                    const_values.insert(out, v);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut edges: Vec<(usize, usize, i64)> = Vec::new();
+    let mut push_edge = |resume_bid: usize, state_id: i64| {
+        if resume_bid != switch_bid {
+            edges.push((switch_bid, resume_bid, state_id));
+        }
+    };
+
+    for (idx, op) in ops.iter().enumerate() {
+        let kind = op.kind.as_str();
+        match kind {
+            // (1) pure `state_yield`: dispatch lands on the op AFTER it (the
+            // post-yield throw-check / send-value continuation).  Saved state =
+            // op.value.
+            "state_yield" => {
+                if let Some(state_id) = op.value {
+                    let cont_idx = idx + 1;
+                    if cont_idx < ops.len()
+                        && let Some(resume_bid) = block_containing(blocks, cont_idx)
+                    {
+                        push_edge(resume_bid, state_id);
+                    }
+                }
+            }
+            // (2) re-poll suspend: the pending-state operand names a `const`
+            // whose value is a `state_label` id; on resume the dispatch lands on
+            // that label's block (re-poll re-entry).  The pending state is the
+            // LAST operand for `state_transition`/`chan_send_yield` (args
+            // `[future, (slot,) pending]` / `[chan, val, pending]`) and the 2nd
+            // for `chan_recv_yield` (args `[chan, pending]`).
+            "state_transition" | "chan_send_yield" | "chan_recv_yield" => {
+                if let Some(args) = &op.args
+                    && let Some(pending_name) = args.last()
+                    && let Some(&pending_state) = const_values.get(pending_name.as_str())
+                    && let Some(&resume_bid) = state_label_block.get(&pending_state)
+                {
+                    push_edge(resume_bid, pending_state);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -750,6 +940,7 @@ impl CFG {
                 dominators: vec![],
                 loop_depth: vec![],
                 exception_edges: vec![],
+                state_resume_edges: vec![],
             };
         }
 
@@ -769,6 +960,9 @@ impl CFG {
         // Compute implicit exception edges from try regions.
         let exception_edges = compute_exception_edges(ops, &blocks, &label_map);
 
+        // Compute implicit state-machine resume (dispatch) edges.
+        let state_resume_edges = compute_state_resume_edges(ops, &blocks);
+
         Self {
             blocks,
             entry,
@@ -777,6 +971,7 @@ impl CFG {
             dominators,
             loop_depth,
             exception_edges,
+            state_resume_edges,
         }
     }
 }

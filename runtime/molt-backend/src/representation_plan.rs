@@ -960,6 +960,12 @@ fn propagate_raw_i64_safe_values(
                 default,
                 default_args,
                 ..
+            }
+            | Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+                ..
             } => {
                 for (_, target, args) in cases {
                     add_edge(*target, args);

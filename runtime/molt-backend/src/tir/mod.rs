@@ -71,6 +71,10 @@ pub(crate) fn is_structural(kind: &str) -> bool {
             | "ret_void"
             | "return"
             | "nop"
+            // `state_switch` is the `_poll` dispatch terminator: it ends its
+            // block and lowers to a `StateDispatch` terminator (it must NOT also
+            // appear as a body op, or the dispatch would be emitted twice).
+            | "state_switch"
     )
 }
 

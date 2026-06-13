@@ -984,6 +984,21 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
                     *use_counts.entry(*v).or_insert(0) += 1;
                 }
             }
+            // `StateDispatch` has no condition value; only its per-edge args.
+            Terminator::StateDispatch {
+                cases,
+                default_args,
+                ..
+            } => {
+                for (_, _, args) in cases {
+                    for v in args {
+                        *use_counts.entry(*v).or_insert(0) += 1;
+                    }
+                }
+                for v in default_args {
+                    *use_counts.entry(*v).or_insert(0) += 1;
+                }
+            }
             Terminator::Unreachable => {}
         }
     }

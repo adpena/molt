@@ -316,6 +316,19 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 v.extend(default_args);
                 v
             }
+            // `StateDispatch` has no condition value; only its per-edge args.
+            Terminator::StateDispatch {
+                cases,
+                default_args,
+                ..
+            } => {
+                let mut v = Vec::new();
+                for (_, _, args) in cases {
+                    v.extend(args);
+                }
+                v.extend(default_args);
+                v
+            }
             Terminator::Unreachable => vec![],
         };
 

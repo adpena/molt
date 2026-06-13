@@ -330,6 +330,25 @@ fn print_lir_terminator(terminator: &LirTerminator) -> String {
                 print_value_list(default_args)
             )
         }
+        LirTerminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+        } => {
+            let cases = cases
+                .iter()
+                .map(|(case, block, args)| {
+                    format!("{case}: ^{}({})", block, print_value_list(args))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "state_dispatch [{}] default ^{}({})",
+                cases,
+                default,
+                print_value_list(default_args)
+            )
+        }
         LirTerminator::Return { values } => format!("return {}", print_value_list(values)),
         LirTerminator::Unreachable => "unreachable".to_string(),
     }
@@ -625,6 +644,38 @@ pub fn print_terminator(term: &Terminator) -> String {
                     format!("({})", s)
                 };
                 parts.push(format!("  case {}: ^{}{}", case_val, target, arg_str));
+            }
+            let default_arg_str = if default_args.is_empty() {
+                String::new()
+            } else {
+                let s = default_args
+                    .iter()
+                    .map(|v| format!("{v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({})", s)
+            };
+            parts.push(format!("  default: ^{}{}", default, default_arg_str));
+            parts.join("\n")
+        }
+        Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+        } => {
+            let mut parts = vec!["state_dispatch".to_string()];
+            for (state_id, target, args) in cases {
+                let arg_str = if args.is_empty() {
+                    String::new()
+                } else {
+                    let s = args
+                        .iter()
+                        .map(|v| format!("{v}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("({})", s)
+                };
+                parts.push(format!("  state {}: ^{}{}", state_id, target, arg_str));
             }
             let default_arg_str = if default_args.is_empty() {
                 String::new()

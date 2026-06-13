@@ -59,6 +59,30 @@ pub enum Terminator {
         default: BlockId,
         default_args: Vec<ValueId>,
     },
+    /// Generator/coroutine `_poll` state-machine dispatch.
+    ///
+    /// On entry the `_poll` function reads the saved resume state (via
+    /// `molt_obj_get_state(self)`) and dispatches: state 0 (initial entry) takes
+    /// the `default` edge (the function's first-entry continuation); every other
+    /// saved state takes the matching `cases` edge to the resume continuation of
+    /// the suspend op that established that state.
+    ///
+    /// This is the first-class form of the `state_switch` op.  Unlike `Switch`,
+    /// the dispatch value is *implicit* (read from the frame header at lowering
+    /// time, not an SSA `ValueId`), because the suspend op `ret`s and the saved
+    /// state is restored by the runtime across the suspend boundary — there is no
+    /// SSA value live across the `ret` to switch on.  The case/default `args` are
+    /// the block-argument incomings supplied on each dispatch edge (the values
+    /// live at the dispatch point), placed by the SSA pass exactly like any other
+    /// terminator's branch args so phi placement, dominator updates, and
+    /// block-renumbering passes handle them for free.
+    StateDispatch {
+        /// (resume_state_id, resume_block, args)
+        cases: Vec<(i64, BlockId, Vec<ValueId>)>,
+        /// State 0 (initial entry) target.
+        default: BlockId,
+        default_args: Vec<ValueId>,
+    },
     /// Return from the function with zero or more values.
     Return { values: Vec<ValueId> },
     /// Marks unreachable code (e.g. after a guaranteed raise).
