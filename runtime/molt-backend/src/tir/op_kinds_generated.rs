@@ -74,6 +74,7 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "type_guard" => Some(OpCode::TypeGuard),
         "inc_ref" => Some(OpCode::IncRef),
         "dec_ref" => Some(OpCode::DecRef),
+        "del_boundary" => Some(OpCode::DelBoundary),
         "build_list" => Some(OpCode::BuildList),
         "build_dict" => Some(OpCode::BuildDict),
         "build_tuple" => Some(OpCode::BuildTuple),
@@ -247,6 +248,22 @@ pub(crate) fn copy_kind_is_explicit_no_heap_move_table(kind: &str) -> bool {
     )
 }
 
+/// EXACT-match arm of the ownership-lattice absorbing-constructor rule
+/// (`ownership_lattice_min.rs`): Copy-lifted constructor kinds whose RESULT
+/// takes (co-)ownership of its element operands — releasing the result
+/// releases the elements, so a finalizer-sensitive element makes the result
+/// finalizer-sensitive. Over-approximation is the SAFE direction here (a
+/// non-finalizer value marked sensitive merely has its release deferred to
+/// the Python lifetime boundary — unobservable); a missing member keeps the
+/// pre-#58 SSA-last-use release for that shape.
+#[inline]
+pub(crate) fn copy_kind_absorbs_elements_table(kind: &str) -> bool {
+    matches!(
+        kind,
+        "\0__never__"
+    )
+}
+
 /// Whether an `OpCode` may raise an exception (DCE must preserve it even
 /// when its result is dead). EXHAUSTIVE over the enum — a new variant fails
 /// to compile until it is classified in op_kinds.toml.
@@ -307,6 +324,7 @@ pub(crate) fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::TypeGuard => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
+        OpCode::DelBoundary => false,
         OpCode::BuildList => false,
         OpCode::BuildDict => false,
         OpCode::BuildTuple => false,
@@ -422,6 +440,7 @@ pub(crate) fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::TypeGuard => false,
         OpCode::IncRef => true,
         OpCode::DecRef => true,
+        OpCode::DelBoundary => true,
         OpCode::BuildList => false,
         OpCode::BuildDict => false,
         OpCode::BuildTuple => false,
@@ -550,6 +569,7 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
         OpCode::TypeGuard => OpcodePurity::Pure,
         OpCode::IncRef => OpcodePurity::Impure,
         OpCode::DecRef => OpcodePurity::Impure,
+        OpCode::DelBoundary => OpcodePurity::Impure,
         OpCode::BuildList => OpcodePurity::Impure,
         OpCode::BuildDict => OpcodePurity::Impure,
         OpCode::BuildTuple => OpcodePurity::Impure,
@@ -792,6 +812,7 @@ pub(crate) fn opcode_operand_ownership_table(
         OpCode::TypeGuard => OperandOwnership::Borrowed,
         OpCode::IncRef => OperandOwnership::Borrowed,
         OpCode::DecRef => OperandOwnership::Consumed,
+        OpCode::DelBoundary => OperandOwnership::Borrowed,
         OpCode::BuildList => OperandOwnership::Borrowed,
         OpCode::BuildDict => OperandOwnership::Borrowed,
         OpCode::BuildTuple => OperandOwnership::Borrowed,
@@ -977,6 +998,7 @@ pub(crate) fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> b
         OpCode::TypeGuard => false,
         OpCode::IncRef => false,
         OpCode::DecRef => false,
+        OpCode::DelBoundary => false,
         OpCode::BuildList => true,
         OpCode::BuildDict => true,
         OpCode::BuildTuple => true,
@@ -1096,6 +1118,7 @@ pub(crate) enum TerminatorKind {
     Branch,
     CondBranch,
     Switch,
+    StateDispatch,
     Return,
     Unreachable,
 }
@@ -1132,6 +1155,8 @@ pub(crate) fn terminator_operand_ownership_table(
         (TerminatorKind::CondBranch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
         (TerminatorKind::Switch, OperandCategory::Direct) => OperandOwnership::Borrowed,
         (TerminatorKind::Switch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
+        (TerminatorKind::StateDispatch, OperandCategory::Direct) => OperandOwnership::NoOperandOwnership,
+        (TerminatorKind::StateDispatch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
         (TerminatorKind::Return, OperandCategory::Direct) => OperandOwnership::Transferred,
         (TerminatorKind::Return, OperandCategory::BranchArg) => OperandOwnership::NoOperandOwnership,
         (TerminatorKind::Unreachable, OperandCategory::Direct) => OperandOwnership::NoOperandOwnership,

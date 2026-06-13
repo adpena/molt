@@ -625,6 +625,7 @@ mod tests {
             | TypeGuard
             | IncRef
             | DecRef
+            | DelBoundary
             | BuildList
             | BuildDict
             | BuildTuple
@@ -739,6 +740,7 @@ mod tests {
             TypeGuard,
             IncRef,
             DecRef,
+            DelBoundary,
             BuildList,
             BuildDict,
             BuildTuple,

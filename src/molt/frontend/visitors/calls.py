@@ -6241,6 +6241,7 @@ class CallVisitorMixin(_MixinBase):
                 )
                 # Route user class construction through the class object so __new__,
                 # metaclass __call__, and runtime constructor policy stay coherent.
+                #
                 self.emit(
                     MoltOp(
                         kind="CALL_BIND",

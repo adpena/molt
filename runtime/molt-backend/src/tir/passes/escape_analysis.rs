@@ -532,6 +532,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
                 | OpCode::IncRef
                 | OpCode::DecRef
                 | OpCode::DeleteVar
+                | OpCode::DelBoundary
                 | OpCode::GetIter
                 | OpCode::IterNext
                 | OpCode::IterNextUnboxed
@@ -760,9 +761,10 @@ fn dict_requiring_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
     dict_required
 }
 
-/// Returns `true` when an op produces a value whose proven runtime class defines
-/// a `__del__` finalizer (the frontend stamps `defines_del=true` after resolving
-/// `__del__` through the class MRO, excluding `object`).
+/// Returns `true` when an op produces a finalizer-bearing instance. The frontend
+/// stamps `defines_del=true` after resolving `__del__` through the class MRO,
+/// excluding `object`; devirtualized allocation and generic class instantiation
+/// both transport that same fact.
 ///
 /// Such an instance has a finalizer that CPython runs at the LAST reference
 /// drop. Stack-promoting it (→ `ObjectNewBoundStack`, which the runtime stamps
@@ -776,12 +778,10 @@ pub(crate) fn op_result_defines_del(op: &TirOp) -> bool {
     !op.results.is_empty() && matches!(op.attrs.get("defines_del"), Some(AttrValue::Bool(true)))
 }
 
-/// The set of value roots whose proven runtime class defines a `__del__`
-/// finalizer — transitively through pure SSA-move copies. This is the single
-/// FinalizerSensitive fact (design 27): the ONE source of truth that every
-/// fast-path / lifetime-shortening optimization must query before touching such
-/// a value's representation or refcount, so the "finalizer never runs" state is
-/// made UNREPRESENTABLE rather than empirically-not-reached.
+/// The set of allocation roots whose class defines a `__del__` finalizer,
+/// transitively through pure SSA-move copies. This is the single
+/// FinalizerSensitive fact (design 27): every fast-path / lifetime-shortening
+/// optimization must query it before touching representation or refcount state.
 ///
 /// Such an instance MUST stay heap-allocated with a live refcount so the
 /// finalizer-aware `dec_ref_ptr` dispatches `__del__` at the last drop; it must

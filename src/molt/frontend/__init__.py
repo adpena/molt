@@ -525,6 +525,11 @@ class SimpleTIRGenerator(
         self.func_aliases: dict[str, str] = {}
         self.reserved_func_symbols: dict[str, str] = {}
         self.const_ints: dict[str, int] = {}
+        # Producing-op index (result SSA name -> MoltOp), maintained by emit().
+        # The named-local binding stamp (#58 `bound_local`) uses it to mark the
+        # op whose result a plain function local binds to. Value names are
+        # globally unique (next_var), so no per-function reset is needed.
+        self._op_by_result: dict[str, MoltOp] = {}
         self.format_token_cache: dict[
             tuple[str, int, tuple[str, ...]], list[FormatToken]
         ] = {}
@@ -898,6 +903,7 @@ class SimpleTIRGenerator(
         self.context_depth = 0
         self.control_flow_depth = 0
         self.const_ints = {}
+        self._op_by_result = {}
         self.in_generator = False
         self.async_context = False
         self.current_line = None
@@ -1230,6 +1236,8 @@ class SimpleTIRGenerator(
             and not isinstance(op.args[0], bool)
         ):
             self.const_ints[op.result.name] = op.args[0]
+        if op.result is not None and op.result.name not in ("none", ""):
+            self._op_by_result[op.result.name] = op
         self.current_ops.append(op)
         if (
             self.try_suppress_depth is not None
@@ -1998,6 +2006,7 @@ class SimpleTIRGenerator(
         self.context_depth = 0
         self.control_flow_depth = 0
         self.const_ints = {}
+        self._op_by_result = {}
         self._module_cache_values = {}
         self.in_generator = False
         self.async_context = False
@@ -3009,17 +3018,22 @@ class SimpleTIRGenerator(
         return idx
 
     def _emit_return_value(self, value: MoltValue) -> None:
-        if self.current_func_name != "molt_main":
-            self._emit_boxed_locals_cleanup()
         exit_baseline_now = self.return_slot is None or self.return_label is None
-        self._emit_restore_exception_stack_depth(exit_baseline=exit_baseline_now)
         if exit_baseline_now:
+            self._emit_plain_local_scope_exit_boundaries(preserve=value)
+            if self.current_func_name != "molt_main":
+                self._emit_boxed_locals_cleanup()
+            self._emit_restore_exception_stack_depth(exit_baseline=True)
             if self._function_needs_frame_trace():
                 self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
             return
+        self._emit_restore_exception_stack_depth(exit_baseline=False)
         slot = self._load_return_slot()
         if slot is None:
+            self._emit_plain_local_scope_exit_boundaries(preserve=value)
+            if self.current_func_name != "molt_main":
+                self._emit_boxed_locals_cleanup()
             if self._function_needs_frame_trace():
                 self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
             self.emit(MoltOp(kind="ret", args=[value], result=MoltValue("none")))
@@ -3032,6 +3046,9 @@ class SimpleTIRGenerator(
                 result=MoltValue("none"),
             )
         )
+        self._emit_plain_local_scope_exit_boundaries()
+        if self.current_func_name != "molt_main":
+            self._emit_boxed_locals_cleanup()
         self.emit(
             MoltOp(kind="JUMP", args=[self.return_label], result=MoltValue("none"))
         )
@@ -7554,7 +7571,139 @@ class SimpleTIRGenerator(
             return res
         return cached
 
-    def _store_local_value(self, name: str, value: MoltValue) -> None:
+    def _emit_plain_local_del_boundary(
+        self, name: str, value: MoltValue | None
+    ) -> None:
+        if (
+            value is None
+            or value.name in ("none", "")
+            or value.type_hint == "missing"
+            or self.current_func_name == "molt_main"
+            or name not in self.scope_assigned
+            or name in self.closure_locals
+            or name in self.boxed_locals
+            or self.is_async()
+        ):
+            return
+        self.emit(
+            MoltOp(
+                kind="DEL_BOUNDARY",
+                args=[value],
+                result=MoltValue("none"),
+                metadata={"var": name},
+            )
+        )
+
+    def _emit_plain_local_alias_retain(self, name: str, value: MoltValue) -> None:
+        if (
+            value.name in ("none", "")
+            or value.type_hint == "missing"
+            or self.current_func_name == "molt_main"
+            or name not in self.scope_assigned
+            or name in self.closure_locals
+            or name in self.boxed_locals
+            or self.is_async()
+        ):
+            return
+        producer = self._op_by_result.get(value.name)
+        loaded_plain_local = False
+        if producer is not None and producer.kind == "LOAD_VAR":
+            source_name = (producer.metadata or {}).get("var")
+            loaded_plain_local = (
+                isinstance(source_name, str)
+                and source_name != name
+                and source_name in self.locals
+                and source_name not in self.closure_locals
+                and source_name not in self.boxed_locals
+            )
+        has_existing_binding = any(
+            other_name != name and other_value.name == value.name
+            for other_name, other_value in self.locals.items()
+        )
+        if not has_existing_binding and not loaded_plain_local:
+            return
+        # `alias = local` gives the alias its own frame-owned reference in
+        # CPython. SimpleIR otherwise stores the same SSA bits in both names, so
+        # later rebinding/del boundaries would release one shared owner twice.
+        self.emit(MoltOp(kind="INC_REF", args=[value], result=MoltValue("none")))
+
+    def _plain_local_scope_exit_bindings(self) -> list[tuple[str, MoltValue]]:
+        if (
+            self.current_func_name == "molt_main"
+            or self.is_async()
+            or self.in_generator
+        ):
+            return []
+        params = set(self.funcs_map.get(self.current_func_name, {}).get("params", []))
+        candidate_names = sorted(set(self.scope_assigned) | params)
+        bindings: list[tuple[str, MoltValue]] = []
+        for name in candidate_names:
+            if (
+                name == _MOLT_CLOSURE_PARAM
+                or name == _MOLT_LOCALS_CACHE
+                or name.startswith("__molt_")
+                or name in self.closure_locals
+                or name in self.boxed_locals
+                or name in self.global_decls
+                or name in self.nonlocal_decls
+            ):
+                continue
+            value = self.locals.get(name)
+            if (
+                value is None
+                or value.name in ("none", "")
+                or value.type_hint == "missing"
+                or self._plain_local_scope_exit_boundary_exempt(value)
+            ):
+                continue
+            bindings.append((name, value))
+        return bindings
+
+    @staticmethod
+    def _plain_local_scope_exit_boundary_exempt(value: MoltValue) -> bool:
+        hint = value.type_hint or ""
+        return (
+            hint == "code"
+            or hint.startswith("Func:")
+            or hint.startswith("ClosureFunc:")
+            or hint.startswith("AsyncFunc:")
+            or hint.startswith("AsyncGenFunc:")
+        )
+
+    def _value_reads_plain_local_binding(
+        self, value: MoltValue, bindings: list[tuple[str, MoltValue]]
+    ) -> bool:
+        if value.name in ("none", "") or value.type_hint == "missing":
+            return False
+        for _, bound_value in bindings:
+            if bound_value.name == value.name:
+                return True
+        producer = self._op_by_result.get(value.name)
+        if producer is not None and producer.kind == "LOAD_VAR":
+            source_name = (producer.metadata or {}).get("var")
+            return any(name == source_name for name, _ in bindings)
+        return False
+
+    def _emit_plain_local_scope_exit_boundaries(
+        self, preserve: MoltValue | None = None
+    ) -> None:
+        bindings = self._plain_local_scope_exit_bindings()
+        if not bindings:
+            return
+        if preserve is not None and self._value_reads_plain_local_binding(
+            preserve, bindings
+        ):
+            self.emit(MoltOp(kind="INC_REF", args=[preserve], result=MoltValue("none")))
+        for name, value in bindings:
+            self._emit_plain_local_del_boundary(name, value)
+
+    def _store_local_value(
+        self,
+        name: str,
+        value: MoltValue,
+        *,
+        emit_rebind_boundary: bool = True,
+    ) -> None:
         def update_locals_cache() -> None:
             self._emit_locals_cache_update(name, value)
 
@@ -7655,7 +7804,30 @@ class SimpleTIRGenerator(
             self.bytearray_len_hints[name] = self.bytearray_len_hints[value.name]
         else:
             self.bytearray_len_hints.pop(name, None)
+        if emit_rebind_boundary:
+            self._emit_plain_local_alias_retain(name, value)
+            previous = self.locals.get(name)
+            if previous is not None and previous.name != value.name:
+                self._emit_plain_local_del_boundary(name, previous)
         self.locals[name] = value
+        # Named-local fact (#58 ordering keystone): stamp `bound_local` on the
+        # op that PRODUCED the bound value. CPython holds a named local in the
+        # frame until `del`/rebinding/scope exit, so a finalizer-sensitive
+        # value bound to a name must not be released at its SSA last-use; an
+        # UNNAMED expression temp (e.g. `bag.append(A())`'s argument) dies at
+        # the statement like CPython's stack ref. The IR otherwise erases this
+        # distinction. Same condition as the named-local STORE_VAR below —
+        # this is metadata on an already-emitted op, not a new op.
+        if (
+            self.current_func_name != "molt_main"
+            and name in self.scope_assigned
+            and value.name not in ("none", "")
+        ):
+            producer = self._op_by_result.get(value.name)
+            if producer is not None:
+                if producer.metadata is None:
+                    producer.metadata = {}
+                producer.metadata["bound_local"] = True
         # Emit explicit store_var for non-boxed function locals so TIR can
         # track variable mutations through loop iterations via SSA phis.
         if (
@@ -18763,7 +18935,7 @@ class SimpleTIRGenerator(
         elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
             res = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-            self.emit(MoltOp(kind="ret", args=[res], result=MoltValue("none")))
+            self._emit_return_value(res)
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
         self.current_gpu_kernel_context = prev_gpu_kernel_context

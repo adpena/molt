@@ -187,8 +187,8 @@ impl TirFunction {
     ///
     /// [`has_exception_handlers`]: TirFunction::has_exception_handlers
     pub fn has_state_machine(&self) -> bool {
-        use super::ops::OpCode;
         use super::blocks::Terminator;
+        use super::ops::OpCode;
         self.blocks.values().any(|block| {
             // The `state_switch` dispatch is now a first-class `StateDispatch`
             // terminator (not a body op), so detect it there; the suspend ops

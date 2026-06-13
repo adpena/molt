@@ -1139,6 +1139,16 @@ fn narrow_loop_header_phis(
                 }
                 add(*default, default_args);
             }
+            Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+            } => {
+                for (_, target, args) in cases {
+                    add(*target, args);
+                }
+                add(*default, default_args);
+            }
             Terminator::Return { .. } | Terminator::Unreachable => {}
         }
     }
