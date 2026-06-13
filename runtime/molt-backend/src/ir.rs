@@ -75,6 +75,13 @@ pub struct OpIR {
     /// finalizer silently never runs (the standing LLVM/WASM parity hole).
     #[serde(default)]
     pub defines_del: Option<bool>,
+    /// Named-local fact (#58 ordering keystone): the op's result is bound to
+    /// a plain function-local NAME. CPython holds a named local in the frame
+    /// until `del`/rebinding/scope exit; an unnamed expression temp dies at
+    /// the statement. The ownership-lattice release deferral consumes this to
+    /// defer ONLY named finalizer-sensitive values to the scope boundary.
+    #[serde(default)]
+    pub bound_local: Option<bool>,
     pub task_kind: Option<String>,
     pub container_type: Option<String>,
     /// Transitional semantic hint preserved on the transport surface for
@@ -356,6 +363,7 @@ impl OpIR {
             bce_safe: optional_bool(obj, "bce_safe", ctx)?,
             arena_eligible: optional_bool(obj, "arena_eligible", ctx)?,
             defines_del: optional_bool(obj, "defines_del", ctx)?,
+            bound_local: optional_bool(obj, "bound_local", ctx)?,
             effect_proof: optional_string(obj, "effect_proof", ctx)?,
             class_name: optional_string(obj, "class", ctx)?,
         })

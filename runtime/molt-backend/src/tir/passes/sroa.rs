@@ -243,8 +243,7 @@ fn terminator_references(term: &Terminator, root: ValueId, alias: &AliasAnalysis
             default_args,
             ..
         } => {
-            cases.iter().any(|(_, _, args)| args.iter().any(hits))
-                || default_args.iter().any(hits)
+            cases.iter().any(|(_, _, args)| args.iter().any(hits)) || default_args.iter().any(hits)
         }
         Terminator::Return { values } => values.iter().any(hits),
         Terminator::Unreachable => false,

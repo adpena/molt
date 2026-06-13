@@ -336,6 +336,9 @@ fn entry_has_predecessor(func: &TirFunction) -> bool {
         Terminator::Switch { cases, default, .. } => {
             *default == entry || cases.iter().any(|(_, t, _)| *t == entry)
         }
+        Terminator::StateDispatch { cases, default, .. } => {
+            *default == entry || cases.iter().any(|(_, t, _)| *t == entry)
+        }
         Terminator::Return { .. } | Terminator::Unreachable => false,
     })
 }
@@ -380,6 +383,20 @@ fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
                 ..
             } => {
                 bump(*value, &mut counts);
+                for (_, _, args) in cases {
+                    for &v in args {
+                        bump(v, &mut counts);
+                    }
+                }
+                for &v in default_args {
+                    bump(v, &mut counts);
+                }
+            }
+            Terminator::StateDispatch {
+                cases,
+                default_args,
+                ..
+            } => {
                 for (_, _, args) in cases {
                     for &v in args {
                         bump(v, &mut counts);
@@ -597,6 +614,11 @@ fn terminator_uses(term: &Terminator, v: ValueId) -> bool {
         } => {
             *value == v || default_args.contains(&v) || cases.iter().any(|(_, _, a)| a.contains(&v))
         }
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => default_args.contains(&v) || cases.iter().any(|(_, _, a)| a.contains(&v)),
         Terminator::Return { values } => values.contains(&v),
         Terminator::Unreachable => false,
     }
@@ -1448,6 +1470,18 @@ fn clone_terminator_local(
             default_args,
         } => Terminator::Switch {
             value: rv(*value),
+            cases: cases
+                .iter()
+                .map(|(c, blk, args)| (*c, rb(*blk), args.iter().map(|v| rv(*v)).collect()))
+                .collect(),
+            default: rb(*default),
+            default_args: default_args.iter().map(|v| rv(*v)).collect(),
+        },
+        Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+        } => Terminator::StateDispatch {
             cases: cases
                 .iter()
                 .map(|(c, blk, args)| (*c, rb(*blk), args.iter().map(|v| rv(*v)).collect()))

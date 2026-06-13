@@ -1473,6 +1473,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.value_types.insert(op.results[0], ty);
                 }
             }
+            // Python lifetime boundary (#58): when a `del`/rebind/scope-exit
+            // marker survives to LLVM, it is the release authority for that
+            // named-local owner. The drop phase may rewrite some markers to
+            // `DecRef`; any marker left here must still lower to the same
+            // runtime release, matching the native backend's direct
+            // `del_boundary` arm.
+            OpCode::DelBoundary => {
+                let val = self.resolve(op.operands[0]);
+                let bits = self.ensure_i64(val);
+                let dec_fn = self.ensure_runtime_i64_fn("molt_dec_ref_obj", 1);
+                self.backend
+                    .builder
+                    .build_call(dec_fn, &[bits.into()], "")
+                    .unwrap();
+            }
             OpCode::DecRef => {
                 let val = self.resolve(op.operands[0]);
                 let dec_fn = self
@@ -2865,8 +2880,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .get_function("molt_list_builder_append")
                     .unwrap();
                 for &item_id in &op.operands {
-                    let item = self.resolve(item_id);
-                    let item_i64 = self.ensure_i64(item);
+                    let item_i64 = self.materialize_dynbox_operand(item_id);
                     self.backend
                         .builder
                         .build_call(push_fn, &[builder.into(), item_i64.into()], "list_push")
@@ -2918,10 +2932,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 let mut i = 0;
                 while i + 1 < op.operands.len() {
-                    let k = self.resolve(op.operands[i]);
-                    let v = self.resolve(op.operands[i + 1]);
-                    let k_i64 = self.ensure_i64(k);
-                    let v_i64 = self.ensure_i64(v);
+                    let k_i64 = self.materialize_dynbox_operand(op.operands[i]);
+                    let v_i64 = self.materialize_dynbox_operand(op.operands[i + 1]);
                     self.backend
                         .builder
                         .build_call(
@@ -2976,8 +2988,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .get_function("molt_list_builder_append")
                     .unwrap();
                 for &item_id in &op.operands {
-                    let item = self.resolve(item_id);
-                    let item_i64 = self.ensure_i64(item);
+                    let item_i64 = self.materialize_dynbox_operand(item_id);
                     self.backend
                         .builder
                         .build_call(push_fn, &[builder.into(), item_i64.into()], "tup_push")
@@ -3027,8 +3038,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .get_function("molt_set_builder_append")
                     .unwrap();
                 for &item_id in &op.operands {
-                    let item = self.resolve(item_id);
-                    let item_i64 = self.ensure_i64(item);
+                    let item_i64 = self.materialize_dynbox_operand(item_id);
                     self.backend
                         .builder
                         .build_call(push_fn, &[builder.into(), item_i64.into()], "set_append")
@@ -8239,7 +8249,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.is_empty() || op.operands.len() != 1 + nbases + nattrs * 2 {
                     return false;
                 }
-                let name_bits = self.ensure_i64(self.resolve(op.operands[0]));
+                let name_bits = self.materialize_dynbox_operand(op.operands[0]);
                 let bases_count = nbases.max(1) as u64;
                 let attrs_count = (nattrs * 2).max(1) as u64;
                 let bases_alloca = self
@@ -8253,7 +8263,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .build_array_alloca(i64_ty, i64_ty.const_int(attrs_count, false), "class_attrs")
                     .unwrap();
                 for idx in 0..nbases {
-                    let base_bits = self.ensure_i64(self.resolve(op.operands[1 + idx]));
+                    let base_bits = self.materialize_dynbox_operand(op.operands[1 + idx]);
                     let elem_ptr = unsafe {
                         self.backend
                             .builder
@@ -8272,7 +8282,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 let attrs_start = 1 + nbases;
                 for idx in 0..(nattrs * 2) {
-                    let value_bits = self.ensure_i64(self.resolve(op.operands[attrs_start + idx]));
+                    let value_bits =
+                        self.materialize_dynbox_operand(op.operands[attrs_start + idx]);
                     let elem_ptr = unsafe {
                         self.backend
                             .builder
@@ -9734,6 +9745,104 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "dataclass_new" => {
+                if op.operands.len() != 4 {
+                    return false;
+                }
+                let name_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let field_names_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let values_bits = self.materialize_dynbox_operand(op.operands[2]);
+                let flags_bits = self.materialize_dynbox_operand(op.operands[3]);
+                let ctor_fn = self.ensure_runtime_i64_fn("molt_dataclass_new", 4);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        ctor_fn,
+                        &[
+                            name_bits.into(),
+                            field_names_bits.into(),
+                            values_bits.into(),
+                            flags_bits.into(),
+                        ],
+                        "dataclass_new",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
+            "dataclass_new_values" => {
+                if op.operands.len() < 3 {
+                    return false;
+                }
+                let name_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let field_names_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let flags_bits = self.materialize_dynbox_operand(op.operands[2]);
+                let value_ids = &op.operands[3..];
+                let values_ptr_bits = if value_ids.is_empty() {
+                    i64_ty.const_zero()
+                } else {
+                    let values_alloca = self
+                        .backend
+                        .builder
+                        .build_array_alloca(
+                            i64_ty,
+                            i64_ty.const_int(value_ids.len() as u64, false),
+                            "dataclass_values",
+                        )
+                        .unwrap();
+                    for (idx, &value_id) in value_ids.iter().enumerate() {
+                        let value_bits = self.materialize_dynbox_operand(value_id);
+                        let elem_ptr = unsafe {
+                            self.backend
+                                .builder
+                                .build_gep(
+                                    i64_ty,
+                                    values_alloca,
+                                    &[i64_ty.const_int(idx as u64, false)],
+                                    &format!("dataclass_value_ptr_{idx}"),
+                                )
+                                .unwrap()
+                        };
+                        self.backend
+                            .builder
+                            .build_store(elem_ptr, value_bits)
+                            .unwrap();
+                    }
+                    self.backend
+                        .builder
+                        .build_ptr_to_int(values_alloca, i64_ty, "dataclass_values_ptr")
+                        .unwrap()
+                };
+                let ctor_fn = self.ensure_runtime_i64_fn("molt_dataclass_new_from_values", 5);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        ctor_fn,
+                        &[
+                            name_bits.into(),
+                            field_names_bits.into(),
+                            values_ptr_bits.into(),
+                            i64_ty.const_int(value_ids.len() as u64, false).into(),
+                            flags_bits.into(),
+                        ],
+                        "dataclass_new_values",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
 
             // ── Preserved value-producing / side-effecting ops whose runtime
             //    symbol name DIFFERS from `molt_<kind>` (so the generic
@@ -10748,6 +10857,19 @@ mod tests {
         );
     }
 
+    fn const_int_def(result: ValueId, value: i64) -> TirOp {
+        let mut attrs = AttrDict::new();
+        attrs.insert("value".into(), AttrValue::Int(value));
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![result],
+            attrs,
+            source_span: None,
+        }
+    }
+
     fn make_dummy_lowering<'ctx, 'func>(
         backend: &'func LlvmBackend<'ctx>,
         func: &'func TirFunction,
@@ -11403,6 +11525,150 @@ mod tests {
     }
 
     #[test]
+    fn lower_direct_container_builders_box_raw_i64_elements() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("container_builder_boxing".into(), vec![], TirType::DynBox);
+        let raw = func.fresh_value();
+        let key = func.fresh_value();
+        let list = func.fresh_value();
+        let tuple = func.fresh_value();
+        let set = func.fresh_value();
+        let dict = func.fresh_value();
+        let ret = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(raw, 2));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstStr,
+            operands: vec![],
+            results: vec![key],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("s_value".into(), AttrValue::Str("k".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::BuildList,
+            operands: vec![raw],
+            results: vec![list],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::BuildTuple,
+            operands: vec![raw],
+            results: vec![tuple],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::BuildSet,
+            operands: vec![raw],
+            results: vec![set],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::BuildDict,
+            operands: vec![key, raw],
+            results: vec![dict],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.ops.push(const_none_def(ret));
+        entry.terminator = Terminator::Return { values: vec![ret] };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        let boxed_two = "9221401712017801218";
+        assert!(
+            ir.matches(boxed_two).count() >= 4,
+            "each direct container builder must append boxed int bits; IR:\n{ir}"
+        );
+        assert!(
+            !ir.contains("molt_list_builder_append(i64 %list, i64 2)"),
+            "{ir}"
+        );
+        assert!(
+            !ir.contains("molt_set_builder_append(i64 %set_builder, i64 2)"),
+            "{ir}"
+        );
+        assert!(
+            !ir.contains("molt_dict_builder_append(i64 %dict_builder, i64 %str_bits, i64 2)"),
+            "{ir}"
+        );
+    }
+
+    #[test]
+    fn lower_class_def_boxes_raw_i64_attribute_values() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("class_def_boxed_attrs".into(), vec![], TirType::DynBox);
+        let name = func.fresh_value();
+        let base = func.fresh_value();
+        let attr_key = func.fresh_value();
+        let attr_value = func.fresh_value();
+        let class_obj = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstStr,
+            operands: vec![],
+            results: vec![name],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("s_value".into(), AttrValue::Str("C".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.ops.push(const_none_def(base));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstStr,
+            operands: vec![],
+            results: vec![attr_key],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("s_value".into(), AttrValue::Str("y".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.ops.push(const_int_def(attr_value, 2));
+        let mut attrs = AttrDict::new();
+        attrs.insert("_original_kind".into(), AttrValue::Str("class_def".into()));
+        attrs.insert("s_value".into(), AttrValue::Str("1,1,0,0,0".into()));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![name, base, attr_key, attr_value],
+            results: vec![class_obj],
+            attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![class_obj],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_guarded_class_def"), "{ir}");
+        assert!(
+            ir.contains("9221401712017801218"),
+            "class_def attr values must be boxed before array storage; IR:\n{ir}"
+        );
+        assert!(!ir.contains("store i64 2, ptr %class_attr_ptr_1"), "{ir}");
+    }
+
+    #[test]
     fn lower_preserved_dict_update_calls_runtime() {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
@@ -11518,6 +11784,7 @@ mod tests {
             ("guard_tag", 2, false, None, "molt_guard_type"),
             ("guard_layout", 3, true, None, "molt_guard_layout_ptr"),
             ("guard_dict_shape", 3, true, None, "molt_guard_layout_ptr"),
+            ("dataclass_new", 4, true, None, "molt_dataclass_new"),
             ("json_parse", 1, true, None, "molt_json_parse_scalar_obj"),
             (
                 "msgpack_parse",
@@ -11750,6 +12017,51 @@ mod tests {
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         let ir = llvm_fn.print_to_string().to_string();
         assert!(ir.contains("molt_list_append"), "{ir}");
+    }
+
+    #[test]
+    fn lower_del_boundary_calls_dec_ref_runtime() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new("del_boundary_release".into(), vec![], TirType::DynBox);
+        let owned = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(owned));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::DelBoundary,
+            operands: vec![owned],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_dec_ref_obj"), "{ir}");
+    }
+
+    #[test]
+    fn lower_preserved_list_pop_calls_runtime() {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend
+            .runtime_intrinsic_symbols
+            .insert("molt_list_pop".to_string());
+        let ir = lower_preserved_kind_ir(&backend, "list_pop", 2, true, None)
+            .expect("list_pop must lower through the boxed runtime call");
+        assert!(ir.contains("molt_list_pop"), "{ir}");
+    }
+
+    #[test]
+    fn lower_preserved_dataclass_new_values_calls_runtime_with_value_slice() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let ir = lower_preserved_kind_ir(&backend, "dataclass_new_values", 5, true, None)
+            .expect("dataclass_new_values must lower through its value-slice runtime call");
+        assert!(ir.contains("molt_dataclass_new_from_values"), "{ir}");
+        assert!(ir.contains("alloca i64, i64 2"), "{ir}");
     }
 
     #[test]

@@ -1523,6 +1523,14 @@ fn preanalyze_alias_source<'a>(
 }
 
 #[cfg(feature = "native-backend")]
+fn simple_ir_op_absorbs_finalizer_elements(op: &OpIR) -> bool {
+    matches!(
+        op.kind.as_str(),
+        "build_list" | "build_tuple" | "build_dict" | "build_set"
+    ) || crate::tir::op_kinds_generated::kind_result_absorbs_operand_ownership_table(&op.kind)
+}
+
+#[cfg(feature = "native-backend")]
 fn preanalysis_value_is_known_non_heap(
     name: &str,
     int_like_vars: &BTreeSet<String>,
@@ -2154,6 +2162,85 @@ fn preanalyze_function_ir(
                 }
             }
         }
+
+        // Finalizer-sensitive named locals (#58 native value-tracking lane).
+        //
+        // The native value-tracking substrate must honor the same lifetime fact
+        // as TIR drop insertion: a finalizer-bearing object bound to a Python
+        // local lives until that binding is deleted/rebound/scope-exited, while
+        // an unnamed expression temporary may die at statement last use.
+        if !drop_inserted {
+            let root_of = |name: &str| -> String {
+                alias_roots
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.to_string())
+            };
+            let mut finalizer_sensitive: BTreeSet<String> = BTreeSet::new();
+            for op in &func_ir.ops {
+                if op.defines_del == Some(true)
+                    && let Some(out) = op.out.as_deref()
+                    && out != "none"
+                {
+                    finalizer_sensitive.insert(root_of(out));
+                }
+            }
+            let mut changed = true;
+            while changed {
+                changed = false;
+                for op in &func_ir.ops {
+                    if !simple_ir_op_absorbs_finalizer_elements(op) {
+                        continue;
+                    }
+                    let absorbs_sensitive = op.args.as_ref().is_some_and(|args| {
+                        args.iter()
+                            .any(|arg| finalizer_sensitive.contains(&root_of(arg)))
+                    });
+                    if absorbs_sensitive
+                        && let Some(out) = op.out.as_deref()
+                        && out != "none"
+                        && finalizer_sensitive.insert(root_of(out))
+                    {
+                        changed = true;
+                    }
+                }
+            }
+            if !finalizer_sensitive.is_empty() {
+                let explicit_del_roots: BTreeSet<String> = func_ir
+                    .ops
+                    .iter()
+                    .filter(|op| matches!(op.kind.as_str(), "del_boundary" | "delete_var"))
+                    .filter_map(|op| op.args.as_ref())
+                    .flat_map(|args| args.iter())
+                    .filter(|name| name.as_str() != "none")
+                    .map(|name| root_of(name))
+                    .collect();
+                let func_end = func_ir.ops.len().saturating_sub(1);
+                let mut named_roots: BTreeSet<String> = BTreeSet::new();
+                for op in &func_ir.ops {
+                    if op.bound_local != Some(true) {
+                        continue;
+                    }
+                    let Some(out) = op.out.as_deref() else {
+                        continue;
+                    };
+                    if out == "none" {
+                        continue;
+                    }
+                    let root = root_of(out);
+                    if finalizer_sensitive.contains(&root) && !explicit_del_roots.contains(&root) {
+                        named_roots.insert(root);
+                    }
+                }
+                for root in named_roots {
+                    let entry = last_use.entry(root).or_insert(func_end);
+                    if *entry < func_end {
+                        *entry = func_end;
+                    }
+                }
+            }
+        }
+
         // Collect loop-carried slot assignments inside each loop body.
         // Only named storage slots (`store_var`) need CPython-style
         // "old slot occupant" handling across iterations. SSA temporaries are

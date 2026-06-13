@@ -121,12 +121,8 @@ fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch {
-            cases, default, ..
-        }
-        | Terminator::StateDispatch {
-            cases, default, ..
-        } => {
+        Terminator::Switch { cases, default, .. }
+        | Terminator::StateDispatch { cases, default, .. } => {
             let mut out: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
             out.push(*default);
             out

@@ -1251,6 +1251,10 @@ impl<'a> SsaContext<'a> {
         if op.defines_del == Some(true) {
             attrs.insert("defines_del".into(), AttrValue::Bool(true));
         }
+        // Named-local fact (#58): generic lift, same shape as `defines_del`.
+        if op.bound_local == Some(true) {
+            attrs.insert("bound_local".into(), AttrValue::Bool(true));
+        }
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
         }

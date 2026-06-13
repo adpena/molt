@@ -676,6 +676,17 @@ purity = "impure"
 operand_ownership = "all_consumed"
 result_absorbs_operands = false
 
+# Python lifetime boundary: function-scope `del x` of a non-closure local.
+# The drop phase normalizes it to DecRef when the root is pass-owned and deletes
+# it otherwise, so backend lowerings never need a second release authority.
+[[opcode]]
+name = "DelBoundary"
+may_throw = false
+side_effecting = true
+purity = "impure"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
 [[opcode]]
 name = "BuildList"
 may_throw = false
@@ -1399,6 +1410,11 @@ aliases = []
 mapper_opcode = "DecRef"
 
 [[kind]]
+canonical = "del_boundary"
+aliases = []
+mapper_opcode = "DelBoundary"
+
+[[kind]]
 canonical = "build_list"
 aliases = []
 mapper_opcode = "BuildList"
@@ -1784,6 +1800,14 @@ branch_arg = "transferred"
 # `default_args` are forwarded into the successors' phis (transferred).
 name = "Switch"
 direct = "borrowed"
+branch_arg = "transferred"
+
+[[terminator]]
+# Generator/coroutine state dispatch: the dispatch state is implicit runtime
+# frame state (no direct SSA operand); case/default args are forwarded into the
+# resume successors' phis (transferred), matching Switch branch-arg semantics.
+name = "StateDispatch"
+direct = "none"
 branch_arg = "transferred"
 
 [[terminator]]

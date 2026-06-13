@@ -1389,6 +1389,7 @@ mod tests {
             TypeGuard,
             IncRef,
             DecRef,
+            DelBoundary,
             BuildList,
             BuildDict,
             BuildTuple,
@@ -1502,6 +1503,7 @@ mod tests {
             | TypeGuard
             | IncRef
             | DecRef
+            | DelBoundary
             | BuildList
             | BuildDict
             | BuildTuple
@@ -1949,6 +1951,8 @@ mod tests {
             Some("int_from_obj"),
             Some("float_from_obj"),
             Some("contains"),
+            Some("dataclass_new"),
+            Some("dataclass_new_values"),
             Some("str_from_obj"),
             Some("iter"),
             Some("aiter"),
@@ -1960,6 +1964,7 @@ mod tests {
             Some("object_new"),
             Some("complex_from_obj"),
             Some("list_new"),
+            Some("list_pop"),
             Some("dict_new"),
             Some("tuple_new"),
             Some("string_join"),
