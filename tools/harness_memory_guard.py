@@ -1651,7 +1651,7 @@ class RepoProcessMemorySentinel:
         self._thread: threading.Thread | None = None
         self._tree_tracker = memory_guard.ProcessTreeTracker(os.getpid())
         self._baseline_pgids: set[int] = set()
-        self._observed_pgids: set[int] = set()
+        self._observed_process_identities: dict[int, memory_guard.ProcessIdentity] = {}
         self._terminated_pgids: set[int] = set()
         self._protected_pgids_recorded: set[int] = set()
         self.tripped = False
@@ -1697,33 +1697,15 @@ class RepoProcessMemorySentinel:
     def _elapsed_s(self) -> float:
         return max(0.0, time.monotonic() - self._started_monotonic)
 
-    def _owned_pgids_from_samples(
+    def _owned_pids_from_samples(
         self,
         samples: Mapping[int, memory_guard.ProcessSample],
     ) -> set[int]:
         if not self._scope_to_current_tree:
             return set()
         self._tree_tracker.update(samples)
-        tracked_pgids = set(self._tree_tracker.known_pgids or set())
-        if not tracked_pgids:
-            return set()
-
-        owned: set[int] = set()
         known_pids = set(self._tree_tracker.known_pids or set())
-        for sample in samples.values():
-            sample_pgid = sample.pgid if sample.pgid is not None else sample.pid
-            if sample_pgid not in tracked_pgids:
-                continue
-            if sample.ppid in known_pids:
-                owned.add(sample_pgid)
-                continue
-            if process_sentinel.is_molt_process(
-                sample,
-                root=self._repo_root,
-                self_pid=os.getpid(),
-            ):
-                owned.add(sample_pgid)
-        return owned
+        return {pid for pid in known_pids if pid in samples}
 
     def _termination_attribution(
         self,
@@ -1820,19 +1802,29 @@ class RepoProcessMemorySentinel:
     ) -> list[process_sentinel.ProcessGroup]:
         samples = memory_guard.sample_processes()
         self._record_skipped_protected_groups(samples)
-        owned_pgids = self._owned_pgids_from_samples(samples)
-        known_pgids = set(self._observed_pgids)
-        known_pgids.update(owned_pgids)
+        owned_pids = self._owned_pids_from_samples(samples)
+        known_process_identities = dict(self._observed_process_identities)
+        known_process_identities.update(
+            {
+                pid: memory_guard.process_identity(samples[pid])
+                for pid in owned_pids
+                if pid in samples
+            }
+        )
         groups = process_sentinel.process_groups(
             samples,
             root=self._repo_root,
             self_pid=os.getpid(),
             self_pgid=os.getpgrp(),
-            known_pgids=known_pgids,
-            owned_pgids=owned_pgids if self._scope_to_current_tree else None,
+            known_process_identities=known_process_identities,
+            owned_pids=owned_pids if self._scope_to_current_tree else None,
         )
         if update_observed:
-            self._observed_pgids.update(group.pgid for group in groups)
+            for group in groups:
+                for sample in group.samples:
+                    self._observed_process_identities[sample.pid] = (
+                        memory_guard.process_identity(sample)
+                    )
         return groups
 
     def _record_skipped_protected_groups(
@@ -1844,7 +1836,7 @@ class RepoProcessMemorySentinel:
             root=self._repo_root,
             self_pid=os.getpid(),
             self_pgid=os.getpgrp(),
-            known_pgids=self._observed_pgids,
+            known_process_identities=self._observed_process_identities,
         )
         for group in protected:
             if not any(

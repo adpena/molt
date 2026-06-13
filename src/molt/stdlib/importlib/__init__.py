@@ -8,9 +8,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 import os as _os
 import sys as _sys
 
-import importlib.machinery as machinery
-import importlib.util as util
-
 _require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic("molt_importlib_resolve_name")
 _MOLT_IMPORTLIB_KNOWN_ABSENT_MISSING_NAME = _require_intrinsic(
@@ -93,6 +90,12 @@ def import_module(name: str, package: object = None):
     if resolved in modules:
         raise ImportError(f"import of {resolved} halted; None in sys.modules")
     raise ModuleNotFoundError(f"No module named '{resolved}'")
+
+
+machinery = import_module("importlib.machinery")
+util = import_module("importlib.util")
+_bootstrap = import_module("importlib._bootstrap")
+_bootstrap_external = import_module("importlib._bootstrap_external")
 
 
 def invalidate_caches() -> None:

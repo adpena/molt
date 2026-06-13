@@ -580,12 +580,16 @@ pub extern "C" fn molt_dict_pop(
                 let key_val = order[key_idx];
                 let val_val = order[val_idx];
                 inc_ref_bits(_py, val_val);
-                dec_ref_bits(_py, key_val);
-                dec_ref_bits(_py, val_val);
                 order.drain(key_idx..=val_idx);
                 let entries = order.len() / 2;
                 let capacity = dict_table_capacity(entries.max(1));
                 dict_rebuild(_py, order, table, capacity);
+                if order.is_empty() {
+                    (*header_from_obj_ptr(dict_ptr)).flags &=
+                        !crate::object::HEADER_FLAG_CONTAINS_REFS;
+                }
+                dec_ref_bits(_py, key_val);
+                dec_ref_bits(_py, val_val);
                 return val_val;
             }
             if has_default {
@@ -764,13 +768,16 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
             if item_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            dec_ref_bits(_py, key_bits);
-            dec_ref_bits(_py, val_bits);
             order.truncate(order.len() - 2);
             let entries = order.len() / 2;
             let table = dict_table(dict_ptr);
             let capacity = dict_table_capacity(entries.max(1));
             dict_rebuild(_py, order, table, capacity);
+            if order.is_empty() {
+                (*header_from_obj_ptr(dict_ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+            }
+            dec_ref_bits(_py, key_bits);
+            dec_ref_bits(_py, val_bits);
             MoltObject::from_ptr(item_ptr).bits()
         }
     })

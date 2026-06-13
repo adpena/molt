@@ -541,6 +541,58 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
     assert key_a != key_b
 
 
+def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> None:
+    variant = _cache_variant()
+    ir = {
+        "profile": "dev-fast",
+        "functions": [
+            {
+                "name": "molt_main",
+                "params": [],
+                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+            },
+            {"name": "molt_init_app", "params": [], "ops": []},
+            {"name": "app__module", "params": [], "ops": []},
+            {"name": "molt_init_sys", "params": [], "ops": []},
+            {"name": "molt_init_importlib", "params": [], "ops": []},
+            {"name": "molt_init_importlib_util", "params": [], "ops": []},
+            {"name": "molt_init_importlib_machinery", "params": [], "ops": []},
+        ],
+    }
+    base_symbols = _explicit_stdlib_modules("sys")
+    runtime_support_symbols = _explicit_stdlib_modules(
+        "importlib", "importlib_machinery", "importlib_util", "sys"
+    )
+
+    key_base = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=base_symbols,
+        target_triple=None,
+        cache_variant=variant,
+    )
+    key_support = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=runtime_support_symbols,
+        target_triple=None,
+        cache_variant=variant,
+    )
+    payload = cli._shared_stdlib_cache_payload_ir(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=runtime_support_symbols,
+    )
+    function_names = {func["name"] for func in payload["functions"]}
+
+    assert key_base != key_support
+    assert {
+        "molt_init_importlib",
+        "molt_init_importlib_util",
+        "molt_init_importlib_machinery",
+    } <= function_names
+
+
 def test_shared_stdlib_cache_matches_key_requires_present_matching_contract(
     tmp_path: Path,
 ) -> None:

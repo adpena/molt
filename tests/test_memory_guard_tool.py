@@ -78,7 +78,7 @@ def test_descendant_pids_includes_grandchildren() -> None:
     assert memory_guard.descendant_pids(samples, 100) == {100, 101, 102}
 
 
-def test_watched_pids_includes_reparented_process_group_members() -> None:
+def test_watched_pids_excludes_unobserved_reparented_process_group_members() -> None:
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
         101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=100),
@@ -86,7 +86,7 @@ def test_watched_pids_includes_reparented_process_group_members() -> None:
         200: memory_guard.ProcessSample(200, 1, 999_999, "unrelated", pgid=200),
     }
 
-    assert memory_guard.watched_pids(samples, 100) == {100, 101, 102}
+    assert memory_guard.watched_pids(samples, 100) == {100, 101}
 
 
 def test_watched_pids_excludes_host_control_plane_group() -> None:
@@ -232,7 +232,20 @@ def test_process_tree_tracker_does_not_absorb_root_ambient_process_group() -> No
     assert tracker.known_pgids == {100}
 
 
-def test_find_rss_violation_catches_reparented_process_group_member() -> None:
+def test_process_tree_tracker_does_not_absorb_learned_descendant_process_group_peer() -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    samples = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=777),
+        200: memory_guard.ProcessSample(200, 1, 999, "unrelated", pgid=777),
+    }
+
+    assert tracker.update(samples) == {100, 101}
+    assert tracker.known_pids == {100, 101}
+    assert tracker.known_pgids == {100, 777}
+
+
+def test_find_rss_violation_ignores_unobserved_reparented_process_group_member() -> None:
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
         101: memory_guard.ProcessSample(101, 1, 26_000_000, "reparented", pgid=100),
@@ -242,11 +255,7 @@ def test_find_rss_violation_catches_reparented_process_group_member() -> None:
         samples, root_pid=100, max_rss_kb=25_000_000
     )
 
-    assert violation == memory_guard.RssViolation(
-        pid=101,
-        rss_kb=26_000_000,
-        command="reparented",
-    )
+    assert violation is None
 
 
 def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
@@ -553,6 +562,84 @@ def test_terminate_watched_processes_never_killpgs_shared_child_group(
     assert (100, memory_guard.signal.SIGTERM) in sent_groups
     assert all(pgid != 777 for pgid, _sig in sent_groups)
     assert (101, memory_guard.signal.SIGTERM) in sent_pids
+    assert (101, memory_guard.signal.SIGKILL) in sent_pids
+    assert all(pid != 200 for pid, _sig in sent_pids)
+
+
+def test_terminate_watched_processes_never_kills_learned_group_peer(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    tracker = memory_guard.ProcessTreeTracker(100)
+    samples = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=777),
+        200: memory_guard.ProcessSample(200, 1, 999, "unrelated", pgid=777),
+    }
+    assert tracker.update(samples) == {100, 101}
+    sent_groups: list[tuple[int, int]] = []
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+
+    def fake_killpg(pgid, sig):
+        sent_groups.append((pgid, sig))
+        if sig == memory_guard.signal.SIGTERM:
+            raise ProcessLookupError
+
+    def fake_kill(pid, sig):
+        sent_pids.append((pid, sig))
+
+    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
+    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
+
+    memory_guard.terminate_watched_processes(
+        100,
+        samples=samples,
+        tracker=tracker,
+        grace=0.001,
+    )
+
+    assert all(pgid != 777 for pgid, _sig in sent_groups)
+    assert (101, memory_guard.signal.SIGTERM) in sent_pids
+    assert (101, memory_guard.signal.SIGKILL) in sent_pids
+    assert all(pid != 200 for pid, _sig in sent_pids)
+
+
+def test_terminate_watched_processes_never_killpgs_mixed_root_group(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    samples = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=100),
+        200: memory_guard.ProcessSample(200, 1, 999, "unrelated", pgid=100),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+
+    def fake_killpg(pgid, sig):
+        sent_groups.append((pgid, sig))
+        if sig == memory_guard.signal.SIGTERM:
+            raise ProcessLookupError
+
+    def fake_kill(pid, sig):
+        sent_pids.append((pid, sig))
+
+    monkeypatch.setattr(memory_guard.os, "killpg", fake_killpg)
+    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
+
+    memory_guard.terminate_watched_processes(
+        100,
+        samples=samples,
+        watched={100, 101},
+        grace=0.001,
+    )
+
+    assert sent_groups == []
+    assert (100, memory_guard.signal.SIGKILL) in sent_pids
     assert (101, memory_guard.signal.SIGKILL) in sent_pids
     assert all(pid != 200 for pid, _sig in sent_pids)
 
@@ -905,8 +992,10 @@ def test_run_guarded_binary_capture_preserves_bytes() -> None:
 
 def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
+    assert tracker.known_pids is not None
+    tracker.known_pids.update({200, 300})
     assert tracker.known_pgids is not None
-    tracker.known_pgids.add(300)
+    tracker.known_pgids.update({100, 300})
     samples = {
         200: memory_guard.ProcessSample(
             pid=200,

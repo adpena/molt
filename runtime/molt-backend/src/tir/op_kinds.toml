@@ -36,6 +36,16 @@
 #   - [[absorbing_kind]] — per-SPELLING result-absorption facts for Copy-lifted
 #                  constructors (`*_new`) whose result owns operand lifetimes
 #                  without becoming first-class [[kind]] aliases.
+#   - [[absorbing_operand_kind]] — per-SPELLING existing-container store facts
+#                  for preserved Copy-lifted mutators (`list_append`, etc.) whose
+#                  value operand is retained by container storage while remaining
+#                  borrowed at the ABI/drop edge.
+#   - result_mints_owned_selected_operand — per-OpCode selected-alias result
+#                  ownership: the backend returns one borrowed operand's bits and
+#                  must retain that selected object to make the result an owned +1.
+#   - [[result_finalizer_source_kind]] — per-SPELLING extraction facts whose
+#                  fresh result may carry a finalizer-sensitive value from one
+#                  source operand (`list_pop` result from list operand 0).
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -90,6 +100,7 @@ classifier_fresh_value = [
     "list_fill_new",
     "list_from_range",
     "list_new",
+    "list_pop",
     "object_new",
     "range_new",
     "repr_from_obj",
@@ -165,6 +176,22 @@ kind = "set_new"
 
 [[absorbing_kind]]
 kind = "tuple_new"
+
+[[absorbing_operand_kind]]
+kind = "list_append"
+absorbed_operand = 1
+
+[[absorbing_operand_kind]]
+kind = "set_attr_generic_obj"
+absorbed_operand = 1
+
+[[absorbing_operand_kind]]
+kind = "set_attr_generic_ptr"
+absorbed_operand = 1
+
+[[result_finalizer_source_kind]]
+kind = "list_pop"
+source_operand = 0
 
 # ===========================================================================
 # Per-OpCode effect classification (EXHAUSTIVE over the OpCode enum).
@@ -432,6 +459,7 @@ side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
+result_mints_owned_selected_operand = true
 
 [[opcode]]
 name = "Or"
@@ -440,6 +468,7 @@ side_effecting = false
 purity = "pure"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
+result_mints_owned_selected_operand = true
 
 [[opcode]]
 name = "Not"
@@ -552,7 +581,11 @@ name = "StoreIndex"
 may_throw = true
 side_effecting = true
 purity = "impure"
-operand_ownership = "all_borrowed"
+# store_index(container, key, value): the container/key operands are borrowed,
+# while the value operand is retained by the container slot. The caller still
+# owns and drops its producer ref; this row only marks the statement boundary for
+# finalizer-sensitive temps.
+operand_ownership = ["borrowed", "borrowed", "container_absorb"]
 result_absorbs_operands = false
 
 [[opcode]]
@@ -1007,7 +1040,11 @@ name = "ModuleSetAttr"
 may_throw = true
 side_effecting = true
 purity = "impure"
-operand_ownership = "all_borrowed"
+# module_set_attr(module, name, value): the module dict retains the value.
+# The caller-owned value ref is still borrowed by the runtime ABI, but finalizer
+# ordering needs the storage boundary so compiler-owned expression temps release
+# after the successful module store instead of surviving until module teardown.
+operand_ownership = ["borrowed", "borrowed", "container_absorb"]
 result_absorbs_operands = false
 
 [[opcode]]

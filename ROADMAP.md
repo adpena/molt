@@ -182,11 +182,23 @@ roadmap claim drifts.
     non-native, MLIR, WASM, and object-only outputs now fail closed when
     external native artifacts are admitted. Frontend source leases and
     byte-backed backend IR custody now avoid retaining the whole upstream graph
-    through lowering/backend handoff. Bounded native TIR optimization now
-    reaches the explicitly admitted tinygrad closure in `41` user-function
-    batches and holds the single backend process below the prior 12 GB failure.
-    The current remaining work is to continue eliminating later backend
-    lifecycle/codegen memory owners exposed by the guarded runner.
+    through lowering/backend handoff, and daemon full-request custody removed
+    the hidden one-shot overlap. Current durable evidence remains fail-closed
+    before Molt adapter workload execution: `bench/results/friends/20260612T203111Z/`
+    fails with a lost-daemon outcome and no outer memory-guard violation,
+    `20260612T205850Z/` fails with an empty daemon response, and the 21:12
+    sidecar `tmp/memory_guard/friends_tinygrad_molt_daemon_harness_custody.json`
+    records a Molt-owned backend daemon RSS guard trip near the 12 GB cap.
+    Native application-object batching now consumes the same
+    `MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching. Daemon-off
+    proof now builds the full-stdlib adapter and reaches runtime execution under
+    guard; after the importlib bootstrap export fix and list-clear detach proof,
+    the current Molt runtime blocker remains `molt fatal: invalid object header
+    before dec_ref` at 1.985 GB peak RSS
+    (`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
+    The current remaining work is runtime object-header/RC correctness plus
+    daemon outcome/log custody until the adapter workload executes and leaves a
+    benchmark artifact.
 14. Make ecosystem compatibility a first-class generated scoreboard, starting
     with NumPy. The current matrix has a dedicated NumPy row deriving `partial`
     through `D28` source-recompiled `libmolt` extension packages, not through
@@ -269,23 +281,34 @@ roadmap claim drifts.
   (`tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`). Path-backed
   `ModuleSourceLease`/analysis metadata, byte-backed backend IR custody, and
   bounded native TIR optimization result consumption are now in-tree; guarded
-  evidence reached `2602` uncached user functions in `41` bounded batches and
-  moved the single backend peak to 9.77 GB. Daemon compile custody now treats
+  evidence reached the bounded path and reduced the single-backend peak before
+  exposing aggregate process-tree RSS from overlapping daemon/fallback
+  lifetimes. Daemon compile custody now treats
   full-request admission as terminal ownership, and verified live daemons are
   not restarted after short readiness misses while they may be compiling. The
   follow-up runner proof (`bench/results/friends/20260612T203111Z/`,
   `tmp/memory_guard/friends_tinygrad_molt_daemon_custody.json`) confirms
   aggregate process-tree RSS no longer comes from duplicate daemon/one-shot
   lifetimes (`violation=null`, no orphaned groups, 4.92 GB peak process-tree
-  RSS); the current failure is a fail-closed lost daemon outcome after stdlib
-  batch `35/35` and user-function TIR batch `8/41`. A 2026-06-12 guarded rerun
+  RSS); the current failure is a fail-closed lost daemon outcome. A 2026-06-12 guarded rerun
   after the explicit-`DeleteVar` finalizer boundary work
   (`bench/results/friends/20260612T205850Z/`) stayed fail-closed without a memory
   violation, protected host/control-plane process groups in the sentinel log,
   and returned after 208.19s with `Backend daemon compile failed: backend daemon
-  returned empty response`. The next structural landing point is daemon crash
-  provenance plus daemon-side large-user-compile memory custody, then backend
-  codegen-memory reduction until adapter workload execution.
+  returned empty response`. The 21:12 guard sidecar
+  (`tmp/memory_guard/friends_tinygrad_molt_daemon_harness_custody.json`) records
+  a separate Molt-owned backend daemon RSS guard trip at the 12 GB process cap;
+  it did not leave a full `results.json`/`summary.md` benchmark artifact.
+  Native application-object batching now consumes the same
+  `MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching. Daemon-off proof
+  now builds the full-stdlib adapter and reaches runtime execution under guard;
+  after the importlib bootstrap export fix and list-clear detach proof, the
+  current Molt runtime blocker remains `molt fatal: invalid object header before
+  dec_ref` at 1.985 GB peak RSS
+  (`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
+  The next structural landing point is runtime object-header/RC correctness,
+  while daemon-enabled runs still need daemon outcome/log custody after the
+  compile-memory split.
 - Continue the clean `molt-gpu` scheduler lane from the current code state:
   Movement/ShapeTracker binding is now a real per-kernel input-view contract
   with storage identity separated from binding identity across scheduler,
@@ -374,9 +397,12 @@ roadmap claim drifts.
 		  The Molt runner executes the correct `{python} -m molt.cli run`
 		  full-stdlib command by default; current evidence reaches the backend daemon
 		  and no longer trips the outer memory guard after daemon full-request
-		  custody closed the hidden one-shot overlap; it now fails closed because
-		  the daemon dies mid full request after stdlib batch `35/35` and
-		  user-function TIR batch `8/41`. `tools/bench_friends.py`
+		  custody closed the hidden one-shot overlap, but still fails before
+		  adapter workload execution through lost-daemon / empty-response outcomes.
+		  A separate 21:12 sidecar records a Molt-owned backend daemon RSS guard
+		  trip near the 12 GB process cap. App-object batching now shares the
+		  stdlib op-budget authority; backend compile-memory reduction remains the
+		  next owner to retire. `tools/bench_friends.py`
 	  now fail-closes
 	  git-source custody by verifying requested refs against checked-out `HEAD`,
 	  requiring clean upstream checkouts, supporting per-suite `--suite-root` and
@@ -448,12 +474,15 @@ roadmap claim drifts.
   filesystem casing, known project modules authorize only exact graph members,
   and ordinary source syntax imports now call the same transaction intrinsic
   with explicit `name`/`fromlist`/`level` payloads while bootstrap/importlib
-  modules keep a private cycle-breaking `MODULE_IMPORT` boundary. Graph-proven
-  `fromlist` child auto-import/binding now lives inside the Rust transaction for
-  the focused native path, preserving package exports and binding successful
-  child modules on the parent before the final `IMPORT_FROM`. The remaining
-  structural import work is to split public API validation while sharing the
-  private resolver, implement CPython 3.12 package-context calculation
+  modules keep a private cycle-breaking `MODULE_IMPORT` boundary, and the
+  focused native shard now preserves `_bootstrap` / `_bootstrap_external`
+  submodule identity. Graph-proven `fromlist` child auto-import/binding now
+  lives inside the Rust transaction for the focused native path, preserving
+  package exports and binding successful child modules on the parent before the
+  final `IMPORT_FROM`. The remaining structural import work is to continue
+  public API validation beyond the covered `import_module` relative-package and
+  bootstrap-submodule cases while sharing the private resolver,
+  implement CPython 3.12 package-context calculation
   (`__package__` / `__spec__.parent` / `__name__` fallback), and close
   `fromlist` star/`__all__` plus namespace-package edge semantics under the
   same transaction authority.

@@ -241,32 +241,44 @@ def _group_samples_by_pgid(
     return grouped
 
 
-def _matched_process_group_ids(
+def _owned_process_ids(
     samples: Mapping[int, memory_guard.ProcessSample],
-    grouped: Mapping[int, Sequence[memory_guard.ProcessSample]],
     *,
     root: Path,
     self_pid: int | None,
-    known_pgids: set[int] | None,
+    known_process_identities: Mapping[int, memory_guard.ProcessIdentity] | None,
 ) -> set[int]:
-    matched: set[int] = set() if known_pgids is None else set(known_pgids)
+    owned: set[int] = set()
+    if known_process_identities is not None:
+        for pid, identity in known_process_identities.items():
+            sample = samples.get(pid)
+            if sample is not None and memory_guard.process_identity(sample) == identity:
+                owned.add(pid)
     for sample in samples.values():
         if is_molt_process(sample, root=root, self_pid=self_pid):
-            matched.add(_sample_pgid(sample))
+            owned.add(sample.pid)
     changed = True
     while changed:
         changed = False
-        matched_pids = {
-            sample.pid for pgid in matched for sample in grouped.get(pgid, ())
-        }
-        if not matched_pids:
-            break
         for sample in samples.values():
-            pgid = _sample_pgid(sample)
-            if pgid not in matched and sample.ppid in matched_pids:
-                matched.add(pgid)
+            if sample.pid not in owned and sample.ppid in owned:
+                owned.add(sample.pid)
                 changed = True
-    return matched
+    return owned
+
+
+def _candidate_process_group_ids(
+    samples: Mapping[int, memory_guard.ProcessSample],
+    owned_pids: set[int],
+) -> set[int]:
+    return {_sample_pgid(sample) for sample in samples.values() if sample.pid in owned_pids}
+
+
+def _group_is_fully_owned(
+    group: Sequence[memory_guard.ProcessSample],
+    owned_pids: set[int],
+) -> bool:
+    return bool(group) and all(sample.pid in owned_pids for sample in group)
 
 
 def is_molt_process(
@@ -296,8 +308,8 @@ def process_groups(
     root: Path,
     self_pid: int | None = None,
     self_pgid: int | None = None,
-    known_pgids: set[int] | None = None,
-    owned_pgids: set[int] | None = None,
+    known_process_identities: Mapping[int, memory_guard.ProcessIdentity] | None = None,
+    owned_pids: set[int] | None = None,
 ) -> list[ProcessGroup]:
     grouped = _group_samples_by_pgid(samples)
     protected_pgids = protected_process_group_ids(
@@ -305,13 +317,17 @@ def process_groups(
         self_pid=self_pid,
         self_pgid=self_pgid,
     )
-    matched = _matched_process_group_ids(
-        samples,
-        grouped,
-        root=root,
-        self_pid=self_pid,
-        known_pgids=known_pgids,
+    owned = (
+        set(owned_pids)
+        if owned_pids is not None
+        else _owned_process_ids(
+            samples,
+            root=root,
+            self_pid=self_pid,
+            known_process_identities=known_process_identities,
+        )
     )
+    matched = _candidate_process_group_ids(samples, owned)
     groups = [
         ProcessGroup(
             pgid=pgid,
@@ -321,7 +337,7 @@ def process_groups(
         for pgid, group in grouped.items()
         if pgid in matched
         and pgid not in protected_pgids
-        and (owned_pgids is None or pgid in owned_pgids)
+        and _group_is_fully_owned(group, owned)
     ]
     return sorted(groups, key=lambda group: group.pgid)
 
@@ -332,7 +348,8 @@ def skipped_protected_process_groups(
     root: Path,
     self_pid: int | None = None,
     self_pgid: int | None = None,
-    known_pgids: set[int] | None = None,
+    observed_pgids: set[int] | None = None,
+    known_process_identities: Mapping[int, memory_guard.ProcessIdentity] | None = None,
 ) -> list[ProcessGroup]:
     grouped = _group_samples_by_pgid(samples)
     protected_pgids = protected_process_group_ids(
@@ -340,13 +357,15 @@ def skipped_protected_process_groups(
         self_pid=self_pid,
         self_pgid=self_pgid,
     )
-    matched = _matched_process_group_ids(
+    owned = _owned_process_ids(
         samples,
-        grouped,
         root=root,
         self_pid=self_pid,
-        known_pgids=known_pgids,
+        known_process_identities=known_process_identities,
     )
+    matched = _candidate_process_group_ids(samples, owned)
+    if observed_pgids:
+        matched.update(observed_pgids)
     return sorted(
         (
             ProcessGroup(
@@ -857,7 +876,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     stream = sys.stdout if args.json else sys.stderr
     started = time.monotonic()
     clean_since: float | None = None
-    known_pgids: set[int] = set()
+    known_process_identities: dict[int, memory_guard.ProcessIdentity] = {}
 
     def scan_groups() -> list[ProcessGroup]:
         groups = process_groups(
@@ -865,9 +884,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             root=root,
             self_pid=os.getpid(),
             self_pgid=os.getpgrp(),
-            known_pgids=known_pgids,
+            known_process_identities=known_process_identities,
         )
-        known_pgids.update(group.pgid for group in groups)
+        for group in groups:
+            for sample in group.samples:
+                known_process_identities[sample.pid] = memory_guard.process_identity(sample)
         return groups
 
     def process_observed_groups(

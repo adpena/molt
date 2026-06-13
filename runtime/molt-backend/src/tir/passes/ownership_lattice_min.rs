@@ -17,11 +17,11 @@
 //!     later rung — here a value is its own root except across the pure-move copies
 //!     `finalizer_alloc_roots` already folds).
 //!   * **FinalizerSensitive** — the transitive closure of `finalizer_alloc_roots`
-//!     through OWNERSHIP-TRANSFERRING ops (container constructors that absorb a
-//!     finalizer-bearing element): releasing such a value fires a `__del__`.
-//!   * python_lifetime_boundary / ordered_release_obligation — a FinalizerSensitive
-//!     value's release must land at the Python boundary (scope exit / `del`), not
-//!     SSA last-use. (Computed/consumed by the NEXT commit; see below.)
+//!     through container owners: releasing such a value can fire a `__del__`.
+//!   * **AbsorbedFinalizerProducer** — a finalizer-sensitive producer operand has
+//!     been retained by a container owner at this statement. The producer's own
+//!     caller ref can release at this absorption boundary; the container owner
+//!     remains FinalizerSensitive until its Python lifetime boundary.
 //!
 //! STATUS — ACTIVE. DropInsertion consumes this lattice to extend a
 //! FinalizerSensitive value's release to the Python lifetime boundary. Non-
@@ -30,9 +30,12 @@
 
 use std::collections::HashSet;
 
+use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    kind_result_absorbs_operand_ownership_table, opcode_result_absorbs_operand_ownership_table,
+    kind_container_absorbed_operand_table, kind_result_absorbs_operand_ownership_table,
+    kind_result_finalizer_source_operand_table, opcode_container_absorbed_operand,
+    opcode_result_absorbs_operand_ownership_table,
 };
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -55,9 +58,42 @@ fn op_result_absorbs_operand_ownership(op: &TirOp) -> bool {
             && original_kind(op).is_some_and(kind_result_absorbs_operand_ownership_table))
 }
 
+/// Existing-container/store absorption: operand 0 is the owner container and the
+/// returned index is the value operand retained by that container. The operand
+/// is still borrowed for ABI/drop purposes; this fact only supplies the producer
+/// temp's finalizer release boundary.
+fn op_container_absorbed_operand(op: &TirOp) -> Option<usize> {
+    opcode_container_absorbed_operand(op.opcode).or_else(|| {
+        original_kind(op)
+            .and_then(|kind| kind_container_absorbed_operand_table(kind, op.operands.len()))
+    })
+}
+
+/// A fresh result that inherits finalizer sensitivity from one source operand
+/// while remaining a statement temporary unless Python-bound (for example,
+/// `list_pop(list)` returning the popped element).
+fn op_result_finalizer_source_operand(op: &TirOp) -> Option<usize> {
+    (op.opcode == OpCode::Copy)
+        .then(|| {
+            original_kind(op).and_then(|kind| {
+                kind_result_finalizer_source_operand_table(kind, op.operands.len())
+            })
+        })
+        .flatten()
+}
+
 /// The minimal ownership-lattice slice for finalizer ordering (#58).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StatementReleaseFinalizerBoundary {
+    pub block: BlockId,
+    pub op_index: usize,
+    pub value: ValueId,
+}
+
 pub struct OwnershipLattice {
     finalizer_sensitive: HashSet<ValueId>,
+    statement_release_finalizer_values: HashSet<ValueId>,
+    statement_release_finalizer_boundaries: Vec<StatementReleaseFinalizerBoundary>,
 }
 
 impl OwnershipLattice {
@@ -67,28 +103,70 @@ impl OwnershipLattice {
         // Rung: seed with the direct finalizer-bearing allocations (already folded
         // across pure-move copies by `finalizer_alloc_roots`).
         let mut finalizer_sensitive = finalizer_alloc_roots(func);
+        let mut statement_release_finalizer_values = HashSet::new();
+        let mut statement_release_finalizer_boundaries = Vec::new();
+        let mut statement_release_finalizer_boundary_keys = HashSet::new();
         if finalizer_sensitive.is_empty() {
             return Self {
                 finalizer_sensitive,
+                statement_release_finalizer_values,
+                statement_release_finalizer_boundaries,
             };
         }
         // Rung: ownership-transfer closure. A container constructor that absorbs a
-        // finalizer-sensitive element yields a finalizer-sensitive result. Forward
-        // fixpoint so a constructor can feed another (`[[A()]]`).
+        // finalizer-sensitive element yields a finalizer-sensitive owner. Existing
+        // container stores do the same for operand 0 while marking the producer
+        // operand as absorbed at this statement. Forward fixpoint so an owner can
+        // feed another (`[[A()]]`) or a later store.
         let mut changed = true;
         while changed {
             changed = false;
-            for block in func.blocks.values() {
-                for op in &block.ops {
-                    if !op_result_absorbs_operand_ownership(op) {
-                        continue;
+            for (&block_id, block) in &func.blocks {
+                for (op_index, op) in block.ops.iter().enumerate() {
+                    if op_result_absorbs_operand_ownership(op) {
+                        let absorbed_sensitive: Vec<ValueId> = op
+                            .operands
+                            .iter()
+                            .copied()
+                            .filter(|operand| finalizer_sensitive.contains(operand))
+                            .collect();
+                        if !absorbed_sensitive.is_empty() {
+                            statement_release_finalizer_values.extend(absorbed_sensitive);
+                            for &result in &op.results {
+                                if finalizer_sensitive.insert(result) {
+                                    changed = true;
+                                }
+                            }
+                        }
                     }
-                    let absorbs_sensitive = op
-                        .operands
-                        .iter()
-                        .any(|operand| finalizer_sensitive.contains(operand));
-                    if absorbs_sensitive {
+                    if let Some(absorbed_idx) = op_container_absorbed_operand(op)
+                        && let Some(&absorbed) = op.operands.get(absorbed_idx)
+                        && finalizer_sensitive.contains(&absorbed)
+                    {
+                        statement_release_finalizer_values.insert(absorbed);
+                        if statement_release_finalizer_boundary_keys
+                            .insert((block_id, op_index, absorbed))
+                        {
+                            statement_release_finalizer_boundaries.push(
+                                StatementReleaseFinalizerBoundary {
+                                    block: block_id,
+                                    op_index,
+                                    value: absorbed,
+                                },
+                            );
+                        }
+                        if let Some(&owner) = op.operands.first()
+                            && finalizer_sensitive.insert(owner)
+                        {
+                            changed = true;
+                        }
+                    }
+                    if let Some(source_idx) = op_result_finalizer_source_operand(op)
+                        && let Some(&source) = op.operands.get(source_idx)
+                        && finalizer_sensitive.contains(&source)
+                    {
                         for &result in &op.results {
+                            statement_release_finalizer_values.insert(result);
                             if finalizer_sensitive.insert(result) {
                                 changed = true;
                             }
@@ -97,8 +175,12 @@ impl OwnershipLattice {
                 }
             }
         }
+        statement_release_finalizer_boundaries
+            .sort_by_key(|boundary| (boundary.block.0, boundary.op_index, boundary.value.0));
         Self {
             finalizer_sensitive,
+            statement_release_finalizer_values,
+            statement_release_finalizer_boundaries,
         }
     }
 
@@ -111,6 +193,18 @@ impl OwnershipLattice {
     /// The full FinalizerSensitive set (the gate the ordering fix consumes).
     pub fn finalizer_sensitive_values(&self) -> &HashSet<ValueId> {
         &self.finalizer_sensitive
+    }
+
+    /// Finalizer-sensitive values whose own producer/extraction reference should
+    /// release at the statement boundary unless Python-bound. This includes
+    /// producer refs retained by a container owner and fresh extracted results
+    /// such as discarded `list_pop`.
+    pub fn statement_release_finalizer_values(&self) -> &HashSet<ValueId> {
+        &self.statement_release_finalizer_values
+    }
+
+    pub fn statement_release_finalizer_boundaries(&self) -> &[StatementReleaseFinalizerBoundary] {
+        &self.statement_release_finalizer_boundaries
     }
 }
 
@@ -192,6 +286,10 @@ mod tests {
             lat.is_finalizer_sensitive(list),
             "the list absorbing the __del__ object must be sensitive (#58 c_scope)"
         );
+        assert!(
+            lat.statement_release_finalizer_values().contains(&a),
+            "the producer temp has a separate absorption-boundary release fact"
+        );
     }
 
     #[test]
@@ -214,6 +312,10 @@ mod tests {
         assert!(
             lat.is_finalizer_sensitive(list),
             "Copy-preserved list_new must absorb the __del__ object's lifetime"
+        );
+        assert!(
+            lat.statement_release_finalizer_values().contains(&a),
+            "Copy-preserved list_new must mark the absorbed producer"
         );
     }
 
@@ -239,6 +341,105 @@ mod tests {
         assert!(
             lat.is_finalizer_sensitive(list),
             "Copy-preserved list_new must absorb the call-created finalizer object"
+        );
+        assert!(
+            lat.statement_release_finalizer_values().contains(&a),
+            "call-created finalizer temp must release at the list_new boundary"
+        );
+    }
+
+    #[test]
+    fn list_append_absorbs_producer_into_existing_container() {
+        let mut f = func();
+        let list = f.fresh_value();
+        let a = f.fresh_value();
+        let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+        entry.ops.push(op(OpCode::BuildList, vec![], vec![list]));
+        entry.ops.push(del_op(a));
+        entry
+            .ops
+            .push(original_kind_copy("list_append", vec![list, a], vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let lat = OwnershipLattice::compute(&f);
+        assert!(lat.is_finalizer_sensitive(a));
+        assert!(
+            lat.is_finalizer_sensitive(list),
+            "list_append must make the existing container finalizer-sensitive"
+        );
+        assert!(
+            lat.statement_release_finalizer_values().contains(&a),
+            "the appended producer temp has an absorption-boundary release fact"
+        );
+    }
+
+    #[test]
+    fn module_set_attr_absorbs_value_into_module_storage() {
+        let mut f = func();
+        let module = f.fresh_value();
+        let name = f.fresh_value();
+        let a = f.fresh_value();
+        let list = f.fresh_value();
+        let entry_id = f.entry_block;
+        let entry = f.blocks.get_mut(&entry_id).unwrap();
+        entry.ops.push(del_op(a));
+        entry
+            .ops
+            .push(original_kind_copy("list_new", vec![a], vec![list]));
+        entry
+            .ops
+            .push(op(OpCode::ModuleSetAttr, vec![module, name, list], vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let lat = OwnershipLattice::compute(&f);
+        assert!(lat.is_finalizer_sensitive(a));
+        assert!(
+            lat.is_finalizer_sensitive(list),
+            "list_new keeps the finalizer-bearing element behind the list owner"
+        );
+        assert!(
+            lat.is_finalizer_sensitive(module),
+            "module storage now owns a finalizer-sensitive value"
+        );
+        assert!(
+            lat.statement_release_finalizer_values().contains(&list),
+            "module_set_attr must release the compiler-owned value ref at the storage boundary"
+        );
+        assert!(
+            lat.statement_release_finalizer_boundaries()
+                .iter()
+                .any(|boundary| {
+                    boundary.block == entry_id && boundary.op_index == 2 && boundary.value == list
+                }),
+            "module_set_attr must expose the exact storage absorption boundary"
+        );
+    }
+
+    #[test]
+    fn list_pop_result_inherits_finalizer_sensitivity_from_container() {
+        let mut f = func();
+        let a = f.fresh_value();
+        let list = f.fresh_value();
+        let popped = f.fresh_value();
+        let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+        entry.ops.push(del_op(a));
+        entry
+            .ops
+            .push(original_kind_copy("list_new", vec![a], vec![list]));
+        entry
+            .ops
+            .push(original_kind_copy("list_pop", vec![list], vec![popped]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let lat = OwnershipLattice::compute(&f);
+        assert!(lat.is_finalizer_sensitive(list));
+        assert!(
+            lat.is_finalizer_sensitive(popped),
+            "list_pop result must inherit finalizer sensitivity from the source container"
+        );
+        assert!(
+            lat.statement_release_finalizer_values().contains(&popped),
+            "discarded pop result is a statement-release temporary unless Python-bound"
         );
     }
 

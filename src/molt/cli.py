@@ -10681,6 +10681,32 @@ def _runtime_intrinsic_symbols_file(
     return cache_path, None
 
 
+def _runtime_intrinsic_symbols_digest(symbols_file: Path | None) -> str:
+    if symbols_file is None:
+        return ""
+    try:
+        symbols = sorted(
+            {
+                line.strip()
+                for line in symbols_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            }
+        )
+    except OSError:
+        return ""
+    if not symbols:
+        return ""
+    payload = json.dumps(
+        {
+            "schema": "runtime-intrinsic-symbols-v1",
+            "symbols": symbols,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
     """Enable target-cpu=native for the Rust runtime compilation.
 
@@ -15390,8 +15416,9 @@ def _backend_daemon_compile_request_bytes(
         env_passthrough["MOLT_STDLIB_MODULE_SYMBOLS"] = stdlib_module_symbols_json
     # Per-app intrinsic resolver validation set: the file of intrinsic symbols the
     # linked runtime staticlib defines. Set in the ambient env once the runtime
-    # lib is ready (see `_prepare_native_codegen_environment`); forward it so the
-    # daemon's resolver never references an intrinsic absent from the staticlib.
+    # lib is ready (see `_stage_runtime_intrinsic_symbols_for_native_codegen`);
+    # forward it so the daemon's resolver never references an intrinsic absent
+    # from the staticlib.
     runtime_intrinsic_symbols = os.environ.get("MOLT_RUNTIME_INTRINSIC_SYMBOLS")
     if runtime_intrinsic_symbols:
         env_passthrough["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = runtime_intrinsic_symbols
@@ -22477,6 +22504,76 @@ def _prepare_frontend_execution(
     )
 
 
+def _stage_runtime_intrinsic_symbols_for_native_codegen(
+    runtime_state: _RuntimeArtifactState,
+    *,
+    target_triple: str | None,
+    json_output: bool,
+    runtime_cargo_profile: str,
+    molt_root: Path,
+    cargo_timeout: float | None,
+    stdlib_profile: str | None = "micro",
+    resolved_modules: set[str] | frozenset[str] | None = None,
+    is_wasm_freestanding: bool = False,
+) -> tuple[str, _CliFailure | None]:
+    # Native bin builds: expose the set of intrinsic symbols the linked runtime
+    # staticlib defines so the per-app resolver only references resolvable
+    # intrinsics. Setting it in the ambient env propagates to both the backend
+    # subprocess and the daemon request env passthrough.
+    #
+    # The digest returned here participates in the app/backend cache identity.
+    # Cache lookup therefore cannot reuse an object whose embedded resolver was
+    # emitted against a different runtime intrinsic symbol set.
+    runtime_lib = runtime_state.runtime_lib
+    os.environ.pop("MOLT_RUNTIME_INTRINSIC_SYMBOLS", None)
+    if runtime_lib is None or is_wasm_freestanding:
+        return "", None
+    runtime_ready = _ensure_native_runtime_lib_ready_before_link(
+        runtime_state,
+        target_triple=target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=molt_root,
+        cargo_timeout=cargo_timeout,
+        diagnostics_enabled=False,
+        phase_starts={},
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+    )
+    if not runtime_ready or not runtime_lib.exists():
+        return "", _fail(
+            "native runtime staticlib build failed or produced no artifact "
+            f"({runtime_lib}); cannot stage the intrinsic-symbol set native "
+            "codegen requires. See the cargo output above for the build error.",
+            json_output,
+            command="build",
+        )
+    symbols_file, symbols_failure = _runtime_intrinsic_symbols_file(runtime_lib)
+    if symbols_file is None:
+        return "", _fail(
+            "failed to extract the runtime staticlib's molt_* intrinsic "
+            f"symbols from {runtime_lib}: {symbols_failure}. Native codegen "
+            "requires this set (the per-app resolver must not reference "
+            "symbols the linker cannot satisfy). Remediation: install an "
+            "LLVM matching your Rust toolchain (`brew install llvm` or "
+            "`rustup component add llvm-tools`), or point MOLT_NM at a "
+            "bitcode-capable llvm-nm.",
+            json_output,
+            command="build",
+        )
+    digest = _runtime_intrinsic_symbols_digest(symbols_file)
+    if not digest:
+        return "", _fail(
+            "failed to digest the runtime staticlib intrinsic-symbol set "
+            f"from {symbols_file}; native backend cache identity requires "
+            "the exact resolver symbol authority.",
+            json_output,
+            command="build",
+        )
+    os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = str(symbols_file)
+    return digest, None
+
+
 def _prepare_backend_setup(
     *,
     is_rust_transpile: bool,
@@ -22516,6 +22613,22 @@ def _prepare_backend_setup(
         target_triple=target_triple,
         stdlib_profile=stdlib_profile,
     )
+    runtime_intrinsic_symbols_digest = ""
+    if emit_mode != "obj":
+        runtime_intrinsic_symbols_digest, intrinsic_symbols_error = (
+            _stage_runtime_intrinsic_symbols_for_native_codegen(
+                runtime_state,
+                target_triple=target_triple,
+                json_output=json_output,
+                runtime_cargo_profile=runtime_cargo_profile,
+                molt_root=molt_root,
+                cargo_timeout=cargo_timeout,
+                stdlib_profile=stdlib_profile,
+                resolved_modules=resolved_modules,
+            )
+        )
+        if intrinsic_symbols_error is not None:
+            return None, intrinsic_symbols_error
     cache_setup = _prepare_backend_cache_setup(
         cache_enabled=cache,
         ir=ir,
@@ -22536,8 +22649,9 @@ def _prepare_backend_setup(
         target_python=target_python,
         stdlib_profile=stdlib_profile,
         native_artifact_plan=native_artifact_plan,
+        runtime_intrinsic_symbols_digest=runtime_intrinsic_symbols_digest,
     )
-    if emit_mode != "obj":
+    if emit_mode != "obj" and not runtime_intrinsic_symbols_digest:
         _maybe_start_native_runtime_lib_ready_async(
             runtime_state,
             target_triple=target_triple,
@@ -22612,65 +22726,19 @@ def _prepare_backend_runtime_context(
             required_exports=required_exports,
         )
 
-    # Native bin builds: expose the set of intrinsic symbols the linked runtime
-    # staticlib defines so the per-app resolver only references resolvable
-    # intrinsics. Setting it in the ambient env propagates to both the backend
-    # subprocess (which copies os.environ) and the daemon request env passthrough.
-    # WASM/transpile builds have no native staticlib and never register the
-    # resolver, so leave the var unset there.
-    #
-    # The backend's resolver is emitted at codegen time and references these
-    # symbols, so codegen depends on the staticlib being built. The native
-    # runtime is built on a background future; join it here (before codegen)
-    # for native bin builds so the symbol set is available. The link-time
-    # readiness check re-runs the now-synchronous (and fingerprint-cached)
-    # ensure, which is cheap once the staticlib exists.
-    # `runtime_state.runtime_lib` is only populated for native bin builds
-    # (emit_mode == "bin"); WASM/transpile leave it None and never register the
-    # resolver, so this whole block is native-only.
-    runtime_lib = runtime_state.runtime_lib
-    os.environ.pop("MOLT_RUNTIME_INTRINSIC_SYMBOLS", None)
-    if runtime_lib is not None and not is_wasm_freestanding:
-        runtime_ready = _ensure_native_runtime_lib_ready_before_link(
-            runtime_state,
-            target_triple=target_triple,
-            json_output=json_output,
-            runtime_cargo_profile=runtime_cargo_profile,
-            molt_root=molt_root,
-            cargo_timeout=cargo_timeout,
-            diagnostics_enabled=False,
-            phase_starts={},
-            stdlib_profile=stdlib_profile,
-            resolved_modules=resolved_modules,
-        )
-        # The staticlib symbol set is a HARD precondition of native codegen: the
-        # backend's per-app intrinsic resolver validates its manifest against it
-        # and fails closed when it is absent. Every failure here must therefore
-        # fail the build NOW with the real reason — silently skipping the env
-        # staging used to surface, much later and misleadingly, as a backend
-        # panic ("MOLT_RUNTIME_INTRINSIC_SYMBOLS was unset").
-        if not runtime_ready or not runtime_lib.exists():
-            return None, _fail(
-                "native runtime staticlib build failed or produced no artifact "
-                f"({runtime_lib}); cannot stage the intrinsic-symbol set native "
-                "codegen requires. See the cargo output above for the build error.",
-                json_output,
-                command="build",
-            )
-        symbols_file, symbols_failure = _runtime_intrinsic_symbols_file(runtime_lib)
-        if symbols_file is None:
-            return None, _fail(
-                "failed to extract the runtime staticlib's molt_* intrinsic "
-                f"symbols from {runtime_lib}: {symbols_failure}. Native codegen "
-                "requires this set (the per-app resolver must not reference "
-                "symbols the linker cannot satisfy). Remediation: install an "
-                "LLVM matching your Rust toolchain (`brew install llvm` or "
-                "`rustup component add llvm-tools`), or point MOLT_NM at a "
-                "bitcode-capable llvm-nm.",
-                json_output,
-                command="build",
-            )
-        os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] = str(symbols_file)
+    _, intrinsic_symbols_error = _stage_runtime_intrinsic_symbols_for_native_codegen(
+        runtime_state,
+        target_triple=target_triple,
+        json_output=json_output,
+        runtime_cargo_profile=runtime_cargo_profile,
+        molt_root=molt_root,
+        cargo_timeout=cargo_timeout,
+        stdlib_profile=stdlib_profile,
+        resolved_modules=resolved_modules,
+        is_wasm_freestanding=is_wasm_freestanding,
+    )
+    if intrinsic_symbols_error is not None:
+        return None, intrinsic_symbols_error
 
     return _PreparedBackendRuntimeContext(
         runtime_state=runtime_state,
@@ -25609,6 +25677,7 @@ def _build_cache_variant(
     partition_mode: bool = False,
     backend_binary_identity: str = "",
     external_static_packages_digest: str = "",
+    runtime_intrinsic_symbols_digest: str = "",
 ) -> str:
     """Build a cache variant key from build configuration.
 
@@ -25635,6 +25704,12 @@ def _build_cache_variant(
     backend *source-tree* fingerprint (``_cache_fingerprint``) does not catch
     this when source mtimes are reset by git/worktree ops or when two
     same-source builds produce different binaries.
+
+    ``runtime_intrinsic_symbols_digest`` MUST be part of native binary cache
+    identity because the app object embeds the per-app intrinsic resolver. The
+    resolver's relocation set is computed against the linked runtime staticlib's
+    exact `molt_*` symbol authority; a stale app object emitted against a
+    different set can either miss required intrinsics or reference absent ones.
     """
     parts = [
         f"profile={profile}",
@@ -25654,6 +25729,8 @@ def _build_cache_variant(
         parts.append(f"backend_bin={backend_binary_identity}")
     if external_static_packages_digest:
         parts.append(f"external_static_packages={external_static_packages_digest}")
+    if runtime_intrinsic_symbols_digest:
+        parts.append(f"runtime_intrinsics={runtime_intrinsic_symbols_digest}")
     return ";".join(parts)
 
 
@@ -25680,6 +25757,7 @@ def _prepare_backend_cache_setup(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
+    runtime_intrinsic_symbols_digest: str = "",
 ) -> _BackendCacheSetup:
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
@@ -25714,6 +25792,7 @@ def _prepare_backend_cache_setup(
         stdlib_profile=stdlib_profile,
         backend_binary_identity=backend_binary_identity,
         external_static_packages_digest=native_artifact_plan.digest(),
+        runtime_intrinsic_symbols_digest=runtime_intrinsic_symbols_digest,
     )
     if not cache_enabled:
         # Even with cache disabled, compute stdlib_object_path so the

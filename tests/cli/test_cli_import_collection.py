@@ -7504,6 +7504,8 @@ def _compile_with_backend_daemon_non_wasm(
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
+    stdlib_module_symbols_json: str | None = None,
+    stdlib_module_symbols: set[str] | frozenset[str] | None = None,
     timeout: float | None,
     request_bytes: bytes | None = None,
     daemon_identity: cli._BackendDaemonIdentity | None = None,
@@ -7526,6 +7528,8 @@ def _compile_with_backend_daemon_non_wasm(
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
+        stdlib_module_symbols_json=stdlib_module_symbols_json,
+        stdlib_module_symbols=stdlib_module_symbols,
         timeout=timeout,
         request_bytes=request_bytes,
         daemon_identity=daemon_identity,
@@ -9084,13 +9088,18 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
     assert any("not a verified live daemon" in warning for warning in warnings)
 
 
-def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_hit(
+def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_hit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_lib = tmp_path / "libmolt_runtime.a"
+    symbols_file = tmp_path / "libmolt_runtime.a.intrinsics.txt"
+    symbols_file.write_text(
+        "molt_importlib_import_transaction\nmolt_len\n", encoding="utf-8"
+    )
     output_artifact = tmp_path / "output.o"
     ensure_calls: list[Path | None] = []
+    cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
         entry_override_by_module={},
@@ -9107,7 +9116,7 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_h
     )
 
     def fake_prepare_backend_cache_setup(**kwargs: object) -> cli._BackendCacheSetup:
-        del kwargs
+        cache_setup_kwargs.append(dict(kwargs))
         return cli._BackendCacheSetup(
             cache_enabled=True,
             cache_key="module-cache",
@@ -9128,8 +9137,15 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_h
         cli,
         "_ensure_runtime_lib_ready",
         lambda runtime_state, **kwargs: (
-            ensure_calls.append(runtime_state.runtime_lib) or True
+            ensure_calls.append(runtime_state.runtime_lib)
+            or runtime_lib.write_bytes(b"runtime")
+            or True
         ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_intrinsic_symbols_file",
+        lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
         cli,
@@ -9164,16 +9180,23 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_h
     assert backend_setup_error is None
     assert prepared_backend_setup is not None
     assert prepared_backend_setup.cache_hit is True
-    assert ensure_calls == []
+    assert ensure_calls == [runtime_lib]
+    assert os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] == str(symbols_file)
+    assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
+        cli._runtime_intrinsic_symbols_digest(symbols_file)
+    )
 
 
-def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_miss(
+def test_prepare_backend_setup_stages_runtime_intrinsics_before_native_cache_miss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_lib = tmp_path / "libmolt_runtime.a"
+    symbols_file = tmp_path / "libmolt_runtime.a.intrinsics.txt"
+    symbols_file.write_text("molt_len\n", encoding="utf-8")
     output_artifact = tmp_path / "output.o"
     ensure_calls: list[Path | None] = []
+    cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
         entry_override_by_module={},
@@ -9190,7 +9213,7 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_m
     )
 
     def fake_prepare_backend_cache_setup(**kwargs: object) -> cli._BackendCacheSetup:
-        del kwargs
+        cache_setup_kwargs.append(dict(kwargs))
         return cli._BackendCacheSetup(
             cache_enabled=True,
             cache_key="module-cache",
@@ -9211,8 +9234,15 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_m
         cli,
         "_ensure_runtime_lib_ready",
         lambda runtime_state, **kwargs: (
-            ensure_calls.append(runtime_state.runtime_lib) or True
+            ensure_calls.append(runtime_state.runtime_lib)
+            or runtime_lib.write_bytes(b"runtime")
+            or True
         ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_intrinsic_symbols_file",
+        lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
         cli,
@@ -9247,16 +9277,22 @@ def test_prepare_backend_setup_defers_runtime_lib_ready_check_for_native_cache_m
     assert backend_setup_error is None
     assert prepared_backend_setup is not None
     assert prepared_backend_setup.cache_hit is False
-    assert ensure_calls == []
+    assert ensure_calls == [runtime_lib]
+    assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
+        cli._runtime_intrinsic_symbols_digest(symbols_file)
+    )
 
 
-def test_prepare_backend_setup_starts_native_runtime_build_async(
+def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_async(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_lib = tmp_path / "libmolt_runtime.a"
+    symbols_file = tmp_path / "libmolt_runtime.a.intrinsics.txt"
+    symbols_file.write_text("molt_len\n", encoding="utf-8")
     output_artifact = tmp_path / "output.o"
     scheduled: list[tuple[Path | None, str | None, str, frozenset[str]]] = []
+    cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
         entry_override_by_module={},
@@ -9273,7 +9309,7 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
     )
 
     def fake_prepare_backend_cache_setup(**kwargs: object) -> cli._BackendCacheSetup:
-        del kwargs
+        cache_setup_kwargs.append(dict(kwargs))
         return cli._BackendCacheSetup(
             cache_enabled=True,
             cache_key="module-cache",
@@ -9289,6 +9325,16 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
 
     monkeypatch.setattr(
         cli, "_prepare_backend_cache_setup", fake_prepare_backend_cache_setup
+    )
+    monkeypatch.setattr(
+        cli,
+        "_ensure_runtime_lib_ready",
+        lambda runtime_state, **kwargs: runtime_lib.write_bytes(b"runtime") or True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_intrinsic_symbols_file",
+        lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
         cli,
@@ -9330,9 +9376,10 @@ def test_prepare_backend_setup_starts_native_runtime_build_async(
 
     assert backend_setup_error is None
     assert prepared_backend_setup is not None
-    assert scheduled == [
-        (runtime_lib, None, "release-fast", frozenset({"__main__", "json"}))
-    ]
+    assert scheduled == []
+    assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
+        cli._runtime_intrinsic_symbols_digest(symbols_file)
+    )
 
 
 def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
@@ -13779,6 +13826,9 @@ def test_backend_daemon_compile_request_includes_partition_env(
         skip_function_output_if_synced=False,
         entry_module="pkg.app",
         stdlib_object_path=stdlib_object_path,
+        stdlib_object_cache_key="stdlib-cache-key",
+        stdlib_object_manifest='{"cache_key":"stdlib-cache-key"}',
+        stdlib_module_symbols_json='["importlib","importlib_machinery","importlib_util","sys"]',
     )
 
     assert error is None
@@ -13787,6 +13837,12 @@ def test_backend_daemon_compile_request_includes_partition_env(
     env = payload["env"]
     assert env["MOLT_ENTRY_MODULE"] == "pkg.app"
     assert env["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
+    assert env["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
+    assert env["MOLT_STDLIB_CACHE_MANIFEST"] == '{"cache_key":"stdlib-cache-key"}'
+    assert (
+        env["MOLT_STDLIB_MODULE_SYMBOLS"]
+        == '["importlib","importlib_machinery","importlib_util","sys"]'
+    )
 
 
 def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
@@ -14617,6 +14673,13 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key="stdlib-cache-key",
         stdlib_object_manifest=stdlib_manifest,
+        stdlib_module_symbols_json='["importlib","importlib_machinery","importlib_util","sys"]',
+        stdlib_module_symbols={
+            "importlib",
+            "importlib_machinery",
+            "importlib_util",
+            "sys",
+        },
         timeout=0.1,
     )
 
@@ -14628,12 +14691,20 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     assert seen_payloads[0]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
     assert seen_payloads[0]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
     assert seen_payloads[0]["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == stdlib_manifest
+    assert (
+        seen_payloads[0]["env"]["MOLT_STDLIB_MODULE_SYMBOLS"]
+        == '["importlib","importlib_machinery","importlib_util","sys"]'
+    )
     second_job = cast(dict[str, object], seen_payloads[1]["jobs"][0])
     assert "ir" not in second_job
     assert Path(cast(str, second_job["ir_path"])) == ir_lease_paths[0]
     assert seen_payloads[1]["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
     assert seen_payloads[1]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
     assert seen_payloads[1]["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == stdlib_manifest
+    assert (
+        seen_payloads[1]["env"]["MOLT_STDLIB_MODULE_SYMBOLS"]
+        == '["importlib","importlib_machinery","importlib_util","sys"]'
+    )
     assert not ir_lease_paths[0].exists()
 
 
@@ -14672,6 +14743,11 @@ def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
                 "functions": [{"name": "heavy"}]
             }
             assert payload["env"]["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
+            assert payload["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
+            assert payload["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == (
+                '{"cache_key":"stdlib-cache-key"}'
+            )
+            assert payload["env"]["MOLT_STDLIB_MODULE_SYMBOLS"] == '["sys"]'
             backend_output.write_bytes(b"\x7fELF")
             self._chunks = [
                 json.dumps(
@@ -14717,6 +14793,8 @@ def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key="stdlib-cache-key",
         stdlib_object_manifest='{"cache_key":"stdlib-cache-key"}',
+        stdlib_module_symbols_json='["sys"]',
+        stdlib_module_symbols={"sys"},
         timeout=0.1,
     )
 
@@ -16983,3 +17061,31 @@ def test_external_static_package_digest_changes_backend_cache_identity() -> None
 
     assert variant_a != variant_b
     assert "external_static_packages=" in variant_a
+
+
+def test_runtime_intrinsic_symbol_digest_changes_backend_cache_identity() -> None:
+    variant_a = cli._build_cache_variant(
+        profile="dev",
+        runtime_cargo="debug",
+        backend_cargo="debug",
+        emit="bin",
+        stdlib_split=True,
+        codegen_env="x",
+        linked=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        runtime_intrinsic_symbols_digest="a" * 64,
+    )
+    variant_b = cli._build_cache_variant(
+        profile="dev",
+        runtime_cargo="debug",
+        backend_cargo="debug",
+        emit="bin",
+        stdlib_split=True,
+        codegen_env="x",
+        linked=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        runtime_intrinsic_symbols_digest="b" * 64,
+    )
+
+    assert variant_a != variant_b
+    assert "runtime_intrinsics=" in variant_a

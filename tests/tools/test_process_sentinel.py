@@ -277,7 +277,9 @@ def test_process_groups_keep_observed_child_group_after_reparenting() -> None:
         samples,
         root=root,
         self_pid=9999,
-        known_pgids={12},
+        known_process_identities={
+            12: module.memory_guard.process_identity(samples[12]),
+        },
     )
 
     assert len(groups) == 1
@@ -309,12 +311,36 @@ def test_process_groups_owned_filter_excludes_repo_matching_peer() -> None:
         samples,
         root=root,
         self_pid=9999,
-        known_pgids={20, 30},
-        owned_pgids={20},
+        owned_pids={20},
     )
 
     assert [group.pgid for group in groups] == [20]
     assert groups[0].command_text.endswith("--owned")
+
+
+def test_process_groups_exclude_mixed_custody_group_with_owned_child() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=777,
+            rss_kb=100,
+            command="/repo/molt/target/dev-fast/molt-backend --owned",
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=777,
+            rss_kb=200,
+            command="/Applications/Claude.app/Contents/MacOS/Claude",
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert groups == []
 
 
 def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
@@ -365,13 +391,12 @@ def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
         samples,
         root=root,
         self_pid=9999,
-        known_pgids={100, 300},
     )
     skipped = module.skipped_protected_process_groups(
         samples,
         root=root,
         self_pid=9999,
-        known_pgids={100, 300},
+        observed_pgids={100, 300},
     )
 
     assert [group.pgid for group in groups] == [200]
@@ -411,13 +436,12 @@ def test_process_groups_exclude_claude_group_even_with_repo_child() -> None:
         samples,
         root=root,
         self_pid=9999,
-        known_pgids={100},
     )
     skipped = module.skipped_protected_process_groups(
         samples,
         root=root,
         self_pid=9999,
-        known_pgids={100},
+        observed_pgids={100},
     )
 
     assert [group.pgid for group in groups] == [200]

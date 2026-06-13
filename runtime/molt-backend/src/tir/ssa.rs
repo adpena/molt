@@ -1114,19 +1114,6 @@ impl<'a> SsaContext<'a> {
         {
             operands.push(vid);
         }
-        // For store_var, the source is in args.
-        if op.kind == "store_var"
-            && let Some(args) = &op.args
-        {
-            for a in args {
-                if is_variable(a)
-                    && let Some(vid) = self.resolve_known_var(a, var_stacks)
-                {
-                    operands.push(vid);
-                }
-            }
-        }
-
         if op.kind == "check_exception"
             && let Some(label_id) = op.value
             && let Some(target_bid) = self.block_for_label(label_id)
@@ -1293,8 +1280,7 @@ impl<'a> SsaContext<'a> {
         // metadata (a non-variable string) rather than an SSA reference.  For
         // such ops, the var was NOT resolved to an operand above (it was either
         // not a variable or failed resolution), so we store it as an attr.
-        if op.kind != "store_var"
-            && op.kind != "load_var"
+        if op.kind != "load_var"
             && op.kind != "copy_var"
             && let Some(ref v) = op.var
         {
@@ -1309,10 +1295,8 @@ impl<'a> SsaContext<'a> {
         // preserve the original kind string so the back-conversion can
         // emit the correct SimpleIR op.
         if opcode == OpCode::Copy
-            && !matches!(
-                op.kind.as_str(),
-                "copy" | "store_var" | "load_var" | "copy_var"
-            )
+            && (op.kind == "store_var"
+                || !matches!(op.kind.as_str(), "copy" | "load_var" | "copy_var"))
         {
             attrs.insert("_original_kind".into(), AttrValue::Str(op.kind.clone()));
         }
@@ -1924,6 +1908,52 @@ mod tests {
         assert_eq!(
             fallback_count, 0,
             "module_get_attr must be a first-class TIR op, not Copy[_original_kind]"
+        );
+    }
+
+    #[test]
+    fn store_var_survives_ssa_as_local_lifetime_marker() {
+        let ops = vec![
+            OpIR {
+                kind: "list_new".to_string(),
+                args: Some(vec![]),
+                out: Some("list".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("bag".to_string()),
+                args: Some(vec!["list".to_string()]),
+                ..OpIR::default()
+            },
+            op("ret_void"),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let store_markers: Vec<_> = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .filter(|op| {
+                op.opcode == OpCode::Copy
+                    && matches!(
+                        op.attrs.get("_original_kind"),
+                        Some(AttrValue::Str(kind)) if kind == "store_var"
+                    )
+                    && matches!(op.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "bag")
+            })
+            .collect();
+        assert!(
+            !store_markers.is_empty(),
+            "store_var must survive SSA as a local lifetime marker for finalizer ordering"
+        );
+        let marker = store_markers[0];
+        assert_eq!(marker.operands.len(), 1);
+        assert_eq!(marker.results.len(), 1);
+        assert!(
+            matches!(marker.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "bag"),
+            "store_var marker must preserve the Python local name"
         );
     }
 

@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::tir::blocks::{BlockId, Terminator};
@@ -12,6 +13,230 @@ use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::type_refine::refine_types;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
+
+const PLAN_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const PLAN_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+#[derive(Clone)]
+struct PlanHasher(u64);
+
+impl Default for PlanHasher {
+    fn default() -> Self {
+        Self(PLAN_HASH_OFFSET)
+    }
+}
+
+impl PlanHasher {
+    #[inline]
+    fn mix_byte(&mut self, value: u8) {
+        self.0 ^= u64::from(value);
+        self.0 = self.0.wrapping_mul(PLAN_HASH_PRIME);
+    }
+
+    #[inline]
+    fn mix_u64(&mut self, value: u64) {
+        self.0 ^= value;
+        self.0 = self.0.wrapping_mul(PLAN_HASH_PRIME);
+    }
+}
+
+impl Hasher for PlanHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut offset = 0;
+        while offset + 8 <= bytes.len() {
+            let lane = u64::from_le_bytes(
+                bytes[offset..offset + 8]
+                    .try_into()
+                    .expect("eight-byte hash chunk"),
+            );
+            self.mix_u64(lane);
+            offset += 8;
+        }
+        while offset < bytes.len() {
+            self.mix_byte(bytes[offset]);
+            offset += 1;
+        }
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.mix_byte(value);
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        self.mix_u64(u64::from(value));
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.mix_u64(u64::from(value));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.mix_u64(value);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.mix_u64(value as u64);
+    }
+}
+
+type PlanBuildHasher = BuildHasherDefault<PlanHasher>;
+type PlanHashMap<K, V> = HashMap<K, V, PlanBuildHasher>;
+type PlanHashSet<T> = HashSet<T, PlanBuildHasher>;
+
+fn plan_hash_map<K, V>(capacity: usize) -> PlanHashMap<K, V> {
+    HashMap::with_capacity_and_hasher(capacity, PlanBuildHasher::default())
+}
+
+fn plan_hash_set<T>(capacity: usize) -> PlanHashSet<T> {
+    HashSet::with_capacity_and_hasher(capacity, PlanBuildHasher::default())
+}
+
+#[derive(Clone, Copy)]
+struct StoreVarEdge<'a> {
+    target: &'a str,
+    source: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+struct AliasEdge<'a> {
+    out: &'a str,
+    source: &'a str,
+}
+
+struct FunctionFactIndex<'a> {
+    stores: Vec<StoreVarEdge<'a>>,
+    aliases: Vec<AliasEdge<'a>>,
+    alias_sources: PlanHashSet<&'a str>,
+    output_ops: Vec<&'a OpIR>,
+    data_ops: Vec<&'a OpIR>,
+    store_index_ops: Vec<&'a OpIR>,
+    delete_targets: PlanHashSet<String>,
+}
+
+impl<'a> FunctionFactIndex<'a> {
+    fn for_function(func_ir: &'a FunctionIR) -> Self {
+        let mut stores = Vec::with_capacity(func_ir.ops.len() / 4 + 1);
+        let mut aliases = Vec::with_capacity(func_ir.ops.len() / 4 + 1);
+        let mut alias_sources = plan_hash_set(func_ir.ops.len() / 4 + 1);
+        let mut output_ops = Vec::with_capacity(func_ir.ops.len());
+        let mut data_ops = Vec::with_capacity(func_ir.ops.len());
+        let mut store_index_ops = Vec::with_capacity(func_ir.ops.len() / 8 + 1);
+        let mut delete_targets = plan_hash_set(func_ir.ops.len() / 8 + 1);
+
+        for op in &func_ir.ops {
+            if let Some(target) = store_var_target_name(op) {
+                stores.push(StoreVarEdge {
+                    target,
+                    source: store_var_source_name(op),
+                });
+            }
+            if op.kind == "delete_var"
+                && let Some(target) = op.var.as_ref().or(op.out.as_ref())
+            {
+                delete_targets.insert(target.clone());
+            }
+            if let Some(out) = op.out.as_deref() {
+                output_ops.push(op);
+                if !matches!(op.kind.as_str(), "store_var" | "delete_var") {
+                    data_ops.push(op);
+                }
+                if let Some(source) = alias_source_name(op) {
+                    aliases.push(AliasEdge { out, source });
+                    alias_sources.insert(source);
+                }
+            }
+            if op.kind == "store_index" {
+                store_index_ops.push(op);
+            }
+        }
+
+        Self {
+            stores,
+            aliases,
+            alias_sources,
+            output_ops,
+            data_ops,
+            store_index_ops,
+            delete_targets,
+        }
+    }
+}
+
+enum StoreTargetState<T> {
+    Proven(T),
+    UnknownRelevant,
+    UnknownIrrelevant,
+}
+
+fn unknown_store_target_state<T>(relevant: impl FnOnce() -> bool) -> StoreTargetState<T> {
+    if relevant() {
+        StoreTargetState::UnknownRelevant
+    } else {
+        StoreTargetState::UnknownIrrelevant
+    }
+}
+
+fn merge_store_target_state<T: Eq>(
+    state: &mut StoreTargetState<T>,
+    source_fact: Option<T>,
+    relevant: impl FnOnce() -> bool,
+) {
+    match source_fact {
+        Some(fact) => {
+            if let StoreTargetState::Proven(existing) = state
+                && existing != &fact
+            {
+                *state = unknown_store_target_state(relevant);
+            }
+        }
+        None => {
+            *state = unknown_store_target_state(relevant);
+        }
+    }
+}
+
+fn initial_store_target_state<T>(
+    source_fact: Option<T>,
+    relevant: impl FnOnce() -> bool,
+) -> StoreTargetState<T> {
+    source_fact
+        .map(StoreTargetState::Proven)
+        .unwrap_or_else(|| unknown_store_target_state(relevant))
+}
+
+struct StoreTargetFacts<'a, T> {
+    entries: Vec<(&'a str, Option<T>)>,
+    none_targets: PlanHashSet<&'a str>,
+}
+
+impl<'a, T> StoreTargetFacts<'a, T> {
+    fn from_states(states: PlanHashMap<&'a str, StoreTargetState<T>>) -> Self {
+        let mut entries = Vec::with_capacity(states.len());
+        let mut none_targets = plan_hash_set(states.len() / 4 + 1);
+        for (target, state) in states {
+            match state {
+                StoreTargetState::Proven(fact) => entries.push((target, Some(fact))),
+                StoreTargetState::UnknownRelevant => {
+                    none_targets.insert(target);
+                    entries.push((target, None));
+                }
+                StoreTargetState::UnknownIrrelevant => {}
+            }
+        }
+        Self {
+            entries,
+            none_targets,
+        }
+    }
+
+    fn target_is_none(&self, target: &str) -> bool {
+        self.none_targets.contains(target)
+    }
+}
 
 /// Scalar lane derived from the backend-facing TIR/LIR contract.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -250,18 +475,18 @@ impl ScalarRepresentationFact {
 /// `fast_float`, or `type_hint`) as representation authority.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ScalarRepresentationPlan {
-    facts_by_name: BTreeMap<String, ScalarRepresentationFact>,
-    conflicted_names: BTreeSet<String>,
+    facts_by_name: PlanHashMap<String, ScalarRepresentationFact>,
+    conflicted_names: PlanHashSet<String>,
     /// Names whose current fact came from a SYNTHETIC (canonical fallback)
     /// name — `_v{N}` / `_bb{N}_arg{I}` from the internal re-lift. Weak facts
     /// yield to explicit-stream-name facts instead of conflicting them out
     /// (see [`Self::insert_lir_value_weak`]).
-    weak_fact_names: BTreeSet<String>,
-    non_scalar_names: BTreeSet<String>,
-    integer_family_names: BTreeSet<String>,
-    container_storage_by_name: BTreeMap<String, ContainerStorageFact>,
-    container_storage_conflicted_names: BTreeSet<String>,
-    container_storage_ops: BTreeMap<usize, ContainerStorageFact>,
+    weak_fact_names: PlanHashSet<String>,
+    non_scalar_names: PlanHashSet<String>,
+    integer_family_names: PlanHashSet<String>,
+    container_storage_by_name: PlanHashMap<String, ContainerStorageFact>,
+    container_storage_conflicted_names: PlanHashSet<String>,
+    container_storage_ops: PlanHashMap<usize, ContainerStorageFact>,
     /// The representation lattice element per SimpleIR name — the single source
     /// of truth for the integer raw-carrier classification (design §2.1). Every
     /// scalar name floors to [`Repr::default_for`] of its `TirType`; names proven
@@ -270,14 +495,14 @@ pub(crate) struct ScalarRepresentationPlan {
     /// (`{name | repr.is_raw_i64_safe()}`); see [`Self::primary_name_sets`].
     /// Phase 4 folds the bool/float carriers (below) in here as `Bool`/
     /// `FloatUnboxed` raises.
-    repr_by_name: BTreeMap<String, Repr>,
+    repr_by_name: PlanHashMap<String, Repr>,
     /// Raw-bool carrier names — kept as an independent set until Phase 4 folds
     /// the bool lane into `repr_by_name`.
-    bool_primary_names: BTreeSet<String>,
+    bool_primary_names: PlanHashSet<String>,
     /// Raw-f64 carrier names — kept as an independent set until Phase 4 folds the
     /// float lane into `repr_by_name`.
-    float_primary_names: BTreeSet<String>,
-    scalar_slot_exclusion_unsafe: BTreeSet<String>,
+    float_primary_names: PlanHashSet<String>,
+    scalar_slot_exclusion_unsafe: PlanHashSet<String>,
     scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
 }
 
@@ -811,7 +1036,27 @@ fn propagate_raw_i64_safe_values(
 }
 
 impl ScalarRepresentationPlan {
+    fn with_capacity(op_count: usize) -> Self {
+        let name_capacity = op_count.saturating_mul(2).max(16);
+        Self {
+            facts_by_name: plan_hash_map(name_capacity),
+            conflicted_names: plan_hash_set(op_count / 4 + 1),
+            weak_fact_names: plan_hash_set(name_capacity),
+            non_scalar_names: plan_hash_set(op_count / 4 + 1),
+            integer_family_names: plan_hash_set(name_capacity),
+            container_storage_by_name: plan_hash_map(op_count / 2 + 1),
+            container_storage_conflicted_names: plan_hash_set(op_count / 8 + 1),
+            container_storage_ops: plan_hash_map(op_count / 8 + 1),
+            repr_by_name: plan_hash_map(name_capacity),
+            bool_primary_names: plan_hash_set(op_count / 4 + 1),
+            float_primary_names: plan_hash_set(op_count / 4 + 1),
+            scalar_slot_exclusion_unsafe: plan_hash_set(op_count / 4 + 1),
+            scalar_store_targets_by_kind: BTreeMap::new(),
+        }
+    }
+
     pub(crate) fn for_function_ir(func_ir: &FunctionIR) -> Self {
+        let fact_index = FunctionFactIndex::for_function(func_ir);
         let mut tir_func = lower_to_tir(func_ir);
         refine_types(&mut tir_func);
         let names = SimpleValueNames::for_function(&tir_func);
@@ -820,7 +1065,7 @@ impl ScalarRepresentationPlan {
         // proven repr would be circular AND would change the analysis input.
         let lir_func = lower_function_to_lir(&tir_func, None);
 
-        let mut plan = Self::default();
+        let mut plan = Self::with_capacity(func_ir.ops.len());
         plan.seed_container_storage_from_tir(&tir_func, &names);
         let mut block_ids: Vec<_> = lir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);
@@ -876,13 +1121,13 @@ impl ScalarRepresentationPlan {
         // (lifted to a type-aliasing `OpCode::Copy` passthrough) is not mistyped
         // as its first element — the root of the membership-dispatch miscompile.
         plan.seed_container_constructor_facts(func_ir);
-        plan.propagate_simple_aliases(func_ir);
-        plan.propagate_integer_family(func_ir);
-        plan.propagate_container_storage(func_ir);
+        plan.propagate_simple_aliases(&fact_index);
+        plan.propagate_integer_family(func_ir, &fact_index);
+        plan.propagate_container_storage(&fact_index);
         plan.mark_container_storage_ops(func_ir);
         plan.scalar_slot_exclusion_unsafe = plan.compute_scalar_slot_exclusion_unsafe(func_ir);
-        plan.scalar_store_targets_by_kind = plan.compute_scalar_store_targets(func_ir);
-        plan.seed_repr_by_name(func_ir);
+        plan.scalar_store_targets_by_kind = plan.compute_scalar_store_targets(&fact_index);
+        plan.seed_repr_by_name(func_ir, &fact_index);
         plan
     }
 
@@ -893,14 +1138,14 @@ impl ScalarRepresentationPlan {
     /// [`Repr::RawI64Safe`]. The bool/float carriers are stored as independent
     /// sets pending the Phase-4 fold. This is the single point where the legacy
     /// carrier analyses become the typed representation lattice.
-    fn seed_repr_by_name(&mut self, func_ir: &FunctionIR) {
-        let primary = self.compute_primary_name_sets(func_ir);
+    fn seed_repr_by_name(&mut self, func_ir: &FunctionIR, fact_index: &FunctionFactIndex<'_>) {
+        let primary = self.compute_primary_name_sets(func_ir, fact_index);
         // Type floor for every scalar name we have a representation fact for.
-        let mut repr_by_name: BTreeMap<String, Repr> = self
-            .facts_by_name
-            .iter()
-            .map(|(name, fact)| (name.clone(), Repr::default_for(&fact.ty)))
-            .collect();
+        let mut repr_by_name =
+            plan_hash_map(self.facts_by_name.len().saturating_add(primary.int.len()));
+        for (name, fact) in &self.facts_by_name {
+            repr_by_name.insert(name.clone(), Repr::default_for(&fact.ty));
+        }
         // Raise the proven raw-i64 int carriers. `primary.int` is exactly the
         // interval-/OSC-proven, no-i64-wrap carrier subset; in the lattice these
         // are `RawI64Safe` (bare i64, not NaN-boxed). The boxed-but-proven-inline
@@ -910,8 +1155,8 @@ impl ScalarRepresentationPlan {
             repr_by_name.insert(name.clone(), Repr::RawI64Safe);
         }
         self.repr_by_name = repr_by_name;
-        self.bool_primary_names = primary.bool_;
-        self.float_primary_names = primary.float;
+        self.bool_primary_names = primary.bool_.into_iter().collect();
+        self.float_primary_names = primary.float.into_iter().collect();
     }
 
     pub(crate) fn scalar_name_sets(
@@ -953,7 +1198,7 @@ impl ScalarRepresentationPlan {
 
     #[cfg(test)]
     pub(crate) fn integer_family_names(&self) -> BTreeSet<String> {
-        self.integer_family_names.clone()
+        self.integer_family_names.iter().cloned().collect()
     }
 
     /// The raw-primary carrier sets, as a **view** over the representation
@@ -966,8 +1211,8 @@ impl ScalarRepresentationPlan {
     pub(crate) fn primary_name_sets(&self) -> ScalarPrimaryNameSets {
         ScalarPrimaryNameSets {
             int: self.int_carrier_names(),
-            bool_: self.bool_primary_names.clone(),
-            float: self.float_primary_names.clone(),
+            bool_: self.bool_primary_names.iter().cloned().collect(),
+            float: self.float_primary_names.iter().cloned().collect(),
         }
     }
 
@@ -987,7 +1232,7 @@ impl ScalarRepresentationPlan {
     #[cfg(any(feature = "native-backend", test))]
     #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
     pub(crate) fn scalar_slot_exclusion_unsafe(&self) -> BTreeSet<String> {
-        self.scalar_slot_exclusion_unsafe.clone()
+        self.scalar_slot_exclusion_unsafe.iter().cloned().collect()
     }
 
     #[cfg(any(feature = "native-backend", test))]
@@ -1237,182 +1482,170 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    fn propagate_simple_aliases(&mut self, func_ir: &FunctionIR) {
+    fn propagate_simple_aliases(&mut self, fact_index: &FunctionFactIndex<'_>) {
         let mut changed = true;
         while changed {
             changed = false;
-            let store_target_facts = self.store_target_facts(func_ir);
-            for (target, fact) in &store_target_facts {
-                if fact.is_none() && self.facts_by_name.remove(target).is_some() {
+            let store_target_facts = self.store_target_facts(fact_index);
+            for (target, fact) in &store_target_facts.entries {
+                if fact.is_none() && self.facts_by_name.remove(*target).is_some() {
                     changed = true;
                 }
             }
-            changed |= self.propagate_store_targets(store_target_facts.clone());
-            for op in &func_ir.ops {
-                let Some(out) = op.out.as_ref() else {
-                    continue;
-                };
-                let Some(source) = alias_source_name(op) else {
-                    continue;
-                };
-                if store_target_facts
-                    .get(source)
-                    .is_some_and(|fact| fact.is_none())
-                {
-                    if self.facts_by_name.remove(out).is_some() {
+            changed |= self.propagate_store_targets(&store_target_facts);
+            for edge in &fact_index.aliases {
+                if store_target_facts.target_is_none(edge.source) {
+                    if self.facts_by_name.remove(edge.out).is_some() {
                         changed = true;
                     }
                     continue;
                 }
-                if self.facts_by_name.contains_key(out) {
+                if self.facts_by_name.contains_key(edge.out) {
                     continue;
                 }
-                let Some(fact) = self.facts_by_name.get(source).cloned() else {
+                let Some(fact) = self.facts_by_name.get(edge.source).cloned() else {
                     continue;
                 };
-                changed |= self.insert_fact(out.clone(), fact);
+                changed |= self.insert_fact(edge.out.to_string(), fact);
             }
         }
     }
 
-    fn store_target_facts(
+    fn store_target_facts<'a>(
         &self,
-        func_ir: &FunctionIR,
-    ) -> BTreeMap<String, Option<ScalarRepresentationFact>> {
-        let mut facts_by_target: BTreeMap<String, Option<ScalarRepresentationFact>> =
-            BTreeMap::new();
-        for op in &func_ir.ops {
-            let Some(target) = store_var_target_name(op) else {
-                continue;
-            };
-            let source_fact = store_var_source_name(op)
+        fact_index: &FunctionFactIndex<'a>,
+    ) -> StoreTargetFacts<'a, ScalarRepresentationFact> {
+        let mut states: PlanHashMap<&str, StoreTargetState<ScalarRepresentationFact>> =
+            plan_hash_map(fact_index.stores.len().saturating_add(1));
+        for edge in &fact_index.stores {
+            let source_fact = edge
+                .source
                 .and_then(|source| self.facts_by_name.get(source))
                 .cloned();
-            facts_by_target
-                .entry(target.to_string())
-                .and_modify(|existing| {
-                    if existing.as_ref() != source_fact.as_ref() {
-                        *existing = None;
-                    }
-                })
-                .or_insert(source_fact);
+            let relevant = || {
+                self.facts_by_name.contains_key(edge.target)
+                    || fact_index.alias_sources.contains(edge.target)
+            };
+            match states.entry(edge.target) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    merge_store_target_state(entry.get_mut(), source_fact, relevant);
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(initial_store_target_state(source_fact, relevant));
+                }
+            }
         }
-        facts_by_target
+        StoreTargetFacts::from_states(states)
     }
 
     fn propagate_store_targets(
         &mut self,
-        facts_by_target: BTreeMap<String, Option<ScalarRepresentationFact>>,
+        facts_by_target: &StoreTargetFacts<'_, ScalarRepresentationFact>,
     ) -> bool {
         let mut changed = false;
-        for (target, fact) in facts_by_target {
-            let Some(fact) = fact else {
+        for (target, fact) in &facts_by_target.entries {
+            let Some(fact) = fact.as_ref() else {
                 continue;
             };
-            if self.facts_by_name.get(&target) != Some(&fact) {
-                changed |= self.insert_fact(target, fact);
+            if self.facts_by_name.get(*target) != Some(fact) {
+                changed |= self.insert_fact((*target).to_string(), fact.clone());
             }
         }
         changed
     }
 
-    fn propagate_container_storage(&mut self, func_ir: &FunctionIR) {
+    fn propagate_container_storage(&mut self, fact_index: &FunctionFactIndex<'_>) {
         let mut changed = true;
         while changed {
             changed = false;
-            let store_target_facts = self.container_storage_store_target_facts(func_ir);
-            for (target, fact) in &store_target_facts {
+            let store_target_facts = self.container_storage_store_target_facts(fact_index);
+            for (target, fact) in &store_target_facts.entries {
                 if fact.is_none() {
-                    changed |= self.remove_container_storage_fact(target);
+                    changed |= self.remove_container_storage_fact(*target);
                 }
             }
-            changed |= self.propagate_container_storage_store_targets(store_target_facts.clone());
-            for op in &func_ir.ops {
-                if let Some(out) = op.out.as_ref()
-                    && let Some(source) = alias_source_name(op)
+            changed |= self.propagate_container_storage_store_targets(&store_target_facts);
+            for edge in &fact_index.aliases {
+                if store_target_facts.target_is_none(edge.source) {
+                    changed |= self.remove_container_storage_fact(edge.out);
+                    continue;
+                }
+                if !self.container_storage_by_name.contains_key(edge.out)
+                    && let Some(fact) = self.container_storage_by_name.get(edge.source).cloned()
                 {
-                    if store_target_facts
-                        .get(source)
-                        .is_some_and(|fact| fact.is_none())
-                    {
-                        changed |= self.remove_container_storage_fact(out);
-                        continue;
-                    }
-                    if !self.container_storage_by_name.contains_key(out)
-                        && let Some(fact) = self.container_storage_by_name.get(source).cloned()
+                    changed |= self.insert_container_storage_fact(edge.out.to_string(), fact);
+                }
+            }
+            for op in &fact_index.store_index_ops {
+                let Some(args) = op.args.as_ref() else {
+                    continue;
+                };
+                let Some(container) = args.first() else {
+                    continue;
+                };
+                if self.name_container_storage_kind(container)
+                    != Some(ContainerStorageKind::FlatListInt)
+                {
+                    continue;
+                }
+                let value_preserves_flat_int = args.get(2).is_some_and(|value| {
+                    self.name_scalar_kind(value) == Some(ScalarKind::Int)
+                        || self.name_is_integer_family(value)
+                });
+                if value_preserves_flat_int {
+                    if let Some(out) = op.out.as_ref()
+                        && let Some(fact) = self.container_storage_by_name.get(container).cloned()
                     {
                         changed |= self.insert_container_storage_fact(out.clone(), fact);
                     }
-                }
-                if op.kind == "store_index" {
-                    let Some(args) = op.args.as_ref() else {
-                        continue;
-                    };
-                    let Some(container) = args.first() else {
-                        continue;
-                    };
-                    if self.name_container_storage_kind(container)
-                        != Some(ContainerStorageKind::FlatListInt)
-                    {
-                        continue;
-                    }
-                    let value_preserves_flat_int = args.get(2).is_some_and(|value| {
-                        self.name_scalar_kind(value) == Some(ScalarKind::Int)
-                            || self.name_is_integer_family(value)
-                    });
-                    if value_preserves_flat_int {
-                        if let Some(out) = op.out.as_ref()
-                            && let Some(fact) =
-                                self.container_storage_by_name.get(container).cloned()
-                        {
-                            changed |= self.insert_container_storage_fact(out.clone(), fact);
-                        }
-                    } else {
-                        changed |= self.remove_container_storage_fact(container);
-                        if let Some(out) = op.out.as_ref() {
-                            changed |= self.remove_container_storage_fact(out);
-                        }
+                } else {
+                    changed |= self.remove_container_storage_fact(container);
+                    if let Some(out) = op.out.as_ref() {
+                        changed |= self.remove_container_storage_fact(out);
                     }
                 }
             }
         }
     }
 
-    fn container_storage_store_target_facts(
+    fn container_storage_store_target_facts<'a>(
         &self,
-        func_ir: &FunctionIR,
-    ) -> BTreeMap<String, Option<ContainerStorageFact>> {
-        let mut facts_by_target: BTreeMap<String, Option<ContainerStorageFact>> = BTreeMap::new();
-        for op in &func_ir.ops {
-            let Some(target) = store_var_target_name(op) else {
-                continue;
-            };
-            let source_fact = store_var_source_name(op)
+        fact_index: &FunctionFactIndex<'a>,
+    ) -> StoreTargetFacts<'a, ContainerStorageFact> {
+        let mut states: PlanHashMap<&str, StoreTargetState<ContainerStorageFact>> =
+            plan_hash_map(fact_index.stores.len() / 2 + 1);
+        for edge in &fact_index.stores {
+            let source_fact = edge
+                .source
                 .and_then(|source| self.container_storage_by_name.get(source))
                 .cloned();
-            facts_by_target
-                .entry(target.to_string())
-                .and_modify(|existing| {
-                    if existing.as_ref() != source_fact.as_ref() {
-                        *existing = None;
-                    }
-                })
-                .or_insert(source_fact);
+            let relevant = || {
+                self.container_storage_by_name.contains_key(edge.target)
+                    || fact_index.alias_sources.contains(edge.target)
+            };
+            match states.entry(edge.target) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    merge_store_target_state(entry.get_mut(), source_fact, relevant);
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(initial_store_target_state(source_fact, relevant));
+                }
+            }
         }
-        facts_by_target
+        StoreTargetFacts::from_states(states)
     }
 
     fn propagate_container_storage_store_targets(
         &mut self,
-        facts_by_target: BTreeMap<String, Option<ContainerStorageFact>>,
+        facts_by_target: &StoreTargetFacts<'_, ContainerStorageFact>,
     ) -> bool {
         let mut changed = false;
-        for (target, fact) in facts_by_target {
-            let Some(fact) = fact else {
+        for (target, fact) in &facts_by_target.entries {
+            let Some(fact) = fact.as_ref() else {
                 continue;
             };
-            if self.container_storage_by_name.get(&target) != Some(&fact) {
-                changed |= self.insert_container_storage_fact(target, fact);
+            if self.container_storage_by_name.get(*target) != Some(fact) {
+                changed |= self.insert_container_storage_fact((*target).to_string(), fact.clone());
             }
         }
         changed
@@ -1433,7 +1666,11 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    fn propagate_integer_family(&mut self, func_ir: &FunctionIR) {
+    fn propagate_integer_family(
+        &mut self,
+        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
+    ) {
         self.non_scalar_names = self.non_scalar_simple_outputs(func_ir);
         self.integer_family_names.extend(
             self.facts_by_name
@@ -1449,8 +1686,8 @@ impl ScalarRepresentationPlan {
         let mut changed = true;
         while changed {
             changed = false;
-            changed |= self.propagate_integer_store_targets(func_ir);
-            for op in &func_ir.ops {
+            changed |= self.propagate_integer_store_targets(fact_index);
+            for op in &fact_index.data_ops {
                 let Some(out) = op.out.as_ref() else {
                     continue;
                 };
@@ -1476,27 +1713,27 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    fn non_scalar_simple_outputs(&self, func_ir: &FunctionIR) -> BTreeSet<String> {
-        func_ir
-            .ops
-            .iter()
-            .filter_map(|op| {
-                let out = op.out.as_deref()?;
-                simple_op_produces_non_scalar_value(op.kind.as_str()).then(|| out.to_string())
-            })
-            .collect()
+    fn non_scalar_simple_outputs(&self, func_ir: &FunctionIR) -> PlanHashSet<String> {
+        let mut names = plan_hash_set(func_ir.ops.len() / 4 + 1);
+        for op in &func_ir.ops {
+            if let Some(out) = op.out.as_deref()
+                && simple_op_produces_non_scalar_value(op.kind.as_str())
+            {
+                names.insert(out.to_string());
+            }
+        }
+        names
     }
 
-    fn propagate_integer_store_targets(&mut self, func_ir: &FunctionIR) -> bool {
-        let mut targets: BTreeMap<String, bool> = BTreeMap::new();
-        for op in &func_ir.ops {
-            let Some(target) = store_var_target_name(op) else {
-                continue;
-            };
-            let source_is_integer = store_var_source_name(op)
+    fn propagate_integer_store_targets(&mut self, fact_index: &FunctionFactIndex<'_>) -> bool {
+        let mut targets: PlanHashMap<&str, bool> =
+            plan_hash_map(fact_index.stores.len().saturating_add(1));
+        for edge in &fact_index.stores {
+            let source_is_integer = edge
+                .source
                 .is_some_and(|source| self.integer_family_names.contains(source));
             targets
-                .entry(target.to_string())
+                .entry(edge.target)
                 .and_modify(|all_sources_integer| {
                     *all_sources_integer &= source_is_integer;
                 })
@@ -1505,7 +1742,7 @@ impl ScalarRepresentationPlan {
 
         let mut changed = false;
         for (target, all_sources_integer) in targets {
-            if all_sources_integer && self.integer_family_names.insert(target) {
+            if all_sources_integer && self.integer_family_names.insert(target.to_string()) {
                 changed = true;
             }
         }
@@ -1559,7 +1796,7 @@ impl ScalarRepresentationPlan {
 
     fn compute_scalar_store_targets(
         &self,
-        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
     ) -> BTreeMap<ScalarKind, BTreeSet<String>> {
         let mut targets = BTreeMap::new();
         for kind in [
@@ -1568,24 +1805,21 @@ impl ScalarRepresentationPlan {
             ScalarKind::Float,
             ScalarKind::Str,
         ] {
-            targets.insert(kind, self.scalar_lane_store_target_names(func_ir, kind));
+            targets.insert(kind, self.scalar_lane_store_target_names(fact_index, kind));
         }
         targets
     }
 
     fn scalar_lane_store_target_names(
         &self,
-        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
         lane: ScalarKind,
     ) -> BTreeSet<String> {
         let mut lane_outputs = BTreeSet::new();
         let mut changed = true;
         while changed {
-            changed = propagate_store_var_targets_in(func_ir, &mut lane_outputs);
-            for op in &func_ir.ops {
-                if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                    continue;
-                }
+            changed = propagate_store_var_targets_in(fact_index, &mut lane_outputs);
+            for op in &fact_index.data_ops {
                 let Some(out) = op.out.as_ref() else {
                     continue;
                 };
@@ -1612,10 +1846,14 @@ impl ScalarRepresentationPlan {
                 }
             }
         }
-        store_var_targets_all_sources_in(func_ir, &lane_outputs)
+        store_var_targets_all_sources_in(fact_index, &lane_outputs)
     }
 
-    fn compute_primary_name_sets(&self, func_ir: &FunctionIR) -> ScalarPrimaryNameSets {
+    fn compute_primary_name_sets(
+        &self,
+        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
+    ) -> ScalarPrimaryNameSets {
         if is_cold_module_chunk_function(&func_ir.name) {
             return ScalarPrimaryNameSets::default();
         }
@@ -1624,13 +1862,14 @@ impl ScalarRepresentationPlan {
         let param_name_set: BTreeSet<&str> = func_ir.params.iter().map(String::as_str).collect();
         let int_primary = self.compute_int_primary_names(
             func_ir,
+            fact_index,
             &param_name_set,
             &int_like,
             &bool_like,
             &float_like,
         );
         let bool_primary = self.compute_bool_primary_names(
-            func_ir,
+            fact_index,
             &param_name_set,
             &int_primary,
             &bool_like,
@@ -1639,7 +1878,7 @@ impl ScalarRepresentationPlan {
             &str_like,
         );
         let float_primary =
-            self.compute_float_primary_names(func_ir, &param_name_set, &int_like, &float_like);
+            self.compute_float_primary_names(fact_index, &param_name_set, &int_like, &float_like);
 
         ScalarPrimaryNameSets {
             int: int_primary,
@@ -1651,15 +1890,15 @@ impl ScalarRepresentationPlan {
     fn compute_int_primary_names(
         &self,
         func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
         param_name_set: &BTreeSet<&str>,
         int_like: &BTreeSet<String>,
         bool_like: &BTreeSet<String>,
         float_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
-        let delete_targets = delete_var_target_names(func_ir);
         let bounded_i64_names = compute_i64_interval_facts(func_ir);
-        let int_unsafe_outputs: BTreeSet<String> = func_ir
-            .ops
+        let int_unsafe_outputs: BTreeSet<String> = fact_index
+            .output_ops
             .iter()
             .filter_map(|op| {
                 let out = op.out.as_ref()?;
@@ -1697,20 +1936,22 @@ impl ScalarRepresentationPlan {
             .collect();
         let bounded_i64_name_set: BTreeSet<String> = bounded_i64_names.keys().cloned().collect();
         let vars_with_non_int_defs =
-            self.vars_with_non_int_defs(func_ir, int_like, bool_like, &bounded_i64_name_set);
+            self.vars_with_non_int_defs(fact_index, int_like, bool_like, &bounded_i64_name_set);
         let passes_filter = |name: &str| {
             (int_like.contains(name) || bounded_i64_names.contains_key(name))
                 && !param_name_set.contains(name)
                 && !int_unsafe_outputs.contains(name)
                 && !vars_with_non_int_defs.contains(name)
-                && !delete_targets.contains(name)
+                && !fact_index.delete_targets.contains(name)
                 && !float_like.contains(name)
         };
-        let mut candidates: BTreeSet<String> =
-            bounded_store_load_loop_seed_names(func_ir, &bounded_i64_names)
-                .into_iter()
-                .filter(|name| passes_filter(name))
-                .collect();
+        let mut candidates: PlanHashSet<String> =
+            plan_hash_set(bounded_i64_names.len().saturating_add(16));
+        for name in bounded_store_load_loop_seed_names(func_ir, &bounded_i64_names) {
+            if passes_filter(&name) {
+                candidates.insert(name);
+            }
+        }
         // OSC admission for `overflow_peel`'d loops: the {slot → load_var →
         // checked_add → slot} carrier cycle is raw-i64-admissible AS A UNIT —
         // no interval proof is needed (or possible: the accumulator is
@@ -1726,15 +1967,14 @@ impl ScalarRepresentationPlan {
         let mut changed = true;
         while changed {
             changed = false;
-            for target in store_var_targets_all_sources_in(func_ir, &candidates) {
+            for target in
+                store_var_targets_all_sources_where(fact_index, |src| candidates.contains(src))
+            {
                 if passes_filter(&target) && candidates.insert(target) {
                     changed = true;
                 }
             }
-            for op in &func_ir.ops {
-                if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                    continue;
-                }
+            for op in &fact_index.data_ops {
                 let Some(out) = op.out.as_ref() else {
                     continue;
                 };
@@ -1748,30 +1988,26 @@ impl ScalarRepresentationPlan {
                 }
             }
         }
-        candidates
+        candidates.into_iter().collect()
     }
 
     fn vars_with_non_int_defs(
         &self,
-        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
         int_like: &BTreeSet<String>,
         bool_like: &BTreeSet<String>,
         extra_int_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
         let mut non_int = BTreeSet::new();
-        for op in &func_ir.ops {
-            if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                let target = op.var.as_ref().or(op.out.as_ref());
-                let source = op.args.as_ref().and_then(|a| a.first());
-                if let Some(t) = target {
-                    let source_is_int = source.is_some_and(|s| {
-                        int_like.contains(s) || bool_like.contains(s) || extra_int_like.contains(s)
-                    });
-                    if !source_is_int {
-                        non_int.insert(t.clone());
-                    }
-                }
+        for edge in &fact_index.stores {
+            let source_is_int = edge.source.is_some_and(|s| {
+                int_like.contains(s) || bool_like.contains(s) || extra_int_like.contains(s)
+            });
+            if !source_is_int {
+                non_int.insert(edge.target.to_string());
             }
+        }
+        for op in &fact_index.output_ops {
             if let Some(out) = op.out.as_ref() {
                 let lane = self.infer_scalar_lane(op);
                 let proven_int = matches!(lane, Some(ScalarKind::Int) | Some(ScalarKind::Bool))
@@ -1786,7 +2022,7 @@ impl ScalarRepresentationPlan {
 
     fn compute_bool_primary_names(
         &self,
-        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
         param_name_set: &BTreeSet<&str>,
         int_primary: &BTreeSet<String>,
         bool_like: &BTreeSet<String>,
@@ -1794,9 +2030,8 @@ impl ScalarRepresentationPlan {
         float_like: &BTreeSet<String>,
         str_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
-        let delete_targets = delete_var_target_names(func_ir);
-        let bool_unsafe_outputs: BTreeSet<String> = func_ir
-            .ops
+        let bool_unsafe_outputs: BTreeSet<String> = fact_index
+            .output_ops
             .iter()
             .filter_map(|op| {
                 let out = op.out.as_ref()?;
@@ -1805,13 +2040,14 @@ impl ScalarRepresentationPlan {
                 (!is_safe_bool_op && bool_like.contains(out)).then(|| out.clone())
             })
             .collect();
-        let vars_with_non_bool_defs = self.vars_with_non_bool_defs(func_ir, bool_like, int_primary);
+        let vars_with_non_bool_defs =
+            self.vars_with_non_bool_defs(fact_index, bool_like, int_primary);
         let passes_filter = |name: &str| {
             bool_like.contains(name)
                 && !param_name_set.contains(name)
                 && !bool_unsafe_outputs.contains(name)
                 && !vars_with_non_bool_defs.contains(name)
-                && !delete_targets.contains(name)
+                && !fact_index.delete_targets.contains(name)
                 && !int_like.contains(name)
                 && !float_like.contains(name)
                 && !str_like.contains(name)
@@ -1821,15 +2057,12 @@ impl ScalarRepresentationPlan {
         let mut changed = true;
         while changed {
             changed = false;
-            for target in store_var_targets_all_sources_in(func_ir, &candidates) {
+            for target in store_var_targets_all_sources_in(fact_index, &candidates) {
                 if passes_filter(&target) && candidates.insert(target) {
                     changed = true;
                 }
             }
-            for op in &func_ir.ops {
-                if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                    continue;
-                }
+            for op in &fact_index.data_ops {
                 let Some(out) = op.out.as_ref() else {
                     continue;
                 };
@@ -1848,22 +2081,18 @@ impl ScalarRepresentationPlan {
 
     fn vars_with_non_bool_defs(
         &self,
-        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
         bool_like: &BTreeSet<String>,
         int_primary: &BTreeSet<String>,
     ) -> BTreeSet<String> {
         let mut non_bool = BTreeSet::new();
-        for op in &func_ir.ops {
-            if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                let target = op.var.as_ref().or(op.out.as_ref());
-                let source = op.args.as_ref().and_then(|a| a.first());
-                if let Some(t) = target {
-                    let source_is_bool = source.is_some_and(|s| bool_like.contains(s));
-                    if !source_is_bool {
-                        non_bool.insert(t.clone());
-                    }
-                }
+        for edge in &fact_index.stores {
+            let source_is_bool = edge.source.is_some_and(|s| bool_like.contains(s));
+            if !source_is_bool {
+                non_bool.insert(edge.target.to_string());
             }
+        }
+        for op in &fact_index.output_ops {
             if let Some(out) = op.out.as_ref() {
                 let lane = self.infer_scalar_lane(op);
                 let raw_bool_output =
@@ -1921,14 +2150,13 @@ impl ScalarRepresentationPlan {
 
     fn compute_float_primary_names(
         &self,
-        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
         param_name_set: &BTreeSet<&str>,
         int_like: &BTreeSet<String>,
         float_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
-        let delete_targets = delete_var_target_names(func_ir);
-        let float_unsafe_outputs: BTreeSet<String> = func_ir
-            .ops
+        let float_unsafe_outputs: BTreeSet<String> = fact_index
+            .output_ops
             .iter()
             .filter_map(|op| {
                 let out = op.out.as_ref()?;
@@ -1954,7 +2182,7 @@ impl ScalarRepresentationPlan {
                 (!is_safe_float_op && float_like.contains(out)).then(|| out.clone())
             })
             .collect();
-        let vars_with_non_float_defs = self.vars_with_non_float_defs(func_ir, float_like);
+        let vars_with_non_float_defs = self.vars_with_non_float_defs(fact_index, float_like);
         float_like
             .iter()
             .filter(|name| {
@@ -1962,7 +2190,7 @@ impl ScalarRepresentationPlan {
                     && !float_unsafe_outputs.contains(*name)
                     && !int_like.contains(*name)
                     && !vars_with_non_float_defs.contains(*name)
-                    && !delete_targets.contains(*name)
+                    && !fact_index.delete_targets.contains(name.as_str())
             })
             .cloned()
             .collect()
@@ -1970,21 +2198,17 @@ impl ScalarRepresentationPlan {
 
     fn vars_with_non_float_defs(
         &self,
-        func_ir: &FunctionIR,
+        fact_index: &FunctionFactIndex<'_>,
         float_like: &BTreeSet<String>,
     ) -> BTreeSet<String> {
         let mut non_float = BTreeSet::new();
-        for op in &func_ir.ops {
-            if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                let target = op.var.as_ref().or(op.out.as_ref());
-                let source = op.args.as_ref().and_then(|a| a.first());
-                if let Some(t) = target {
-                    let source_is_float = source.is_some_and(|s| float_like.contains(s));
-                    if !source_is_float {
-                        non_float.insert(t.clone());
-                    }
-                }
+        for edge in &fact_index.stores {
+            let source_is_float = edge.source.is_some_and(|s| float_like.contains(s));
+            if !source_is_float {
+                non_float.insert(edge.target.to_string());
             }
+        }
+        for op in &fact_index.output_ops {
             if let Some(out) = op.out.as_ref() {
                 let lane = self.infer_scalar_lane(op);
                 if lane != Some(ScalarKind::Float) && float_like.contains(out) {
@@ -1995,8 +2219,8 @@ impl ScalarRepresentationPlan {
         non_float
     }
 
-    fn compute_scalar_slot_exclusion_unsafe(&self, func_ir: &FunctionIR) -> BTreeSet<String> {
-        let mut unsafe_set = BTreeSet::new();
+    fn compute_scalar_slot_exclusion_unsafe(&self, func_ir: &FunctionIR) -> PlanHashSet<String> {
+        let mut unsafe_set = plan_hash_set(func_ir.ops.len() / 4 + 1);
         for (op_index, op) in func_ir.ops.iter().enumerate() {
             match op.kind.as_str() {
                 "call"
@@ -2064,7 +2288,7 @@ impl ScalarRepresentationPlan {
         unsafe_set
     }
 
-    fn collect_scalar_args(&self, op: &OpIR, into: &mut BTreeSet<String>) {
+    fn collect_scalar_args(&self, op: &OpIR, into: &mut PlanHashSet<String>) {
         if let Some(args) = &op.args {
             for arg in args {
                 if self.name_is_slot_scalar(arg) {
@@ -2233,42 +2457,37 @@ impl ScalarRepresentationPlan {
 }
 
 fn store_var_targets_all_sources_in(
-    func_ir: &FunctionIR,
+    fact_index: &FunctionFactIndex<'_>,
     proven_outputs: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let mut targets: BTreeMap<String, bool> = BTreeMap::new();
-    for op in &func_ir.ops {
-        let Some(target) = store_var_target_name(op) else {
-            continue;
-        };
-        let source_proven =
-            store_var_source_name(op).is_some_and(|src| proven_outputs.contains(src));
+    store_var_targets_all_sources_where(fact_index, |src| proven_outputs.contains(src))
+}
+
+fn store_var_targets_all_sources_where(
+    fact_index: &FunctionFactIndex<'_>,
+    mut source_proven: impl FnMut(&str) -> bool,
+) -> BTreeSet<String> {
+    let mut targets: PlanHashMap<&str, bool> =
+        plan_hash_map(fact_index.stores.len().saturating_add(1));
+    for edge in &fact_index.stores {
+        let source_proven = edge.source.is_some_and(|src| source_proven(src));
         targets
-            .entry(target.to_string())
+            .entry(edge.target)
             .and_modify(|all_sources_proven| *all_sources_proven &= source_proven)
             .or_insert(source_proven);
     }
     targets
         .into_iter()
-        .filter_map(|(target, all_sources_proven)| all_sources_proven.then_some(target))
-        .collect()
-}
-
-fn delete_var_target_names(func_ir: &FunctionIR) -> BTreeSet<String> {
-    func_ir
-        .ops
-        .iter()
-        .filter(|op| op.kind == "delete_var")
-        .filter_map(|op| op.var.as_ref().or(op.out.as_ref()).cloned())
+        .filter_map(|(target, all_sources_proven)| all_sources_proven.then(|| target.to_string()))
         .collect()
 }
 
 fn propagate_store_var_targets_in(
-    func_ir: &FunctionIR,
+    fact_index: &FunctionFactIndex<'_>,
     proven_outputs: &mut BTreeSet<String>,
 ) -> bool {
     let mut changed = false;
-    for target in store_var_targets_all_sources_in(func_ir, proven_outputs) {
+    for target in store_var_targets_all_sources_in(fact_index, proven_outputs) {
         if proven_outputs.insert(target) {
             changed = true;
         }
@@ -2337,8 +2556,8 @@ fn tir_op_original_kind(op: &TirOp) -> Option<&str> {
 
 fn op_produces_raw_i64_for_int_primary(
     op: &OpIR,
-    candidates: &BTreeSet<String>,
-    bounded_i64_names: &BTreeMap<String, I64Interval>,
+    candidates: &PlanHashSet<String>,
+    bounded_i64_names: &PlanHashMap<String, I64Interval>,
 ) -> bool {
     let first_source = || {
         op.var.as_deref().or_else(|| {
@@ -2378,8 +2597,8 @@ fn op_produces_raw_i64_for_int_primary(
 /// rather than loop forever. The bound guarantees termination on ANY input.
 const INTERVAL_WIDEN_AFTER_PASSES: u32 = 8;
 
-fn compute_i64_interval_facts(func_ir: &FunctionIR) -> BTreeMap<String, I64Interval> {
-    let mut intervals = BTreeMap::new();
+fn compute_i64_interval_facts(func_ir: &FunctionIR) -> PlanHashMap<String, I64Interval> {
+    let mut intervals = plan_hash_map(func_ir.ops.len());
     let loop_backedge_updates = loop_backedge_update_names(func_ir);
     let mut changed = true;
     let mut pass = 0u32;
@@ -2405,7 +2624,7 @@ fn compute_i64_interval_facts(func_ir: &FunctionIR) -> BTreeMap<String, I64Inter
 }
 
 fn insert_interval(
-    intervals: &mut BTreeMap<String, I64Interval>,
+    intervals: &mut PlanHashMap<String, I64Interval>,
     name: &str,
     interval: I64Interval,
     widen: bool,
@@ -2433,8 +2652,8 @@ fn insert_interval(
 
 fn interval_for_simple_op(
     op: &OpIR,
-    intervals: &BTreeMap<String, I64Interval>,
-    loop_backedge_updates: &BTreeSet<String>,
+    intervals: &PlanHashMap<String, I64Interval>,
+    loop_backedge_updates: &PlanHashSet<String>,
 ) -> Option<I64Interval> {
     if op
         .out
@@ -2459,7 +2678,7 @@ fn interval_for_simple_op(
 
 fn interval_for_first_source(
     op: &OpIR,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
 ) -> Option<I64Interval> {
     let source = op.var.as_deref().or_else(|| {
         op.args
@@ -2471,7 +2690,7 @@ fn interval_for_first_source(
 
 fn interval_for_binary_args(
     op: &OpIR,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
     combine: fn(I64Interval, I64Interval) -> Option<I64Interval>,
 ) -> Option<I64Interval> {
     let args = op.args.as_ref()?;
@@ -2482,10 +2701,11 @@ fn interval_for_binary_args(
 
 fn propagate_store_target_intervals(
     func_ir: &FunctionIR,
-    intervals: &mut BTreeMap<String, I64Interval>,
+    intervals: &mut PlanHashMap<String, I64Interval>,
     widen: bool,
 ) -> bool {
-    let mut targets: BTreeMap<String, Option<I64Interval>> = BTreeMap::new();
+    let mut targets: PlanHashMap<String, Option<I64Interval>> =
+        plan_hash_map(func_ir.ops.len() / 4 + 1);
     for op in &func_ir.ops {
         let Some(target) = store_var_target_name(op) else {
             continue;
@@ -2514,7 +2734,7 @@ fn propagate_store_target_intervals(
 
 fn propagate_counted_loop_intervals(
     func_ir: &FunctionIR,
-    intervals: &mut BTreeMap<String, I64Interval>,
+    intervals: &mut PlanHashMap<String, I64Interval>,
     widen: bool,
 ) -> bool {
     let mut changed = false;
@@ -2558,7 +2778,7 @@ fn loop_index_interval_proof(
     func_ir: &FunctionIR,
     start: usize,
     end: usize,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
 ) -> Option<CountedLoopIntervalProof> {
     let ops = &func_ir.ops;
     let (iv_start_idx, iv_name, init_name) = ((start + 1)..end).find_map(|idx| {
@@ -2585,7 +2805,7 @@ fn store_load_loop_interval_proof(
     func_ir: &FunctionIR,
     start: usize,
     end: usize,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
 ) -> Option<CountedLoopIntervalProof> {
     let ops = &func_ir.ops;
     for load_idx in (start + 1)..end {
@@ -2642,7 +2862,7 @@ fn counted_loop_continue_predicate(
     start: usize,
     end: usize,
     iv_name: &str,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
 ) -> Option<LoopContinuePredicate> {
     let ops = &func_ir.ops;
     for break_idx in (start + 1)..end {
@@ -2710,7 +2930,7 @@ fn counted_loop_update(
     start: usize,
     end: usize,
     iv_name: &str,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
 ) -> Option<(usize, String, i64)> {
     let ops = &func_ir.ops;
     for idx in (start + 1..end).rev() {
@@ -2734,7 +2954,7 @@ fn store_load_loop_update(
     end: usize,
     slot_name: &str,
     iv_name: &str,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
 ) -> Option<(usize, String, i64)> {
     let ops = &func_ir.ops;
     for idx in (start + 1..end).rev() {
@@ -2756,7 +2976,7 @@ fn induction_update_step(
     func_ir: &FunctionIR,
     update_idx: usize,
     iv_name: &str,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
 ) -> Option<i64> {
     let op = &func_ir.ops[update_idx];
     let args = op.args.as_ref()?;
@@ -2820,7 +3040,7 @@ fn resolve_interval_before(
     func_ir: &FunctionIR,
     before_idx: usize,
     name: &str,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
     depth: usize,
 ) -> Option<I64Interval> {
     if depth > 8 {
@@ -2838,7 +3058,7 @@ fn resolve_interval_before(
         if op.out.as_deref() != Some(name) {
             continue;
         }
-        if let Some(interval) = interval_for_simple_op(op, intervals, &BTreeSet::new()) {
+        if let Some(interval) = interval_for_simple_op(op, intervals, &plan_hash_set(0)) {
             return Some(interval);
         }
         match op.kind.as_str() {
@@ -2860,7 +3080,7 @@ fn resolve_store_slot_interval_before(
     func_ir: &FunctionIR,
     before_idx: usize,
     slot_name: &str,
-    intervals: &BTreeMap<String, I64Interval>,
+    intervals: &PlanHashMap<String, I64Interval>,
 ) -> Option<I64Interval> {
     for idx in (0..before_idx).rev() {
         let op = &func_ir.ops[idx];
@@ -2872,8 +3092,8 @@ fn resolve_store_slot_interval_before(
     None
 }
 
-fn loop_backedge_update_names(func_ir: &FunctionIR) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
+fn loop_backedge_update_names(func_ir: &FunctionIR) -> PlanHashSet<String> {
+    let mut names = plan_hash_set(func_ir.ops.len() / 8 + 1);
     let ops = &func_ir.ops;
     for (start, end) in loop_regions(&func_ir.ops) {
         for idx in start + 1..end {
@@ -2948,7 +3168,7 @@ fn loop_backedge_update_names(func_ir: &FunctionIR) -> BTreeSet<String> {
 /// the fast loop's accumulator, IV, and `prev_*` snapshot slots survive.
 fn checked_loop_seed_names(
     func_ir: &FunctionIR,
-    bounded_i64_names: &BTreeMap<String, I64Interval>,
+    bounded_i64_names: &PlanHashMap<String, I64Interval>,
     passes_filter: &dyn Fn(&str) -> bool,
 ) -> BTreeSet<String> {
     // No checked_add ops → nothing to admit (the common case, zero cost).
@@ -3023,7 +3243,7 @@ fn checked_loop_seed_names(
 
 fn bounded_store_load_loop_seed_names(
     func_ir: &FunctionIR,
-    bounded_i64_names: &BTreeMap<String, I64Interval>,
+    bounded_i64_names: &PlanHashMap<String, I64Interval>,
 ) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for (start, end) in loop_regions(&func_ir.ops) {
@@ -3045,7 +3265,7 @@ fn store_slot_initial_source_is_raw_seed(
     func_ir: &FunctionIR,
     before_idx: usize,
     slot_name: &str,
-    bounded_i64_names: &BTreeMap<String, I64Interval>,
+    bounded_i64_names: &PlanHashMap<String, I64Interval>,
 ) -> bool {
     for idx in (0..before_idx).rev() {
         let op = &func_ir.ops[idx];
@@ -3062,7 +3282,7 @@ fn name_is_structural_raw_i64_before(
     func_ir: &FunctionIR,
     before_idx: usize,
     name: &str,
-    bounded_i64_names: &BTreeMap<String, I64Interval>,
+    bounded_i64_names: &PlanHashMap<String, I64Interval>,
     depth: usize,
 ) -> bool {
     if depth > 8 || !bounded_i64_names.contains_key(name) {
@@ -3530,7 +3750,9 @@ mod tests {
                 repr: LirRepr::DynBox,
             },
         );
-        plan.propagate_integer_family(&function("empty", &[], None, vec![]));
+        let func = function("empty", &[], None, vec![]);
+        let fact_index = FunctionFactIndex::for_function(&func);
+        plan.propagate_integer_family(&func, &fact_index);
 
         let (int_like, _, _, _, _) = plan.scalar_name_sets();
 
@@ -3805,7 +4027,9 @@ mod tests {
                 repr: LirRepr::Bool1,
             },
         );
-        plan.propagate_integer_family(&function("empty", &[], None, vec![]));
+        let func = function("empty", &[], None, vec![]);
+        let fact_index = FunctionFactIndex::for_function(&func);
+        plan.propagate_integer_family(&func, &fact_index);
 
         let (int_like, bool_like, _, _, _) = plan.scalar_name_sets();
 

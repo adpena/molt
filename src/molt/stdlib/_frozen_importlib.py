@@ -2,16 +2,18 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-import importlib.machinery as _machinery
-import importlib.util as _util
 import sys
+
+_machinery = __import__("importlib.machinery", globals(), locals(), ("ModuleSpec",), 0)
 
 _require_intrinsic("molt_capabilities_has")
 _MOLT_IMPORTLIB_FROZEN_PAYLOAD = _require_intrinsic("molt_importlib_frozen_payload")
+_MOLT_IMPORTLIB_MODULE_FROM_SPEC = _require_intrinsic("molt_importlib_module_from_spec")
+_MOLT_IMPORTLIB_SPEC_FROM_LOADER = _require_intrinsic("molt_importlib_spec_from_loader")
 
 
 def _load_payload() -> dict[str, object]:
-    payload = _MOLT_IMPORTLIB_FROZEN_PAYLOAD(_machinery, _util)
+    payload = _MOLT_IMPORTLIB_FROZEN_PAYLOAD(_machinery, None)
     if not isinstance(payload, dict):
         raise RuntimeError("invalid importlib frozen payload: dict expected")
     return payload
@@ -27,8 +29,8 @@ _PAYLOAD = _load_payload()
 BuiltinImporter = _payload_get(_PAYLOAD, "BuiltinImporter")
 FrozenImporter = _payload_get(_PAYLOAD, "FrozenImporter")
 ModuleSpec = _payload_get(_PAYLOAD, "ModuleSpec")
-module_from_spec = _payload_get(_PAYLOAD, "module_from_spec")
-spec_from_loader = _payload_get(_PAYLOAD, "spec_from_loader")
+module_from_spec = _MOLT_IMPORTLIB_MODULE_FROM_SPEC
+spec_from_loader = _MOLT_IMPORTLIB_SPEC_FROM_LOADER
 
 __all__ = [
     "BuiltinImporter",

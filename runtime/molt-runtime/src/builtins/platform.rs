@@ -6736,7 +6736,83 @@ fn importlib_spec_set_cached_from_origin_if_missing(
     out
 }
 
+fn importlib_module_support_bits(
+    _py: &PyToken<'_>,
+    modules_ptr: *mut u8,
+    module_name: &'static str,
+) -> Result<u64, u64> {
+    let key_bits = alloc_str_bits(_py, module_name)?;
+    let cached_bits = unsafe { dict_get_in_place(_py, modules_ptr, key_bits) };
+    if exception_pending(_py) {
+        dec_ref_bits(_py, key_bits);
+        return Err(MoltObject::none().bits());
+    }
+    if let Some(cached_bits) = cached_bits {
+        dec_ref_bits(_py, key_bits);
+        if obj_from_bits(cached_bits).is_none() {
+            return Err(raise_exception::<_>(
+                _py,
+                "ImportError",
+                &format!("import of {module_name} halted; None in sys.modules"),
+            ));
+        }
+        inc_ref_bits(_py, cached_bits);
+        return Ok(cached_bits);
+    }
+
+    let imported_bits = crate::molt_module_import(key_bits);
+    dec_ref_bits(_py, key_bits);
+    if exception_pending(_py) {
+        if !obj_from_bits(imported_bits).is_none() {
+            dec_ref_bits(_py, imported_bits);
+        }
+        return Err(MoltObject::none().bits());
+    }
+    if obj_from_bits(imported_bits).is_none() {
+        return Err(raise_exception::<_>(
+            _py,
+            "RuntimeError",
+            &format!("runtime support module unavailable: {module_name}"),
+        ));
+    }
+    Ok(imported_bits)
+}
+
 fn importlib_import_via_spec(
+    _py: &PyToken<'_>,
+    resolved: &str,
+    resolved_bits: u64,
+    modules_ptr: *mut u8,
+) -> Result<u64, u64> {
+    let util_bits = importlib_module_support_bits(_py, modules_ptr, "importlib.util")?;
+    let machinery_bits =
+        match importlib_module_support_bits(_py, modules_ptr, "importlib.machinery") {
+            Ok(bits) => bits,
+            Err(err) => {
+                if !obj_from_bits(util_bits).is_none() {
+                    dec_ref_bits(_py, util_bits);
+                }
+                return Err(err);
+            }
+        };
+    let out = importlib_import_via_spec_with_support(
+        _py,
+        resolved,
+        resolved_bits,
+        modules_ptr,
+        util_bits,
+        machinery_bits,
+    );
+    if !obj_from_bits(util_bits).is_none() {
+        dec_ref_bits(_py, util_bits);
+    }
+    if !obj_from_bits(machinery_bits).is_none() {
+        dec_ref_bits(_py, machinery_bits);
+    }
+    out
+}
+
+fn importlib_import_via_spec_with_support(
     _py: &PyToken<'_>,
     resolved: &str,
     resolved_bits: u64,
@@ -6947,17 +7023,8 @@ fn importlib_import_with_fallback(
     resolved: &str,
     resolved_bits: u64,
     modules_ptr: *mut u8,
-    util_bits: u64,
-    machinery_bits: u64,
 ) -> Result<u64, u64> {
-    let result = importlib_import_with_fallback_inner(
-        _py,
-        resolved,
-        resolved_bits,
-        modules_ptr,
-        util_bits,
-        machinery_bits,
-    );
+    let result = importlib_import_with_fallback_inner(_py, resolved, resolved_bits, modules_ptr);
 
     // If every import mechanism failed with ModuleNotFoundError, try loading a
     // native C extension (.so / .dylib) from sys.path before giving up.
@@ -6982,18 +7049,9 @@ fn importlib_import_with_fallback_inner(
     resolved: &str,
     resolved_bits: u64,
     modules_ptr: *mut u8,
-    util_bits: u64,
-    machinery_bits: u64,
 ) -> Result<u64, u64> {
     if IMPORTLIB_SPEC_FIRST_IMPORTS.contains(&resolved) {
-        return importlib_import_via_spec(
-            _py,
-            resolved,
-            resolved_bits,
-            modules_ptr,
-            util_bits,
-            machinery_bits,
-        );
+        return importlib_import_via_spec(_py, resolved, resolved_bits, modules_ptr);
     }
 
     let module_bits = crate::molt_module_import(resolved_bits);
@@ -7002,14 +7060,7 @@ fn importlib_import_with_fallback_inner(
             if !obj_from_bits(module_bits).is_none() {
                 dec_ref_bits(_py, module_bits);
             }
-            return importlib_import_via_spec(
-                _py,
-                resolved,
-                resolved_bits,
-                modules_ptr,
-                util_bits,
-                machinery_bits,
-            );
+            return importlib_import_via_spec(_py, resolved, resolved_bits, modules_ptr);
         }
         // Exceptions raised while importing in another runtime lane can carry
         // non-canonical class identities; rethrow in the current lane so
@@ -7024,27 +7075,13 @@ fn importlib_import_with_fallback_inner(
         if should_retry {
             clear_exception(_py);
             dec_ref_bits(_py, module_bits);
-            return importlib_import_via_spec(
-                _py,
-                resolved,
-                resolved_bits,
-                modules_ptr,
-                util_bits,
-                machinery_bits,
-            );
+            return importlib_import_via_spec(_py, resolved, resolved_bits, modules_ptr);
         }
         return Ok(module_bits);
     }
 
     clear_exception(_py);
-    importlib_import_via_spec(
-        _py,
-        resolved,
-        resolved_bits,
-        modules_ptr,
-        util_bits,
-        machinery_bits,
-    )
+    importlib_import_via_spec(_py, resolved, resolved_bits, modules_ptr)
 }
 
 /// Scan `sys.path` directories for a native C extension matching `module_name`,
