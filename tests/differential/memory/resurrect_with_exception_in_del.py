@@ -9,14 +9,14 @@
 # exception SIGNATURE (type+message) since the traceback frame/address formatting
 # differs across engines.
 #
-# STATUS: expected-fail. The standalone finalizer-exception path is isolated, but
-# this resurrection form still misses the explicit `del`/gc boundary: `__del__`
-# has not appended the object by the time mainline observes `box`, so Molt prints
-# `after_del box_len 0` and then raises IndexError on `box[0]`. Keep this as an
-# xfail until the finalizer dispatch/resurrection boundary matches CPython; the
-# harness will turn a real fix into XPASS-failure instead of silently weakening
-# the contract.
-# MOLT_META: stderr=exception_signature xfail=molt xfail_reason=finalizer-resurrection-explicit-del-boundary
+# STATUS: the #59 IC marker SIGSEGV is fixed. Any remaining failure here is a
+# separate finalizer resurrection / finalizer exception-state defect, not the IC
+# fast-path marker-transmute crash: the object must be appended before mainline
+# observes `box`, and a `__del__` exception must be swallowed even when
+# resurrection and gc collection compose. Keep this xfail until both boundaries
+# match CPython; the harness turns a real fix into XPASS-failure instead of
+# silently weakening the contract.
+# MOLT_META: stderr=exception_signature xfail=molt xfail_reason=finalizer-resurrection-exception-state-boundary-not-ic-marker
 import gc
 
 box = []
