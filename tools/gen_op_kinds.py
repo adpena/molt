@@ -92,16 +92,25 @@ _TERMINATOR_OWNERSHIP_LEAVES = {"borrowed", "transferred", "none"}
 # mirroring the [[opcode]] exhaustiveness discipline). Kept here (not parsed from
 # Rust) as the single declarative expectation; tests/test_gen_op_kinds.py
 # cross-checks it against the enum declared in blocks.rs so the two cannot drift.
-_TERMINATOR_VARIANTS = ("Branch", "CondBranch", "Switch", "Return", "Unreachable")
+_TERMINATOR_VARIANTS = (
+    "Branch",
+    "CondBranch",
+    "Switch",
+    "StateDispatch",
+    "Return",
+    "Unreachable",
+)
 
-# The three flat classifier sets (mirroring the flat `matches!` arms in
-# alias_analysis.rs). Kept distinct from the mapper's alias grouping because the
-# classifier groups per-individual-kind, not per-OpCode-equivalence.
+# The flat classifier sets (mirroring the flat `matches!` arms in
+# alias_analysis.rs and ownership_lattice_min.rs). Kept distinct from the
+# mapper's alias grouping because the classifier groups per-individual-kind,
+# not per-OpCode-equivalence.
 _CLASSIFIER_SETS = (
     "classifier_fresh_value",
     "classifier_exception_creation_ref",
     "classifier_inert_marker",
     "classifier_no_heap_move",
+    "classifier_absorbing_constructor",
 )
 
 
@@ -739,6 +748,25 @@ def render_rs(data: dict) -> str:
         "        kind,\n"
     )
     out.append(_render_matches_arm(no_heap))
+    out.append("    )\n}\n\n")
+
+    # -- absorbing-constructor classifier exact set ---------------------------
+    absorbing = list(data.get("classifier_absorbing_constructor", []))
+    out.append(
+        "/// EXACT-match arm of the ownership-lattice absorbing-constructor rule\n"
+        "/// (`ownership_lattice_min.rs`): Copy-lifted constructor kinds whose RESULT\n"
+        "/// takes (co-)ownership of its element operands — releasing the result\n"
+        "/// releases the elements, so a finalizer-sensitive element makes the result\n"
+        "/// finalizer-sensitive. Over-approximation is the SAFE direction here (a\n"
+        "/// non-finalizer value marked sensitive merely has its release deferred to\n"
+        "/// the Python lifetime boundary — unobservable); a missing member keeps the\n"
+        "/// pre-#58 SSA-last-use release for that shape.\n"
+        "#[inline]\n"
+        "pub(crate) fn copy_kind_absorbs_elements_table(kind: &str) -> bool {\n"
+        "    matches!(\n"
+        "        kind,\n"
+    )
+    out.append(_render_matches_arm(absorbing))
     out.append("    )\n}\n\n")
 
     # -- effect oracle: exhaustive over OpCode -------------------------------

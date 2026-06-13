@@ -1544,6 +1544,27 @@ pub(crate) fn drain_cleanup_tracked_dedup(
     skip: Option<&str>,
     mut already_decrefed: Option<&mut BTreeSet<String>>,
 ) -> Vec<String> {
+    drain_cleanup_tracked_dedup_with_budget(
+        names,
+        last_use,
+        alias_roots,
+        op_idx,
+        skip,
+        already_decrefed.as_deref_mut(),
+        None,
+    )
+}
+
+#[cfg(feature = "native-backend")]
+pub(crate) fn drain_cleanup_tracked_dedup_with_budget(
+    names: &mut Vec<String>,
+    last_use: &BTreeMap<String, usize>,
+    alias_roots: &BTreeMap<String, String>,
+    op_idx: usize,
+    skip: Option<&str>,
+    mut already_decrefed: Option<&mut BTreeSet<String>>,
+    mut retain_release_budget: Option<&mut BTreeMap<String, usize>>,
+) -> Vec<String> {
     let mut cleanup = Vec::new();
     names.retain(|name| {
         if skip == Some(name.as_str()) {
@@ -1553,15 +1574,33 @@ pub(crate) fn drain_cleanup_tracked_dedup(
             .get(name)
             .map(String::as_str)
             .unwrap_or(name.as_str());
-        if let Some(ref set) = already_decrefed
+        if let Some(ref mut set) = already_decrefed
             && set.contains(cleanup_key)
         {
-            return false;
+            let budget_allows = if let Some(ref mut budget) = retain_release_budget {
+                if let Some(extra) = budget.get_mut(cleanup_key) {
+                    if *extra > 0 {
+                        *extra -= 1;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !budget_allows {
+                return false;
+            }
         }
         let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
             if let Some(ref mut set) = already_decrefed {
-                set.insert(cleanup_key.to_string());
+                if !set.contains(cleanup_key) {
+                    set.insert(cleanup_key.to_string());
+                }
             }
             cleanup.push(name.clone());
             return false;

@@ -600,10 +600,8 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         // through in-loop blocks; the EXIT is the successor that leaves the loop.
         // Derive that here and emit a polarity consistent with it, so the
         // reconstruction is correct regardless of `break_kind` staleness.
-        let then_reaches_header =
-            successor_reaches_header(func, *then_block, *bid, cond_bid);
-        let else_reaches_header =
-            successor_reaches_header(func, *else_block, *bid, cond_bid);
+        let then_reaches_header = successor_reaches_header(func, *then_block, *bid, cond_bid);
+        let else_reaches_header = successor_reaches_header(func, *else_block, *bid, cond_bid);
         // Fall back to the recorded hint only when the CFG is ambiguous (both or
         // neither successor reaches the header — e.g. an infinite loop with no
         // exit, or an exit that re-enters). A reducible loop with a normal exit
@@ -1764,6 +1762,15 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 args: Some(operand_args(op)),
                 out: out_var,
                 value: attr_int(&op.attrs, "value"),
+                // Preserve the finalizer fact across the round-trip (the
+                // GENERIC class-instantiation `call_bind` carries it exactly
+                // like `object_new_bound` — #58): a re-lift must still seed
+                // `finalizer_alloc_roots` from this result, or the ownership
+                // lattice goes blind after the first SimpleIR round-trip and
+                // the deferred Return-boundary release silently degrades to
+                // SSA-last-use.
+                defines_del: attr_bool(&op.attrs, "defines_del"),
+                bound_local: attr_bool(&op.attrs, "bound_local"),
                 ..OpIR::default()
             })
         }
@@ -1853,6 +1860,10 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                     task_kind: attr_str(&op.attrs, "task_kind"),
                     container_type: attr_str(&op.attrs, "container_type"),
                     ic_index: attr_int(&op.attrs, "ic_index"),
+                    // Named-local fact (#58) — container literals (`list_new`/
+                    // `tuple_new`) ride this passthrough; losing the attr here
+                    // silently degrades the scope-boundary deferral.
+                    bound_local: attr_bool(&op.attrs, "bound_local"),
                     ..OpIR::default()
                 })
             } else if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
@@ -2156,6 +2167,16 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             args: Some(operand_args(op)),
             ..OpIR::default()
         }),
+        // Python lifetime boundary (`del x`, #58). Normally the drop phase
+        // normalizes this away before back-conversion on drop-activated
+        // targets; on the dormant-native lane it survives so the native
+        // preanalysis can pin the local's last_use to the del statement
+        // (codegen's default arm ignores the kind).
+        OpCode::DelBoundary => Some(OpIR {
+            kind: "del_boundary".to_string(),
+            args: Some(operand_args(op)),
+            ..OpIR::default()
+        }),
         OpCode::Alloc => Some(OpIR {
             kind: "alloc".to_string(),
             args: Some(operand_args(op)),
@@ -2186,6 +2207,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             // stack arm (rewritten by escape analysis) uses it to size
             // the Cranelift StackSlot.
             value: attr_int(&op.attrs, "value"),
+            // Preserve the finalizer fact across the round-trip so a
+            // re-lowering still sees that this instance's class defines
+            // `__del__` and must not be stack-promoted / RC-stripped.
+            defines_del: attr_bool(&op.attrs, "defines_del"),
+            bound_local: attr_bool(&op.attrs, "bound_local"),
             ..OpIR::default()
         }),
         OpCode::ObjectNewBoundStack => Some(OpIR {
