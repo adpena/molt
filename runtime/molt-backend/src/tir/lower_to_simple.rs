@@ -600,8 +600,10 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         // through in-loop blocks; the EXIT is the successor that leaves the loop.
         // Derive that here and emit a polarity consistent with it, so the
         // reconstruction is correct regardless of `break_kind` staleness.
-        let then_reaches_header = successor_reaches_header(func, *then_block, *bid, cond_bid);
-        let else_reaches_header = successor_reaches_header(func, *else_block, *bid, cond_bid);
+        let then_reaches_header =
+            successor_reaches_header(func, *then_block, *bid, cond_bid);
+        let else_reaches_header =
+            successor_reaches_header(func, *else_block, *bid, cond_bid);
         // Fall back to the recorded hint only when the CFG is ambiguous (both or
         // neither successor reaches the header — e.g. an infinite loop with no
         // exit, or an exit that re-enters). A reducible loop with a normal exit
