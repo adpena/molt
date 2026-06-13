@@ -576,7 +576,7 @@ mod tests {
             | BitXor | BitNot | Shl | Shr | And | Or | Not | Bool | Alloc | StackAlloc
             | ObjectNewBound | ObjectNewBoundStack | Free | LoadAttr | StoreAttr | DelAttr
             | Index | StoreIndex | DelIndex | Call | CallMethod | CallBuiltin | OrdAt | BoxVal
-            | UnboxVal | TypeGuard | IncRef | DecRef | BuildList | BuildDict | BuildTuple
+            | UnboxVal | TypeGuard | IncRef | DecRef | DelBoundary | BuildList | BuildDict | BuildTuple
             | BuildSet | BuildSlice | GetIter | IterNext | IterNextUnboxed | ForIter | AllocTask
             | StateSwitch | StateTransition | StateYield | ChanSendYield | ChanRecvYield
             | ClosureLoad | ClosureStore | Yield | YieldFrom | Raise | CheckException
@@ -647,6 +647,7 @@ mod tests {
             TypeGuard,
             IncRef,
             DecRef,
+            DelBoundary,
             BuildList,
             BuildDict,
             BuildTuple,

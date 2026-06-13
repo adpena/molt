@@ -3026,6 +3026,39 @@ impl SimpleBackend {
         } else {
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use)
         };
+        let mut explicit_retain_release_budget: BTreeMap<String, usize> = BTreeMap::new();
+        for (idx, op) in func_ir.ops.iter().enumerate() {
+            if op.kind != "inc_ref"
+                || rc_skip_inc.contains(&idx)
+                || op.out.as_deref() != Some("none")
+            {
+                continue;
+            }
+            let Some(src_name) = op.args.as_ref().and_then(|args| args.first()) else {
+                continue;
+            };
+            if src_name == "none" {
+                continue;
+            }
+            let root = alias_root_name(&alias_roots, src_name).to_string();
+            *explicit_retain_release_budget.entry(root).or_default() += 1;
+        }
+        let mut del_boundary_binding_sources: BTreeMap<usize, String> = BTreeMap::new();
+        let mut current_binding_sources: BTreeMap<String, String> = BTreeMap::new();
+        for (idx, op) in func_ir.ops.iter().enumerate() {
+            if op.kind == "del_boundary"
+                && let Some(binding_name) = op.s_value.as_ref()
+                && let Some(source_name) = current_binding_sources.get(binding_name)
+            {
+                del_boundary_binding_sources.insert(idx, source_name.clone());
+            }
+            if op.kind == "store_var"
+                && let Some(binding_name) = op.var.as_ref().or(op.out.as_ref())
+                && let Some(source_name) = op.args.as_ref().and_then(|args| args.first())
+            {
+                current_binding_sources.insert(binding_name.clone(), source_name.clone());
+            }
+        }
         let returns_value = has_ret || stateful;
 
         if returns_value {
@@ -3159,6 +3192,23 @@ impl SimpleBackend {
         // values are cloned to multiple blocks by if/check_exception/br_if.
         let mut already_decrefed: std::collections::BTreeSet<String> =
             std::collections::BTreeSet::new();
+        let mut drain_cleanup_tracked_dedup =
+            |names: &mut Vec<String>,
+             last_use: &BTreeMap<String, usize>,
+             alias_roots: &BTreeMap<String, String>,
+             op_idx: usize,
+             skip: Option<&str>,
+             already_decrefed: Option<&mut BTreeSet<String>>| {
+                crate::native_backend::drain_cleanup_tracked_dedup_with_budget(
+                    names,
+                    last_use,
+                    alias_roots,
+                    op_idx,
+                    skip,
+                    already_decrefed,
+                    Some(&mut explicit_retain_release_budget),
+                )
+            };
 
         let scrub_tracked_roots =
             |roots: &BTreeSet<String>,
@@ -4157,6 +4207,7 @@ impl SimpleBackend {
             let alias_src_name =
                 preanalyze_alias_source(&ops[op_idx], return_alias_summaries).map(str::to_string);
             let mut output_is_ptr = false;
+            let op_origin_block = builder.current_block();
 
             // ── Per-iteration dec_ref for loop-body reassigned variables ──
             // When a variable is assigned inside a loop body, the previous
@@ -16849,6 +16900,45 @@ impl SimpleBackend {
                         }
                     }
                 }
+                "del_boundary" => {
+                    let args_names = op.args.as_ref().expect("del_boundary args missing");
+                    let Some(src_name) = args_names.first() else {
+                        continue;
+                    };
+                    if src_name == "none" {
+                        continue;
+                    }
+                    let src = *var_get_boxed_overflow_safe(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        &vars,
+                        src_name,
+                        &int_primary_vars,
+                        &float_primary_vars,
+                        box_int_mask_var,
+                        box_int_tag_var,
+                    )
+                    .expect("del_boundary source not found");
+                    builder.ins().call(local_dec_ref_obj, &[src]);
+                    let mut scrub_names = BTreeSet::from([src_name.clone()]);
+                    if let Some(stored_name) = del_boundary_binding_sources.get(&op_idx) {
+                        scrub_names.insert(stored_name.clone());
+                    }
+                    let scrub_roots = cleanup_roots_for_names(&alias_roots, scrub_names);
+                    scrub_tracked_roots(
+                        &scrub_roots,
+                        &mut tracked_vars,
+                        &mut tracked_obj_vars,
+                        &mut tracked_vars_set,
+                        &mut tracked_obj_vars_set,
+                        &mut entry_vars,
+                        &mut block_tracked_obj,
+                        &mut block_tracked_ptr,
+                    );
+                }
                 "inc_ref" | "borrow" => {
                     if !rc_skip_inc.contains(&op_idx) {
                         let args_names = op.args.as_ref().expect("inc_ref/borrow args missing");
@@ -25262,6 +25352,31 @@ impl SimpleBackend {
                 && !is_block_filled
             {
                 builder.ins().call(local_dec_ref_obj, &[old_val]);
+            }
+
+            // Some expression helpers (`ensure_boxed_overflow_safe` is the common
+            // case) create internal fast/slow/merge blocks while lowering a single
+            // SimpleIR op. Values tracked on the origin block remain live through
+            // that helper-generated CFG and must continue on the merge block; if
+            // they stay attached to the abandoned origin block, later `del_boundary`
+            // / scope-exit cleanup cannot see them.
+            if !is_block_filled
+                && let (Some(origin_block), Some(current_block)) =
+                    (op_origin_block, builder.current_block())
+                && origin_block != current_block
+            {
+                if let Some(names) = block_tracked_obj.remove(&origin_block) {
+                    extend_unique_tracked(
+                        block_tracked_obj.entry(current_block).or_default(),
+                        names,
+                    );
+                }
+                if let Some(names) = block_tracked_ptr.remove(&origin_block) {
+                    extend_unique_tracked(
+                        block_tracked_ptr.entry(current_block).or_default(),
+                        names,
+                    );
+                }
             }
 
             // IMPORTANT: entry-tracked cleanup must be control-flow safe.
