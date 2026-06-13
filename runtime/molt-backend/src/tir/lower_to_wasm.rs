@@ -240,7 +240,8 @@ fn lir_terminator_successors(term: &LirTerminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        LirTerminator::Switch { cases, default, .. } => {
+        LirTerminator::Switch { cases, default, .. }
+        | LirTerminator::StateDispatch { cases, default, .. } => {
             let mut succs: Vec<BlockId> = cases.iter().map(|(_, bid, _)| *bid).collect();
             succs.push(*default);
             succs
@@ -1477,6 +1478,21 @@ fn emit_lir_terminator_multiblock(ctx: &mut LirLowerCtx, term: &LirTerminator, n
                 let depth = (num_blocks - 1).saturating_sub(tgt_idx + 1);
                 ctx.instructions.push(Instruction::Br(depth as u32));
             }
+        }
+        LirTerminator::StateDispatch { .. } => {
+            // `StateDispatch` only appears in generator/coroutine `_poll`
+            // bodies, which on WASM are lowered by the SimpleIR relooper path
+            // (`wasm.rs`), NOT this LIR fast path: `prepare_lir_wasm_fast_output`
+            // is gated to `____molt_globals_builtin__` functions only
+            // (`is_production_lir_wasm_fast_path_name`).  Reaching here means a
+            // state-machine body was incorrectly routed through the LIR fast
+            // lane — fail loud rather than emit a dispatch that silently ignores
+            // the saved frame state.
+            panic!(
+                "StateDispatch terminator reached the LIR→WASM fast lane in '{}'; \
+                 generator/coroutine _poll bodies must lower via the SimpleIR relooper",
+                ctx.func.name
+            );
         }
     }
 }

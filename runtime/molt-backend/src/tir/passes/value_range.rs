@@ -1514,6 +1514,12 @@ fn back_edge_update_value(
                 default,
                 default_args,
                 ..
+            }
+            | Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+                ..
             } => {
                 let mut v: Vec<(BlockId, &Vec<ValueId>)> =
                     cases.iter().map(|(_, t, a)| (*t, a)).collect();

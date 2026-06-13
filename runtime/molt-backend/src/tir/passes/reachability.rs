@@ -14,7 +14,8 @@ fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
+        Terminator::Switch { cases, default, .. }
+        | Terminator::StateDispatch { cases, default, .. } => {
             let mut successors = vec![*default];
             successors.extend(cases.iter().map(|(_, target, _)| *target));
             successors

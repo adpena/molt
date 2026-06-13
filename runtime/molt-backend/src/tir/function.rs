@@ -188,18 +188,23 @@ impl TirFunction {
     /// [`has_exception_handlers`]: TirFunction::has_exception_handlers
     pub fn has_state_machine(&self) -> bool {
         use super::ops::OpCode;
+        use super::blocks::Terminator;
         self.blocks.values().any(|block| {
-            block.ops.iter().any(|op| {
-                matches!(
-                    op.opcode,
-                    OpCode::StateSwitch
-                        | OpCode::StateTransition
-                        | OpCode::StateYield
-                        | OpCode::ChanSendYield
-                        | OpCode::ChanRecvYield
-                        | OpCode::AllocTask
-                )
-            })
+            // The `state_switch` dispatch is now a first-class `StateDispatch`
+            // terminator (not a body op), so detect it there; the suspend ops
+            // (`StateYield`/`StateTransition`/`Chan*Yield`) remain body ops.
+            matches!(block.terminator, Terminator::StateDispatch { .. })
+                || block.ops.iter().any(|op| {
+                    matches!(
+                        op.opcode,
+                        OpCode::StateSwitch
+                            | OpCode::StateTransition
+                            | OpCode::StateYield
+                            | OpCode::ChanSendYield
+                            | OpCode::ChanRecvYield
+                            | OpCode::AllocTask
+                    )
+                })
         })
     }
 }

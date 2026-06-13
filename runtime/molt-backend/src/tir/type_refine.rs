@@ -1369,6 +1369,12 @@ fn collect_branch_edges(block: &TirBlock) -> Vec<(BlockId, Vec<ValueId>)> {
             default,
             default_args,
             ..
+        }
+        | Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+            ..
         } => {
             let mut edges: Vec<(BlockId, Vec<ValueId>)> = cases
                 .iter()
