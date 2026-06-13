@@ -9,8 +9,9 @@
 /// validates candidate intrinsic names against this set so it never takes the
 /// address of a symbol absent from the staticlib (an unresolvable relocation).
 ///
-/// Returns `None` when the env var is unset or the file cannot be read, in which
-/// case the manifest scan falls back to a conservative structural heuristic.
+/// Returns `None` when the env var is unset or the file cannot be read. The
+/// required resolver path treats that as a build-environment contract violation
+/// and fails closed; only in-crate tests may intentionally use the empty set.
 pub fn runtime_intrinsic_symbols_from_env() -> Option<std::collections::BTreeSet<String>> {
     let path = std::env::var_os("MOLT_RUNTIME_INTRINSIC_SYMBOLS")?;
     let contents = std::fs::read_to_string(&path).ok()?;

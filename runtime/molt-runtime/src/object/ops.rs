@@ -4534,6 +4534,9 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             if s > e {
                                 e = s;
                             }
+                            let new_items_have_refs = new_items
+                                .iter()
+                                .any(|&item| crate::object::refcount_opt::is_heap_ref(item));
                             for &item in new_items.iter() {
                                 if crate::object::refcount_opt::is_heap_ref(item) {
                                     inc_ref_bits(_py, item);
@@ -4541,6 +4544,10 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                             }
                             let removed: Vec<u64> =
                                 elems.splice(s..e, new_items.iter().copied()).collect();
+                            if new_items_have_refs {
+                                (*header_from_obj_ptr(ptr)).flags |=
+                                    crate::object::HEADER_FLAG_CONTAINS_REFS;
+                            }
                             for old_bits in removed {
                                 if crate::object::refcount_opt::is_heap_ref(old_bits) {
                                     dec_ref_bits(_py, old_bits);
@@ -4560,18 +4567,29 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                                 ),
                             );
                         }
+                        let new_items_have_refs = new_items
+                            .iter()
+                            .any(|&item| crate::object::refcount_opt::is_heap_ref(item));
                         for &item in new_items.iter() {
                             if crate::object::refcount_opt::is_heap_ref(item) {
                                 inc_ref_bits(_py, item);
                             }
                         }
+                        let mut removed = Vec::new();
                         for (idx, &item) in indices.iter().zip(new_items.iter()) {
                             let old_bits = elems[*idx];
                             if old_bits != item {
-                                if crate::object::refcount_opt::is_heap_ref(old_bits) {
-                                    dec_ref_bits(_py, old_bits);
-                                }
                                 elems[*idx] = item;
+                                removed.push(old_bits);
+                            }
+                        }
+                        if new_items_have_refs {
+                            (*header_from_obj_ptr(ptr)).flags |=
+                                crate::object::HEADER_FLAG_CONTAINS_REFS;
+                        }
+                        for old_bits in removed {
+                            if crate::object::refcount_opt::is_heap_ref(old_bits) {
+                                dec_ref_bits(_py, old_bits);
                             }
                         }
                         return obj_bits;
@@ -4621,13 +4639,15 @@ pub extern "C" fn molt_store_index(obj_bits: u64, key_bits: u64, val_bits: u64) 
                     let elems = seq_vec(ptr);
                     let old_bits = elems[i as usize];
                     if old_bits != val_bits {
+                        if crate::object::refcount_opt::is_heap_ref(val_bits) {
+                            inc_ref_bits(_py, val_bits);
+                            (*header_from_obj_ptr(ptr)).flags |=
+                                crate::object::HEADER_FLAG_CONTAINS_REFS;
+                        }
+                        elems[i as usize] = val_bits;
                         if crate::object::refcount_opt::is_heap_ref(old_bits) {
                             dec_ref_bits(_py, old_bits);
                         }
-                        if crate::object::refcount_opt::is_heap_ref(val_bits) {
-                            inc_ref_bits(_py, val_bits);
-                        }
-                        elems[i as usize] = val_bits;
                     }
                     return obj_bits;
                 }
@@ -5158,16 +5178,20 @@ pub extern "C" fn molt_del_index(obj_bits: u64, key_bits: u64) -> u64 {
                             return obj_bits;
                         }
                         let indices = collect_slice_indices(start, stop, step);
+                        let mut removed = Vec::with_capacity(indices.len());
                         if step > 0 {
                             for &idx in indices.iter().rev() {
                                 let old_bits = elems.remove(idx);
-                                dec_ref_bits(_py, old_bits);
+                                removed.push(old_bits);
                             }
                         } else {
                             for &idx in indices.iter() {
                                 let old_bits = elems.remove(idx);
-                                dec_ref_bits(_py, old_bits);
+                                removed.push(old_bits);
                             }
+                        }
+                        for old_bits in removed {
+                            dec_ref_bits(_py, old_bits);
                         }
                         return obj_bits;
                     }
@@ -6066,13 +6090,16 @@ pub(crate) extern "C" fn dict_popitem_method(self_bits: u64) -> i64 {
             if item_ptr.is_null() {
                 return MoltObject::none().bits() as i64;
             }
-            dec_ref_bits(_py, key_bits);
-            dec_ref_bits(_py, val_bits);
             order.truncate(order.len() - 2);
             let entries = order.len() / 2;
             let table = dict_table(ptr);
             let capacity = dict_table_capacity(entries.max(1));
             dict_rebuild(_py, order, table, capacity);
+            if order.is_empty() {
+                (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+            }
+            dec_ref_bits(_py, key_bits);
+            dec_ref_bits(_py, val_bits);
             MoltObject::from_ptr(item_ptr).bits() as i64
         }
     })
@@ -9350,14 +9377,14 @@ pub(crate) unsafe fn dict_set_in_place(
             let val_idx = entry_idx * 2 + 1;
             let old_bits = order[val_idx];
             if old_bits != val_bits {
-                if crate::object::refcount_opt::is_heap_ref(old_bits) {
-                    dec_ref_bits(_py, old_bits);
-                }
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
                     inc_ref_bits(_py, val_bits);
                     (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
                 }
                 order[val_idx] = val_bits;
+                if crate::object::refcount_opt::is_heap_ref(old_bits) {
+                    dec_ref_bits(_py, old_bits);
+                }
             }
             return;
         }
@@ -9428,15 +9455,15 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
                         if old_bits != val_bits {
                             let old_obj = obj_from_bits(old_bits);
                             let new_obj = obj_from_bits(val_bits);
-                            if old_obj.as_ptr().is_some() {
-                                dec_ref_bits(_py, old_bits);
-                            }
                             if new_obj.as_ptr().is_some() {
                                 inc_ref_bits(_py, val_bits);
                                 (*header_from_obj_ptr(ptr)).flags |=
                                     crate::object::HEADER_FLAG_CONTAINS_REFS;
                             }
                             order[val_idx] = val_bits;
+                            if old_obj.as_ptr().is_some() {
+                                dec_ref_bits(_py, old_bits);
+                            }
                         }
                         return;
                     }
@@ -9549,12 +9576,12 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
             let val_idx = entry_idx * 2 + 1;
             let old_bits = order[val_idx];
             if old_bits != val_bits {
-                dec_ref_bits(_py, old_bits);
                 inc_ref_bits(_py, val_bits);
                 order[val_idx] = val_bits;
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
                     (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
                 }
+                dec_ref_bits(_py, old_bits);
             }
             return;
         }
@@ -9751,7 +9778,6 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
             return false;
         };
         let key_val = order[entry_idx];
-        dec_ref_bits(_py, key_val);
         order.remove(entry_idx);
         let removed_slot_val = entry_idx + 1;
         let mut tombstones = 0usize;
@@ -9779,6 +9805,10 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
         {
             set_rebuild(_py, order, table, desired_capacity);
         }
+        if order.is_empty() {
+            (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
+        dec_ref_bits(_py, key_val);
         true
     }
 }
@@ -9807,13 +9837,21 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
         for entry in entries {
             inc_ref_bits(_py, *entry);
         }
-        for entry in order.iter().copied() {
-            dec_ref_bits(_py, entry);
-        }
-        order.clear();
+        let removed: Vec<u64> = order.drain(..).collect();
         order.extend_from_slice(entries);
         let table = set_table(ptr);
         set_rebuild(_py, order, table, capacity);
+        if entries
+            .iter()
+            .any(|&entry| crate::object::refcount_opt::is_heap_ref(entry))
+        {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
+        } else {
+            (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
+        for entry in removed {
+            dec_ref_bits(_py, entry);
+        }
     }
 }
 
@@ -9833,11 +9871,7 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
         };
         let key_idx = entry_idx * 2;
         let val_idx = key_idx + 1;
-        let key_val = order[key_idx];
-        let val_val = order[val_idx];
-        dec_ref_bits(_py, key_val);
-        dec_ref_bits(_py, val_val);
-        order.drain(key_idx..=val_idx);
+        let removed: Vec<u64> = order.drain(key_idx..=val_idx).collect();
         let removed_slot_val = entry_idx + 1;
         let mut tombstones = 0usize;
         for slot in table.iter_mut() {
@@ -9864,6 +9898,12 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
         {
             dict_rebuild(_py, order, table, desired_capacity);
         }
+        if order.is_empty() {
+            (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+        }
+        for bits in removed {
+            dec_ref_bits(_py, bits);
+        }
         true
     }
 }
@@ -9872,13 +9912,14 @@ pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         crate::gil_assert();
         let order = dict_order(ptr);
-        for pair in order.chunks_exact(2) {
+        let removed: Vec<u64> = order.drain(..).collect();
+        let table = dict_table(ptr);
+        table.clear();
+        (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+        for pair in removed.chunks_exact(2) {
             dec_ref_bits(_py, pair[0]);
             dec_ref_bits(_py, pair[1]);
         }
-        order.clear();
-        let table = dict_table(ptr);
-        table.clear();
     }
 }
 
@@ -9886,13 +9927,14 @@ pub(crate) unsafe fn dict_clear_in_place_shutdown(_py: &PyToken<'_>, ptr: *mut u
     unsafe {
         crate::gil_assert();
         let order = dict_order(ptr);
-        for pair in order.chunks_exact(2) {
+        let removed: Vec<u64> = order.drain(..).collect();
+        let table = dict_table(ptr);
+        table.clear();
+        (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
+        for pair in removed.chunks_exact(2) {
             crate::object::release_shutdown_bits(_py, pair[0]);
             crate::object::release_shutdown_bits(_py, pair[1]);
         }
-        order.clear();
-        let table = dict_table(ptr);
-        table.clear();
     }
 }
 
@@ -11302,6 +11344,7 @@ pub extern "C" fn molt_list_setitem_raw_idx(list_bits: u64, raw_idx: i64, val_bi
             elems[idx as usize] = val_bits;
             if crate::object::refcount_opt::is_heap_ref(val_bits) {
                 inc_ref_bits(_py, val_bits);
+                (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
             }
             if crate::object::refcount_opt::is_heap_ref(old) {
                 dec_ref_bits(_py, old);
@@ -11924,14 +11967,14 @@ pub extern "C" fn molt_list_setitem_int_fast(
                 // returns None so inc_ref_bits/dec_ref_bits would be no-ops, but
                 // skipping the function call eliminates overhead in hot loops
                 // (e.g., sieve: is_prime[i] = False millions of times).
-                if crate::object::refcount_opt::is_heap_ref(old_bits) {
-                    dec_ref_bits(_py, old_bits);
-                }
                 if crate::object::refcount_opt::is_heap_ref(val_bits) {
                     inc_ref_bits(_py, val_bits);
                     (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_CONTAINS_REFS;
                 }
                 elems[idx as usize] = val_bits;
+                if crate::object::refcount_opt::is_heap_ref(old_bits) {
+                    dec_ref_bits(_py, old_bits);
+                }
             }
             list_bits
         })

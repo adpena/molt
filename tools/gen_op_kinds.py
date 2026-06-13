@@ -55,7 +55,7 @@ OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
 # fallback classification).
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 
-# Operand-ownership: the per-operand borrowed|consumed|interior_borrow_keepalive
+# Operand-ownership: the per-operand borrowed|consumed|refinement
 # axis (design 27 §2.1). A uniform shorthand ("all_borrowed" / "all_consumed") or
 # a per-position list of the leaf values. molt's "callee borrows all args" ABI
 # (design 20 §1.2) makes "all_borrowed" the universal default; "consumed" is the
@@ -64,12 +64,18 @@ _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 # borrows the operand (frees nothing) AND its result holds an INTERIOR reference
 # into that operand's backing store, so the operand's drop is deferred to the
 # result's last use (the `LoadAttr`/`Index` source — the round-6 `Counter._handle`
-# UAF). It is a refinement of "borrowed" (NOT consumed), reached only via the
-# per-position list (an op that interior-borrows one operand still merely borrows
-# the rest — `Index`'s key). A value outside this set is a hard error (a typo must
-# never silently degrade to a borrow assumption that leaks, a consume assumption
-# that double-frees, or a missing keepalive that re-opens the round-6 UAF).
-_OPERAND_OWNERSHIP_LEAVES = {"borrowed", "consumed", "interior_borrow_keepalive"}
+# UAF). "container_absorb" is the existing-container store boundary: the op
+# borrows the operand while retaining its own container/storage reference, so the
+# caller-owned producer ref still drops at the statement. These refinements are
+# per-position only. A value outside this set is a hard error (a typo must never
+# silently degrade to a borrow assumption, a consume assumption that double-frees,
+# or a missing keepalive/release-boundary fact).
+_OPERAND_OWNERSHIP_LEAVES = {
+    "borrowed",
+    "consumed",
+    "interior_borrow_keepalive",
+    "container_absorb",
+}
 _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
 
 # Per-TERMINATOR operand-category leaves (design 27 §2.4, the ownership-moves-out
@@ -172,6 +178,16 @@ def load_table() -> dict:
             raise OpKindTableError(
                 f"opcode {name}: 'result_absorbs_operands' must be a bool"
             )
+        selected_owner = row.get("result_mints_owned_selected_operand", False)
+        if not isinstance(selected_owner, bool):
+            raise OpKindTableError(
+                f"opcode {name}: 'result_mints_owned_selected_operand' must be a bool"
+            )
+        if selected_owner and row["result_absorbs_operands"]:
+            raise OpKindTableError(
+                f"opcode {name}: selected-alias ownership and result absorption "
+                "are mutually exclusive result-side ownership facts"
+            )
 
     prefixes = data.get("classifier_fresh_value_prefixes", [])
     if not isinstance(prefixes, list) or not all(isinstance(p, str) for p in prefixes):
@@ -227,6 +243,8 @@ def load_table() -> dict:
     # very C6 double-free this column retires).
     _validate_consuming_kinds(data, owner)
     _validate_absorbing_kinds(data, owner)
+    _validate_absorbing_operand_kinds(data)
+    _validate_result_finalizer_source_kinds(data)
 
     _validate_terminators(data)
 
@@ -343,6 +361,69 @@ def _validate_absorbing_kinds(data: dict, mapper_spellings: dict[str, str]) -> N
                 f"absorbing_kind {kind!r} must also be in classifier_fresh_value "
                 "(a result cannot absorb operand ownership unless it mints a fresh "
                 "owned container result)"
+            )
+
+
+def _validate_absorbing_operand_kinds(data: dict) -> None:
+    """Structurally validate Copy-lifted existing-container store facts.
+
+    These rows name preserved SimpleIR spellings whose operand is retained by an
+    existing container/store. The caller still owns and drops its operand ref;
+    the fact only tells finalizer-boundary placement that the producer temp's
+    Python-visible obligation ended at this statement.
+    """
+    rows = data.get("absorbing_operand_kind", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("[[absorbing_operand_kind]] must be an array of tables")
+    seen: set[str] = set()
+    for row in rows:
+        kind = row.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise OpKindTableError(f"[[absorbing_operand_kind]] row missing 'kind': {row}")
+        if kind in seen:
+            raise OpKindTableError(f"duplicate absorbing_operand_kind: {kind}")
+        seen.add(kind)
+        sel = row.get("absorbed_operand")
+        if sel == "last":
+            continue
+        if isinstance(sel, bool) or not isinstance(sel, int) or sel < 0:
+            raise OpKindTableError(
+                f"absorbing_operand_kind {kind}: 'absorbed_operand' must be "
+                f"\"last\" or a non-negative operand index, got {sel!r}"
+            )
+
+
+def _validate_result_finalizer_source_kinds(data: dict) -> None:
+    """Validate Copy-lifted extraction facts whose fresh result can carry a
+    finalizer-sensitive value from one source operand."""
+    rows = data.get("result_finalizer_source_kind", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError(
+            "[[result_finalizer_source_kind]] must be an array of tables"
+        )
+    fresh_members = set(data.get("classifier_fresh_value", []))
+    seen: set[str] = set()
+    for row in rows:
+        kind = row.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise OpKindTableError(
+                f"[[result_finalizer_source_kind]] row missing 'kind': {row}"
+            )
+        if kind in seen:
+            raise OpKindTableError(f"duplicate result_finalizer_source_kind: {kind}")
+        seen.add(kind)
+        if kind not in fresh_members:
+            raise OpKindTableError(
+                f"result_finalizer_source_kind {kind!r} must also be in "
+                "classifier_fresh_value (the result must carry its own owned ref)"
+            )
+        sel = row.get("source_operand")
+        if sel == "last":
+            continue
+        if isinstance(sel, bool) or not isinstance(sel, int) or sel < 0:
+            raise OpKindTableError(
+                f"result_finalizer_source_kind {kind}: 'source_operand' must be "
+                f"\"last\" or a non-negative operand index, got {sel!r}"
             )
 
 
@@ -707,9 +788,21 @@ def render_rs(data: dict) -> str:
     out.append("    }\n}\n\n")
 
     # -- operand ownership: per-OpCode default + per-spelling consume override --
-    out.append(_render_operand_ownership(opcodes, data.get("consuming_kind", [])))
+    out.append(
+        _render_operand_ownership(
+            opcodes,
+            data.get("consuming_kind", []),
+            data.get("absorbing_operand_kind", []),
+        )
+    )
     out.append("\n")
-    out.append(_render_result_absorption(opcodes, data.get("absorbing_kind", [])))
+    out.append(
+        _render_result_absorption(
+            opcodes,
+            data.get("absorbing_kind", []),
+            data.get("result_finalizer_source_kind", []),
+        )
+    )
 
     # -- per-terminator operand ownership (the ownership-moves-out / transfer axis) --
     out.append("\n")
@@ -768,16 +861,24 @@ _OPERAND_OWNERSHIP_VARIANT = {
     # `LoadAttr`/`Index` source — the round-6 `Counter._handle` keepalive). Read by
     # `opcode_borrows_source_operand` and `op_borrow_source` in alias_analysis.rs.
     "interior_borrow_keepalive": "OperandOwnership::InteriorBorrowKeepAlive",
+    # Existing-container store leaf: the op borrows the operand while retaining
+    # its own container/storage reference. DropInsertion uses this as a release
+    # boundary for finalizer-sensitive producer temps.
+    "container_absorb": "OperandOwnership::ContainerAbsorb",
     # Move-out leaves used by the per-TERMINATOR table (design 27 §2.4). The
     # opcode `operand_ownership` validator restricts opcodes to
-    # borrowed|consumed|interior_borrow_keepalive; these are reachable only via
+    # borrowed|consumed|interior_borrow_keepalive|container_absorb; these are reachable only via
     # the terminator categories.
     "transferred": "OperandOwnership::Transferred",
     "none": "OperandOwnership::NoOperandOwnership",
 }
 
 
-def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str:
+def _render_operand_ownership(
+    opcodes: list[dict],
+    consuming: list[dict],
+    absorbing_operands: list[dict],
+) -> str:
     """Render the operand-ownership tables (design 27 §2.1/§2.3):
 
       * ``OperandOwnership`` — the per-operand borrowed|consumed leaf.
@@ -819,7 +920,9 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         "/// design-27 ownership-boundary lattice (#58) and the next consumer\n"
         "/// migrations are TABLE edits, not enum surgery. `Borrowed`/`Consumed`\n"
         "/// seed the per-OpCode + per-spelling tables; `InteriorBorrowKeepAlive`\n"
-        "/// seeds the per-position borrow-of column (ladder #73); `Transferred`\n"
+        "/// seeds the per-position borrow-of column (ladder #73);\n"
+        "/// `ContainerAbsorb` marks borrowed operands retained by container/storage\n"
+        "/// mutation; `Transferred`\n"
         "/// seeds the per-TERMINATOR table (design 27 §2.4 transfer sites — ladder\n"
         "/// #72). One variant still names an EXISTING molt fact whose hand-list\n"
         "/// migrates into ownership rows in a follow-up tranche:\n"
@@ -834,6 +937,10 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         "///     `LoadAttr`/`Index` source position and read by\n"
         "///     `opcode_borrows_source_operand` / `op_borrow_source` to build the\n"
         "///     `BorrowProvenance` relation (the `Counter._handle` UAF fix).\n"
+        "///   * `ContainerAbsorb` — an existing-container/store mutation retains\n"
+        "///     this operand while the caller still owns the producer temp ref. This\n"
+        "///     gives DropInsertion a shared release boundary for absorbed temps\n"
+        "///     without making the mutator consume the operand.\n"
         "///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:\n"
         "///     valid only on the not-exhausted edge, NEVER unconditionally\n"
         "///     droppable (stale stack garbage on the exhaustion edge). The LONE\n"
@@ -853,6 +960,7 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         "    Consumed,\n"
         "    Transferred,\n"
         "    InteriorBorrowKeepAlive,\n"
+        "    ContainerAbsorb,\n"
         "    ConditionalValidOnlyOnEdge,\n"
         "    NoOperandOwnership,\n"
         "}\n\n"
@@ -868,11 +976,12 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         "// and live today.\n"
         "#[allow(dead_code)]\n"
         "impl OperandOwnership {\n"
-        "    pub(crate) const ALL: [OperandOwnership; 6] = [\n"
+        "    pub(crate) const ALL: [OperandOwnership; 7] = [\n"
         "        OperandOwnership::Borrowed,\n"
         "        OperandOwnership::Consumed,\n"
         "        OperandOwnership::Transferred,\n"
         "        OperandOwnership::InteriorBorrowKeepAlive,\n"
+        "        OperandOwnership::ContainerAbsorb,\n"
         "        OperandOwnership::ConditionalValidOnlyOnEdge,\n"
         "        OperandOwnership::NoOperandOwnership,\n"
         "    ];\n"
@@ -882,6 +991,7 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         "            OperandOwnership::Consumed => \"consumed\",\n"
         "            OperandOwnership::Transferred => \"transferred\",\n"
         "            OperandOwnership::InteriorBorrowKeepAlive => \"interior_borrow_keepalive\",\n"
+        "            OperandOwnership::ContainerAbsorb => \"container_absorb\",\n"
         "            OperandOwnership::ConditionalValidOnlyOnEdge => \"conditional_valid_only_on_edge\",\n"
         "            OperandOwnership::NoOperandOwnership => \"no_operand_ownership\",\n"
         "        }\n"
@@ -892,6 +1002,7 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
         "            \"consumed\" => Some(OperandOwnership::Consumed),\n"
         "            \"transferred\" => Some(OperandOwnership::Transferred),\n"
         "            \"interior_borrow_keepalive\" => Some(OperandOwnership::InteriorBorrowKeepAlive),\n"
+        "            \"container_absorb\" => Some(OperandOwnership::ContainerAbsorb),\n"
         "            \"conditional_valid_only_on_edge\" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),\n"
         "            \"no_operand_ownership\" => Some(OperandOwnership::NoOperandOwnership),\n"
         "            _ => None,\n"
@@ -972,6 +1083,24 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
     out.append("    }\n}\n\n")
 
     out.append(
+        "/// The operand index retained by an existing container/store mutation.\n"
+        "/// The op still borrows the operand for ABI/drop purposes; this fact only\n"
+        "/// records that the container now owns its own reference, so a\n"
+        "/// finalizer-sensitive producer temp can release its caller-owned ref at\n"
+        "/// this statement. Derived from `container_absorb` operand rows.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_container_absorbed_operand(opcode: OpCode) -> Option<usize> {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        idx = _container_absorb_operand_index(row["operand_ownership"])
+        if idx is not None:
+            out.append(f"        OpCode::{name} => Some({idx}),\n")
+    out.append("        _ => None,\n")
+    out.append("    }\n}\n\n")
+
+    out.append(
         "/// Per-SPELLING consume override (design 27 §2.3): for a `Copy`-lifted op\n"
         "/// carrying `_original_kind = kind`, the 0-based index of the operand the\n"
         "/// op CONSUMES (frees internally), or `None` if it consumes none. `arity`\n"
@@ -995,10 +1124,34 @@ def _render_operand_ownership(opcodes: list[dict], consuming: list[dict]) -> str
                 out.append(f'        "{kind}" => Some({int(sel)}),\n')
     out.append("        _ => None,\n")
     out.append("    }\n}\n")
+    absorbed_uses_arity = any(row["absorbed_operand"] == "last" for row in absorbing_operands)
+    absorbed_arity_param = "arity" if absorbed_uses_arity else "_arity"
+    out.append(
+        "\n/// Per-SPELLING existing-container absorption override. These preserved\n"
+        "/// SimpleIR spellings lower as `Copy` with `_original_kind`, so they need a\n"
+        "/// spelling table parallel to `kind_consumed_operand_table`.\n"
+        "#[inline]\n"
+        f"pub(crate) fn kind_container_absorbed_operand_table(kind: &str, {absorbed_arity_param}: usize) -> Option<usize> {{\n"
+        "    match kind {\n"
+    )
+    if absorbing_operands:
+        for row in absorbing_operands:
+            kind = row["kind"]
+            sel = row["absorbed_operand"]
+            if sel == "last":
+                out.append(f'        "{kind}" => arity.checked_sub(1),\n')
+            else:
+                out.append(f'        "{kind}" => Some({int(sel)}),\n')
+    out.append("        _ => None,\n")
+    out.append("    }\n}\n")
     return "".join(out)
 
 
-def _render_result_absorption(opcodes: list[dict], absorbing: list[dict]) -> str:
+def _render_result_absorption(
+    opcodes: list[dict],
+    absorbing: list[dict],
+    result_sources: list[dict],
+) -> str:
     """Render the result-absorbs-operands ownership-transfer tables.
 
     This is a RESULT-side fact: the returned value owns the operands' lifetimes
@@ -1025,6 +1178,41 @@ def _render_result_absorption(opcodes: list[dict], absorbing: list[dict]) -> str
     out.append("    }\n}\n\n")
 
     out.append(
+        "/// Result-side selected-alias ownership fact. These opcodes return one\n"
+        "/// borrowed operand's bits as their result, so backend lowering must\n"
+        "/// retain the selected object when an owned boxed result is produced.\n"
+        "/// Raw scalar lanes remain refcount-free. The table is keyed by explicit\n"
+        "/// `result_mints_owned_selected_operand` rows in op_kinds.toml.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_result_mints_owned_selected_operand_table(opcode: OpCode) -> bool {\n"
+    )
+    selected_owner_opcodes = sorted(
+        row["name"]
+        for row in opcodes
+        if row.get("result_mints_owned_selected_operand", False)
+    )
+    if selected_owner_opcodes:
+        out.append("    matches!(\n        opcode,\n")
+        for i, name in enumerate(selected_owner_opcodes):
+            sep = "" if i == len(selected_owner_opcodes) - 1 else " |"
+            out.append(f"        OpCode::{name}{sep}\n")
+        out.append("    )\n")
+    else:
+        out.append("    let _ = opcode;\n    false\n")
+    out.append("}\n\n")
+
+    out.append(
+        "/// Same selected-alias result ownership fact keyed by SimpleIR kind spelling.\n"
+        "/// String-dispatch backends must query this rather than duplicating an\n"
+        "/// `and`/`or` list by hand.\n"
+        "#[inline]\n"
+        "pub(crate) fn kind_result_mints_owned_selected_operand_table(kind: &str) -> bool {\n"
+        "    kind_to_opcode_table(kind)\n"
+        "        .is_some_and(opcode_result_mints_owned_selected_operand_table)\n"
+        "}\n\n"
+    )
+
+    out.append(
         "/// Result-side ownership-transfer fact for Copy-lifted SimpleIR spellings.\n"
         "/// These spellings intentionally remain outside `[[kind]]` so backconversion\n"
         "/// and backend dispatch preserve their public wire names while still sharing\n"
@@ -1035,7 +1223,29 @@ def _render_result_absorption(opcodes: list[dict], absorbing: list[dict]) -> str
     )
     absorbing_kinds = sorted(row["kind"] for row in absorbing)
     out.append(_render_matches_arm(absorbing_kinds))
-    out.append("    )\n}\n")
+    out.append("    )\n}\n\n")
+
+    result_source_uses_arity = any(row["source_operand"] == "last" for row in result_sources)
+    result_source_arity_param = "arity" if result_source_uses_arity else "_arity"
+    out.append(
+        "/// Per-SPELLING result finalizer-source facts. These Copy-lifted\n"
+        "/// extraction spellings return a fresh owned result whose finalizer\n"
+        "/// sensitivity is inherited from one source operand, but whose own\n"
+        "/// temporary ref should release at the statement unless Python-bound.\n"
+        "#[inline]\n"
+        f"pub(crate) fn kind_result_finalizer_source_operand_table(kind: &str, {result_source_arity_param}: usize) -> Option<usize> {{\n"
+        "    match kind {\n"
+    )
+    if result_sources:
+        for row in result_sources:
+            kind = row["kind"]
+            sel = row["source_operand"]
+            if sel == "last":
+                out.append(f'        "{kind}" => arity.checked_sub(1),\n')
+            else:
+                out.append(f'        "{kind}" => Some({int(sel)}),\n')
+    out.append("        _ => None,\n")
+    out.append("    }\n}\n")
     return "".join(out)
 
 
@@ -1150,6 +1360,19 @@ def _borrows_source_operand_index(spec: object) -> int | None:
         return None
     for i, leaf in enumerate(spec):
         if leaf == "interior_borrow_keepalive":
+            return i
+    return None
+
+
+def _container_absorb_operand_index(spec: object) -> int | None:
+    """The operand index retained by an existing container/store mutation, or
+    ``None``. Like interior borrows, this is per-position only: a uniform opcode
+    cannot name one absorbed value operand without also identifying container/key
+    operands."""
+    if not isinstance(spec, list):
+        return None
+    for i, leaf in enumerate(spec):
+        if leaf == "container_absorb":
             return i
     return None
 

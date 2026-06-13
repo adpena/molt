@@ -1337,7 +1337,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap();
                 let lhs_bits = self.materialize_dynbox_bits(lhs, &lhs_ty);
                 let rhs_bits = self.materialize_dynbox_bits(rhs, &rhs_ty);
-                let val = if op.opcode == OpCode::And {
+                let selected = if op.opcode == OpCode::And {
                     self.backend
                         .builder
                         .build_select(cond_i1, rhs_bits, lhs_bits, "bool_and")
@@ -1348,7 +1348,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .build_select(cond_i1, lhs_bits, rhs_bits, "bool_or")
                         .unwrap()
                 };
-                self.values.insert(result_id, val);
+                if crate::tir::op_kinds_generated::opcode_result_mints_owned_selected_operand_table(
+                    op.opcode,
+                ) {
+                    let inc_fn = self
+                        .backend
+                        .module
+                        .get_function("molt_inc_ref_obj")
+                        .unwrap();
+                    self.backend
+                        .builder
+                        .build_call(
+                            inc_fn,
+                            &[selected.into_int_value().into()],
+                            "boolop_selected_inc_ref",
+                        )
+                        .unwrap();
+                }
+                self.values.insert(result_id, selected);
                 self.value_types.insert(result_id, TirType::DynBox);
             }
             OpCode::Bool => {
@@ -10687,6 +10704,38 @@ mod tests {
             attrs: AttrDict::new(),
             source_span: None,
         }
+    }
+
+    #[test]
+    fn boxed_or_retains_selected_operand_result() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "boxed_or_selected_owner".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Or,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_is_truthy"), "{ir}");
+        assert!(
+            ir.contains("call void @molt_inc_ref_obj(i64 %bool_or)"),
+            "{ir}"
+        );
     }
 
     fn make_dummy_lowering<'ctx, 'func>(

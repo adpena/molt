@@ -171,7 +171,10 @@ pub extern "C" fn molt_set_pop(set_bits: u64) -> u64 {
                     let table = set_table(ptr);
                     let capacity = set_table_capacity(entries.max(1));
                     set_rebuild(_py, order, table, capacity);
-                    inc_ref_bits(_py, key_bits);
+                    if order.is_empty() {
+                        (*header_from_obj_ptr(ptr)).flags &=
+                            !crate::object::HEADER_FLAG_CONTAINS_REFS;
+                    }
                     return key_bits;
                 }
             }

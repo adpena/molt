@@ -22,11 +22,11 @@ import transaction for the active importlib/`builtins.__import__` runtime paths,
 ordinary source import payload lowering for the focused active paths,
 transaction-owned graph-proven `fromlist` child auto-import/binding for the
 covered native path, and persisted module graph/import-scan caches keyed by
-compiler/tooling policy inputs. Remaining transaction work is not closed: public
-importlib API validation shapes, `__package__`/`__spec__.parent`
-package-context calculation, CPython `fromlist` star/`__all__` expansion, and
-namespace-package edge cases still need structural reconciliation against
-CPython 3.12.
+compiler/tooling policy inputs. Remaining transaction work is not closed:
+public importlib API validation outside the covered `import_module`
+relative-package cases, `__package__`/`__spec__.parent` package-context
+calculation, CPython `fromlist` star/`__all__` expansion, and namespace-package
+edge cases still need structural reconciliation against CPython 3.12.
 
 ---
 
@@ -121,7 +121,10 @@ Modules may be:
   private relative-name rules. Public argument validation must stay API-specific
   even when helpers share resolver logic; CPython 3.12 gives
   `resolve_name(".x", None)` and `import_module(".x", None)` different error
-  classes.
+  classes. Current native differential evidence covers
+  `import_module("math", 1)`, relative non-string package `TypeError`, relative
+  `package=None` `TypeError`, package-relative success, and importlib bootstrap
+  submodule identity through this path.
 - `importlib.import_module` has no alias side table in the Python shim. The old
   empty `_MODULE_ALIASES` map was a dead second source of truth and must not be
   restored. Frontend literal and direct-call folds for
@@ -162,7 +165,7 @@ Import/bootstrap changes are expected to be covered by the existing in-tree regr
 
 - Native bootstrap/package-entry regressions: `tests/test_native_import_bootstrap_regressions.py`
 - WASM import bootstrap smoke and package-relative imports: `tests/test_wasm_importlib_smoke.py`, `tests/test_wasm_importlib_package_bootstrap.py`
-- Differential import semantics: `tests/differential/stdlib/importlib_basic.py`, `tests/differential/stdlib/importlib_import_module_basic.py`, `tests/differential/stdlib/importlib_import_module_helper_constant.py`, `tests/differential/stdlib/importlib_import_module_helper_dotted.py`, `tests/differential/stdlib/importlib_import_module_helper_submodule.py`, `tests/differential/stdlib/importlib_import_module_relative_package_typeerror.py`, `tests/differential/stdlib/importlib_relative_import_from_package.py`, `tests/differential/stdlib/importlib_runtime_state_payload_intrinsic.py`, `tests/differential/stdlib/importlib_support_bootstrap.py`
+- Differential import semantics: `tests/differential/stdlib/importlib_basic.py`, `tests/differential/stdlib/importlib_from_bootstrap_submodules.py`, `tests/differential/stdlib/importlib_import_module_basic.py`, `tests/differential/stdlib/importlib_import_module_helper_constant.py`, `tests/differential/stdlib/importlib_import_module_helper_dotted.py`, `tests/differential/stdlib/importlib_import_module_helper_submodule.py`, `tests/differential/stdlib/importlib_import_module_relative_package_typeerror.py`, `tests/differential/stdlib/importlib_relative_import_from_package.py`, `tests/differential/stdlib/importlib_runtime_state_payload_intrinsic.py`, `tests/differential/stdlib/importlib_support_bootstrap.py`
 - Focused active transaction/fromlist slice: `tests/differential/stdlib/importlib_import_module_basic.py`, `tests/differential/stdlib/importlib_import_module_helper_constant.py`, `tests/differential/stdlib/importlib_import_module_helper_submodule.py`, `tests/differential/stdlib/importlib_dunder_import_fromlist.py`; this is a focused regression slice for transaction/cache changes, not a replacement for the full IB2 matrix when declaring import semantics matrix-green.
 
 ---

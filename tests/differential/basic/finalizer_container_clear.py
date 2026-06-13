@@ -1,12 +1,9 @@
-# MOLT_META: xfail=molt xfail_reason=finalizer-container-release-boundary
 """Purpose: a finalizer-bearing object held in a container is released (and its
 ``__del__`` runs) when the container drops the reference via ``clear()``/removal.
 
-STATUS: expected-fail. The current native path drops the container contents
-without running the element finalizers at `clear()`/`pop()`/container `del`, so
-the observed event list stays empty. Keep the CPython-strict assertions and let
-the harness flip this to XPASS-failure when container-owned releases dispatch
-`__del__` at the boundary.
+STATUS: native differential pass. Container `clear()`, `pop()`, and module-global
+container `del` release the contained finalizer-bearing object at the
+CPython-visible boundary.
 """
 
 events = []

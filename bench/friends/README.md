@@ -33,9 +33,9 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   proving the blocker is backend compile memory rather than manifest skip or
   CLI profile propagation. Native TIR optimization now consumes uncached user
   functions in bounded op/count batches and applies each batch immediately; the
-  next runner proof reached `2602` uncached user functions in `41` bounded
-  batches, with a 9.77 GB peak single backend process, then exposed aggregate
-  process-tree RSS from overlapping daemon plus hidden one-shot fallback. The
+  next runner proof reached that bounded path and reduced the single-backend
+  peak before exposing aggregate process-tree RSS from overlapping daemon plus
+  hidden one-shot fallback. The
   CLI now treats full daemon request admission as the ownership boundary: after
   a full request is sent it fails closed on lost outcome instead of restarting
   the daemon or launching that hidden second backend compile. The follow-up
@@ -43,16 +43,29 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   `tmp/memory_guard/friends_tinygrad_molt_daemon_custody.json`) no longer trips
   the outer memory guard (`violation=null`, no orphaned groups, 4.92 GB peak
   process-tree RSS); it fails explicitly with `Backend daemon compile failed:
-  backend daemon died while request was in flight` after stdlib batch `35/35`
-  and user-function TIR batch `8/41`. The later Molt-only rerun
+  backend daemon died while request was in flight`. A later Molt-only rerun
   (`bench/results/friends/20260612T205850Z/`) stayed below the configured
   memory caps, recorded only protected host/control-plane exclusions in the
   sentinel log, and failed after 208.19s with `Backend daemon compile failed:
-  backend daemon returned empty response`, so the current blocker is daemon
-  crash provenance plus daemon-side large-user-compile memory custody.
+  backend daemon returned empty response`. The 21:12 guard sidecar
+  (`tmp/memory_guard/friends_tinygrad_molt_daemon_harness_custody.json`) records
+  a separate daemon compile-memory event: the bench sentinel terminated only the
+  Molt-owned `molt-backend --daemon` process group when that process reached the
+  12 GB RSS cap. Native application-object batching now consumes the same
+  `MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching. Daemon-off proof
+  now builds the full-stdlib adapter and reaches runtime execution under guard;
+  after the importlib bootstrap export fix and list-clear detach proof, the
+  current Molt runtime blocker remains `molt fatal: invalid object header before
+  dec_ref` at 1.985 GB peak RSS
+  (`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
+  Daemon-enabled runs still need daemon outcome/log custody after the compile
+  memory split.
 - Fresh runs write ignored local artifacts under `bench/results/friends/`.
   Git checkout caches live under `bench/friends/repos/`; both roots are owned by
   the canonical cleanup allowlist.
+  Emergency-writer coverage guards bounded `results.json` / `summary.md`
+  snapshots with `memory_guard_incidents`, while real interrupted runs may leave
+  only sidecar guard receipts until a suite-level artifact can be finalized.
   Do not commit one-off result bundles; publish durable summaries through
   `docs/benchmarks/friend_summary.md` only when the run is meant to become
   project evidence.

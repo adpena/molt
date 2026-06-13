@@ -1131,7 +1131,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
 
             // Emit then-block ops inline.
             for op in &then_blk.ops {
-                if let Some(mut opir) = lower_op(op) {
+                for mut opir in lower_op_many(op) {
                     annotate_lowered_op(&mut opir, op, &original_to_new_label);
                     out.push(opir);
                 }
@@ -1158,7 +1158,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
 
             // Emit else-block ops inline.
             for op in &else_blk.ops {
-                if let Some(mut opir) = lower_op(op) {
+                for mut opir in lower_op_many(op) {
                     annotate_lowered_op(&mut opir, op, &original_to_new_label);
                     out.push(opir);
                 }
@@ -1541,6 +1541,33 @@ fn missing_label_references(ops: &[crate::ir::OpIR]) -> Vec<i64> {
 
 /// Convert a single TirOp to an OpIR. Returns None for ops that are
 /// dialect-internal and have no SimpleIR equivalent (yet).
+fn lower_op_many(op: &TirOp) -> Vec<OpIR> {
+    if op.opcode == OpCode::Copy
+        && matches!(
+            attr_str(&op.attrs, "_original_kind").as_deref(),
+            Some("store_var")
+        )
+        && let Some(result) = op.results.first()
+    {
+        let args = operand_args(op);
+        return vec![
+            OpIR {
+                kind: "store_var".to_string(),
+                args: Some(args.clone()),
+                var: attr_str(&op.attrs, "_var").or_else(|| Some(value_var(*result))),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "copy_var".to_string(),
+                args: Some(args),
+                out: Some(value_var(*result)),
+                ..OpIR::default()
+            },
+        ];
+    }
+    lower_op(op).into_iter().collect()
+}
+
 fn lower_op(op: &TirOp) -> Option<OpIR> {
     // Map result (if any) to output variable.
     let out_var = op.results.first().map(|v| value_var(*v));
@@ -1781,6 +1808,15 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         // whose original kind was preserved in attrs.
         OpCode::Copy => {
             if let Some(original_kind) = attr_str(&op.attrs, "_original_kind") {
+                if original_kind == "store_var" {
+                    return Some(OpIR {
+                        kind: original_kind,
+                        args: Some(operand_args(op)),
+                        var: attr_str(&op.attrs, "_var")
+                            .or_else(|| op.results.first().map(|v| value_var(*v))),
+                        ..OpIR::default()
+                    });
+                }
                 if original_kind == "unpack_sequence" {
                     let mut args = operand_args(op);
                     args.extend(op.results.iter().map(|v| value_var(*v)));
@@ -2932,7 +2968,7 @@ fn emit_block_ops_inner(
         {
             emit_block_arg_stores(handler_block, &op.operands, block_param_vars, out);
         }
-        if let Some(mut opir) = lower_op(op) {
+        for mut opir in lower_op_many(op) {
             annotate_lowered_op(&mut opir, op, original_to_new_label);
             out.push(opir);
         }
@@ -3392,8 +3428,10 @@ fn attr_bytes(attrs: &super::ops::AttrDict, key: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::FunctionIR;
     use crate::tir::blocks::{LoopBreakKind, LoopRole, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
+    use crate::tir::lower_from_simple::lower_to_tir;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
     use crate::tir::values::{TirValue, ValueId};
@@ -3463,6 +3501,84 @@ mod tests {
                 crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR,
             ],
             "full drop ownership and exception-only drop facts must remain distinct on SimpleIR transport"
+        );
+    }
+
+    #[test]
+    fn result_carrying_store_var_lowers_to_defined_alias_value() {
+        let mut func = TirFunction::new("store_var_result_alias".into(), vec![], TirType::None);
+        let source = func.fresh_value();
+        let stored = func.fresh_value();
+        let entry = func.entry_block;
+        {
+            let block = func.blocks.get_mut(&entry).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::ConstNone,
+                operands: vec![],
+                results: vec![source],
+                attrs: AttrDict::new(),
+                source_span: None,
+            });
+            let mut attrs = AttrDict::new();
+            attrs.insert("_original_kind".into(), AttrValue::Str("store_var".into()));
+            attrs.insert("_var".into(), AttrValue::Str("slot".into()));
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![source],
+                results: vec![stored],
+                attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Return {
+                values: vec![stored],
+            };
+        }
+
+        let ops = lower_to_simple_ir(&func);
+
+        let source_name = value_var(source);
+        let stored_name = value_var(stored);
+        let store = ops
+            .iter()
+            .find(|op| op.kind == "store_var" && op.var.as_deref() == Some("slot"))
+            .expect("result-carrying store_var must preserve the local lifetime boundary");
+        assert_eq!(
+            store.args.as_deref(),
+            Some(&[source_name.clone()][..]),
+            "store_var boundary must store the original source bits"
+        );
+        let alias = ops
+            .iter()
+            .find(|op| op.kind == "copy_var" && op.out.as_deref() == Some(stored_name.as_str()))
+            .expect("result-carrying store_var must define its SSA alias result");
+        assert_eq!(
+            alias.args.as_deref(),
+            Some(&[source_name][..]),
+            "store_var alias result must copy the stored source bits"
+        );
+
+        let relifted = lower_to_tir(&FunctionIR {
+            name: "store_var_result_alias".into(),
+            ops,
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+        assert!(
+            relifted.blocks.values().any(|block| {
+                block.ops.iter().any(|op| {
+                    op.opcode == OpCode::Copy
+                        && matches!(
+                            op.attrs.get("_original_kind"),
+                            Some(AttrValue::Str(kind)) if kind == "store_var"
+                        )
+                        && matches!(op.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "slot")
+                })
+            }),
+            "store_var lifetime marker must survive a SimpleIR relift"
         );
     }
 

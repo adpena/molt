@@ -11,22 +11,23 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
 import builtins
+import importlib.machinery
 import importlib.util
 import sys
 import types
 
 
 def _frozen_payload(machinery, util):
+    assert util is None
     return {{
         "BuiltinImporter": machinery.BuiltinImporter,
         "FrozenImporter": machinery.FrozenImporter,
         "ModuleSpec": machinery.ModuleSpec,
-        "module_from_spec": util.module_from_spec,
-        "spec_from_loader": util.spec_from_loader,
     }}
 
 
 def _frozen_external_payload(machinery, util):
+    assert util is None
     _file_loader = getattr(machinery, "FileLoader", machinery.SourceFileLoader)
     _source_loader = getattr(machinery, "SourceLoader", machinery.SourceFileLoader)
     return {{
@@ -46,10 +47,6 @@ def _frozen_external_payload(machinery, util):
         "SourcelessFileLoader": machinery.SourcelessFileLoader,
         "_LoaderBasics": machinery.SourceFileLoader,
         "WindowsRegistryFinder": getattr(machinery, "WindowsRegistryFinder", type("WindowsRegistryFinder", (), {{}})),
-        "cache_from_source": util.cache_from_source,
-        "decode_source": lambda data: data.decode() if isinstance(data, bytes) else str(data),
-        "source_from_cache": util.source_from_cache,
-        "spec_from_file_location": util.spec_from_file_location,
     }}
 
 
@@ -57,6 +54,20 @@ builtins._molt_intrinsics = {{
     "molt_capabilities_has": lambda _name=None: True,
     "molt_importlib_frozen_payload": _frozen_payload,
     "molt_importlib_frozen_external_payload": _frozen_external_payload,
+    "molt_importlib_module_from_spec": importlib.util.module_from_spec,
+    "molt_importlib_spec_from_loader": importlib.util.spec_from_loader,
+    "molt_importlib_cache_from_source": importlib.util.cache_from_source,
+    "molt_importlib_decode_source": lambda data: data.decode() if isinstance(data, bytes) else str(data),
+    "molt_importlib_source_from_cache": importlib.util.source_from_cache,
+    "molt_importlib_spec_from_file_location": (
+        lambda name, location, loader, submodule_search_locations, machinery:
+        importlib.util.spec_from_file_location(
+            name,
+            location,
+            loader=loader,
+            submodule_search_locations=submodule_search_locations,
+        )
+    ),
 }}
 
 _intrinsics_mod = types.ModuleType("_intrinsics")

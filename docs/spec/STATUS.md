@@ -436,8 +436,11 @@ the implementation. For forward-looking priorities, use
   CPython `fromlist` star/`__all__`, namespace-package, and package-context
   edge matrix remains open. Current focused differential coverage for this
   active transaction slice includes literal/helper `importlib.import_module`
-  paths and `__import__(..., fromlist=...)`; this is not a claim that the full
-  IB2 9-file matrix is green.
+  paths, relative `import_module` package validation/success cases, importlib
+  basic/find-spec bootstrap, `_bootstrap` / `_bootstrap_external` submodule
+  identity, runtime-state payload, and support bootstrap; the focused 10-file
+  importlib transaction shard is green, but this is not a claim that the full
+  import semantics matrix is complete.
 - Native module attribute lookup preserves CPython-shaped module `__getattr__`
   exception custody for the covered bootstrap path: direct `module.attr` and
   two-argument `getattr(module, name)` propagate a raised `AttributeError`,
@@ -656,34 +659,46 @@ the implementation. For forward-looking priorities, use
 	  workload execution. Native TIR optimization now partitions uncached
 	  user-function work by function count and op budget, runs only one bounded
 	  parallel batch at a time, and applies/cache-writes optimized ops before
-		  constructing the next batch. Follow-up guarded evidence
-		  (`tmp/memory_guard/friends_tinygrad_molt_tir_batched.json`,
-		  `bench/results/friends/20260612T184515Z/`) reached that bounded path
-		  (`2602` uncached user functions in `41` batches), moved the peak single
-		  backend process to 9.77 GB, and exposed the next bug as aggregate
-		  process-tree RSS from overlapping daemon plus hidden one-shot fallback.
-		  The CLI now fails closed after full daemon request admission instead of
-		  restarting the daemon or silently launching that second backend compile;
-		  short readiness misses from verified live daemons no longer authorize
-		  socket unlink/rebind while another compile may be running. Follow-up
-		  guarded evidence (`tmp/memory_guard/friends_tinygrad_molt_daemon_custody.json`,
-		  `bench/results/friends/20260612T203111Z/`) no longer trips the outer
-		  memory guard (`violation=null`, no orphaned groups, 4.92 GB peak
-		  process-tree RSS), but the daemon dies mid full request after stdlib batch
-		  `35/35` and user-function TIR batch `8/41`; the runner stderr is the
-		  explicit fail-closed diagnostic `Backend daemon compile failed: backend
-		  daemon died while request was in flight`. A later guarded Molt-only rerun
-		  (`bench/results/friends/20260612T205850Z/`) did not trip the memory guard
-		  and instead failed after 208.19s with `Backend daemon compile failed:
-		  backend daemon returned empty response`. The current blocker is daemon
-		  crash provenance plus daemon-side large-user-compile memory custody. This
-		  is the compatibility/perf case study for compiling and profiling
-		  unmodified tinygrad code. The
-	  friend-suite harness now records git source
-	  custody, fails dirty or wrong-ref checkouts, accepts per-suite `--suite-root`
-	  and `--repo-ref` overrides for pinned local clones, supports manifest-declared
-	  runner names without a hidden allowlist, and ingests `json_stdout` workload
-	  timings into structured runner metrics. The public tinygrad wrappers now
+	  constructing the next batch. Follow-up guarded evidence
+	  (`tmp/memory_guard/friends_tinygrad_molt_tir_batched.json`,
+	  `bench/results/friends/20260612T184515Z/`) reached that bounded path,
+	  reduced the peak single backend process, and exposed the next bug as
+	  aggregate process-tree RSS from overlapping daemon plus hidden one-shot
+	  fallback. The CLI now fails closed after full daemon request admission
+	  instead of restarting the daemon or silently launching that second backend
+	  compile; short readiness misses from verified live daemons no longer
+	  authorize socket unlink/rebind while another compile may be running.
+	  Follow-up guarded evidence
+	  (`tmp/memory_guard/friends_tinygrad_molt_daemon_custody.json`,
+	  `bench/results/friends/20260612T203111Z/`) no longer trips the outer
+	  memory guard (`violation=null`, no orphaned groups, 4.92 GB peak
+	  process-tree RSS), but the daemon dies mid full request; the runner stderr
+	  is the explicit fail-closed diagnostic `Backend daemon compile failed:
+	  backend daemon died while request was in flight`. A later guarded Molt-only
+	  rerun (`bench/results/friends/20260612T205850Z/`) did not trip the memory
+	  guard and instead failed after 208.19s with `Backend daemon compile failed:
+	  backend daemon returned empty response`. The 21:12 guard sidecar
+	  (`tmp/memory_guard/friends_tinygrad_molt_daemon_harness_custody.json`)
+	  records a separate daemon compile-memory event: the bench sentinel
+	  terminated only the Molt-owned daemon process group when that process hit
+	  the 12 GB process RSS cap. Native application-object batching now consumes
+	  the same `MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching.
+	  Daemon-off proof now builds the full-stdlib adapter and reaches runtime
+	  execution under guard; after the importlib bootstrap export fix and
+	  list-clear detach proof, the current Molt runtime blocker remains `molt
+	  fatal: invalid object header before dec_ref` at 1.985 GB peak RSS
+	  (`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
+	  Daemon-enabled runs still need daemon outcome/log custody after the compile
+	  memory split. This is the compatibility/perf case study for compiling and
+	  profiling unmodified tinygrad code. The friend-suite harness now records
+	  git source custody, fails dirty or wrong-ref checkouts, accepts per-suite
+	  `--suite-root` and `--repo-ref` overrides for pinned local clones, supports
+	  manifest-declared runner names without a hidden allowlist, ingests
+	  `json_stdout` workload timings into structured runner metrics, preserves
+	  per-phase memory-guard diagnostics, has emergency-writer coverage for
+	  bounded partial `results.json` / `summary.md` snapshots, and cleans only
+	  identity-verified current-session backend daemons through the canonical
+	  custody module. The public tinygrad wrappers now
 	  carry canonical dtype codes, byte tensors report `uint8`, explicit uint/int
 	  constructors upload exact little-endian storage through
 	  `molt_gpu_prim_create_tensor_raw`, typed zeros use
