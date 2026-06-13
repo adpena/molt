@@ -288,6 +288,18 @@ fn remap_terminator(term: &Terminator, remap: &HashMap<ValueId, ValueId>) -> Ter
             default: *default,
             default_args: default_args.iter().map(&r).collect(),
         },
+        Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+        } => Terminator::StateDispatch {
+            cases: cases
+                .iter()
+                .map(|(s, bid, args)| (*s, *bid, args.iter().map(&r).collect()))
+                .collect(),
+            default: *default,
+            default_args: default_args.iter().map(&r).collect(),
+        },
         Terminator::Return { values } => Terminator::Return {
             values: values.iter().map(r).collect(),
         },
@@ -335,6 +347,12 @@ fn redirect_terminator(
             }
         }
         Terminator::Switch {
+            cases,
+            default,
+            default_args,
+            ..
+        }
+        | Terminator::StateDispatch {
             cases,
             default,
             default_args,

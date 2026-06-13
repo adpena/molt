@@ -237,6 +237,15 @@ fn terminator_references(term: &Terminator, root: ValueId, alias: &AliasAnalysis
                 || cases.iter().any(|(_, _, args)| args.iter().any(hits))
                 || default_args.iter().any(hits)
         }
+        // `StateDispatch` has no condition value; only its per-edge args.
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
+            cases.iter().any(|(_, _, args)| args.iter().any(hits))
+                || default_args.iter().any(hits)
+        }
         Terminator::Return { values } => values.iter().any(hits),
         Terminator::Unreachable => false,
     }

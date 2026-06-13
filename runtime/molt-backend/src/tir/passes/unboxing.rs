@@ -209,6 +209,19 @@ fn terminator_values(term: &Terminator) -> Vec<ValueId> {
             v.extend_from_slice(default_args);
             v
         }
+        // `StateDispatch` has no condition value; only its per-edge args.
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
+            let mut v = Vec::new();
+            for (_, _, args) in cases {
+                v.extend_from_slice(args);
+            }
+            v.extend_from_slice(default_args);
+            v
+        }
         Terminator::Return { values } => values.clone(),
         Terminator::Unreachable => vec![],
     }
@@ -249,6 +262,21 @@ fn replace_in_terminator(term: &mut Terminator, replacements: &HashMap<ValueId, 
             ..
         } => {
             replace(value);
+            for (_, _, args) in cases {
+                for a in args {
+                    replace(a);
+                }
+            }
+            for a in default_args {
+                replace(a);
+            }
+        }
+        // `StateDispatch` has no condition value; only its per-edge args.
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
             for (_, _, args) in cases {
                 for a in args {
                     replace(a);

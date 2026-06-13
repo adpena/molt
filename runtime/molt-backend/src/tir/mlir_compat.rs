@@ -115,6 +115,19 @@ pub fn to_mlir_text(func: &TirFunction) -> String {
                 }
                 writeln!(out, "default: ^bb{}({})]", default.0, da.join(", ")).unwrap();
             }
+            Terminator::StateDispatch {
+                cases,
+                default,
+                default_args,
+            } => {
+                let da: Vec<String> = default_args.iter().map(|v| format!("%{}", v.0)).collect();
+                write!(out, "  state_dispatch [").unwrap();
+                for (state_id, target, args) in cases {
+                    let a: Vec<String> = args.iter().map(|v| format!("%{}", v.0)).collect();
+                    write!(out, "{}: ^bb{}({}), ", state_id, target.0, a.join(", ")).unwrap();
+                }
+                writeln!(out, "default: ^bb{}({})]", default.0, da.join(", ")).unwrap();
+            }
             Terminator::Unreachable => {
                 writeln!(out, "  \"molt.unreachable\"() : () -> ()").unwrap();
             }

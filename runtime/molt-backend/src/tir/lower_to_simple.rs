@@ -3161,6 +3161,46 @@ fn emit_terminator(
             });
         }
 
+        Terminator::StateDispatch {
+            cases,
+            default,
+            default_args,
+        } => {
+            // The `_poll` state-machine dispatch.  Round-trip back to the
+            // `state_switch` SimpleIR op the native/WASM backends re-derive their
+            // dispatch from (they read `molt_obj_get_state(self)` and switch on
+            // the saved state to the resume continuation that established it,
+            // scanning the linear stream for `state_yield`/`state_label` ids).
+            //
+            // The per-edge block-argument incomings are emitted as `store_var`
+            // into each target block's join-slot param vars BEFORE the dispatch:
+            // - resume (case) edges first, so the values threaded across a
+            //   suspend (e.g. exception-stack bookkeeping) populate the resume
+            //   block's join slots, which the native backend loads on re-entry
+            //   via its global `label_join_slots` mechanism;
+            // - then the state-0 default (initial-entry) edge, which falls
+            //   through to the default block.
+            //
+            // The LLVM backend does NOT consume this SimpleIR (it lowers the
+            // `StateDispatch` terminator directly to a real `switch` to the real
+            // resume blocks, supplying their phis); this path is exclusively for
+            // the SimpleIR-consuming native/WASM state-machine lowering.
+            for (_state_id, target, case_args) in cases {
+                emit_block_arg_stores(*target, case_args, block_param_vars, out);
+            }
+            emit_block_arg_stores(*default, default_args, block_param_vars, out);
+            out.push(OpIR {
+                kind: "state_switch".to_string(),
+                ..OpIR::default()
+            });
+            // State 0 (initial entry) falls through to the default block.
+            out.push(OpIR {
+                kind: "jump".to_string(),
+                value: Some(block_label_id(default)),
+                ..OpIR::default()
+            });
+        }
+
         Terminator::Unreachable => {
             out.push(OpIR {
                 kind: "unreachable".to_string(),
@@ -3294,7 +3334,8 @@ fn successors_of(block: &TirBlock) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. } => {
+        Terminator::Switch { cases, default, .. }
+        | Terminator::StateDispatch { cases, default, .. } => {
             let mut succs = vec![*default];
             for (_, target, _) in cases {
                 succs.push(*target);

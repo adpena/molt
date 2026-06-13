@@ -74,6 +74,19 @@ pub enum LirTerminator {
         default: BlockId,
         default_args: Vec<ValueId>,
     },
+    /// Generator/coroutine `_poll` state-machine dispatch (LIR mirror of
+    /// [`super::blocks::Terminator::StateDispatch`]).  The dispatch value is
+    /// implicit (read from the frame header at codegen time), so unlike `Switch`
+    /// it carries no condition `ValueId` — only the per-edge block-argument
+    /// incomings.  LIR is the verification carrier here (the native codegen
+    /// consumes the SimpleIR round-trip), so this variant exists primarily so
+    /// generator `_poll` bodies pass `verify_lir` with correct resume-edge
+    /// dominance.
+    StateDispatch {
+        cases: Vec<(i64, BlockId, Vec<ValueId>)>,
+        default: BlockId,
+        default_args: Vec<ValueId>,
+    },
     Return {
         values: Vec<ValueId>,
     },
