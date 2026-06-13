@@ -1414,6 +1414,9 @@ unsafe fn call_type_with_builder(
                 init_type, init_bits, fn_ptr
             );
         }
+        let init_consumes_self_param = obj_from_bits(init_bits)
+            .as_ptr()
+            .is_some_and(|ptr| function_uses_compiled_arg_ownership(ptr));
         if obj_from_bits(init_bits).as_ptr().is_some() {
             inc_ref_bits(_py, init_bits);
         }
@@ -1447,8 +1450,13 @@ unsafe fn call_type_with_builder(
         builder_guard.release();
         let args_ptr = callargs_ptr(builder_ptr);
         if !args_ptr.is_null() {
-            // The CallArgs builder owns its slots; take a reference for the instance we inject.
+            // The CallArgs builder owns the injected slot. Compiled function
+            // parameters are also owned by the callee epilogue, while runtime
+            // callable function objects borrow their arguments.
             inc_ref_bits(_py, inst_bits);
+            if init_consumes_self_param {
+                inc_ref_bits(_py, inst_bits);
+            }
             (*args_ptr).pos.insert(0, inst_bits);
         }
         let _ = molt_call_bind(init_bits, builder_bits);
@@ -1780,6 +1788,14 @@ unsafe fn protect_callargs_aliased_return_with_extra(
             }
         }
         result
+    }
+}
+
+unsafe fn function_uses_compiled_arg_ownership(func_ptr: *mut u8) -> bool {
+    unsafe {
+        object_type_id(func_ptr) == TYPE_ID_FUNCTION
+            && crate::builtins::functions::runtime_callable_target_ptr(function_fn_ptr(func_ptr))
+                .is_none()
     }
 }
 
@@ -2723,6 +2739,7 @@ unsafe fn try_call_bind_ic_fast(
             if function_fn_ptr(init_ptr) as u64 != entry.fn_ptr {
                 return None;
             }
+            let init_consumes_self_param = function_uses_compiled_arg_ownership(init_ptr);
             // Allocate instance using the IC-cached allocation size.
             // This skips the entire class_layout_size recomputation
             // (MRO walks, dict probes, issubclass checks) on every
@@ -2782,6 +2799,9 @@ unsafe fn try_call_bind_ic_fast(
                     "RecursionError",
                     "maximum recursion depth exceeded",
                 ));
+            }
+            if init_consumes_self_param {
+                inc_ref_bits(_py, inst_bits);
             }
             frame_stack_push(_py, code_bits);
             let _init_result = if closure_bits != 0 {
@@ -6265,14 +6285,25 @@ unsafe fn bind_builtin_pop(_py: &PyToken<'_>, args: &CallArgs) -> Option<Vec<u64
 #[cfg(test)]
 mod tests {
     use super::{
-        CALL_BIND_IC_KIND_DIRECT_FUNC, CallBindIcEntry, clear_call_bind_ic_cache, ic_tls_insert,
-        ic_tls_lookup, protect_callargs_aliased_return_with_extra,
-        trace_call_type_builder_enabled_raw,
+        CALL_BIND_IC_KIND_DIRECT_FUNC, CALL_BIND_IC_KIND_TYPE_CALL, CallBindIcEntry,
+        clear_call_bind_ic_cache, ic_tls_insert, ic_tls_lookup,
+        protect_callargs_aliased_return_with_extra, trace_call_type_builder_enabled_raw,
+        try_call_bind_ic_fast,
     };
-    use crate::object::builders::alloc_list;
-    use crate::{dec_ref_bits, obj_from_bits, ptr_from_bits, runtime_state};
+    use crate::object::builders::{alloc_function_obj, alloc_list};
+    use crate::{
+        TYPE_ID_OBJECT, dec_ref_bits, inc_ref_bits, obj_from_bits, object_type_id, ptr_from_bits,
+        runtime_state,
+    };
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
+
+    extern "C" fn compiled_init_drops_self_for_type_call_ic(self_bits: u64) -> i64 {
+        crate::with_gil_entry_nopanic!(_py, {
+            dec_ref_bits(_py, self_bits);
+            MoltObject::none().bits()
+        }) as i64
+    }
 
     #[test]
     fn trace_call_type_builder_gate_requires_explicit_opt_in() {
@@ -6408,6 +6439,72 @@ mod tests {
             assert_eq!(crate::molt_exception_pending(), 0);
             // Release the extra reference taken above.
             dec_ref_bits(_py, inst_bits);
+        });
+    }
+
+    #[test]
+    fn type_call_ic_retains_compiled_init_self_param_for_constructor_result() {
+        crate::with_gil_entry_nopanic!(_py, {
+            clear_call_bind_ic_cache();
+            let init_ptr = alloc_function_obj(
+                _py,
+                compiled_init_drops_self_for_type_call_ic as *const () as usize as u64,
+                1,
+            );
+            assert!(!init_ptr.is_null());
+            let init_bits = MoltObject::from_ptr(init_ptr).bits();
+            let builtins = crate::builtins::classes::builtin_classes(_py);
+            let name_ptr = super::alloc_string(_py, b"IcCtor");
+            let init_name_ptr = super::alloc_string(_py, b"__init__");
+            assert!(!name_ptr.is_null());
+            assert!(!init_name_ptr.is_null());
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let init_name_bits = MoltObject::from_ptr(init_name_ptr).bits();
+            let attrs = [init_name_bits, init_bits];
+            let bases = [builtins.object];
+            let class_bits = unsafe {
+                crate::object::ops::molt_guarded_class_def(
+                    name_bits,
+                    bases.as_ptr(),
+                    bases.len() as u64,
+                    attrs.as_ptr(),
+                    1,
+                    std::mem::size_of::<u64>() as i64,
+                    0,
+                    0,
+                )
+            };
+            assert!(!obj_from_bits(class_bits).is_none());
+            let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+            let layout_size =
+                unsafe { crate::call::class_init::class_layout_size_cached(_py, class_ptr) };
+            let entry = CallBindIcEntry {
+                fn_ptr: compiled_init_drops_self_for_type_call_ic as *const () as usize as u64,
+                target_bits: init_bits,
+                class_bits,
+                class_version: unsafe { crate::class_layout_version_bits(class_ptr) },
+                cached_alloc_size: (layout_size + std::mem::size_of::<crate::object::MoltHeader>())
+                    as u32,
+                arity: 0,
+                kind: CALL_BIND_IC_KIND_TYPE_CALL,
+            };
+            let builder_bits = super::molt_callargs_new(0, 0);
+            let builder_ptr = ptr_from_bits(builder_bits);
+            let args_ptr = unsafe { super::callargs_ptr(builder_ptr) };
+            let result_bits = unsafe {
+                try_call_bind_ic_fast(_py, entry, class_bits, args_ptr)
+                    .expect("type-call IC entry should apply")
+            };
+            let result_ptr = obj_from_bits(result_bits).as_ptr().expect("live instance");
+            assert_eq!(unsafe { object_type_id(result_ptr) }, TYPE_ID_OBJECT);
+            inc_ref_bits(_py, result_bits);
+            dec_ref_bits(_py, result_bits);
+            dec_ref_bits(_py, result_bits);
+            dec_ref_bits(_py, builder_bits);
+            dec_ref_bits(_py, init_name_bits);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, class_bits);
+            dec_ref_bits(_py, init_bits);
         });
     }
 

@@ -323,25 +323,33 @@ forwarding the required full-stdlib build profile with
 the blocker is backend-daemon compile memory before adapter workload execution.
 Native TIR optimization now processes uncached user functions in bounded
 op/count batches and applies/cache-writes each batch immediately; the next Molt
-runner proof (`bench/results/friends/20260612T184515Z/`) reached `2602`
-uncached user functions in `41` bounded batches and moved the single backend
-peak to 9.77 GB, then failed on aggregate process-tree RSS from overlapping
-daemon plus hidden one-shot fallback. CLI daemon failure now fails closed after
+runner proof (`bench/results/friends/20260612T184515Z/`) reached that bounded
+path and reduced single-backend RSS before failing on aggregate process-tree RSS
+from overlapping daemon plus hidden one-shot fallback. CLI daemon failure now fails closed after
 full-request admission instead of restarting the daemon or launching that hidden
 second backend compile. The follow-up Molt runner proof
 (`bench/results/friends/20260612T203111Z/`,
 `tmp/memory_guard/friends_tinygrad_molt_daemon_custody.json`) no longer trips
 the outer memory guard (`violation=null`, no orphaned process groups, 4.92 GB
 peak process-tree RSS); it fails closed with `Backend daemon compile failed:
-backend daemon died while request was in flight` after stdlib batch `35/35` and
-user-function TIR batch `8/41`. A later guarded Molt-only rerun
+backend daemon died while request was in flight`. A later guarded Molt-only rerun
 (`bench/results/friends/20260612T205850Z/`) used 10 GB process / 18 GB aggregate
 bench caps, recorded no memory violation, preserved host/control-plane process
 groups in `memory_guard/bench_friends_sentinel.jsonl`, and failed after 208.19s
 with `Backend daemon compile failed: backend daemon returned empty response`.
-The current Molt blocker for this lane is daemon crash provenance plus
-daemon-side large-user-compile memory custody. Do not patch, vendor, or
-translate tinygrad sources for this lane.
+The 21:12 guard sidecar
+(`tmp/memory_guard/friends_tinygrad_molt_daemon_harness_custody.json`) records a
+separate daemon compile-memory event: the suite sentinel terminated only the
+Molt-owned `molt-backend --daemon` process group when the daemon reached the 12
+GB process RSS cap. Native application-object batching now consumes the same
+`MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching. Daemon-off proof
+now builds the full-stdlib adapter and reaches runtime execution under guard;
+after the importlib bootstrap export fix and list-clear detach proof, the
+current Molt runtime blocker remains `molt fatal: invalid object header before
+dec_ref` at 1.985 GB peak RSS
+(`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
+Daemon-enabled runs still need daemon outcome/log custody after the compile
+memory split. Do not patch, vendor, or translate tinygrad sources for this lane.
 Its output is intended to drive GPU primitive, typed runtime upload/readback,
 MLIR/MIL lowering, and profiler work.
 
@@ -394,6 +402,9 @@ Artifacts:
 - machine-readable: `results.json`
 - human summary: `summary.md`
 - published summary: `docs/benchmarks/friend_summary.md` (`--update-doc`)
+- memory custody: `memory_guard/bench_friends_sentinel.jsonl`,
+  `memory_guard/backend_daemon_cleanup.jsonl`, and serialized
+  `memory_guard_incidents` in `results.json`
 
 Rules:
 - Pin friend repos to immutable `repo_ref` values before enabling suites.
@@ -406,6 +417,10 @@ Rules:
   `numpy`, or another manifest-declared runner name); invalid runner names are
   rejected rather than silently ignored. `friend` is kept only as a legacy
   generic lane.
+- Treat interrupted runs and RSS sentinel trips as evidence-producing runs when
+  the suite can finalize an artifact; emergency-writer tests cover partial
+  JSON/markdown snapshots, while real sentinel trips may leave only bounded
+  sidecar receipts plus identity-verified backend-daemon cleanup logs.
 
 ## Binary Size & Cold-Start (Optional)
 

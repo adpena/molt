@@ -135,6 +135,28 @@ def test_generated_classifier_matches_table() -> None:
     )
 
 
+def test_selected_operand_result_contract_covers_python_boolops() -> None:
+    """Python `and`/`or` return one operand, not a fresh value. Backends must
+    retain the selected borrowed operand whenever that selected value is bound as
+    an owned boxed result."""
+    gen = _gen()
+    data = gen.load_table()
+    selected_owner = {
+        row["name"]
+        for row in data["opcode"]
+        if row.get("result_mints_owned_selected_operand", False)
+    }
+    assert selected_owner == {"And", "Or"}
+
+    rendered = gen.render_rs(data)
+    selected_block = rendered.split(
+        "fn opcode_result_mints_owned_selected_operand_table"
+    )[1].split("fn kind_result_mints_owned_selected_operand_table")[0]
+    assert "OpCode::And" in selected_block
+    assert "OpCode::Or" in selected_block
+    assert "kind_to_opcode_table(kind)" in rendered
+
+
 def test_audit_sources_backend_vocab_from_registry() -> None:
     """The audit tool must source the backend mapper + classifier vocabularies
     from the registry (post phase-2), so its drift matrix compares the FRONTEND
@@ -441,9 +463,8 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
     `opcode_operand_ownership_table` (EXHAUSTIVE over the enum — the kill for a
     new opcode silently inheriting an unstated borrow/consume assumption). The
     seed is uniformly `Borrowed` (molt's callee-borrows-args ABI, design 20 §1.2)
-    EXCEPT the two interior-borrowing reads `LoadAttr`/`Index` (op-semantics
-    ladder #73): their source operand is `InteriorBorrowKeepAlive` — the
-    behavior-preserving migration of the `op_borrow_source` keepalive fact."""
+    EXCEPT the two interior-borrowing reads `LoadAttr`/`Index` and the
+    storage value operands' container-absorb finalizer boundary."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
@@ -460,6 +481,10 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
         "LoadAttr": ["interior_borrow_keepalive"],
         "Index": ["interior_borrow_keepalive", "borrowed"],
     }
+    container_absorb = {
+        "StoreIndex": ["borrowed", "borrowed", "container_absorb"],
+        "ModuleSetAttr": ["borrowed", "borrowed", "container_absorb"],
+    }
     consumed = {"DecRef"}
     expected_arm = {
         "LoadAttr": "OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,",
@@ -467,6 +492,18 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
             "OpCode::Index => match operand_idx { "
             "0 => OperandOwnership::InteriorBorrowKeepAlive, "
             "_ => OperandOwnership::Borrowed },"
+        ),
+        "StoreIndex": (
+            "OpCode::StoreIndex => match operand_idx { "
+            "0 => OperandOwnership::Borrowed, "
+            "1 => OperandOwnership::Borrowed, "
+            "_ => OperandOwnership::ContainerAbsorb },"
+        ),
+        "ModuleSetAttr": (
+            "OpCode::ModuleSetAttr => match operand_idx { "
+            "0 => OperandOwnership::Borrowed, "
+            "1 => OperandOwnership::Borrowed, "
+            "_ => OperandOwnership::ContainerAbsorb },"
         ),
     }
     for row in data["opcode"]:
@@ -476,6 +513,14 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
                 f"{name} interior-borrow seed drifted: {row['operand_ownership']!r} "
                 f"!= {interior[name]!r} (ladder #73 must stay byte-identical to the "
                 "op_borrow_source LoadAttr|Index→operand-0 fact)"
+            )
+            assert expected_arm[name] in region, (
+                f"opcode_operand_ownership_table missing/incorrect {name} arm"
+            )
+        elif name in container_absorb:
+            assert row["operand_ownership"] == container_absorb[name], (
+                f"{name} container-absorb seed drifted: {row['operand_ownership']!r} "
+                f"!= {container_absorb[name]!r}"
             )
             assert expected_arm[name] in region, (
                 f"opcode_operand_ownership_table missing/incorrect {name} arm"
@@ -504,6 +549,7 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
         "    Consumed,\n"
         "    Transferred,\n"
         "    InteriorBorrowKeepAlive,\n"
+        "    ContainerAbsorb,\n"
         "    ConditionalValidOnlyOnEdge,\n"
         "    NoOperandOwnership,\n"
         "}"
@@ -548,6 +594,47 @@ def test_consuming_kinds_are_known_mapper_spellings() -> None:
         assert row["kind"] in spellings, (
             f"consuming_kind {row['kind']!r} is not a [[kind]] mapper spelling"
         )
+
+
+def test_container_absorbing_kind_table_renders_storage_boundaries() -> None:
+    """Preserved SimpleIR mutators that retain a value in an existing container
+    get a generated per-spelling table, parallel to consuming-kind overrides but
+    not consuming the operand."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    region = _re_search(rendered, "fn kind_container_absorbed_operand_table")
+
+    absorbing = {
+        row["kind"]: row["absorbed_operand"]
+        for row in data["absorbing_operand_kind"]
+    }
+    assert absorbing == {
+        "list_append": 1,
+        "set_attr_generic_obj": 1,
+        "set_attr_generic_ptr": 1,
+    }
+    for kind in absorbing:
+        assert f'"{kind}" => Some(1),' in region
+    assert "_ => None," in region
+
+
+def test_result_finalizer_source_kind_table_renders_list_pop_boundary() -> None:
+    """Extraction results such as list_pop carry a fresh owned ref whose
+    finalizer sensitivity derives from a source container operand."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    region = _re_search(rendered, "fn kind_result_finalizer_source_operand_table")
+
+    result_sources = {
+        row["kind"]: row["source_operand"]
+        for row in data["result_finalizer_source_kind"]
+    }
+    assert result_sources == {"list_pop": 0}
+    assert "list_pop" in set(data["classifier_fresh_value"])
+    assert '"list_pop" => Some(0),' in region
+    assert "_ => None," in region
 
 
 def test_result_absorption_tables_render_container_authority() -> None:

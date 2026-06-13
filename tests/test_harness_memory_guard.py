@@ -1708,7 +1708,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
                 ppid=1,
                 pgid=owned_pgid,
                 rss_kb=5 * 1024 * 1024,
-                command=f"{tmp_path}/target/dev-fast/molt-backend --reparented",
+                command=f"{tmp_path}/target/dev-fast/molt-backend --warming",
             ),
             peer_pgid: harness_memory_guard.memory_guard.ProcessSample(
                 pid=peer_pgid,
@@ -1761,7 +1761,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
     event = json.loads(sentinel.events_path.read_text(encoding="utf-8"))
     assert event["active_pgids"] == [owned_pgid]
     assert event["victim_pgid"] == owned_pgid
-    assert event["victim_command"].endswith("--reparented")
+    assert event["victim_command"].endswith("--warming")
     assert event["owner_match_reason"] == "current_process_tree"
     assert event["claim_status"] == "claimed"
     assert event["termination"]["attempted"] is True
@@ -2058,7 +2058,9 @@ def test_repo_process_sentinel_drain_skips_protected_codex_group(
         scope_to_current_tree=False,
     )
     sentinel._baseline_pgids = set()
-    sentinel._observed_pgids = {100}
+    sentinel._observed_process_identities = {
+        101: harness_memory_guard.memory_guard.process_identity(samples[101]),
+    }
 
     drained = sentinel.drain_new_processes()
 
@@ -2293,18 +2295,18 @@ def test_repo_process_sentinel_remembers_observed_child_groups(
     seen_known: list[set[int]] = []
 
     def fake_process_groups(*args, **kwargs):
-        known = set(kwargs.get("known_pgids") or set())
+        known = set((kwargs.get("known_process_identities") or {}).keys())
         seen_known.append(known)
-        pgid = 456 if 123 in known else 123
+        pid = 456 if 123 in known else 123
         return [
             harness_memory_guard.process_sentinel.ProcessGroup(
-                pgid=pgid,
+                pgid=pid,
                 matched=True,
                 samples=(
                     harness_memory_guard.memory_guard.ProcessSample(
-                        pid=pgid,
+                        pid=pid,
                         ppid=1,
-                        pgid=pgid,
+                        pgid=pid,
                         rss_kb=100,
                         command="molt worker",
                     ),
@@ -2339,7 +2341,7 @@ def test_repo_process_sentinel_remembers_observed_child_groups(
     assert [group.pgid for group in second] == [456]
     assert set() in seen_known
     assert {123} in seen_known
-    assert sentinel._observed_pgids == {123, 456}
+    assert set(sentinel._observed_process_identities) == {123, 456}
 
 
 def test_guarded_harness_scope_standardizes_repo_sentinel(monkeypatch, tmp_path: Path):

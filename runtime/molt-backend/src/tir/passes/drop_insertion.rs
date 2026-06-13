@@ -95,8 +95,11 @@
 //! straight-line rule does; there is no separate IncRef to elide here (molt's ABI
 //! is borrow-args, so no IncRef was ever needed around the call). The borrow
 //! inference therefore reduces to: drop after the call, never before — which the
-//! last-use placement already does. We keep the call operands out of any
-//! *pre-call* drop, which the last-use semantics guarantee.
+//! last-use placement already does. Finalizer-sensitive values only override
+//! that placement when they are Python-bound roots (`store_var` / explicit
+//! delete boundary); unbound expression temporaries still die at their last use.
+//! We keep the call operands out of any *pre-call* drop, which the last-use
+//! semantics guarantee.
 //!
 //! ## Soundness invariants (the over-release hazards this pass must avoid)
 //!
@@ -337,13 +340,7 @@ fn insert_exception_region_match_drops(
     let mut result = ExceptionRegionDropInsertion::default();
 
     for (position, values) in release_to_matches {
-        let (
-            original_args,
-            pop_op,
-            prefix_source_ops,
-            tail_source_ops,
-            tail_source_terminator,
-        ) = {
+        let (original_args, pop_op, prefix_source_ops, tail_source_ops, tail_source_terminator) = {
             let Some(block) = func.blocks.get(&position.block) else {
                 continue;
             };
@@ -875,6 +872,36 @@ struct EdgeSplit {
     retains: Vec<ValueId>,
 }
 
+struct ExceptionArc {
+    op_index: usize,
+    target: BlockId,
+    args: Vec<ValueId>,
+}
+
+fn exception_arcs_for_block(func: &TirFunction, block: &TirBlock) -> Vec<ExceptionArc> {
+    let label_to_block = crate::tir::dominators::exception_label_to_block(func);
+    block
+        .ops
+        .iter()
+        .enumerate()
+        .filter_map(|(op_index, op)| {
+            if !crate::tir::dominators::is_exception_transfer_edge(op.opcode) {
+                return None;
+            }
+            let target_label = match op.attrs.get("value") {
+                Some(AttrValue::Int(label)) => *label,
+                _ => return None,
+            };
+            let target = *label_to_block.get(&target_label)?;
+            Some(ExceptionArc {
+                op_index,
+                target,
+                args: op.operands.clone(),
+            })
+        })
+        .collect()
+}
+
 /// Run drop insertion. See module docs for the algorithm.
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
@@ -949,7 +976,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             am.invalidate_ops();
         }
     }
-    if func.has_exception_handlers() || func.has_state_machine() {
+    if func.has_state_machine() {
         if debug_this {
             let _ = crate::debug_artifacts::write_debug_artifact(
                 format!("drop/{}.txt", func.name),
@@ -1101,10 +1128,13 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     };
 
     let finalizer_lattice = super::ownership_lattice_min::OwnershipLattice::compute(func);
-    let finalizer_sensitive_roots: HashSet<ValueId> = finalizer_lattice
-        .finalizer_sensitive_values()
-        .iter()
-        .map(|&v| canon(v))
+    let python_boundary_roots: HashSet<ValueId> = func
+        .blocks
+        .values()
+        .flat_map(|block| block.ops.iter())
+        .filter(|op| op.opcode == OpCode::Copy && matches!(original_kind(op), Some("store_var")))
+        .flat_map(|op| op.operands.iter().chain(op.results.iter()).copied())
+        .map(canon)
         .collect();
     let explicit_release_roots: HashSet<ValueId> = func
         .blocks
@@ -1117,7 +1147,32 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         })
         .map(canon)
         .collect();
-    let boundary_release_roots: HashSet<ValueId> = finalizer_sensitive_roots
+    let mut statement_release_after_op: HashMap<BlockId, HashMap<usize, Vec<ValueId>>> =
+        HashMap::new();
+    let mut statement_released_roots: HashSet<ValueId> = HashSet::new();
+    for boundary in finalizer_lattice.statement_release_finalizer_boundaries() {
+        let root = canon(boundary.value);
+        if !droppable(root)
+            || python_boundary_roots.contains(&root)
+            || explicit_release_roots.contains(&root)
+        {
+            continue;
+        }
+        statement_release_after_op
+            .entry(boundary.block)
+            .or_default()
+            .entry(boundary.op_index)
+            .or_default()
+            .push(root);
+        statement_released_roots.insert(root);
+    }
+    for by_op in statement_release_after_op.values_mut() {
+        for roots in by_op.values_mut() {
+            roots.sort_unstable_by_key(|v| v.0);
+            roots.dedup();
+        }
+    }
+    let boundary_release_roots: HashSet<ValueId> = python_boundary_roots
         .iter()
         .copied()
         .filter(|root| droppable(*root) && !explicit_release_roots.contains(root))
@@ -1163,6 +1218,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         /// IncRef(v) to insert immediately BEFORE the op at this index (a
         /// suspension point). Keyed by op index → values inc-ref'd before it.
         before_op: HashMap<usize, Vec<ValueId>>,
+        /// IncRef(v) to insert immediately BEFORE an exception-transfer op, with
+        /// an exactly paired normal-fallthrough DecRef in `after_exception_op`.
+        /// This models a borrowed value passed as a `CheckException` edge
+        /// payload into an owned handler block arg: on the exceptional path the
+        /// handler arg owns the retained +1; on the normal path the retain is
+        /// released immediately after the check. Unlike `before_op`, duplicate
+        /// entries are load-bearing and are not deduplicated during insertion.
+        before_exception_op: HashMap<usize, Vec<ValueId>>,
+        /// Normal-fallthrough release for `before_exception_op` retains.
+        after_exception_op: HashMap<usize, Vec<ValueId>>,
         /// IncRef(v) to insert just BEFORE the terminator (the mixed-ownership-phi
         /// retain, design §ownership / §5): a BORROWED value `v` this block passes
         /// as a branch arg into a successor's OWNED block-arg (phi) must be retained
@@ -1201,6 +1266,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             at_entry: Vec::new(),
             before_term: Vec::new(),
             before_op: HashMap::new(),
+            before_exception_op: HashMap::new(),
+            after_exception_op: HashMap::new(),
             before_term_incref: Vec::new(),
         };
 
@@ -1255,10 +1322,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if live.is_live_out(bid, v) {
                 continue;
             }
-            // Releasing a finalizer-sensitive root can execute Python `__del__`.
-            // Unless an explicit DecRef already marks the Python `del` boundary,
-            // hold it until the dominated return boundary rather than firing at
-            // SSA last read.
+            if statement_released_roots.contains(&v) {
+                continue;
+            }
+            // Releasing a Python-bound finalizer-sensitive root can execute
+            // Python `__del__`. Unless an explicit DecRef already marks the
+            // Python `del` boundary, hold named-local roots until the dominated
+            // return boundary rather than firing at SSA last read. Unbound
+            // expression temporaries are intentionally not in
+            // `boundary_release_roots`; they keep last-use placement.
             if boundary_release_roots.contains(&v) {
                 continue;
             }
@@ -1330,9 +1402,13 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 if live.is_live_out(bid, r) {
                     continue;
                 }
-                // Zero-use finalizer-sensitive temps are still Python-lifetime
-                // locals/temporaries for finalizer ordering: drop them at the
-                // boundary, not immediately after construction.
+                if statement_released_roots.contains(&r) {
+                    continue;
+                }
+                // Zero-use Python-bound finalizer-sensitive roots are still
+                // locals for finalizer ordering: drop them at the frame
+                // boundary, not immediately after construction. Unbound
+                // expression temporaries are not Python-bound and die here.
                 if boundary_release_roots.contains(&r) {
                     continue;
                 }
@@ -1361,6 +1437,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     }
                     _ => {}
                 }
+            }
+        }
+
+        if let Some(by_op) = statement_release_after_op.get(&bid) {
+            for (&idx, roots) in by_op {
+                plan.after_op
+                    .entry(idx)
+                    .or_default()
+                    .extend(roots.iter().copied());
             }
         }
 
@@ -1403,6 +1488,60 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     defined.insert(canon(r));
                 }
             }
+        }
+
+        // ── 2b. Exception-edge owned-arg retain ─────────────────────────────
+        // `CheckException`/`TryStart` carry implicit edges to handler blocks.
+        // When the target handler has droppable block args, the edge has the same
+        // uniform-owned-phi obligation as an ordinary branch edge, except the edge
+        // is conditional inside the op: the normal fallthrough must keep its
+        // original ownership while the exceptional transfer may need a retained
+        // +1. Therefore a borrowed/non-owned payload gets:
+        //
+        //     IncRef(v); CheckException(...v...); DecRef(v)
+        //
+        // The `DecRef` is skipped when the check transfers to the handler, so the
+        // retained +1 becomes the handler arg's owned reference. On the normal
+        // path it is balanced immediately. A clean function-owned payload needs no
+        // retain: the single +1 conditionally flows to the handler on the
+        // exceptional path and remains with the normal path otherwise.
+        for arc in exception_arcs_for_block(func, block) {
+            let Some(handler) = func.blocks.get(&arc.target) else {
+                continue;
+            };
+            if handler.args.is_empty() {
+                continue;
+            }
+            let mut retains = Vec::new();
+            for (idx, &v) in arc.args.iter().enumerate() {
+                let Some(handler_arg) = handler.args.get(idx) else {
+                    continue;
+                };
+                if !droppable(handler_arg.id) || live.is_raw_scalar(v) {
+                    continue;
+                }
+                let root = canon(v);
+                if iter_cond_value_results.contains(&v)
+                    || iter_cond_value_results.iter().any(|&iv| canon(iv) == root)
+                {
+                    continue;
+                }
+                if droppable(root) {
+                    continue;
+                }
+                retains.push(v);
+            }
+            if retains.is_empty() {
+                continue;
+            }
+            plan.before_exception_op
+                .entry(arc.op_index)
+                .or_default()
+                .extend(retains.iter().copied());
+            plan.after_exception_op
+                .entry(arc.op_index)
+                .or_default()
+                .extend(retains);
         }
 
         plans.insert(bid, plan);
@@ -1600,6 +1739,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     at_entry: Vec::new(),
                     before_term: Vec::new(),
                     before_op: HashMap::new(),
+                    before_exception_op: HashMap::new(),
+                    after_exception_op: HashMap::new(),
                     before_term_incref: Vec::new(),
                 })
                 .at_entry
@@ -1829,6 +1970,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     at_entry: Vec::new(),
                     before_term: Vec::new(),
                     before_op: HashMap::new(),
+                    before_exception_op: HashMap::new(),
+                    after_exception_op: HashMap::new(),
                     before_term_incref: Vec::new(),
                 });
                 for v in arc_retains {
@@ -1876,7 +2019,19 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     }
                 }
             }
+            if let Some(vals) = plan.before_exception_op.get(&idx) {
+                for &v in vals {
+                    new_ops.push(make_op(OpCode::IncRef, vec![v]));
+                    inserted += 1;
+                }
+            }
             new_ops.push(op.clone());
+            if let Some(vals) = plan.after_exception_op.get(&idx) {
+                for &v in vals {
+                    new_ops.push(make_op(OpCode::DecRef, vec![v]));
+                    inserted += 1;
+                }
+            }
             // after_op DecRefs (straight-line last use).
             if let Some(vals) = plan.after_op.get(&idx) {
                 let mut seen: HashSet<ValueId> = HashSet::new();
@@ -1944,10 +2099,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
     }
 
-    if inserted > 0 {
-        func.attrs
-            .insert(DROP_INSERTED_ATTR.to_string(), AttrValue::Bool(true));
-    }
+    // Full-function drop authority is a semantic fact, not a mutation count.
+    // A function with zero inserted DecRefs can still have borrowed parameters
+    // or transparent aliases that the native legacy tracker would otherwise
+    // release at scope exit. Mark every non-bailed function that reaches this
+    // point so native has exactly one RC authority even when the correct TIR
+    // edit is the empty edit.
+    func.attrs
+        .insert(DROP_INSERTED_ATTR.to_string(), AttrValue::Bool(true));
     if debug_this {
         let mut out = format!("[DROP] {} inserted={} blocks:\n", func.name, inserted);
         let mut bids: Vec<_> = func.blocks.keys().copied().collect();
@@ -2221,7 +2380,39 @@ mod tests {
     }
 
     #[test]
-    fn exception_region_match_release_inserts_before_handler_drop_bail() {
+    fn zero_insertion_borrowed_param_function_still_marks_drop_inserted() {
+        let mut func = TirFunction::new(
+            "borrowed_param_no_owned_temps".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let param = func.blocks[&func.entry_block].args[0].id;
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![op(OpCode::Call, vec![param], vec![])];
+            entry.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        let stats = run(&mut func, &mut am);
+
+        assert_eq!(
+            stats.ops_added, 0,
+            "borrowed-param-only functions need no physical drops"
+        );
+        assert_eq!(count_decrefs(&func), 0);
+        assert_eq!(count_increfs(&func), 0);
+        assert!(
+            matches!(
+                func.attrs.get(DROP_INSERTED_ATTR),
+                Some(AttrValue::Bool(true))
+            ),
+            "zero-insertion full analysis must still disable native legacy RC cleanup"
+        );
+    }
+
+    #[test]
+    fn exception_region_match_release_inserts_before_handler_full_drop() {
         let mut func = TirFunction::new("split_exception_cleanup".into(), vec![], TirType::None);
         let clean = func.fresh_block();
         let handler = func.fresh_block();
@@ -2274,8 +2465,11 @@ mod tests {
             Some(AttrValue::Bool(true))
         ));
         assert!(
-            !func.attrs.contains_key(DROP_INSERTED_ATTR),
-            "exception-only pre-bail drops must not claim full-function RC ownership"
+            matches!(
+                func.attrs.get(DROP_INSERTED_ATTR),
+                Some(AttrValue::Bool(true))
+            ),
+            "handler functions now run on full shared DropInsertion ownership"
         );
         assert_eq!(
             func.blocks[&clean]
@@ -2300,12 +2494,12 @@ mod tests {
                 .filter(|op| op.opcode == OpCode::DecRef)
                 .count(),
             1,
-            "exception-only marker must make the pre-bail slice idempotent without full drop_inserted"
+            "full drop_inserted marker must make the handler ownership slice idempotent"
         );
     }
 
     #[test]
-    fn exception_creation_ref_releases_at_raise_before_handler_drop_bail() {
+    fn exception_creation_ref_releases_at_raise_with_handler_full_drop() {
         let mut func = TirFunction::new("raise_creation_cleanup".into(), vec![], TirType::None);
         let handler = func.fresh_block();
         let exc = func.fresh_value();
@@ -2337,13 +2531,72 @@ mod tests {
             Some(AttrValue::Bool(true))
         ));
         assert!(
-            !func.attrs.contains_key(DROP_INSERTED_ATTR),
-            "raise-path CreationRef release before handler bail must not suppress native legacy RC"
+            matches!(
+                func.attrs.get(DROP_INSERTED_ATTR),
+                Some(AttrValue::Bool(true))
+            ),
+            "raise-path CreationRef release composes with full handler DropInsertion"
         );
         let entry_ops = &func.blocks[&func.entry_block].ops;
         assert_eq!(entry_ops[2].opcode, OpCode::Raise);
         assert_eq!(entry_ops[3].opcode, OpCode::DecRef);
         assert_eq!(entry_ops[3].operands, vec![exc]);
+    }
+
+    #[test]
+    fn exception_edge_borrowed_payload_retains_for_owned_handler_arg() {
+        let mut func = TirFunction::new(
+            "exception_edge_borrowed_payload".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let handler = func.fresh_block();
+        let handler_arg = func.fresh_value();
+        func.value_types.insert(handler_arg, TirType::DynBox);
+        func.label_id_map.insert(handler.0, 4);
+
+        let param = func.blocks[&func.entry_block].args[0].id;
+        let mut check = op(OpCode::CheckException, vec![param], vec![]);
+        check.attrs.insert("value".into(), AttrValue::Int(4));
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![try_start(4), check];
+            entry.terminator = Terminator::Return { values: vec![] };
+        }
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::Call, vec![handler_arg], vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        let stats = run(&mut func, &mut am);
+
+        assert_eq!(
+            stats.ops_added, 3,
+            "borrowed payload retain+normal release plus handler arg release"
+        );
+        let entry_ops = &func.blocks[&func.entry_block].ops;
+        let check_idx = entry_ops
+            .iter()
+            .position(|op| op.opcode == OpCode::CheckException)
+            .expect("check_exception survives");
+        assert_eq!(entry_ops[check_idx - 1].opcode, OpCode::IncRef);
+        assert_eq!(entry_ops[check_idx - 1].operands, vec![param]);
+        assert_eq!(entry_ops[check_idx + 1].opcode, OpCode::DecRef);
+        assert_eq!(entry_ops[check_idx + 1].operands, vec![param]);
+
+        let handler_ops = &func.blocks[&handler].ops;
+        assert_eq!(handler_ops[0].opcode, OpCode::Call);
+        assert_eq!(handler_ops[1].opcode, OpCode::DecRef);
+        assert_eq!(handler_ops[1].operands, vec![handler_arg]);
     }
 
     #[test]
@@ -2837,6 +3090,8 @@ mod tests {
             let b = func.blocks.get_mut(&entry).unwrap();
             b.ops.push(finalizer_object(item));
             b.ops.push(op(OpCode::BuildList, vec![item], vec![list]));
+            b.ops
+                .push(original_copy_with_operands("store_var", vec![list], vec![]));
             b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
             b.terminator = Terminator::Return { values: vec![] };
         }
@@ -2845,6 +3100,10 @@ mod tests {
         run(&mut func, &mut am);
 
         let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::BuildList)
+            .expect("BuildList op must survive");
         let marker_idx = ops
             .iter()
             .position(|op| op.opcode == OpCode::WarnStderr)
@@ -2857,8 +3116,149 @@ mod tests {
             .collect();
         assert_eq!(
             dropped,
-            vec![(marker_idx + 1, item), (marker_idx + 2, list)],
-            "finalizer-sensitive ownership must release at return boundary, after later side effects"
+            vec![(list_idx + 1, item), (marker_idx + 1, list)],
+            "absorbed producer temp releases at list construction; container owner releases at return"
+        );
+    }
+
+    #[test]
+    fn result_carrying_store_var_keeps_container_owner_to_return_boundary() {
+        let mut func =
+            TirFunction::new("finalizer_scope_store_result".into(), vec![], TirType::None);
+        let item = func.fresh_value();
+        let list = func.fresh_value();
+        let stored = func.fresh_value();
+        for v in [item, list, stored] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_object(item));
+            b.ops.push(original_copy_with_operands(
+                "list_new",
+                vec![item],
+                vec![list],
+            ));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![list],
+                vec![stored],
+            ));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_new"))
+            .expect("list_new op must survive");
+        let store_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("store_var"))
+            .expect("store_var marker must survive");
+        let marker_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::WarnStderr)
+            .expect("marker op must survive");
+        let dropped: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .map(|(idx, op)| (idx, op.operands[0]))
+            .collect();
+        assert!(
+            !dropped
+                .iter()
+                .any(|(idx, value)| *idx == store_idx + 1 && *value == list),
+            "store_var is a no-incref local lifetime marker; it must not release the source owner"
+        );
+        assert_eq!(
+            dropped,
+            vec![(list_idx + 1, item), (marker_idx + 1, list)],
+            "result-carrying store_var aliases the source owner and defers finalizer-sensitive locals to return"
+        );
+    }
+
+    #[test]
+    fn result_carrying_store_var_later_container_absorb_keeps_owner_to_return_boundary() {
+        let mut func = TirFunction::new(
+            "finalizer_scope_store_result_later_absorb".into(),
+            vec![],
+            TirType::None,
+        );
+        let list = func.fresh_value();
+        let stored = func.fresh_value();
+        let item = func.fresh_value();
+        for v in [list, stored, item] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops
+                .push(original_copy_with_operands("list_new", vec![], vec![list]));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![list],
+                vec![stored],
+            ));
+            b.ops.push(finalizer_object(item));
+            b.ops.push(original_copy_with_operands(
+                "list_append",
+                vec![stored, item],
+                vec![],
+            ));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_new"))
+            .expect("list_new op must survive");
+        let store_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("store_var"))
+            .expect("store_var marker must survive");
+        let append_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_append"))
+            .expect("list_append op must survive");
+        let marker_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::WarnStderr)
+            .expect("marker op must survive");
+        let dropped: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .map(|(idx, op)| (idx, op.operands[0]))
+            .collect();
+        assert!(
+            !dropped
+                .iter()
+                .any(|(idx, value)| *idx == store_idx + 1 && *value == list),
+            "a result-carrying store_var must not release an empty container before later mutation through its alias"
+        );
+        assert_eq!(
+            dropped,
+            vec![(append_idx + 1, item), (marker_idx + 1, list)],
+            "later container absorption makes the Python-bound owner finalizer-sensitive without moving its release before return"
+        );
+        assert!(
+            !dropped
+                .iter()
+                .any(|(idx, value)| *idx == list_idx + 1 && *value == list),
+            "empty container owner must survive past construction once bound to a Python local"
         );
     }
 
@@ -2879,6 +3279,8 @@ mod tests {
                 vec![item],
                 vec![list],
             ));
+            b.ops
+                .push(original_copy_with_operands("store_var", vec![list], vec![]));
             b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
             b.terminator = Terminator::Return { values: vec![] };
         }
@@ -2887,6 +3289,10 @@ mod tests {
         run(&mut func, &mut am);
 
         let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_new"))
+            .expect("list_new op must survive");
         let marker_idx = ops
             .iter()
             .position(|op| op.opcode == OpCode::WarnStderr)
@@ -2899,8 +3305,8 @@ mod tests {
             .collect();
         assert_eq!(
             dropped,
-            vec![(marker_idx + 1, item), (marker_idx + 2, list)],
-            "Copy-preserved list_new must share the BuildList finalizer boundary"
+            vec![(list_idx + 1, item), (marker_idx + 1, list)],
+            "Copy-preserved list_new must release the producer temp at the absorption boundary"
         );
     }
 
@@ -2925,6 +3331,8 @@ mod tests {
                 vec![item],
                 vec![list],
             ));
+            b.ops
+                .push(original_copy_with_operands("store_var", vec![list], vec![]));
             b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
             b.terminator = Terminator::Return { values: vec![] };
         }
@@ -2933,6 +3341,10 @@ mod tests {
         run(&mut func, &mut am);
 
         let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_new"))
+            .expect("list_new op must survive");
         let marker_idx = ops
             .iter()
             .position(|op| op.opcode == OpCode::WarnStderr)
@@ -2945,8 +3357,67 @@ mod tests {
             .collect();
         assert_eq!(
             dropped,
-            vec![(marker_idx + 1, item), (marker_idx + 2, list)],
-            "call_bind-created finalizer objects must feed the same list_new boundary"
+            vec![(list_idx + 1, item), (marker_idx + 1, list)],
+            "call_bind-created finalizer temps release at list_new while the container owner defers"
+        );
+    }
+
+    #[test]
+    fn unbound_finalizer_container_call_arg_releases_at_call_boundary() {
+        let mut func = TirFunction::new(
+            "finalizer_scope_unbound_call_arg".into(),
+            vec![],
+            TirType::None,
+        );
+        let item = func.fresh_value();
+        let list = func.fresh_value();
+        for v in [item, list] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_object(item));
+            b.ops.push(original_copy_with_operands(
+                "list_new",
+                vec![item],
+                vec![list],
+            ));
+            b.ops.push(op(OpCode::Call, vec![list], vec![]));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_new"))
+            .expect("list_new op must survive");
+        let call_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Call && op.operands == vec![list])
+            .expect("call op must survive");
+        let marker_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::WarnStderr)
+            .expect("marker op must survive");
+        let dropped: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .map(|(idx, op)| (idx, op.operands[0]))
+            .collect();
+        assert_eq!(
+            dropped,
+            vec![(list_idx + 1, item), (call_idx + 1, list)],
+            "unbound finalizer-sensitive expression temps die at their last use, not at frame return"
+        );
+        assert!(
+            call_idx < marker_idx,
+            "fixture must keep a later side effect after the call boundary"
         );
     }
 
@@ -2982,6 +3453,8 @@ mod tests {
                 vec![item],
                 vec![list],
             ));
+            b.ops
+                .push(original_copy_with_operands("store_var", vec![list], vec![]));
             b.ops.push(op(OpCode::CheckException, vec![], vec![]));
             b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
             b.terminator = Terminator::Return { values: vec![] };
@@ -2991,6 +3464,10 @@ mod tests {
         run(&mut func, &mut am);
 
         let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_new"))
+            .expect("list_new op must survive");
         let marker_idx = ops
             .iter()
             .position(|op| op.opcode == OpCode::WarnStderr)
@@ -3002,12 +3479,346 @@ mod tests {
             .map(|(idx, op)| (idx, op.operands[0]))
             .collect();
         assert!(
-            dropped.contains(&(marker_idx + 1, item)),
-            "call result must not drop before later side effects: {dropped:?}"
+            dropped.contains(&(list_idx + 1, item)),
+            "call result temp must release at the list_new absorption boundary: {dropped:?}"
         );
         assert!(
-            dropped.contains(&(marker_idx + 2, list)),
-            "absorbing list must not drop before later side effects: {dropped:?}"
+            dropped.contains(&(marker_idx + 1, list)),
+            "absorbing list owner must still release at return boundary: {dropped:?}"
+        );
+    }
+
+    #[test]
+    fn list_append_absorbed_temp_releases_at_append_boundary() {
+        let mut func =
+            TirFunction::new("finalizer_scope_list_append".into(), vec![], TirType::None);
+        let list = func.fresh_value();
+        let item = func.fresh_value();
+        for v in [list, item] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops
+                .push(original_copy_with_operands("list_new", vec![], vec![list]));
+            b.ops
+                .push(original_copy_with_operands("store_var", vec![list], vec![]));
+            b.ops.push(finalizer_object(item));
+            b.ops.push(original_copy_with_operands(
+                "list_append",
+                vec![list, item],
+                vec![],
+            ));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let append_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_append"))
+            .expect("list_append op must survive");
+        let marker_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::WarnStderr)
+            .expect("marker op must survive");
+        let dropped: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .map(|(idx, op)| (idx, op.operands[0]))
+            .collect();
+        assert_eq!(
+            dropped,
+            vec![(append_idx + 1, item), (marker_idx + 1, list)],
+            "list_append absorbs the producer temp but the container owner stays boundary-deferred"
+        );
+    }
+
+    #[test]
+    fn module_set_attr_releases_absorbed_value_before_later_borrowed_use() {
+        let mut func = TirFunction::new(
+            "finalizer_scope_module_set_attr".into(),
+            vec![],
+            TirType::None,
+        );
+        let module = func.fresh_value();
+        let name = func.fresh_value();
+        let item = func.fresh_value();
+        let list = func.fresh_value();
+        let popped = func.fresh_value();
+        for v in [module, name, item, list, popped] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_object(item));
+            b.ops.push(original_copy_with_operands(
+                "list_new",
+                vec![item],
+                vec![list],
+            ));
+            b.ops
+                .push(op(OpCode::ModuleSetAttr, vec![module, name, list], vec![]));
+            b.ops.push(original_copy_with_operands(
+                "list_pop",
+                vec![list],
+                vec![popped],
+            ));
+            b.ops
+                .push(op(OpCode::ModuleDelGlobal, vec![module, name], vec![]));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_new"))
+            .expect("list_new op must survive");
+        let store_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::ModuleSetAttr)
+            .expect("module_set_attr op must survive");
+        let pop_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_pop"))
+            .expect("list_pop op must survive");
+        let tracked_drops: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .filter_map(|(idx, op)| {
+                let dropped = op.operands[0];
+                [item, list, popped]
+                    .contains(&dropped)
+                    .then_some((idx, dropped))
+            })
+            .collect();
+        assert_eq!(
+            tracked_drops,
+            vec![
+                (list_idx + 1, item),
+                (store_idx + 1, list),
+                (pop_idx + 1, popped),
+            ],
+            "module_set_attr owns the Python-visible global lifetime, so the compiler-owned list ref must release at the storage boundary"
+        );
+    }
+
+    #[test]
+    fn generic_attr_store_releases_absorbed_defaults_tuple_before_later_borrowed_use() {
+        let mut func = TirFunction::new(
+            "finalizer_scope_generic_attr_defaults".into(),
+            vec![],
+            TirType::None,
+        );
+        let item = func.fresh_value();
+        let func_obj = func.fresh_value();
+        let defaults = func.fresh_value();
+        let version = func.fresh_value();
+        for v in [item, func_obj, defaults, version] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_object(item));
+            b.ops.push(finalizer_object(func_obj));
+            b.ops.push(original_copy_with_operands(
+                "tuple_new",
+                vec![item],
+                vec![defaults],
+            ));
+            let mut store = op(OpCode::StoreAttr, vec![func_obj, defaults], vec![]);
+            store.attrs.insert(
+                "_original_kind".into(),
+                AttrValue::Str("set_attr_generic_obj".into()),
+            );
+            store
+                .attrs
+                .insert("s_value".into(), AttrValue::Str("__defaults__".into()));
+            b.ops.push(store);
+            b.ops.push(op(
+                OpCode::FunctionDefaultsVersion,
+                vec![func_obj],
+                vec![version],
+            ));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let tuple_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("tuple_new"))
+            .expect("tuple_new op must survive");
+        let store_idx = ops
+            .iter()
+            .position(|op| {
+                op.opcode == OpCode::StoreAttr && original_kind(op) == Some("set_attr_generic_obj")
+            })
+            .expect("generic attr store must survive");
+        let version_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::FunctionDefaultsVersion)
+            .expect("later borrowed function read must survive");
+        let tracked_drops: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .filter_map(|(idx, op)| {
+                let dropped = op.operands[0];
+                [item, defaults, version]
+                    .contains(&dropped)
+                    .then_some((idx, dropped))
+            })
+            .collect();
+        let drop_index = |value| {
+            tracked_drops
+                .iter()
+                .find_map(|(idx, dropped)| (*dropped == value).then_some(*idx))
+                .expect("tracked owned value must be released")
+        };
+        assert_eq!(drop_index(item), tuple_idx + 1);
+        assert_eq!(
+            drop_index(defaults),
+            store_idx + 1,
+            "generic attr storage retains the value, so the compiler-owned defaults tuple must release at the store boundary before later borrowed function reads"
+        );
+        assert!(drop_index(version) > version_idx);
+        assert!(
+            drop_index(defaults) < version_idx,
+            "the compiler-owned defaults ref must be released before the later borrowed defaults-version read"
+        );
+    }
+
+    #[test]
+    fn discarded_list_pop_result_releases_at_pop_boundary() {
+        let mut func = TirFunction::new("finalizer_scope_list_pop".into(), vec![], TirType::None);
+        let item = func.fresh_value();
+        let list = func.fresh_value();
+        let popped = func.fresh_value();
+        for v in [item, list, popped] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_object(item));
+            b.ops.push(original_copy_with_operands(
+                "list_new",
+                vec![item],
+                vec![list],
+            ));
+            b.ops
+                .push(original_copy_with_operands("store_var", vec![list], vec![]));
+            b.ops.push(original_copy_with_operands(
+                "list_pop",
+                vec![list],
+                vec![popped],
+            ));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_new"))
+            .expect("list_new op must survive");
+        let pop_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_pop"))
+            .expect("list_pop op must survive");
+        let marker_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::WarnStderr)
+            .expect("marker op must survive");
+        let dropped: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .map(|(idx, op)| (idx, op.operands[0]))
+            .collect();
+        assert_eq!(
+            dropped,
+            vec![
+                (list_idx + 1, item),
+                (pop_idx + 1, popped),
+                (marker_idx + 1, list),
+            ],
+            "discarded list_pop result releases at pop boundary while list owner defers"
+        );
+    }
+
+    #[test]
+    fn named_local_absorbed_into_list_is_not_released_at_absorption_boundary() {
+        let mut func = TirFunction::new(
+            "finalizer_scope_named_local_list".into(),
+            vec![],
+            TirType::None,
+        );
+        let item = func.fresh_value();
+        let list = func.fresh_value();
+        for v in [item, list] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_object(item));
+            b.ops
+                .push(original_copy_with_operands("store_var", vec![item], vec![]));
+            b.ops.push(original_copy_with_operands(
+                "list_new",
+                vec![item],
+                vec![list],
+            ));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let list_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("list_new"))
+            .expect("list_new op must survive");
+        let marker_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::WarnStderr)
+            .expect("marker op must survive");
+        let dropped: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .map(|(idx, op)| (idx, op.operands[0]))
+            .collect();
+        assert!(
+            !dropped.contains(&(list_idx + 1, item)),
+            "Python-bound local must not drop at the list absorption statement: {dropped:?}"
+        );
+        assert_eq!(
+            dropped,
+            vec![(list_idx + 1, list), (marker_idx + 1, item)],
+            "the expression container releases at statement last use while the Python-bound local root waits for the frame boundary"
         );
     }
 

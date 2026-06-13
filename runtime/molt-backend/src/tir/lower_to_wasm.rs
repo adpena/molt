@@ -749,17 +749,8 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
             }
         }
         OpCode::And | OpCode::Or => {
-            if tir_op.operands.len() >= 2
-                && let Some(result) = op.result_values.first()
-            {
-                ctx.emit_get(tir_op.operands[0]);
-                ctx.emit_get(tir_op.operands[1]);
-                ctx.instructions.push(if tir_op.opcode == OpCode::And {
-                    Instruction::I32And
-                } else {
-                    Instruction::I32Or
-                });
-                ctx.emit_set(result.id);
+            if tir_op.operands.len() >= 2 && !op.result_values.is_empty() {
+                emit_lir_bool_select(ctx, op, tir_op.opcode == OpCode::And);
             }
         }
         OpCode::Bool => {
@@ -1117,6 +1108,66 @@ fn emit_lir_unary_arith(ctx: &mut LirLowerCtx, op: &LirOp, _unary: UnaryOp) {
         }
     }
     ctx.emit_set(dst);
+}
+
+#[cfg(feature = "wasm-backend")]
+fn emit_lir_bool_select(ctx: &mut LirLowerCtx, op: &LirOp, is_and: bool) {
+    let tir_op = &op.tir_op;
+    if tir_op.operands.len() < 2 || op.result_values.is_empty() {
+        return;
+    }
+    let lhs = tir_op.operands[0];
+    let rhs = tir_op.operands[1];
+    let result = &op.result_values[0];
+    let dst = result.id;
+    if ctx.repr_of(lhs) == LirRepr::Bool1
+        && ctx.repr_of(rhs) == LirRepr::Bool1
+        && result.repr == LirRepr::Bool1
+    {
+        ctx.emit_get(lhs);
+        ctx.emit_get(rhs);
+        ctx.instructions.push(if is_and {
+            Instruction::I32And
+        } else {
+            Instruction::I32Or
+        });
+        ctx.emit_set(dst);
+        return;
+    }
+
+    assert!(
+        matches!(result.repr, LirRepr::DynBox | LirRepr::Ref64),
+        "boxed Python boolean selection must produce a boxed result, got {:?}",
+        result.repr
+    );
+    assert!(
+        crate::tir::op_kinds_generated::opcode_result_mints_owned_selected_operand_table(
+            tir_op.opcode
+        ),
+        "boxed Python boolean selection must mint an owned selected operand"
+    );
+
+    emit_get_boxed_for_repr(ctx, lhs);
+    ctx.emit_runtime_call("is_truthy");
+    ctx.instructions.push(Instruction::I64Const(0));
+    ctx.instructions.push(Instruction::I64Ne);
+    ctx.instructions
+        .push(Instruction::If(BlockType::Result(ValType::I64)));
+    if is_and {
+        emit_get_boxed_for_repr(ctx, rhs);
+    } else {
+        emit_get_boxed_for_repr(ctx, lhs);
+    }
+    ctx.instructions.push(Instruction::Else);
+    if is_and {
+        emit_get_boxed_for_repr(ctx, lhs);
+    } else {
+        emit_get_boxed_for_repr(ctx, rhs);
+    }
+    ctx.instructions.push(Instruction::End);
+    ctx.instructions
+        .push(Instruction::LocalTee(ctx.get_local(dst)));
+    ctx.emit_runtime_call("inc_ref_obj");
 }
 
 #[cfg(feature = "wasm-backend")]
@@ -1697,6 +1748,85 @@ mod tests {
             .iter()
             .any(|i| matches!(i, Instruction::I64Add));
         assert!(has_add, "expected i64.add instruction");
+    }
+
+    #[test]
+    fn bool1_and_stays_raw_without_selected_ref_retain() {
+        let mut func = TirFunction::new(
+            "and_bool1".into(),
+            vec![TirType::Bool, TirType::Bool],
+            TirType::Bool,
+        );
+        let result_id = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::And,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func);
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::I32And)),
+            "raw Bool1 and must stay a native i32.and: {:?}",
+            output.instructions
+        );
+        assert!(
+            !output.runtime_calls.contains(&"inc_ref_obj"),
+            "raw Bool1 and must not retain a selected boxed operand: {:?}",
+            output.runtime_calls
+        );
+    }
+
+    #[test]
+    fn dynbox_or_retains_selected_operand_result() {
+        let mut func = TirFunction::new(
+            "or_dynbox".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+        );
+        let result_id = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Or,
+            operands: vec![ValueId(0), ValueId(1)],
+            results: vec![result_id],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result_id],
+        };
+
+        let output = lower_tir_to_wasm(&func);
+        assert!(
+            output.runtime_calls.contains(&"is_truthy"),
+            "boxed or must test Python truthiness: {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            output.runtime_calls.contains(&"inc_ref_obj"),
+            "boxed or must retain the selected borrowed operand result: {:?}",
+            output.runtime_calls
+        );
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::LocalTee(_))),
+            "boxed or must tee the selected result before retaining it: {:?}",
+            output.instructions
+        );
     }
 
     #[test]

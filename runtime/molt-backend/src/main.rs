@@ -34,7 +34,7 @@ use crate::json_boundary::{
 const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_BACKEND_BATCH_SIZE: usize = 64;
 const DEFAULT_STDLIB_BATCH_SIZE: usize = 128;
-const DEFAULT_STDLIB_BATCH_OP_BUDGET: usize = 12_000;
+const DEFAULT_BACKEND_BATCH_OP_BUDGET: usize = 8_000;
 const MIB: usize = 1024 * 1024;
 const DEFAULT_DAEMON_REQUEST_LIMIT_BYTES: usize = 512 * MIB;
 const DEFAULT_STDIN_REQUEST_LIMIT_BYTES: usize = DEFAULT_DAEMON_REQUEST_LIMIT_BYTES;
@@ -262,6 +262,14 @@ fn resolved_batch_size_limit(default: usize) -> usize {
     if raw == 0 { usize::MAX } else { raw }
 }
 
+fn resolved_batch_op_budget_limit(default: usize) -> usize {
+    let raw = std::env::var("MOLT_BACKEND_BATCH_OP_BUDGET")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default);
+    if raw == 0 { usize::MAX } else { raw }
+}
+
 #[cfg(feature = "native-backend")]
 struct NativeApplicationObjectOptions<'a> {
     target_triple: Option<&'a str>,
@@ -381,7 +389,12 @@ fn compile_native_application_object_to_path(
 
     let function_count = ir.functions.len();
     let batch_size = resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE);
-    if function_count <= batch_size {
+    let batch_ops_budget = resolved_batch_op_budget_limit(DEFAULT_BACKEND_BATCH_OP_BUDGET);
+    let total_ops = ir
+        .functions
+        .iter()
+        .fold(0usize, |ops, func| ops.saturating_add(func.ops.len()));
+    if function_count <= batch_size && total_ops <= batch_ops_budget {
         let mut backend = SimpleBackend::new_with_target(options.target_triple);
         if options.stdlib_split_enabled {
             backend.skip_shared_stdlib_partition = true;
@@ -410,7 +423,7 @@ fn compile_native_application_object_to_path(
             &all_functions,
         ));
     }
-    let batches = partition_functions_for_batches(all_functions, batch_size, usize::MAX);
+    let batches = partition_functions_for_batches(all_functions, batch_size, batch_ops_budget);
     let total_batches = batches.len();
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt_batch_{}_{}",
@@ -424,11 +437,16 @@ fn compile_native_application_object_to_path(
     let mut batch_paths: Vec<std::path::PathBuf> = Vec::new();
     let compile_result = (|| -> io::Result<()> {
         for (batch_idx, batch_funcs) in batches.into_iter().enumerate() {
+            let batch_ops = batch_funcs
+                .iter()
+                .fold(0usize, |ops, func| ops.saturating_add(func.ops.len()));
             eprintln!(
-                "{}: batch {}/{total_batches} ({} functions)",
+                "{}: batch {}/{total_batches} ({} functions, {} ops / budget {})",
                 options.log_prefix,
                 batch_idx + 1,
-                batch_funcs.len()
+                batch_funcs.len(),
+                batch_ops,
+                batch_ops_budget
             );
             let batch_ir = SimpleIR {
                 functions: batch_funcs,
@@ -487,10 +505,7 @@ fn compile_stdlib_cache_object(
     }
 
     let stdlib_batch_size = resolved_batch_size_limit(DEFAULT_STDLIB_BATCH_SIZE);
-    let stdlib_batch_ops_budget: usize = std::env::var("MOLT_BACKEND_BATCH_OP_BUDGET")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_STDLIB_BATCH_OP_BUDGET);
+    let stdlib_batch_ops_budget = resolved_batch_op_budget_limit(DEFAULT_BACKEND_BATCH_OP_BUDGET);
     let all_stdlib_names: std::collections::BTreeSet<String> =
         stdlib_funcs.iter().map(|f| f.name.clone()).collect();
     let stdlib_module_context = SimpleBackend::build_module_context(&stdlib_funcs);
@@ -3027,16 +3042,17 @@ mod tests {
     #[cfg(feature = "rust-backend")]
     use super::rust_source_for_ir;
     use super::{
-        BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_SIZE,
-        DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest, DaemonRequest, DaemonResponse,
-        GIB, MIB, NativeApplicationObjectOptions, RequestBoundedRead,
-        compile_native_application_object_to_path, compile_single_job, create_backend_output_file,
-        daemon_response_payload, default_backend_max_rss_gb_from_physical_mem_bytes,
-        default_backend_output_path, default_daemon_cache_bytes_from_physical_mem_bytes,
-        ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
-        partition_functions_for_batches, prune_and_partition_native_stdlib,
-        read_bounded_request_bytes, read_daemon_request_bytes, relocatable_linker_binary,
-        resolve_backend_output_path, resolved_batch_size_limit, shared_stdlib_cache_matches,
+        BACKEND_DAEMON_PROTOCOL_VERSION, BackendOutputKind, DEFAULT_BACKEND_BATCH_OP_BUDGET,
+        DEFAULT_BACKEND_BATCH_SIZE, DEFAULT_STDLIB_BATCH_SIZE, DaemonCache, DaemonJobRequest,
+        DaemonRequest, DaemonResponse, GIB, MIB, NativeApplicationObjectOptions,
+        RequestBoundedRead, compile_native_application_object_to_path, compile_single_job,
+        create_backend_output_file, daemon_response_payload,
+        default_backend_max_rss_gb_from_physical_mem_bytes, default_backend_output_path,
+        default_daemon_cache_bytes_from_physical_mem_bytes, ensure_output_parent_dir,
+        is_user_owned_symbol, merge_relocatable_objects, partition_functions_for_batches,
+        prune_and_partition_native_stdlib, read_bounded_request_bytes, read_daemon_request_bytes,
+        relocatable_linker_binary, resolve_backend_output_path, resolved_batch_op_budget_limit,
+        resolved_batch_size_limit, shared_stdlib_cache_matches,
         shared_stdlib_partition_closure_issue, shared_stdlib_partition_manifest,
         stdlib_cache_partition_manifest_sidecar_path, validate_shared_stdlib_partition,
         write_cached_output, write_shared_stdlib_cache_sidecars,
@@ -4256,14 +4272,106 @@ mod tests {
     }
 
     #[test]
-    fn resolved_batch_size_limit_defaults_and_zero_disable_count_cap() {
+    fn native_application_object_uses_op_budget_even_when_count_fits() {
         let _env_guard = ENV_TEST_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prior = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
+        let prior_batch_size = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
+        let prior_op_budget = std::env::var("MOLT_BACKEND_BATCH_OP_BUDGET").ok();
+        let prior_linker = std::env::var("MOLT_LINKER").ok();
+        unsafe {
+            std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "64");
+            std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", "1");
+            std::env::set_var("MOLT_LINKER", "false");
+        }
+
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-native-app-op-budget-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let output = tmp_dir.join("output.o");
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "molt_main".to_string(),
+                    params: vec![],
+                    ops: vec![
+                        OpIR {
+                            kind: "call".to_string(),
+                            s_value: Some("helper".to_string()),
+                            value: Some(0),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "helper".to_string(),
+                    params: vec![],
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            profile: None,
+        };
+
+        let err = compile_native_application_object_to_path(
+            ir,
+            &output,
+            NativeApplicationObjectOptions {
+                target_triple: None,
+                stdlib_split_enabled: false,
+                app_intrinsic_manifest: None,
+                log_prefix: "MOLT_BACKEND(test)",
+            },
+        )
+        .expect_err("op budget must force relocatable batching");
+        let message = err.to_string();
+        assert!(message.contains("relocatable link failed"), "{message}");
+        assert!(!output.exists(), "failed merge must not publish output");
+
+        match prior_batch_size {
+            Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", value) },
+            None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_SIZE") },
+        }
+        match prior_op_budget {
+            Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", value) },
+            None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_OP_BUDGET") },
+        }
+        match prior_linker {
+            Some(value) => unsafe { std::env::set_var("MOLT_LINKER", value) },
+            None => unsafe { std::env::remove_var("MOLT_LINKER") },
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn resolved_batch_size_and_op_budget_limits_default_and_zero_disable_caps() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prior_size = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
+        let prior_ops = std::env::var("MOLT_BACKEND_BATCH_OP_BUDGET").ok();
 
         unsafe {
             std::env::remove_var("MOLT_BACKEND_BATCH_SIZE");
+            std::env::remove_var("MOLT_BACKEND_BATCH_OP_BUDGET");
         }
         assert_eq!(
             resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE),
@@ -4273,9 +4381,14 @@ mod tests {
             resolved_batch_size_limit(DEFAULT_STDLIB_BATCH_SIZE),
             DEFAULT_STDLIB_BATCH_SIZE
         );
+        assert_eq!(
+            resolved_batch_op_budget_limit(DEFAULT_BACKEND_BATCH_OP_BUDGET),
+            DEFAULT_BACKEND_BATCH_OP_BUDGET
+        );
 
         unsafe {
             std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "0");
+            std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", "0");
         }
         assert_eq!(
             resolved_batch_size_limit(DEFAULT_BACKEND_BATCH_SIZE),
@@ -4285,10 +4398,18 @@ mod tests {
             resolved_batch_size_limit(DEFAULT_STDLIB_BATCH_SIZE),
             usize::MAX
         );
+        assert_eq!(
+            resolved_batch_op_budget_limit(DEFAULT_BACKEND_BATCH_OP_BUDGET),
+            usize::MAX
+        );
 
-        match prior {
+        match prior_size {
             Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_SIZE", value) },
             None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_SIZE") },
+        }
+        match prior_ops {
+            Some(value) => unsafe { std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", value) },
+            None => unsafe { std::env::remove_var("MOLT_BACKEND_BATCH_OP_BUDGET") },
         }
     }
 

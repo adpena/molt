@@ -108,7 +108,11 @@ struct NativeBackendIrAnalysis {
 #[cfg(feature = "native-backend")]
 const TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT: usize = 128;
 #[cfg(feature = "native-backend")]
-const TIR_OPTIMIZATION_BATCH_OP_BUDGET: usize = 12_000;
+const TIR_OPTIMIZATION_BATCH_OP_BUDGET: usize = 8_000;
+#[cfg(feature = "native-backend")]
+const DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT: usize = 16;
+#[cfg(feature = "native-backend")]
+const DEFERRED_CODEGEN_FLUSH_OP_BUDGET: usize = 4_000;
 
 #[cfg(feature = "native-backend")]
 #[derive(Debug, Eq, PartialEq)]
@@ -154,6 +158,13 @@ fn partition_tir_optimization_work_items(
         batches.push(current);
     }
     batches
+}
+
+#[cfg(feature = "native-backend")]
+fn should_flush_deferred_codegen(deferred_count: usize, deferred_ops: usize) -> bool {
+    deferred_count > 0
+        && (deferred_count >= DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT
+            || deferred_ops >= DEFERRED_CODEGEN_FLUSH_OP_BUDGET)
 }
 
 #[cfg(feature = "native-backend")]
@@ -3405,9 +3416,11 @@ impl SimpleBackend {
         // every 50 functions.
         let progress_interval = (func_count / 20).clamp(1, 50);
         let mut last_progress = std::time::Instant::now();
+        let mut deferred_codegen_ops = 0usize;
 
         for mut func_ir in ir.functions {
             let func_name = func_ir.name.clone();
+            let func_op_count = func_ir.ops.len().max(1);
             // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs +
             // call_bind) into a single allocation-free `call_method_ic` op
             // (CPython LOAD_METHOD/CALL_METHOD optimisation).  Run as the LAST
@@ -3435,6 +3448,19 @@ impl SimpleBackend {
             }
             if slowest_func.as_ref().is_none_or(|(_, d)| func_elapsed > *d) {
                 slowest_func = Some((func_name, func_elapsed));
+            }
+            deferred_codegen_ops = deferred_codegen_ops.saturating_add(func_op_count);
+            if should_flush_deferred_codegen(self.deferred_defines.len(), deferred_codegen_ops) {
+                let deferred_count = self.deferred_defines.len();
+                let flush_start = std::time::Instant::now();
+                self.flush_deferred_defines();
+                if timing {
+                    let flush_elapsed = flush_start.elapsed();
+                    eprintln!(
+                        "MOLT_BACKEND_TIMING: bounded Cranelift flush ({deferred_count} functions, {deferred_codegen_ops} source ops) took {flush_elapsed:.2?}"
+                    );
+                }
+                deferred_codegen_ops = 0;
             }
             compiled += 1;
             // Print progress at regular intervals, or every 500ms for
@@ -3466,12 +3492,13 @@ impl SimpleBackend {
         {
             let deferred_count = self.deferred_defines.len();
             if deferred_count > 0 {
+                let deferred_ops = deferred_codegen_ops;
                 let flush_start = std::time::Instant::now();
                 self.flush_deferred_defines();
                 if timing {
                     let flush_elapsed = flush_start.elapsed();
                     eprintln!(
-                        "MOLT_BACKEND_TIMING: parallel Cranelift flush ({deferred_count} functions) took {flush_elapsed:.2?}"
+                        "MOLT_BACKEND_TIMING: final Cranelift flush ({deferred_count} functions, {deferred_ops} source ops) took {flush_elapsed:.2?}"
                     );
                 }
             }
@@ -4281,11 +4308,13 @@ impl SimpleBackend {
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::{
+        DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
         NativeBackendModuleContext, SimpleBackend, TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT,
         TIR_OPTIMIZATION_BATCH_OP_BUDGET, TirOptimizationWorkItem, TrampolineKey,
         analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_entry_tracked,
         merge_closure_functions, merge_function_arities, merge_function_has_ret,
         merge_leaf_functions, merge_task_kinds, partition_tir_optimization_work_items,
+        should_flush_deferred_codegen,
     };
     use crate::TrampolineKind;
     use crate::ir::{FunctionIR, OpIR, SimpleIR};
@@ -4367,6 +4396,26 @@ mod tests {
             TIR_OPTIMIZATION_BATCH_OP_BUDGET
         );
         assert_eq!(op_batches[1][0].index, 2);
+    }
+
+    #[test]
+    fn deferred_codegen_flush_predicate_bounds_function_and_op_retention() {
+        assert!(!should_flush_deferred_codegen(
+            0,
+            DEFERRED_CODEGEN_FLUSH_OP_BUDGET
+        ));
+        assert!(!should_flush_deferred_codegen(
+            DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT - 1,
+            DEFERRED_CODEGEN_FLUSH_OP_BUDGET - 1
+        ));
+        assert!(should_flush_deferred_codegen(
+            DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT,
+            1
+        ));
+        assert!(should_flush_deferred_codegen(
+            1,
+            DEFERRED_CODEGEN_FLUSH_OP_BUDGET
+        ));
     }
 
     fn op_shapes(
@@ -6220,6 +6269,44 @@ mod tests {
         assert!(
             !clif.contains("explicit_slot"),
             "direct imported runtime calls should not spill args for the guarded-call wrapper:\n{clif}"
+        );
+    }
+
+    #[test]
+    fn native_boxed_or_retains_selected_operand_result() {
+        let func = FunctionIR {
+            name: "boxed_or_selected_owner".to_string(),
+            params: vec!["lhs".to_string(), "rhs".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "or".to_string(),
+                    args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+                    out: Some("selected".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("selected".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let clif = compile_function_to_clif_text(vec![func], "boxed_or_selected_owner");
+        let selected = clif
+            .lines()
+            .find_map(|line| line.trim().split_once(" = select ").map(|(v, _)| v.trim()))
+            .unwrap_or_else(|| panic!("boxed or must emit a selected result:\n{clif}"));
+        let selected_call = format!("({selected})");
+        assert!(
+            clif.lines().any(|line| {
+                let line = line.trim();
+                line.starts_with("call fn") && line.contains(&selected_call)
+            }),
+            "boxed or must retain the selected result before returning it:\n{clif}"
         );
     }
 

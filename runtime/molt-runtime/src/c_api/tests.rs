@@ -244,6 +244,27 @@ extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
     })
 }
 
+extern "C" fn c_api_test_init_stores_tag_and_drops_self(self_bits: u64, tag_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__init__ self missing");
+        }
+        if tag_bits == 0 || obj_from_bits(tag_bits).is_none() {
+            return raise_exception::<u64>(_py, "TypeError", "__init__ tag missing");
+        }
+        let name_bits = unsafe { molt_string_from(b"tag".as_ptr(), 3) };
+        assert!(!obj_from_bits(name_bits).is_none());
+        let result =
+            crate::object::ops_builtins::molt_object_setattr(self_bits, name_bits, tag_bits);
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        dec_ref_bits(_py, self_bits);
+        result
+    })
+}
+
 fn create_test_heap_class(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u64 {
     let builtins = crate::builtins::classes::builtin_classes(_py);
     let name_bits = unsafe { molt_string_from(name.as_ptr(), name.len() as u64) };
@@ -351,6 +372,188 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
         }
         dec_ref_bits(_py, class_bits);
         dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn owned_list_builder_drop_runs_remaining_element_finalizer() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        FINALIZER_CALL_COUNT.store(0, Ordering::SeqCst);
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_finalizer_records",
+                c_api_test_finalizer_records as *const (),
+            ),
+            1,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+        let (class_bits, attr_storage) =
+            create_guarded_test_class(_py, b"FinalizerListItem", &[(b"__del__", func_bits)]);
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+
+        let first_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        let second_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        assert!(!obj_from_bits(first_bits).is_none());
+        assert!(!obj_from_bits(second_bits).is_none());
+
+        let builder_bits =
+            crate::object::builders::molt_list_builder_new(MoltObject::from_int(2).bits());
+        assert!(!obj_from_bits(builder_bits).is_none());
+        unsafe {
+            crate::object::builders::molt_list_builder_append(builder_bits, first_bits);
+            crate::object::builders::molt_list_builder_append(builder_bits, second_bits);
+        }
+        let list_bits =
+            unsafe { crate::object::builders::molt_list_builder_finish_owned(builder_bits) };
+        assert!(!obj_from_bits(list_bits).is_none());
+
+        let popped_bits = crate::object::ops_list::molt_list_pop(list_bits, none_bits());
+        assert_eq!(popped_bits, second_bits);
+        dec_ref_bits(_py, popped_bits);
+        assert_eq!(
+            FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "discarding the popped owned element must run its finalizer"
+        );
+
+        dec_ref_bits(_py, list_bits);
+        assert_eq!(
+            FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
+            2,
+            "dropping the list must run the remaining element finalizer"
+        );
+
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn list_append_retains_finalizer_element_until_clear() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        FINALIZER_CALL_COUNT.store(0, Ordering::SeqCst);
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_finalizer_records",
+                c_api_test_finalizer_records as *const (),
+            ),
+            1,
+        );
+        assert!(!func_ptr.is_null());
+        let func_bits = MoltObject::from_ptr(func_ptr).bits();
+        let (class_bits, attr_storage) =
+            create_guarded_test_class(_py, b"FinalizerAppendItem", &[(b"__del__", func_bits)]);
+        let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
+
+        let list_bits =
+            crate::object::builders::molt_list_builder_new(MoltObject::from_int(0).bits());
+        let list_bits =
+            unsafe { crate::object::builders::molt_list_builder_finish_owned(list_bits) };
+        assert!(!obj_from_bits(list_bits).is_none());
+
+        let item_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+        assert!(!obj_from_bits(item_bits).is_none());
+        assert!(obj_from_bits(crate::molt_list_append(list_bits, item_bits)).is_none());
+        dec_ref_bits(_py, item_bits);
+        assert_eq!(
+            FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
+            0,
+            "list_append must retain an appended heap element beyond the caller temporary"
+        );
+
+        assert!(obj_from_bits(crate::object::ops_list::molt_list_clear(list_bits)).is_none());
+        assert_eq!(
+            FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "list_clear must release the retained element exactly once"
+        );
+
+        dec_ref_bits(_py, list_bits);
+        assert_eq!(
+            FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "dropping the empty list must not re-run the element finalizer"
+        );
+
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, func_bits);
+    });
+}
+
+#[test]
+fn call_bind_constructed_finalizer_element_survives_append_temp_drop_until_clear() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        FINALIZER_CALL_COUNT.store(0, Ordering::SeqCst);
+        let del_func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_finalizer_records",
+                c_api_test_finalizer_records as *const (),
+            ),
+            1,
+        );
+        assert!(!del_func_ptr.is_null());
+        let init_func_ptr = crate::object::builders::alloc_function_obj(
+            _py,
+            c_api_test_init_stores_tag_and_drops_self as *const () as usize as u64,
+            2,
+        );
+        assert!(!init_func_ptr.is_null());
+        let del_func_bits = MoltObject::from_ptr(del_func_ptr).bits();
+        let init_func_bits = MoltObject::from_ptr(init_func_ptr).bits();
+        let (class_bits, attr_storage) = create_guarded_test_class(
+            _py,
+            b"FinalizerCallBindItem",
+            &[(b"__del__", del_func_bits), (b"__init__", init_func_bits)],
+        );
+
+        let builder_bits = crate::call::bind::molt_callargs_new(1, 0);
+        assert!(!obj_from_bits(builder_bits).is_none());
+        let _ =
+            unsafe { crate::molt_callargs_push_pos(builder_bits, MoltObject::from_int(1).bits()) };
+        let item_bits = crate::molt_call_bind(class_bits, builder_bits);
+        assert!(!exception_pending(_py));
+        assert!(!obj_from_bits(item_bits).is_none());
+
+        let list_bits =
+            crate::object::builders::molt_list_builder_new(MoltObject::from_int(0).bits());
+        let list_bits =
+            unsafe { crate::object::builders::molt_list_builder_finish_owned(list_bits) };
+        assert!(!obj_from_bits(list_bits).is_none());
+        assert!(obj_from_bits(crate::molt_list_append(list_bits, item_bits)).is_none());
+        dec_ref_bits(_py, item_bits);
+        assert_eq!(
+            FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
+            0,
+            "constructed object must remain alive after append retains it and caller drops the call result"
+        );
+
+        assert!(obj_from_bits(crate::object::ops_list::molt_list_clear(list_bits)).is_none());
+        assert_eq!(
+            FINALIZER_CALL_COUNT.load(Ordering::SeqCst),
+            1,
+            "list_clear must release the constructed element exactly once"
+        );
+
+        dec_ref_bits(_py, list_bits);
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
+        dec_ref_bits(_py, init_func_bits);
+        dec_ref_bits(_py, del_func_bits);
     });
 }
 

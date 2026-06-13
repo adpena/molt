@@ -95,13 +95,13 @@ OPTIMIZED_BYTECODE_SUFFIXES = [".pyc"]
 import sys as _sys
 
 
+def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):
+    from _intrinsics import require_intrinsic as _require
+
+    return _require(name, namespace)
+
+
 def _resolve_platform() -> str:
-    platform = getattr(_sys, "platform", None)
-    if isinstance(platform, str):
-        return platform
-
-    from _intrinsics import require_intrinsic as _require_intrinsic
-
     platform_fn = _require_intrinsic("molt_sys_platform")
     platform = platform_fn()
     if not isinstance(platform, str):
@@ -805,12 +805,6 @@ def _validate_resource_name(resource: str) -> str:
             "invalid importlib validate resource name payload: str expected"
         )
     return value
-
-
-def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):
-    from _intrinsics import require_intrinsic as _require
-
-    return _require(name, namespace)
 
 
 def _coerce_module_name(

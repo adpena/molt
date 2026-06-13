@@ -7,7 +7,7 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 import abc as _abc
 import sys
 
-import importlib.machinery as _machinery
+_machinery = __import__("importlib.machinery", globals(), locals(), ("ModuleSpec",), 0)
 
 if False:
     from importlib.machinery import ModuleSpec

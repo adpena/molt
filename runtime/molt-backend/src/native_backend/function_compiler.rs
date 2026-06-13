@@ -13298,13 +13298,15 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0)
                     };
                     let res = builder.ins().select(cond, *rhs, *lhs);
-                    // The `select` result aliases one of the inputs (same NaN-boxed
-                    // bits).  The tracking system will eventually dec_ref the input
-                    // name independently of the output name, so we must inc_ref the
-                    // result to prevent a use-after-free when the input's refcount
-                    // reaches zero before the output is consumed.
-                    emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out {
+                    if let Some(out__) = op.out.as_deref() {
+                        debug_assert!(
+                            crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table("and")
+                        );
+                        // The `select` result aliases one of the inputs (same
+                        // NaN-boxed bits).  The generated result-ownership table
+                        // classifies boxed `and` as minting a new owned selected
+                        // operand, so retain exactly when an output name is bound.
+                        emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }
@@ -13389,9 +13391,12 @@ impl SimpleBackend {
                         builder.ins().icmp_imm(IntCC::NotEqual, lhs_val, 0)
                     };
                     let res = builder.ins().select(cond, *lhs, *rhs);
-                    // Same aliasing hazard as `and` — see comment above.
-                    emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
-                    if let Some(out__) = op.out {
+                    if let Some(out__) = op.out.as_deref() {
+                        debug_assert!(
+                            crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table("or")
+                        );
+                        // Same selected-alias ownership contract as `and`.
+                        emit_inc_ref_obj(&mut builder, res, local_inc_ref_obj, &nbc);
                         def_var_named(&mut builder, &vars, out__, res);
                     }
                 }

@@ -1939,6 +1939,26 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     false
 }
 
+unsafe fn release_dealloc_tracked_bits_vec(
+    py: &PyToken<'_>,
+    vec_ptr: *mut Vec<u64>,
+    header_flags: u32,
+) {
+    unsafe {
+        if vec_ptr.is_null() {
+            return;
+        }
+        let mut vec = backing::tracked_vec_box_from_raw(vec_ptr);
+        if (header_flags & HEADER_FLAG_CONTAINS_REFS) == 0 {
+            return;
+        }
+        let detached = std::mem::take(&mut *vec);
+        for bits in detached {
+            dec_ref_bits(py, bits);
+        }
+    }
+}
+
 /// # Safety
 /// Dereferences raw pointer to decrement ref count. Frees memory if count reaches 0.
 #[inline(always)]
@@ -2208,41 +2228,13 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         drop(storage.into_vec());
                     }
                 }
-                TYPE_ID_LIST => {
-                    let vec_ptr = seq_vec_ptr(ptr);
-                    if !vec_ptr.is_null() {
-                        let vec = backing::tracked_vec_box_from_raw(vec_ptr);
-                        // contains_refs fast-path: skip element dec_ref when
-                        // every element is a primitive (int/float/bool/None).
-                        if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
-                            for bits in vec.iter() {
-                                dec_ref_bits(py, *bits);
-                            }
-                        }
-                    }
-                }
-                TYPE_ID_TUPLE => {
-                    let vec_ptr = seq_vec_ptr(ptr);
-                    if !vec_ptr.is_null() {
-                        let vec = backing::tracked_vec_box_from_raw(vec_ptr);
-                        if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
-                            for bits in vec.iter() {
-                                dec_ref_bits(py, *bits);
-                            }
-                        }
-                    }
+                TYPE_ID_LIST | TYPE_ID_TUPLE => {
+                    release_dealloc_tracked_bits_vec(py, seq_vec_ptr(ptr), header_flags);
                 }
                 TYPE_ID_DICT => {
                     let order_ptr = dict_order_ptr(ptr);
                     let table_ptr = dict_table_ptr(ptr);
-                    if !order_ptr.is_null() {
-                        let order = backing::tracked_vec_box_from_raw(order_ptr);
-                        if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
-                            for bits in order.iter() {
-                                dec_ref_bits(py, *bits);
-                            }
-                        }
-                    }
+                    release_dealloc_tracked_bits_vec(py, order_ptr, header_flags);
                     if !table_ptr.is_null() {
                         drop(backing::tracked_vec_box_from_raw(table_ptr));
                     }
@@ -2268,14 +2260,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_SET | TYPE_ID_FROZENSET => {
                     let order_ptr = set_order_ptr(ptr);
                     let table_ptr = set_table_ptr(ptr);
-                    if !order_ptr.is_null() {
-                        let order = backing::tracked_vec_box_from_raw(order_ptr);
-                        if (header_flags & HEADER_FLAG_CONTAINS_REFS) != 0 {
-                            for bits in order.iter() {
-                                dec_ref_bits(py, *bits);
-                            }
-                        }
-                    }
+                    release_dealloc_tracked_bits_vec(py, order_ptr, header_flags);
                     if !table_ptr.is_null() {
                         drop(backing::tracked_vec_box_from_raw(table_ptr));
                     }

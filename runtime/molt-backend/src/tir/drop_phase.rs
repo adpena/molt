@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn native_roundtrip_preserves_call_bind_finalizer_fact_for_terminal_drops() {
+    fn native_roundtrip_preserves_call_bind_finalizer_fact_for_absorption_drops() {
         let func_ir = FunctionIR {
             name: "call_bind_finalizer_roundtrip".into(),
             params: vec![],
@@ -307,8 +307,34 @@ mod tests {
             .iter()
             .position(|op| op.kind == "ret_void")
             .expect("function must still return");
+        let list_idx = ops
+            .iter()
+            .position(|op| op.kind == "list_new")
+            .expect("absorbing list constructor must remain in the lowered body");
 
-        let early_dec_refs: Vec<_> = ops[..warn_idx]
+        assert!(
+            ops[list_idx + 1..warn_idx]
+                .iter()
+                .any(|op| op.kind == "dec_ref"
+                    && op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args.iter().any(|arg| arg == &item_name))),
+            "drop insertion must release the absorbed call-owned item after \
+             list_new takes ownership; ops={ops:?}"
+        );
+        assert!(
+            ops[..warn_idx].iter().all(|op| {
+                op.kind != "dec_ref"
+                    || !op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args.iter().any(|arg| arg == &bag_name))
+            }),
+            "the finalizer-sensitive container root must survive until after \
+             later side effects; ops={ops:?}"
+        );
+        let post_warn_dec_refs: Vec<_> = ops[warn_idx + 1..ret_idx]
             .iter()
             .filter(|op| {
                 op.kind == "dec_ref"
@@ -318,29 +344,19 @@ mod tests {
             })
             .collect();
         assert!(
-            early_dec_refs.is_empty(),
-            "finalizer-sensitive call/list roots must release at the return \
-             boundary, after later side effects; ops={ops:?}"
+            post_warn_dec_refs.iter().all(|op| {
+                !op.args
+                    .as_ref()
+                    .is_some_and(|args| args.iter().any(|arg| arg == &item_name))
+            }),
+            "the absorbed item must not get a second terminal drop; ops={ops:?}"
         );
         assert!(
-            ops[warn_idx + 1..ret_idx]
-                .iter()
-                .any(|op| op.kind == "dec_ref"
-                    && op
-                        .args
-                        .as_ref()
-                        .is_some_and(|args| args.iter().any(|arg| arg == &item_name))),
-            "terminal drop insertion must release the original call-owned \
-             finalizer root before returning; ops={ops:?}"
-        );
-        assert!(
-            ops[warn_idx + 1..ret_idx]
-                .iter()
-                .any(|op| op.kind == "dec_ref"
-                    && op
-                        .args
-                        .as_ref()
-                        .is_some_and(|args| args.iter().any(|arg| arg == &bag_name))),
+            post_warn_dec_refs.iter().any(|op| {
+                op.args
+                    .as_ref()
+                    .is_some_and(|args| args.iter().any(|arg| arg == &bag_name))
+            }),
             "terminal drop insertion must still release the finalizer-sensitive \
              container root before returning; ops={ops:?}"
         );

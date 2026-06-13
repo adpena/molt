@@ -1953,6 +1953,12 @@ impl WasmBackend {
                 else if known_imports.contains(kind) {
                     required.insert(kind.to_string());
                 }
+                if crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(
+                    kind,
+                ) && op.out.is_some()
+                {
+                    required.insert("inc_ref_obj".to_string());
+                }
 
                 // builtin_func ops reference imports by s_value (with molt_ prefix).
                 if kind == "builtin_func"
@@ -8336,7 +8342,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::End);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
-                            func.instruction(&Instruction::LocalSet(res));
+                            debug_assert!(
+                                crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table("and")
+                            );
+                            func.instruction(&Instruction::LocalTee(res));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                         } else {
                             func.instruction(&Instruction::Drop);
                         }
@@ -8356,7 +8366,11 @@ impl WasmBackend {
                         func.instruction(&Instruction::End);
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
-                            func.instruction(&Instruction::LocalSet(res));
+                            debug_assert!(
+                                crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table("or")
+                            );
+                            func.instruction(&Instruction::LocalTee(res));
+                            emit_call(func, reloc_enabled, import_ids["inc_ref_obj"]);
                         } else {
                             func.instruction(&Instruction::Drop);
                         }

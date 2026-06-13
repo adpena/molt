@@ -122,11 +122,19 @@ class ProcessSample:
     elapsed_sec: int | None = None
 
 
+ProcessIdentity = tuple[int | None, str]
+
+
+def process_identity(sample: ProcessSample) -> ProcessIdentity:
+    return (sample.pgid, sample.command)
+
+
 @dataclass(slots=True)
 class ProcessTreeTracker:
     root_pid: int
     known_pids: set[int] | None = None
     known_pgids: set[int] | None = None
+    known_identities: dict[int, ProcessIdentity] | None = None
 
     def __post_init__(self) -> None:
         if self.known_pids is None:
@@ -137,19 +145,31 @@ class ProcessTreeTracker:
             self.known_pgids = {self.root_pid}
         else:
             self.known_pgids.add(self.root_pid)
+        if self.known_identities is None:
+            self.known_identities = {}
 
     def update(self, samples: Mapping[int, ProcessSample]) -> set[int]:
         """Return currently observed members of this process tree.
 
-        PID lineage is the only authority for discovering new descendants.
-        Process groups are custody metadata for already-proven descendants:
-        they keep orphaned group members terminable after reparenting, but they
-        must not make unrelated siblings part of the lineage just because they
-        share an ambient launcher PGID.
+        PID lineage is the only authority for discovering descendants.  Process
+        groups are signal-delivery metadata for already-proven descendants; they
+        must never make unrelated co-tenants part of the owned tree.
         """
 
         assert self.known_pids is not None
         assert self.known_pgids is not None
+        assert self.known_identities is not None
+        for pid in list(self.known_pids):
+            sample = samples.get(pid)
+            if sample is None:
+                continue
+            identity = process_identity(sample)
+            known_identity = self.known_identities.get(pid)
+            if known_identity is None:
+                self.known_identities[pid] = identity
+            elif known_identity != identity:
+                self.known_pids.remove(pid)
+                self.known_identities.pop(pid, None)
         changed = True
         while changed:
             changed = False
@@ -158,18 +178,14 @@ class ProcessTreeTracker:
                 if sample.pid in self.known_pids or sample.ppid in self.known_pids:
                     if sample.pid not in self.known_pids:
                         self.known_pids.add(sample.pid)
+                        self.known_identities[sample.pid] = process_identity(sample)
                         changed = True
                     if (
                         sample.pid != self.root_pid or sample_pgid == self.root_pid
                     ) and sample_pgid not in self.known_pgids:
                         self.known_pgids.add(sample_pgid)
                         changed = True
-        watched = {pid for pid in self.known_pids if pid in samples}
-        for sample in samples.values():
-            sample_pgid = sample.pgid if sample.pgid is not None else sample.pid
-            if sample_pgid in self.known_pgids:
-                watched.add(sample.pid)
-        return watched
+        return {pid for pid in self.known_pids if pid in samples}
 
 
 @dataclass(frozen=True, slots=True)
@@ -801,9 +817,6 @@ def watched_pids(
     if tracker is not None:
         return _filter_protected_watched_pids(samples, tracker.update(samples))
     watched = descendant_pids(samples, root_pid)
-    for sample in samples.values():
-        if sample.pgid == root_pid:
-            watched.add(sample.pid)
     return _filter_protected_watched_pids(samples, watched)
 
 
@@ -1124,6 +1137,26 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
     return False
 
 
+def _process_group_members(
+    samples: Mapping[int, ProcessSample],
+    pgid: int,
+) -> tuple[ProcessSample, ...]:
+    return tuple(sample for sample in samples.values() if _sample_pgid(sample) == pgid)
+
+
+def _process_group_is_fully_owned(
+    samples: Mapping[int, ProcessSample],
+    pgid: int,
+    *,
+    owned_pids: set[int],
+    protected_pgids: set[int],
+) -> bool:
+    if pgid <= 0 or pgid in protected_pgids:
+        return False
+    members = _process_group_members(samples, pgid)
+    return bool(members) and all(sample.pid in owned_pids for sample in members)
+
+
 def terminate_watched_processes(
     root_pid: int,
     *,
@@ -1172,10 +1205,12 @@ def terminate_watched_processes(
             if sample_pgid != root_group_pgid:
                 escaped_pids.add(pid)
     remaining_pgids: set[int] = set()
-    if root_group_pgid not in protected_pgids and not _terminate_single_process_group(
+    if _process_group_is_fully_owned(
+        observed_samples,
         root_group_pgid,
-        grace=grace,
-    ):
+        owned_pids=pids,
+        protected_pgids=protected_pgids,
+    ) and not _terminate_single_process_group(root_group_pgid, grace=grace):
         remaining_pgids.add(root_group_pgid)
     remaining_pids: set[int] = set()
     for pid in sorted(escaped_pids):

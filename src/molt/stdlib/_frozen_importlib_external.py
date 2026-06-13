@@ -2,19 +2,29 @@
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-import importlib.machinery as _machinery
-import importlib.util as _util
 import marshal
 import sys
+
+_machinery = __import__("importlib.machinery", globals(), locals(), ("ModuleSpec",), 0)
 
 _require_intrinsic("molt_capabilities_has")
 _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD = _require_intrinsic(
     "molt_importlib_frozen_external_payload"
 )
+_MOLT_IMPORTLIB_CACHE_FROM_SOURCE = _require_intrinsic(
+    "molt_importlib_cache_from_source"
+)
+_MOLT_IMPORTLIB_DECODE_SOURCE = _require_intrinsic("molt_importlib_decode_source")
+_MOLT_IMPORTLIB_SOURCE_FROM_CACHE = _require_intrinsic(
+    "molt_importlib_source_from_cache"
+)
+_MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION = _require_intrinsic(
+    "molt_importlib_spec_from_file_location"
+)
 
 
 def _load_payload() -> dict[str, object]:
-    payload = _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD(_machinery, _util)
+    payload = _MOLT_IMPORTLIB_FROZEN_EXTERNAL_PAYLOAD(_machinery, None)
     if not isinstance(payload, dict):
         raise RuntimeError("invalid importlib frozen external payload: dict expected")
     return payload
@@ -47,10 +57,29 @@ SourcelessFileLoader = _payload_get(_PAYLOAD, "SourcelessFileLoader")
 _LoaderBasics = _payload_get(_PAYLOAD, "_LoaderBasics")
 WindowsRegistryFinder = _payload_get(_PAYLOAD, "WindowsRegistryFinder")
 
-cache_from_source = _payload_get(_PAYLOAD, "cache_from_source")
-decode_source = _payload_get(_PAYLOAD, "decode_source")
-source_from_cache = _payload_get(_PAYLOAD, "source_from_cache")
-spec_from_file_location = _payload_get(_PAYLOAD, "spec_from_file_location")
+
+def cache_from_source(path: str, debug_override=None, *, optimization=None) -> str:
+    del debug_override, optimization
+    return _MOLT_IMPORTLIB_CACHE_FROM_SOURCE(path)
+
+
+def decode_source(source):
+    return _MOLT_IMPORTLIB_DECODE_SOURCE(source)
+
+
+def source_from_cache(path):
+    return _MOLT_IMPORTLIB_SOURCE_FROM_CACHE(path)
+
+
+def spec_from_file_location(
+    name: str,
+    location,
+    loader=None,
+    submodule_search_locations=None,
+):
+    return _MOLT_IMPORTLIB_SPEC_FROM_FILE_LOCATION(
+        name, location, loader, submodule_search_locations, _machinery
+    )
 
 path_sep = "/"
 path_sep_tuple = ("/", "\\")

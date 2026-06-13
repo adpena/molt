@@ -2132,8 +2132,6 @@ fn importlib_import_resolved_module(
     resolved: &str,
     resolved_key_bits: u64,
     modules_ptr: *mut u8,
-    util_bits: u64,
-    machinery_bits: u64,
 ) -> u64 {
     let cached_bits = match importlib_dict_get_raw_key_bits(_py, modules_ptr, resolved_key_bits) {
         Ok(bits) => bits,
@@ -2163,22 +2161,16 @@ fn importlib_import_resolved_module(
         importlib_dict_del_string_key(_py, modules_ptr, resolved_key_bits);
     }
 
-    let imported_bits = match importlib_import_with_fallback(
-        _py,
-        resolved,
-        resolved_key_bits,
-        modules_ptr,
-        util_bits,
-        machinery_bits,
-    ) {
-        Ok(bits) => bits,
-        Err(err) => {
-            if exception_pending(_py) {
-                importlib_rethrow_pending_exception(_py);
+    let imported_bits =
+        match importlib_import_with_fallback(_py, resolved, resolved_key_bits, modules_ptr) {
+            Ok(bits) => bits,
+            Err(err) => {
+                if exception_pending(_py) {
+                    importlib_rethrow_pending_exception(_py);
+                }
+                return err;
             }
-            return err;
-        }
-    };
+        };
 
     let cached_bits = match importlib_dict_get_raw_key_bits(_py, modules_ptr, resolved_key_bits) {
         Ok(bits) => bits,
@@ -2232,8 +2224,6 @@ fn importlib_import_parent_chain(
     _py: &PyToken<'_>,
     resolved: &str,
     modules_ptr: *mut u8,
-    util_bits: u64,
-    machinery_bits: u64,
 ) -> Result<(), u64> {
     let mut search_from = 0usize;
     while let Some(offset) = resolved[search_from..].find('.') {
@@ -2241,14 +2231,8 @@ fn importlib_import_parent_chain(
         let parent_name = &resolved[..dot];
         if !parent_name.is_empty() {
             let parent_key_bits = alloc_str_bits(_py, parent_name)?;
-            let parent_bits = importlib_import_resolved_module(
-                _py,
-                parent_name,
-                parent_key_bits,
-                modules_ptr,
-                util_bits,
-                machinery_bits,
-            );
+            let parent_bits =
+                importlib_import_resolved_module(_py, parent_name, parent_key_bits, modules_ptr);
             dec_ref_bits(_py, parent_key_bits);
             if exception_pending(_py) {
                 if !obj_from_bits(parent_bits).is_none() {
@@ -2268,46 +2252,6 @@ fn importlib_import_parent_chain(
         search_from = dot + 1;
     }
     Ok(())
-}
-
-fn importlib_module_support_bits(
-    _py: &PyToken<'_>,
-    modules_ptr: *mut u8,
-    module_name: &'static str,
-) -> Result<u64, u64> {
-    let key_bits = alloc_str_bits(_py, module_name)?;
-    let cached_bits = match importlib_dict_get_raw_key_bits(_py, modules_ptr, key_bits) {
-        Ok(bits) => bits,
-        Err(err) => {
-            dec_ref_bits(_py, key_bits);
-            return Err(err);
-        }
-    };
-    if let Some(cached_bits) = cached_bits {
-        dec_ref_bits(_py, key_bits);
-        if obj_from_bits(cached_bits).is_none() {
-            return Err(importlib_none_in_modules_error(_py, module_name));
-        }
-        inc_ref_bits(_py, cached_bits);
-        return Ok(cached_bits);
-    }
-
-    let imported_bits = crate::molt_module_import(key_bits);
-    dec_ref_bits(_py, key_bits);
-    if exception_pending(_py) {
-        if !obj_from_bits(imported_bits).is_none() {
-            dec_ref_bits(_py, imported_bits);
-        }
-        return Err(MoltObject::none().bits());
-    }
-    if obj_from_bits(imported_bits).is_none() {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            &format!("runtime support module unavailable: {module_name}"),
-        ));
-    }
-    Ok(imported_bits)
 }
 
 fn importlib_transaction_package_from_globals(
@@ -2586,59 +2530,15 @@ pub extern "C" fn molt_importlib_import_transaction(
                 return err;
             }
         };
-        let util_bits = match importlib_module_support_bits(_py, modules_ptr, "importlib.util") {
-            Ok(bits) => bits,
-            Err(err) => {
-                dec_ref_bits(_py, resolved_key_bits);
-                if !obj_from_bits(modules_bits).is_none() {
-                    dec_ref_bits(_py, modules_bits);
-                }
-                return err;
-            }
-        };
-        let machinery_bits =
-            match importlib_module_support_bits(_py, modules_ptr, "importlib.machinery") {
-                Ok(bits) => bits,
-                Err(err) => {
-                    if !obj_from_bits(util_bits).is_none() {
-                        dec_ref_bits(_py, util_bits);
-                    }
-                    dec_ref_bits(_py, resolved_key_bits);
-                    if !obj_from_bits(modules_bits).is_none() {
-                        dec_ref_bits(_py, modules_bits);
-                    }
-                    return err;
-                }
-            };
-        if let Err(err) =
-            importlib_import_parent_chain(_py, &resolved, modules_ptr, util_bits, machinery_bits)
-        {
-            if !obj_from_bits(util_bits).is_none() {
-                dec_ref_bits(_py, util_bits);
-            }
-            if !obj_from_bits(machinery_bits).is_none() {
-                dec_ref_bits(_py, machinery_bits);
-            }
+        if let Err(err) = importlib_import_parent_chain(_py, &resolved, modules_ptr) {
             dec_ref_bits(_py, resolved_key_bits);
             if !obj_from_bits(modules_bits).is_none() {
                 dec_ref_bits(_py, modules_bits);
             }
             return err;
         }
-        let leaf_bits = importlib_import_resolved_module(
-            _py,
-            &resolved,
-            resolved_key_bits,
-            modules_ptr,
-            util_bits,
-            machinery_bits,
-        );
-        if !obj_from_bits(util_bits).is_none() {
-            dec_ref_bits(_py, util_bits);
-        }
-        if !obj_from_bits(machinery_bits).is_none() {
-            dec_ref_bits(_py, machinery_bits);
-        }
+        let leaf_bits =
+            importlib_import_resolved_module(_py, &resolved, resolved_key_bits, modules_ptr);
         dec_ref_bits(_py, resolved_key_bits);
         if exception_pending(_py) {
             if !obj_from_bits(leaf_bits).is_none() {
@@ -2675,10 +2575,10 @@ pub extern "C" fn molt_importlib_import_transaction(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: u64) -> u64 {
+pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, _util_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let mut owned: Vec<u64> = Vec::new();
-        let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(5);
+        let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(3);
 
         let builtin_importer_bits = match importlib_required_attribute(
             _py,
@@ -2728,42 +2628,6 @@ pub extern "C" fn molt_importlib_frozen_payload(machinery_bits: u64, util_bits: 
         };
         owned.push(module_spec_bits);
         values.push((b"ModuleSpec", module_spec_bits));
-
-        let module_from_spec_bits = match importlib_required_attribute(
-            _py,
-            util_bits,
-            runtime_static_name_slot(_py, b"module_from_spec"),
-            b"module_from_spec",
-            "importlib.util",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
-            }
-        };
-        owned.push(module_from_spec_bits);
-        values.push((b"module_from_spec", module_from_spec_bits));
-
-        let spec_from_loader_bits = match importlib_required_attribute(
-            _py,
-            util_bits,
-            runtime_static_name_slot(_py, b"spec_from_loader"),
-            b"spec_from_loader",
-            "importlib.util",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
-            }
-        };
-        owned.push(spec_from_loader_bits);
-        values.push((b"spec_from_loader", spec_from_loader_bits));
 
         let mut pairs: Vec<u64> = Vec::with_capacity(values.len() * 2);
         for (key, value_bits) in values {
@@ -3192,11 +3056,11 @@ pub extern "C" fn molt_importlib_metadata_types_payload(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_frozen_external_payload(
     machinery_bits: u64,
-    util_bits: u64,
+    _util_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let mut owned: Vec<u64> = Vec::new();
-        let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(20);
+        let mut values: Vec<(&[u8], u64)> = Vec::with_capacity(16);
 
         let bytecode_suffixes_bits = match importlib_required_attribute(
             _py,
@@ -3252,21 +3116,14 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         owned.push(extension_suffixes_bits);
         values.push((b"EXTENSION_SUFFIXES", extension_suffixes_bits));
 
-        let magic_number_bits = match importlib_required_attribute(
-            _py,
-            util_bits,
-            runtime_static_name_slot(_py, b"MAGIC_NUMBER"),
-            b"MAGIC_NUMBER",
-            "importlib.util",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
+        let magic_number_ptr = alloc_bytes(_py, b"\x00\x00\x00\x00");
+        if magic_number_ptr.is_null() {
+            for bits in owned {
+                dec_ref_bits(_py, bits);
             }
-        };
+            return raise_exception::<_>(_py, "MemoryError", "out of memory");
+        }
+        let magic_number_bits = MoltObject::from_ptr(magic_number_ptr).bits();
         owned.push(magic_number_bits);
         values.push((b"MAGIC_NUMBER", magic_number_bits));
 
@@ -3488,78 +3345,6 @@ pub extern "C" fn molt_importlib_frozen_external_payload(
         };
         owned.push(windows_registry_finder_bits);
         values.push((b"WindowsRegistryFinder", windows_registry_finder_bits));
-
-        let cache_from_source_bits = match importlib_required_attribute(
-            _py,
-            util_bits,
-            runtime_static_name_slot(_py, b"cache_from_source"),
-            b"cache_from_source",
-            "importlib.util",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
-            }
-        };
-        owned.push(cache_from_source_bits);
-        values.push((b"cache_from_source", cache_from_source_bits));
-
-        let decode_source_bits = match importlib_required_attribute(
-            _py,
-            util_bits,
-            runtime_static_name_slot(_py, b"decode_source"),
-            b"decode_source",
-            "importlib.util",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
-            }
-        };
-        owned.push(decode_source_bits);
-        values.push((b"decode_source", decode_source_bits));
-
-        let source_from_cache_bits = match importlib_required_attribute(
-            _py,
-            util_bits,
-            runtime_static_name_slot(_py, b"source_from_cache"),
-            b"source_from_cache",
-            "importlib.util",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
-            }
-        };
-        owned.push(source_from_cache_bits);
-        values.push((b"source_from_cache", source_from_cache_bits));
-
-        let spec_from_file_location_bits = match importlib_required_attribute(
-            _py,
-            util_bits,
-            runtime_static_name_slot(_py, b"spec_from_file_location"),
-            b"spec_from_file_location",
-            "importlib.util",
-        ) {
-            Ok(bits) => bits,
-            Err(err) => {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return err;
-            }
-        };
-        owned.push(spec_from_file_location_bits);
-        values.push((b"spec_from_file_location", spec_from_file_location_bits));
 
         let mut pairs: Vec<u64> = Vec::with_capacity(values.len() * 2);
         for (key, value_bits) in values {
