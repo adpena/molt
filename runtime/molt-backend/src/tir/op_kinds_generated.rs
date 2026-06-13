@@ -138,6 +138,8 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
         "ascii_from_obj" |
         "complex_from_obj" |
         "contains" |
+        "dataclass_new" |
+        "dataclass_new_values" |
         "dict_from_obj" |
         "dict_items" |
         "dict_keys" |
@@ -161,6 +163,7 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
         "list_fill_new" |
         "list_from_range" |
         "list_new" |
+        "list_pop" |
         "object_new" |
         "range_new" |
         "repr_from_obj" |
