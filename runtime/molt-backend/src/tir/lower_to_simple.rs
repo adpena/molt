@@ -4618,6 +4618,7 @@ mod tests {
                 effect_proof: None,
                 class_name: None,
                 defines_del: None,
+                bound_local: None,
             },
             OpIR {
                 kind: "loop_end".into(),
@@ -4642,6 +4643,7 @@ mod tests {
                 effect_proof: None,
                 class_name: None,
                 defines_del: None,
+                bound_local: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4666,6 +4668,7 @@ mod tests {
                 effect_proof: None,
                 class_name: None,
                 defines_del: None,
+                bound_local: None,
             },
         ];
 
@@ -4703,6 +4706,7 @@ mod tests {
                 effect_proof: None,
                 class_name: None,
                 defines_del: None,
+                bound_local: None,
             },
             OpIR {
                 kind: "jump".into(),
@@ -4727,6 +4731,7 @@ mod tests {
                 effect_proof: None,
                 class_name: None,
                 defines_del: None,
+                bound_local: None,
             },
             OpIR {
                 kind: "label".into(),
@@ -4751,6 +4756,7 @@ mod tests {
                 effect_proof: None,
                 class_name: None,
                 defines_del: None,
+                bound_local: None,
             },
         ];
 

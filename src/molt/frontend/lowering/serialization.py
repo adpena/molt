@@ -1108,12 +1108,14 @@ class SerializationMixin(_MixinBase):
                     entry["bound_local"] = True
                 json_ops.append(entry)
             elif op.kind == "DEL_BOUNDARY":
-                json_ops.append(
-                    {
-                        "kind": "del_boundary",
-                        "args": [arg.name for arg in op.args],
-                    }
-                )
+                entry = {
+                    "kind": "del_boundary",
+                    "args": [arg.name for arg in op.args],
+                }
+                boundary_var = (op.metadata or {}).get("var")
+                if boundary_var:
+                    entry["s_value"] = boundary_var
+                json_ops.append(entry)
             elif op.kind == "CALL_METHOD":
                 entry = {
                     "kind": "call_method",

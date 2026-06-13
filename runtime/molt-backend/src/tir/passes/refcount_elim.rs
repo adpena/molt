@@ -31,7 +31,9 @@ use crate::tir::blocks::BlockId;
 use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
-use crate::tir::passes::alias_analysis::{AliasAnalysis, AliasAnalysisResult};
+use crate::tir::passes::alias_analysis::{
+    AliasAnalysis, AliasAnalysisResult, build_alias_union_find,
+};
 use crate::tir::values::ValueId;
 
 use super::PassStats;
@@ -595,12 +597,25 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
     //   - Import / ImportFrom (interacts with module system)
     //
     // All remaining IncRef/DecRef ops target pure stack references and are
-    // safe to eliminate.
+    // safe to eliminate, except finalizer-sensitive roots. Their refcount
+    // transitions are Python-visible because rc→0 dispatches `__del__`, so an
+    // explicit local-binding retain/release pair is semantic even when the value
+    // never escapes the frame.
     // -----------------------------------------------------------------------
     {
-        let heap_exposed = build_heap_exposed_set(func);
+        let aliases = build_alias_union_find(func);
+        let heap_exposed: HashSet<ValueId> = build_heap_exposed_set(func)
+            .into_iter()
+            .map(|v| aliases.root(v))
+            .collect();
 
-        // Eliminate IncRef/DecRef on values that have NO heap exposure.
+        let finalizer_roots: HashSet<ValueId> = super::escape_analysis::finalizer_alloc_roots(func)
+            .into_iter()
+            .map(|v| aliases.root(v))
+            .collect();
+
+        // Eliminate IncRef/DecRef on values that have NO heap exposure and no
+        // finalizer-visible release timing.
         let block_ids: Vec<_> = func.blocks.keys().copied().collect();
         for bid in block_ids {
             let block = match func.blocks.get_mut(&bid) {
@@ -611,10 +626,10 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
             let before_len = block.ops.len();
             block.ops.retain(|op| {
                 if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
-                    && op
-                        .operands
-                        .first()
-                        .is_some_and(|v| !heap_exposed.contains(v))
+                    && op.operands.first().is_some_and(|v| {
+                        let root = aliases.root(*v);
+                        !heap_exposed.contains(&root) && !finalizer_roots.contains(&root)
+                    })
                 {
                     return false; // Eliminate: pure stack reference
                 }

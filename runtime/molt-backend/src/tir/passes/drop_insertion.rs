@@ -156,7 +156,7 @@ use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    terminator_operand_is_transferred, OperandCategory, TerminatorKind,
+    OperandCategory, TerminatorKind, terminator_operand_is_transferred,
 };
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::liveness::{TirLiveness, TirLivenessResult};
@@ -262,9 +262,7 @@ fn terminator_successor_blocks(term: &Terminator) -> Vec<BlockId> {
             else_block,
             ..
         } => vec![*then_block, *else_block],
-        Terminator::Switch {
-            cases, default, ..
-        } => {
+        Terminator::Switch { cases, default, .. } => {
             let mut out: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
             out.push(*default);
             out
@@ -869,10 +867,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                             bound_roots.insert(canon(result));
                         }
                     }
-                    if matches!(
-                        op.opcode,
-                        OpCode::IncRef | OpCode::DecRef | OpCode::Free
-                    ) {
+                    if matches!(op.opcode, OpCode::IncRef | OpCode::DecRef | OpCode::Free) {
                         for &operand in &op.operands {
                             disqualified.insert(canon(operand));
                         }
@@ -925,10 +920,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 if !reachable.contains(&dblk) {
                     continue;
                 }
-                if !matches!(
-                    func.blocks[&dblk].terminator,
-                    Terminator::Return { .. }
-                ) {
+                if !matches!(func.blocks[&dblk].terminator, Terminator::Return { .. }) {
                     continue;
                 }
                 accepted.insert(r);
@@ -1191,8 +1183,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             Some(p) if !p.is_empty() => p,
             _ => continue,
         };
-        let block_args: HashSet<ValueId> =
-            func.blocks[&bid].args.iter().map(|a| a.id).collect();
+        let block_args: HashSet<ValueId> = func.blocks[&bid].args.iter().map(|a| a.id).collect();
         // Roots that some predecessor passes as a branch ARG into THIS block's
         // phi(s). Such a value transfers its ownership INTO the block arg on the
         // edge — it is NOT dying on entry, even though liveness reports it dead-in
@@ -1534,9 +1525,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // uninitialized slot). So SKIP iter-cond values entirely (they are
                 // handled by the body straight-line rule on the valid path).
                 if iter_cond_value_results.contains(&v)
-                    || iter_cond_value_results
-                        .iter()
-                        .any(|&iv| canon(iv) == root)
+                    || iter_cond_value_results.iter().any(|&iv| canon(iv) == root)
                 {
                     continue;
                 }
@@ -1738,7 +1727,17 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 let reprs: Vec<String> = op
                     .operands
                     .iter()
-                    .map(|o| format!("{}:{}", o.0, if live.is_raw_scalar(*o) { "raw" } else { "heap" }))
+                    .map(|o| {
+                        format!(
+                            "{}:{}",
+                            o.0,
+                            if live.is_raw_scalar(*o) {
+                                "raw"
+                            } else {
+                                "heap"
+                            }
+                        )
+                    })
                     .collect();
                 // The `_original_kind` carried by a `Copy` is load-bearing for the
                 // alias/ownership model (it decides whether the Copy is a no-incref
@@ -1751,14 +1750,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 };
                 out.push_str(&format!(
                     "    {:?} ops={:?} -> {:?}  [{}]{}\n",
-                    op.opcode, ops, res, reprs.join(","), kind
+                    op.opcode,
+                    ops,
+                    res,
+                    reprs.join(","),
+                    kind
                 ));
             }
         }
-        let _ = crate::debug_artifacts::write_debug_artifact(
-            format!("drop/{}.txt", func.name),
-            out,
-        );
+        let _ =
+            crate::debug_artifacts::write_debug_artifact(format!("drop/{}.txt", func.name), out);
     }
     stats.ops_added = inserted;
     stats
@@ -1810,10 +1811,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 /// `kind_consumed_operand_table` resolves the `"last"` selector against the op's
 /// operand count, exactly reproducing the prior `op.operands.last()` semantics
 /// (`arity.checked_sub(1)` is `None` for a 0-operand op, matching `.last()`).
-fn op_consumed_operand_root(
-    op: &TirOp,
-    canon: &dyn Fn(ValueId) -> ValueId,
-) -> Option<ValueId> {
+fn op_consumed_operand_root(op: &TirOp, canon: &dyn Fn(ValueId) -> ValueId) -> Option<ValueId> {
     // The consume fact is the UNION of the two generated authorities (the full
     // operand-ownership model, design 27 §2.1/§2.3), evaluated per operand
     // position:
@@ -1828,14 +1826,13 @@ fn op_consumed_operand_root(
     // At most one operand is consumed in molt's lowering today, so the first
     // consumed position is returned (the CallArgs builder = the last operand).
     use crate::tir::op_kinds_generated::{
-        kind_consumed_operand_table, opcode_operand_ownership_table, OperandOwnership,
+        OperandOwnership, kind_consumed_operand_table, opcode_operand_ownership_table,
     };
     let kind = match op.attrs.get("_original_kind") {
         Some(AttrValue::Str(k)) => Some(k.as_str()),
         _ => None,
     };
-    let spelling_consumed = kind
-        .and_then(|k| kind_consumed_operand_table(k, op.operands.len()));
+    let spelling_consumed = kind.and_then(|k| kind_consumed_operand_table(k, op.operands.len()));
     for idx in 0..op.operands.len() {
         let consumed = spelling_consumed == Some(idx)
             || opcode_operand_ownership_table(op.opcode, idx) == OperandOwnership::Consumed;
@@ -1951,11 +1948,20 @@ mod tests {
         use crate::tir::passes::run_pipeline;
         use crate::tir::type_refine::refine_types;
 
-        let mk = |kind: &str, out: Option<&str>, var: Option<&str>, args: Vec<&str>, val: Option<i64>, sval: Option<&str>| OpIR {
+        let mk = |kind: &str,
+                  out: Option<&str>,
+                  var: Option<&str>,
+                  args: Vec<&str>,
+                  val: Option<i64>,
+                  sval: Option<&str>| OpIR {
             kind: kind.into(),
             out: out.map(|s| s.to_string()),
             var: var.map(|s| s.to_string()),
-            args: if args.is_empty() { None } else { Some(args.iter().map(|s| s.to_string()).collect()) },
+            args: if args.is_empty() {
+                None
+            } else {
+                Some(args.iter().map(|s| s.to_string()).collect())
+            },
             value: val,
             s_value: sval.map(|s| s.to_string()),
             ..OpIR::default()
@@ -1968,27 +1974,76 @@ mod tests {
             ops: vec![
                 mk("const", Some("v106"), None, vec![], Some(1), None),
                 mk("const", Some("v107"), None, vec![], Some(60), None),
-                mk("lshift", Some("v108"), None, vec!["v106", "v107"], None, None),
+                mk(
+                    "lshift",
+                    Some("v108"),
+                    None,
+                    vec!["v106", "v107"],
+                    None,
+                    None,
+                ),
                 mk("const", Some("v109"), None, vec![], Some(0), None),
                 mk("const", Some("v114"), None, vec![], Some(1), None),
                 mk("const", Some("v117"), None, vec![], Some(1), None),
                 mk("const", Some("v120"), None, vec![], Some(1), None),
                 mk("const", Some("v123"), None, vec![], Some(1), None),
-                mk("store_var", None, Some("_bb1_arg0"), vec!["v108"], None, None),
-                mk("store_var", None, Some("_bb1_arg1"), vec!["v109"], None, None),
+                mk(
+                    "store_var",
+                    None,
+                    Some("_bb1_arg0"),
+                    vec!["v108"],
+                    None,
+                    None,
+                ),
+                mk(
+                    "store_var",
+                    None,
+                    Some("_bb1_arg1"),
+                    vec!["v109"],
+                    None,
+                    None,
+                ),
                 mk("jump", None, None, vec![], Some(8), None),
                 mk("label", None, None, vec![], Some(8), None),
                 mk("loop_start", None, None, vec![], None, None),
-                mk("load_var", Some("_v19"), Some("_bb1_arg0"), vec![], None, None),
-                mk("load_var", Some("_v20"), Some("_bb1_arg1"), vec![], None, None),
+                mk(
+                    "load_var",
+                    Some("_v19"),
+                    Some("_bb1_arg0"),
+                    vec![],
+                    None,
+                    None,
+                ),
+                mk(
+                    "load_var",
+                    Some("_v20"),
+                    Some("_bb1_arg1"),
+                    vec![],
+                    None,
+                    None,
+                ),
                 mk("lt", Some("v112"), None, vec!["_v20", "n"], None, None),
                 mk("loop_break_if_false", None, None, vec!["v112"], None, None),
                 mk("add", Some("v115"), None, vec!["_v19", "v114"], None, None),
                 mk("sub", Some("v118"), None, vec!["v115", "v117"], None, None),
                 mk("add", Some("v121"), None, vec!["v118", "v120"], None, None),
                 mk("add", Some("v124"), None, vec!["_v20", "v123"], None, None),
-                mk("store_var", None, Some("_bb1_arg0"), vec!["v121"], None, None),
-                mk("store_var", None, Some("_bb1_arg1"), vec!["v124"], None, None),
+                mk(
+                    "store_var",
+                    None,
+                    Some("_bb1_arg0"),
+                    vec!["v121"],
+                    None,
+                    None,
+                ),
+                mk(
+                    "store_var",
+                    None,
+                    Some("_bb1_arg1"),
+                    vec!["v124"],
+                    None,
+                    None,
+                ),
                 mk("loop_continue", None, None, vec![], None, None),
                 mk("loop_end", None, None, vec![], None, None),
                 mk("jump", None, None, vec![], Some(12), None),
@@ -2009,7 +2064,10 @@ mod tests {
         // remaining activation prerequisite — see the pass_manager activation
         // note), so we invoke it explicitly here to exercise the alias-root
         // placement on the production-shaped IR.
-        run_pipeline(&mut tir_func, &crate::tir::target_info::TargetInfo::native_release_fast());
+        run_pipeline(
+            &mut tir_func,
+            &crate::tir::target_info::TargetInfo::native_release_fast(),
+        );
         {
             let mut am = AnalysisManager::new();
             run(&mut tir_func, &mut am);
@@ -2039,7 +2097,10 @@ mod tests {
             .flat_map(|b| b.ops.iter())
             .filter(|o| o.opcode == OpCode::DecRef)
             .count();
-        assert!(total_decrefs >= 2, "loop accumulator must insert drops, got {total_decrefs}");
+        assert!(
+            total_decrefs >= 2,
+            "loop accumulator must insert drops, got {total_decrefs}"
+        );
     }
 
     /// Branch-arg transfer to a successor must NOT be edge-dropped (design §2.5).
@@ -2067,12 +2128,18 @@ mod tests {
                 args: vec![v],
             };
         }
-        func.blocks.insert(join, TirBlock {
-            id: join,
-            args: vec![TirValue { id: p, ty: TirType::Str }],
-            ops: vec![],
-            terminator: Terminator::Return { values: vec![p] },
-        });
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: p,
+                    ty: TirType::Str,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![p] },
+            },
+        );
         let mut am = AnalysisManager::new();
         run(&mut func, &mut am);
         // No DecRef of `v` (transferred to `p`), and none of `p` (returned).
@@ -2131,6 +2198,145 @@ mod tests {
         assert!(func.attrs.contains_key(DROP_INSERTED_ATTR));
     }
 
+    /// `list_pop` removes an element from the list and returns a fresh owned
+    /// reference to that removed element. If the Python result is discarded, the
+    /// returned owner must be released immediately at the pop statement; otherwise
+    /// finalizer-bearing elements survive until unrelated container teardown
+    /// (`finalizer_container_clear.py`: `bag2.pop()` must run A(11).__del__ before
+    /// the following print).
+    #[test]
+    fn unused_list_pop_result_is_dropped_at_pop_boundary() {
+        let mut func = TirFunction::new("list_pop_dead_result".into(), vec![], TirType::DynBox);
+        let list = func.fresh_value();
+        let idx = func.fresh_value();
+        let popped = func.fresh_value();
+        let ret = func.fresh_value();
+        for v in [list, idx, popped, ret] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(list));
+            b.ops.push(op(OpCode::ConstNone, vec![], vec![idx]));
+            let mut attrs = AttrDict::new();
+            attrs.insert("_original_kind".into(), AttrValue::Str("list_pop".into()));
+            b.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![list, idx],
+                results: vec![popped],
+                attrs,
+                source_span: None,
+            });
+            b.ops.push(op(OpCode::ConstNone, vec![], vec![ret]));
+            b.terminator = Terminator::Return { values: vec![ret] };
+        }
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        let ops = &func.blocks[&entry].ops;
+        let pop_idx = ops
+            .iter()
+            .position(|o| {
+                o.opcode == OpCode::Copy
+                    && matches!(
+                        o.attrs.get("_original_kind"),
+                        Some(AttrValue::Str(k)) if k == "list_pop"
+                    )
+            })
+            .expect("list_pop op present");
+        let dec_popped_idx = ops
+            .iter()
+            .position(|o| o.opcode == OpCode::DecRef && o.operands == vec![popped])
+            .expect("unused list_pop result must be dropped");
+        assert!(
+            dec_popped_idx > pop_idx,
+            "list_pop result must be released after the runtime removes/returns it; ops={ops:?}"
+        );
+    }
+
+    /// `dataclass_new_values` returns the newly-created instance as an owned
+    /// reference. Class attachment (`dataclass_set_class`) mutates metadata and
+    /// returns `None`, so the constructor result remains the only owner that can
+    /// trigger the instance finalizer at function exit. Releasing only field
+    /// operands leaks the parent instance and skips child-finalizer teardown.
+    #[test]
+    fn dataclass_new_values_result_is_dropped_after_last_metadata_use() {
+        let mut func = TirFunction::new(
+            "dataclass_new_values_owner_drop".into(),
+            vec![],
+            TirType::DynBox,
+        );
+        let name = func.fresh_value();
+        let fields = func.fresh_value();
+        let flags = func.fresh_value();
+        let child = func.fresh_value();
+        let instance = func.fresh_value();
+        let class_obj = func.fresh_value();
+        let ret = func.fresh_value();
+        for v in [name, fields, flags, child, instance, class_obj, ret] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(name));
+            b.ops.push(const_str(fields));
+            b.ops.push(op(OpCode::ConstNone, vec![], vec![flags]));
+            b.ops.push(op(OpCode::Call, vec![], vec![child]));
+            let mut ctor_attrs = AttrDict::new();
+            ctor_attrs.insert(
+                "_original_kind".into(),
+                AttrValue::Str("dataclass_new_values".into()),
+            );
+            b.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![name, fields, flags, child],
+                results: vec![instance],
+                attrs: ctor_attrs,
+                source_span: None,
+            });
+            b.ops.push(op(OpCode::Call, vec![], vec![class_obj]));
+            let mut set_class_attrs = AttrDict::new();
+            set_class_attrs.insert(
+                "_original_kind".into(),
+                AttrValue::Str("dataclass_set_class".into()),
+            );
+            b.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![instance, class_obj],
+                results: vec![],
+                attrs: set_class_attrs,
+                source_span: None,
+            });
+            b.ops.push(op(OpCode::ConstNone, vec![], vec![ret]));
+            b.terminator = Terminator::Return { values: vec![ret] };
+        }
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        let ops = &func.blocks[&entry].ops;
+        let set_class_idx = ops
+            .iter()
+            .position(|o| {
+                o.opcode == OpCode::Copy
+                    && matches!(
+                        o.attrs.get("_original_kind"),
+                        Some(AttrValue::Str(k)) if k == "dataclass_set_class"
+                    )
+            })
+            .expect("dataclass_set_class op present");
+        let dec_instance_idx = ops
+            .iter()
+            .position(|o| o.opcode == OpCode::DecRef && o.operands == vec![instance])
+            .expect("dataclass instance result must be dropped");
+        assert!(
+            dec_instance_idx > set_class_idx,
+            "dataclass instance owner must survive metadata attachment and then release; ops={ops:?}"
+        );
+    }
+
     /// A CallArgs builder consumed by `call_bind` / `call_indirect` must NOT get
     /// a trailing DecRef: the runtime entry (`molt_call_bind_ic`, via
     /// `PtrDropGuard`) frees the builder internally, so an inserted DecRef would
@@ -2176,7 +2382,9 @@ mod tests {
                 attrs: cb,
                 source_span: None,
             });
-            b.terminator = Terminator::Return { values: vec![result] };
+            b.terminator = Terminator::Return {
+                values: vec![result],
+            };
         }
         let mut am = AnalysisManager::new();
         run(&mut func, &mut am);
@@ -2276,7 +2484,9 @@ mod tests {
             });
             b.ops.push(op(OpCode::LoadAttr, vec![obj_alias], vec![h]));
             b.ops.push(op(OpCode::Call, vec![h], vec![consumer]));
-            b.terminator = Terminator::Return { values: vec![consumer] };
+            b.terminator = Terminator::Return {
+                values: vec![consumer],
+            };
         }
         let mut am = AnalysisManager::new();
         run(&mut func, &mut am);
@@ -2294,7 +2504,9 @@ mod tests {
             .enumerate()
             .filter(|(_, o)| {
                 o.opcode == OpCode::DecRef
-                    && o.operands.first().is_some_and(|&v| aliases.root(v) == obj_root)
+                    && o.operands
+                        .first()
+                        .is_some_and(|&v| aliases.root(v) == obj_root)
             })
             .map(|(i, _)| i)
             .collect();
@@ -2467,60 +2679,81 @@ mod tests {
                 args: vec![s0],
             };
         }
-        func.blocks.insert(header, TirBlock {
-            id: header,
-            args: vec![TirValue { id: s_phi, ty: TirType::Str }],
-            ops: vec![],
-            terminator: Terminator::Branch {
-                target: cond_blk,
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: s_phi,
+                    ty: TirType::Str,
+                }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: cond_blk,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            cond_blk,
+            TirBlock {
+                id: cond_blk,
                 args: vec![],
+                // `s_alias = Copy(s_phi)` — a transparent alias (root = s_phi) used by
+                // both successors; plus the loop condition.
+                ops: vec![
+                    op(OpCode::Copy, vec![s_phi], vec![s_alias]),
+                    op(OpCode::ConstBool, vec![], vec![cond]),
+                ],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: pre_exit,
+                    else_args: vec![],
+                },
             },
-        });
-        func.blocks.insert(cond_blk, TirBlock {
-            id: cond_blk,
-            args: vec![],
-            // `s_alias = Copy(s_phi)` — a transparent alias (root = s_phi) used by
-            // both successors; plus the loop condition.
-            ops: vec![
-                op(OpCode::Copy, vec![s_phi], vec![s_alias]),
-                op(OpCode::ConstBool, vec![], vec![cond]),
-            ],
-            terminator: Terminator::CondBranch {
-                cond,
-                then_block: body,
-                then_args: vec![],
-                else_block: pre_exit,
-                else_args: vec![],
-            },
-        });
-        func.blocks.insert(body, TirBlock {
-            id: body,
-            args: vec![],
-            ops: vec![const_str(lit), op(OpCode::Add, vec![s_alias, lit], vec![s_new])],
-            terminator: Terminator::Branch {
-                target: header,
-                args: vec![s_new],
-            },
-        });
-        func.blocks.insert(pre_exit, TirBlock {
-            id: pre_exit,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::Branch {
-                target: exit,
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
                 args: vec![],
+                ops: vec![
+                    const_str(lit),
+                    op(OpCode::Add, vec![s_alias, lit], vec![s_new]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![s_new],
+                },
             },
-        });
+        );
+        func.blocks.insert(
+            pre_exit,
+            TirBlock {
+                id: pre_exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: exit,
+                    args: vec![],
+                },
+            },
+        );
         // A fresh (non-alias) consumer of the aliased phi → it dies after it.
         // `Call` borrows its operand and returns a fresh owned value (the real IR
         // uses a `len`-carrying op here; the only property that matters for
         // liveness is that the result is NOT a transparent alias).
-        func.blocks.insert(exit, TirBlock {
-            id: exit,
-            args: vec![],
-            ops: vec![op(OpCode::Call, vec![s_alias], vec![r])],
-            terminator: Terminator::Return { values: vec![r] },
-        });
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![op(OpCode::Call, vec![s_alias], vec![r])],
+                terminator: Terminator::Return { values: vec![r] },
+            },
+        );
         func.loop_roles.insert(header, LoopRole::LoopHeader);
 
         let mut am = AnalysisManager::new();
@@ -2635,14 +2868,20 @@ mod tests {
             b.ops.push(const_str(yval));
             // Yield: x is live across (used in resume), yval is the yielded value.
             b.ops.push(op(OpCode::Yield, vec![yval], vec![]));
-            b.terminator = Terminator::Branch { target: resume, args: vec![] };
+            b.terminator = Terminator::Branch {
+                target: resume,
+                args: vec![],
+            };
         }
-        func.blocks.insert(resume, TirBlock {
-            id: resume,
-            args: vec![],
-            ops: vec![op(OpCode::Call, vec![x], vec![used])],
-            terminator: Terminator::Return { values: vec![used] },
-        });
+        func.blocks.insert(
+            resume,
+            TirBlock {
+                id: resume,
+                args: vec![],
+                ops: vec![op(OpCode::Call, vec![x], vec![used])],
+                terminator: Terminator::Return { values: vec![used] },
+            },
+        );
         let mut am = AnalysisManager::new();
         run(&mut func, &mut am);
         // x must be IncRef'd before the Yield (it survives into the frame).
@@ -2679,34 +2918,52 @@ mod tests {
         {
             let b = func.blocks.get_mut(&entry).unwrap();
             b.ops.push(const_str(acc0));
-            b.terminator = Terminator::Branch { target: header, args: vec![acc0] };
+            b.terminator = Terminator::Branch {
+                target: header,
+                args: vec![acc0],
+            };
         }
-        func.blocks.insert(header, TirBlock {
-            id: header,
-            args: vec![TirValue { id: acc_phi, ty: TirType::Str }],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
-            terminator: Terminator::CondBranch {
-                cond,
-                then_block: body,
-                then_args: vec![],
-                else_block: exit,
-                else_args: vec![],
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: acc_phi,
+                    ty: TirType::Str,
+                }],
+                ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
             },
-        });
-        func.blocks.insert(body, TirBlock {
-            id: body,
-            args: vec![],
-            // acc_next = Call(acc_phi): consumes the phi, produces a new owned acc.
-            ops: vec![op(OpCode::Call, vec![acc_phi], vec![acc_next])],
-            terminator: Terminator::Branch { target: header, args: vec![acc_next] },
-        });
-        func.blocks.insert(exit, TirBlock {
-            id: exit,
-            args: vec![],
-            ops: vec![],
-            // The final acc_phi is dead (not returned).
-            terminator: Terminator::Return { values: vec![] },
-        });
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                // acc_next = Call(acc_phi): consumes the phi, produces a new owned acc.
+                ops: vec![op(OpCode::Call, vec![acc_phi], vec![acc_next])],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![acc_next],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                // The final acc_phi is dead (not returned).
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         func.loop_roles.insert(header, LoopRole::LoopHeader);
         let mut am = AnalysisManager::new();
         run(&mut func, &mut am);
@@ -2752,51 +3009,77 @@ mod tests {
         let entry = func.entry_block;
         {
             let b = func.blocks.get_mut(&entry).unwrap();
-            b.terminator = Terminator::Branch { target: pre, args: vec![] };
+            b.terminator = Terminator::Branch {
+                target: pre,
+                args: vec![],
+            };
         }
         // preheader: x0 = copy_var(base) → transparent alias of the param.
-        func.blocks.insert(pre, TirBlock {
-            id: pre,
-            args: vec![],
-            ops: vec![{
-                let mut o = op(OpCode::Copy, vec![base], vec![x0]);
-                o.attrs.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
-                o
-            }],
-            terminator: Terminator::Branch { target: header, args: vec![x0] },
-        });
-        func.blocks.insert(header, TirBlock {
-            id: header,
-            args: vec![TirValue { id: acc_phi, ty: TirType::Str }],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
-            terminator: Terminator::CondBranch {
-                cond,
-                then_block: body,
-                then_args: vec![],
-                else_block: exit,
-                else_args: vec![],
-            },
-        });
-        func.blocks.insert(body, TirBlock {
-            id: body,
-            args: vec![],
-            ops: vec![
-                {
-                    let mut o = op(OpCode::Copy, vec![acc_phi], vec![load_x]);
-                    o.attrs.insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+        func.blocks.insert(
+            pre,
+            TirBlock {
+                id: pre,
+                args: vec![],
+                ops: vec![{
+                    let mut o = op(OpCode::Copy, vec![base], vec![x0]);
+                    o.attrs
+                        .insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
                     o
+                }],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![x0],
                 },
-                // acc_next = Call(load_x, base): fresh owned, reads base each iter.
-                op(OpCode::Call, vec![load_x, base], vec![acc_next]),
-            ],
-            terminator: Terminator::Branch { target: header, args: vec![acc_next] },
-        });
-        func.blocks.insert(exit, TirBlock {
-            id: exit,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::Return { values: vec![] },
-        });
+            },
+        );
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: acc_phi,
+                    ty: TirType::Str,
+                }],
+                ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    {
+                        let mut o = op(OpCode::Copy, vec![acc_phi], vec![load_x]);
+                        o.attrs
+                            .insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+                        o
+                    },
+                    // acc_next = Call(load_x, base): fresh owned, reads base each iter.
+                    op(OpCode::Call, vec![load_x, base], vec![acc_next]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![acc_next],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         func.loop_roles.insert(header, LoopRole::LoopHeader);
         let mut am = AnalysisManager::new();
         run(&mut func, &mut am);
@@ -2854,28 +3137,41 @@ mod tests {
         let entry = func.entry_block;
         {
             let b = func.blocks.get_mut(&entry).unwrap();
-            b.terminator = Terminator::Branch { target: mid, args: vec![] };
+            b.terminator = Terminator::Branch {
+                target: mid,
+                args: vec![],
+            };
         }
-        func.blocks.insert(mid, TirBlock {
-            id: mid,
-            args: vec![],
-            ops: vec![
-                const_str(owned),
-                {
+        func.blocks.insert(
+            mid,
+            TirBlock {
+                id: mid,
+                args: vec![],
+                ops: vec![const_str(owned), {
                     let mut o = op(OpCode::Copy, vec![owned], vec![fwd]);
-                    o.attrs.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+                    o.attrs
+                        .insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
                     o
+                }],
+                // Forward `fwd` (owned, via alias) into the join's phi.
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![fwd],
                 },
-            ],
-            // Forward `fwd` (owned, via alias) into the join's phi.
-            terminator: Terminator::Branch { target: join, args: vec![fwd] },
-        });
-        func.blocks.insert(join, TirBlock {
-            id: join,
-            args: vec![TirValue { id: phi, ty: TirType::Str }],
-            ops: vec![op(OpCode::Call, vec![phi], vec![used])],
-            terminator: Terminator::Return { values: vec![used] },
-        });
+            },
+        );
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: phi,
+                    ty: TirType::Str,
+                }],
+                ops: vec![op(OpCode::Call, vec![phi], vec![used])],
+                terminator: Terminator::Return { values: vec![used] },
+            },
+        );
         let mut am = AnalysisManager::new();
         run(&mut func, &mut am);
         // The forwarded owned value (`fwd`, alias root `owned`) must NOT be dropped
@@ -2950,7 +3246,8 @@ mod tests {
             // raw Switch selector.
             b.ops.push({
                 let mut o = op(OpCode::Copy, vec![base], vec![case0_alias]);
-                o.attrs.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+                o.attrs
+                    .insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
                 o
             });
             b.ops.push(const_str(fresh_owned));
@@ -2964,14 +3261,20 @@ mod tests {
                 default_args: vec![fresh_owned],
             };
         }
-        func.blocks.insert(join, TirBlock {
-            id: join,
-            args: vec![TirValue { id: phi, ty: TirType::Str }],
-            // Consume the phi (drops it at its last use) and return nothing so the
-            // phi dies in `join` — the case-0 borrowed edge therefore needs a +1.
-            ops: vec![op(OpCode::Call, vec![phi], vec![used])],
-            terminator: Terminator::Return { values: vec![] },
-        });
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: phi,
+                    ty: TirType::Str,
+                }],
+                // Consume the phi (drops it at its last use) and return nothing so the
+                // phi dies in `join` — the case-0 borrowed edge therefore needs a +1.
+                ops: vec![op(OpCode::Call, vec![phi], vec![used])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         let n_blocks_before = func.blocks.len();
         let mut am = AnalysisManager::new();
         run(&mut func, &mut am);
@@ -2986,9 +3289,7 @@ mod tests {
         // `entry`'s case-0 arc must now target a NEW block (not `join`): the retarget.
         // The default arc must still go to `join` (unsplit, clean transfer).
         let (case0_target, default_target) = match &func.blocks[&entry].terminator {
-            Terminator::Switch {
-                cases, default, ..
-            } => (cases[0].1, *default),
+            Terminator::Switch { cases, default, .. } => (cases[0].1, *default),
             other => panic!("entry terminator must remain a Switch, got {other:?}"),
         };
         assert_ne!(
@@ -3015,7 +3316,10 @@ mod tests {
         );
         match &split.terminator {
             Terminator::Branch { target, args } => {
-                assert_eq!(*target, join, "split block must branch to the original target");
+                assert_eq!(
+                    *target, join,
+                    "split block must branch to the original target"
+                );
                 assert_eq!(
                     args,
                     &vec![case0_alias],
@@ -3109,30 +3413,49 @@ mod tests {
             };
         }
         // p1: forward `r` straight into the join phi.
-        func.blocks.insert(p1, TirBlock {
-            id: p1,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::Branch { target: join, args: vec![r] },
-        });
+        func.blocks.insert(
+            p1,
+            TirBlock {
+                id: p1,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![r],
+                },
+            },
+        );
         // p2: r_alias = load_var(r) [transparent alias]; forward the alias into the
         // SAME phi position → `r`'s root is forwarded by a 2nd predecessor.
-        func.blocks.insert(p2, TirBlock {
-            id: p2,
-            args: vec![],
-            ops: vec![{
-                let mut o = op(OpCode::Copy, vec![r], vec![r_alias]);
-                o.attrs.insert("_original_kind".into(), AttrValue::Str("load_var".into()));
-                o
-            }],
-            terminator: Terminator::Branch { target: join, args: vec![r_alias] },
-        });
-        func.blocks.insert(join, TirBlock {
-            id: join,
-            args: vec![TirValue { id: phi, ty: TirType::Str }],
-            ops: vec![op(OpCode::Call, vec![phi], vec![used])],
-            terminator: Terminator::Return { values: vec![] },
-        });
+        func.blocks.insert(
+            p2,
+            TirBlock {
+                id: p2,
+                args: vec![],
+                ops: vec![{
+                    let mut o = op(OpCode::Copy, vec![r], vec![r_alias]);
+                    o.attrs
+                        .insert("_original_kind".into(), AttrValue::Str("load_var".into()));
+                    o
+                }],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![r_alias],
+                },
+            },
+        );
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: phi,
+                    ty: TirType::Str,
+                }],
+                ops: vec![op(OpCode::Call, vec![phi], vec![used])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
         let mut am = AnalysisManager::new();
         run(&mut func, &mut am);
         // The single owned object (`r`'s alias group: r, r_alias, phi) must be
@@ -3144,9 +3467,9 @@ mod tests {
             .flat_map(|b| b.ops.iter())
             .filter(|o| {
                 o.opcode == OpCode::DecRef
-                    && o.operands.first().is_some_and(|&v| {
-                        v == r || v == r_alias || v == phi
-                    })
+                    && o.operands
+                        .first()
+                        .is_some_and(|&v| v == r || v == r_alias || v == phi)
             })
             .count();
         assert!(
