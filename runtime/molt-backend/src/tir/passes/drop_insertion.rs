@@ -49,7 +49,8 @@
 //!
 //! ## What is dropped
 //!
-//! A value `v` is a drop candidate when ALL hold:
+//! `DropEligibility` owns the composed predicate for whether a value root is a
+//! drop candidate. A value `v` is eligible when ALL hold:
 //! * `v` is heap-carrying (NOT a [`TirLivenessResult::is_raw_scalar`] — raw i64 /
 //!   bool / float carriers hold no refcount; dropping them would pass a raw
 //!   register to `molt_dec_ref_obj`).
@@ -112,11 +113,10 @@
 //! 1. **Alias-root ownership** — a whole alias group is ONE reference, dropped
 //!    once at the group's last in-block *touch*, through a live alias of the
 //!    root. The drop point dominates every in-block read of the group, so a
-//!    later alias-move can never read a freed object. A `Copy` whose
-//!    `_original_kind` is neither a proven fresh-owned producer nor an explicit
-//!    no-heap move (`non_owning_copy_results`) is its OWN alias root in the
-//!    union-find but is a no-incref bit-passthrough of operand 0, so it is
-//!    excluded from droppability — releasing it would double-free operand 0.
+//!    later alias-move can never read a freed object. A `Copy` result root that
+//!    the ownership lattice classifies as non-owning is a no-incref
+//!    bit-passthrough or no-heap marker, so it is excluded from droppability:
+//!    releasing it would double-free operand 0 or drop a non-ref carrier.
 //! 2. **TerminatorOnly dominance** — an edge-dying drop at a successor `B` is
 //!    placed only when the value's def-block dominates `B` in the
 //!    **terminator-only** CFG (the view codegen enforces). The *full*-CFG
@@ -125,7 +125,7 @@
 //!    the def → use-before-def in codegen. (Observed otherwise as the LLVM
 //!    verifier "Instruction does not dominate all uses!" abort.)
 //! 3. **Conditionally-valid iterator results** — an `IterNextUnboxed` value
-//!    result (`iter_cond_value_results`) is valid ONLY on the not-done branch;
+//!    result (from the generated result-validity table) is valid ONLY on the not-done branch;
 //!    its slot is uninitialized garbage on the exhaustion edge. It is NEVER
 //!    edge-dropped (and never IncRef'd onto a phi edge); the body straight-line
 //!    rule releases it on the valid path.
@@ -156,15 +156,16 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::{
-    OperandCategory, TerminatorKind, kind_result_absorbs_operand_ownership_table,
-    opcode_result_absorbs_operand_ownership_table, terminator_operand_is_transferred,
-};
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::liveness::{TirLiveness, TirLivenessResult};
 use crate::tir::values::{TirValue, ValueId};
 
 use super::PassStats;
+use super::ownership_lattice_min::{
+    StatementReleasePlan, copy_no_heap_move_alias, exception_creation_ref_values,
+    op_consumed_operand_root, op_result_absorbs_operand_ownership, terminator_branch_args,
+    terminator_uses_root,
+};
 
 /// The function-level attr the pass sets (round-tripped to the native backend as
 /// a marker op) so the SimpleIR `loop_reassign_old_val` ad-hoc dec-ref path is
@@ -233,36 +234,12 @@ fn value_definitions(func: &TirFunction) -> HashMap<ValueId, ValueDefinition> {
     defs
 }
 
+#[cfg(test)]
 fn original_kind(op: &TirOp) -> Option<&str> {
     match op.attrs.get("_original_kind") {
         Some(AttrValue::Str(kind)) => Some(kind.as_str()),
         _ => None,
     }
-}
-
-fn op_result_absorbs_operand_ownership(op: &TirOp) -> bool {
-    opcode_result_absorbs_operand_ownership_table(op.opcode)
-        || (op.opcode == OpCode::Copy
-            && original_kind(op).is_some_and(kind_result_absorbs_operand_ownership_table))
-}
-
-fn exception_creation_ref_values(func: &TirFunction) -> HashSet<ValueId> {
-    value_definitions(func)
-        .into_iter()
-        .filter_map(|(value, def)| {
-            let op_index = def.op_index?;
-            let op = func.blocks.get(&def.block)?.ops.get(op_index)?;
-            if op.opcode != OpCode::Copy {
-                return None;
-            }
-            let kind = original_kind(op)?;
-            if crate::tir::passes::alias_analysis::copy_kind_is_exception_creation_ref(kind) {
-                Some(value)
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 fn insert_exception_creation_drops_at_raise(func: &mut TirFunction) -> usize {
@@ -440,15 +417,10 @@ fn insert_exception_region_match_drops(
             .collect();
         let mut tail_value_remap = tail_arg_remap.clone();
         for op in &prefix_source_ops {
-            if op.opcode != OpCode::Copy || op.operands.len() != 1 || op.results.len() != 1 {
-                continue;
-            }
-            let kind = original_kind(op);
-            if !crate::tir::passes::alias_analysis::copy_kind_is_explicit_no_heap_move(kind) {
-                continue;
-            }
-            if let Some(mapped_operand) = tail_value_remap.get(&op.operands[0]).copied() {
-                tail_value_remap.insert(op.results[0], mapped_operand);
+            if let Some(alias) = copy_no_heap_move_alias(op)
+                && let Some(mapped_operand) = tail_value_remap.get(&alias.source).copied()
+            {
+                tail_value_remap.insert(alias.result, mapped_operand);
             }
         }
         let original_arg_values: Vec<ValueId> = original_args.iter().map(|arg| arg.id).collect();
@@ -544,72 +516,6 @@ fn is_suspension_point(opcode: OpCode) -> bool {
             | OpCode::Yield
             | OpCode::YieldFrom
     )
-}
-
-/// True if `opcode` produces a stack-allocated value with no RC (design R6).
-fn produces_stack_value(opcode: OpCode) -> bool {
-    matches!(opcode, OpCode::StackAlloc | OpCode::ObjectNewBoundStack)
-}
-
-/// The zero-cost discriminant of `term`, the key for the generated
-/// per-terminator operand-ownership authority (`terminator_operand_ownership_table`
-/// / `terminator_operand_is_transferred`, design 27 §2.4). The ownership FACT is
-/// declarative (op_kinds.toml `[[terminator]]`); only this structural shape map —
-/// which `Terminator` field carries which operand category — stays in the pass.
-fn terminator_kind(term: &Terminator) -> TerminatorKind {
-    match term {
-        Terminator::Branch { .. } => TerminatorKind::Branch,
-        Terminator::CondBranch { .. } => TerminatorKind::CondBranch,
-        Terminator::Switch { .. } => TerminatorKind::Switch,
-        Terminator::StateDispatch { .. } => TerminatorKind::StateDispatch,
-        Terminator::Return { .. } => TerminatorKind::Return,
-        Terminator::Unreachable => TerminatorKind::Unreachable,
-    }
-}
-
-/// The values `term` forwards as block args to a successor's phi, WHEN the
-/// generated authority classifies that terminator's `BranchArg` category as
-/// `Transferred` (design 27 §2.4: ownership moves INTO the block param on the
-/// edge — these are NOT dropped on that edge; the dual exclusion is
-/// `incoming_arg_roots` in §3). The transfer FACT is read from
-/// `terminator_operand_is_transferred` (op_kinds.toml `[[terminator]]`), not
-/// hand-coded here; this function supplies only the structural shape (which
-/// fields hold the forwarded args). Today every branching variant is
-/// `Transferred`, so the set equals the raw forwarded args; a future terminator
-/// that forwarded args WITHOUT transferring would be flipped by the table alone.
-fn terminator_branch_args(term: &Terminator) -> HashSet<ValueId> {
-    let mut out = HashSet::new();
-    if !terminator_operand_is_transferred(terminator_kind(term), OperandCategory::BranchArg) {
-        return out;
-    }
-    match term {
-        Terminator::Branch { args, .. } => out.extend(args.iter().copied()),
-        Terminator::CondBranch {
-            then_args,
-            else_args,
-            ..
-        } => {
-            out.extend(then_args.iter().copied());
-            out.extend(else_args.iter().copied());
-        }
-        Terminator::Switch {
-            cases,
-            default_args,
-            ..
-        }
-        | Terminator::StateDispatch {
-            cases,
-            default_args,
-            ..
-        } => {
-            for (_, _, args) in cases {
-                out.extend(args.iter().copied());
-            }
-            out.extend(default_args.iter().copied());
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => {}
-    }
-    out
 }
 
 /// The successor blocks of `term` (de-dup not required; callers union into sets).
@@ -1080,19 +986,21 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let live: TirLivenessResult = am.get::<TirLiveness>(func).clone();
 
-    // Parameters are borrowed from the caller (ABI): never dropped here.
-    let param_ids: HashSet<ValueId> = {
-        let mut s = HashSet::new();
-        if let Some(entry) = func.blocks.get(&func.entry_block) {
-            for arg in &entry.args {
-                s.insert(arg.id);
-            }
-        }
-        s
-    };
+    // Alias-root canonicalization (design 20 §1.2) and root-only ownership facts
+    // are stable across the DelBoundary normalization below: DelBoundary carries
+    // no results and therefore cannot change alias roots or result-validity /
+    // non-owning-copy root facts. Statement-boundary facts are computed later on
+    // the normalized op stream so their op indices remain exact.
+    let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(func);
+    let ownership_root_facts =
+        super::ownership_lattice_min::OwnershipRootFacts::compute(func, &aliases);
+    let drop_eligibility = super::ownership_lattice_min::DropEligibility::new(
+        &aliases,
+        &ownership_root_facts,
+        &live.raw_scalars,
+    );
+    let canon = |v: ValueId| -> ValueId { drop_eligibility.root(v) };
 
-    // Stack-allocated values: never dropped (design R6).
-    let mut stack_values: HashSet<ValueId> = HashSet::new();
     // Conditionally-valid iterator value results (design §2.8). The VALUE result
     // of an `IterNextUnboxed` (results[0]) holds a valid owned reference ONLY on
     // the not-done branch: `molt_iter_next_unboxed` writes the value-out slot
@@ -1106,18 +1014,20 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // `list(gen)` / `"".join(gen)` / `for v in gen:` consumer). On the not-done
     // (body) path the value is valid and is released by the ordinary straight-line
     // last-use rule, which only ever runs in body blocks the done-edge can't reach.
-    let mut iter_cond_value_results: HashSet<ValueId> = HashSet::new();
-    // Non-owning, NON-aliased `Copy` results (the over-release-class keystone).
+    // The fact is sourced from `[[result_validity]]` through OwnershipLattice,
+    // not from a DropInsertion-owned opcode hand list.
+    // Non-owning, NON-aliased `Copy` result roots (the over-release-class
+    // keystone). The root fact is sourced from OwnershipRootFacts, not from a
+    // DropInsertion-owned classifier scan.
     // An `OpCode::Copy` result falls into exactly one of three drop classes:
-    //   1. FreshValue (`alias_analysis::copy_kind_mints_fresh_owned_ref` — `slice`,
-    //      `int_from_obj`, container constructors, `iter`, …): a brand-new `+1`.
-    //      DROP it independently. (Stays droppable.)
+    //   1. FreshValue (`slice`, `int_from_obj`, container constructors, `iter`,
+    //      …): a brand-new `+1`. DROP it independently. (Stays droppable.)
     //   2. EXPLICIT transparent alias (`copy`/`copy_var`/`guard_tag`/…,
-    //      `copy_kind_is_explicit_no_heap_move`): its result is operand 0's
-    //      reference. The alias union-find folds it into operand 0's group (so its
-    //      ROOT is operand 0, never itself) and the group is released ONCE through
-    //      the root — `droppable`'s `r == v` rail already declines the non-root
-    //      member, so it is naturally non-droppable here.
+    //      a no-heap move): its result is operand 0's reference. The alias
+    //      union-find folds it into operand 0's group (so its ROOT is operand 0,
+    //      never itself) and the group is released ONCE through the root —
+    //      `droppable`'s `r == v` rail already declines the non-root member, so
+    //      it is naturally non-droppable here.
     //   3. EVERYTHING ELSE (an UNKNOWN / unmapped value-producing carrier with its
     //      OWN alias root — `copy_is_known_local_alias` is FALSE so the union-find
     //      does NOT fold it — or an inert marker): the backend lowers it as a
@@ -1129,40 +1039,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // sanctioned direction, never a UAF). This is the precise drop-side half of the
     // lowering-truth alias contract that `alias_analysis::copy_is_known_local_alias`
     // mandates (its docstring: "the drop pass separately fails closed to 'do NOT
-    // release'"); the MemGVN-precise union-find half lives in `alias_analysis`.
-    // Class 3 is exactly "not FreshValue AND not an explicit alias move".
-    let mut non_owning_copy_results: HashSet<ValueId> = HashSet::new();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            if produces_stack_value(op.opcode) {
-                for &r in &op.results {
-                    stack_values.insert(r);
-                }
-            }
-            if op.opcode == OpCode::IterNextUnboxed
-                && let Some(&value_result) = op.results.first()
-            {
-                iter_cond_value_results.insert(value_result);
-            }
-            if op.opcode == OpCode::Copy {
-                let kind = match op.attrs.get("_original_kind") {
-                    Some(AttrValue::Str(s)) => Some(s.as_str()),
-                    _ => None,
-                };
-                let mints_fresh = kind
-                    .map(crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref)
-                    .unwrap_or(false);
-                let explicit_alias =
-                    crate::tir::passes::alias_analysis::copy_kind_is_explicit_no_heap_move(kind);
-                if !mints_fresh && !explicit_alias {
-                    for &r in &op.results {
-                        non_owning_copy_results.insert(r);
-                    }
-                }
-            }
-        }
-    }
-
+    // release'"). OwnershipRootFacts owns that fail-closed root set; the
+    // MemGVN-precise union-find half lives in `alias_analysis`.
     // Alias-root canonicalization (design 20 §1.2 — `Copy`/`TypeGuard` are
     // borrowed aliases, holding NO new reference). Ownership — and therefore the
     // drop obligation — is per alias ROOT, not per SSA value. The drop pass
@@ -1173,9 +1051,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // `load_var`→`Copy` every iteration; a per-copy drop double-frees the live
     // accumulator). This is the SAME union-find the liveness analysis used, so the
     // live sets (in root space) line up with these canonicalized placements.
-    let aliases = crate::tir::passes::alias_analysis::build_alias_union_find(func);
-    let canon = |v: ValueId| -> ValueId { aliases.root(v) };
-
     // Interior-borrow keepalive (design 20). A value produced by a borrowing read
     // (`LoadAttr`/`Index`) may borrow into / index its SOURCE object's backing
     // store; using such a result keeps the source object live. This is the SAME
@@ -1191,34 +1066,13 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // few ops (harmless); for the borrow/handle case it is required for soundness.
     let borrows = crate::tir::passes::alias_analysis::build_borrow_provenance(func, &aliases);
 
-    // Root-space params / stack sets.
-    let param_roots: HashSet<ValueId> = param_ids.iter().map(|&v| canon(v)).collect();
-    let stack_roots: HashSet<ValueId> = stack_values.iter().map(|&v| canon(v)).collect();
-
-    // A root is droppable iff it is heap-carrying, not a (root of a) param, not a
-    // (root of a) stack value, AND it is its own alias root (a non-root alias is a
-    // borrow — the root carries the single ownership obligation).
-    // `is_raw_scalar` covers the repr filter — RawI64Safe/Bool/Float — and is
-    // tested on the root carrier (a copy of a raw i64 is raw).
+    // A root is droppable iff DropEligibility says it is heap-carrying,
+    // function-owned per OwnershipRootFacts, and its own alias root. The raw
+    // scalar carrier set still comes from liveness/representation; the composed
+    // predicate lives in the ownership module rather than this placement pass.
     // Class-3 (non-owning, unmapped) `Copy` results are their OWN alias root (the
-    // union-find declines to fold them — see `non_owning_copy_results`), so the
-    // `r == v` rail alone would admit them; exclude them explicitly. The set is
-    // keyed by the SSA result id, which IS the root for a class-3 copy.
-    //
-    // `raw_scalars` is snapshotted (not read through `live`) so this closure
-    // holds no borrow of `live` — the §0b deferral below mutates `live`'s
-    // in/out sets while `droppable` is alive. The raw-scalar set itself is
-    // immutable analysis output; the deferral only ever touches in/out.
-    let raw_scalars = live.raw_scalars.clone();
-    let droppable = |v: ValueId| -> bool {
-        let r = canon(v);
-        r == v
-            && !raw_scalars.contains(&r)
-            && !param_roots.contains(&r)
-            && !stack_roots.contains(&r)
-            && !non_owning_copy_results.contains(&r)
-    };
-
+    // union-find declines to fold them), so the `r == v` rail alone would admit
+    // them; exclude the lattice-owned non-owning roots explicitly.
     // ── 0a. `del`-boundary normalization (#58) ────────────────────────────────
     // The frontend carries a function-scope `del x` as `DelBoundary(v)` so the
     // Python lifetime boundary survives optimization (it used to lower to
@@ -1228,7 +1082,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // place to `DecRef(root)` when the root is pass-owned (droppable); delete
     // otherwise (raw carrier / param / stack / borrowed alias — CPython's
     // frame-slot decref is equally unobservable there). Rewritten roots are
-    // recorded in `explicit_release_roots`: §1 must never place a second drop
+    // recorded in `PythonLifetimeFacts`: §1 must never place a second drop
     // (exactly-once — the alloc's +1 now belongs to the del), and §0b must
     // never defer them (an explicit boundary beats scope exit; its operand also
     // trips §0b's gate (c) DecRef rail, so the protection is doubled).
@@ -1247,7 +1101,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     continue;
                 };
                 let r = canon(v);
-                if droppable(r) {
+                // `DelBoundary` is unconditional. A conditionally-valid result
+                // may be stale on one outgoing edge, so deletion is the only
+                // safe normalization for that root.
+                if drop_eligibility.is_droppable(r)
+                    && !drop_eligibility.is_conditionally_valid_result_root(r)
+                {
                     op.opcode = OpCode::DecRef;
                     op.operands = vec![r];
                     op.results.clear();
@@ -1265,56 +1124,26 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         stats.values_changed += normalized;
     }
 
-    let finalizer_lattice = super::ownership_lattice_min::OwnershipLattice::compute(func);
-    let python_boundary_roots: HashSet<ValueId> = func
-        .blocks
-        .values()
-        .flat_map(|block| block.ops.iter())
-        .filter(|op| op.opcode == OpCode::Copy && matches!(original_kind(op), Some("store_var")))
-        .flat_map(|op| op.operands.iter().chain(op.results.iter()).copied())
-        .map(canon)
-        .collect();
-    let explicit_release_roots: HashSet<ValueId> = func
-        .blocks
-        .values()
-        .flat_map(|block| block.ops.iter())
-        .flat_map(|op| match op.opcode {
-            OpCode::DecRef => op.operands.iter().copied().collect::<Vec<_>>(),
-            OpCode::DeleteVar => op.operands.get(1).copied().into_iter().collect(),
-            _ => Vec::new(),
-        })
-        .map(canon)
-        .collect();
-    let mut statement_release_after_op: HashMap<BlockId, HashMap<usize, Vec<ValueId>>> =
-        HashMap::new();
-    let mut statement_released_roots: HashSet<ValueId> = HashSet::new();
-    for boundary in finalizer_lattice.statement_release_finalizer_boundaries() {
-        let root = canon(boundary.value);
-        if !droppable(root)
-            || python_boundary_roots.contains(&root)
-            || explicit_release_roots.contains(&root)
-        {
-            continue;
-        }
-        statement_release_after_op
-            .entry(boundary.block)
-            .or_default()
-            .entry(boundary.op_index)
-            .or_default()
-            .push(root);
-        statement_released_roots.insert(root);
-    }
-    for by_op in statement_release_after_op.values_mut() {
-        for roots in by_op.values_mut() {
-            roots.sort_unstable_by_key(|v| v.0);
-            roots.dedup();
-        }
-    }
-    let boundary_release_roots: HashSet<ValueId> = python_boundary_roots
-        .iter()
-        .copied()
-        .filter(|root| droppable(*root) && !explicit_release_roots.contains(root))
-        .collect();
+    // Ownership-lattice fact surface. DropInsertion owns placement; the lattice
+    // owns semantic result facts such as conditionally-valid results and
+    // finalizer-sensitive boundaries. Compute it after DelBoundary normalization
+    // so statement-boundary op indices match the mutated function.
+    let ownership_lattice = super::ownership_lattice_min::OwnershipLattice::compute_with_root_facts(
+        func,
+        &aliases,
+        ownership_root_facts.clone(),
+    );
+    let python_lifetime_facts =
+        super::ownership_lattice_min::PythonLifetimeFacts::compute(func, &aliases);
+    let is_conditionally_valid_result_or_alias =
+        |v: ValueId| -> bool { ownership_lattice.is_conditionally_valid_result_root(canon(v)) };
+
+    let statement_release_plan = StatementReleasePlan::compute(
+        &ownership_lattice,
+        &python_lifetime_facts,
+        &drop_eligibility,
+    );
+    let boundary_release_roots = python_lifetime_facts.boundary_release_roots(&drop_eligibility);
 
     let pred_map_term = crate::tir::dominators::build_pred_map_with(
         func,
@@ -1453,12 +1282,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let deferred: HashSet<ValueId>;
     let mut deferred_return_placements: Vec<(BlockId, ValueId)> = Vec::new();
     {
-        let lattice = super::ownership_lattice_min::OwnershipLattice::compute(func);
+        let lattice = &ownership_lattice;
         let sensitive_roots: HashSet<ValueId> = lattice
-            .finalizer_sensitive_values()
+            .finalizer_sensitive_roots()
             .iter()
-            .map(|&v| canon(v))
-            .filter(|&r| droppable(r))
+            .copied()
+            .filter(|&r| drop_eligibility.is_droppable(r))
             .collect();
         let has_suspension = !sensitive_roots.is_empty()
             && func
@@ -1478,7 +1307,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             // otherwise ERASED by lowering — this is the named-local rung of
             // the council lattice arriving as a carried fact, not an
             // inference from use-shape.
-            let mut bound_roots: HashSet<ValueId> = HashSet::new();
             let mut disqualified: HashSet<ValueId> = HashSet::new();
             for &bid in &block_ids {
                 if !reachable.contains(&bid) {
@@ -1494,11 +1322,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     }
                 }
                 for op in &block.ops {
-                    if matches!(op.attrs.get("bound_local"), Some(AttrValue::Bool(true))) {
-                        for &result in &op.results {
-                            bound_roots.insert(canon(result));
-                        }
-                    }
                     if matches!(op.opcode, OpCode::IncRef | OpCode::DecRef | OpCode::Free) {
                         for &operand in &op.operands {
                             disqualified.insert(canon(operand));
@@ -1515,30 +1338,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                             disqualified.insert(canon(operand));
                         }
                     }
-                    // Gate (c) named-slot rail: a `store_var`/`load_var` Copy
-                    // marks the group as a slot-backed local — the slot owns
-                    // its del/rebinding release boundary.
-                    if op.opcode == OpCode::Copy
-                        && matches!(
-                            op.attrs.get("_original_kind"),
-                            Some(AttrValue::Str(k)) if k == "store_var" || k == "load_var"
-                        )
-                    {
-                        for &operand in &op.operands {
-                            disqualified.insert(canon(operand));
-                        }
-                        for &result in &op.results {
-                            disqualified.insert(canon(result));
-                        }
-                    }
                 }
             }
             for &r in &sensitive_roots {
                 if disqualified.contains(&r) {
                     continue;
                 }
-                // Gate (b'): named locals only.
-                if !bound_roots.contains(&r) {
+                // Gate (b'/c): PythonLifetimeFacts owns whether this root is a
+                // bound-local deferral instead of a slot-backed local with its
+                // own del/rebinding release boundary.
+                if !python_lifetime_facts.is_return_boundary_deferred_root(r, &drop_eligibility) {
                     continue;
                 }
                 let Some(&dblk) = def_block.get(&r) else {
@@ -1620,7 +1429,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
         for (&v, &idx) in &last_use {
             // `v` is already a root (last_use is keyed by canon'd operands).
-            if !droppable(v) {
+            if !drop_eligibility.is_droppable(v) {
                 continue;
             }
             // §0b finalizer-ordering deferral: this root's release lands at the
@@ -1630,7 +1439,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             }
             // §0a `del`-boundary: the rewritten DecRef IS this root's release —
             // a trailing last-use drop here would be the double-free.
-            if explicit_release_roots.contains(&v) {
+            if python_lifetime_facts.has_explicit_release_boundary(v) {
                 continue;
             }
             // Transferred via branch arg (root space) → no drop (successor owns).
@@ -1641,7 +1450,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if live.is_live_out(bid, v) {
                 continue;
             }
-            if statement_released_roots.contains(&v) {
+            if statement_release_plan.contains_released_root(v) {
                 continue;
             }
             // Releasing a Python-bound finalizer-sensitive root can execute
@@ -1710,12 +1519,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 if deferred.contains(&r) {
                     continue;
                 }
-                if !droppable(r) {
+                if !drop_eligibility.is_droppable(r) {
                     continue;
                 }
                 // Conditionally-valid iterator value result: never drop it (it is
                 // stale garbage on the iterator-exhaustion path).
-                if iter_cond_value_results.contains(&result) {
+                if is_conditionally_valid_result_or_alias(result) {
                     continue;
                 }
                 // Transferred via branch arg (root space) → successor owns it.
@@ -1726,7 +1535,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 if live.is_live_out(bid, r) {
                     continue;
                 }
-                if statement_released_roots.contains(&r) {
+                if statement_release_plan.contains_released_root(r) {
                     continue;
                 }
                 // Zero-use Python-bound finalizer-sensitive roots are still
@@ -1764,12 +1573,31 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             }
         }
 
-        if let Some(by_op) = statement_release_after_op.get(&bid) {
+        if let Some(by_op) = statement_release_plan.after_op().get(&bid) {
             for (&idx, roots) in by_op {
                 plan.after_op
                     .entry(idx)
                     .or_default()
                     .extend(roots.iter().copied());
+            }
+        }
+
+        // `DeleteVar` is the Python local-slot deletion boundary. The op stores
+        // the missing sentinel as the slot's new value; the old occupant's
+        // reference must be released immediately after that store, before later
+        // side effects can observe finalizer timing. `PythonLifetimeFacts`
+        // prevents the generic last-use and finalizer deferral paths from placing
+        // a second release.
+        for (idx, op) in block.ops.iter().enumerate() {
+            if op.opcode != OpCode::DeleteVar {
+                continue;
+            }
+            let Some(&old_slot_value) = op.operands.get(1) else {
+                continue;
+            };
+            let root = canon(old_slot_value);
+            if drop_eligibility.is_droppable(root) {
+                plan.after_op.entry(idx).or_default().push(root);
             }
         }
 
@@ -1801,7 +1629,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     for &v in &live_out_here {
                         // `v` is a root; IncRef the root if it is droppable and
                         // already defined before the yield.
-                        if droppable(v) && defined.contains(&v) && seen.insert(v) {
+                        if drop_eligibility.is_droppable(v)
+                            && defined.contains(&v)
+                            && seen.insert(v)
+                        {
                             plan.before_op.entry(idx).or_default().push(v);
                         }
                     }
@@ -1841,16 +1672,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 let Some(handler_arg) = handler.args.get(idx) else {
                     continue;
                 };
-                if !droppable(handler_arg.id) || live.is_raw_scalar(v) {
-                    continue;
-                }
-                let root = canon(v);
-                if iter_cond_value_results.contains(&v)
-                    || iter_cond_value_results.iter().any(|&iv| canon(iv) == root)
+                if !drop_eligibility.is_droppable(handler_arg.id)
+                    || drop_eligibility.is_raw_scalar_root(canon(v))
                 {
                     continue;
                 }
-                if droppable(root) {
+                let root = canon(v);
+                if is_conditionally_valid_result_or_alias(v) {
+                    continue;
+                }
+                if drop_eligibility.is_droppable(root) {
                     continue;
                 }
                 retains.push(v);
@@ -1999,7 +1830,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         // not raw value — two aliases of the same group must drop once).
         let mut entry_root_seen: HashSet<ValueId> = HashSet::new();
         for v in candidates {
-            if !droppable(v) {
+            if !drop_eligibility.is_droppable(v) {
                 continue;
             }
             // Conditionally-valid iterator value result (§2.8): NEVER drop it on a
@@ -2012,11 +1843,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             // itself unless a later `Copy` of it widened the group; in that case
             // the whole group is conditionally-valid and equally unsafe to
             // edge-drop.)
-            if iter_cond_value_results.contains(&v)
-                || iter_cond_value_results
-                    .iter()
-                    .any(|&iv| canon(iv) == canon(v))
-            {
+            if is_conditionally_valid_result_or_alias(v) {
                 continue;
             }
             let root = canon(v);
@@ -2205,7 +2032,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         let mut root_forward_count: HashMap<ValueId, usize> = HashMap::new();
         for arc in &arcs {
             for &v in &arc.args {
-                if !live.is_raw_scalar(v) {
+                if !drop_eligibility.is_raw_scalar_root(canon(v)) {
                     *root_forward_count.entry(canon(v)).or_default() += 1;
                 }
             }
@@ -2230,11 +2057,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // The phi must be an OWNED obj-lane phi (droppable) for the
                 // transfer-ownership assumption to apply. A non-droppable phi
                 // (raw/param/stack) is never dropped → no retain obligation.
-                if !droppable(phi_id) {
+                if !drop_eligibility.is_droppable(phi_id) {
                     continue;
                 }
                 // (a) raw/inline edge value → self-balancing, cannot RC. Skip.
-                if live.is_raw_scalar(v) {
+                if drop_eligibility.is_raw_scalar_root(canon(v)) {
                     continue;
                 }
                 let root = canon(v);
@@ -2244,17 +2071,17 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 //     transfer → retain.
                 //
                 // Test droppability on the ROOT, not on `v` directly: in the
-                // alias-root model `droppable(x)` is FALSE for any non-root alias
+                // alias-root model `is_droppable(x)` is FALSE for any non-root alias
                 // (`canon(x) != x`), but a forwarded value is very often an alias of
                 // a fresh owned root (`s_next = Copy(s + "x")`, a bare-`Copy` SSA
-                // move the union-find folds into `s + "x"`). Checking `droppable(v)`
+                // move the union-find folds into `s + "x"`). Checking `is_droppable(v)`
                 // would then misclassify that clean-owned forward as borrowed and
                 // RETAIN it every iteration — a per-iteration leak of the
                 // accumulator (the exact "fresh owned back-edge value must NOT be
-                // retained" hazard). `droppable(root)` already excludes params /
+                // retained" hazard). `is_droppable(root)` already excludes params /
                 // stack / non-owning-copy roots, so it is the correct ownership
                 // test for the value the edge actually delivers.
-                let function_owned = droppable(root);
+                let function_owned = drop_eligibility.is_droppable(root);
                 // Conditionally-valid iterator value result feeding a phi: its
                 // backing slot is only valid on the not-done path — never mint an
                 // independent ref obligation for it on an edge. Treat as needing a
@@ -2263,9 +2090,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // to the borrowed branch is unsafe (it would IncRef a possibly
                 // uninitialized slot). So SKIP iter-cond values entirely (they are
                 // handled by the body straight-line rule on the valid path).
-                if iter_cond_value_results.contains(&v)
-                    || iter_cond_value_results.iter().any(|&iv| canon(iv) == root)
-                {
+                if is_conditionally_valid_result_or_alias(v) {
                     continue;
                 }
                 let clean_transfer = function_owned
@@ -2455,8 +2280,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // release at scope exit. Mark every non-bailed function that reaches this
     // point so native has exactly one RC authority even when the correct TIR
     // edit is the empty edit.
-    func.attrs
-        .insert(DROP_INSERTED_ATTR.to_string(), AttrValue::Bool(true));
+    if !attr_is_true(func, DROP_INSERTED_ATTR) {
+        func.attrs
+            .insert(DROP_INSERTED_ATTR.to_string(), AttrValue::Bool(true));
+        stats.attrs_changed += 1;
+    }
     if debug_this {
         let mut out = format!("[DROP] {} inserted={} blocks:\n", func.name, inserted);
         if !deferred.is_empty() {
@@ -2522,129 +2350,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     }
     stats.ops_added = inserted;
     stats
-}
-
-/// The alias roots of the operands an op TAKES OWNERSHIP OF (consumes), in
-/// alias-root space (design §1.2 "Operands: takes-ownership").
-///
-/// Most molt ops borrow their operands (the callee never decrefs its args), so
-/// the holder drops at last use. A handful of ops are the exception: they
-/// **consume** an operand — the runtime entry frees it internally — so the
-/// holder MUST NOT also drop it (that double-frees). The drop pass treats a
-/// value whose last use is a consumed-operand position exactly like a value
-/// consumed by a `Return` terminator: ownership transfers to the op, no
-/// trailing `DecRef`.
-///
-/// The only such ops in molt's lowering are the two CallArgs-builder dispatch
-/// forms. The un-fused `obj.method(args)` / indirect-call idiom lowers (in
-/// `lower_to_simple`) to:
-///
-/// ```text
-/// b   = callargs_new                         # allocates a CallArgs builder (rc=1)
-/// ... = callargs_push_pos(b, a_i) ...
-/// r   = call_bind(callee, b)    # molt_call_bind_ic FREES b internally (PtrDropGuard)
-/// ```
-///
-/// `molt_call_bind_ic` / `molt_call_indirect_ic` (`call/bind.rs`) wrap the
-/// builder in a `PtrDropGuard`, so the builder is dropped exactly once by the
-/// call regardless of whether the call returns or raises. The TIR drop pass
-/// would otherwise insert `DecRef(b)` after the call (the builder's last use is
-/// the call) → a second free of a `TYPE_ID_CALLARGS` object → `invalid object
-/// header before dec_ref`. The builder is operand index 1 (the LAST operand) of
-/// `call_bind`/`call_indirect`: SimpleIR `call_bind args=[callee, builder]`,
-/// matching the `molt_call_bind_ic(site, callee, builder)` ABI.
-///
-/// NOTE: `call_func`/`call_guarded`/`call`/`call_internal` do NOT take a
-/// pre-built CallArgs operand — they marshal direct positional args and build
-/// (and consume) their own builder internally — so they consume none of their
-/// TIR operands. Only `call_bind`/`call_indirect` carry the builder as an
-/// operand.
-///
-/// REGISTRY-DRIVEN (design 27 §2.3): the consume signature is no longer a
-/// hardcoded `matches!` of the CallArgs-builder spellings here — it is a
-/// `[[consuming_kind]]` row in `op_kinds.toml`, generated into
-/// [`kind_consumed_operand_table`]. The single declarative authority means a
-/// FUTURE consuming op (a streaming builder, a move-into-collection intrinsic)
-/// gets correct drop treatment by adding ONE row, never by editing this pass —
-/// retiring the per-pass operand-consume hand list (the C6 double-free class).
-/// `kind_consumed_operand_table` resolves the `"last"` selector against the op's
-/// operand count, exactly reproducing the prior `op.operands.last()` semantics
-/// (`arity.checked_sub(1)` is `None` for a 0-operand op, matching `.last()`).
-fn op_consumed_operand_root(op: &TirOp, canon: &dyn Fn(ValueId) -> ValueId) -> Option<ValueId> {
-    // The consume fact is the UNION of the two generated authorities (the full
-    // operand-ownership model, design 27 §2.1/§2.3), evaluated per operand
-    // position:
-    //   1. the per-OpCode floor `opcode_operand_ownership_table(opcode, idx)` —
-    //      `Consumed` for an OpCode that consumes by construction (none today;
-    //      `all_borrowed` across the enum — molt's callee-borrows-args ABI), and
-    //   2. the per-SPELLING refinement `kind_consumed_operand_table(kind, arity)`
-    //      keyed on the Copy-lifted `_original_kind` (finer than the OpCode:
-    //      `call_bind`/`call_indirect` and the borrowing `call`/`call_func`/…
-    //      spellings all share OpCode::Call; only the two CallArgs-builder forms
-    //      consume their builder operand).
-    // At most one operand is consumed in molt's lowering today, so the first
-    // consumed position is returned (the CallArgs builder = the last operand).
-    use crate::tir::op_kinds_generated::{
-        OperandOwnership, kind_consumed_operand_table, opcode_operand_ownership_table,
-    };
-    let kind = match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(k)) => Some(k.as_str()),
-        _ => None,
-    };
-    let spelling_consumed = kind.and_then(|k| kind_consumed_operand_table(k, op.operands.len()));
-    for idx in 0..op.operands.len() {
-        let consumed = spelling_consumed == Some(idx)
-            || opcode_operand_ownership_table(op.opcode, idx) == OperandOwnership::Consumed;
-        if consumed {
-            return op.operands.get(idx).copied().map(&canon);
-        }
-    }
-    None
-}
-
-/// True if the alias root `v` is read DIRECTLY by the terminator — i.e. `v` is
-/// still live AT the terminator and so is not dropped at its producing op's
-/// straight-line point. This fuses two distinct facts the §1/§1b drop guards
-/// treat identically as "do not drop here", but which the generated authority
-/// (op_kinds.toml `[[terminator]]`, design 27 §2.4) now classifies on the
-/// `Direct` category:
-///
-///   * `Return` values are `Transferred` (the return ABI moves `+1` to the
-///     caller; dropped NOWHERE in the callee). Read from
-///     `terminator_operand_is_transferred(kind, Direct)` — the migrated transfer
-///     carve-out, no longer a hand-coded `Return` arm.
-///   * `CondBranch`/`Switch` predicates are `Borrowed` (the branch TESTS the
-///     value; ownership does not leave, the drop is merely RELOCATED to the dying
-///     successor edge by §3). In molt's lowering the predicate is always an
-///     unboxed bool/i64 discriminant (a raw scalar — `is_raw_scalar` ⇒ NOT
-///     droppable), so this arm is never reached for a heap value today; it is
-///     retained to preserve the EXACT prior read-but-not-transfer semantics and
-///     stay correct if a future shape made the predicate heap-carrying.
-///
-/// Branch ARGS are handled separately (`terminator_branch_args`): they transfer
-/// ownership to the successor's block arg.
-fn terminator_uses_root(term: &Terminator, v: ValueId, canon: &dyn Fn(ValueId) -> ValueId) -> bool {
-    // Direct-category TRANSFER (the `Return` value), read from the generated
-    // authority rather than matched here.
-    if terminator_operand_is_transferred(terminator_kind(term), OperandCategory::Direct) {
-        if let Terminator::Return { values } = term {
-            if values.iter().any(|&x| canon(x) == v) {
-                return true;
-            }
-        }
-    }
-    // Direct-category BORROW (the still-live branch predicate) — not a transfer,
-    // but read by the terminator, so likewise not dropped at the producing op.
-    match term {
-        Terminator::CondBranch { cond, .. } => canon(*cond) == v,
-        Terminator::Switch { value, .. } => canon(*value) == v,
-        // `StateDispatch` reads the saved state from the frame header, not an
-        // SSA value — it consumes no condition root.
-        Terminator::StateDispatch { .. }
-        | Terminator::Branch { .. }
-        | Terminator::Return { .. }
-        | Terminator::Unreachable => false,
-    }
 }
 
 #[cfg(test)]
@@ -5140,6 +4845,110 @@ mod tests {
     }
 
     /// Parameters are borrowed — never dropped.
+    /// `IterNextUnboxed` writes its value result only on the not-done edge. A
+    /// following `store_var` makes that result look like a Python local-store
+    /// root, but the done edge reaches loop exit with the value slot
+    /// uninitialized. The local lifetime rail must therefore not schedule an
+    /// unconditional return-boundary `DecRef(value)` in the exit block.
+    #[test]
+    fn iter_next_unboxed_del_boundary_not_dropped_on_done_return_boundary() {
+        let mut func = TirFunction::new(
+            "iter_next_conditional_local_boundary".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let iter = func.blocks[&func.entry_block].args[0].id;
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let seed = func.fresh_value();
+        let current = func.fresh_value();
+        let value = func.fresh_value();
+        let done = func.fresh_value();
+        let stored = func.fresh_value();
+        for v in [seed, current, value, stored] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        func.value_types.insert(done, TirType::Bool);
+
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(const_str(seed));
+            entry.terminator = Terminator::Branch {
+                target: header,
+                args: vec![seed],
+            };
+        }
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: current,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::IterNextUnboxed, vec![iter], vec![value, done])],
+                terminator: Terminator::CondBranch {
+                    cond: done,
+                    then_block: exit,
+                    then_args: vec![],
+                    else_block: body,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![original_copy_with_operands(
+                    "store_var",
+                    vec![value],
+                    vec![stored],
+                )],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![value],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![
+                    op(OpCode::WarnStderr, vec![], vec![]),
+                    op(OpCode::DelBoundary, vec![value], vec![]),
+                ],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let exit_decrefs: Vec<ValueId> = func.blocks[&exit]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert!(
+            !exit_decrefs.contains(&value),
+            "done-edge return must not drop the conditionally-valid iterator value; exit drops={exit_decrefs:?}"
+        );
+        assert!(
+            func.blocks[&exit]
+                .ops
+                .iter()
+                .all(|op| op.opcode != OpCode::DelBoundary),
+            "drop insertion must consume DelBoundary markers even when the safe action is deletion"
+        );
+    }
+
     #[test]
     fn params_not_dropped() {
         let mut func = TirFunction::new("p".into(), vec![TirType::Str], TirType::DynBox);

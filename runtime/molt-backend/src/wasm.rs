@@ -2170,8 +2170,8 @@ impl WasmBackend {
                 if tir_stats {
                     for s in &stats {
                         eprintln!(
-                            "[TIR] {}: {} changed, {} removed, {} added",
-                            s.name, s.values_changed, s.ops_removed, s.ops_added
+                            "[TIR] {}: {} values changed, {} attrs changed, {} removed, {} added",
+                            s.name, s.values_changed, s.attrs_changed, s.ops_removed, s.ops_added
                         );
                     }
                 }

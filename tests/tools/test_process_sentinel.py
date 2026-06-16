@@ -227,6 +227,37 @@ def test_process_groups_match_canonical_artifact_roots() -> None:
     assert [group.pgid for group in groups] == [10, 20, 30]
 
 
+def test_process_groups_match_windows_canonical_artifact_roots() -> None:
+    module = _load_process_sentinel()
+    root = Path("C:/Users/adpen/OneDrive/Documents/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --daemon"
+            ),
+        ),
+        20: module.memory_guard.ProcessSample(
+            pid=20,
+            ppid=1,
+            pgid=20,
+            rss_kb=100,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\tmp\diff\case_1\main_molt.exe"
+            ),
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert [group.pgid for group in groups] == [10, 20]
+
+
 def test_process_groups_propagate_to_nested_child_sessions() -> None:
     module = _load_process_sentinel()
     root = Path("/repo/molt")
@@ -509,6 +540,82 @@ def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child()
     assert skipped[0].pids == [777]
 
 
+def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned_child(
+    monkeypatch,
+) -> None:
+    module = _load_process_sentinel()
+    root = Path("C:/Users/adpen/OneDrive/Documents/molt")
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
+                r"\app\resources\codex.exe"
+            ),
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=None,
+            rss_kb=10_000,
+            command="powershell.exe",
+        ),
+        777: module.memory_guard.ProcessSample(
+            pid=777,
+            ppid=101,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --daemon"
+            ),
+        ),
+        999: module.memory_guard.ProcessSample(
+            pid=999,
+            ppid=1,
+            pgid=None,
+            rss_kb=30_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\tools\process_sentinel.py --once --kill-all"
+            ),
+        ),
+        200: module.memory_guard.ProcessSample(
+            pid=200,
+            ppid=999,
+            pgid=None,
+            rss_kb=250_000,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --owned"
+            ),
+        ),
+    }
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    groups = module.process_groups(
+        samples,
+        root=root,
+        self_pid=999,
+        self_pgid=None,
+    )
+    skipped = module.skipped_protected_process_groups(
+        samples,
+        root=root,
+        self_pid=999,
+        self_pgid=None,
+    )
+
+    assert [group.pgid for group in groups] == [200]
+    assert groups[0].pids == [200]
+    assert [group.pgid for group in skipped] == [777]
+    assert skipped[0].pids == [777]
+
+
 def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child() -> None:
     module = _load_process_sentinel()
     root = Path("/repo/molt")
@@ -635,16 +742,134 @@ def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
     sent_groups: list[tuple[int, int]] = []
     monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
     monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
     monkeypatch.setattr(
         module.os,
         "killpg",
         lambda pgid, sig: sent_groups.append((pgid, sig)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module.os,
+        "kill",
+        lambda pid, sig: sent_groups.append((pid, sig)),
+        raising=False,
     )
 
     module.terminate_group(100, grace=0.001)
 
     assert sent_groups == []
+
+
+def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command="/repo/molt/target/release-fast/molt-backend",
+        ),
+    }
+    killed: list[tuple[int, int]] = []
+    killpg_calls: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(
+        module.os,
+        "killpg",
+        lambda pgid, sig: killpg_calls.append((pgid, sig)),
+        raising=False,
+    )
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+
+    module.terminate_group(100, grace=0.001)
+
+    assert [pid for pid, _sig in killed] == [100, 100]
+    assert killpg_calls == []
+
+
+def test_terminate_group_windows_refuses_reused_pid_identity(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    selected = module.memory_guard.ProcessSample(
+        pid=100,
+        ppid=1,
+        pgid=None,
+        rss_kb=500_000,
+        command="/repo/molt/target/release-fast/molt-backend",
+        started_at_ns=111,
+    )
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=None,
+            rss_kb=500_000,
+            command="/repo/molt/target/release-fast/molt-backend",
+            started_at_ns=222,
+        ),
+    }
+    killed: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+
+    module.terminate_group(
+        100,
+        grace=0.001,
+        root=Path("/repo/molt"),
+        expected_identity=module.memory_guard.process_identity(selected),
+    )
+
+    assert killed == []
+
+
+def test_terminate_group_refuses_windows_codex_app_server(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    samples = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=42,
+            pgid=None,
+            rss_kb=500_000,
+            command=(
+                r'"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0'
+                r'\app\resources\codex.exe" app-server --analytics-default-enabled'
+            ),
+        ),
+        101: module.memory_guard.ProcessSample(
+            pid=101,
+            ppid=100,
+            pgid=None,
+            rss_kb=100,
+            command=(
+                r'"C:\Users\adpen\AppData\Local\OpenAI\Codex\runtimes'
+                r'\cua_node\bin\node_repl.exe"'
+            ),
+        ),
+    }
+    killed: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module.memory_guard, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+
+    module.terminate_group(100, grace=0.001)
+    module.terminate_group(101, grace=0.001)
+
+    assert killed == []
 
 
 def test_find_violations_can_kill_all_or_threshold() -> None:
@@ -935,7 +1160,7 @@ def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> N
     monkeypatch.setattr(
         module,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        lambda pgid, *, grace, **_kwargs: terminated.append(pgid),
     )
 
     rc = module.main(["--once", "--dry-run", "--kill-all"])
@@ -972,7 +1197,7 @@ def test_main_once_reports_operator_incident_for_terminated_group(
     monkeypatch.setattr(
         module,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append((pgid, grace)),
+        lambda pgid, *, grace, **_kwargs: terminated.append((pgid, grace)),
     )
 
     rc = module.main(["--once", "--kill-all", "--grace-sec", "0.25"])
@@ -1013,7 +1238,11 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
             )
         },
     )
-    monkeypatch.setattr(module, "terminate_group", lambda pgid, *, grace: None)
+    monkeypatch.setattr(
+        module,
+        "terminate_group",
+        lambda pgid, *, grace, **_kwargs: None,
+    )
 
     rc = module.main(["--once", "--dry-run", "--kill-all", "--json"])
 
@@ -1032,7 +1261,9 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
     assert payload["victim_command"].endswith("molt-backend")
     assert payload["owner_match_reason"] == "repo_scope"
     assert payload["termination"]["signal"]["name"] == "SIGTERM"
-    assert payload["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert payload["termination"]["fallback_signal"] == (
+        module.memory_guard.fallback_kill_signal_payload()
+    )
     assert payload["termination"]["grace_sec"] == module.DEFAULT_GRACE_SEC
     assert payload["termination"]["rss_triggered"] is False
     assert payload["violation"]["reason"] == "kill_all"
@@ -1092,7 +1323,7 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        lambda pgid, *, grace, **_kwargs: terminated.append(pgid),
     )
 
     rc = module.main(

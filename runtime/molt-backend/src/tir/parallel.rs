@@ -241,6 +241,7 @@ mod tests {
         assert_eq!(par_stats.len(), seq_stats.len());
         for (p, s) in par_stats.iter().zip(seq_stats.iter()) {
             assert_eq!(p.name, s.name);
+            assert_eq!(p.attrs_changed, s.attrs_changed);
             assert_eq!(p.ops_removed, s.ops_removed);
             assert_eq!(p.ops_added, s.ops_added);
         }

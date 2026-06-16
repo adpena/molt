@@ -69,10 +69,10 @@ fn ensure_wasm_ctors() {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 static DEBUG_SIGTRAP_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 fn debug_sigtrap_backtrace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -85,7 +85,7 @@ fn debug_sigtrap_backtrace_enabled() -> bool {
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 unsafe extern "C" fn debug_sigtrap_handler(sig: i32) {
     unsafe {
         let msg = b"molt debug: SIGTRAP backtrace\n";
@@ -99,7 +99,7 @@ unsafe extern "C" fn debug_sigtrap_handler(sig: i32) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 fn ensure_debug_sigtrap_handler() {
     if debug_sigtrap_backtrace_enabled()
         && !DEBUG_SIGTRAP_INSTALLED.swap(true, AtomicOrdering::Relaxed)
@@ -109,6 +109,9 @@ fn ensure_debug_sigtrap_handler() {
         }
     }
 }
+
+#[cfg(not(unix))]
+fn ensure_debug_sigtrap_handler() {}
 
 pub(crate) struct SpecialCache {
     pub(crate) open_default_mode: AtomicU64,

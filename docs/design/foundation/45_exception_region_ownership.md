@@ -138,9 +138,10 @@ consumption paths:
   `exception_current`, and `exceptiongroup_*` are selected by TIR
   `ExceptionRegions` path-depth facts and bound to the reachable
   handler-region `exception_pop`.
-- Shared TIR drop insertion consumes CreationRefs at the `raise` boundary and
-  MatchRefs immediately after the owning `exception_pop`, before the
-  conservative handler-CFG drop-pass bail, by materializing ordinary TIR
+- Shared TIR drop insertion consumes CreationRefs selected by
+  `ownership_lattice_min::exception_creation_ref_values` at the `raise`
+  boundary and MatchRefs immediately after the owning `exception_pop`, before
+  the conservative handler-CFG drop-pass bail, by materializing ordinary TIR
   `DecRef` ops.
 - Native Cranelift is now activated on the same TIR DropInsertion path, and the
   old native-only CreationRef lifetime carve-out plus `exception_pop`
@@ -161,8 +162,13 @@ verification boundary when those diagnostics are present. Depth-zero exception
 reads remain ordinary observers rather than handler-owned MatchRefs, so
 guard-style `exception_last` probes outside an open handler region stay on the
 normal value/lifetime path. Shared drop insertion materializes TIR `DecRef`s for
-CreationRefs at `Raise` and for MatchRefs after the owning `exception_pop` for
-activated TIR-drop targets, including native Cranelift. The current analyzer also accepts
+CreationRefs sourced from the ownership module at `Raise` and for MatchRefs
+after the owning `exception_pop` for activated TIR-drop targets, including
+native Cranelift. When shared `exception_pop` splitting must remap the moved
+tail through no-heap `Copy` aliases, DropInsertion consumes
+`ownership_lattice_min::copy_no_heap_move_alias`; the `_original_kind`
+classifier read remains in the ownership module rather than becoming a
+drop-placement-side spelling table. The current analyzer also accepts
 path-alternative handler exits, loop re-entry shapes where `try_end` and
 `exception_pop` are one close boundary, and shared `exception_pop` blocks with
 block-arg payloads, where the splitter now routes the moved tail through fresh

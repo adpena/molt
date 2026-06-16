@@ -70,7 +70,8 @@
 //! Observability: `MOLT_OVERFLOW_PEEL_STATS=1` prints per-function peel/refusal
 //! counts to stderr AND writes a `overflow_peel/<func>.txt` debug artifact
 //! (backend stderr does not surface in build mode — the module_slot_promotion
-//! lesson). `MOLT_DISABLE_OVERFLOW_PEEL=1` is the rollback lever.
+//! lesson). Refusal is owned by the pass predicates below, not by ambient
+//! process-global rollback state.
 
 use std::collections::{HashMap, HashSet};
 
@@ -132,9 +133,6 @@ pub fn run(func: &mut TirFunction, _am: &mut crate::tir::analysis::AnalysisManag
         name: "overflow_peel",
         ..PassStats::default()
     };
-    if std::env::var("MOLT_DISABLE_OVERFLOW_PEEL").as_deref() == Ok("1") {
-        return stats;
-    }
     let debug = std::env::var("MOLT_OVERFLOW_PEEL_STATS").as_deref() == Ok("1");
     let mut refusals: Vec<(BlockId, Refusal)> = Vec::new();
     let mut peeled: Vec<BlockId> = Vec::new();
@@ -1404,9 +1402,4 @@ mod tests {
         let stats = run_peel(&mut func);
         assert_eq!(stats.ops_added, 0, "param-seeded accumulator must refuse");
     }
-
-    // NOTE: the MOLT_DISABLE_OVERFLOW_PEEL rollback lever is deliberately NOT
-    // tested here — `std::env::set_var` is unsafe in edition 2024 and mutating
-    // process-global env races parallel tests (the poisoned-env-lock failure
-    // class). The lever is a one-line early return, verified by inspection.
 }

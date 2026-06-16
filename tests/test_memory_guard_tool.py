@@ -1,14 +1,68 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
 import pytest
 
 import tools.memory_guard as memory_guard
+
+
+def test_pytest_bootstrap_accepts_marker_for_image_only_guard_command(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tools import pytest_memory_guard_bootstrap as bootstrap
+
+    token = "a" * 32
+    marker_root = tmp_path / "active"
+    marker_root.mkdir()
+    marker = marker_root / f"guard-100-{token}.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "pid": 100,
+                "token": token,
+                "path": str(Path(memory_guard.__file__).resolve()),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    samples = {
+        100: memory_guard.ProcessSample(
+            pid=100,
+            ppid=50,
+            rss_kb=1,
+            command=r"C:\Users\adpen\OneDrive\Documents\molt\.venv\Scripts\python.exe",
+        ),
+        200: memory_guard.ProcessSample(
+            pid=200,
+            ppid=100,
+            rss_kb=1,
+            command=r"C:\Users\adpen\OneDrive\Documents\molt\.venv\Scripts\python.exe",
+        ),
+    }
+
+    monkeypatch.setattr(bootstrap, "ACTIVE_GUARD_MARKER_DIR", marker_root)
+    monkeypatch.setattr(bootstrap.os, "getpid", lambda: 200)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+
+    assert bootstrap.outer_memory_guard_active(
+        {
+            "MOLT_MEMORY_GUARD_ACTIVE": "1",
+            "MOLT_MEMORY_GUARD_PID": "100",
+            "MOLT_MEMORY_GUARD_TOKEN": token,
+            "MOLT_MEMORY_GUARD_MARKER": str(marker),
+        }
+    )
 
 
 def test_parse_process_table_keeps_commands_with_spaces() -> None:
@@ -990,6 +1044,157 @@ def test_run_guarded_binary_capture_preserves_bytes() -> None:
     assert result.stderr == b"err:\xffa"
 
 
+def test_run_guarded_interrupt_during_sampling_terminates_child_tree() -> None:
+    def interrupting_sampler():
+        raise KeyboardInterrupt
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        sampler=interrupting_sampler,
+    )
+
+    assert result.returncode == memory_guard.GUARD_RETURN_CODE
+    assert "memory_guard: interrupted" in result.stderr
+    assert result.elapsed_s < 10
+
+
+def test_run_guarded_interrupt_reuses_last_successful_descendant_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_pid = 4242
+    child_pid = 4243
+    grandchild_pid = 4244
+    samples = {
+        root_pid: memory_guard.ProcessSample(root_pid, 1, 64, "root"),
+        child_pid: memory_guard.ProcessSample(child_pid, root_pid, 64, "child"),
+        grandchild_pid: memory_guard.ProcessSample(
+            grandchild_pid, child_pid, 64, "grandchild"
+        ),
+    }
+
+    class FakePopen:
+        pid = root_pid
+        stdin = None
+        returncode: int | None = None
+
+        def __init__(self, command: list[str], **_kwargs: object) -> None:
+            self.command = command
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            return self.returncode
+
+    processes: list[FakePopen] = []
+
+    def fake_popen(command: list[str], **kwargs: object) -> FakePopen:
+        proc = FakePopen(command, **kwargs)
+        processes.append(proc)
+        return proc
+
+    sample_calls = 0
+
+    def sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        nonlocal sample_calls
+        sample_calls += 1
+        if sample_calls > 1:
+            raise KeyboardInterrupt
+        return samples
+
+    terminations: list[dict[str, object]] = []
+
+    def recording_terminate(root_pid: int, **kwargs: object) -> None:
+        terminations.append({"root_pid": root_pid, **kwargs})
+        processes[0].returncode = -15
+
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(memory_guard, "terminate_watched_processes", recording_terminate)
+
+    result = memory_guard.run_guarded(
+        ["fake-python", "-c", "sleep"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        sampler=sampler,
+    )
+
+    assert result.returncode == memory_guard.GUARD_RETURN_CODE
+    assert "memory_guard: interrupted" in result.stderr
+    assert any(
+        {root_pid, child_pid, grandchild_pid}.issubset(call.get("watched", set()))
+        for call in terminations
+    )
+
+
+def test_run_guarded_sampler_failure_cleans_then_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root_pid = 5252
+    child_pid = 5253
+    samples = {
+        root_pid: memory_guard.ProcessSample(root_pid, 1, 64, "root"),
+        child_pid: memory_guard.ProcessSample(child_pid, root_pid, 64, "child"),
+    }
+
+    class FakePopen:
+        pid = root_pid
+        stdin = None
+        returncode: int | None = None
+
+        def __init__(self, command: list[str], **_kwargs: object) -> None:
+            self.command = command
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            return self.returncode
+
+    processes: list[FakePopen] = []
+
+    def fake_popen(command: list[str], **kwargs: object) -> FakePopen:
+        proc = FakePopen(command, **kwargs)
+        processes.append(proc)
+        return proc
+
+    sample_calls = 0
+
+    def sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        nonlocal sample_calls
+        sample_calls += 1
+        if sample_calls > 1:
+            raise RuntimeError("sampler failed after custody")
+        return samples
+
+    terminations: list[dict[str, object]] = []
+
+    def recording_terminate(root_pid: int, **kwargs: object) -> None:
+        terminations.append({"root_pid": root_pid, **kwargs})
+        processes[0].returncode = -15
+
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(memory_guard, "terminate_watched_processes", recording_terminate)
+
+    with pytest.raises(RuntimeError, match="sampler failed after custody"):
+        memory_guard.run_guarded(
+            ["fake-python", "-c", "sleep"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            sampler=sampler,
+        )
+
+    assert any(
+        {root_pid, child_pid}.issubset(call.get("watched", set()))
+        for call in terminations
+    )
+
+
 def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> None:
     tracker = memory_guard.ProcessTreeTracker(100)
     assert tracker.known_pids is not None
@@ -1030,6 +1235,43 @@ def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> 
     assert calls[0]["root_pid"] == 100
     assert calls[0]["watched"] == {200, 300}
     assert calls[0]["grace"] == 0.125
+
+
+def test_cleanup_tracked_orphans_sampler_failure_uses_remembered_watched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = memory_guard.ProcessTreeTracker(100)
+    assert tracker.known_pids is not None
+    tracker.known_pids.add(200)
+    remembered_samples = {
+        200: memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=None,
+            rss_kb=64,
+            command="escaped worker",
+        )
+    }
+    calls: list[dict[str, object]] = []
+
+    def failing_sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        raise RuntimeError("sampler unavailable")
+
+    def fake_terminate(root_pid: int, **kwargs: object) -> None:
+        calls.append({"root_pid": root_pid, **kwargs})
+
+    monkeypatch.setattr(memory_guard, "terminate_watched_processes", fake_terminate)
+
+    with pytest.raises(RuntimeError, match="sampler unavailable"):
+        memory_guard.cleanup_tracked_orphans(
+            100,
+            tracker=tracker,
+            sampler=failing_sampler,
+            remembered_samples=remembered_samples,
+            remembered_watched={200},
+        )
+
+    assert calls and calls[0]["watched"] == {200}
 
 
 def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
@@ -1096,7 +1338,7 @@ def test_run_command_elapsed_excludes_guard_child_runner_startup() -> None:
     assert result.returncode == 0
     assert result.elapsed_s is not None
     assert result.elapsed_s >= 0.02
-    assert result.elapsed_s < 0.5
+    assert result.elapsed_s < (2.0 if os.name == "nt" else 0.5)
 
 
 def test_run_command_ignores_samples_without_root_pid() -> None:
@@ -1135,6 +1377,7 @@ def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> Non
         "time.sleep(0.20); "
         "print(len(buf))"
     )
+    sampler = memory_guard.sample_processes if os.name == "nt" else (lambda: {})
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", script],
@@ -1142,7 +1385,7 @@ def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> Non
         max_total_rss_kb=160 * 1024,
         poll_interval=1.0,
         child_rlimit_kb=None,
-        sampler=lambda: {},
+        sampler=sampler,
     )
 
     assert result.returncode == memory_guard.GUARD_RETURN_CODE
@@ -1234,6 +1477,17 @@ def test_exit_signal_payload_classifies_shell_signal_status() -> None:
         "signal": 15,
         "name": "SIGTERM",
         "conventional_shell_status": True,
+    }
+
+
+def test_exit_signal_payload_classifies_windows_sigterm_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(memory_guard, "_is_windows_process_model", lambda: True)
+    assert memory_guard._exit_signal_payload(15) == {
+        "signal": 15,
+        "name": "SIGTERM",
+        "conventional_shell_status": False,
     }
 
 
@@ -1329,17 +1583,24 @@ def test_run_guarded_signal_exit_quarantines_cargo_incremental(
         sampler=lambda: {},
     )
 
-    assert result.returncode == -15
+    assert result.returncode == (15 if os.name == "nt" else -15)
     assert result.cargo_incremental_quarantine is None
     assert live_file.exists()
 
-    fake_cargo = tmp_path / "cargo"
-    fake_cargo.write_text(
-        f"#!{sys.executable}\n"
-        "import os, signal\n"
-        "os.kill(os.getpid(), signal.SIGTERM)\n",
-        encoding="utf-8",
-    )
+    fake_cargo = tmp_path / ("cargo.cmd" if os.name == "nt" else "cargo")
+    if os.name == "nt":
+        fake_cargo.write_text(
+            f'@echo off\r\n"{sys.executable}" -c "import os, signal; '
+            'os.kill(os.getpid(), signal.SIGTERM)"\r\n',
+            encoding="utf-8",
+        )
+    else:
+        fake_cargo.write_text(
+            f"#!{sys.executable}\n"
+            "import os, signal\n"
+            "os.kill(os.getpid(), signal.SIGTERM)\n",
+            encoding="utf-8",
+        )
     fake_cargo.chmod(0o755)
     result = memory_guard.run_guarded(
         [str(fake_cargo)],
@@ -1767,7 +2028,9 @@ def test_parser_accepts_process_and_tree_rss_aliases() -> None:
     assert group_args.max_total_rss_gb == 3.5
 
 
-def test_main_reexec_hides_guarded_command_from_guard_argv() -> None:
+def test_main_reexec_hides_guarded_command_from_guard_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     marker = "molt-backend-marker"
     captured: dict[str, object] = {}
 
@@ -1777,23 +2040,37 @@ def test_main_reexec_hides_guarded_command_from_guard_argv() -> None:
         captured["env"] = dict(env)
         raise SystemExit(73)
 
-    with pytest.raises(SystemExit) as exc:
-        memory_guard.main(
-            [
-                "--max-rss-gb",
-                "1",
-                "--poll-interval",
-                "0.01",
-                "--",
-                sys.executable,
-                "-c",
-                f"print({marker!r})",
-            ],
+    def fake_subprocess_run(argv, *, env, check):
+        assert check is False
+        captured["argv"] = list(argv)
+        captured["env"] = dict(env)
+        return subprocess.CompletedProcess(argv, 73)
+
+    main_argv = [
+        "--max-rss-gb",
+        "1",
+        "--poll-interval",
+        "0.01",
+        "--",
+        sys.executable,
+        "-c",
+        f"print({marker!r})",
+    ]
+    if os.name == "nt":
+        monkeypatch.setattr(memory_guard.subprocess, "run", fake_subprocess_run)
+        assert memory_guard.main(
+            main_argv,
             hide_command_argv=True,
             execve=fake_execve,
-        )
-
-    assert exc.value.code == 73
+        ) == 73
+    else:
+        with pytest.raises(SystemExit) as exc:
+            memory_guard.main(
+                main_argv,
+                hide_command_argv=True,
+                execve=fake_execve,
+            )
+        assert exc.value.code == 73
     worker_argv = captured["argv"]
     assert isinstance(worker_argv, list)
     assert all(marker not in arg for arg in worker_argv)
@@ -1825,7 +2102,9 @@ def test_run_guarded_marks_child_environment_as_guarded() -> None:
     assert result.stdout.splitlines() == ["1", "True"]
 
 
-def test_main_reexec_preserves_stream_and_sample_rotation_options(tmp_path) -> None:
+def test_main_reexec_preserves_stream_and_sample_rotation_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     captured: dict[str, object] = {}
     samples_path = tmp_path / "samples.jsonl"
 
@@ -1835,31 +2114,45 @@ def test_main_reexec_preserves_stream_and_sample_rotation_options(tmp_path) -> N
         captured["env"] = dict(env)
         raise SystemExit(74)
 
-    with pytest.raises(SystemExit) as exc:
-        memory_guard.main(
-            [
-                "--max-rss-gb",
-                "1",
-                "--poll-interval",
-                "0.01",
-                "--samples-jsonl",
-                str(samples_path),
-                "--samples-max-mb",
-                "0.5",
-                "--stream",
-                "json-stderr",
-                "--child-rlimit-gb",
-                "0.75",
-                "--",
-                sys.executable,
-                "-c",
-                "print('ok')",
-            ],
+    def fake_subprocess_run(argv, *, env, check):
+        assert check is False
+        captured["argv"] = list(argv)
+        captured["env"] = dict(env)
+        return subprocess.CompletedProcess(argv, 74)
+
+    main_argv = [
+        "--max-rss-gb",
+        "1",
+        "--poll-interval",
+        "0.01",
+        "--samples-jsonl",
+        str(samples_path),
+        "--samples-max-mb",
+        "0.5",
+        "--stream",
+        "json-stderr",
+        "--child-rlimit-gb",
+        "0.75",
+        "--",
+        sys.executable,
+        "-c",
+        "print('ok')",
+    ]
+    if os.name == "nt":
+        monkeypatch.setattr(memory_guard.subprocess, "run", fake_subprocess_run)
+        assert memory_guard.main(
+            main_argv,
             hide_command_argv=True,
             execve=fake_execve,
-        )
-
-    assert exc.value.code == 74
+        ) == 74
+    else:
+        with pytest.raises(SystemExit) as exc:
+            memory_guard.main(
+                main_argv,
+                hide_command_argv=True,
+                execve=fake_execve,
+            )
+        assert exc.value.code == 74
     worker_argv = captured["argv"]
     assert isinstance(worker_argv, list)
     assert "--samples-jsonl" in worker_argv
@@ -1948,12 +2241,16 @@ def test_resolve_relative_executable_resolves_against_parent_cwd(
 ) -> None:
     rel_dir = tmp_path / "relbin"
     rel_dir.mkdir()
-    rel_interp = rel_dir / "python3"
-    rel_interp.symlink_to(Path(sys.executable).resolve())
+    rel_interp_name = "python.exe" if os.name == "nt" else "python3"
+    rel_interp = rel_dir / rel_interp_name
+    if os.name == "nt":
+        shutil.copy2(Path(sys.executable).resolve(), rel_interp)
+    else:
+        rel_interp.symlink_to(Path(sys.executable).resolve())
     monkeypatch.chdir(tmp_path)
 
     resolved = memory_guard._resolve_relative_executable(
-        ["relbin/python3", "-c", "print('x')"]
+        [f"relbin/{rel_interp_name}", "-c", "print('x')"]
     )
 
     assert resolved[0] == str(rel_interp.resolve())
@@ -2022,7 +2319,8 @@ def test_guarded_launch_applies_resource_limit_before_exec_on_posix() -> None:
             json.loads(launch_env[memory_guard.INTERNAL_CHILD_COMMAND_ENV]) == command
         )
         assert launch_env[memory_guard.INTERNAL_CHILD_RLIMIT_KB_ENV] == "12345"
-        assert memory_guard.INTERNAL_CHILD_STARTED_FD_ENV in launch_env
+        assert memory_guard.INTERNAL_CHILD_STARTED_FD_ENV not in launch_env
+        assert launch.started_read_fd is None
     memory_guard._close_fds((*launch.close_fds, launch.started_read_fd))
 
 

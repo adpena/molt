@@ -4,11 +4,9 @@ import argparse
 import ast
 import hashlib
 import json
-import os
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Literal
 
 from molt.frontend import SimpleTIRGenerator
 
@@ -49,22 +47,6 @@ def _display_function_name(raw_name: str) -> str:
     return parts[-1]
 
 
-@contextmanager
-def _temporary_env(name: str, value: str | None) -> Iterator[None]:
-    previous = os.environ.get(name)
-    if value is None:
-        os.environ.pop(name, None)
-    else:
-        os.environ[name] = value
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = previous
-
-
 def _normalize_module_name(module_filter: str | None) -> str | None:
     if module_filter is None:
         return None
@@ -90,14 +72,13 @@ def _compile_snapshot(
     source: str,
     *,
     source_path: Path | None,
-    disable_midend: bool,
+    midend_stage: Literal["pre-midend", "post-midend"],
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     filename = str(source_path) if source_path is not None else "<stdin>"
     tree = ast.parse(source, filename=filename)
-    with _temporary_env("MOLT_MIDEND_DISABLE", "1" if disable_midend else None):
-        generator = SimpleTIRGenerator(source_path=filename)
-        generator.visit(tree)
-        ir_json = generator.to_json()
+    generator = SimpleTIRGenerator(source_path=filename)
+    generator.visit(tree)
+    ir_json = generator.to_json(midend_stage=midend_stage)
     return (
         list(ir_json.get("functions", [])),
         dict(generator.midend_pass_stats_by_function),
@@ -174,7 +155,7 @@ def capture_ir_snapshots(
         pre_functions, pre_pass_stats = _compile_snapshot(
             source,
             source_path=source_path,
-            disable_midend=True,
+            midend_stage="pre-midend",
         )
         normalized_functions = [
             _normalize_function_entry(
@@ -197,7 +178,7 @@ def capture_ir_snapshots(
         post_functions, post_pass_stats = _compile_snapshot(
             source,
             source_path=source_path,
-            disable_midend=False,
+            midend_stage="post-midend",
         )
         normalized_functions = [
             _normalize_function_entry(

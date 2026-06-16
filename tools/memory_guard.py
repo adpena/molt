@@ -52,6 +52,10 @@ INTERNAL_CHILD_RLIMIT_KB_ENV = "MOLT_MEMORY_GUARD_CHILD_RLIMIT_KB"
 INTERNAL_CHILD_STARTED_FD_ENV = "MOLT_MEMORY_GUARD_CHILD_STARTED_FD"
 ACTIVE_ENV = "MOLT_MEMORY_GUARD_ACTIVE"
 ACTIVE_GUARD_PID_ENV = "MOLT_MEMORY_GUARD_PID"
+ACTIVE_GUARD_TOKEN_ENV = "MOLT_MEMORY_GUARD_TOKEN"
+ACTIVE_GUARD_MARKER_ENV = "MOLT_MEMORY_GUARD_MARKER"
+ACTIVE_GUARD_MARKER_DIR = ROOT / "tmp" / "memory_guard" / "active"
+ACTIVE_GUARD_MARKER_KEEP = 128
 _INTERNAL_ENV_KEYS = (
     INTERNAL_COMMAND_ENV,
     INTERNAL_WORKER_ENV,
@@ -65,11 +69,21 @@ HOST_CONTROL_PLANE_TOKENS = (
     "Codex.app/Contents/",
     "Codex (Renderer)",
     "Codex Helper",
+    "OpenAI.Codex_",
+    "\\app\\Codex.exe",
+    "\\app\\resources\\codex.exe",
+    "codex.exe\" app-server",
     "codex app-server",
     "codex_chronicle",
     "/cua_node/bin/node_repl",
+    "\\runtimes\\cua_node\\",
+    "node_repl.exe",
     "/Applications/Claude.app/",
     "claude --",
+    "\\claude.exe",
+    "\\claude.cmd",
+    "\\claude-code.exe",
+    "\\node_modules\\@anthropic-ai\\claude-code\\",
     "Claude.app/Contents/",
     "/.claude/",
     "@anthropic-ai/claude-code",
@@ -79,8 +93,33 @@ HOST_CONTROL_PLANE_EXECUTABLE_NAMES = frozenset(
     {
         "claude",
         "claude-code",
+        "claude-code.exe",
+        "claude.cmd",
+        "claude.exe",
+        "codex.exe",
+        "node_repl.exe",
     }
 )
+WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES = frozenset(
+    {
+        "cargo.exe",
+        "clang.exe",
+        "clang-cl.exe",
+        "lld-link.exe",
+        "molt-backend.exe",
+        "node.exe",
+        "python.exe",
+        "pythonw.exe",
+        "py.exe",
+        "rustc.exe",
+        "uv.exe",
+        "zig.exe",
+    }
+)
+
+
+def _windows_process_needs_full_command_line(exe_name: str) -> bool:
+    return exe_name.strip().casefold() in WINDOWS_FULL_COMMAND_LINE_EXECUTABLE_NAMES
 
 
 def _utc_timestamp() -> str:
@@ -112,6 +151,62 @@ def termination_wait_seconds(env: Mapping[str, str] | None = None) -> float:
     return DEFAULT_TERMINATION_WAIT_SEC
 
 
+def _is_windows_process_model() -> bool:
+    return os.name == "nt"
+
+
+def _write_active_guard_marker(pid: int) -> tuple[str, Path]:
+    if pid <= 0:
+        raise ValueError("active guard marker requires a live pid")
+    token = os.urandom(16).hex()
+    ACTIVE_GUARD_MARKER_DIR.mkdir(parents=True, exist_ok=True)
+    marker_path = ACTIVE_GUARD_MARKER_DIR / f"guard-{pid}-{token}.json"
+    tmp_path = marker_path.with_name(f".{marker_path.name}.{os.getpid()}.tmp")
+    payload = {
+        "schema_version": 1,
+        "pid": pid,
+        "token": token,
+        "path": str(Path(__file__).resolve()),
+        "created_at": _utc_timestamp(),
+    }
+    tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp_path, marker_path)
+    _prune_active_guard_markers()
+    return token, marker_path
+
+
+def _prune_active_guard_markers() -> None:
+    with contextlib.suppress(OSError):
+        markers = sorted(
+            ACTIVE_GUARD_MARKER_DIR.glob("guard-*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for marker in markers[ACTIVE_GUARD_MARKER_KEEP:]:
+            with contextlib.suppress(OSError):
+                marker.unlink()
+
+
+def signal_payload(sig: int) -> dict[str, int | str]:
+    try:
+        name = signal.Signals(sig).name
+    except ValueError:
+        name = str(sig)
+    return {"signal": int(sig), "name": name}
+
+
+def term_signal_payload() -> dict[str, int | str]:
+    return signal_payload(signal.SIGTERM)
+
+
+def fallback_kill_signal() -> int:
+    return getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def fallback_kill_signal_payload() -> dict[str, int | str]:
+    return signal_payload(fallback_kill_signal())
+
+
 @dataclass(frozen=True, slots=True)
 class ProcessSample:
     pid: int
@@ -120,13 +215,14 @@ class ProcessSample:
     command: str
     pgid: int | None = None
     elapsed_sec: int | None = None
+    started_at_ns: int | None = None
 
 
-ProcessIdentity = tuple[int | None, str]
+ProcessIdentity = tuple[int | None, str, int | None]
 
 
 def process_identity(sample: ProcessSample) -> ProcessIdentity:
-    return (sample.pgid, sample.command)
+    return (sample.pgid, sample.command, sample.started_at_ns)
 
 
 @dataclass(slots=True)
@@ -690,37 +786,358 @@ def parse_process_table(text: str) -> dict[int, ProcessSample]:
     return samples
 
 
-def sample_processes() -> dict[int, ProcessSample]:
-    result = subprocess.run(
-        ["ps", "-axo", "pid=,ppid=,pgid=,rss=,etime=,command="],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def _filetime_to_unix_seconds(low: int, high: int) -> float | None:
+    ticks = (high << 32) | low
+    if ticks <= 0:
+        return None
+    return (ticks - 116444736000000000) / 10_000_000
+
+
+def _windows_process_snapshot_rows() -> list[tuple[int, int, int, str, int | None, int | None]]:
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    class PROCESS_BASIC_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("Reserved1", ctypes.c_void_p),
+            ("PebBaseAddress", ctypes.c_void_p),
+            ("Reserved2", ctypes.c_void_p * 2),
+            ("UniqueProcessId", ctypes.c_size_t),
+            ("InheritedFromUniqueProcessId", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    create_snapshot = kernel32.CreateToolhelp32Snapshot
+    create_snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    create_snapshot.restype = wintypes.HANDLE
+    process_first = kernel32.Process32FirstW
+    process_first.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    process_first.restype = wintypes.BOOL
+    process_next = kernel32.Process32NextW
+    process_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    process_next.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    get_process_memory_info = psapi.GetProcessMemoryInfo
+    get_process_memory_info.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(PROCESS_MEMORY_COUNTERS),
+        wintypes.DWORD,
+    ]
+    get_process_memory_info.restype = wintypes.BOOL
+    get_process_times = kernel32.GetProcessTimes
+    get_process_times.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    get_process_times.restype = wintypes.BOOL
+    query_full_process_image_name = kernel32.QueryFullProcessImageNameW
+    query_full_process_image_name.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    query_full_process_image_name.restype = wintypes.BOOL
+    read_process_memory = kernel32.ReadProcessMemory
+    read_process_memory.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPCVOID,
+        wintypes.LPVOID,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    read_process_memory.restype = wintypes.BOOL
+    nt_query_information_process = ntdll.NtQueryInformationProcess
+    nt_query_information_process.argtypes = [
+        wintypes.HANDLE,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        ctypes.POINTER(wintypes.ULONG),
+    ]
+    nt_query_information_process.restype = wintypes.LONG
+
+    TH32CS_SNAPPROCESS = 0x00000002
+    PROCESS_QUERY_INFORMATION = 0x0400
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    PROCESS_VM_READ = 0x0010
+    INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+    ProcessBasicInformation = 0
+    pointer_size = ctypes.sizeof(ctypes.c_void_p)
+    peb_process_parameters_offset = 0x20 if pointer_size == 8 else 0x10
+    command_line_offset = 0x70 if pointer_size == 8 else 0x40
+    command_line_buffer_offset = command_line_offset + (8 if pointer_size == 8 else 4)
+
+    def read_memory(handle: wintypes.HANDLE, address: int, size: int) -> bytes | None:
+        if address <= 0 or size <= 0:
+            return None
+        buffer = (ctypes.c_ubyte * size)()
+        bytes_read = ctypes.c_size_t(0)
+        if not read_process_memory(
+            handle,
+            ctypes.c_void_p(address),
+            buffer,
+            size,
+            ctypes.byref(bytes_read),
+        ):
+            return None
+        if bytes_read.value <= 0:
+            return None
+        return bytes(buffer[: bytes_read.value])
+
+    def read_u16(handle: wintypes.HANDLE, address: int) -> int | None:
+        raw = read_memory(handle, address, 2)
+        if raw is None or len(raw) != 2:
+            return None
+        return int.from_bytes(raw, "little", signed=False)
+
+    def read_ptr(handle: wintypes.HANDLE, address: int) -> int | None:
+        raw = read_memory(handle, address, pointer_size)
+        if raw is None or len(raw) != pointer_size:
+            return None
+        return int.from_bytes(raw, "little", signed=False)
+
+    def read_process_command_line(handle: wintypes.HANDLE) -> str | None:
+        info = PROCESS_BASIC_INFORMATION()
+        returned = wintypes.ULONG(0)
+        status = nt_query_information_process(
+            handle,
+            ProcessBasicInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+            ctypes.byref(returned),
+        )
+        if status != 0 or not info.PebBaseAddress:
+            return None
+        process_parameters = read_ptr(
+            handle,
+            int(info.PebBaseAddress) + peb_process_parameters_offset,
+        )
+        if not process_parameters:
+            return None
+        byte_len = read_u16(handle, process_parameters + command_line_offset)
+        buffer_addr = read_ptr(handle, process_parameters + command_line_buffer_offset)
+        if not byte_len or not buffer_addr:
+            return None
+        raw = read_memory(handle, buffer_addr, min(byte_len, 32768))
+        if raw is None:
+            return None
+        return raw.decode("utf-16-le", errors="replace").strip("\x00")
+
+    def read_process_image_name(handle: wintypes.HANDLE) -> str | None:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if query_full_process_image_name(handle, 0, buffer, ctypes.byref(size)):
+            return buffer.value
+        return None
+
+    snapshot = create_snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot == INVALID_HANDLE_VALUE:
+        return []
+    rows: list[tuple[int, int, int, str, int | None, int | None]] = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = process_first(snapshot, ctypes.byref(entry))
+        now = time.time()
+        while ok:
+            pid = int(entry.th32ProcessID)
+            if pid > 0:
+                rss_kb = 0
+                elapsed_sec: int | None = None
+                started_at_ns: int | None = None
+                exe_name = str(entry.szExeFile).strip()
+                command = exe_name
+                access_masks = (
+                    (PROCESS_QUERY_INFORMATION | PROCESS_VM_READ),
+                    (PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ),
+                    PROCESS_QUERY_LIMITED_INFORMATION,
+                )
+                handle = None
+                for access in access_masks:
+                    handle = open_process(access, False, pid)
+                    if handle:
+                        break
+                if handle:
+                    try:
+                        image_name = read_process_image_name(handle)
+                        if _windows_process_needs_full_command_line(exe_name):
+                            command = (
+                                read_process_command_line(handle)
+                                or image_name
+                                or command
+                            )
+                        else:
+                            command = image_name or command
+                        counters = PROCESS_MEMORY_COUNTERS()
+                        counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
+                        if get_process_memory_info(
+                            handle,
+                            ctypes.byref(counters),
+                            counters.cb,
+                        ):
+                            rss_kb = max(
+                                0,
+                                int((counters.WorkingSetSize + 1023) // 1024),
+                            )
+                        created = wintypes.FILETIME()
+                        exited = wintypes.FILETIME()
+                        kernel = wintypes.FILETIME()
+                        user = wintypes.FILETIME()
+                        if get_process_times(
+                            handle,
+                            ctypes.byref(created),
+                            ctypes.byref(exited),
+                            ctypes.byref(kernel),
+                            ctypes.byref(user),
+                        ):
+                            created_ts = _filetime_to_unix_seconds(
+                                int(created.dwLowDateTime),
+                                int(created.dwHighDateTime),
+                            )
+                            if created_ts is not None:
+                                elapsed_sec = max(0, int(now - created_ts))
+                                started_at_ns = max(
+                                    0,
+                                    int(created_ts * 1_000_000_000),
+                                )
+                    finally:
+                        close_handle(handle)
+                rows.append(
+                    (
+                        pid,
+                        int(entry.th32ParentProcessID),
+                        rss_kb,
+                        command,
+                        elapsed_sec,
+                        started_at_ns,
+                    )
+                )
+            ok = process_next(snapshot, ctypes.byref(entry))
+    finally:
+        close_handle(snapshot)
+    return rows
+
+
+def parse_windows_process_snapshot_rows(
+    rows: Sequence[
+        tuple[int, int, int, str, int | None]
+        | tuple[int, int, int, str, int | None, int | None]
+    ],
+) -> dict[int, ProcessSample]:
+    samples: dict[int, ProcessSample] = {}
+    for row in rows:
+        if len(row) == 5:
+            pid, ppid, rss_kb, command, elapsed_sec = row
+            started_at_ns = None
+        else:
+            pid, ppid, rss_kb, command, elapsed_sec, started_at_ns = row
+        if pid <= 0:
+            continue
+        samples[pid] = ProcessSample(
+            pid=pid,
+            ppid=max(0, ppid),
+            rss_kb=max(0, rss_kb),
+            command=command.strip() or f"pid:{pid}",
+            pgid=None,
+            elapsed_sec=elapsed_sec,
+            started_at_ns=started_at_ns,
+        )
+    return samples
+
+
+def sample_processes_posix() -> dict[int, ProcessSample]:
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,pgid=,rss=,etime=,command="],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired, TypeError):
+        return {}
     if result.returncode != 0:
         return {}
     return parse_process_table(result.stdout)
 
+
+def sample_processes_windows() -> dict[int, ProcessSample]:
+    try:
+        rows = _windows_process_snapshot_rows()
+    except (OSError, TypeError, AttributeError):
+        return {}
+    return parse_windows_process_snapshot_rows(rows)
+
+
+def sample_processes() -> dict[int, ProcessSample]:
+    if _is_windows_process_model():
+        return sample_processes_windows()
+    return sample_processes_posix()
 
 def _sample_pgid(sample: ProcessSample) -> int:
     return sample.pgid if sample.pgid is not None else sample.pid
 
 
 def _command_executable_name(command: str) -> str:
-    try:
-        parts = shlex.split(command)
-    except ValueError:
-        parts = command.split()
-    if not parts:
+    text = command.strip()
+    if not text:
         return ""
-    return Path(parts[0]).name.casefold()
+    if text[0] in {"'", '"'}:
+        quote = text[0]
+        end = text.find(quote, 1)
+        token = text[1:end] if end > 0 else text[1:]
+    else:
+        token = text.split(None, 1)[0]
+    return token.replace("\\", "/").rsplit("/", 1)[-1].casefold()
 
 
 def is_host_control_plane_process(sample: ProcessSample) -> bool:
     command = sample.command.casefold()
     return (
         any(token.casefold() in command for token in HOST_CONTROL_PLANE_TOKENS)
-        or _command_executable_name(sample.command) in HOST_CONTROL_PLANE_EXECUTABLE_NAMES
+        or _command_executable_name(sample.command)
+        in HOST_CONTROL_PLANE_EXECUTABLE_NAMES
     )
 
 
@@ -766,6 +1183,23 @@ def protected_process_group_ids(
         ):
             protected.add(_sample_pgid(sample))
     return protected
+
+
+def _root_pid_is_kill_eligible(
+    samples: Mapping[int, ProcessSample],
+    root_pid: int,
+    *,
+    protected_pgids: set[int],
+    root_owned: bool,
+) -> bool:
+    if root_pid <= 0 or root_pid == os.getpid():
+        return False
+    sample = samples.get(root_pid)
+    if sample is None:
+        return root_owned
+    return _sample_pgid(sample) not in protected_pgids and not is_host_control_plane_process(
+        sample
+    )
 
 
 def _current_protected_process_group_ids(
@@ -1090,6 +1524,8 @@ def _record_sample(
 def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
     if pgid <= 0:
         return True
+    if _is_windows_process_model():
+        return _terminate_single_pid(pgid, grace=grace)
     if os.name == "posix":
         if pgid == os.getpgrp():
             return True
@@ -1164,15 +1600,32 @@ def terminate_watched_processes(
     watched: set[int] | None = None,
     tracker: ProcessTreeTracker | None = None,
     grace: float = 0.25,
+    root_owned: bool = False,
 ) -> None:
     if root_pid <= 0:
         return
-    if os.name != "posix":
-        with contextlib.suppress(ProcessLookupError, OSError):
-            os.kill(root_pid, signal.SIGTERM)
-        time.sleep(max(0.0, grace))
-        with contextlib.suppress(ProcessLookupError, OSError):
-            os.kill(root_pid, signal.SIGKILL)
+    if _is_windows_process_model():
+        observed_samples = sample_processes() if samples is None else samples
+        observed = (
+            watched
+            if watched is not None
+            else watched_pids(observed_samples, root_pid, tracker=tracker)
+        )
+        protected_pgids = _current_protected_process_group_ids(observed_samples)
+        owned_pids = _filter_protected_watched_pids(observed_samples, set(observed))
+        if _root_pid_is_kill_eligible(
+            observed_samples,
+            root_pid,
+            protected_pgids=protected_pgids,
+            root_owned=root_owned,
+        ):
+            owned_pids.add(root_pid)
+        for pid in sorted(owned_pids, reverse=True):
+            if pid == os.getpid():
+                continue
+            if not _terminate_single_pid(pid, grace=grace):
+                with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                    os.kill(pid, fallback_kill_signal())
         return
     observed_samples = sample_processes() if samples is None else samples
     observed = (
@@ -1189,7 +1642,12 @@ def terminate_watched_processes(
     )
     observed = _filter_protected_watched_pids(observed_samples, set(observed))
     pids: set[int] = set()
-    if root_group_pgid not in protected_pgids:
+    if _root_pid_is_kill_eligible(
+        observed_samples,
+        root_pid,
+        protected_pgids=protected_pgids,
+        root_owned=root_owned,
+    ):
         pids.add(root_pid)
     escaped_pids: set[int] = set()
     for pid in observed:
@@ -1231,21 +1689,35 @@ def cleanup_tracked_orphans(
     *,
     tracker: ProcessTreeTracker,
     sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
+    remembered_samples: Mapping[int, ProcessSample] | None = None,
+    remembered_watched: set[int] | None = None,
     grace: float = 0.25,
 ) -> tuple[int, ...]:
     """Terminate descendants still alive after the guarded root process exits."""
 
     if root_pid <= 0:
         return ()
-    samples = sampler()
-    watched = _filter_protected_watched_pids(samples, tracker.update(samples))
+    sampler_failure: BaseException | None = None
+    try:
+        samples = sampler()
+    except (KeyboardInterrupt, Exception) as exc:
+        sampler_failure = exc
+        if remembered_watched is None:
+            raise
+        samples = {} if remembered_samples is None else remembered_samples
+    observed = tracker.update(samples)
+    if not observed and remembered_watched is not None:
+        observed = set(remembered_watched)
+    watched = _filter_protected_watched_pids(samples, observed)
     live_pgids: set[int] = set()
     for pid in watched:
         sample = samples.get(pid)
         if sample is None:
             continue
         live_pgids.add(sample.pgid if sample.pgid is not None else sample.pid)
-    if not live_pgids:
+    if not live_pgids and not watched:
+        if sampler_failure is not None:
+            raise sampler_failure
         return ()
     terminate_watched_processes(
         root_pid,
@@ -1254,11 +1726,13 @@ def cleanup_tracked_orphans(
         tracker=tracker,
         grace=grace,
     )
+    if sampler_failure is not None:
+        raise sampler_failure
     return tuple(sorted(live_pgids))
 
 
 def _terminate_process_group(pid: int) -> None:
-    terminate_watched_processes(pid, grace=5.0)
+    terminate_watched_processes(pid, grace=5.0, root_owned=True)
 
 
 def _load_json_string_list(environ: Mapping[str, str], name: str) -> list[str]:
@@ -1321,6 +1795,13 @@ def _run_child_runner(environ: Mapping[str, str]) -> int:
     _apply_child_resource_limit(limit_kb)
     child_env = _child_env_without_internal_keys(environ)
     _write_child_started_timestamp(environ)
+    if _is_windows_process_model():
+        try:
+            completed = subprocess.run(command, env=child_env, check=False)
+        except OSError as exc:
+            print(f"memory_guard child_runner: spawn failed: {exc}", file=sys.stderr)
+            return 127
+        return completed.returncode
     try:
         os.execvpe(command[0], command, child_env)
     except OSError as exc:
@@ -1490,12 +1971,17 @@ def _command_tokens(fragment: str) -> list[str]:
 
 
 def _token_executable_name(token: str) -> str:
-    return Path(token).name
+    text = token.strip().strip("\"'")
+    name = text.replace("\\", "/").rsplit("/", 1)[-1]
+    suffix = Path(name).suffix.casefold()
+    if suffix in {".exe", ".cmd", ".bat"}:
+        name = name[: -len(suffix)]
+    return name.casefold()
 
 
 def _command_invokes_cargo_build_state(command: Sequence[str]) -> bool:
     for item in command:
-        for token in _command_tokens(item):
+        for token in (item, *_command_tokens(item)):
             if _token_executable_name(token) in _CARGO_BUILD_STATE_EXECUTABLES:
                 return True
     return False
@@ -1785,8 +2271,46 @@ def _cargo_interruption_reason(
     return None
 
 
+WINDOWS_PROCESS_SIGNAL_EXIT_CODES = frozenset(
+    code
+    for code in (
+        int(signal.SIGTERM),
+        int(getattr(signal, "SIGBREAK", 0)),
+    )
+    if code > 0
+)
+
+
+def _returncode_signal_payload(returncode: int) -> dict[str, object] | None:
+    conventional_shell_status = False
+    if returncode < 0:
+        signo = -returncode
+    elif 129 <= returncode <= 192:
+        signo = returncode - 128
+        conventional_shell_status = True
+    elif (
+        _is_windows_process_model()
+        and returncode in WINDOWS_PROCESS_SIGNAL_EXIT_CODES
+    ):
+        signo = returncode
+    else:
+        return None
+    with contextlib.suppress(ValueError):
+        signame = signal.Signals(signo).name
+        return {
+            "signal": signo,
+            "name": signame,
+            "conventional_shell_status": conventional_shell_status,
+        }
+    return {
+        "signal": signo,
+        "name": None,
+        "conventional_shell_status": conventional_shell_status,
+    }
+
+
 def _returncode_looks_signal(returncode: int) -> bool:
-    return returncode < 0 or 129 <= returncode <= 192
+    return _returncode_signal_payload(returncode) is not None
 
 
 def _append_guard_message(
@@ -1845,6 +2369,9 @@ def run_guarded(
     child_env = dict(os.environ) if env is None else dict(env)
     child_env[ACTIVE_ENV] = "1"
     child_env[ACTIVE_GUARD_PID_ENV] = str(os.getpid())
+    guard_token, guard_marker = _write_active_guard_marker(os.getpid())
+    child_env[ACTIVE_GUARD_TOKEN_ENV] = guard_token
+    child_env[ACTIVE_GUARD_MARKER_ENV] = str(guard_marker)
     start = time.monotonic()
     launch = _guarded_launch(
         command,
@@ -1926,22 +2453,61 @@ def run_guarded(
         if progress_label is not None and keepalive_interval is not None
         else None
     )
+    interrupted = False
+    sampler_failure: Exception | None = None
+    last_samples: Mapping[int, ProcessSample] = {}
+    last_watched: set[int] = {proc.pid}
+
+    def remembered_sampler() -> tuple[Mapping[int, ProcessSample], bool]:
+        nonlocal interrupted, last_samples, sampler_failure
+        try:
+            samples = sampler()
+        except KeyboardInterrupt:
+            interrupted = True
+            return last_samples, True
+        except Exception as exc:
+            sampler_failure = exc
+            return last_samples, True
+        last_samples = samples
+        return samples, False
+
+    def guarded_sampler() -> Mapping[int, ProcessSample]:
+        samples, _sampler_interrupted = remembered_sampler()
+        return samples
+
+    def sample_and_track() -> tuple[Mapping[int, ProcessSample], set[int]]:
+        nonlocal last_watched
+        samples, sampler_interrupted = remembered_sampler()
+        if sampler_interrupted:
+            return samples, set(last_watched)
+        watched = tracker.update(samples)
+        last_watched = set(watched)
+        return samples, watched
+
+    def terminate_from_custody(
+        samples: Mapping[int, ProcessSample],
+        watched: set[int],
+        *,
+        grace: float,
+    ) -> None:
+        terminate_watched_processes(
+            proc.pid,
+            samples=samples,
+            watched=watched,
+            grace=grace,
+            root_owned=True,
+        )
+
     while True:
         now = time.monotonic()
         if timeout is not None and now - start >= timeout:
             timed_out = True
-            samples = sampler()
-            watched = tracker.update(samples)
+            samples, watched = sample_and_track()
             saw_cargo_build_state = (
                 saw_cargo_build_state
                 or _samples_include_cargo_build_state(samples, watched)
             )
-            terminate_watched_processes(
-                proc.pid,
-                samples=samples,
-                watched=watched,
-                grace=0.25,
-            )
+            terminate_from_custody(samples, watched, grace=0.25)
             break
         if next_keepalive is not None and now >= next_keepalive:
             timeout_text = "unbounded" if timeout is None else f"{timeout:.2f}s"
@@ -1953,8 +2519,13 @@ def run_guarded(
             )
             assert keepalive_interval is not None
             next_keepalive = now + keepalive_interval
-        samples = sampler()
-        watched = tracker.update(samples)
+        samples, watched = sample_and_track()
+        if sampler_failure is not None:
+            terminate_from_custody(samples, watched, grace=0.25)
+            break
+        if interrupted:
+            terminate_from_custody(samples, watched, grace=0.25)
+            break
         saw_cargo_build_state = (
             saw_cargo_build_state
             or _samples_include_cargo_build_state(samples, watched)
@@ -2002,6 +2573,7 @@ def run_guarded(
                 samples=samples,
                 watched=watched,
                 grace=0.25,
+                root_owned=True,
             )
             break
         if samples_jsonl is not None or stream:
@@ -2031,7 +2603,13 @@ def run_guarded(
             remaining = timeout - elapsed
             wait_timeout = max(0.0, min(wait_timeout, remaining))
         if os.name == "posix" and hasattr(os, "wait4"):
-            time.sleep(wait_timeout)
+            try:
+                time.sleep(wait_timeout)
+            except KeyboardInterrupt:
+                interrupted = True
+                samples, watched = sample_and_track()
+                terminate_from_custody(samples, watched, grace=0.25)
+                break
             exited_usage = _poll_wait4_child(proc)
             if exited_usage is not None:
                 child_exit_usage = exited_usage
@@ -2042,6 +2620,11 @@ def run_guarded(
                 break
             except subprocess.TimeoutExpired:
                 pass
+            except KeyboardInterrupt:
+                interrupted = True
+                samples, watched = sample_and_track()
+                terminate_from_custody(samples, watched, grace=0.25)
+                break
     finished = time.monotonic()
     if violation is None and child_exit_usage is not None:
         current_limits = last_limits or resolve_memory_limits(
@@ -2080,14 +2663,8 @@ def run_guarded(
             try:
                 proc.wait(timeout=max(1.0, poll_interval * 4.0))
             except subprocess.TimeoutExpired:
-                samples = sampler()
-                watched = tracker.update(samples)
-                terminate_watched_processes(
-                    proc.pid,
-                    samples=samples,
-                    watched=watched,
-                    grace=0.0,
-                )
+                samples, watched = sample_and_track()
+                terminate_from_custody(samples, watched, grace=0.0)
                 try:
                     proc.wait(timeout=termination_wait_s)
                 except subprocess.TimeoutExpired:
@@ -2096,7 +2673,9 @@ def run_guarded(
             orphaned_process_groups = cleanup_tracked_orphans(
                 proc.pid,
                 tracker=tracker,
-                sampler=sampler,
+                sampler=guarded_sampler,
+                remembered_samples=last_samples,
+                remembered_watched=last_watched,
                 grace=0.25,
             )
         if stdin_thread is not None:
@@ -2107,6 +2686,8 @@ def run_guarded(
         if stderr_capture is not None:
             stderr_capture.seek(0)
             stderr = stderr_capture.read()
+        if sampler_failure is not None:
+            raise sampler_failure
     finally:
         if stdout_capture is not None:
             stdout_capture.close()
@@ -2122,6 +2703,13 @@ def run_guarded(
         returncode = TIMEOUT_RETURN_CODE
         timeout_msg = f"memory_guard: timeout after {timeout:.2f}s\n"
         stderr = _append_guard_message(stderr, timeout_msg, text=text)
+    if interrupted:
+        returncode = GUARD_RETURN_CODE
+        stderr = _append_guard_message(
+            stderr,
+            "memory_guard: interrupted; terminated the tracked process tree.\n",
+            text=text,
+        )
     if termination_wait_expired:
         if returncode is None:
             returncode = TIMEOUT_RETURN_CODE if timed_out else GUARD_RETURN_CODE
@@ -2680,26 +3268,7 @@ def repro_context_line(payload: Mapping[str, object]) -> str:
 
 
 def exit_signal_payload(returncode: int) -> dict[str, object] | None:
-    conventional_shell_status = False
-    if returncode < 0:
-        signo = -returncode
-    elif 129 <= returncode <= 192:
-        signo = returncode - 128
-        conventional_shell_status = True
-    else:
-        return None
-    with contextlib.suppress(ValueError):
-        signame = signal.Signals(signo).name
-        return {
-            "signal": signo,
-            "name": signame,
-            "conventional_shell_status": conventional_shell_status,
-        }
-    return {
-        "signal": signo,
-        "name": None,
-        "conventional_shell_status": conventional_shell_status,
-    }
+    return _returncode_signal_payload(returncode)
 
 
 _exit_signal_payload = exit_signal_payload
@@ -3056,6 +3625,13 @@ def main(
         return 2
     if hide_command_argv and current_env.get(INTERNAL_WORKER_ENV) != "1":
         worker_argv = _worker_argv(args)
+        if _is_windows_process_model():
+            completed = subprocess.run(
+                worker_argv,
+                env=_worker_env(current_env, command),
+                check=False,
+            )
+            return completed.returncode
         execve(
             sys.executable,
             worker_argv,

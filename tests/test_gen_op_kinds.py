@@ -25,6 +25,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,19 +63,60 @@ def test_generated_rs_is_in_sync() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    checked_in = OUT_RS.read_text()
-    assert checked_in == rendered, (
+    checked_in = OUT_RS.read_bytes()
+    assert checked_in == rendered.encode("utf-8"), (
         f"{OUT_RS.relative_to(ROOT)} is stale — run "
         "`python3 tools/gen_op_kinds.py` to regenerate from op_kinds.toml."
     )
+
+
+def test_render_rs_rustfmt_uses_shared_memory_guard(monkeypatch) -> None:
+    gen = _gen()
+    calls: list[dict[str, object]] = []
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        path = Path(cmd[-1])
+        path.write_text("fn main() {}\n", encoding="utf-8", newline="\n")
+        calls.append({"cmd": list(cmd), "path": path, **kwargs})
+        return SimpleNamespace(
+            returncode=0,
+            stdout="",
+            stderr="",
+            check_returncode=lambda: None,
+        )
+
+    monkeypatch.setattr(
+        gen.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    formatted = gen._rustfmt_rust_source("fn main(){}\n")
+
+    assert formatted == "fn main() {}\n"
+    assert len(calls) == 1
+    call = calls[0]
+    cmd = call["cmd"]
+    assert isinstance(cmd, list)
+    assert cmd[:3] == ["rustfmt", "--edition", "2024"]
+    temp_path = call["path"]
+    assert isinstance(temp_path, Path)
+    assert temp_path.parent == ROOT / "tmp" / "gen_op_kinds"
+    assert temp_path.suffix == ".rs"
+    assert not temp_path.exists()
+    assert call["prefix"] == "MOLT_GENERATOR"
+    assert call["cwd"] == ROOT
+    assert call["capture_output"] is True
+    assert call["text"] is True
+    assert call["timeout"] == 60.0
 
 
 def test_generated_py_is_in_sync() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_py(data)
-    checked_in = OUT_PY.read_text()
-    assert checked_in == rendered, (
+    checked_in = OUT_PY.read_bytes()
+    assert checked_in == rendered.encode("utf-8"), (
         f"{OUT_PY.relative_to(ROOT)} is stale — run "
         "`python3 tools/gen_op_kinds.py` to regenerate from op_kinds.toml."
     )
@@ -121,6 +163,11 @@ def test_generated_classifier_matches_table() -> None:
     gen_inert = set(
         audit.extract_matches_macro(OUT_RS, "copy_kind_is_inert_marker_table")
     )
+    gen_transparent_alias = set(
+        audit.extract_matches_macro(
+            OUT_RS, "copy_kind_is_explicit_transparent_alias_table"
+        )
+    )
     gen_no_heap = set(
         audit.extract_matches_macro(OUT_RS, "copy_kind_is_explicit_no_heap_move_table")
     )
@@ -130,9 +177,25 @@ def test_generated_classifier_matches_table() -> None:
     assert gen_inert == set(data["classifier_inert_marker"]), (
         "generated inert-marker table drifted from classifier_inert_marker"
     )
+    assert gen_transparent_alias == set(data["classifier_transparent_alias"]), (
+        "generated transparent-alias table drifted from classifier_transparent_alias"
+    )
     assert gen_no_heap == set(data["classifier_no_heap_move"]), (
         "generated no-heap-move table drifted from classifier_no_heap_move"
     )
+
+
+def test_removed_absorbing_constructor_helper_stays_removed() -> None:
+    """Result absorption is owned by the generated result-ownership tables.
+
+    The old per-spelling ``copy_kind_absorbs_elements_table`` had no table source
+    data and no consumer; keeping it around reintroduced a compiler warning and a
+    second apparent authority for finalizer-sensitive container ownership. If
+    this assertion fails, wire the new fact through the live
+    ``kind_result_absorbs_operand_ownership_table`` authority instead.
+    """
+    generated = OUT_RS.read_text(encoding="utf-8")
+    assert "copy_kind_absorbs_elements_table" not in generated
 
 
 def test_selected_operand_result_contract_covers_python_boolops() -> None:
@@ -175,8 +238,98 @@ def test_audit_sources_backend_vocab_from_registry() -> None:
     assert res.mapper_kinds == table_spellings
     assert res.fresh_value == set(data["classifier_fresh_value"])
     assert res.inert_marker == set(data["classifier_inert_marker"])
+    assert res.transparent_alias == set(data["classifier_transparent_alias"])
     assert res.no_heap_move == set(data["classifier_no_heap_move"])
     assert set(res.fresh_value_prefixes) == set(data["classifier_fresh_value_prefixes"])
+
+
+def test_audit_sources_pre_ssa_rewritten_kinds_from_lowering_authority() -> None:
+    """Loop-IV helper ops are consumed by lower_from_simple before SSA/opcode
+    dispatch. The audit must derive that fact from the lowering authority, not
+    preserve a stale LLVM-gap allowlist."""
+    audit = _audit()
+    pre_ssa = audit.derive_pre_ssa_rewritten_kinds()
+    res = audit.run_audit()
+    dangerous = res.dangerous()
+
+    assert pre_ssa == {"loop_index_start", "loop_index_next"}
+    for kind in pre_ssa:
+        assert kind in res.structural_kinds
+        assert kind not in dangerous["llvm_coverage_gap"]
+
+
+def test_audit_llvm_runtime_fallback_uses_real_abi_shape() -> None:
+    """LLVM generic runtime coverage means the backend can emit the exact ABI:
+    boxed integer parameters plus boxed integer return, or an explicit LLVM-owned
+    void-result preserved-op table entry. A raw symbol alone is not coverage."""
+    audit = _audit()
+    externs = audit.extract_runtime_molt_externs()
+    void_ops = audit.extract_llvm_void_runtime_ops()
+    res = audit.run_audit()
+    dangerous = res.dangerous()
+    assert dangerous["llvm_void_runtime_abi_mismatch"] == []
+    assert audit.llvm_void_runtime_abi_mismatches(void_ops, externs) == []
+
+    assert "molt_block_on" in externs
+    assert externs["molt_block_on"].return_ty == "i64"
+    assert res.rows["block_on"].llvm_runtime_fallback_eligible
+    assert "block_on" not in dangerous["llvm_coverage_gap"]
+
+    assert void_ops == {
+        "print_newline": ("molt_print_newline", 0),
+        "spawn": ("molt_spawn", 1),
+    }
+    assert audit.runtime_extern_is_boxed_void_fallback_eligible(
+        externs["molt_print_newline"], 0
+    )
+    assert externs["molt_spawn"].return_ty == "()"
+    assert externs["molt_spawn"].params == ("u64",)
+    assert audit.runtime_extern_is_boxed_void_fallback_eligible(externs["molt_spawn"], 1)
+    assert not audit.runtime_extern_is_boxed_void_fallback_eligible(
+        externs["molt_spawn"], 0
+    )
+    assert res.rows["spawn"].llvm_runtime_fallback_eligible
+    assert "spawn" not in dangerous["llvm_coverage_gap"]
+
+    assert "molt_object_set_class" in externs
+    assert "*mut u8" in externs["molt_object_set_class"].params
+    assert not audit.runtime_extern_has_boxed_params(externs["molt_object_set_class"], 2)
+    assert not res.rows["object_set_class"].llvm_runtime_fallback_eligible
+    assert "object_set_class" in res.llvm_arms
+    assert "object_set_class" not in dangerous["llvm_coverage_gap"]
+    assert "guarded_field_init" in res.llvm_arms
+    assert "guarded_field_init" not in dangerous["llvm_coverage_gap"]
+
+    assert "molt_call_async" not in externs
+    assert not res.rows["call_async"].llvm_runtime_fallback_eligible
+    assert "call_async" in res.llvm_arms
+    assert "call_async" not in dangerous["llvm_coverage_gap"]
+
+    synthetic_externs = {
+        "molt_i64_return": audit.RuntimeExtern(
+            "molt_i64_return", (), "i64", Path("runtime/synthetic.rs")
+        ),
+        "molt_one_arg": audit.RuntimeExtern(
+            "molt_one_arg", ("u64",), "()", Path("runtime/synthetic.rs")
+        ),
+        "molt_ptr_arg": audit.RuntimeExtern(
+            "molt_ptr_arg", ("*mut u8",), "()", Path("runtime/synthetic.rs")
+        ),
+    }
+    synthetic_void_ops = {
+        "bad_arity": ("molt_one_arg", 0),
+        "bad_param": ("molt_ptr_arg", 1),
+        "bad_return": ("molt_i64_return", 0),
+        "missing": ("molt_missing", 0),
+    }
+    assert audit.llvm_void_runtime_abi_mismatches(
+        synthetic_void_ops, synthetic_externs
+    ) == [
+        "bad_arity:molt_one_arg:arity=0:extern_params=1",
+        "bad_param:molt_ptr_arg:non-boxed-params=*mut u8",
+        "bad_return:molt_i64_return:return=i64",
+        "missing:molt_missing:missing-extern",
+    ]
 
 
 def test_effects_rs_delegates_to_generated_tables() -> None:
@@ -188,7 +341,9 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    effects = (ROOT / "runtime/molt-backend/src/tir/passes/effects.rs").read_text()
+    effects = (
+        ROOT / "runtime/molt-backend/src/tir/passes/effects.rs"
+    ).read_text(encoding="utf-8")
 
     # effects.rs delegates rather than hand-lists.
     for fn, table in (
@@ -239,7 +394,9 @@ def test_opcode_effects_exhaustive_over_enum() -> None:
     table_names = [row["name"] for row in data["opcode"]]
     assert len(table_names) == len(set(table_names)), "duplicate opcode rows"
 
-    src = (ROOT / "runtime/molt-backend/src/tir/ops.rs").read_text()
+    src = (ROOT / "runtime/molt-backend/src/tir/ops.rs").read_text(
+        encoding="utf-8"
+    )
     m = re.search(r"pub enum OpCode \{(.*?)\n\}", src, re.S)
     assert m is not None
     enum_variants = []
@@ -446,8 +603,9 @@ def test_render_detects_classifier_mutation() -> None:
 # 4. Operand-ownership tables (design 27 §2.1/§2.3, the Perceus rung-2 seed of
 #    the #58 Owned/Borrowed/Raw/Consumed lattice). The per-OpCode `Borrowed`
 #    default is EXHAUSTIVE over the enum; the per-spelling consume override
-#    ([[consuming_kind]]) replaces drop_insertion.rs's `op_consumed_operand_root`
-#    hand list. These tests pin the render + the fail-loud classification
+#    ([[consuming_kind]]) replaces the old drop_insertion.rs hand consume list
+#    behind the ownership-module `op_consumed_operand_root`. These tests pin the
+#    render + the fail-loud classification
 #    discipline + the byte-identical CallArgs consume semantics.
 # ---------------------------------------------------------------------------
 
@@ -456,6 +614,16 @@ def _re_search(src: str, fn_sig: str) -> str:
     """Return the body text of a `match` block inside the named generated fn."""
     assert fn_sig in src, f"generated fn {fn_sig!r} not found"
     return src.split(fn_sig, 1)[1]
+
+
+def _generated_arm_region(region: str, marker: str, next_marker: str) -> str:
+    """Return one generated match-arm region, independent of rustfmt wrapping."""
+    start = region.find(marker)
+    assert start >= 0, f"generated arm {marker!r} not found"
+    next_start = region.find(next_marker, start + len(marker))
+    if next_start < 0:
+        return region[start:]
+    return region[start:next_start]
 
 
 def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
@@ -486,25 +654,25 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
         "ModuleSetAttr": ["borrowed", "borrowed", "container_absorb"],
     }
     consumed = {"DecRef"}
-    expected_arm = {
-        "LoadAttr": "OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,",
-        "Index": (
-            "OpCode::Index => match operand_idx { "
-            "0 => OperandOwnership::InteriorBorrowKeepAlive, "
-            "_ => OperandOwnership::Borrowed },"
-        ),
-        "StoreIndex": (
-            "OpCode::StoreIndex => match operand_idx { "
-            "0 => OperandOwnership::Borrowed, "
-            "1 => OperandOwnership::Borrowed, "
-            "_ => OperandOwnership::ContainerAbsorb },"
-        ),
-        "ModuleSetAttr": (
-            "OpCode::ModuleSetAttr => match operand_idx { "
-            "0 => OperandOwnership::Borrowed, "
-            "1 => OperandOwnership::Borrowed, "
-            "_ => OperandOwnership::ContainerAbsorb },"
-        ),
+    expected_tokens = {
+        "LoadAttr": ["OperandOwnership::InteriorBorrowKeepAlive"],
+        "Index": [
+            "match operand_idx",
+            "0 => OperandOwnership::InteriorBorrowKeepAlive",
+            "_ => OperandOwnership::Borrowed",
+        ],
+        "StoreIndex": [
+            "match operand_idx",
+            "0 => OperandOwnership::Borrowed",
+            "1 => OperandOwnership::Borrowed",
+            "_ => OperandOwnership::ContainerAbsorb",
+        ],
+        "ModuleSetAttr": [
+            "match operand_idx",
+            "0 => OperandOwnership::Borrowed",
+            "1 => OperandOwnership::Borrowed",
+            "_ => OperandOwnership::ContainerAbsorb",
+        ],
     }
     for row in data["opcode"]:
         name = row["name"]
@@ -514,17 +682,23 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
                 f"!= {interior[name]!r} (ladder #73 must stay byte-identical to the "
                 "op_borrow_source LoadAttr|Index→operand-0 fact)"
             )
-            assert expected_arm[name] in region, (
-                f"opcode_operand_ownership_table missing/incorrect {name} arm"
-            )
+            arm = _generated_arm_region(region, f"OpCode::{name}", "        OpCode::")
+            for token in expected_tokens[name]:
+                assert token in arm, (
+                    f"opcode_operand_ownership_table missing/incorrect {name} arm: "
+                    f"{token!r}"
+                )
         elif name in container_absorb:
             assert row["operand_ownership"] == container_absorb[name], (
                 f"{name} container-absorb seed drifted: {row['operand_ownership']!r} "
                 f"!= {container_absorb[name]!r}"
             )
-            assert expected_arm[name] in region, (
-                f"opcode_operand_ownership_table missing/incorrect {name} arm"
-            )
+            arm = _generated_arm_region(region, f"OpCode::{name}", "        OpCode::")
+            for token in expected_tokens[name]:
+                assert token in arm, (
+                    f"opcode_operand_ownership_table missing/incorrect {name} arm: "
+                    f"{token!r}"
+                )
         elif name in consumed:
             assert row["operand_ownership"] == "all_consumed"
             assert f"OpCode::{name} => OperandOwnership::Consumed," in region, (
@@ -550,7 +724,6 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
         "    Transferred,\n"
         "    InteriorBorrowKeepAlive,\n"
         "    ContainerAbsorb,\n"
-        "    ConditionalValidOnlyOnEdge,\n"
         "    NoOperandOwnership,\n"
         "}"
     ) in rendered
@@ -666,6 +839,90 @@ def test_result_absorption_tables_render_container_authority() -> None:
         assert f'"{kind}"' in kind_region
 
 
+def test_result_validity_table_renders_iter_next_unboxed_value_out() -> None:
+    """Path-sensitive result validity is generated from op_kinds.toml.
+
+    `IterNextUnboxed` result 0 is only initialized on the not-done edge; it must
+    never be edge-dropped or retained from the exhaustion edge. The fact belongs
+    in the generated op semantics table, not a drop_insertion hand list.
+    """
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    region = _re_search(rendered, "fn opcode_result_validity_table").split(
+        "fn opcode_result_is_conditionally_valid_only_on_edge"
+    )[0]
+
+    validity = {
+        (row["opcode"], row["result"]): row["validity"]
+        for row in data["result_validity"]
+    }
+    assert validity == {
+        ("IterNextUnboxed", 0): "conditional_valid_only_on_edge"
+    }
+
+    assert (
+        "pub(crate) enum ResultValidity {\n"
+        "    AlwaysValid,\n"
+        "    ConditionalValidOnlyOnEdge,\n"
+        "}"
+    ) in rendered
+    arm = _generated_arm_region(region, "OpCode::IterNextUnboxed", "        OpCode::")
+    assert "match result_idx" in arm
+    assert "0 => ResultValidity::ConditionalValidOnlyOnEdge" in arm
+    assert "_ => ResultValidity::AlwaysValid" in arm
+    for row in data["opcode"]:
+        if row["name"] != "IterNextUnboxed":
+            assert f"OpCode::{row['name']} => ResultValidity::AlwaysValid," in region
+
+    predicate = _re_search(
+        rendered, "fn opcode_result_is_conditionally_valid_only_on_edge"
+    )
+    assert "opcode_result_validity_table(opcode, result_idx)" in predicate
+    assert "ResultValidity::ConditionalValidOnlyOnEdge" in predicate
+
+
+def test_result_validity_rejects_bad_rows() -> None:
+    gen = _gen()
+    data = gen.load_table()
+
+    bad_rows = [
+        {"opcode": "Bogus", "result": 0, "validity": "conditional_valid_only_on_edge"},
+        {"opcode": "IterNextUnboxed", "result": -1, "validity": "conditional_valid_only_on_edge"},
+        {"opcode": "IterNextUnboxed", "result": 0, "validity": "bogus"},
+    ]
+    opcodes = {row["name"] for row in data["opcode"]}
+    for row in bad_rows:
+        mutated = json.loads(json.dumps(data))
+        mutated["result_validity"] = [row]
+        try:
+            gen._validate_result_validity(mutated, opcodes)
+        except gen.OpKindTableError:
+            pass
+        else:  # pragma: no cover - explicit fail branch for pytest output clarity
+            raise AssertionError(f"bad result_validity row was accepted: {row!r}")
+
+    mutated = json.loads(json.dumps(data))
+    mutated["result_validity"] = [
+        {
+            "opcode": "IterNextUnboxed",
+            "result": 0,
+            "validity": "conditional_valid_only_on_edge",
+        },
+        {
+            "opcode": "IterNextUnboxed",
+            "result": 0,
+            "validity": "conditional_valid_only_on_edge",
+        },
+    ]
+    try:
+        gen._validate_result_validity(mutated, opcodes)
+    except gen.OpKindTableError:
+        pass
+    else:  # pragma: no cover - explicit fail branch for pytest output clarity
+        raise AssertionError("duplicate result_validity row was accepted")
+
+
 def test_absorbing_kinds_remain_copy_fresh_spellings_not_aliases() -> None:
     """The preserved `*_new` spellings must not become [[kind]] aliases. They
     are fresh Copy spellings with a separate generated absorption fact."""
@@ -688,7 +945,7 @@ def test_ownership_lattice_uses_generated_result_absorption_tables() -> None:
     tables, not a hand-maintained `BuildList | BuildTuple | ...` match."""
     source = (
         ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     marker = "fn op_result_absorbs_operand_ownership("
     assert marker in source
     start = source.index(marker)
@@ -710,43 +967,102 @@ def test_ownership_lattice_uses_generated_result_absorption_tables() -> None:
         assert stale not in body
 
 
-def test_drop_insertion_delegates_consume_to_generated_table() -> None:
-    """drop_insertion.rs's `op_consumed_operand_root` must DELEGATE to the
-    generated `kind_consumed_operand_table` (no hand-maintained `matches!` of the
-    CallArgs-builder spellings in its body). This is the council's 'migrate one
-    consumer + delete one duplicate list' proof.
-
-    Scoped to the FUNCTION BODY (not the whole file) so a legitimate #[cfg(test)]
-    fixture that constructs a `call_bind` op — the consume-path regression — is
-    not mistaken for the deleted production hand list."""
+def test_drop_insertion_uses_single_result_absorption_authority() -> None:
+    """DropInsertion must not duplicate the result-absorbs-operand classifier."""
     drop = (
         ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
-    ).read_text()
-    assert "op_kinds_generated::" in drop, (
-        "drop_insertion.rs must reference the generated op_kinds tables"
-    )
-    # Extract the `fn op_consumed_operand_root(...) { ... }` body by brace-matching
-    # from the signature to its closing brace.
-    marker = "fn op_consumed_operand_root("
-    assert marker in drop, "op_consumed_operand_root not found"
-    start = drop.index(marker)
-    brace = drop.index("{", start)
+    ).read_text(encoding="utf-8")
+    lattice = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+    assert "use super::ownership_lattice_min::" in drop
+    assert "op_result_absorbs_operand_ownership" in drop
+    assert "pub(crate) fn op_result_absorbs_operand_ownership(" in lattice
+    assert "fn op_result_absorbs_operand_ownership(" not in drop
+    assert "kind_result_absorbs_operand_ownership_table" not in drop
+    assert "opcode_result_absorbs_operand_ownership_table" not in drop
+
+
+def test_ownership_lattice_uses_generated_result_validity_table() -> None:
+    """The ownership lattice owns conditional result-validity facts through the
+    generated table, not a hand-maintained opcode check."""
+    source = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+    marker = "fn conditionally_valid_result_roots("
+    assert marker in source, "conditionally_valid_result_roots not found"
+    start = source.index(marker)
+    brace = source.index("{", start)
     depth = 0
     end = brace
-    for i in range(brace, len(drop)):
-        if drop[i] == "{":
+    for i in range(brace, len(source)):
+        if source[i] == "{":
             depth += 1
-        elif drop[i] == "}":
+        elif source[i] == "}":
             depth -= 1
             if depth == 0:
                 end = i + 1
                 break
-    body = drop[start:end]
+    body = source[start:end]
+    assert "opcode_result_is_conditionally_valid_only_on_edge" in body
+    assert "aliases.root(result)" in body
+    assert "OpCode::IterNextUnboxed" not in body, (
+        "conditional result-validity must live in generated tables, not the "
+        "ownership lattice source"
+    )
+
+
+def test_drop_insertion_delegates_consume_to_generated_table() -> None:
+    """Consumed-operand ownership must live in the ownership lattice module.
+
+    DropInsertion may ask for the consumed root, but it must not own generated
+    table reads or a hand-maintained CallArgs-builder spelling list."""
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    ownership = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "op_consumed_operand_root" in drop, (
+        "drop_insertion.rs must import the ownership-module consume query"
+    )
+    assert "op_result_absorbs_operand_ownership" in drop, (
+        "drop_insertion.rs must import the ownership-module absorption query"
+    )
+    assert "fn op_consumed_operand_root(" not in drop, (
+        "drop_insertion.rs must not define its own consumed-operand helper"
+    )
+    for forbidden in (
+        "kind_consumed_operand_table",
+        "opcode_operand_ownership_table",
+        "OperandOwnership",
+    ):
+        assert forbidden not in drop, (
+            f"drop_insertion.rs must not own the generated consume authority: {forbidden}"
+        )
+    # Extract the `fn op_consumed_operand_root(...) { ... }` body by brace-matching
+    # from the signature to its closing brace.
+    marker = "fn op_consumed_operand_root("
+    assert marker in ownership, "op_consumed_operand_root not found"
+    start = ownership.index(marker)
+    brace = ownership.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(ownership)):
+        if ownership[i] == "{":
+            depth += 1
+        elif ownership[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = ownership[start:end]
     # The duplicate consume hand list must be gone from the function (the only
     # authority is now the generated table the body delegates to).
     assert '"call_bind"' not in body and '"call_indirect"' not in body, (
         "the hand-coded call_bind/call_indirect consume literals must be deleted "
-        "from op_consumed_operand_root (now sourced from [[consuming_kind]])"
+        "from op_consumed_operand_root (now sourced from generated ownership facts)"
     )
     assert "kind_consumed_operand_table" in body, (
         "op_consumed_operand_root's body must call kind_consumed_operand_table"
@@ -758,6 +1074,241 @@ def test_drop_insertion_delegates_consume_to_generated_table() -> None:
         "op_consumed_operand_root must also consult the per-OpCode floor "
         "opcode_operand_ownership_table (the unified operand-ownership query)"
     )
+
+
+def test_drop_insertion_delegates_conditional_result_validity_to_ownership_lattice() -> None:
+    """drop_insertion.rs must consume conditional result-validity through
+    OwnershipLattice root facts, not own a second generated-table/root scan."""
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    assert "fn op_result_is_conditionally_valid_only_on_edge(" not in drop
+    assert "opcode_result_is_conditionally_valid_only_on_edge" not in drop
+    assert "OwnershipRootFacts::compute(func, &aliases)" in drop
+    assert "OwnershipLattice::compute_with_root_facts(" in drop
+    assert "ownership_lattice.is_conditionally_valid_result_root(canon(v))" in drop
+    assert ".conditionally_valid_result_values()" not in drop
+    assert ".conditionally_valid_result_roots()" not in drop
+    assert "OpCode::IterNextUnboxed" not in drop, (
+        "DropInsertion must not own an IterNextUnboxed result-validity hand list"
+    )
+
+
+def test_drop_insertion_consumes_finalizer_sensitive_roots_from_ownership_lattice() -> None:
+    """DropInsertion must consume FinalizerSensitive as a root-space lattice fact.
+
+    The lattice owns alias-root folding for finalizer-sensitive values and
+    return-boundary deferral; statement-release boundary composition is checked
+    separately through `StatementReleasePlan`.
+    """
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    assert ".finalizer_sensitive_values()" not in drop
+    assert ".finalizer_sensitive_roots()" in drop
+    assert "let root = boundary.root;" not in drop
+    assert "boundary.value" not in drop
+    marker = "let sensitive_roots: HashSet<ValueId> = lattice"
+    assert marker in drop, "sensitive_roots lattice consumer not found"
+    region = drop[drop.index(marker) : drop.index("let has_suspension", drop.index(marker))]
+    assert ".finalizer_sensitive_roots()" in region
+    assert ".map(|&v| canon(v))" not in region
+
+
+def test_drop_insertion_consumes_non_owning_copy_roots_from_ownership_lattice() -> None:
+    """DropInsertion must consume C5 non-owning Copy roots as lattice facts.
+
+    The pass owns placement, not copy-result ownership classification. The
+    no-heap alias classifier is consumed through a separate ownership helper for
+    CFG remapping; droppability must read the OwnershipRootFacts root set.
+    """
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    lattice = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+    assert "non_owning_copy_results" not in drop
+    assert "copy_kind_mints_fresh_owned_ref" not in drop
+    assert "let mints_fresh =" not in drop
+    assert "OwnershipRootFacts::compute(func, &aliases)" in drop
+    assert "DropEligibility::new(" in drop
+    assert "drop_eligibility.is_droppable(" in drop
+    assert "ownership_root_facts.is_drop_owned_root_candidate(" not in drop
+    assert "fn non_owning_copy_result_roots(" in lattice
+    assert "pub(crate) fn is_non_owning_copy_result_root(" in lattice
+    assert "pub(crate) struct DropEligibility" in lattice
+    assert "pub(crate) fn is_droppable(" in lattice
+    assert "classify_copy_kind(kind)" in lattice
+    assert "copy_kind_is_explicit_no_heap_move(kind)" in lattice
+
+
+def test_drop_insertion_consumes_no_heap_copy_aliases_from_ownership_lattice() -> None:
+    """Exception-pop CFG splitting may remap no-heap copy aliases.
+
+    DropInsertion owns the split placement, but the `_original_kind` classifier
+    read belongs to the ownership fact module so the pass does not grow another
+    copy-spelling authority.
+    """
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    drop_prod = drop.split("#[cfg(test)]", 1)[0]
+    lattice = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "copy_no_heap_move_alias" in drop_prod
+    assert "copy_kind_is_explicit_no_heap_move" not in drop_prod
+    assert "fn original_kind(" not in drop_prod
+
+    assert "pub(crate) struct NoHeapCopyAlias" in lattice
+    assert "pub(crate) fn copy_no_heap_move_alias(" in lattice
+    assert "copy_kind_is_explicit_no_heap_move(original_kind(op))" in lattice
+    assert "source: op.operands[0]" in lattice
+    assert "result: op.results[0]" in lattice
+
+
+def test_drop_insertion_consumes_parameter_and_stack_roots_from_ownership_lattice() -> None:
+    """Parameter/stack no-drop facts belong to OwnershipRootFacts, not the pass."""
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    lattice = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+    assert "let param_ids" not in drop
+    assert "let param_roots" not in drop
+    assert "let stack_values" not in drop
+    assert "let stack_roots" not in drop
+    assert "fn produces_stack_value(" not in drop
+    assert "drop_eligibility.is_droppable(" in drop
+    assert "ownership_root_facts.is_drop_owned_root_candidate(" not in drop
+    assert "fn parameter_roots(" in lattice
+    assert "fn stack_value_roots(" in lattice
+    assert "pub(crate) fn is_drop_owned_root_candidate(" in lattice
+
+
+def test_drop_insertion_delegates_droppable_predicate_to_drop_eligibility() -> None:
+    """DropInsertion owns placement, not the composed root/raw droppability test."""
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    lattice = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+    assert "let droppable =" not in drop
+    assert "raw_scalars.contains" not in drop
+    assert "live.is_raw_scalar(v)" not in drop
+    assert "DropEligibility::new(" in drop
+    assert "&live.raw_scalars" in drop
+    assert "drop_eligibility.is_raw_scalar_root(canon(v))" in drop
+    assert "drop_eligibility.is_droppable(" in drop
+    assert "pub(crate) struct DropEligibility" in lattice
+    assert "pub(crate) fn is_raw_scalar_root(" in lattice
+    assert "pub(crate) fn is_droppable(" in lattice
+
+
+def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() -> None:
+    """DropInsertion consumes Python lifetime roots instead of re-scanning them."""
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    lattice = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+    assert "PythonLifetimeFacts::compute(" in drop
+    assert "let python_boundary_roots" not in drop
+    assert "let explicit_release_roots" not in drop
+    assert "let mut bound_roots" not in drop
+    assert 'k == "store_var" || k == "load_var"' not in drop
+    assert ".local_store_roots()" not in drop
+    assert "python_lifetime_facts.is_local_store_root(" not in drop
+    assert "python_lifetime_facts.is_bound_local_root(" not in drop
+    assert "python_lifetime_facts.is_named_slot_root(" not in drop
+    assert "python_lifetime_facts.boundary_release_roots(&drop_eligibility)" in drop
+    assert (
+        "python_lifetime_facts.is_statement_release_boundary_root(" not in drop
+    )
+    assert "python_lifetime_facts.is_return_boundary_deferred_root(r)" in drop
+    assert "python_lifetime_facts.has_explicit_release_boundary(v)" in drop
+    assert "pub(crate) struct PythonLifetimeFacts" in lattice
+    assert "pub(crate) fn compute(func: &TirFunction, aliases: &AliasUnionFind)" in lattice
+    assert "pub(crate) fn local_store_roots(" not in lattice
+    assert "pub(crate) fn is_local_store_root(" not in lattice
+    assert "pub(crate) fn is_bound_local_root(" not in lattice
+    assert "pub(crate) fn is_named_slot_root(" not in lattice
+    assert "pub(crate) fn is_explicit_release_root(" not in lattice
+    assert "pub(crate) fn boundary_release_roots(" in lattice
+    assert "drop_eligibility.is_droppable(*root)" in lattice
+    assert "!self.has_explicit_release_boundary(*root)" in lattice
+    assert "pub(crate) fn is_statement_release_boundary_root(" in lattice
+    assert "drop_eligibility.is_droppable(root)" in lattice
+    assert "!self.local_store_roots.contains(&root)" in lattice
+    assert "!self.has_explicit_release_boundary(root)" in lattice
+    assert "pub(crate) fn is_return_boundary_deferred_root(" in lattice
+    assert (
+        "self.bound_local_roots.contains(&root) && !self.named_slot_roots.contains(&root)"
+        in lattice
+    )
+    assert "pub(crate) fn has_explicit_release_boundary(" in lattice
+
+
+def test_drop_insertion_consumes_statement_release_plan_from_ownership_lattice() -> None:
+    """Statement-release boundary composition belongs to the ownership module.
+
+    DropInsertion may materialize the DecRefs, but it must not own the local
+    maps that combine FinalizerSensitive storage boundaries, Python lifetime
+    exclusions, drop eligibility, sorting, and deduplication.
+    """
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    lattice = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "StatementReleasePlan::compute(" in drop
+    assert "statement_release_plan.contains_released_root(" in drop
+    assert "statement_release_plan.after_op().get(&bid)" in drop
+    for forbidden in (
+        "let mut statement_release_after_op",
+        "let mut statement_released_roots",
+        "statement_release_finalizer_boundaries()",
+        "python_lifetime_facts.is_statement_release_boundary_root(",
+    ):
+        assert forbidden not in drop, (
+            "drop_insertion.rs must not rebuild statement-release authority: "
+            f"{forbidden}"
+        )
+
+    assert "pub(crate) struct StatementReleasePlan" in lattice
+    assert "pub(crate) fn compute(" in lattice
+    assert "lattice.statement_release_finalizer_boundaries()" in lattice
+    assert (
+        "python_lifetime_facts.is_statement_release_boundary_root(root, drop_eligibility)"
+        in lattice
+    )
+    assert "plan.after_op" in lattice
+    assert "plan.released_roots.insert(root)" in lattice
+    assert "roots.sort_unstable_by_key(" in lattice
+    assert "roots.dedup()" in lattice
+
+
+def test_drop_insertion_consumes_exception_creation_facts_from_ownership_lattice() -> None:
+    """CreationRef classification belongs to the ownership module, not placement."""
+    drop = (
+        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+    lattice = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+    assert "exception_creation_ref_values" in drop
+    assert "fn exception_creation_ref_values(" not in drop
+    assert "copy_kind_is_exception_creation_ref" not in drop
+    assert "pub(crate) fn exception_creation_ref_values(" in lattice
+    assert "copy_kind_is_exception_creation_ref" in lattice
+    assert "op.opcode != OpCode::Copy" in lattice
 
 
 def test_operand_ownership_mandatory_fail_loud() -> None:
@@ -915,7 +1466,7 @@ def test_op_borrow_source_delegates_to_generated_table() -> None:
     hand-coded match."""
     alias = (
         ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     marker = "fn op_borrow_source("
     assert marker in alias, "op_borrow_source not found"
     start = alias.index(marker)
@@ -988,6 +1539,12 @@ def test_render_detects_operand_ownership_mutation() -> None:
         "dropping list_new from absorbing_kind did not change the render"
     )
 
+    mutated6 = json.loads(json.dumps(data))
+    mutated6["result_validity"] = []
+    assert gen.render_rs(mutated6) != rendered, (
+        "dropping IterNextUnboxed result_validity did not change the render"
+    )
+
 
 # ---------------------------------------------------------------------------
 # 5. Per-terminator operand ownership (design 27 §2.4, the ownership-moves-out /
@@ -997,8 +1554,8 @@ def test_render_detects_operand_ownership_mutation() -> None:
 #    `[[terminator]]` section seeds the FIRST real `Transferred` consumer
 #    (`Return` value + branch-arg into a successor phi), and
 #    `terminator_operand_is_transferred` REPLACES the hand-coded transfer
-#    carve-out in drop_insertion.rs (`terminator_branch_args` + the `Return` arm
-#    of `terminator_uses_root`). These tests pin the render, the enum
+#    carve-out behind ownership-module `terminator_branch_args` and
+#    `terminator_uses_root`. These tests pin the render, the enum
 #    exhaustiveness, and the consumer migration.
 # ---------------------------------------------------------------------------
 
@@ -1042,14 +1599,22 @@ def test_terminator_table_renders_transferred_and_borrowed() -> None:
         "(the migrated terminator_branch_args + terminator_uses_root carve-out)"
     )
     for name, cats in expected.items():
-        assert (
-            f"(TerminatorKind::{name}, OperandCategory::Direct) => {variant[cats['direct']]},"
-            in region
-        ), f"terminator_operand_ownership_table missing Direct arm for {name}"
-        assert (
-            f"(TerminatorKind::{name}, OperandCategory::BranchArg) => {variant[cats['branch_arg']]},"
-            in region
-        ), f"terminator_operand_ownership_table missing BranchArg arm for {name}"
+        direct_arm = _generated_arm_region(
+            region,
+            f"(TerminatorKind::{name}, OperandCategory::Direct)",
+            "        (TerminatorKind::",
+        )
+        assert variant[cats["direct"]] in direct_arm, (
+            f"terminator_operand_ownership_table missing Direct arm for {name}"
+        )
+        branch_arm = _generated_arm_region(
+            region,
+            f"(TerminatorKind::{name}, OperandCategory::BranchArg)",
+            "        (TerminatorKind::",
+        )
+        assert variant[cats["branch_arg"]] in branch_arm, (
+            f"terminator_operand_ownership_table missing BranchArg arm for {name}"
+        )
 
     # `Transferred` is constructed by the generated table — it is GENUINELY LIVE
     # now, not a `from_str`-only forward-compat variant.
@@ -1077,7 +1642,9 @@ def test_terminator_section_exhaustive_over_enum() -> None:
     table_names = [row["name"] for row in data["terminator"]]
     assert len(table_names) == len(set(table_names)), "duplicate terminator rows"
 
-    src = (ROOT / "runtime/molt-backend/src/tir/blocks.rs").read_text()
+    src = (ROOT / "runtime/molt-backend/src/tir/blocks.rs").read_text(
+        encoding="utf-8"
+    )
     m = re.search(r"pub enum Terminator \{(.*?)\n\}", src, re.S)
     assert m is not None, "Terminator enum not found in blocks.rs"
     enum_variants = []
@@ -1157,21 +1724,19 @@ def test_render_detects_terminator_mutation() -> None:
 
 
 def test_drop_insertion_delegates_transfer_to_generated_authority() -> None:
-    """drop_insertion.rs's transfer carve-out must DELEGATE to the generated
-    `terminator_operand_is_transferred` authority — the hand-coded `Return`-arm /
-    branch-arg transfer decision is gone from the pass, replaced by a read of the
-    generated table. This is the ladder-#72 'migrate one consumer + delete one
-    duplicate fact' proof (the analogue of the #70 op_consumed_operand_root one).
+    """Terminator transfer ownership must live in the ownership module.
 
-    Scoped to the two transfer-helper FUNCTION BODIES so the structural shape
-    match (which fields carry args — legitimately in the pass) is not mistaken for
-    a hand-coded transfer fact."""
+    DropInsertion may ask whether a terminator transfers/uses roots, but it must
+    not own the generated terminator table read or a second transfer classifier."""
     drop = (
         ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
+    ownership = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
 
-    def _fn_body(src: str, marker: str) -> str:
-        assert marker in src, f"{marker} not found in drop_insertion.rs"
+    def _fn_body(src: str, marker: str, label: str) -> str:
+        assert marker in src, f"{marker} not found in {label}"
         start = src.index(marker)
         brace = src.index("{", start)
         depth = 0
@@ -1184,15 +1749,26 @@ def test_drop_insertion_delegates_transfer_to_generated_authority() -> None:
                     return src[start : i + 1]
         raise AssertionError(f"unbalanced braces after {marker}")
 
-    # The generated transfer authority is imported + load-bearing.
-    assert "terminator_operand_is_transferred" in drop, (
-        "drop_insertion.rs must read the generated terminator transfer authority"
+    assert "terminator_branch_args" in drop
+    assert "terminator_uses_root" in drop
+    assert "fn terminator_branch_args(" not in drop
+    assert "fn terminator_uses_root(" not in drop
+    for forbidden in (
+        "terminator_operand_is_transferred",
+        "OperandCategory",
+        "TerminatorKind",
+    ):
+        assert forbidden not in drop, (
+            f"drop_insertion.rs must not own generated terminator ownership: {forbidden}"
+        )
+
+    branch_args = _fn_body(
+        ownership, "fn terminator_branch_args(", "ownership_lattice_min.rs"
+    )
+    uses_root = _fn_body(
+        ownership, "fn terminator_uses_root(", "ownership_lattice_min.rs"
     )
 
-    branch_args = _fn_body(drop, "fn terminator_branch_args(")
-    uses_root = _fn_body(drop, "fn terminator_uses_root(")
-
-    # Both transfer helpers consult the generated authority.
     assert "terminator_operand_is_transferred" in branch_args, (
         "terminator_branch_args must gate the forwarded args on the generated "
         "BranchArg transfer fact (not treat them as transfers unconditionally)"

@@ -1051,11 +1051,11 @@ pub(crate) fn glob_dir_fd_root_text(fd: i64, _bytes_mode: bool) -> Option<String
     if fd < 0 {
         return None;
     }
-    let handle = unsafe { libc::_get_osfhandle(fd as libc::c_int) };
+    let handle = unsafe { libc::get_osfhandle(fd as libc::c_int) };
     if handle == -1 {
         return None;
     }
-    windows_path_from_handle(handle as *mut std::ffi::c_void)
+    crate::builtins::io::windows_path_from_handle(handle as *mut std::ffi::c_void)
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -197,17 +197,12 @@ struct FusionCandidate {
 
 /// Run generator fusion over `module`. Returns the elided-frame statistics.
 ///
-/// `MOLT_SKIP_GENERATOR_FUSION=1` disables the pass entirely (a no-op),
-/// matching the inliner's `MOLT_DISABLE_INLINING` rollback lever.
 pub fn run_generator_fusion(
     module: &mut TirModule,
     call_graph: &CallGraph,
     tti: &TargetInfo,
 ) -> FusionStats {
     let mut stats = FusionStats::default();
-    if std::env::var("MOLT_SKIP_GENERATOR_FUSION").is_ok() {
-        return stats;
-    }
 
     // Snapshot every fusable poll body up front (owned clones), keyed by name —
     // the splice reads the poll body while holding `&mut` on the caller, and the

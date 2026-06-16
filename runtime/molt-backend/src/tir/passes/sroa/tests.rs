@@ -295,11 +295,11 @@ fn blocked_when_object_stored_into_another() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6. Disable lever.
+// 6. Unconditional production path.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn disable_lever_is_a_no_op() {
+fn run_removes_stack_stores_without_ambient_disable_path() {
     let mut func = TirFunction::new("main".into(), vec![TirType::DynBox], TirType::None);
     let cls = ValueId(0);
     let c0 = func.fresh_value();
@@ -312,9 +312,12 @@ fn disable_lever_is_a_no_op() {
         entry.terminator = Terminator::Return { values: vec![] };
     }
     let mut am = AnalysisManager::new();
-    let stats = run_with(&mut func, &mut am, /* disabled */ true);
-    assert_eq!(stats.ops_removed, 0, "disabled SROA removes nothing");
-    assert_eq!(n_stores(&func), 1);
+    let stats = run(&mut func, &mut am);
+    assert_eq!(
+        stats.ops_removed, 1,
+        "production SROA removes the dead store"
+    );
+    assert_eq!(n_stores(&func), 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

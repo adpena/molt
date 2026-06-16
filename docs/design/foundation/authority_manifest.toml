@@ -1,0 +1,30 @@
+# Machine-checked routing for planning and long-horizon authority documents.
+# `tools/check_docs_architecture.py` consumes this file; update it when a new
+# planning authority supersedes or constrains the existing roadmap stack.
+
+[[authority]]
+path = "docs/design/foundation/00_integrated_parallel_program.md"
+required_markers = [
+  "Supersedes stale",
+  "live codebase, executable tests, and generated evidence are authoritative",
+]
+
+[[authority]]
+path = "docs/design/foundation/51_ten_year_roadmap.md"
+index_ref = "design/foundation/51_ten_year_roadmap.md"
+canonicals_ref = "design/foundation/51_ten_year_roadmap.md"
+required_markers = [
+  "Status: NORTH STAR",
+  "Faster than CPython",
+  "SEMANTIC FACT PLANE",
+]
+
+[[authority]]
+path = "docs/design/foundation/52_autonomous_operating_charter.md"
+index_ref = "design/foundation/52_autonomous_operating_charter.md"
+canonicals_ref = "design/foundation/52_autonomous_operating_charter.md"
+required_markers = [
+  "Status: BINDING OPERATING DOCTRINE",
+  "design docs go stale",
+  "The verifier is the product",
+]

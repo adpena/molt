@@ -62,5 +62,8 @@ the source of truth.
 ## Planning
 
 - Active roadmap: [../ROADMAP.md](../ROADMAP.md)
+- Planning authority manifest: [design/foundation/authority_manifest.toml](design/foundation/authority_manifest.toml)
+- Long-horizon north star and compression ladder: [design/foundation/51_ten_year_roadmap.md](design/foundation/51_ten_year_roadmap.md)
+- Autonomous operating doctrine and 5/10/50-year gap map: [design/foundation/52_autonomous_operating_charter.md](design/foundation/52_autonomous_operating_charter.md)
 - 90-day execution slice: [ROADMAP_90_DAYS.md](ROADMAP_90_DAYS.md)
 - Roadmap archive: [ROADMAP.md](ROADMAP.md)

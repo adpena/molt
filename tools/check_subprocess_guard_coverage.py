@@ -182,9 +182,23 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
-        "sample_processes",
+        "sample_processes_posix",
         "run",
-        "memory guard process sampler",
+        "memory guard POSIX process sampler",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "_run_child_runner",
+        "run",
+        "Windows child-runner custody preserves the guarded child under "
+        "tools/memory_guard.py when POSIX exec is unavailable",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "main",
+        "run",
+        "Windows hidden-argv custody runs the internal memory_guard worker "
+        "without exposing the guarded command on the parent argv",
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
@@ -217,13 +231,20 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "terminate_watched_processes",
         "os.kill",
         "memory guard watched-root and escaped-PID teardown primitive",
-        expected_count=3,
+        expected_count=2,
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
         "terminate_watched_processes",
         "os.killpg",
         "memory guard watched process-group escalation primitive",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/pytest_memory_guard_bootstrap.py",
+        "handoff_to_outer_guard",
+        "run",
+        "Windows import-time custody handoff waits for tools/memory_guard.py "
+        "and exits the bootstrap process with the guarded result",
     ),
     AllowedRawSubprocessUse(
         "tools/profile.py",
@@ -275,6 +296,14 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "os.killpg",
         "repo process sentinel low-level process-group teardown primitive",
         expected_count=3,
+    ),
+    AllowedRawSubprocessUse(
+        "tools/process_sentinel.py",
+        "terminate_group",
+        "os.kill",
+        "repo process sentinel Windows PID teardown primitive when process "
+        "groups are unavailable",
+        expected_count=2,
     ),
     AllowedRawSubprocessUse(
         "tools/bench_backend_incremental.py",
@@ -392,9 +421,10 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "src/molt/cli.py",
-        "_build_lock",
-        "os.kill",
-        "build-lock holder liveness probe only; not cleanup signal authority",
+        "_reexec_cli_with_hash_seed",
+        "run",
+        "Windows CLI startup restarts once with deterministic PYTHONHASHSEED "
+        "when POSIX exec is unavailable",
     ),
     AllowedRawSubprocessUse(
         "src/molt/backend_daemon_custody.py",

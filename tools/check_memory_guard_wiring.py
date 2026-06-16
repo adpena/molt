@@ -477,6 +477,9 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
             "pyproject.toml",
             "sample_processes",
+            "handoff_to_outer_guard",
+            "subprocess.run",
+            "os._exit",
             "os.execvpe",
         ),
         "test startup bootstrap must fail closed on forged guard markers, "
@@ -696,15 +699,16 @@ def _audit_direct_executable_test_guards(root: Path) -> tuple[MissingDirectTestG
     missing: list[MissingDirectTestGuard] = []
     for path in sorted(tests_root.rglob("*.py")):
         relative = path.relative_to(root)
+        relative_text = relative.as_posix()
         if any(part in DIRECT_TEST_SCRIPT_EXCLUDED_PARTS for part in relative.parts):
             continue
         try:
             text = path.read_text(encoding="utf-8")
-            tree = ast.parse(text, filename=str(relative))
+            tree = ast.parse(text, filename=relative_text)
         except (OSError, SyntaxError) as exc:
             missing.append(
                 MissingDirectTestGuard(
-                    str(relative),
+                    relative_text,
                     0,
                     f"could not parse direct-executable test candidate: {exc}",
                 )
@@ -722,7 +726,7 @@ def _audit_direct_executable_test_guards(root: Path) -> tuple[MissingDirectTestG
             continue
         missing.append(
             MissingDirectTestGuard(
-                str(relative),
+                relative_text,
                 line,
                 "direct-executable tests require a path-local sitecustomize.py "
                 "that imports the shared test memory-guard bootstrap",

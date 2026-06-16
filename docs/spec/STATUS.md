@@ -41,10 +41,19 @@ the implementation. For forward-looking priorities, use
   truthy sentinel. Luau source outputs materialize the same target-version `sys`
   metadata into `molt_module_cache["sys"]`, and dynamic Luau module import now
   fails closed instead of manufacturing empty table fallbacks for unsupported
-  modules. Malformed or non-string target-version config fails closed instead of
-  falling back to another target. The default target remains Python `3.12`.
+  modules. Translation validation uses the same resolver, probes the selected
+  CPython command for an exact minor-version match, and passes
+  `molt build --python-version` through the Molt run, so validation baselines
+  cannot silently inherit `sys.executable`. Malformed or non-string
+  target-version config fails closed instead of falling back to another target.
+  The default target remains Python `3.12`.
 - Rust-first stdlib lowering is the canonical direction, with generated audit
   surfaces under `docs/spec/areas/compat/surfaces/stdlib/`.
+- Native networking currently claims the Unix-family native socket ABI and the
+  WASM host socket ABI only. Windows native builds route requested `stdlib_net`
+  symbols through the explicit no-net intrinsic surface until the WinSock
+  constants, sockaddr storage, resolver, SSL socket ownership, and async poller
+  contracts land together.
 - Build-time import graph discovery now separates external-root resolution from
   external-package admission. `MOLT_MODULE_ROOTS`, `--lib-path`, respected
   `PYTHONPATH`, and auto site-packages can make a package resolvable, but
@@ -194,6 +203,12 @@ the implementation. For forward-looking priorities, use
 - Backend-facing native and WASM lowering always runs through the TIR pipeline;
   the old environment-variable opt-out has been removed so SimpleIR transport
   metadata cannot bypass typed-IR validation.
+- Frontend midend fixed-point verification fails closed: non-convergence and
+  post-convergence idempotence drift record policy diagnostics and raise instead
+  of accepting the last verified round or probe output behind an env-controlled
+  policy switch. Each canonicalization round now closes CSE-created dead pure
+  definitions with verified post-CSE DCE before convergence is measured, so
+  guarded type-fact cleanup cannot leak into a follow-on proof round.
 - WASM `Auto` import retention is split by output form. Non-relocatable Auto
   registers the canonical import registry, records actual import lookups during
   code emission through `TrackedImportIds`, and validates serialized-module
@@ -206,23 +221,25 @@ the implementation. For forward-looking priorities, use
   representation-filtered liveness (`tir/passes/liveness.rs`) and
   `tir/passes/drop_insertion.rs`. It is active for LLVM, WASM, Luau, and native
   Cranelift for the proven shared-drop and ExceptionRegion slices through the
-  shared TIR authority. WASM runtime parity, broader RC/finalizer balance
-  validation, and deletion of any stale native value-tracking assumptions that
-  no longer own release placement remain the convergence work before this can be
-  treated as a global RC ownership claim.
+  shared TIR authority. `PassStats` now records metadata-only authority changes
+  through `attrs_changed`, so zero-physical-drop `drop_inserted` functions are
+  not restored to stale SimpleIR without the marker. WASM runtime parity, broader
+  RC/finalizer balance validation, and deletion of any stale native
+  value-tracking assumptions that no longer own release placement remain the
+  convergence work before this can be treated as a global RC ownership claim.
 - Finalizer dispatch is implemented through the runtime `dec_ref_ptr` /
   `maybe_run_object_finalizer` authority and the committed finalizer matrix.
   Runtime execution now records class-MRO finalizer sensitivity on class and
   instance headers, so non-finalizer objects never perform dying-instance
   `__del__` lookup. The standalone raising-finalizer lane, native scope-exit
   ordering gate, plain-object false-positive guard, object-attribute release
-  smoke, exit-semantics lane, and explicit local `del` / `gc.collect()`
+  smoke, focused container clear/pop release boundaries, inline object-field
+  release, exit-semantics lane, and explicit local `del` / `gc.collect()`
   resurrection-once gate are green. `DeleteVar` carries the old slot occupant as
   a first-class TIR operand, stores the missing sentinel before releasing that
-  old occupant, and the shared drop pass owns the delete-boundary release.
-  Container-owned release boundaries and the broader resurrection/leak matrix
-  remain fail-closed xfails with raw mismatches preserved; Molt still observes
-  empty container event lists where CPython runs nested `__del__` paths.
+  old occupant, and the shared drop pass owns the delete-boundary release. The
+  broader resurrection/leak matrix remains fail-closed until the full corpus and
+  backend parity gates cover the same ownership surface.
 - Configurable runtime memory protection is supported and opt-in. A compiled
   binary caps its own memory through a single `ResourceLimits` enforcement path:
   the human-readable `MOLT_MEMORY_LIMIT` env (e.g. `64M`, `2G`) is an alias that
@@ -515,11 +532,11 @@ the implementation. For forward-looking priorities, use
   operand and the shared drop pass releases that occupant at the delete boundary
   while excluding `None`/missing sentinels from RC placement. Standalone
   `__del__` exception isolation, scope-exit ordering, plain-object
-  no-false-positive behavior, object-attribute release smoke, and exit
-  semantics plus the explicit local `del` / `gc.collect()` resurrection-once
-  gate are green; container-owned release paths and the broader resurrection
-  leak/matrix still need closure before Molt can claim complete finalizer
-  ordering parity.
+  no-false-positive behavior, object-attribute release smoke, focused container
+  clear/pop release, inline object-field child release, and exit semantics plus
+  the explicit local `del` / `gc.collect()` resurrection-once gate are green;
+  the broader resurrection leak/matrix still needs closure before Molt can claim
+  complete finalizer ordering parity.
 - The runpy dynamic-lane expected failures list is currently empty because
   supported lanes moved to intrinsic support; governance for unsupported
   runpy dynamic execution remains documented rather than tracked through an
