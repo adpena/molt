@@ -1414,9 +1414,6 @@ unsafe fn call_type_with_builder(
                 init_type, init_bits, fn_ptr
             );
         }
-        let init_consumes_self_param = obj_from_bits(init_bits)
-            .as_ptr()
-            .is_some_and(|ptr| function_uses_compiled_arg_ownership(ptr));
         if obj_from_bits(init_bits).as_ptr().is_some() {
             inc_ref_bits(_py, init_bits);
         }
@@ -1450,13 +1447,11 @@ unsafe fn call_type_with_builder(
         builder_guard.release();
         let args_ptr = callargs_ptr(builder_ptr);
         if !args_ptr.is_null() {
-            // The CallArgs builder owns the injected slot. Compiled function
-            // parameters are also owned by the callee epilogue, while runtime
-            // callable function objects borrow their arguments.
+            // The CallArgs builder owns the injected slot; every function call
+            // path, compiled or runtime, borrows parameters from that builder.
+            // Builder teardown releases this retain after `__init__`, leaving
+            // the constructor's original owning result as the single live ref.
             inc_ref_bits(_py, inst_bits);
-            if init_consumes_self_param {
-                inc_ref_bits(_py, inst_bits);
-            }
             (*args_ptr).pos.insert(0, inst_bits);
         }
         let _ = molt_call_bind(init_bits, builder_bits);
@@ -1788,14 +1783,6 @@ unsafe fn protect_callargs_aliased_return_with_extra(
             }
         }
         result
-    }
-}
-
-unsafe fn function_uses_compiled_arg_ownership(func_ptr: *mut u8) -> bool {
-    unsafe {
-        object_type_id(func_ptr) == TYPE_ID_FUNCTION
-            && crate::builtins::functions::runtime_callable_target_ptr(function_fn_ptr(func_ptr))
-                .is_none()
     }
 }
 
@@ -2739,7 +2726,6 @@ unsafe fn try_call_bind_ic_fast(
             if function_fn_ptr(init_ptr) as u64 != entry.fn_ptr {
                 return None;
             }
-            let init_consumes_self_param = function_uses_compiled_arg_ownership(init_ptr);
             // Allocate instance using the IC-cached allocation size.
             // This skips the entire class_layout_size recomputation
             // (MRO walks, dict probes, issubclass checks) on every
@@ -2800,9 +2786,9 @@ unsafe fn try_call_bind_ic_fast(
                     "maximum recursion depth exceeded",
                 ));
             }
-            if init_consumes_self_param {
-                inc_ref_bits(_py, inst_bits);
-            }
+            // Direct IC calls borrow `self` exactly like the generic function
+            // call path. The freshly allocated instance's original ref remains
+            // the constructor result; no extra callee-owned self lane exists.
             frame_stack_push(_py, code_bits);
             let _init_result = if closure_bits != 0 {
                 match args.pos.len() {
@@ -6298,9 +6284,9 @@ mod tests {
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
 
-    extern "C" fn compiled_init_drops_self_for_type_call_ic(self_bits: u64) -> i64 {
+    extern "C" fn compiled_init_borrows_self_for_type_call_ic(self_bits: u64) -> i64 {
         crate::with_gil_entry_nopanic!(_py, {
-            dec_ref_bits(_py, self_bits);
+            assert!(!obj_from_bits(self_bits).is_none());
             MoltObject::none().bits()
         }) as i64
     }
@@ -6443,12 +6429,12 @@ mod tests {
     }
 
     #[test]
-    fn type_call_ic_retains_compiled_init_self_param_for_constructor_result() {
+    fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
         crate::with_gil_entry_nopanic!(_py, {
             clear_call_bind_ic_cache();
             let init_ptr = alloc_function_obj(
                 _py,
-                compiled_init_drops_self_for_type_call_ic as *const () as usize as u64,
+                compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
                 1,
             );
             assert!(!init_ptr.is_null());
@@ -6479,7 +6465,7 @@ mod tests {
             let layout_size =
                 unsafe { crate::call::class_init::class_layout_size_cached(_py, class_ptr) };
             let entry = CallBindIcEntry {
-                fn_ptr: compiled_init_drops_self_for_type_call_ic as *const () as usize as u64,
+                fn_ptr: compiled_init_borrows_self_for_type_call_ic as *const () as usize as u64,
                 target_bits: init_bits,
                 class_bits,
                 class_version: unsafe { crate::class_layout_version_bits(class_ptr) },
@@ -6497,8 +6483,15 @@ mod tests {
             };
             let result_ptr = obj_from_bits(result_bits).as_ptr().expect("live instance");
             assert_eq!(unsafe { object_type_id(result_ptr) }, TYPE_ID_OBJECT);
-            inc_ref_bits(_py, result_bits);
-            dec_ref_bits(_py, result_bits);
+            let ref_count = unsafe {
+                (*crate::object::header_from_obj_ptr(result_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+            assert_eq!(
+                ref_count, 1,
+                "type-call IC must return exactly the constructor-owned instance ref"
+            );
             dec_ref_bits(_py, result_bits);
             dec_ref_bits(_py, builder_bits);
             dec_ref_bits(_py, init_name_bits);

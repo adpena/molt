@@ -26,7 +26,6 @@ def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(
     monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_FEATURE_MODE", raising=False)
     monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_FEATURES_EXTRA", raising=False)
     monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_CPU", raising=False)
-    monkeypatch.delenv("MOLT_WASM_LEGACY_LINK_FLAGS", raising=False)
 
     captured: list[tuple[list[str], dict[str, str]]] = []
 
@@ -66,16 +65,16 @@ def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(
     rustflags = env.get("RUSTFLAGS", "")
     assert "--import-memory" in rustflags
     assert "--export-if-defined=molt_frozenset_add" in rustflags
+    assert "--export-dynamic" not in rustflags
 
 
-def test_build_runtime_wasm_honors_baseline_mode_and_legacy_shared_link_flags(
+def test_build_runtime_wasm_uses_explicit_shared_link_flags(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     target_root = tmp_path / "target"
     monkeypatch.setattr(bench_wasm, "_cargo_target_root", lambda: target_root)
     monkeypatch.setattr(bench_wasm, "_repo_root", lambda: tmp_path)
-    monkeypatch.setenv("MOLT_WASM_LEGACY_LINK_FLAGS", "1")
 
     captured: list[tuple[list[str], dict[str, str]]] = []
 
@@ -108,6 +107,8 @@ def test_build_runtime_wasm_honors_baseline_mode_and_legacy_shared_link_flags(
     rustflags = env.get("RUSTFLAGS", "")
     assert "--import-memory" in rustflags
     assert "--growable-table" in rustflags
+    assert "--export-if-defined=molt_frozenset_add" in rustflags
+    assert "--export-dynamic" not in rustflags
 
 
 def test_build_runtime_wasm_full_profile_uses_wasm_safe_full_feature_set(

@@ -1492,23 +1492,23 @@ fn preanalyze_alias_source<'a>(
     return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
 ) -> Option<&'a str> {
     match op.kind.as_str() {
-        "copy" | "copy_var" => op.var.as_deref().or_else(|| {
+        "copy" => op.var.as_deref().or_else(|| {
             op.args
                 .as_ref()
                 .and_then(|args| args.first())
                 .map(String::as_str)
         }),
+        "copy_var" | "load_var" => op
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .map(String::as_str)
+            .or(op.var.as_deref()),
         "box" | "unbox" | "cast" | "widen" | "identity_alias" | "store_var" => op
             .args
             .as_ref()
             .and_then(|args| args.first())
             .map(String::as_str),
-        "load_var" => op.var.as_deref().or_else(|| {
-            op.args
-                .as_ref()
-                .and_then(|args| args.first())
-                .map(String::as_str)
-        }),
         "call" => {
             let callee = op.s_value.as_ref()?;
             let crate::passes::ReturnAliasSummary::Param(param_idx) =
@@ -24494,7 +24494,9 @@ impl SimpleBackend {
                     // Load a named variable into an output (block arg receiving / copy).
                     // Use Variable-backed shadow (phi-resolved across loop iterations)
                     // when available, falling back to Value-based shadow.
-                    if let Some(ref var_name) = op.var {
+                    if let Some(ref var_name) = op.var
+                        && !op.args.as_ref().is_some_and(|args| !args.is_empty())
+                    {
                         if let Some(&slot) = slot_backed_join_slots.get(var_name) {
                             // Raw-backed slot: the slot holds RAW i64 (or a
                             // raw 0/1 bool) — no unbox, no refcount. A
@@ -26584,6 +26586,42 @@ mod tests {
         );
         assert_eq!(analysis.last_use.get("src"), Some(&3));
         assert_eq!(analysis.last_use.get("_bb4_arg0"), Some(&3));
+    }
+
+    #[test]
+    fn preanalysis_uses_args_based_copy_var_value_source() {
+        let func = FunctionIR {
+            name: "args_copy_alias".to_string(),
+            params: vec!["value".to_string(), "metadata_slot".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    var: Some("metadata_slot".to_string()),
+                    args: Some(vec!["value".to_string()]),
+                    out: Some("alias".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("alias".to_string()),
+                    args: Some(vec!["alias".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+
+        assert_eq!(
+            analysis.alias_roots.get("alias").map(String::as_str),
+            Some("value"),
+            "args[0] is the copied value authority; var is local-name metadata"
+        );
+        assert_eq!(analysis.last_use.get("value"), Some(&1));
+        assert_eq!(analysis.last_use.get("metadata_slot"), Some(&0));
     }
 
     #[test]

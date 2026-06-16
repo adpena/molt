@@ -552,9 +552,9 @@ This is NOT a blocker for correctness — the bail is conservative. But it IS a 
 - **itertools native retirement**: unblocked by Phase 6
 - **deforestation.rs `is_impure` relaxation**: once generator_fusion runs first, the loop body may become pure (no more `IterNext` Call), enabling deforestation to fuse further — e.g., `sum(x for x in gen())` with a non-trivial `gen` body may fuse end-to-end
 
-### Rollback
+### Refusal policy
 
-The pass bails conservatively in every unrecognized case — no IR change, no correctness risk. The `MOLT_SKIP_GENERATOR_FUSION=1` env gate (add at the top of `run_generator_fusion`) enables surgical disabling without a rebuild.
+The pass bails conservatively in every unrecognized case — no IR change, no correctness risk. There is no process-global environment rollback for `run_generator_fusion`; a fusable shape must be optimized, and non-fusable shapes must be rejected by the pass predicates with deterministic IR.
 
 ### The SROA dependency question
 
@@ -576,7 +576,7 @@ Checklist:
 - [ ] Implement `apply_fusion` with the 8-step splice algorithm
 - [ ] Wire into `module_phase.rs::run_module_pipeline` after E1
 - [ ] Register in `passes/mod.rs`
-- [ ] Implement the `MOLT_SKIP_GENERATOR_FUSION` bail gate
+- [x] Keep generator fusion always wired; do not add a process-global bail gate
 - [ ] All 8 Rust unit tests pass
 - [ ] All differential tests pass on all 4 backends
 - [ ] `cargo test -p molt-backend` passes (must be >= current count, 0 new warn)

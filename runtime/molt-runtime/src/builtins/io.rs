@@ -1,6 +1,11 @@
 use crate::PyToken;
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+#[cfg(windows)]
+use crate::windows_abi::{
+    CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, FILE_NAME_NORMALIZED, FILE_TYPE_CHAR,
+    GetConsoleMode, GetCurrentProcess, GetFileType, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
+};
 
 // Re-export path/glob/os functions so that `io::*` includes them
 #[allow(unused_imports)]
@@ -250,7 +255,7 @@ pub(crate) fn file_handle_close_ptr(ptr: *mut u8) -> bool {
             let mut fd_guard = backend_state.crt_fd.lock().unwrap();
             if let Some(fd) = fd_guard.take() {
                 unsafe {
-                    libc::_close(fd as libc::c_int);
+                    libc::close(fd as libc::c_int);
                 }
             }
         }
@@ -1181,7 +1186,7 @@ fn file_from_fd(fd: i64) -> Option<std::fs::File> {
 #[cfg(windows)]
 fn file_from_fd(fd: i64) -> Option<std::fs::File> {
     use std::os::windows::io::FromRawHandle;
-    let handle = unsafe { libc::_get_osfhandle(fd as libc::c_int) };
+    let handle = unsafe { libc::get_osfhandle(fd as libc::c_int) };
     if handle == -1 {
         return None;
     }
@@ -1220,54 +1225,13 @@ pub(crate) fn dup_fd(fd: i64) -> Option<i64> {
     if fd < 0 {
         return None;
     }
-    let duped = unsafe { libc::_dup(fd as libc::c_int) };
+    let duped = unsafe { libc::dup(fd as libc::c_int) };
     if duped < 0 { None } else { Some(duped as i64) }
 }
 
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn dup_fd(_fd: i64) -> Option<i64> {
     None
-}
-
-#[cfg(windows)]
-const FILE_TYPE_CHAR: u32 = 0x0002;
-
-#[cfg(windows)]
-const HANDLE_FLAG_INHERIT: u32 = 0x00000001;
-
-#[cfg(windows)]
-const DUPLICATE_SAME_ACCESS: u32 = 0x00000002;
-
-#[cfg(windows)]
-const FILE_NAME_NORMALIZED: u32 = 0x0000000;
-
-#[cfg(windows)]
-const VOLUME_NAME_DOS: u32 = 0x0000000;
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-extern "system" {
-    fn GetCurrentProcess() -> *mut std::ffi::c_void;
-    fn GetFileType(hFile: *mut std::ffi::c_void) -> u32;
-    fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
-    fn GetHandleInformation(hObject: *mut std::ffi::c_void, lpdwFlags: *mut u32) -> i32;
-    fn SetHandleInformation(hObject: *mut std::ffi::c_void, dwMask: u32, dwFlags: u32) -> i32;
-    fn DuplicateHandle(
-        hSourceProcessHandle: *mut std::ffi::c_void,
-        hSourceHandle: *mut std::ffi::c_void,
-        hTargetProcessHandle: *mut std::ffi::c_void,
-        lpTargetHandle: *mut *mut std::ffi::c_void,
-        dwDesiredAccess: u32,
-        bInheritHandle: i32,
-        dwOptions: u32,
-    ) -> i32;
-    fn GetFinalPathNameByHandleW(
-        hFile: *mut std::ffi::c_void,
-        lpszFilePath: *mut u16,
-        cchFilePath: u32,
-        dwFlags: u32,
-    ) -> u32;
-    fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
 }
 
 #[cfg(windows)]
@@ -1307,7 +1271,7 @@ fn duplicate_handle(handle: *mut std::ffi::c_void) -> Option<*mut std::ffi::c_vo
 }
 
 #[cfg(windows)]
-fn windows_path_from_handle(handle: *mut std::ffi::c_void) -> Option<String> {
+pub(crate) fn windows_path_from_handle(handle: *mut std::ffi::c_void) -> Option<String> {
     if handle.is_null() || handle as isize == -1 {
         return None;
     }
@@ -1346,7 +1310,7 @@ fn windows_crt_fd_from_handle(
     } else {
         flags |= libc::O_WRONLY;
     }
-    let fd = unsafe { libc::_open_osfhandle(dup as isize, flags) };
+    let fd = unsafe { libc::open_osfhandle(dup as isize, flags) };
     if fd < 0 {
         unsafe {
             CloseHandle(dup);

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shlex
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 import sys
@@ -14,6 +16,9 @@ PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
 PYTEST_OUTER_GUARD_REEXEC_ENV = "MOLT_PYTEST_OUTER_GUARD_REEXEC"
 TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV = "MOLT_TEST_SCRIPT_OUTER_GUARD_REEXEC"
 PYTEST_CURRENT_TEST_FILE_ENV = "MOLT_PYTEST_CURRENT_TEST_FILE"
+ACTIVE_GUARD_TOKEN_ENV = "MOLT_MEMORY_GUARD_TOKEN"
+ACTIVE_GUARD_MARKER_ENV = "MOLT_MEMORY_GUARD_MARKER"
+ACTIVE_GUARD_MARKER_DIR = ROOT / "tmp" / "memory_guard" / "active"
 PYTEST_COMMAND_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
 PYTEST_GUARD_PLUGIN_NAMES = frozenset(
     {
@@ -27,6 +32,7 @@ SAFE_CONFIG_FILES = frozenset({ROOT / "pyproject.toml"})
 PYTHON_OPTIONS_WITH_ARGUMENT = frozenset({"-W", "-X"})
 MAX_CURRENT_TEST_TEXT = 4096
 _ATOMIC_REPLACE = os.replace
+_ATOMIC_REPLACE_RETRYABLE_WINERRORS = frozenset({5, 32})
 
 
 def _truthy_env(value: str | None) -> bool:
@@ -37,6 +43,66 @@ def _truthy_env(value: str | None) -> bool:
         "no",
         "off",
     }
+
+
+def _is_windows_process_model() -> bool:
+    return os.name == "nt"
+
+
+def _is_retryable_atomic_replace_error(exc: OSError) -> bool:
+    if not _is_windows_process_model():
+        return False
+    winerror = getattr(exc, "winerror", None)
+    if winerror in _ATOMIC_REPLACE_RETRYABLE_WINERRORS:
+        return True
+    return isinstance(exc, PermissionError) and exc.errno in {
+        errno.EACCES,
+        errno.EPERM,
+    }
+
+
+def _atomic_replace_with_retry(src: Path, dst: Path) -> None:
+    attempts = 40 if _is_windows_process_model() else 1
+    for attempt in range(attempts):
+        try:
+            _ATOMIC_REPLACE(src, dst)
+            return
+        except OSError as exc:
+            if (
+                attempt + 1 >= attempts
+                or not _is_retryable_atomic_replace_error(exc)
+            ):
+                raise
+            time.sleep(min(0.25, 0.01 * (attempt + 1)))
+
+
+def _flush_standard_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def _process_exit_code(returncode: int | None) -> int:
+    if returncode is None:
+        return 1
+    if returncode < 0:
+        return 128 + abs(returncode)
+    return returncode
+
+
+def handoff_to_outer_guard(argv: Sequence[str], env: Mapping[str, str]) -> None:
+    if _is_windows_process_model():
+        try:
+            completed = subprocess.run(list(argv), env=dict(env), check=False)
+        except OSError as exc:
+            print(f"pytest memory guard bootstrap: spawn failed: {exc}", file=sys.stderr)
+            _flush_standard_streams()
+            os._exit(127)
+        _flush_standard_streams()
+        os._exit(_process_exit_code(completed.returncode))
+    os.execvpe(argv[0], argv, env)
 
 
 def _orig_argv_pytest_module_args(orig: Sequence[str]) -> tuple[str, ...] | None:
@@ -323,6 +389,42 @@ def _command_is_repo_memory_guard(command: str) -> bool:
     return guard_path in command or "tools/memory_guard.py" in command
 
 
+def _active_guard_marker_valid(
+    environ: Mapping[str, str],
+    *,
+    guard_pid: int,
+) -> bool:
+    token = environ.get(ACTIVE_GUARD_TOKEN_ENV, "").strip()
+    marker_raw = environ.get(ACTIVE_GUARD_MARKER_ENV, "").strip()
+    if guard_pid <= 0 or len(token) < 16 or not marker_raw:
+        return False
+    marker = Path(marker_raw).expanduser()
+    try:
+        marker_resolved = marker.resolve(strict=False)
+        marker_root = ACTIVE_GUARD_MARKER_DIR.resolve(strict=False)
+    except OSError:
+        return False
+    if marker_resolved.parent != marker_root:
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("pid") != guard_pid or payload.get("token") != token:
+        return False
+    guard_path = payload.get("path")
+    if not isinstance(guard_path, str):
+        return False
+    try:
+        return Path(guard_path).resolve(strict=False) == (
+            ROOT / "tools" / "memory_guard.py"
+        ).resolve(strict=False)
+    except OSError:
+        return False
+
+
 def outer_memory_guard_active(environ: Mapping[str, str] | None = None) -> bool:
     source = os.environ if environ is None else environ
     guard_pid = _guard_pid_from_env(source)
@@ -337,7 +439,9 @@ def outer_memory_guard_active(environ: Mapping[str, str] | None = None) -> bool:
     guard_sample = samples.get(guard_pid)
     if guard_sample is None:
         return False
-    if not _command_is_repo_memory_guard(guard_sample.command):
+    if not _command_is_repo_memory_guard(
+        guard_sample.command
+    ) and not _active_guard_marker_valid(source, guard_pid=guard_pid):
         return False
 
     current = os.getpid()
@@ -478,7 +582,7 @@ def ensure_repo_test_module_memory_guard(
     argv = repo_test_module_outer_guard_argv(module_name, module_args)
     env = dict(os.environ)
     env[TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV] = "1"
-    os.execvpe(argv[0], argv, env)
+    handoff_to_outer_guard(argv, env)
     raise RuntimeError("failed to re-exec repo test module under tools/memory_guard.py")
 
 
@@ -532,7 +636,7 @@ def ensure_repo_test_script_memory_guard(
     argv = repo_test_script_outer_guard_argv(script_path, script_args)
     env = dict(os.environ)
     env[TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV] = "1"
-    os.execvpe(argv[0], argv, env)
+    handoff_to_outer_guard(argv, env)
     raise RuntimeError("failed to re-exec repo test script under tools/memory_guard.py")
 
 
@@ -593,7 +697,7 @@ def ensure_pytest_memory_guard(
             env.get(PYTEST_CURRENT_TEST_FILE_ENV)
         )
     )
-    os.execvpe(argv[0], argv, env)
+    handoff_to_outer_guard(argv, env)
     raise RuntimeError("failed to re-exec pytest under tools/memory_guard.py")
 
 
@@ -628,7 +732,7 @@ def _write_pytest_current_test(
         payload["location"] = _bounded_text(location)
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-    _ATOMIC_REPLACE(tmp_path, path)
+    _atomic_replace_with_retry(tmp_path, path)
 
 
 def pytest_runtest_logstart(nodeid: str, location: object) -> None:

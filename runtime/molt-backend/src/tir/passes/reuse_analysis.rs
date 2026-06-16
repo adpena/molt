@@ -266,6 +266,7 @@ pub fn annotate(func: &mut TirFunction, candidates: &[ReuseCandidate]) -> PassSt
     let mut stats = PassStats {
         name: "reuse_analysis",
         values_changed: 0,
+        attrs_changed: 0,
         ops_removed: 0,
         ops_added: 0,
     };

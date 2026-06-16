@@ -207,8 +207,64 @@ def repo_root() -> Path:
     return _REPO_ROOT
 
 
-def _normalized_repo_token(root: Path) -> str:
-    return root.resolve().as_posix()
+def _normalized_path_text(path: str) -> str:
+    normalized = path.replace("\\", "/").rstrip("/")
+    if normalized.startswith("//?/"):
+        normalized = normalized[4:]
+    return normalized
+
+
+def _ordered_unique(items: Sequence[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return tuple(result)
+
+
+def _normalized_repo_tokens(root: Path) -> tuple[str, ...]:
+    candidates = [
+        _normalized_path_text(root.as_posix()),
+        _normalized_path_text(str(root)),
+    ]
+    with contextlib.suppress(OSError, RuntimeError):
+        resolved = root.resolve(strict=False)
+        candidates.extend(
+            [
+                _normalized_path_text(resolved.as_posix()),
+                _normalized_path_text(str(resolved)),
+            ]
+        )
+    drive_relative: list[str] = []
+    for candidate in candidates:
+        if len(candidate) > 2 and candidate[1] == ":" and candidate[2] == "/":
+            drive_relative.append(candidate[2:])
+    return _ordered_unique([*candidates, *drive_relative])
+
+
+def _command_contains(command: str, token: str) -> bool:
+    if _is_windows_process_model():
+        return token.casefold() in command.casefold()
+    return token in command
+
+
+def _repo_scoped_command_match(command: str, root: Path) -> bool:
+    normalized_command = _normalized_path_text(command)
+    scoped_tokens = tuple(
+        _normalized_path_text(token) for token in REPO_SCOPED_PROCESS_TOKENS
+    )
+    for repo_token in _normalized_repo_tokens(root):
+        if not _command_contains(normalized_command, repo_token):
+            continue
+        if any(
+            _command_contains(normalized_command, f"{repo_token}{token}")
+            for token in scoped_tokens
+        ):
+            return True
+    return False
 
 
 def _sample_pgid(sample: memory_guard.ProcessSample) -> int:
@@ -230,6 +286,14 @@ def protected_process_group_ids(
         self_pid=self_pid,
         self_pgid=self_pgid,
     )
+
+
+def _safe_getpgrp() -> int | None:
+    return memory_guard._safe_getpgrp()
+
+
+def _is_windows_process_model() -> bool:
+    return os.name == "nt"
 
 
 def _group_samples_by_pgid(
@@ -292,14 +356,11 @@ def is_molt_process(
     command = sample.command
     if is_host_control_plane_process(sample):
         return False
-    if any(token in command for token in INSPECTION_COMMAND_TOKENS):
+    if any(_command_contains(command, token) for token in INSPECTION_COMMAND_TOKENS):
         return False
-    repo_token = _normalized_repo_token(root)
-    if repo_token in command and any(
-        f"{repo_token}{token}" in command for token in REPO_SCOPED_PROCESS_TOKENS
-    ):
+    if _repo_scoped_command_match(command, root):
         return True
-    return any(token in command for token in MOLT_PROCESS_TOKENS)
+    return any(_command_contains(command, token) for token in MOLT_PROCESS_TOKENS)
 
 
 def process_groups(
@@ -567,8 +628,8 @@ def _incident_payload(
         "victim_command": violation.command,
         "owner_match_reason": "repo_scope",
         "termination": {
-            "signal": {"signal": signal.SIGTERM, "name": "SIGTERM"},
-            "fallback_signal": {"signal": signal.SIGKILL, "name": "SIGKILL"},
+            "signal": memory_guard.term_signal_payload(),
+            "fallback_signal": memory_guard.fallback_kill_signal_payload(),
             "grace_sec": grace_sec,
             "rss_triggered": violation.reason
             in {"process_rss", "group_rss", "global_rss"},
@@ -653,16 +714,51 @@ def emit_violations(
         stream.flush()
 
 
-def terminate_group(pgid: int, *, grace: float) -> None:
-    if pgid <= 0 or pgid == os.getpgrp():
+def _windows_group_expected_identity(
+    violation: SentinelViolation,
+) -> memory_guard.ProcessIdentity | None:
+    if not _is_windows_process_model():
+        return None
+    for sample in violation.samples:
+        if _sample_pgid(sample) == violation.pgid:
+            return memory_guard.process_identity(sample)
+    return None
+
+
+def terminate_group(
+    pgid: int,
+    *,
+    grace: float,
+    root: Path | None = None,
+    expected_identity: memory_guard.ProcessIdentity | None = None,
+) -> None:
+    self_pgid = _safe_getpgrp()
+    if pgid <= 0 or (self_pgid is not None and pgid == self_pgid):
         return
+    root = repo_root() if root is None else root
     samples = memory_guard.sample_processes()
     protected_pgids = protected_process_group_ids(
         samples,
         self_pid=os.getpid(),
-        self_pgid=os.getpgrp(),
+        self_pgid=self_pgid,
     )
     if pgid in protected_pgids:
+        return
+    if _is_windows_process_model():
+        sample = samples.get(pgid)
+        if sample is None:
+            return
+        if expected_identity is not None and (
+            memory_guard.process_identity(sample) != expected_identity
+        ):
+            return
+        if not is_molt_process(sample, root=root, self_pid=os.getpid()):
+            return
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.kill(pgid, signal.SIGTERM)
+        time.sleep(max(0.0, grace))
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.kill(pgid, memory_guard.fallback_kill_signal())
         return
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(pgid, signal.SIGTERM)
@@ -674,7 +770,7 @@ def terminate_group(pgid: int, *, grace: float) -> None:
             return
         time.sleep(0.05)
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(pgid, signal.SIGKILL)
+        os.killpg(pgid, memory_guard.fallback_kill_signal())
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -883,7 +979,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             memory_guard.sample_processes(),
             root=root,
             self_pid=os.getpid(),
-            self_pgid=os.getpgrp(),
+            self_pgid=_safe_getpgrp(),
             known_process_identities=known_process_identities,
         )
         for group in groups:
@@ -939,7 +1035,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if not args.dry_run:
             for violation in violations:
-                terminate_group(violation.pgid, grace=args.grace_sec)
+                terminate_group(
+                    violation.pgid,
+                    grace=args.grace_sec,
+                    root=root,
+                    expected_identity=_windows_group_expected_identity(violation),
+                )
         return violations
 
     while True:

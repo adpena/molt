@@ -40,6 +40,32 @@ def _seed_valid_repo(root: Path) -> None:
     )
     _write_file(root / "docs/getting-started.md", "# Getting Started\n")
     _write_file(
+        root / "docs/CANONICALS.md",
+        "\n".join(
+            [
+                "# Canonicals",
+                "",
+                "- [manifest](design/foundation/authority_manifest.toml)",
+                "- [51](design/foundation/51_ten_year_roadmap.md)",
+                "- [52](design/foundation/52_autonomous_operating_charter.md)",
+                "",
+            ]
+        ),
+    )
+    _write_file(
+        root / "docs/INDEX.md",
+        "\n".join(
+            [
+                "# Index",
+                "",
+                "- [manifest](design/foundation/authority_manifest.toml)",
+                "- [51](design/foundation/51_ten_year_roadmap.md)",
+                "- [52](design/foundation/52_autonomous_operating_charter.md)",
+                "",
+            ]
+        ),
+    )
+    _write_file(
         root / "docs/spec/STATUS.md",
         "\n".join(
             [
@@ -65,6 +91,77 @@ def _seed_valid_repo(root: Path) -> None:
     _write_file(root / "docs/ROADMAP_90_DAYS.md", "# 90 Day Roadmap\n")
     _write_file(
         root / "docs/proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md", "# Proof Workflow\n"
+    )
+    _write_file(
+        root / "docs/design/foundation/00_integrated_parallel_program.md",
+        "\n".join(
+            [
+                "<!-- Supersedes stale 2026-06-05 claims. -->",
+                "",
+                "The live codebase, executable tests, and generated evidence are authoritative.",
+                "",
+            ]
+        ),
+    )
+    _write_file(
+        root / "docs/design/foundation/authority_manifest.toml",
+        "\n".join(
+            [
+                '[[authority]]',
+                'path = "docs/design/foundation/00_integrated_parallel_program.md"',
+                'required_markers = [',
+                '  "Supersedes stale",',
+                '  "live codebase, executable tests, and generated evidence are authoritative",',
+                ']',
+                '',
+                '[[authority]]',
+                'path = "docs/design/foundation/51_ten_year_roadmap.md"',
+                'index_ref = "design/foundation/51_ten_year_roadmap.md"',
+                'canonicals_ref = "design/foundation/51_ten_year_roadmap.md"',
+                'required_markers = [',
+                '  "Status: NORTH STAR",',
+                '  "Faster than CPython",',
+                '  "SEMANTIC FACT PLANE",',
+                ']',
+                '',
+                '[[authority]]',
+                'path = "docs/design/foundation/52_autonomous_operating_charter.md"',
+                'index_ref = "design/foundation/52_autonomous_operating_charter.md"',
+                'canonicals_ref = "design/foundation/52_autonomous_operating_charter.md"',
+                'required_markers = [',
+                '  "Status: BINDING OPERATING DOCTRINE",',
+                '  "design docs go stale",',
+                '  "The verifier is the product",',
+                ']',
+                '',
+            ]
+        ),
+    )
+    _write_file(
+        root / "docs/design/foundation/51_ten_year_roadmap.md",
+        "\n".join(
+            [
+                "Status: NORTH STAR",
+                "",
+                "Faster than CPython.",
+                "",
+                "SEMANTIC FACT PLANE",
+                "",
+            ]
+        ),
+    )
+    _write_file(
+        root / "docs/design/foundation/52_autonomous_operating_charter.md",
+        "\n".join(
+            [
+                "Status: BINDING OPERATING DOCTRINE",
+                "",
+                "RECON: design docs go stale in hours.",
+                "",
+                "The verifier is the product.",
+                "",
+            ]
+        ),
     )
     _write_file(root / "AGENTS.md", "# Agents\n")
 
@@ -164,6 +261,44 @@ def test_checker_flags_old_sync_language_in_agents_and_90_day_plan(
         "docs/ROADMAP_90_DAYS.md" in error and "stay aligned with both" in error
         for error in errors
     )
+
+
+def test_checker_requires_long_horizon_routing_and_authority_markers(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_file(tmp_path / "docs/INDEX.md", "# Index\n")
+    _write_file(
+        tmp_path / "docs/design/foundation/52_autonomous_operating_charter.md",
+        "Status: BINDING OPERATING DOCTRINE\n",
+    )
+    module.ROOT = tmp_path
+
+    errors = module.check_repo()
+
+    assert any(
+        "docs/INDEX.md" in error and "51_ten_year_roadmap.md" in error
+        for error in errors
+    )
+    assert any(
+        "52_autonomous_operating_charter.md" in error
+        and "design docs go stale" in error
+        for error in errors
+    )
+
+
+def test_checker_requires_planning_authority_manifest(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    (tmp_path / "docs/design/foundation/authority_manifest.toml").unlink()
+    module.ROOT = tmp_path
+
+    errors = module.check_repo()
+
+    assert any("authority_manifest.toml" in error for error in errors)
 
 
 def test_checker_passes_for_valid_repo(

@@ -425,13 +425,18 @@ class SerializationMixin(_MixinBase):
         return rewritten_ops
 
     def map_ops_to_json(
-        self, ops: list[MoltOp], *, function_name: str | None = None
+        self,
+        ops: list[MoltOp],
+        *,
+        function_name: str | None = None,
+        run_midend: bool = True,
     ) -> list[dict[str, Any]]:
         if function_name is not None:
             self._active_midend_function_name = function_name
         else:
             self._active_midend_function_name = "<direct>"
-        ops = self._run_ir_midend_passes(ops)
+        if run_midend:
+            ops = self._run_ir_midend_passes(ops)
         ops, fused_dict_guard_prunes = (
             self._eliminate_redundant_fused_dict_increment_guards(ops)
         )

@@ -132,6 +132,46 @@ def test_verify_runtime_integrity_rejects_mismatched_sidecar_hash(
         wasm_link._verify_runtime_integrity(runtime)
 
 
+def test_verify_runtime_integrity_env_cannot_bypass_mismatched_sidecar_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "molt_runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    sidecar = runtime.with_name(f"{runtime.name}.sha256")
+    sidecar.write_text("0" * 64 + "\n")
+    monkeypatch.setenv("MOLT_SKIP_RUNTIME_VERIFY", "1")
+
+    with pytest.raises(SystemExit, match="sidecar"):
+        wasm_link._verify_runtime_integrity(runtime)
+
+
+def test_verify_runtime_integrity_rejects_missing_sidecar_and_missing_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "custom_runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    monkeypatch.setattr(wasm_link, "RUNTIME_EXPECTED_HASHES", {}, raising=True)
+
+    with pytest.raises(SystemExit, match="no sidecar"):
+        wasm_link._verify_runtime_integrity(runtime)
+
+
+def test_verify_runtime_integrity_rejects_unpinned_runtime_without_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "custom_runtime.wasm"
+    runtime.write_bytes(_build_exported_runtime_module("molt_main"))
+    monkeypatch.setattr(
+        wasm_link,
+        "RUNTIME_EXPECTED_HASHES",
+        {"molt_runtime.wasm": hashlib.sha256(runtime.read_bytes()).hexdigest()},
+        raising=True,
+    )
+
+    with pytest.raises(SystemExit, match="no pinned SHA-256"):
+        wasm_link._verify_runtime_integrity(runtime)
+
+
 def _build_minimal_module(element_payload: bytes) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections = []

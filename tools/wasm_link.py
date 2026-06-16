@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import warnings
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -161,13 +160,9 @@ def _read_runtime_integrity_sidecar(path: Path) -> str | None:
 def _verify_runtime_integrity(path: Path) -> None:
     """Verify SHA-256 integrity of the runtime binary.
 
-    Raises ``SystemExit`` when a hash mismatch is detected.  The check can be
-    bypassed by setting ``MOLT_SKIP_RUNTIME_VERIFY=1`` in the environment
-    (intended for local development only).
+    Raises ``SystemExit`` when no integrity authority exists or a hash mismatch
+    is detected.
     """
-    if os.environ.get("MOLT_SKIP_RUNTIME_VERIFY") == "1":
-        return
-
     # Reject path-traversal components before reading the file.
     for part in path.parts:
         if part == "..":
@@ -188,20 +183,22 @@ def _verify_runtime_integrity(path: Path) -> None:
         return
 
     if not RUNTIME_EXPECTED_HASHES:
-        warnings.warn(
-            "RUNTIME_EXPECTED_HASHES is empty — runtime integrity is NOT verified. "
-            "Pin hashes before releasing.",
-            stacklevel=2,
+        raise SystemExit(
+            "Runtime integrity check failed for "
+            f"{path}\n  no sidecar was found at "
+            f"{_runtime_integrity_sidecar_path(path)}\n"
+            "  RUNTIME_EXPECTED_HASHES is empty; publish an integrity sidecar "
+            "or pin the runtime SHA-256."
         )
-        return
 
     if filename not in RUNTIME_EXPECTED_HASHES:
-        warnings.warn(
-            f"Runtime file '{filename}' has no pinned SHA-256 hash in "
-            f"RUNTIME_EXPECTED_HASHES — integrity not verified.",
-            stacklevel=2,
+        raise SystemExit(
+            "Runtime integrity check failed for "
+            f"{path}\n  no sidecar was found at "
+            f"{_runtime_integrity_sidecar_path(path)}\n"
+            f"  runtime file {filename!r} has no pinned SHA-256 hash in "
+            "RUNTIME_EXPECTED_HASHES."
         )
-        return
 
     expected = RUNTIME_EXPECTED_HASHES[filename]
     if digest != expected:
@@ -209,7 +206,6 @@ def _verify_runtime_integrity(path: Path) -> None:
             f"Runtime integrity check failed for {path}\n"
             f"  expected SHA-256: {expected}\n"
             f"  actual   SHA-256: {digest}\n"
-            f"Set MOLT_SKIP_RUNTIME_VERIFY=1 to bypass (development only)."
         )
 
 

@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
     Any,
+    BinaryIO,
     Callable,
     Collection,
     ContextManager,
@@ -196,16 +197,13 @@ _BACKEND_REQUEST_ENV_KNOBS = (
     "MOLT_DUMP_CLIF_FILE_FILTER",
     "MOLT_DUMP_FINAL_FUNC_IR",
     "MOLT_DUMP_IR",
-    # Optimization-pass instruments + rollback levers (mirrors the backend's
+    # Optimization-pass instruments (mirrors the backend's
     # DAEMON_REQUEST_ENV_KEYS — an instrument is useless if the CLI strips
     # its env key before the daemon sees it).
     "MOLT_DEBUG_ARTIFACT_DIR",
     "MOLT_OVERFLOW_PEEL_STATS",
-    "MOLT_DISABLE_OVERFLOW_PEEL",
     "MOLT_PROMOTE_DEBUG",
-    "MOLT_DISABLE_MODULE_SLOT_PROMOTION",
     "MOLT_INLINE_STATS",
-    "MOLT_DISABLE_INLINING",
     "MOLT_VERIFY_ANALYSIS",
     "MOLT_DEBUG_BIND",
     "MOLT_BACKEND",
@@ -217,7 +215,6 @@ _BACKEND_REQUEST_ENV_KNOBS = (
     "MOLT_MEMGVN_REPORT_BASELINE",
     "MOLT_MEMGVN_DIAG",
     "MOLT_MEMGVN_DUMP",
-    "MOLT_DISABLE_MEM_GVN",
     "MOLT_DEBUG_DROP",
     "MOLT_DEBUG_LOWER_FUNC",
     "MOLT_TIR_DUMP",
@@ -596,6 +593,21 @@ _BACKEND_DIAGNOSTIC_ENV_KNOBS = frozenset(
     }
 )
 _FALSY_ENV_VALUES = frozenset({"", "0", "false", "no", "off"})
+_VALIDATE_PROOF_BYPASS_ENV = frozenset(
+    {
+        "MOLT_SKIP_BINARY_VALIDITY_CHECK",
+        "MOLT_SKIP_CARGO_LOCK",
+        "MOLT_SKIP_RUNTIME_REBUILD",
+    }
+)
+_VALIDATE_SUITE_CHOICES = (
+    "full",
+    "smoke",
+    "commands",
+    "conformance",
+    "bench",
+    "custody-proof",
+)
 
 
 def _env_requests_backend_diagnostics(env: Mapping[str, str]) -> bool:
@@ -2003,9 +2015,7 @@ class _ExternalPackageNativeArtifactPlan:
     artifacts: tuple[_ExternalPackageNativeArtifact, ...] = ()
 
     def digest_payload(self) -> dict[str, Any]:
-        return {
-            "artifacts": [artifact.digest_payload() for artifact in self.artifacts]
-        }
+        return {"artifacts": [artifact.digest_payload() for artifact in self.artifacts]}
 
     def digest(self) -> str:
         payload = json.dumps(
@@ -2045,9 +2055,7 @@ class _StagedExternalPackageNativeArtifact:
             "source_manifest_path": str(self.source_manifest_path),
             "staged_path": str(self.staged_path),
             "staged_manifest_path": str(self.staged_manifest_path),
-            "staged_support_paths": [
-                str(path) for path in self.staged_support_paths
-            ],
+            "staged_support_paths": [str(path) for path in self.staged_support_paths],
             "extension_sha256": self.extension_sha256,
             "manifest_sha256": self.manifest_sha256,
             "capabilities": list(self.capabilities),
@@ -5117,7 +5125,9 @@ def _external_package_dir(root: Path, package: str) -> Path | None:
 
 def _is_external_package_native_artifact(path: Path) -> bool:
     name = path.name.lower()
-    return any(name.endswith(suffix) for suffix in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES)
+    return any(
+        name.endswith(suffix) for suffix in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES
+    )
 
 
 def _iter_external_package_native_artifacts(package_dir: Path) -> list[Path]:
@@ -5169,10 +5179,9 @@ def _extension_path_matches_manifest(
     manifest_path = Path(expected_norm)
     if manifest_path.is_absolute():
         return manifest_path.resolve() == artifact_path
-    return (
-        (manifest_dir / manifest_path).resolve() == artifact_path
-        or (package_dir / manifest_path).resolve() == artifact_path
-    )
+    return (manifest_dir / manifest_path).resolve() == artifact_path or (
+        package_dir / manifest_path
+    ).resolve() == artifact_path
 
 
 def _find_external_extension_manifest(
@@ -5232,7 +5241,9 @@ def _validate_external_package_native_artifact(
     except (OSError, json.JSONDecodeError) as exc:
         return None, [f"{package}: invalid extension manifest {manifest_path}: {exc}"]
     if not isinstance(manifest, dict):
-        return None, [f"{package}: extension manifest {manifest_path} must be an object"]
+        return None, [
+            f"{package}: extension manifest {manifest_path} must be an object"
+        ]
     validation = _validate_extension_manifest(
         manifest,
         manifest_dir=manifest_path.parent,
@@ -5319,7 +5330,9 @@ def _resolve_external_package_native_artifact_plan(
         return None, errors
     return (
         _ExternalPackageNativeArtifactPlan(
-            artifacts=tuple(sorted(artifacts, key=lambda item: (item.module, str(item.path))))
+            artifacts=tuple(
+                sorted(artifacts, key=lambda item: (item.module, str(item.path)))
+            )
         ),
         [],
     )
@@ -7724,10 +7737,10 @@ def _emit_build_diagnostics(
                     f"{hot_tier_promotion_enabled}",
                     file=sys.stderr,
                 )
-            budget_override_ms = policy_config.get("budget_override_ms")
-            if isinstance(budget_override_ms, (int, float)):
+            work_budget_override = policy_config.get("work_budget_override")
+            if isinstance(work_budget_override, (int, float)):
                 print(
-                    f"- midend.policy.budget_override_ms: {budget_override_ms:.4f}",
+                    f"- midend.policy.work_budget_override: {work_budget_override:.4f}",
                     file=sys.stderr,
                 )
             budget_alpha = policy_config.get("budget_alpha")
@@ -7944,16 +7957,16 @@ def _midend_sample_p95(samples: list[float]) -> float:
 
 def _midend_policy_config_snapshot() -> dict[str, Any]:
     profile_override = os.environ.get("MOLT_MIDEND_PROFILE", "").strip().lower()
-    budget_override_raw = os.environ.get("MOLT_MIDEND_BUDGET_MS", "").strip()
-    budget_override_ms: float | None = None
-    if budget_override_raw:
-        try:
-            budget_override_ms = max(0.0, float(budget_override_raw))
-        except ValueError:
-            budget_override_ms = None
     hot_promotion_enabled = os.environ.get(
         "MOLT_MIDEND_HOT_TIER_PROMOTION", "1"
     ).strip().lower() not in {"0", "false", "no", "off"}
+    work_budget_override_raw = os.environ.get("MOLT_MIDEND_WORK_BUDGET", "").strip()
+    work_budget_override: float | None = None
+    if work_budget_override_raw:
+        try:
+            work_budget_override = max(0.0, float(work_budget_override_raw))
+        except ValueError:
+            work_budget_override = None
 
     def _float_env(name: str, default: float) -> float:
         raw = os.environ.get(name, "").strip()
@@ -7967,7 +7980,7 @@ def _midend_policy_config_snapshot() -> dict[str, Any]:
     return {
         "profile_override": profile_override or None,
         "hot_tier_promotion_enabled": hot_promotion_enabled,
-        "budget_override_ms": budget_override_ms,
+        "work_budget_override": work_budget_override,
         "budget_alpha": _float_env("MOLT_MIDEND_BUDGET_ALPHA", 0.03),
         "budget_beta": _float_env("MOLT_MIDEND_BUDGET_BETA", 0.75),
         "budget_scale": _float_env("MOLT_MIDEND_BUDGET_SCALE", 1.0),
@@ -8410,9 +8423,7 @@ def _build_module_source_catalog(
                 module_path, inline_source, path_stat
             )
         else:
-            leases[module_name] = _ModuleSourceLease.path_backed(
-                module_path, path_stat
-            )
+            leases[module_name] = _ModuleSourceLease.path_backed(module_path, path_stat)
     return _ModuleSourceCatalog(leases=leases)
 
 
@@ -9203,17 +9214,28 @@ def _normalize_runtime_stdlib_profile(stdlib_profile: str | None) -> str:
     return profile
 
 
-def _runtime_lib_archive_name(stdlib_profile: str | None) -> str:
+def _runtime_staticlib_target_is_windows(target_triple: str | None) -> bool:
+    if target_triple:
+        return "windows" in target_triple.lower()
+    return os.name == "nt"
+
+
+def _runtime_lib_archive_name(
+    stdlib_profile: str | None,
+    target_triple: str | None = None,
+) -> str:
     profile = _normalize_runtime_stdlib_profile(stdlib_profile)
     alias = _RUNTIME_STDLIB_PROFILE_ALIASES[profile]
+    if _runtime_staticlib_target_is_windows(target_triple):
+        return f"molt_runtime.{alias}.lib"
     return f"libmolt_runtime.{alias}.a"
 
 
-def _runtime_lib_archive_names() -> tuple[str, ...]:
+def _runtime_lib_archive_names(target_triple: str | None = None) -> tuple[str, ...]:
     names = [
-        _runtime_lib_archive_name("micro"),
-        _runtime_lib_archive_name("full"),
-        "libmolt_runtime.a",
+        _runtime_lib_archive_name("micro", target_triple),
+        _runtime_lib_archive_name("full", target_triple),
+        _runtime_cargo_scratch_lib_name(target_triple),
     ]
     return tuple(dict.fromkeys(names))
 
@@ -9237,8 +9259,17 @@ def _module_graph_policy_digest(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
-def _runtime_cargo_scratch_lib_path(runtime_lib: Path) -> Path:
-    return runtime_lib.with_name("libmolt_runtime.a")
+def _runtime_cargo_scratch_lib_name(target_triple: str | None = None) -> str:
+    if _runtime_staticlib_target_is_windows(target_triple):
+        return "molt_runtime.lib"
+    return "libmolt_runtime.a"
+
+
+def _runtime_cargo_scratch_lib_path(
+    runtime_lib: Path,
+    target_triple: str | None = None,
+) -> Path:
+    return runtime_lib.with_name(_runtime_cargo_scratch_lib_name(target_triple))
 
 
 @functools.lru_cache(maxsize=1024)
@@ -10378,50 +10409,56 @@ def _is_valid_cached_backend_artifact(path: Path, *, is_wasm: bool) -> bool:
             return False
     except OSError:
         return False
-    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
-    if nm_bin is None:
-        return True
-    nm_cmd = (
+    result = _native_object_global_symbols_result(path, timeout=5)
+    return result is None or bool(result.stdout.strip())
+
+
+def _normalize_native_symbol_name(name: str) -> str:
+    if sys.platform == "darwin" and name.startswith("_"):
+        return name[1:]
+    return name
+
+
+def _native_nm_command(nm_bin: str, path: Path) -> list[str]:
+    return (
         [nm_bin, "-gU", str(path)]
         if sys.platform == "darwin"
         else [nm_bin, "-g", str(path)]
     )
-    try:
-        result = _run_completed_command(
-            nm_cmd,
-            capture_output=True,
-            timeout=5,
-            env=None,
-            cwd=path.parent,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if result.returncode != 0:
-        return False
-    return bool(result.stdout.strip())
 
 
-def _normalize_native_symbol_name(name: str) -> str:
-    return name[1:] if name.startswith("_") else name
+def _native_object_global_symbols_result(
+    path: Path,
+    *,
+    timeout: float,
+) -> subprocess.CompletedProcess[str] | None:
+    candidates = _nm_candidate_binaries()
+    if not candidates:
+        return None
+    last_failure: subprocess.CompletedProcess[str] | None = None
+    for nm_bin in candidates:
+        try:
+            result = _run_completed_command(
+                _native_nm_command(nm_bin, path),
+                capture_output=True,
+                timeout=timeout,
+                env=None,
+                cwd=path.parent,
+                memory_guard_prefix="MOLT_BUILD",
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0 and result.stdout.strip():
+            return result
+        last_failure = result
+    if last_failure is not None and last_failure.returncode == 0:
+        return last_failure
+    return None
 
 
 def _native_object_global_symbol_sets(path: Path) -> tuple[set[str], set[str]] | None:
-    nm_bin = shutil.which("nm") or shutil.which("llvm-nm")
-    if nm_bin is None:
-        return None
-    try:
-        result = _run_completed_command(
-            [nm_bin, "-g", str(path)],
-            capture_output=True,
-            timeout=5,
-            env=None,
-            cwd=path.parent,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
+    result = _native_object_global_symbols_result(path, timeout=5)
+    if result is None:
         return None
     defined: set[str] = set()
     undefined: set[str] = set()
@@ -10739,6 +10776,8 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
 def _cargo_build_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("CARGO_INCREMENTAL", "0")
+    if sys.executable:
+        env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
     return env
 
 
@@ -10798,88 +10837,140 @@ def _build_lock_dir_cached(project_root_str: str, build_state_root_str: str) -> 
     return Path(build_state_root_str) / "build_locks"
 
 
+def _open_file_lock_handle(lock_path: Path) -> BinaryIO:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+    handle = os.fdopen(fd, "r+b", buffering=0)
+    try:
+        if os.fstat(fd).st_size == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+    except BaseException:
+        handle.close()
+        raise
+    return handle
+
+
+def _try_lock_file_handle(handle: BinaryIO) -> bool:
+    handle.seek(0)
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+
+    import fcntl
+
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            return False
+        raise
+    return True
+
+
+def _unlock_file_handle(handle: BinaryIO) -> None:
+    with contextlib.suppress(OSError, ImportError):
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _write_lock_holder_pid(handle: BinaryIO) -> None:
+    with contextlib.suppress(OSError):
+        handle.seek(0)
+        handle.truncate(0)
+        handle.write(f"{os.getpid()}\n".encode("ascii"))
+        handle.flush()
+        handle.seek(0)
+
+
+def _try_acquire_file_lock(lock_path: Path) -> BinaryIO | None:
+    handle = _open_file_lock_handle(lock_path)
+    try:
+        if not _try_lock_file_handle(handle):
+            handle.close()
+            return None
+        _write_lock_holder_pid(handle)
+        return handle
+    except BaseException:
+        handle.close()
+        raise
+
+
+def _acquire_file_lock(
+    lock_path: Path,
+    *,
+    timeout_s: float | None,
+    timeout_message: str,
+    poll_s: float = 0.05,
+) -> BinaryIO:
+    deadline = time.monotonic() + timeout_s if timeout_s is not None else None
+    while True:
+        handle = _try_acquire_file_lock(lock_path)
+        if handle is not None:
+            return handle
+        if deadline is not None and time.monotonic() >= deadline:
+            raise RuntimeError(timeout_message)
+        time.sleep(poll_s)
+
+
+def _release_file_lock(handle: BinaryIO) -> None:
+    try:
+        _unlock_file_handle(handle)
+    finally:
+        handle.close()
+
+
+def _parse_lock_timeout(raw: str, *, default_s: float | None) -> float | None:
+    raw = raw.strip()
+    if not raw:
+        return default_s
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return default_s
+    return parsed if parsed > 0 else None
+
+
 @contextmanager
 def _build_lock(project_root: Path, name: str):
-    if os.name != "posix":
-        yield
-        return
-    try:
-        import fcntl
-    except Exception:
-        yield
-        return
     lock_dir = _build_lock_dir_cached(
         os.fspath(project_root),
         os.fspath(_build_state_root(project_root)),
     )
-    lock_dir.mkdir(parents=True, exist_ok=True)
     # The build-state root already carries target/session isolation. When an
     # operator explicitly shares a target/build-state root, mutable Cargo
     # artifacts must share the same lock regardless of MOLT_SESSION_ID.
     lock_path = lock_dir / f"{name}.lock"
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
-    timeout_raw = os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
-    lock_timeout: float | None = 300.0
-    if timeout_raw:
-        try:
-            parsed = float(timeout_raw)
-        except ValueError:
-            parsed = 300.0
-        lock_timeout = parsed if parsed > 0 else None
+    lock_timeout = _parse_lock_timeout(
+        os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", ""),
+        default_s=300.0,
+    )
+    timeout_label = "unbounded" if lock_timeout is None else f"{lock_timeout:.1f}s"
+    handle = _acquire_file_lock(
+        lock_path,
+        timeout_s=lock_timeout,
+        timeout_message=(
+            f"Timed out waiting for build lock {lock_path} after {timeout_label}. "
+            "Check for stale molt build/backend helper processes."
+        ),
+    )
     try:
-        deadline = time.monotonic() + lock_timeout if lock_timeout is not None else None
-        stale_checked = False
-        wait_start = time.monotonic()
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                    raise
-                # After 5s of waiting, check whether the recorded holder PID is
-                # still alive. Dead processes release flock state at the OS
-                # boundary, so this only retries the same lock inode.
-                if not stale_checked and time.monotonic() - wait_start > 5.0:
-                    stale_checked = True
-                    try:
-                        # Read PID from lock file (if written by holder)
-                        os.lseek(fd, 0, os.SEEK_SET)
-                        pid_bytes = os.read(fd, 32)
-                        if pid_bytes:
-                            holder_pid = int(pid_bytes.strip())
-                            try:
-                                os.kill(holder_pid, 0)  # check if alive
-                            except ProcessLookupError:
-                                # Holder is dead; retry the same lock inode.
-                                fcntl.flock(fd, fcntl.LOCK_UN)
-                                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                                break
-                            except (PermissionError, OSError):
-                                pass  # process exists or can't check
-                    except (ValueError, OSError):
-                        pass  # no PID or read error — continue waiting
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise RuntimeError(
-                        "Timed out waiting for build lock "
-                        f"{lock_path} after {lock_timeout:.1f}s. "
-                        "Check for stale molt build/backend helper processes."
-                    ) from exc
-                time.sleep(0.05)
-        # Write our PID so stale-lock detection works for future waiters
-        try:
-            os.ftruncate(fd, 0)
-            os.lseek(fd, 0, os.SEEK_SET)
-            os.write(fd, str(os.getpid()).encode())
-        except OSError:
-            pass
         yield
     finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        os.close(fd)
+        _release_file_lock(handle)
 
 
 @functools.lru_cache(maxsize=64)
@@ -10889,58 +10980,29 @@ def _shared_cache_lock_dir_cached(cache_root_str: str) -> Path:
 
 @contextmanager
 def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
-    if os.name != "posix":
-        yield
-        return
-    try:
-        import fcntl
-    except Exception:
-        yield
-        return
     if cache_root is None:
         cache_root = _default_molt_cache()
     lock_dir = _shared_cache_lock_dir_cached(os.fspath(cache_root))
-    lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"{name}.lock"
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
     timeout_raw = (
         os.environ.get("MOLT_CACHE_LOCK_TIMEOUT", "").strip()
         or os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
     )
-    lock_timeout: float | None = 300.0
-    if timeout_raw:
-        try:
-            parsed = float(timeout_raw)
-        except ValueError:
-            parsed = 300.0
-        lock_timeout = parsed if parsed > 0 else None
+    lock_timeout = _parse_lock_timeout(timeout_raw, default_s=300.0)
+    timeout_label = "unbounded" if lock_timeout is None else f"{lock_timeout:.1f}s"
+    handle = _acquire_file_lock(
+        lock_path,
+        timeout_s=lock_timeout,
+        timeout_message=(
+            "Timed out waiting for shared cache lock "
+            f"{lock_path} after {timeout_label}. "
+            "Check for stale molt build/backend helper processes."
+        ),
+    )
     try:
-        deadline = time.monotonic() + lock_timeout if lock_timeout is not None else None
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                    raise
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise RuntimeError(
-                        "Timed out waiting for shared cache lock "
-                        f"{lock_path} after {lock_timeout:.1f}s. "
-                        "Check for stale molt build/backend helper processes."
-                    ) from exc
-                time.sleep(0.05)
-        try:
-            os.ftruncate(fd, 0)
-            os.lseek(fd, 0, os.SEEK_SET)
-            os.write(fd, str(os.getpid()).encode())
-        except OSError:
-            pass
         yield
     finally:
-        with contextlib.suppress(OSError):
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+        _release_file_lock(handle)
 
 
 def _load_molt_config(project_root: Path) -> dict[str, Any]:
@@ -13513,7 +13575,7 @@ def _runtime_lib_path_cached(
         cwd_str,
         _molt_session_id(),
     )
-    archive_name = _runtime_lib_archive_name(stdlib_profile)
+    archive_name = _runtime_lib_archive_name(stdlib_profile, target_triple)
     if target_triple:
         return target_root / target_triple / profile_dir / archive_name
     return target_root / profile_dir / archive_name
@@ -13711,7 +13773,7 @@ def _runtime_lib_freshness_candidates(
     profile_dirs: tuple[str, ...] | None = None,
 ) -> tuple[Path, ...]:
     profile_dirs = profile_dirs or _active_artifact_profile_dirs()
-    names = _runtime_lib_archive_names()
+    names = _runtime_lib_archive_names(target_triple)
     candidates: list[Path] = []
     seen: set[Path] = set()
     for profile_dir in profile_dirs:
@@ -14022,45 +14084,32 @@ def _build_slot_dir() -> Path:
 def _build_slot():
     """Acquire one of N build slots before running cargo build.
 
-    Uses flock-based semaphore to hard-cap concurrent cargo builds.
+    Uses a cross-platform file-lock semaphore to hard-cap concurrent cargo builds.
     Each build peaks at ~16GB RSS, so MAX_CONCURRENT_BUILDS=2 keeps
     total below 32GB even on machines with 128GB RAM (leaves room for
     daemon, tests, and OS).  Without this, 5+ concurrent builds from
     multi-agent sessions OOM the machine.
     """
-    import fcntl
-
     build_slot_dir = _build_slot_dir()
-    build_slot_dir.mkdir(parents=True, exist_ok=True)
-    max_slots = int(
-        os.environ.get("MOLT_MAX_CONCURRENT_BUILDS", _MAX_CONCURRENT_BUILDS)
-    )
+    max_slots_raw = os.environ.get("MOLT_MAX_CONCURRENT_BUILDS", "").strip()
+    try:
+        max_slots = int(max_slots_raw) if max_slots_raw else _MAX_CONCURRENT_BUILDS
+    except ValueError:
+        max_slots = _MAX_CONCURRENT_BUILDS
+    max_slots = max(1, max_slots)
 
-    for slot_idx in range(max_slots):
-        slot_path = build_slot_dir / f"slot-{slot_idx}.lock"
-        fd = slot_path.open("w")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            # Got the slot
+    while True:
+        for slot_idx in range(max_slots):
+            slot_path = build_slot_dir / f"slot-{slot_idx}.lock"
+            handle = _try_acquire_file_lock(slot_path)
+            if handle is None:
+                continue
             try:
                 yield slot_idx
             finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-                fd.close()
+                _release_file_lock(handle)
             return
-        except OSError:
-            fd.close()
-            continue
-
-    # All slots busy — wait for any slot (blocking)
-    slot_path = build_slot_dir / "slot-0.lock"
-    fd = slot_path.open("w")
-    fcntl.flock(fd, fcntl.LOCK_EX)  # blocks until available
-    try:
-        yield 0
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        fd.close()
+        time.sleep(0.05)
 
 
 def _molt_session_id() -> str | None:
@@ -14836,11 +14885,7 @@ def _materialize_cached_backend_artifact(
     sync_source_key = source_key
     try:
         _atomic_link_or_copy_file(candidate, output_artifact)
-        if (
-            tier == "function"
-            and cache_path is not None
-            and candidate != cache_path
-        ):
+        if tier == "function" and cache_path is not None and candidate != cache_path:
             with contextlib.suppress(OSError):
                 published_module_cache = _publish_immutable_backend_cache_artifact(
                     candidate,
@@ -16214,24 +16259,16 @@ def _shared_stdlib_manifest(
 
 @contextmanager
 def _shared_stdlib_cache_lock(stdlib_object_path: Path) -> Iterator[None]:
-    if os.name != "posix":
-        yield
-        return
-    try:
-        import fcntl
-    except Exception:
-        yield
-        return
     lock_path = _shared_stdlib_publish_lock_path(stdlib_object_path)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+    handle = _acquire_file_lock(
+        lock_path,
+        timeout_s=None,
+        timeout_message=f"Timed out waiting for shared stdlib cache lock {lock_path}.",
+    )
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
-        with contextlib.suppress(OSError):
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+        _release_file_lock(handle)
 
 
 def _stage_shared_stdlib_object_for_link(
@@ -18909,6 +18946,19 @@ def _build_isolate_import_ops(
     return import_ops
 
 
+def _isolate_import_module_order(
+    module_order: Sequence[str],
+    explicit_imports: Collection[str],
+) -> list[str]:
+    if not explicit_imports:
+        return []
+    import_roots: set[str] = set()
+    for module_name in explicit_imports:
+        parts = module_name.split(".")
+        import_roots.update(".".join(parts[:idx]) for idx in range(1, len(parts) + 1))
+    return [module_name for module_name in module_order if module_name in import_roots]
+
+
 def _finalize_backend_ir(
     *,
     functions: Sequence[dict[str, Any]],
@@ -19133,7 +19183,6 @@ def _prepare_backend_ir(
     *,
     entry_module: str,
     module_graph: Mapping[str, Path],
-    explicit_imports: Collection[str],
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -19154,6 +19203,7 @@ def _prepare_backend_ir(
     fail: Callable[..., _CliFailure],
     json_output: bool,
     module_order: Sequence[str],
+    explicit_imports: Collection[str],
     generated_module_source_paths: Mapping[str, str],
     spawn_enabled: bool,
     pgo_profile_summary: Any | None,
@@ -19313,7 +19363,7 @@ def _prepare_backend_ir(
     )
     import_ops = _build_isolate_import_ops(
         code_slot_count=len(global_code_ids),
-        module_order=module_order,
+        module_order=_isolate_import_module_order(module_order, explicit_imports),
         register_global_code_id=register_global_code_id,
     )
     functions.append(
@@ -19975,8 +20025,7 @@ def _render_native_main_stub(
     runtime_module_roots: Sequence[Path] = (),
 ) -> str:
     runtime_module_roots_literals = tuple(
-        json.dumps(str(path.resolve()))
-        for path in dict.fromkeys(runtime_module_roots)
+        json.dumps(str(path.resolve())) for path in dict.fromkeys(runtime_module_roots)
     )
     (
         trusted_snippet,
@@ -20369,6 +20418,19 @@ def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[
     return search_paths, link_libs
 
 
+def _native_windows_system_link_libs(target_triple: str | None) -> list[str]:
+    """Return Windows system libraries required by Molt's Rust runtime surface."""
+    triple = (target_triple or "").lower()
+    is_windows = (
+        ("windows" in triple or "msvc" in triple)
+        if target_triple
+        else sys.platform == "win32"
+    )
+    if not is_windows:
+        return []
+    return ["-lws2_32", "-lntdll", "-luserenv"]
+
+
 def _build_native_link_command(
     *,
     output_obj: Path,
@@ -20472,6 +20534,7 @@ def _build_native_link_command(
     cargo_search, cargo_libs = _collect_cargo_native_link_deps(runtime_lib)
     link_cmd.extend(cargo_search)
     link_cmd.extend(cargo_libs)
+    link_cmd.extend(_native_windows_system_link_libs(target_triple))
     return link_cmd, linker_hint, normalized_target
 
 
@@ -23245,7 +23308,10 @@ def _execute_backend_compile(
                     if daemon_health is not None:
                         backend_daemon_health = daemon_health
             if not backend_compiled:
-                detail = daemon_error or "backend daemon returned no successful compile result"
+                detail = (
+                    daemon_error
+                    or "backend daemon returned no successful compile result"
+                )
                 return None, _fail(
                     f"Backend daemon compile failed: {detail}",
                     json_output,
@@ -23802,7 +23868,6 @@ def _run_backend_pipeline(
     prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
         entry_module=resolved_build_entry.entry_module,
         module_graph=module_graph,
-        explicit_imports=explicit_imports,
         parse_codec=parse_codec,
         type_hint_policy=type_hint_policy,
         fallback_policy=fallback_policy,
@@ -23823,6 +23888,7 @@ def _run_backend_pipeline(
         fail=_fail,
         json_output=json_output,
         module_order=module_order,
+        explicit_imports=explicit_imports,
         generated_module_source_paths=generated_module_source_paths,
         spawn_enabled=spawn_enabled,
         pgo_profile_summary=prepared_build_config.pgo_profile_summary,
@@ -24384,10 +24450,7 @@ def _prepare_non_native_build_result(
                         memory_guard_prefix="MOLT_WASM_LINK",
                     )
                     if link_process.returncode != 0:
-                        err = (
-                            link_process.stderr.strip()
-                            or link_process.stdout.strip()
-                        )
+                        err = link_process.stderr.strip() or link_process.stdout.strip()
                         msg = "Wasm link failed"
                         if err:
                             msg = f"{msg}: {err}"
@@ -24621,7 +24684,7 @@ def _prepare_non_native_build_result(
                     runtime_import_signatures=app_runtime_import_signatures,
                     app_table_ref_signatures=app_table_ref_signatures,
                     runtime_table_ref_signatures=runtime_table_ref_signatures,
-                )
+                ),
             )
             vfs_support_src = molt_root / "wasm" / "molt_vfs_browser.js"
             vfs_support_dst = split_dir / "molt_vfs_browser.js"
@@ -24640,7 +24703,7 @@ def _prepare_non_native_build_result(
             wrangler_jsonc = split_dir / "wrangler.jsonc"
             _atomic_write_text(
                 wrangler_jsonc,
-                _generate_split_wrangler_jsonc(dt.date.today().isoformat())
+                _generate_split_wrangler_jsonc(dt.date.today().isoformat()),
             )
             legacy_wrangler_toml = split_dir / "wrangler.toml"
             if legacy_wrangler_toml.exists():
@@ -25069,7 +25132,6 @@ def _run_build_pipeline(
         prepared_backend_ir, prepared_backend_ir_error = _prepare_backend_ir(
             entry_module=resolved_build_entry.entry_module,
             module_graph=module_graph,
-            explicit_imports=explicit_imports,
             parse_codec=parse_codec,
             type_hint_policy=type_hint_policy,
             fallback_policy=fallback_policy,
@@ -25090,6 +25152,7 @@ def _run_build_pipeline(
             fail=_fail,
             json_output=json_output,
             module_order=module_order,
+            explicit_imports=explicit_imports,
             generated_module_source_paths=generated_module_source_paths,
             spawn_enabled=spawn_enabled,
             pgo_profile_summary=prepared_build_config.pgo_profile_summary,
@@ -27907,7 +27970,7 @@ def _ensure_runtime_lib(
         stdlib_profile,
         target_triple=target_triple,
     )
-    # Cargo always writes libmolt_runtime.a as scratch output. Molt then
+    # Cargo writes the platform staticlib name as scratch output. Molt then
     # materializes a profile-qualified link alias, so the requested feature
     # profile must remain an explicit fingerprint input.
     fingerprint_features: tuple[str, ...] = tuple(
@@ -28069,7 +28132,7 @@ def _ensure_runtime_lib(
             if err:
                 print(err, file=sys.stderr)
             return False
-        cargo_runtime_lib = _runtime_cargo_scratch_lib_path(runtime_lib)
+        cargo_runtime_lib = _runtime_cargo_scratch_lib_path(runtime_lib, target_triple)
         if cargo_runtime_lib != runtime_lib:
             if not cargo_runtime_lib.exists():
                 if not json_output:
@@ -28261,8 +28324,7 @@ def _reported_runtime_artifact_matches(
     except OSError:
         return False
     if not (
-        resolved_path == resolved_root
-        or resolved_path.is_relative_to(resolved_root)
+        resolved_path == resolved_root or resolved_path.is_relative_to(resolved_root)
     ):
         return False
     name = resolved_path.name
@@ -28320,6 +28382,89 @@ def _reported_runtime_artifact_from_cargo_stdout(
 
 def _wasm_runtime_recovery_target_root(target_root: Path) -> Path:
     return target_root.parent / f"{target_root.name}-wasm-runtime-recovery"
+
+
+def _append_rustflags_text(base: str, flags: str) -> str:
+    return f"{base.strip()} {flags.strip()}".strip()
+
+
+def _wasm_link_args_from_rustflags(flags: str) -> list[str]:
+    tokens = flags.split()
+    link_args: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-C" and index + 1 < len(tokens):
+            value = tokens[index + 1]
+            if value.startswith("link-arg="):
+                link_args.append(value.removeprefix("link-arg="))
+                index += 2
+                continue
+        if token.startswith("-Clink-arg="):
+            link_args.append(token.removeprefix("-Clink-arg="))
+        index += 1
+    return link_args
+
+
+def _write_wasm_link_args_response_file(
+    response_root: Path,
+    *,
+    label: str,
+    link_args: Sequence[str],
+) -> Path:
+    digest = hashlib.sha256("\0".join(link_args).encode("utf-8")).hexdigest()
+    safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._-") or "runtime"
+    response_path = response_root / f"{safe_label}.{digest}.rsp"
+    _atomic_write_text(response_path, "\n".join(link_args) + "\n")
+    return response_path
+
+
+def _wasm_link_args_response_rustflags(
+    project_root: Path,
+    *,
+    label: str,
+    link_flags: str,
+) -> str:
+    link_args = _wasm_link_args_from_rustflags(link_flags)
+    if not link_args:
+        return ""
+    response_path = _write_wasm_link_args_response_file(
+        _build_state_root(project_root) / "wasm_link_args",
+        label=label,
+        link_args=link_args,
+    )
+    return f"-C link-arg=@{response_path}"
+
+
+def _wasm_runtime_codegen_rustflags(
+    rustflags: str,
+    *,
+    simd_enabled: bool,
+    freestanding: bool,
+) -> str:
+    # Disable reference-types so that LLVM (Rust 1.94+ / LLVM 21+) does not
+    # emit GC-proposal rec groups or `exact` heap types.  These are rejected
+    # by Cloudflare Workers' V8 and by wasm-opt without --all-features.
+    # Enable WASM SIMD (128-bit) for vectorized string/bytes operations.
+    # Freestanding builds use the conservative baseline because the WASI stub
+    # rewriter currently cannot remap SIMD-prefixed instruction streams.
+    if "-C target-feature" not in rustflags:
+        tf_parts = ["-reference-types"]
+        if simd_enabled:
+            tf_parts.append("+simd128")
+        rustflags = _append_rustflags_text(
+            rustflags, f"-C target-feature={','.join(tf_parts)}"
+        )
+    elif "-reference-types" not in rustflags:
+        # Caller already set -C target-feature; append the ref-types disable.
+        rustflags = rustflags.replace(
+            "-C target-feature=", "-C target-feature=-reference-types,", 1
+        )
+    if freestanding and 'getrandom_backend="' not in rustflags:
+        rustflags = _append_rustflags_text(
+            rustflags, '--cfg getrandom_backend="unsupported"'
+        )
+    return rustflags
 
 
 def _run_runtime_wasm_cargo_build(
@@ -28422,11 +28567,14 @@ def _link_runtime_staticlib_to_reloc_wasm(
     tmp_output_path = output_path.with_name(
         f".{output_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     )
-    export_args = [
-        arg
-        for chunk in export_link_args.split(" -C link-arg=")
-        if (arg := chunk.strip()) and not arg.startswith("-C ")
-    ]
+    export_args = _wasm_link_args_from_rustflags(export_link_args)
+    if export_args:
+        export_response_path = _write_wasm_link_args_response_file(
+            output_path.parent / ".molt_link_args",
+            label=f"{output_path.stem}.reloc",
+            link_args=export_args,
+        )
+        export_args = [f"@{export_response_path}"]
     try:
         process = _run_completed_command(
             [
@@ -28521,10 +28669,10 @@ def _ensure_runtime_wasm(
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
     env = _cargo_build_env()
-    use_legacy_wasm_flags = os.environ.get("MOLT_WASM_LEGACY_LINK_FLAGS") == "1"
     runtime_exports = wasm_runtime_export_link_args()
     if reloc:
-        flags = "" if use_legacy_wasm_flags else runtime_exports
+        link_flags = runtime_exports
+        cargo_link_flags = ""
     else:
         # Shared-runtime ABI: import the host-provided memory and table, and
         # allow the table to grow for app-specific call_indirect slots.
@@ -28532,46 +28680,36 @@ def _ensure_runtime_wasm(
             "-C link-arg=--import-memory -C link-arg=--import-table"
             " -C link-arg=--growable-table"
         )
-        if use_legacy_wasm_flags:
-            # Legacy path keeps --export-dynamic for bit-for-bit reproducibility
-            # of older shared runtimes.
-            flags = f"{shared_import_flags} -C link-arg=--export-dynamic"
-        else:
-            # Split-runtime size policy (feedback_wasm_export_treeshaking: "only
-            # export table refs for split-runtime builds").  --export-dynamic
-            # exports every defined Rust symbol — thousands of mangled
-            # serde_json/num_bigint/alloc/core internals.  Those leaked exports
-            # (a) bloat the export-name section by ~800KB of mangled strings and
-            # (b) pin internal-only functions as wasm-opt GC roots, blocking
-            # --remove-unused-module-elements from stripping ~MBs of dead code.
-            # The public surface is fully described by the explicit
-            # wasm_runtime_export_link_args() allowlist plus the post-link
-            # __molt_table_ref_* export pass (_export_wasm_table_refs), so
-            # --export-dynamic is pure bloat here.  Dropping it lets the shared
-            # runtime shrink under the cacheable-runtime size budget while the
-            # full public ABI still resolves for every app.
-            flags = f"{shared_import_flags}{runtime_exports}"
-    rustflags = env.get("RUSTFLAGS", "").strip()
-    if flags:
-        rustflags = f"{rustflags} {flags}".strip()
-    # Disable reference-types so that LLVM (Rust 1.94+ / LLVM 21+) does not
-    # emit GC-proposal rec groups or `exact` heap types.  These are rejected
-    # by Cloudflare Workers' V8 and by wasm-opt without --all-features.
-    # Enable WASM SIMD (128-bit) for vectorized string/bytes operations.
-    # Freestanding builds use the conservative baseline because the WASI stub
-    # rewriter currently cannot remap SIMD-prefixed instruction streams.
-    if "-C target-feature" not in rustflags:
-        tf_parts = ["-reference-types"]
-        if simd_enabled:
-            tf_parts.append("+simd128")
-        rustflags = f"{rustflags} -C target-feature={','.join(tf_parts)}".strip()
-    elif "-reference-types" not in rustflags:
-        # Caller already set -C target-feature; append the ref-types disable.
-        rustflags = rustflags.replace(
-            "-C target-feature=", "-C target-feature=-reference-types,", 1
+        # Split-runtime size policy (feedback_wasm_export_treeshaking: "only
+        # export table refs for split-runtime builds").  --export-dynamic exports
+        # every defined Rust symbol — thousands of mangled
+        # serde_json/num_bigint/alloc/core internals.  Those leaked exports (a)
+        # bloat the export-name section by ~800KB of mangled strings and (b) pin
+        # internal-only functions as wasm-opt GC roots, blocking
+        # --remove-unused-module-elements from stripping ~MBs of dead code. The
+        # public surface is fully described by the explicit
+        # wasm_runtime_export_link_args() allowlist plus the post-link
+        # __molt_table_ref_* export pass (_export_wasm_table_refs), so
+        # --export-dynamic is pure bloat here.
+        link_flags = f"{shared_import_flags}{runtime_exports}"
+        cargo_link_flags = _wasm_link_args_response_rustflags(
+            root,
+            label=f"runtime.{_resolve_wasm_cargo_profile(cargo_profile)}.shared",
+            link_flags=link_flags,
         )
-    if freestanding and 'getrandom_backend="' not in rustflags:
-        rustflags = f'{rustflags} --cfg getrandom_backend="unsupported"'.strip()
+    base_rustflags = env.get("RUSTFLAGS", "").strip()
+    cargo_rustflags = _append_rustflags_text(base_rustflags, cargo_link_flags)
+    fingerprint_rustflags = _append_rustflags_text(base_rustflags, link_flags)
+    cargo_rustflags = _wasm_runtime_codegen_rustflags(
+        cargo_rustflags,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+    )
+    fingerprint_rustflags = _wasm_runtime_codegen_rustflags(
+        fingerprint_rustflags,
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+    )
     cargo_runtime_features = tuple(
         ["molt_gpu_primitives"] + (["wasm_freestanding"] if freestanding else [])
     )
@@ -28597,7 +28735,7 @@ def _ensure_runtime_wasm(
         root,
         cargo_profile=cargo_profile,
         target_triple="wasm32-wasip1",
-        rustflags=rustflags,
+        rustflags=fingerprint_rustflags,
         runtime_features=fingerprint_features,
         stored_fingerprint=stored_fingerprint,
     )
@@ -28618,9 +28756,7 @@ def _ensure_runtime_wasm(
         if (
             not reloc
             and target_runtime_wasm_current is not None
-            and (
-                target_runtime_wasm := target_runtime_wasm_current[0]
-            )
+            and (target_runtime_wasm := target_runtime_wasm_current[0])
             and _inspect_wasm_binary(target_runtime_wasm) == "valid"
             and _is_valid_shared_runtime_wasm_artifact(target_runtime_wasm)
             and (
@@ -28761,8 +28897,8 @@ def _ensure_runtime_wasm(
             )
         if not json_output:
             print("Runtime sources changed; rebuilding runtime...", file=sys.stderr)
-        if rustflags:
-            env["RUSTFLAGS"] = rustflags
+        if cargo_rustflags:
+            env["RUSTFLAGS"] = cargo_rustflags
         if os.environ.get("MOLT_WASM_FORCE_CC") == "1":
             _configure_wasm_cc_env(env)
         # Deterministic proof builds default Cargo incremental off at the env
@@ -28865,13 +29001,11 @@ def _ensure_runtime_wasm(
                     fingerprint,
                     artifact=runtime_wasm,
                 )
-                reported_staticlib_fingerprint_path = (
-                    _runtime_target_fingerprint_path(
-                        target_build_state_root,
-                        src,
-                        cargo_profile=cargo_profile,
-                        target_label=target_label,
-                    )
+                reported_staticlib_fingerprint_path = _runtime_target_fingerprint_path(
+                    target_build_state_root,
+                    src,
+                    cargo_profile=cargo_profile,
+                    target_label=target_label,
                 )
                 reported_staticlib_fingerprint_path.parent.mkdir(
                     parents=True,
@@ -33075,7 +33209,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         level="warning",
         advice=[
             "Run: molt run examples/hello.py to auto-build and materialize runtime aliases",
-            "Raw cargo builds only refresh scratch libmolt_runtime.a; Molt publishes profile-qualified aliases",
+            "Raw cargo builds only refresh the platform staticlib scratch artifact; Molt publishes profile-qualified aliases",
         ]
         if not runtime_exists
         else None,
@@ -33476,7 +33610,14 @@ def doctor(
 def _planned_validate_steps(
     root: Path,
     *,
-    suite: Literal["full", "smoke", "commands", "conformance", "bench"],
+    suite: Literal[
+        "full",
+        "smoke",
+        "commands",
+        "conformance",
+        "bench",
+        "custody-proof",
+    ],
     backend: Literal["all", "native", "llvm", "wasm", "luau"],
     profile: Literal["all", "dev", "release"],
 ) -> list[_ValidationStep]:
@@ -33539,6 +33680,25 @@ def _planned_validate_steps(
             [
                 python,
                 "tools/check_memory_guard_wiring.py",
+            ],
+            root,
+            "command",
+            ("native", "llvm", "wasm", "luau"),
+            ("dev", "release"),
+            "smoke",
+        ),
+        _ValidationStep(
+            "custody-proof",
+            [
+                python,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_memory_guard_wiring.py",
+                "tests/tools/test_memory_guard_windows_sampling.py",
+                "tests/tools/test_process_sentinel.py",
+                "tests/cli/test_cli_smoke.py::test_cli_hash_seed_windows_handoff_waits_for_restarted_process",
+                "tests/cli/test_cli_smoke.py::test_cli_hash_seed_reexec_argv_uses_active_python_executable",
             ],
             root,
             "command",
@@ -33826,6 +33986,8 @@ def _planned_validate_steps(
 
     selected: list[_ValidationStep] = []
     for step in steps:
+        if suite == "custody-proof" and step.name != "custody-proof":
+            continue
         if suite == "commands" and step.category != "command":
             continue
         if suite == "conformance" and step.category != "conformance":
@@ -33925,9 +34087,28 @@ def _persist_validate_summary(
     return None
 
 
+def _validate_proof_bypass_errors(env: Mapping[str, str]) -> list[str]:
+    errors: list[str] = []
+    for key in sorted(_VALIDATE_PROOF_BYPASS_ENV):
+        value = env.get(key)
+        if value is None or value.strip().lower() in _FALSY_ENV_VALUES:
+            continue
+        errors.append(
+            f"{key}={value} disables a validation proof gate; unset it before running molt validate."
+        )
+    return errors
+
+
 def validate(
     *,
-    suite: Literal["full", "smoke", "commands", "conformance", "bench"] = "full",
+    suite: Literal[
+        "full",
+        "smoke",
+        "commands",
+        "conformance",
+        "bench",
+        "custody-proof",
+    ] = "full",
     backend: Literal["all", "native", "llvm", "wasm", "luau"] = "all",
     profile: Literal["all", "dev", "release"] = "all",
     json_output: bool = False,
@@ -33939,6 +34120,9 @@ def validate(
     root_error = _require_molt_root(root, json_output, "validate")
     if root_error is not None:
         return root_error
+    bypass_errors = _validate_proof_bypass_errors(os.environ)
+    if bypass_errors:
+        return _fail(" ".join(bypass_errors), json_output, command="validate")
     steps = _planned_validate_steps(
         root,
         suite=suite,
@@ -34173,8 +34357,7 @@ class _ExtensionScanSurface:
 
 def _extract_numpy_fail_fast_symbols(text: str) -> set[str]:
     return {
-        match.group("symbol")
-        for match in _NUMPY_FAIL_FAST_SYMBOL_RE.finditer(text)
+        match.group("symbol") for match in _NUMPY_FAIL_FAST_SYMBOL_RE.finditer(text)
     }
 
 
@@ -34259,7 +34442,10 @@ def _iter_extension_scan_dir_sources(root: Path) -> list[Path]:
         current = Path(current_root)
         for filename in sorted(filenames):
             path = current / filename
-            if path.is_symlink() or path.suffix.lower() not in _EXTENSION_SCAN_SOURCE_SUFFIXES:
+            if (
+                path.is_symlink()
+                or path.suffix.lower() not in _EXTENSION_SCAN_SOURCE_SUFFIXES
+            ):
                 continue
             source_paths.append(path.resolve())
     return source_paths
@@ -34356,9 +34542,7 @@ def extension_scan(
     if root_error is not None:
         return root_error
 
-    scan_surface, header_path, header_error = _load_py_c_api_scan_surface(
-        molt_root
-    )
+    scan_surface, header_path, header_error = _load_py_c_api_scan_surface(molt_root)
     if header_error is not None:
         return _fail(
             f"Failed to read libmolt Python.h surface ({header_path}): {header_error}",
@@ -34505,8 +34689,7 @@ def extension_scan(
         if verbose:
             for file_path in sorted(fail_fast_by_file):
                 print(
-                    f"{file_path} fail-fast: "
-                    f"{', '.join(fail_fast_by_file[file_path])}"
+                    f"{file_path} fail-fast: {', '.join(fail_fast_by_file[file_path])}"
                 )
             for file_path in sorted(missing_by_file):
                 print(f"{file_path} missing: {', '.join(missing_by_file[file_path])}")
@@ -37298,6 +37481,7 @@ def _completion_script(shell: str) -> str:
             "--type-hints",
             "--fallback",
             "--type-facts",
+            "--python-version",
             "--pgo-profile",
             "--output",
             "--out-dir",
@@ -37339,6 +37523,7 @@ def _completion_script(shell: str) -> str:
         "run": [
             "--module",
             "--build-arg",
+            "--python-version",
             "--profile",
             "--build-profile",
             "--rebuild",
@@ -37708,6 +37893,57 @@ def _build_args_has_profile_flag(args: list[str]) -> bool:
     return False
 
 
+def _is_windows_process_model() -> bool:
+    return os.name == "nt"
+
+
+def _flush_standard_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def _process_exit_code(returncode: int | None) -> int:
+    if returncode is None:
+        return 1
+    if returncode < 0:
+        return 128 + abs(returncode)
+    return returncode
+
+
+def _cli_hash_seed_reexec_argv() -> list[str] | None:
+    orig_argv = list(getattr(sys, "orig_argv", ()) or ())
+    if len(orig_argv) >= 2 and orig_argv[1] not in {"-c", "-"}:
+        return [sys.executable, *orig_argv[1:]]
+    if not sys.argv or sys.argv[0] in {"", "-c", "-"}:
+        return None
+    argv0 = sys.argv[0]
+    has_sep = os.sep in argv0 or (os.altsep is not None and os.altsep in argv0)
+    if has_sep or Path(argv0).exists() or shutil.which(argv0):
+        return [sys.executable, *sys.argv]
+    return None
+
+
+def _reexec_cli_with_hash_seed(env: Mapping[str, str]) -> None:
+    argv = _cli_hash_seed_reexec_argv()
+    if argv is None:
+        return
+    if _is_windows_process_model():
+        try:
+            completed = subprocess.run(argv, env=dict(env), check=False)
+        except OSError as exc:
+            print(
+                f"molt: failed to restart with PYTHONHASHSEED: {exc}", file=sys.stderr
+            )
+            _flush_standard_streams()
+            os._exit(127)
+        _flush_standard_streams()
+        os._exit(_process_exit_code(completed.returncode))
+    os.execvpe(argv[0], argv, env)
+
+
 def _ensure_cli_hash_seed() -> None:
     desired = os.environ.get(_HASH_SEED_OVERRIDE_ENV, "0").strip()
     if not desired:
@@ -37721,7 +37957,7 @@ def _ensure_cli_hash_seed() -> None:
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = desired
     env[_HASH_SEED_SENTINEL_ENV] = "1"
-    os.execvpe(sys.executable, [sys.executable, *sys.argv], env)
+    _reexec_cli_with_hash_seed(env)
 
 
 _BUILD_ESSENTIAL_FLAGS = frozenset(
@@ -40133,7 +40369,7 @@ def main() -> int:
     )
     validate_parser.add_argument(
         "--suite",
-        choices=["full", "smoke", "commands", "conformance", "bench"],
+        choices=_VALIDATE_SUITE_CHOICES,
         default="full",
         help="Validation scope (default: full).",
     )

@@ -56,16 +56,35 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         "object_new_bound" => Some(OpCode::ObjectNewBound),
         "object_new_bound_stack" => Some(OpCode::ObjectNewBoundStack),
         "free" => Some(OpCode::Free),
-        "get_attr" | "get_attr_generic_ptr" | "get_attr_generic_obj" | "get_attr_name" | "guarded_field_get" | "load" | "load_attr" => Some(OpCode::LoadAttr),
-        "set_attr" | "store_attr" | "set_attr_name" | "set_attr_generic_ptr" | "set_attr_generic_obj" | "guarded_field_set" | "guarded_field_set_init" | "store" | "store_init" => Some(OpCode::StoreAttr),
-        "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => Some(OpCode::DelAttr),
+        "get_attr"
+        | "get_attr_generic_ptr"
+        | "get_attr_generic_obj"
+        | "get_attr_name"
+        | "guarded_field_get"
+        | "load"
+        | "load_attr" => Some(OpCode::LoadAttr),
+        "set_attr"
+        | "store_attr"
+        | "set_attr_name"
+        | "set_attr_generic_ptr"
+        | "set_attr_generic_obj"
+        | "guarded_field_set"
+        | "guarded_field_set_init"
+        | "store"
+        | "store_init" => Some(OpCode::StoreAttr),
+        "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => {
+            Some(OpCode::DelAttr)
+        }
         "index" => Some(OpCode::Index),
         "store_index" | "index_set" => Some(OpCode::StoreIndex),
         "del_index" => Some(OpCode::DelIndex),
         "delete_var" => Some(OpCode::DeleteVar),
-        "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind" | "call_function" | "call_guarded" | "invoke_ffi" => Some(OpCode::Call),
+        "call" | "call_func" | "call_internal" | "call_indirect" | "call_bind"
+        | "call_function" | "call_guarded" | "invoke_ffi" => Some(OpCode::Call),
         // GPU offload primitives lower through the call machinery.
-        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => Some(OpCode::Call),
+        "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim" | "gpu_barrier" => {
+            Some(OpCode::Call)
+        }
         "call_method" => Some(OpCode::CallMethod),
         "call_builtin" | "builtin_print" | "print" | "range_new" => Some(OpCode::CallBuiltin),
         "ord_at" => Some(OpCode::OrdAt),
@@ -135,52 +154,55 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
 pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
     matches!(
         kind,
-        "aiter" |
-        "ascii_from_obj" |
-        "complex_from_obj" |
-        "contains" |
-        "dict_from_obj" |
-        "dict_items" |
-        "dict_keys" |
-        "dict_new" |
-        "dict_values" |
-        "enumerate" |
-        "exception_new" |
-        "exception_new_builtin" |
-        "exception_new_builtin_empty" |
-        "exception_new_builtin_one" |
-        "exception_new_from_class" |
-        "float_from_obj" |
-        "frozenset_new" |
-        "inplace_bit_and" |
-        "inplace_bit_or" |
-        "inplace_bit_xor" |
-        "inplace_div" |
-        "inplace_floordiv" |
-        "inplace_lshift" |
-        "inplace_matmul" |
-        "inplace_mod" |
-        "inplace_pow" |
-        "inplace_rshift" |
-        "int_from_obj" |
-        "int_from_str_of_obj" |
-        "iter" |
-        "list_fill_new" |
-        "list_from_range" |
-        "list_new" |
-        "list_pop" |
-        "object_new" |
-        "range_new" |
-        "repr_from_obj" |
-        "set_new" |
-        "slice" |
-        "slice_new" |
-        "str_from_obj" |
-        "string_format" |
-        "string_join" |
-        "string_split_field_to_int" |
-        "tuple_from_list" |
-        "tuple_new"
+        "aiter"
+            | "ascii_from_obj"
+            | "complex_from_obj"
+            | "contains"
+            | "dataclass_new"
+            | "dataclass_new_values"
+            | "dict_from_obj"
+            | "dict_items"
+            | "dict_keys"
+            | "dict_new"
+            | "dict_values"
+            | "enumerate"
+            | "exception_new"
+            | "exception_new_builtin"
+            | "exception_new_builtin_empty"
+            | "exception_new_builtin_one"
+            | "exception_new_from_class"
+            | "float_from_obj"
+            | "frozenset_new"
+            | "inplace_bit_and"
+            | "inplace_bit_or"
+            | "inplace_bit_xor"
+            | "inplace_div"
+            | "inplace_floordiv"
+            | "inplace_lshift"
+            | "inplace_matmul"
+            | "inplace_mod"
+            | "inplace_pow"
+            | "inplace_rshift"
+            | "int_from_obj"
+            | "int_from_str_of_obj"
+            | "iter"
+            | "list_fill_new"
+            | "list_from_range"
+            | "list_new"
+            | "list_pop"
+            | "matmul"
+            | "object_new"
+            | "range_new"
+            | "repr_from_obj"
+            | "set_new"
+            | "slice"
+            | "slice_new"
+            | "str_from_obj"
+            | "string_format"
+            | "string_join"
+            | "string_split_field_to_int"
+            | "tuple_from_list"
+            | "tuple_new"
     )
 }
 
@@ -192,20 +214,18 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
 pub(crate) fn copy_kind_is_exception_creation_ref_table(kind: &str) -> bool {
     matches!(
         kind,
-        "exception_new" |
-        "exception_new_builtin" |
-        "exception_new_builtin_empty" |
-        "exception_new_builtin_one" |
-        "exception_new_from_class"
+        "exception_new"
+            | "exception_new_builtin"
+            | "exception_new_builtin_empty"
+            | "exception_new_builtin_one"
+            | "exception_new_from_class"
     )
 }
 
 /// Prefix rules for `copy_kind_mints_fresh_owned_ref`: a kind starting
 /// with any of these mints a fresh owned reference (e.g. the `vec_*`
 /// vectorized-reduction family, each calling a dedicated `molt_vec_*`).
-pub(crate) const FRESH_VALUE_PREFIXES: &[&str] = &[
-    "vec_",
-];
+pub(crate) const FRESH_VALUE_PREFIXES: &[&str] = &["vec_"];
 
 /// EXACT-match arm of `classify_copy_kind`'s inert bucket: kinds with a
 /// dedicated RC-inert backend lowering and no surviving heap reference to
@@ -214,19 +234,237 @@ pub(crate) const FRESH_VALUE_PREFIXES: &[&str] = &[
 pub(crate) fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
     matches!(
         kind,
-        "guard_bool" |
-        "guard_dict_shape" |
-        "guard_float" |
-        "guard_int" |
-        "guard_layout" |
-        "guard_layout_ptr" |
-        "guard_none" |
-        "guard_str" |
-        "line" |
-        "missing" |
-        "nop" |
-        "trace_enter_slot" |
-        "trace_exit"
+        "guard_bool"
+            | "guard_dict_shape"
+            | "guard_float"
+            | "guard_int"
+            | "guard_layout"
+            | "guard_layout_ptr"
+            | "guard_none"
+            | "guard_str"
+            | "line"
+            | "missing"
+            | "nop"
+            | "trace_enter_slot"
+            | "trace_exit"
+    )
+}
+
+/// EXACT-match arm of `classify_copy_kind`'s explicit transparent-alias
+/// bucket: known Copy-lifted runtime ops that intentionally keep the
+/// drop-insertion fail-closed behavior (not FreshValue, not InertMarker)
+/// while remaining distinct from `copy_kind_is_explicit_no_heap_move`.
+/// Membership here DOES NOT grant MemGVN/SROA no-heap-move privileges.
+#[inline]
+pub(crate) fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
+    matches!(
+        kind,
+        "alloc_class"
+            | "alloc_class_static"
+            | "alloc_class_trusted"
+            | "anext"
+            | "asyncgen_locals_register"
+            | "asyncgen_new"
+            | "asyncgen_shutdown"
+            | "bound_method_new"
+            | "block_on"
+            | "bridge_unavailable"
+            | "buffer2d_get"
+            | "buffer2d_matmul"
+            | "buffer2d_new"
+            | "buffer2d_set"
+            | "builtin_type"
+            | "bytearray_count"
+            | "bytearray_count_slice"
+            | "bytearray_endswith"
+            | "bytearray_endswith_slice"
+            | "bytearray_fill_range"
+            | "bytearray_find"
+            | "bytearray_find_slice"
+            | "bytearray_from_obj"
+            | "bytearray_from_str"
+            | "bytearray_replace"
+            | "bytearray_split"
+            | "bytearray_split_max"
+            | "bytearray_startswith"
+            | "bytearray_startswith_slice"
+            | "bytes_count"
+            | "bytes_count_slice"
+            | "bytes_endswith"
+            | "bytes_endswith_slice"
+            | "bytes_find"
+            | "bytes_find_slice"
+            | "bytes_from_obj"
+            | "bytes_from_str"
+            | "bytes_replace"
+            | "bytes_split"
+            | "bytes_split_max"
+            | "bytes_startswith"
+            | "bytes_startswith_slice"
+            | "callargs_expand_kwstar"
+            | "callargs_expand_star"
+            | "callargs_new"
+            | "callargs_push_kw"
+            | "callargs_push_pos"
+            | "cancel_current"
+            | "cancel_token_cancel"
+            | "cancel_token_clone"
+            | "cancel_token_drop"
+            | "cancel_token_get_current"
+            | "cancel_token_is_cancelled"
+            | "cancel_token_new"
+            | "cancel_token_set_current"
+            | "cancelled"
+            | "chan_drop"
+            | "chan_new"
+            | "chr"
+            | "class_apply_set_name"
+            | "class_layout_version"
+            | "class_merge_layout"
+            | "class_new"
+            | "class_set_base"
+            | "class_set_layout_version"
+            | "classmethod_new"
+            | "code_new"
+            | "code_slot_set"
+            | "code_slots_init"
+            | "context_closing"
+            | "context_depth"
+            | "context_enter"
+            | "context_exit"
+            | "context_null"
+            | "context_unwind"
+            | "context_unwind_to"
+            | "dataclass_get"
+            | "dataclass_set"
+            | "dataclass_set_class"
+            | "dict_clear"
+            | "dict_copy"
+            | "dict_get"
+            | "dict_inc"
+            | "dict_pop"
+            | "dict_popitem"
+            | "dict_set"
+            | "dict_setdefault"
+            | "dict_setdefault_empty_list"
+            | "dict_str_int_inc"
+            | "dict_update"
+            | "dict_update_kwstar"
+            | "dict_update_missing"
+            | "env_get"
+            | "exception_class"
+            | "exception_clear"
+            | "exception_context_set"
+            | "exception_kind"
+            | "exception_last"
+            | "exception_last_pending"
+            | "exception_match_builtin"
+            | "exception_message"
+            | "exception_pop"
+            | "exception_push"
+            | "exception_set_cause"
+            | "exception_set_last"
+            | "exception_stack_clear"
+            | "exception_stack_depth"
+            | "exception_stack_enter"
+            | "exception_stack_exit"
+            | "exception_stack_set_depth"
+            | "exceptiongroup_combine"
+            | "exceptiongroup_match"
+            | "file_close"
+            | "file_flush"
+            | "file_open"
+            | "file_read"
+            | "file_write"
+            | "fn_ptr_code_set"
+            | "frame_locals_set"
+            | "frozenset_add"
+            | "func_new"
+            | "func_new_closure"
+            | "function_closure_bits"
+            | "future_cancel"
+            | "future_cancel_clear"
+            | "future_cancel_msg"
+            | "gen_locals_register"
+            | "get_attr_name_default"
+            | "has_attr_name"
+            | "id"
+            | "intarray_from_seq"
+            | "invert"
+            | "is_bound_method"
+            | "is_callable"
+            | "is_generator"
+            | "is_native_awaitable"
+            | "isinstance"
+            | "issubclass"
+            | "len"
+            | "list_append"
+            | "list_clear"
+            | "list_copy"
+            | "list_count"
+            | "list_extend"
+            | "list_index"
+            | "list_index_range"
+            | "list_insert"
+            | "list_int_new"
+            | "list_remove"
+            | "list_reverse"
+            | "memoryview_new"
+            | "memoryview_tobytes"
+            | "module_import_star"
+            | "module_new"
+            | "ord"
+            | "pow_mod"
+            | "print_newline"
+            | "promise_set_exception"
+            | "promise_set_result"
+            | "promise_new"
+            | "property_new"
+            | "round"
+            | "set_add"
+            | "set_add_probe"
+            | "set_difference_update"
+            | "set_discard"
+            | "set_intersection_update"
+            | "set_pop"
+            | "set_remove"
+            | "set_symdiff_update"
+            | "set_update"
+            | "spawn"
+            | "staticmethod_new"
+            | "statistics_mean_slice"
+            | "statistics_stdev_slice"
+            | "string_capitalize"
+            | "string_count"
+            | "string_count_slice"
+            | "string_endswith"
+            | "string_endswith_slice"
+            | "string_find"
+            | "string_find_slice"
+            | "string_lower"
+            | "string_lstrip"
+            | "string_replace"
+            | "string_rstrip"
+            | "string_split"
+            | "string_split_field"
+            | "string_split_field_eq"
+            | "string_split_field_len"
+            | "string_split_max"
+            | "string_split_sep_dict_inc"
+            | "string_split_validate"
+            | "string_split_ws_dict_inc"
+            | "string_startswith"
+            | "string_startswith_slice"
+            | "string_strip"
+            | "string_upper"
+            | "super_new"
+            | "taq_ingest_line"
+            | "task_register_token_owned"
+            | "thread_submit"
+            | "trunc"
+            | "tuple_count"
+            | "tuple_index"
+            | "type_of"
     )
 }
 
@@ -238,29 +476,13 @@ pub(crate) fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
 pub(crate) fn copy_kind_is_explicit_no_heap_move_table(kind: &str) -> bool {
     matches!(
         kind,
-        "copy" |
-        "copy_var" |
-        "guard_tag" |
-        "guard_type" |
-        "identity_alias" |
-        "load_var" |
-        "store_var"
-    )
-}
-
-/// EXACT-match arm of the ownership-lattice absorbing-constructor rule
-/// (`ownership_lattice_min.rs`): Copy-lifted constructor kinds whose RESULT
-/// takes (co-)ownership of its element operands — releasing the result
-/// releases the elements, so a finalizer-sensitive element makes the result
-/// finalizer-sensitive. Over-approximation is the SAFE direction here (a
-/// non-finalizer value marked sensitive merely has its release deferred to
-/// the Python lifetime boundary — unobservable); a missing member keeps the
-/// pre-#58 SSA-last-use release for that shape.
-#[inline]
-pub(crate) fn copy_kind_absorbs_elements_table(kind: &str) -> bool {
-    matches!(
-        kind,
-        "\0__never__"
+        "copy"
+            | "copy_var"
+            | "guard_tag"
+            | "guard_type"
+            | "identity_alias"
+            | "load_var"
+            | "store_var"
     )
 }
 
@@ -643,8 +865,7 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
 /// `ContainerAbsorb` marks borrowed operands retained by container/storage
 /// mutation; `Transferred`
 /// seeds the per-TERMINATOR table (design 27 §2.4 transfer sites — ladder
-/// #72). One variant still names an EXISTING molt fact whose hand-list
-/// migrates into ownership rows in a follow-up tranche:
+/// #72). Every variant below is constructed by a generated table today:
 ///   * `Transferred` — ownership moves OUT of the function/block: a
 ///     `Return` value or a branch-arg passed into a successor block arg.
 ///     LIVE: constructed by `terminator_operand_ownership_table` and read
@@ -660,19 +881,9 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
 ///     this operand while the caller still owns the producer temp ref. This
 ///     gives DropInsertion a shared release boundary for absorbed temps
 ///     without making the mutator consume the operand.
-///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:
-///     valid only on the not-exhausted edge, NEVER unconditionally
-///     droppable (stale stack garbage on the exhaustion edge). The LONE
-///     remaining `from_str`-only variant (its consumer hand-list —
-///     `iter_cond_value_results` — migrates in the iter-cond tranche, #74).
 ///   * `NoOperandOwnership` — no ref-bearing operand in that category (a
 ///     raw lane; a terminator category absent on a variant — `Branch` has
 ///     no direct operand, `Return` forwards no branch arg).
-// `ConditionalValidOnlyOnEdge` is the only variant still seeded solely by
-// `from_str` (awaiting the iter-cond consumer migration). The schema is
-// kept ALIVE (not ornamental) by `ALL` + `from_str`/`as_str` below: every
-// variant is constructed and round-tripped, so a dropped or renamed
-// variant is a compile/test failure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OperandOwnership {
     Borrowed,
@@ -680,68 +891,7 @@ pub(crate) enum OperandOwnership {
     Transferred,
     InteriorBorrowKeepAlive,
     ContainerAbsorb,
-    ConditionalValidOnlyOnEdge,
     NoOperandOwnership,
-}
-
-// Parse/render path for the operand-ownership vocabulary. `Transferred`
-// is LIVE through `terminator_operand_ownership_table` (ladder #72) and
-// `InteriorBorrowKeepAlive` through `opcode_operand_ownership_table` /
-// `opcode_borrows_source_operand` (ladder #73); `from_str` remains the
-// toml-ingest path the LAST migration (the `conditional_valid_only_on_edge`
-// row, #74) reads and is not yet wired to a runtime caller, so
-// `from_str`/`as_str`/`ALL` keep allow(dead_code) — SCOPED to this
-// forward-compat parse API, never the enum (every variant is constructed)
-// nor the file. `ALL` + the round-trip test keep every variant constructed
-// and live today.
-#[allow(dead_code)]
-impl OperandOwnership {
-    pub(crate) const ALL: [OperandOwnership; 7] = [
-        OperandOwnership::Borrowed,
-        OperandOwnership::Consumed,
-        OperandOwnership::Transferred,
-        OperandOwnership::InteriorBorrowKeepAlive,
-        OperandOwnership::ContainerAbsorb,
-        OperandOwnership::ConditionalValidOnlyOnEdge,
-        OperandOwnership::NoOperandOwnership,
-    ];
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            OperandOwnership::Borrowed => "borrowed",
-            OperandOwnership::Consumed => "consumed",
-            OperandOwnership::Transferred => "transferred",
-            OperandOwnership::InteriorBorrowKeepAlive => "interior_borrow_keepalive",
-            OperandOwnership::ContainerAbsorb => "container_absorb",
-            OperandOwnership::ConditionalValidOnlyOnEdge => "conditional_valid_only_on_edge",
-            OperandOwnership::NoOperandOwnership => "no_operand_ownership",
-        }
-    }
-    pub(crate) fn from_str(s: &str) -> Option<OperandOwnership> {
-        match s {
-            "borrowed" => Some(OperandOwnership::Borrowed),
-            "consumed" => Some(OperandOwnership::Consumed),
-            "transferred" => Some(OperandOwnership::Transferred),
-            "interior_borrow_keepalive" => Some(OperandOwnership::InteriorBorrowKeepAlive),
-            "container_absorb" => Some(OperandOwnership::ContainerAbsorb),
-            "conditional_valid_only_on_edge" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),
-            "no_operand_ownership" => Some(OperandOwnership::NoOperandOwnership),
-            _ => None,
-        }
-    }
-}
-
-#[cfg(test)]
-mod operand_ownership_schema_tests {
-    use super::OperandOwnership;
-    #[test]
-    fn every_variant_round_trips() {
-        // The schema is alive: every declared variant parses + renders +
-        // round-trips. Dropping or renaming a variant breaks this test.
-        for v in OperandOwnership::ALL {
-            assert_eq!(OperandOwnership::from_str(v.as_str()), Some(v));
-        }
-        assert_eq!(OperandOwnership::from_str("bogus"), None);
-    }
 }
 
 /// Per-OpCode operand-ownership DEFAULT: how `OpCode` treats the operand
@@ -799,8 +949,15 @@ pub(crate) fn opcode_operand_ownership_table(
         OpCode::LoadAttr => OperandOwnership::InteriorBorrowKeepAlive,
         OpCode::StoreAttr => OperandOwnership::Borrowed,
         OpCode::DelAttr => OperandOwnership::Borrowed,
-        OpCode::Index => match operand_idx { 0 => OperandOwnership::InteriorBorrowKeepAlive, _ => OperandOwnership::Borrowed },
-        OpCode::StoreIndex => match operand_idx { 0 => OperandOwnership::Borrowed, 1 => OperandOwnership::Borrowed, _ => OperandOwnership::ContainerAbsorb },
+        OpCode::Index => match operand_idx {
+            0 => OperandOwnership::InteriorBorrowKeepAlive,
+            _ => OperandOwnership::Borrowed,
+        },
+        OpCode::StoreIndex => match operand_idx {
+            0 => OperandOwnership::Borrowed,
+            1 => OperandOwnership::Borrowed,
+            _ => OperandOwnership::ContainerAbsorb,
+        },
         OpCode::DelIndex => OperandOwnership::Borrowed,
         OpCode::DeleteVar => OperandOwnership::Borrowed,
         OpCode::Call => OperandOwnership::Borrowed,
@@ -857,7 +1014,11 @@ pub(crate) fn opcode_operand_ownership_table(
         OpCode::ModuleImportFrom => OperandOwnership::Borrowed,
         OpCode::ModuleGetGlobal => OperandOwnership::Borrowed,
         OpCode::ModuleGetName => OperandOwnership::Borrowed,
-        OpCode::ModuleSetAttr => match operand_idx { 0 => OperandOwnership::Borrowed, 1 => OperandOwnership::Borrowed, _ => OperandOwnership::ContainerAbsorb },
+        OpCode::ModuleSetAttr => match operand_idx {
+            0 => OperandOwnership::Borrowed,
+            1 => OperandOwnership::Borrowed,
+            _ => OperandOwnership::ContainerAbsorb,
+        },
         OpCode::ModuleDelGlobal => OperandOwnership::Borrowed,
         OpCode::ModuleDelGlobalIfPresent => OperandOwnership::Borrowed,
         OpCode::WarnStderr => OperandOwnership::Borrowed,
@@ -1062,11 +1223,7 @@ pub(crate) fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> b
 /// `result_mints_owned_selected_operand` rows in op_kinds.toml.
 #[inline]
 pub(crate) fn opcode_result_mints_owned_selected_operand_table(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::And |
-        OpCode::Or
-    )
+    matches!(opcode, OpCode::And | OpCode::Or)
 }
 
 /// Same selected-alias result ownership fact keyed by SimpleIR kind spelling.
@@ -1074,8 +1231,7 @@ pub(crate) fn opcode_result_mints_owned_selected_operand_table(opcode: OpCode) -
 /// `and`/`or` list by hand.
 #[inline]
 pub(crate) fn kind_result_mints_owned_selected_operand_table(kind: &str) -> bool {
-    kind_to_opcode_table(kind)
-        .is_some_and(opcode_result_mints_owned_selected_operand_table)
+    kind_to_opcode_table(kind).is_some_and(opcode_result_mints_owned_selected_operand_table)
 }
 
 /// Result-side ownership-transfer fact for Copy-lifted SimpleIR spellings.
@@ -1084,12 +1240,9 @@ pub(crate) fn kind_result_mints_owned_selected_operand_table(kind: &str) -> bool
 /// the finalizer/escape ownership fact with first-class Build* opcodes.
 #[inline]
 pub(crate) fn kind_result_absorbs_operand_ownership_table(kind: &str) -> bool {
-    matches!(kind,
-        "dict_new" |
-        "frozenset_new" |
-        "list_new" |
-        "set_new" |
-        "tuple_new"
+    matches!(
+        kind,
+        "dict_new" | "frozenset_new" | "list_new" | "set_new" | "tuple_new"
     )
 }
 
@@ -1098,11 +1251,154 @@ pub(crate) fn kind_result_absorbs_operand_ownership_table(kind: &str) -> bool {
 /// sensitivity is inherited from one source operand, but whose own
 /// temporary ref should release at the statement unless Python-bound.
 #[inline]
-pub(crate) fn kind_result_finalizer_source_operand_table(kind: &str, _arity: usize) -> Option<usize> {
+pub(crate) fn kind_result_finalizer_source_operand_table(
+    kind: &str,
+    _arity: usize,
+) -> Option<usize> {
     match kind {
         "list_pop" => Some(0),
         _ => None,
     }
+}
+
+/// Result-validity fact for op results whose bits are not valid on every
+/// outgoing edge. `ConditionalValidOnlyOnEdge` is the §2.8
+/// `IterNextUnboxed` value-out: result 0 is initialized only on the
+/// not-done edge and must never be dropped or retained from the exhaustion
+/// edge. EXHAUSTIVE over OpCode; result indices not listed for an opcode
+/// are unconditionally valid.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ResultValidity {
+    AlwaysValid,
+    ConditionalValidOnlyOnEdge,
+}
+
+#[inline]
+pub(crate) fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> ResultValidity {
+    match opcode {
+        OpCode::Add => ResultValidity::AlwaysValid,
+        OpCode::Sub => ResultValidity::AlwaysValid,
+        OpCode::Mul => ResultValidity::AlwaysValid,
+        OpCode::CheckedAdd => ResultValidity::AlwaysValid,
+        OpCode::InplaceAdd => ResultValidity::AlwaysValid,
+        OpCode::InplaceSub => ResultValidity::AlwaysValid,
+        OpCode::InplaceMul => ResultValidity::AlwaysValid,
+        OpCode::Div => ResultValidity::AlwaysValid,
+        OpCode::FloorDiv => ResultValidity::AlwaysValid,
+        OpCode::Mod => ResultValidity::AlwaysValid,
+        OpCode::Pow => ResultValidity::AlwaysValid,
+        OpCode::Neg => ResultValidity::AlwaysValid,
+        OpCode::Pos => ResultValidity::AlwaysValid,
+        OpCode::Eq => ResultValidity::AlwaysValid,
+        OpCode::Ne => ResultValidity::AlwaysValid,
+        OpCode::Lt => ResultValidity::AlwaysValid,
+        OpCode::Le => ResultValidity::AlwaysValid,
+        OpCode::Gt => ResultValidity::AlwaysValid,
+        OpCode::Ge => ResultValidity::AlwaysValid,
+        OpCode::Is => ResultValidity::AlwaysValid,
+        OpCode::IsNot => ResultValidity::AlwaysValid,
+        OpCode::In => ResultValidity::AlwaysValid,
+        OpCode::NotIn => ResultValidity::AlwaysValid,
+        OpCode::BitAnd => ResultValidity::AlwaysValid,
+        OpCode::BitOr => ResultValidity::AlwaysValid,
+        OpCode::BitXor => ResultValidity::AlwaysValid,
+        OpCode::BitNot => ResultValidity::AlwaysValid,
+        OpCode::Shl => ResultValidity::AlwaysValid,
+        OpCode::Shr => ResultValidity::AlwaysValid,
+        OpCode::And => ResultValidity::AlwaysValid,
+        OpCode::Or => ResultValidity::AlwaysValid,
+        OpCode::Not => ResultValidity::AlwaysValid,
+        OpCode::Bool => ResultValidity::AlwaysValid,
+        OpCode::Alloc => ResultValidity::AlwaysValid,
+        OpCode::StackAlloc => ResultValidity::AlwaysValid,
+        OpCode::ObjectNewBound => ResultValidity::AlwaysValid,
+        OpCode::ObjectNewBoundStack => ResultValidity::AlwaysValid,
+        OpCode::Free => ResultValidity::AlwaysValid,
+        OpCode::LoadAttr => ResultValidity::AlwaysValid,
+        OpCode::StoreAttr => ResultValidity::AlwaysValid,
+        OpCode::DelAttr => ResultValidity::AlwaysValid,
+        OpCode::Index => ResultValidity::AlwaysValid,
+        OpCode::StoreIndex => ResultValidity::AlwaysValid,
+        OpCode::DelIndex => ResultValidity::AlwaysValid,
+        OpCode::DeleteVar => ResultValidity::AlwaysValid,
+        OpCode::Call => ResultValidity::AlwaysValid,
+        OpCode::CallMethod => ResultValidity::AlwaysValid,
+        OpCode::CallBuiltin => ResultValidity::AlwaysValid,
+        OpCode::OrdAt => ResultValidity::AlwaysValid,
+        OpCode::BoxVal => ResultValidity::AlwaysValid,
+        OpCode::UnboxVal => ResultValidity::AlwaysValid,
+        OpCode::TypeGuard => ResultValidity::AlwaysValid,
+        OpCode::IncRef => ResultValidity::AlwaysValid,
+        OpCode::DecRef => ResultValidity::AlwaysValid,
+        OpCode::DelBoundary => ResultValidity::AlwaysValid,
+        OpCode::BuildList => ResultValidity::AlwaysValid,
+        OpCode::BuildDict => ResultValidity::AlwaysValid,
+        OpCode::BuildTuple => ResultValidity::AlwaysValid,
+        OpCode::BuildSet => ResultValidity::AlwaysValid,
+        OpCode::BuildSlice => ResultValidity::AlwaysValid,
+        OpCode::GetIter => ResultValidity::AlwaysValid,
+        OpCode::IterNext => ResultValidity::AlwaysValid,
+        OpCode::IterNextUnboxed => match result_idx {
+            0 => ResultValidity::ConditionalValidOnlyOnEdge,
+            _ => ResultValidity::AlwaysValid,
+        },
+        OpCode::ForIter => ResultValidity::AlwaysValid,
+        OpCode::AllocTask => ResultValidity::AlwaysValid,
+        OpCode::StateSwitch => ResultValidity::AlwaysValid,
+        OpCode::StateTransition => ResultValidity::AlwaysValid,
+        OpCode::StateYield => ResultValidity::AlwaysValid,
+        OpCode::ChanSendYield => ResultValidity::AlwaysValid,
+        OpCode::ChanRecvYield => ResultValidity::AlwaysValid,
+        OpCode::ClosureLoad => ResultValidity::AlwaysValid,
+        OpCode::ClosureStore => ResultValidity::AlwaysValid,
+        OpCode::Yield => ResultValidity::AlwaysValid,
+        OpCode::YieldFrom => ResultValidity::AlwaysValid,
+        OpCode::Raise => ResultValidity::AlwaysValid,
+        OpCode::CheckException => ResultValidity::AlwaysValid,
+        OpCode::ExceptionPending => ResultValidity::AlwaysValid,
+        OpCode::FunctionDefaultsVersion => ResultValidity::AlwaysValid,
+        OpCode::TryStart => ResultValidity::AlwaysValid,
+        OpCode::TryEnd => ResultValidity::AlwaysValid,
+        OpCode::StateBlockStart => ResultValidity::AlwaysValid,
+        OpCode::StateBlockEnd => ResultValidity::AlwaysValid,
+        OpCode::ConstInt => ResultValidity::AlwaysValid,
+        OpCode::ConstBigInt => ResultValidity::AlwaysValid,
+        OpCode::ConstFloat => ResultValidity::AlwaysValid,
+        OpCode::ConstStr => ResultValidity::AlwaysValid,
+        OpCode::ConstBool => ResultValidity::AlwaysValid,
+        OpCode::ConstNone => ResultValidity::AlwaysValid,
+        OpCode::ConstBytes => ResultValidity::AlwaysValid,
+        OpCode::Copy => ResultValidity::AlwaysValid,
+        OpCode::Import => ResultValidity::AlwaysValid,
+        OpCode::ImportFrom => ResultValidity::AlwaysValid,
+        OpCode::ModuleCacheGet => ResultValidity::AlwaysValid,
+        OpCode::ModuleCacheSet => ResultValidity::AlwaysValid,
+        OpCode::ModuleCacheDel => ResultValidity::AlwaysValid,
+        OpCode::ModuleGetAttr => ResultValidity::AlwaysValid,
+        OpCode::ModuleImportFrom => ResultValidity::AlwaysValid,
+        OpCode::ModuleGetGlobal => ResultValidity::AlwaysValid,
+        OpCode::ModuleGetName => ResultValidity::AlwaysValid,
+        OpCode::ModuleSetAttr => ResultValidity::AlwaysValid,
+        OpCode::ModuleDelGlobal => ResultValidity::AlwaysValid,
+        OpCode::ModuleDelGlobalIfPresent => ResultValidity::AlwaysValid,
+        OpCode::WarnStderr => ResultValidity::AlwaysValid,
+        OpCode::ScfIf => ResultValidity::AlwaysValid,
+        OpCode::ScfFor => ResultValidity::AlwaysValid,
+        OpCode::ScfWhile => ResultValidity::AlwaysValid,
+        OpCode::ScfYield => ResultValidity::AlwaysValid,
+        OpCode::Deopt => ResultValidity::AlwaysValid,
+    }
+}
+
+#[inline]
+pub(crate) fn opcode_result_is_conditionally_valid_only_on_edge(
+    opcode: OpCode,
+    result_idx: usize,
+) -> bool {
+    matches!(
+        opcode_result_validity_table(opcode, result_idx),
+        ResultValidity::ConditionalValidOnlyOnEdge
+    )
 }
 
 /// Zero-cost discriminant of the `Terminator` enum (blocks.rs) the
@@ -1155,12 +1451,22 @@ pub(crate) fn terminator_operand_ownership_table(
         (TerminatorKind::CondBranch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
         (TerminatorKind::Switch, OperandCategory::Direct) => OperandOwnership::Borrowed,
         (TerminatorKind::Switch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
-        (TerminatorKind::StateDispatch, OperandCategory::Direct) => OperandOwnership::NoOperandOwnership,
-        (TerminatorKind::StateDispatch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
+        (TerminatorKind::StateDispatch, OperandCategory::Direct) => {
+            OperandOwnership::NoOperandOwnership
+        }
+        (TerminatorKind::StateDispatch, OperandCategory::BranchArg) => {
+            OperandOwnership::Transferred
+        }
         (TerminatorKind::Return, OperandCategory::Direct) => OperandOwnership::Transferred,
-        (TerminatorKind::Return, OperandCategory::BranchArg) => OperandOwnership::NoOperandOwnership,
-        (TerminatorKind::Unreachable, OperandCategory::Direct) => OperandOwnership::NoOperandOwnership,
-        (TerminatorKind::Unreachable, OperandCategory::BranchArg) => OperandOwnership::NoOperandOwnership,
+        (TerminatorKind::Return, OperandCategory::BranchArg) => {
+            OperandOwnership::NoOperandOwnership
+        }
+        (TerminatorKind::Unreachable, OperandCategory::Direct) => {
+            OperandOwnership::NoOperandOwnership
+        }
+        (TerminatorKind::Unreachable, OperandCategory::BranchArg) => {
+            OperandOwnership::NoOperandOwnership
+        }
     }
 }
 

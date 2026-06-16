@@ -244,7 +244,7 @@ extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
     })
 }
 
-extern "C" fn c_api_test_init_stores_tag_and_drops_self(self_bits: u64, tag_bits: u64) -> u64 {
+extern "C" fn c_api_test_init_stores_tag_borrowed_self(self_bits: u64, tag_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, "RuntimeError", "__init__ self missing");
@@ -260,7 +260,6 @@ extern "C" fn c_api_test_init_stores_tag_and_drops_self(self_bits: u64, tag_bits
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        dec_ref_bits(_py, self_bits);
         result
     })
 }
@@ -507,7 +506,7 @@ fn call_bind_constructed_finalizer_element_survives_append_temp_drop_until_clear
         assert!(!del_func_ptr.is_null());
         let init_func_ptr = crate::object::builders::alloc_function_obj(
             _py,
-            c_api_test_init_stores_tag_and_drops_self as *const () as usize as u64,
+            c_api_test_init_stores_tag_borrowed_self as *const () as usize as u64,
             2,
         );
         assert!(!init_func_ptr.is_null());

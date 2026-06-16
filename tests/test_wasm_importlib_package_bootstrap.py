@@ -45,9 +45,6 @@ def _build_file_wasm(
     env.setdefault("MOLT_WASM_DISABLE_SCCACHE", "1")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
-    env.setdefault("MOLT_MIDEND_IDEMPOTENCE_CHECK", "0")
-    env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
     tmp_root = root / "tmp"
     tmp_root.mkdir(parents=True, exist_ok=True)
     env["TMPDIR"] = str(tmp_root)

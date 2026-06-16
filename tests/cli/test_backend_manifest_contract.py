@@ -145,6 +145,23 @@ def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:
     assert zip_dependency["features"] == ["deflate"]
 
 
+def test_runtime_net_io_cfg_requires_supported_native_socket_abi() -> None:
+    build_rs = (ROOT / "runtime" / "molt-runtime" / "build.rs").read_text()
+    net_stubs = (
+        ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "net_stubs.rs"
+    ).read_text()
+
+    assert 'env::var("CARGO_CFG_TARGET_FAMILY")' in build_rs
+    assert 'let native_net_target_supported = target_arch != "wasm32"' in build_rs
+    assert 'family == "unix"' in build_rs
+    assert "if native_net_target_supported" in build_rs
+    assert 'println!("cargo:rustc-cfg=molt_has_net_io")' in build_rs
+
+    assert '#[cfg(feature = "stdlib_net")]' in net_stubs
+    assert "networking not available for this runtime target" in net_stubs
+    assert "networking not available (compile with stdlib_net)" in net_stubs
+
+
 def test_runtime_manifest_uses_minimal_rustpython_parser_features() -> None:
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:

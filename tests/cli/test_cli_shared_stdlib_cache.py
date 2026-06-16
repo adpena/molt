@@ -994,12 +994,18 @@ finally:
     )
 
     assert stdlib_object.exists()
-    assert cli._stdlib_object_key_sidecar_path(stdlib_object).read_text(
-        encoding="utf-8"
-    ).strip() == key
-    assert cli._stdlib_object_manifest_sidecar_path(stdlib_object).read_text(
-        encoding="utf-8"
-    ).strip() == manifest
+    assert (
+        cli._stdlib_object_key_sidecar_path(stdlib_object)
+        .read_text(encoding="utf-8")
+        .strip()
+        == key
+    )
+    assert (
+        cli._stdlib_object_manifest_sidecar_path(stdlib_object)
+        .read_text(encoding="utf-8")
+        .strip()
+        == manifest
+    )
     assert cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).exists()
 
 
@@ -1126,6 +1132,79 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
         )
         == _partition_manifest() + "\n"
     )
+
+
+def test_native_object_symbol_sets_use_nm_candidate_ladder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    obj = tmp_path / "stdlib_shared_test.o"
+    obj.write_bytes(b"coff")
+    calls: list[str] = []
+
+    def fake_run_completed_command(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        calls.append(cmd[0])
+        if cmd[0] == "broken-nm":
+            return subprocess.CompletedProcess(cmd, 1, "", "unreadable COFF")
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            "00000000 T __future_____Feature___init__\n"
+            "         U molt_runtime_symbol\n",
+            "",
+        )
+
+    monkeypatch.setattr(cli, "_nm_candidate_binaries", lambda: ["broken-nm", "llvm-nm"])
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
+
+    symbols = cli._native_object_global_symbol_sets(obj)
+
+    assert calls == ["broken-nm", "llvm-nm"]
+    assert symbols is not None
+    defined, undefined = symbols
+    assert "__future_____Feature___init__" in defined
+    assert "molt_runtime_symbol" in undefined
+
+
+def test_native_symbol_normalization_is_platform_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    assert (
+        cli._normalize_native_symbol_name("__future_____Feature___init__")
+        == "__future_____Feature___init__"
+    )
+
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    assert (
+        cli._normalize_native_symbol_name("___future_____Feature___init__")
+        == "__future_____Feature___init__"
+    )
+
+
+def test_cached_native_artifact_validation_uses_nm_candidate_ladder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    obj = tmp_path / "module_cache.o"
+    obj.write_bytes(b"coff")
+    calls: list[str] = []
+
+    def fake_run_completed_command(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        calls.append(cmd[0])
+        if cmd[0] == "broken-nm":
+            return subprocess.CompletedProcess(cmd, 1, "", "unreadable COFF")
+        return subprocess.CompletedProcess(cmd, 0, "00000000 T molt_main\n", "")
+
+    monkeypatch.setattr(cli, "_nm_candidate_binaries", lambda: ["broken-nm", "llvm-nm"])
+    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed_command)
+
+    assert cli._is_valid_cached_backend_artifact(obj, is_wasm=False)
+    assert calls == ["broken-nm", "llvm-nm"]
 
 
 # --- Finding #4 confound: bind the shared-stdlib cache key to the backend binary

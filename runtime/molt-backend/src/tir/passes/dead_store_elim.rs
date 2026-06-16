@@ -412,6 +412,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     PassStats {
         name: "dead_store_elim",
         values_changed: 0,
+        attrs_changed: 0,
         ops_removed: total_removed,
         ops_added: 0,
     }

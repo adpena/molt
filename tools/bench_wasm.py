@@ -517,7 +517,6 @@ def _write_build_timeout_diag(
                 "MOLT_BUILD_STATE_DIR",
                 "MOLT_BUILD_LOCK_TIMEOUT",
                 "MOLT_FRONTEND_PHASE_TIMEOUT",
-                "MOLT_MIDEND_FAIL_OPEN",
                 "MOLT_MIDEND_MAX_ROUNDS",
                 "MOLT_SCCP_MAX_ITERS",
                 "MOLT_CSE_MAX_ITERS",
@@ -599,11 +598,6 @@ def _base_env() -> dict[str, str]:
     env.setdefault("MOLT_SCCP_MAX_ITERS", "8")
     env.setdefault("MOLT_CSE_MAX_ITERS", "8")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "3")
-    env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
-    env.setdefault(
-        "MOLT_MIDEND_SKIP_MODULE_PREFIXES",
-        "_collections_abc,abc,asyncio,collections",
-    )
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "60")
     env.setdefault("MOLT_FRONTEND_PHASE_TIMEOUT", "60")
     external_root = _external_root()
@@ -722,7 +716,7 @@ def build_runtime_wasm(
     else:
         base_flags = (
             "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table -C link-arg=--export-dynamic"
+            " -C link-arg=--growable-table"
             + wasm_runtime_export_link_args()
         )
     _append_rustflags(env, base_flags)
@@ -1007,7 +1001,7 @@ def _build_wasm_output(
     if build_res.timed_out:
         print(
             f"WASM build timed out for {script} after {build_timeout_s:.1f}s; "
-            "retrying once with stricter fail-open limits.",
+            "retrying once with stricter midend limits.",
             file=sys.stderr,
         )
         _write_build_timeout_diag(
@@ -1020,11 +1014,9 @@ def _build_wasm_output(
             result=build_res,
         )
         retry_env = env.copy()
-        retry_env["MOLT_MIDEND_FAIL_OPEN"] = "1"
-        retry_env["MOLT_MIDEND_MAX_ROUNDS"] = "1"
+        retry_env["MOLT_MIDEND_MAX_ROUNDS"] = "2"
         retry_env["MOLT_SCCP_MAX_ITERS"] = "2"
         retry_env["MOLT_CSE_MAX_ITERS"] = "2"
-        retry_env["MOLT_MIDEND_IDEMPOTENCE_CHECK"] = "0"
         retry_env["MOLT_BUILD_LOCK_TIMEOUT"] = "30"
         retry_env["MOLT_BUILD_STATE_DIR"] = str(
             output_path.parent / ".molt_state_wasm_retry"

@@ -334,9 +334,11 @@ def test_unpack_and_pattern_hashseed_independence(
 # The degrade ladder now gates on a DETERMINISTIC work-unit budget (op counts),
 # so pass selection — and thus the IR — is a pure function of the input.  The
 # decisive, deterministic regression check: the compiled IR must be byte-
-# identical regardless of the wall-clock budget knob ``MOLT_MIDEND_BUDGET_MS``.
-# On the buggy compiler a tiny budget forced degradation and changed the IR; on
-# the fixed compiler the time budget influences telemetry only, never output.
+# identical regardless of the retired wall-clock budget knob
+# ``MOLT_MIDEND_BUDGET_MS``. On the buggy compiler a tiny budget forced
+# degradation and changed the IR; on the fixed compiler this variable has no
+# active reader. Deterministic pass-selection overrides use
+# ``MOLT_MIDEND_WORK_BUDGET`` instead.
 # These programs were verified to degrade under a tiny time budget on the buggy
 # compiler (so the assertion genuinely fails pre-fix).
 # ---------------------------------------------------------------------------
@@ -404,11 +406,11 @@ def _compile_ir_subprocess_with_env(
 # exercises a fresh process-chosen seed (the configuration that caught the #34
 # async-offset leak when a hand-picked fixed set happened to agree).
 _MIDEND_DETERMINISM_SEEDS = ("0", "1", "7", "42", "1337", "random")
-# Wall-clock budget knob values.  ``1``/``5`` ms are tiny enough that, on the
-# pre-fix *time*-gated compiler, the degrade ladder fired and disabled
-# CSE/LICM/edge-threading (changing the IR); ``None`` is the default budget and
-# the large value can never trip.  On the fixed compiler the knob feeds
-# telemetry only, so every value must yield byte-identical IR.
+# Retired wall-clock budget knob values.  ``1``/``5`` ms are tiny enough that,
+# on the pre-fix *time*-gated compiler, the degrade ladder fired and disabled
+# CSE/LICM/edge-threading (changing the IR); ``None`` is the default and the
+# large value can never trip.  On the fixed compiler this variable has no active
+# reader, so every value must yield byte-identical IR.
 _MIDEND_BUDGET_KNOBS: tuple[str | None, ...] = (None, "1", "5", "999999999")
 
 
@@ -422,21 +424,22 @@ def test_midend_ir_independent_of_walltime_budget(
     program: Path, parse_codec: str
 ) -> None:
     """Mid-end pass selection — and the emitted IR — must be a pure function of
-    the input: independent of the wall-clock time budget AND of PYTHONHASHSEED
-    (#73; #34 bug class).
+    the input: independent of the retired wall-clock time budget env AND of
+    PYTHONHASHSEED (#73; #34 bug class).
 
     The compiled IR must be byte-identical across the full cross-product of
-    {hash seed} x {wall-clock budget knob}:
+    {hash seed} x {retired wall-clock budget knob}:
 
     * **Budget axis** (the decisive #73 regression): the mid-end's pass-degrade
       ladder used to gate on ``time.perf_counter()``, so a compile that ran slow
       enough — or was handed a tiny ``MOLT_MIDEND_BUDGET_MS`` — degraded the
       pipeline and disabled CSE/const-dedup, changing the IR.  That made the
       output a function of machine speed (a flaky, load-dependent determinism
-      violation).  Sweeping the budget knob *deterministically* forces the same
-      degraded path a slow machine would hit by chance, so this axis fails on
-      the pre-fix tree (three distinct IR hashes were observed for these
-      programs) and passes once the ladder gates on deterministic work units.
+      violation).  Sweeping the retired budget knob *deterministically* forces
+      the same degraded path a slow machine would hit by chance, so this axis
+      fails on the pre-fix tree (three distinct IR hashes were observed for
+      these programs) and passes once the variable is ignored and the ladder
+      gates on deterministic work units.
     * **Seed axis** (#34 bug class, guarded defensively): any set-iteration that
       reaches IR emission — e.g. the SCCP worklist's ``out_changed_keys`` set
       union, whose order steers the fixed-point schedule and thus cap behaviour
@@ -472,7 +475,7 @@ def test_midend_ir_independent_of_walltime_budget(
             f"PYTHONHASHSEED={seed}, "
             f"MOLT_MIDEND_BUDGET_MS={budget if budget is not None else '<default>'}"
             f" vs the (seed=0, default-budget) reference — the mid-end degrade "
-            f"ladder is gating on wall-clock time or a set-iteration order is "
+            f"ladder is gating on the retired wall-clock env or a set-iteration order is "
             f"leaking into IR emission (regression of #73 / #34)"
         )
 
