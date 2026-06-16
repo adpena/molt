@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import ast
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -45,10 +46,18 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+try:
+    from tools import harness_memory_guard
+except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+    import harness_memory_guard  # type: ignore
 
 TABLE = ROOT / "runtime/molt-backend/src/tir/op_kinds.toml"
 OUT_RS = ROOT / "runtime/molt-backend/src/tir/op_kinds_generated.rs"
 OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
+RUSTFMT_TMP = ROOT / "tmp" / "gen_op_kinds"
 
 # Valid enum values for the table's constrained columns. A value outside these
 # sets is a hard error (a typo in the table must not silently degrade to a
@@ -86,6 +95,7 @@ _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
 # (`CondBranch`/`Switch` discriminant). `consumed` is NOT meaningful for a
 # terminator (nothing frees a terminator operand internally), so it is excluded.
 _TERMINATOR_OWNERSHIP_LEAVES = {"borrowed", "transferred", "none"}
+_RESULT_VALIDITY_VALUES = {"conditional_valid_only_on_edge"}
 
 # The `Terminator` enum variants (blocks.rs). The [[terminator]] section MUST be
 # EXHAUSTIVE over this set (a new variant fails to render until classified —
@@ -102,15 +112,16 @@ _TERMINATOR_VARIANTS = (
 )
 
 # The flat classifier sets (mirroring the flat `matches!` arms in
-# alias_analysis.rs and ownership_lattice_min.rs). Kept distinct from the
-# mapper's alias grouping because the classifier groups per-individual-kind,
-# not per-OpCode-equivalence.
+# alias_analysis.rs). Kept distinct from the mapper's alias grouping because the
+# classifier groups per-individual-kind, not per-OpCode-equivalence. Ownership
+# lattice result absorption is owned by the generated result-ownership tables,
+# not by a classifier_* ghost lane.
 _CLASSIFIER_SETS = (
     "classifier_fresh_value",
     "classifier_exception_creation_ref",
     "classifier_inert_marker",
+    "classifier_transparent_alias",
     "classifier_no_heap_move",
-    "classifier_absorbing_constructor",
 )
 
 
@@ -136,7 +147,7 @@ def load_table() -> dict:
     """
     if not TABLE.exists():
         raise OpKindTableError(f"op-kind table missing: {TABLE}")
-    data = tomllib.loads(TABLE.read_text())
+    data = tomllib.loads(TABLE.read_text(encoding="utf-8"))
 
     opcodes = data.get("opcode", [])
     if not opcodes:
@@ -254,6 +265,7 @@ def load_table() -> dict:
     _validate_absorbing_kinds(data, owner)
     _validate_absorbing_operand_kinds(data)
     _validate_result_finalizer_source_kinds(data)
+    _validate_result_validity(data, seen_opcodes)
 
     _validate_terminators(data)
 
@@ -434,6 +446,46 @@ def _validate_result_finalizer_source_kinds(data: dict) -> None:
                 f"result_finalizer_source_kind {kind}: 'source_operand' must be "
                 f"\"last\" or a non-negative operand index, got {sel!r}"
             )
+
+
+def _validate_result_validity(data: dict, opcodes: set[str]) -> None:
+    """Validate per-opcode result-validity rows.
+
+    These rows encode result slots whose bits are only valid on a specific
+    outgoing edge, currently the `IterNextUnboxed` value-out result. Missing or
+    misspelled rows must fail at generation rather than silently reintroduce a
+    drop-insertion hand list.
+    """
+    rows = data.get("result_validity", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("[[result_validity]] must be an array of tables")
+    seen: set[tuple[str, int]] = set()
+    for row in rows:
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"[[result_validity]] row missing 'opcode': {row}")
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"result_validity opcode {opcode!r} is not a known OpCode"
+            )
+        result = row.get("result")
+        if isinstance(result, bool) or not isinstance(result, int) or result < 0:
+            raise OpKindTableError(
+                f"result_validity {opcode}: 'result' must be a non-negative "
+                f"result index, got {result!r}"
+            )
+        validity = row.get("validity")
+        if validity not in _RESULT_VALIDITY_VALUES:
+            raise OpKindTableError(
+                f"result_validity {opcode}: 'validity' must be one of "
+                f"{sorted(_RESULT_VALIDITY_VALUES)}, got {validity!r}"
+            )
+        key = (opcode, result)
+        if key in seen:
+            raise OpKindTableError(
+                f"duplicate result_validity row for opcode {opcode} result {result}"
+            )
+        seen.add(key)
 
 
 def _validate_terminators(data: dict) -> None:
@@ -651,6 +703,10 @@ use crate::tir::ops::OpCode;
 
 
 def render_rs(data: dict) -> str:
+    return _rustfmt_rust_source(_render_rs_unformatted(data))
+
+
+def _render_rs_unformatted(data: dict) -> str:
     opcodes = data["opcode"]
     kinds = data.get("kind", [])
     prefixes = data.get("classifier_fresh_value_prefixes", [])
@@ -735,6 +791,22 @@ def render_rs(data: dict) -> str:
     out.append(_render_matches_arm(inert))
     out.append("    )\n}\n\n")
 
+    # -- explicit transparent-alias classifier exact set ---------------------
+    transparent_alias = list(data.get("classifier_transparent_alias", []))
+    out.append(
+        "/// EXACT-match arm of `classify_copy_kind`'s explicit transparent-alias\n"
+        "/// bucket: known Copy-lifted runtime ops that intentionally keep the\n"
+        "/// drop-insertion fail-closed behavior (not FreshValue, not InertMarker)\n"
+        "/// while remaining distinct from `copy_kind_is_explicit_no_heap_move`.\n"
+        "/// Membership here DOES NOT grant MemGVN/SROA no-heap-move privileges.\n"
+        "#[inline]\n"
+        "pub(crate) fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {\n"
+        "    matches!(\n"
+        "        kind,\n"
+    )
+    out.append(_render_matches_arm(transparent_alias))
+    out.append("    )\n}\n\n")
+
     # -- explicit no-heap-move classifier exact set --------------------------
     no_heap = list(data.get("classifier_no_heap_move", []))
     out.append(
@@ -748,25 +820,6 @@ def render_rs(data: dict) -> str:
         "        kind,\n"
     )
     out.append(_render_matches_arm(no_heap))
-    out.append("    )\n}\n\n")
-
-    # -- absorbing-constructor classifier exact set ---------------------------
-    absorbing = list(data.get("classifier_absorbing_constructor", []))
-    out.append(
-        "/// EXACT-match arm of the ownership-lattice absorbing-constructor rule\n"
-        "/// (`ownership_lattice_min.rs`): Copy-lifted constructor kinds whose RESULT\n"
-        "/// takes (co-)ownership of its element operands — releasing the result\n"
-        "/// releases the elements, so a finalizer-sensitive element makes the result\n"
-        "/// finalizer-sensitive. Over-approximation is the SAFE direction here (a\n"
-        "/// non-finalizer value marked sensitive merely has its release deferred to\n"
-        "/// the Python lifetime boundary — unobservable); a missing member keeps the\n"
-        "/// pre-#58 SSA-last-use release for that shape.\n"
-        "#[inline]\n"
-        "pub(crate) fn copy_kind_absorbs_elements_table(kind: &str) -> bool {\n"
-        "    matches!(\n"
-        "        kind,\n"
-    )
-    out.append(_render_matches_arm(absorbing))
     out.append("    )\n}\n\n")
 
     # -- effect oracle: exhaustive over OpCode -------------------------------
@@ -831,12 +884,49 @@ def render_rs(data: dict) -> str:
             data.get("result_finalizer_source_kind", []),
         )
     )
+    out.append("\n")
+    out.append(_render_result_validity(opcodes, data.get("result_validity", [])))
 
     # -- per-terminator operand ownership (the ownership-moves-out / transfer axis) --
     out.append("\n")
     out.append(_render_terminator_ownership(data.get("terminator", [])))
 
     return "".join(out)
+
+
+def _rustfmt_rust_source(source: str) -> str:
+    """Format generated Rust before freshness checks or writes.
+
+    The generated file is compiler-owned, so the formatter is part of the
+    generator contract rather than an optional developer cleanup command.
+    """
+    RUSTFMT_TMP.mkdir(parents=True, exist_ok=True)
+    path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="\n",
+            suffix=".rs",
+            prefix="op_kinds_",
+            dir=RUSTFMT_TMP,
+            delete=False,
+        ) as tmp:
+            path = Path(tmp.name)
+            tmp.write(source)
+        result = harness_memory_guard.guarded_completed_process(
+            ["rustfmt", "--edition", "2024", str(path)],
+            prefix="MOLT_GENERATOR",
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60.0,
+        )
+        result.check_returncode()
+        return path.read_text(encoding="utf-8")
+    finally:
+        if path is not None:
+            path.unlink(missing_ok=True)
 
 
 def _render_matches_arm(spellings: list[str]) -> str:
@@ -901,6 +991,10 @@ _OPERAND_OWNERSHIP_VARIANT = {
     "none": "OperandOwnership::NoOperandOwnership",
 }
 
+_RESULT_VALIDITY_VARIANT = {
+    "conditional_valid_only_on_edge": "ResultValidity::ConditionalValidOnlyOnEdge",
+}
+
 
 def _render_operand_ownership(
     opcodes: list[dict],
@@ -952,8 +1046,7 @@ def _render_operand_ownership(
         "/// `ContainerAbsorb` marks borrowed operands retained by container/storage\n"
         "/// mutation; `Transferred`\n"
         "/// seeds the per-TERMINATOR table (design 27 §2.4 transfer sites — ladder\n"
-        "/// #72). One variant still names an EXISTING molt fact whose hand-list\n"
-        "/// migrates into ownership rows in a follow-up tranche:\n"
+        "/// #72). Every variant below is constructed by a generated table today:\n"
         "///   * `Transferred` — ownership moves OUT of the function/block: a\n"
         "///     `Return` value or a branch-arg passed into a successor block arg.\n"
         "///     LIVE: constructed by `terminator_operand_ownership_table` and read\n"
@@ -969,19 +1062,9 @@ def _render_operand_ownership(
         "///     this operand while the caller still owns the producer temp ref. This\n"
         "///     gives DropInsertion a shared release boundary for absorbed temps\n"
         "///     without making the mutator consume the operand.\n"
-        "///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:\n"
-        "///     valid only on the not-exhausted edge, NEVER unconditionally\n"
-        "///     droppable (stale stack garbage on the exhaustion edge). The LONE\n"
-        "///     remaining `from_str`-only variant (its consumer hand-list —\n"
-        "///     `iter_cond_value_results` — migrates in the iter-cond tranche, #74).\n"
         "///   * `NoOperandOwnership` — no ref-bearing operand in that category (a\n"
         "///     raw lane; a terminator category absent on a variant — `Branch` has\n"
         "///     no direct operand, `Return` forwards no branch arg).\n"
-        "// `ConditionalValidOnlyOnEdge` is the only variant still seeded solely by\n"
-        "// `from_str` (awaiting the iter-cond consumer migration). The schema is\n"
-        "// kept ALIVE (not ornamental) by `ALL` + `from_str`/`as_str` below: every\n"
-        "// variant is constructed and round-tripped, so a dropped or renamed\n"
-        "// variant is a compile/test failure.\n"
         "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n"
         "pub(crate) enum OperandOwnership {\n"
         "    Borrowed,\n"
@@ -989,66 +1072,7 @@ def _render_operand_ownership(
         "    Transferred,\n"
         "    InteriorBorrowKeepAlive,\n"
         "    ContainerAbsorb,\n"
-        "    ConditionalValidOnlyOnEdge,\n"
         "    NoOperandOwnership,\n"
-        "}\n\n"
-        "// Parse/render path for the operand-ownership vocabulary. `Transferred`\n"
-        "// is LIVE through `terminator_operand_ownership_table` (ladder #72) and\n"
-        "// `InteriorBorrowKeepAlive` through `opcode_operand_ownership_table` /\n"
-        "// `opcode_borrows_source_operand` (ladder #73); `from_str` remains the\n"
-        "// toml-ingest path the LAST migration (the `conditional_valid_only_on_edge`\n"
-        "// row, #74) reads and is not yet wired to a runtime caller, so\n"
-        "// `from_str`/`as_str`/`ALL` keep allow(dead_code) — SCOPED to this\n"
-        "// forward-compat parse API, never the enum (every variant is constructed)\n"
-        "// nor the file. `ALL` + the round-trip test keep every variant constructed\n"
-        "// and live today.\n"
-        "#[allow(dead_code)]\n"
-        "impl OperandOwnership {\n"
-        "    pub(crate) const ALL: [OperandOwnership; 7] = [\n"
-        "        OperandOwnership::Borrowed,\n"
-        "        OperandOwnership::Consumed,\n"
-        "        OperandOwnership::Transferred,\n"
-        "        OperandOwnership::InteriorBorrowKeepAlive,\n"
-        "        OperandOwnership::ContainerAbsorb,\n"
-        "        OperandOwnership::ConditionalValidOnlyOnEdge,\n"
-        "        OperandOwnership::NoOperandOwnership,\n"
-        "    ];\n"
-        "    pub(crate) fn as_str(self) -> &'static str {\n"
-        "        match self {\n"
-        "            OperandOwnership::Borrowed => \"borrowed\",\n"
-        "            OperandOwnership::Consumed => \"consumed\",\n"
-        "            OperandOwnership::Transferred => \"transferred\",\n"
-        "            OperandOwnership::InteriorBorrowKeepAlive => \"interior_borrow_keepalive\",\n"
-        "            OperandOwnership::ContainerAbsorb => \"container_absorb\",\n"
-        "            OperandOwnership::ConditionalValidOnlyOnEdge => \"conditional_valid_only_on_edge\",\n"
-        "            OperandOwnership::NoOperandOwnership => \"no_operand_ownership\",\n"
-        "        }\n"
-        "    }\n"
-        "    pub(crate) fn from_str(s: &str) -> Option<OperandOwnership> {\n"
-        "        match s {\n"
-        "            \"borrowed\" => Some(OperandOwnership::Borrowed),\n"
-        "            \"consumed\" => Some(OperandOwnership::Consumed),\n"
-        "            \"transferred\" => Some(OperandOwnership::Transferred),\n"
-        "            \"interior_borrow_keepalive\" => Some(OperandOwnership::InteriorBorrowKeepAlive),\n"
-        "            \"container_absorb\" => Some(OperandOwnership::ContainerAbsorb),\n"
-        "            \"conditional_valid_only_on_edge\" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),\n"
-        "            \"no_operand_ownership\" => Some(OperandOwnership::NoOperandOwnership),\n"
-        "            _ => None,\n"
-        "        }\n"
-        "    }\n"
-        "}\n\n"
-        "#[cfg(test)]\n"
-        "mod operand_ownership_schema_tests {\n"
-        "    use super::OperandOwnership;\n"
-        "    #[test]\n"
-        "    fn every_variant_round_trips() {\n"
-        "        // The schema is alive: every declared variant parses + renders +\n"
-        "        // round-trips. Dropping or renaming a variant breaks this test.\n"
-        "        for v in OperandOwnership::ALL {\n"
-        "            assert_eq!(OperandOwnership::from_str(v.as_str()), Some(v));\n"
-        "        }\n"
-        "        assert_eq!(OperandOwnership::from_str(\"bogus\"), None);\n"
-        "    }\n"
         "}\n\n"
     )
 
@@ -1274,6 +1298,65 @@ def _render_result_absorption(
                 out.append(f'        "{kind}" => Some({int(sel)}),\n')
     out.append("        _ => None,\n")
     out.append("    }\n}\n")
+    return "".join(out)
+
+
+def _render_result_validity(opcodes: list[dict], rows: list[dict]) -> str:
+    """Render per-result validity facts.
+
+    `IterNextUnboxed` result 0 is only initialized on the not-done edge. The
+    table keeps that path-sensitive result fact beside the other op-kind
+    semantics instead of duplicating it inside drop insertion.
+    """
+    by_opcode: dict[str, dict[int, str]] = {}
+    for row in rows:
+        by_opcode.setdefault(row["opcode"], {})[row["result"]] = row["validity"]
+
+    out: list[str] = []
+    out.append(
+        "/// Result-validity fact for op results whose bits are not valid on every\n"
+        "/// outgoing edge. `ConditionalValidOnlyOnEdge` is the §2.8\n"
+        "/// `IterNextUnboxed` value-out: result 0 is initialized only on the\n"
+        "/// not-done edge and must never be dropped or retained from the exhaustion\n"
+        "/// edge. EXHAUSTIVE over OpCode; result indices not listed for an opcode\n"
+        "/// are unconditionally valid.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n"
+        "pub(crate) enum ResultValidity {\n"
+        "    AlwaysValid,\n"
+        "    ConditionalValidOnlyOnEdge,\n"
+        "}\n\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_result_validity_table(\n"
+        "    opcode: OpCode,\n"
+        "    result_idx: usize,\n"
+        ") -> ResultValidity {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        result_rows = by_opcode.get(name, {})
+        if not result_rows:
+            out.append(f"        OpCode::{name} => ResultValidity::AlwaysValid,\n")
+            continue
+        out.append(f"        OpCode::{name} => match result_idx {{\n")
+        for idx in sorted(result_rows):
+            variant = _RESULT_VALIDITY_VARIANT[result_rows[idx]]
+            out.append(f"            {idx} => {variant},\n")
+        out.append("            _ => ResultValidity::AlwaysValid,\n")
+        out.append("        },\n")
+    out.append("    }\n}\n\n")
+    out.append(
+        "#[inline]\n"
+        "pub(crate) fn opcode_result_is_conditionally_valid_only_on_edge(\n"
+        "    opcode: OpCode,\n"
+        "    result_idx: usize,\n"
+        ") -> bool {\n"
+        "    matches!(\n"
+        "        opcode_result_validity_table(opcode, result_idx),\n"
+        "        ResultValidity::ConditionalValidOnlyOnEdge\n"
+        "    )\n"
+        "}\n"
+    )
     return "".join(out)
 
 
@@ -1571,8 +1654,9 @@ def _check(path: Path, rendered: str) -> bool:
     if not path.exists():
         print(f"MISSING generated file: {path}", file=sys.stderr)
         return False
-    current = path.read_text()
-    if current != rendered:
+    current = path.read_bytes()
+    expected = rendered.encode("utf-8")
+    if current != expected:
         print(
             f"STALE generated file: {path}\n"
             f"  run `python3 tools/gen_op_kinds.py` to regenerate from "
@@ -1603,8 +1687,8 @@ def main(argv: list[str]) -> int:
             print("op-kind generated files: in sync")
         return 0 if ok else 1
 
-    OUT_RS.write_text(rs)
-    OUT_PY.write_text(py)
+    OUT_RS.write_text(rs, encoding="utf-8", newline="\n")
+    OUT_PY.write_text(py, encoding="utf-8", newline="\n")
     print(f"wrote {OUT_RS.relative_to(ROOT)}")
     print(f"wrote {OUT_PY.relative_to(ROOT)}")
     return 0

@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 import types
-from typing import Mapping, cast
+from typing import Any, Mapping, cast
 
 import molt.cli as cli
 import pytest
@@ -452,7 +452,10 @@ def test_materialize_import_plan_does_not_rescan_importlib_support(
         diagnostics_enabled=False,
     )
 
-    assert import_plan.runtime_import_support_policy == prepared.runtime_import_support_policy
+    assert (
+        import_plan.runtime_import_support_policy
+        == prepared.runtime_import_support_policy
+    )
     assert "demo" in import_plan.module_graph
 
 
@@ -500,7 +503,10 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
     )
 
     assert import_plan.native_artifact_plan == policy.native_artifact_plan
-    assert import_plan.native_artifact_plan.digest() == policy.native_artifact_plan.digest()
+    assert (
+        import_plan.native_artifact_plan.digest()
+        == policy.native_artifact_plan.digest()
+    )
     assert import_plan.native_artifact_plan.artifacts[0].module == "nativepkg._native"
 
 
@@ -710,8 +716,7 @@ def test_prepare_entry_module_graph_marks_dependency_module_init_dynamic_import(
     runtime.mkdir(parents=True)
     (package / "__init__.py").write_text("import pkg.device\n", encoding="utf-8")
     (package / "device.py").write_text(
-        "import importlib\n"
-        "importlib.import_module('pkg.runtime.ops_cpu')\n",
+        "import importlib\nimportlib.import_module('pkg.runtime.ops_cpu')\n",
         encoding="utf-8",
     )
     (runtime / "__init__.py").write_text("", encoding="utf-8")
@@ -967,6 +972,89 @@ def test_generated_importer_import_plan_includes_runtime_support_modules(
     assert "_KNOWN_MODULES" not in importer_source
 
 
+def test_backend_ir_isolate_import_is_bounded_by_explicit_imports(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    gc_path = tmp_path / "gc.py"
+    machinery_path = tmp_path / "machinery.py"
+    entry_path.write_text("import gc\n", encoding="utf-8")
+    gc_path.write_text("", encoding="utf-8")
+    machinery_path.write_text("", encoding="utf-8")
+    module_graph = {
+        "demo": entry_path,
+        "gc": gc_path,
+        "importlib.machinery": machinery_path,
+    }
+    module_order = ["gc", "importlib.machinery", "demo"]
+    integration_state = cli._FrontendIntegrationState(
+        functions=[
+            {
+                "name": cli.SimpleTIRGenerator.module_init_symbol(module_name),
+                "params": [],
+                "ops": [{"kind": "ret_void"}],
+            }
+            for module_name in module_order
+        ],
+        known_classes={},
+    )
+    diagnostics_state = cli._MidendDiagnosticsState(
+        policy_outcomes_by_function={},
+        pass_stats_by_function={},
+    )
+
+    prepared, error = cli._prepare_backend_ir(
+        entry_module="demo",
+        module_graph=module_graph,
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules=set(module_graph),
+        known_classes={},
+        stdlib_allowlist=set(module_graph),
+        known_func_defaults={},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        frontend_phase_timeout=None,
+        integration_state=integration_state,
+        diagnostics_state=diagnostics_state,
+        record_frontend_timing=lambda **_: None,
+        fail=cli._fail,
+        json_output=True,
+        module_order=module_order,
+        explicit_imports={"gc"},
+        generated_module_source_paths={},
+        spawn_enabled=False,
+        pgo_profile_summary=None,
+        runtime_feedback_summary=None,
+        emit_ir_path=None,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert error is None
+    assert prepared is not None
+    import_ops = next(
+        func["ops"]
+        for func in prepared.ir["functions"]
+        if func["name"] == "molt_isolate_import"
+    )
+    const_names = [
+        op.get("s_value") for op in import_ops if op.get("kind") == "const_str"
+    ]
+    call_targets = [op.get("s_value") for op in import_ops if op.get("kind") == "call"]
+    assert "gc" in const_names
+    assert cli.SimpleTIRGenerator.module_init_symbol("gc") in call_targets
+    assert "importlib.machinery" not in const_names
+    assert (
+        cli.SimpleTIRGenerator.module_init_symbol("importlib.machinery")
+        not in call_targets
+    )
+
+
 def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_supported(
     tmp_path: Path,
 ) -> None:
@@ -1176,11 +1264,14 @@ def test_static_backend_ir_module_call_closure_accepts_graph_modules() -> None:
         ]
     }
 
-    assert cli._static_backend_ir_module_call_closure_issue(
-        ir,
-        {"demo": Path("demo.py"), "copy": Path("copy.py")},
-        {"copy", "demo"},
-    ) is None
+    assert (
+        cli._static_backend_ir_module_call_closure_issue(
+            ir,
+            {"demo": Path("demo.py"), "copy": Path("copy.py")},
+            {"copy", "demo"},
+        )
+        is None
+    )
     assert cli._static_backend_ir_module_call_targets(ir, {"copy", "demo"}) == (
         ("copy", "copy__copy", "molt_init_demo", 0),
     )
@@ -1225,9 +1316,12 @@ def test_static_backend_ir_module_call_closure_allows_lazy_missing_import() -> N
         ]
     }
 
-    assert cli._static_backend_ir_module_call_closure_issue(
-        ir, {"zipfile": Path("zipfile.py")}, {"zipfile", "bz2"}
-    ) is None
+    assert (
+        cli._static_backend_ir_module_call_closure_issue(
+            ir, {"zipfile": Path("zipfile.py")}, {"zipfile", "bz2"}
+        )
+        is None
+    )
 
 
 def _discover_with_core_modules(entry: Path) -> dict[str, Path]:
@@ -1502,12 +1596,16 @@ def test_external_static_package_native_artifact_plan_validates_manifest(
     assert artifact.path == artifact_path.resolve()
     assert artifact.manifest_path == manifest_path.resolve()
     assert artifact.capabilities == ("module.extension.exec",)
-    assert artifact.extension_sha256 == hashlib.sha256(
-        artifact_path.read_bytes()
-    ).hexdigest()
-    assert policy.digest_payload()["native_artifact_plan"]["artifacts"][0][
-        "manifest_sha256"
-    ] == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    assert (
+        artifact.extension_sha256
+        == hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    )
+    assert (
+        policy.digest_payload()["native_artifact_plan"]["artifacts"][0][
+            "manifest_sha256"
+        ]
+        == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    )
 
 
 def test_external_static_package_native_artifact_requires_sidecar_manifest(
@@ -1636,7 +1734,9 @@ def test_module_graph_policy_digest_includes_native_artifact_plan(
 
     artifact_path.write_bytes(b"native-extension-v2")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["extension_sha256"] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    manifest["extension_sha256"] = hashlib.sha256(
+        artifact_path.read_bytes()
+    ).hexdigest()
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     second_policy, second_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2428,7 +2528,9 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     assert json.loads(staged.staged_manifest_path.read_text(encoding="utf-8")) == (
         json.loads(manifest_path.read_text(encoding="utf-8"))
     )
-    assert staged_init.read_text(encoding="utf-8").startswith("import nativepkg._native")
+    assert staged_init.read_text(encoding="utf-8").startswith(
+        "import nativepkg._native"
+    )
     assert staged_shim.read_text(encoding="utf-8") == "value = 911\n"
     assert staged.staged_path in captured_inputs
     assert staged.staged_manifest_path in captured_inputs
@@ -2437,10 +2539,9 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     stub_content = prepared.stub_path.read_text(encoding="utf-8")
     assert str(expected_runtime_root.resolve()) in stub_content
     native_main_start = stub_content.index("int main")
-    assert (
-        stub_content.index("molt_set_runtime_module_roots();", native_main_start)
-        < stub_content.index("molt_runtime_init();", native_main_start)
-    )
+    assert stub_content.index(
+        "molt_set_runtime_module_roots();", native_main_start
+    ) < stub_content.index("molt_runtime_init();", native_main_start)
     assert str(staged.staged_path) not in captured_link_cmd
     assert str(staged.staged_manifest_path) not in captured_link_cmd
 
@@ -2458,13 +2559,12 @@ def test_render_native_main_stub_embeds_runtime_module_roots_before_init(
 
     assert "static void molt_set_runtime_module_roots()" in stub_content
     assert str(runtime_root.resolve()) in stub_content
-    assert "getenv(\"MOLT_MODULE_ROOTS\")" in stub_content
-    assert "setenv(\"MOLT_MODULE_ROOTS\", roots, 1)" in stub_content
+    assert 'getenv("MOLT_MODULE_ROOTS")' in stub_content
+    assert 'setenv("MOLT_MODULE_ROOTS", roots, 1)' in stub_content
     native_main_start = stub_content.index("int main")
-    assert (
-        stub_content.index("molt_set_runtime_module_roots();", native_main_start)
-        < stub_content.index("molt_runtime_init();", native_main_start)
-    )
+    assert stub_content.index(
+        "molt_set_runtime_module_roots();", native_main_start
+    ) < stub_content.index("molt_runtime_init();", native_main_start)
 
 
 def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
@@ -2703,6 +2803,42 @@ def test_windows_link_omits_icf_for_fn_identity(
 
     assert "-Wl,/OPT:REF" in link_cmd
     assert "-Wl,/OPT:ICF" not in link_cmd
+    assert "-lws2_32" in link_cmd
+    assert "-lntdll" in link_cmd
+    assert "-luserenv" in link_cmd
+
+
+def test_windows_gnu_link_uses_gnu_system_lib_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.obj"
+    stub_path = tmp_path / "main_stub.c"
+    runtime_lib = tmp_path / "molt_runtime.lib"
+    output_binary = tmp_path / "app.exe"
+    output_obj.write_bytes(b"COFFobject")
+    stub_path.write_text("int main(void) { return 0; }\n")
+    runtime_lib.write_bytes(b"archive")
+
+    monkeypatch.setenv("CC", "zig cc")
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "zig" if name == "zig" else None
+    )
+
+    link_cmd, _linker_hint, normalized_target = cli._build_native_link_command(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        output_binary=output_binary,
+        target_triple="x86_64-pc-windows-gnu",
+        sysroot_path=None,
+        profile="release",
+        stdlib_obj_path=None,
+    )
+
+    assert normalized_target == "x86_64-windows-gnu"
+    assert "-lws2_32" in link_cmd
+    assert "-lntdll" in link_cmd
+    assert "-luserenv" in link_cmd
 
 
 def _legacy_streamed_cache_digest(
@@ -2761,7 +2897,9 @@ def test_streamed_cache_keys_preserve_legacy_payload_semantics() -> None:
     assert module_text.index('"name":"alpha"') < module_text.index('"name":"zeta"')
     assert backend_text.index('"name":"alpha"') < backend_text.index('"name":"zeta"')
     assert '"top_level_extras_digest"' in backend_text
-    assert cli._cache_key(ir, "native", None, "variant") == _legacy_streamed_cache_digest(
+    assert cli._cache_key(
+        ir, "native", None, "variant"
+    ) == _legacy_streamed_cache_digest(
         module_payload_ir,
         target="native",
         target_triple=None,
@@ -4049,7 +4187,9 @@ def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
 ) -> None:
     module_path = tmp_path / "pkg" / "mod.py"
     module_path.parent.mkdir()
-    module_path.write_text("import os\n\ndef f():\n    import warnings\n", encoding="utf-8")
+    module_path.write_text(
+        "import os\n\ndef f():\n    import warnings\n", encoding="utf-8"
+    )
 
     cli._write_persisted_module_analysis(
         tmp_path,
@@ -4539,20 +4679,14 @@ def test_build_lock_is_shared_for_explicit_target_root(
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
     with cli._build_lock(tmp_path, "runtime.dev-fast.native"):
         alpha_lock = (
-            target_root
-            / ".molt_state"
-            / "build_locks"
-            / "runtime.dev-fast.native.lock"
+            target_root / ".molt_state" / "build_locks" / "runtime.dev-fast.native.lock"
         )
         assert alpha_lock.exists()
 
     monkeypatch.setenv("MOLT_SESSION_ID", "beta-session")
     with cli._build_lock(tmp_path, "runtime.dev-fast.native"):
         beta_lock = (
-            target_root
-            / ".molt_state"
-            / "build_locks"
-            / "runtime.dev-fast.native.lock"
+            target_root / ".molt_state" / "build_locks" / "runtime.dev-fast.native.lock"
         )
         assert beta_lock.exists()
 
@@ -7482,9 +7616,7 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
     assert main_lease.path_backed_source is True
     assert main_lease.source_size == main_path.stat().st_size
     assert (
-        analysis.module_source_catalog.read_source(
-            "main", main_path, resolution_cache
-        )
+        analysis.module_source_catalog.read_source("main", main_path, resolution_cache)
         == "import dep\nVALUE = dep.VALUE\n"
     )
     assert resolution_cache.source_cache == {}
@@ -8279,7 +8411,7 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
                 "policy_config": {
                     "profile_override": None,
                     "hot_tier_promotion_enabled": True,
-                    "budget_override_ms": None,
+                    "work_budget_override": 4096.0,
                     "budget_alpha": 0.03,
                     "budget_beta": 0.75,
                     "budget_scale": 1.0,
@@ -8308,6 +8440,7 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "frontend_parallel.layer.1: mode=parallel" in stderr
     assert "frontend_parallel.worker_ms: count=3" in stderr
     assert "- midend.policy.hot_tier_promotion_enabled: True" in stderr
+    assert "- midend.policy.work_budget_override: 4096.0000" in stderr
     assert (
         "- midend.policy.budget_formula: alpha=0.0300 beta=0.7500 scale=1.0000"
         in stderr
@@ -8364,6 +8497,7 @@ def test_midend_policy_config_snapshot_honors_env(
     monkeypatch.setenv("MOLT_MIDEND_PROFILE", "release")
     monkeypatch.setenv("MOLT_MIDEND_HOT_TIER_PROMOTION", "0")
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_MS", "42")
+    monkeypatch.setenv("MOLT_MIDEND_WORK_BUDGET", "4096")
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_ALPHA", "0.5")
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_BETA", "2.0")
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_SCALE", "1.5")
@@ -8371,7 +8505,7 @@ def test_midend_policy_config_snapshot_honors_env(
     assert cli._midend_policy_config_snapshot() == {
         "profile_override": "release",
         "hot_tier_promotion_enabled": False,
-        "budget_override_ms": 42.0,
+        "work_budget_override": 4096.0,
         "budget_alpha": 0.5,
         "budget_beta": 2.0,
         "budget_scale": 1.5,
@@ -9850,7 +9984,9 @@ def test_ensure_runtime_wasm_verified_key_is_stable_across_user_import_graph(
             or False
         ),
     )
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: stored_fingerprint)
+    monkeypatch.setattr(
+        cli, "_read_runtime_fingerprint", lambda path: stored_fingerprint
+    )
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
     monkeypatch.setattr(
         cli, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
@@ -10043,7 +10179,9 @@ def test_ensure_runtime_wasm_writes_integrity_sidecar_when_reusing_valid_artifac
         cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "same"}
     )
     monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: stored_fingerprint)
+    monkeypatch.setattr(
+        cli, "_read_runtime_fingerprint", lambda path: stored_fingerprint
+    )
     monkeypatch.setattr(cli, "_is_valid_runtime_wasm_artifact", lambda path: True)
     monkeypatch.setattr(
         cli, "_is_valid_shared_runtime_wasm_artifact", lambda path: True
@@ -10138,9 +10276,7 @@ def _install_fake_wasm_link_runner(
             split_dir = Path(command[command.index("--split-output-dir") + 1])
             split_dir.mkdir(parents=True, exist_ok=True)
             (split_dir / "app.wasm").write_bytes(b"\0asm\x01\0\0\0app")
-            (split_dir / "molt_runtime.wasm").write_bytes(
-                b"\0asm\x01\0\0\0runtime"
-            )
+            (split_dir / "molt_runtime.wasm").write_bytes(b"\0asm\x01\0\0\0runtime")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(cli, "_run_completed_command", fake_run)
@@ -10566,11 +10702,11 @@ def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
 ) -> None:
     monkeypatch.setenv("MOLT_SUBPROCESS_KEEPALIVE_SECS", "0.01")
     result = cli._run_subprocess_captured_to_tempfiles(
-            [
-                sys.executable,
-                "-c",
-                "import time; print('ok'); time.sleep(0.3)",
-            ],
+        [
+            sys.executable,
+            "-c",
+            "import time; print('ok'); time.sleep(0.3)",
+        ],
         timeout=1.0,
         progress_label="Tempfile helper",
     )
@@ -10624,7 +10760,9 @@ def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfi
         "artifact_sha256": cli._sha256_file(runtime),
     }
 
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda path: stored_fingerprint)
+    monkeypatch.setattr(
+        cli, "_read_runtime_fingerprint", lambda path: stored_fingerprint
+    )
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "ok"}
     )
@@ -13895,7 +14033,10 @@ def test_backend_daemon_compile_request_rejects_duplicate_ir_authority(
     )
 
     assert request_bytes is None
-    assert error == "backend daemon request must use exactly one IR custody field: ir or ir_path"
+    assert (
+        error
+        == "backend daemon request must use exactly one IR custody field: ir or ir_path"
+    )
 
 
 def test_backend_daemon_compile_request_includes_batch_op_budget_env(
@@ -16327,9 +16468,7 @@ def test_stage_backend_output_and_caches_warns_on_function_cache_failure(
     warnings: list[str] = []
     original = cli._publish_immutable_backend_cache_artifact
 
-    def wrapped(
-        src: Path, dst: Path, *, is_wasm: bool, warnings: list[str]
-    ) -> Path:
+    def wrapped(src: Path, dst: Path, *, is_wasm: bool, warnings: list[str]) -> Path:
         if dst == function_cache_path:
             raise OSError("link failed")
         return original(src, dst, is_wasm=is_wasm, warnings=warnings)

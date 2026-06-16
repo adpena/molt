@@ -567,13 +567,14 @@ for sequential multi-yield).
 ### Pre-existing bug surfaced (not introduced by fusion)
 
 `t3_throw` (a generator with `try/except` consumed with `.throw()`) fails LLVM
-codegen with an `%exception_stack_enter` phi error — and **fails identically with
-`MOLT_SKIP_GENERATOR_FUSION=1`**. This is a pre-existing Tier-D generator
-state-machine LLVM-lowering bug (the `_poll` exception-stack phi at a state-resume
-edge), in the same dominance class as the LLVM state-resume issue documented in
-`07`/session memory (commit `0fd0e9794`). The fusion pass bails on this shape
-(it has a real exception HANDLER), so the bug is orthogonal; it is recorded here
-as the next Tier-D LLVM correctness item.
+codegen with an `%exception_stack_enter` phi error. This is a pre-existing Tier-D
+generator state-machine LLVM-lowering bug (the `_poll` exception-stack phi at a
+state-resume edge), in the same dominance class as the LLVM state-resume issue
+documented in `07`/session memory (commit `0fd0e9794`). The fusion pass bails on
+this shape (it has a real exception HANDLER), so the bug is orthogonal; it is
+recorded here as the next Tier-D LLVM correctness item. Generator fusion has no
+process-global environment rollback; this evidence must be reproved through the
+refusal predicate and the emitted TIR, not by disabling the pass.
 
 ### Gate evidence (native, release-fast)
 

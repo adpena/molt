@@ -230,10 +230,7 @@ impl PassManager {
             stats.push(stat);
         }
 
-        let total_changes: usize = stats
-            .iter()
-            .map(|s| s.values_changed + s.ops_removed + s.ops_added)
-            .sum();
+        let total_changes: usize = stats.iter().map(PassStats::total_changes).sum();
         if total_changes == 0 {
             *func = snapshot.clone();
         }
@@ -264,8 +261,8 @@ impl PassManager {
         if std::env::var("TIR_OPT_STATS").as_deref() == Ok("1") {
             for s in &stats {
                 eprintln!(
-                    "[TIR] {}: {} values changed, {} ops removed, {} ops added",
-                    s.name, s.values_changed, s.ops_removed, s.ops_added
+                    "[TIR] {}: {} values changed, {} attrs changed, {} ops removed, {} ops added",
+                    s.name, s.values_changed, s.attrs_changed, s.ops_removed, s.ops_added
                 );
             }
         }
@@ -605,7 +602,15 @@ fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
             "// stats: {:?}\n",
             stats
                 .iter()
-                .map(|s| (s.name, s.values_changed, s.ops_removed, s.ops_added))
+                .map(|s| {
+                    (
+                        s.name,
+                        s.values_changed,
+                        s.attrs_changed,
+                        s.ops_removed,
+                        s.ops_added,
+                    )
+                })
                 .collect::<Vec<_>>()
         ));
     }

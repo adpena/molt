@@ -113,11 +113,6 @@
 //! AliasAnalysis, MemorySSA) are dropped by the manager's `invalidate_ops`
 //! afterward.
 //!
-//! ## Rollback
-//!
-//! `MOLT_DISABLE_MEM_GVN=1` makes the pass a no-op (the canonical rollback
-//! lever, mirroring `MOLT_DISABLE_INLINING` in the inliner).
-//!
 //! [`AliasAnalysisResult::region_of`]: super::alias_analysis::AliasAnalysisResult::region_of
 //! [`MemRegion::GenericHeap`]: super::alias_analysis::MemRegion::GenericHeap
 //! [`MemRegion::StackObject`]: super::alias_analysis::MemRegion::StackObject
@@ -176,24 +171,14 @@ struct Forward {
 }
 
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
-    // Canonical rollback lever (mirrors MOLT_DISABLE_INLINING). Read the
-    // process env exactly once here and thread the decision into `run_with`, so
-    // the disable behavior is exercised in tests deterministically rather than
-    // through a process-global env var (which would race parallel cargo tests —
-    // the same reason `pass_manager::run_inner` takes its flag by argument).
-    let disabled = std::env::var("MOLT_DISABLE_MEM_GVN").as_deref() == Ok("1");
-    run_with(func, am, disabled)
+    run_with(func, am)
 }
 
-fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, disabled: bool) -> PassStats {
+fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "mem_gvn",
         ..Default::default()
     };
-
-    if disabled {
-        return stats;
-    }
 
     // Trivial functions have no memory redundancy to eliminate.
     if func.blocks.values().all(|b| b.ops.is_empty()) {
@@ -1223,10 +1208,10 @@ mod tests {
         assert_eq!(ops[2].operands, vec![val]);
     }
 
-    // ── Rollback lever ─────────────────────────────────────────────────────
+    // ── Unconditional production path ──────────────────────────────────────
 
     #[test]
-    fn disable_env_makes_pass_a_noop() {
+    fn run_forwards_without_ambient_disable_path() {
         let mut func = TirFunction::new(
             "f".into(),
             vec![TirType::DynBox, TirType::DynBox],
@@ -1241,26 +1226,15 @@ mod tests {
             entry.ops.push(load(obj, 0, r));
             entry.terminator = Terminator::Return { values: vec![r] };
         }
-        // Drive the disable path through `run_with(disabled=true)` directly,
-        // NOT a process-global env var. Setting/removing `MOLT_DISABLE_MEM_GVN`
-        // here would race the parallel cargo test runner and silently disable
-        // the pass under other tests (observed: it flips forward_* to no-op).
-        // `run` reads the env once and delegates to `run_with`; this test
-        // verifies the delegated path deterministically.
         let mut am = AnalysisManager::new();
-        let stats = run_with(&mut func, &mut am, /* disabled */ true);
-        assert_eq!(stats.values_changed, 0, "disabled pass forwards nothing");
+        let stats = run(&mut func, &mut am);
+        assert_eq!(stats.values_changed, 1, "production pass forwards the load");
         assert_eq!(
             func.blocks[&func.entry_block].ops[1].opcode,
-            OpCode::LoadAttr,
-            "load untouched when disabled"
+            OpCode::IncRef,
+            "forwarded load acquires the owned reference"
         );
-
-        // And the same function WITH the pass enabled does forward — proving
-        // the disable flag (not some other condition) is what suppressed it.
-        let mut am2 = AnalysisManager::new();
-        let stats_on = run_with(&mut func, &mut am2, /* disabled */ false);
-        assert_eq!(stats_on.values_changed, 1, "enabled pass forwards the load");
+        assert_eq!(func.blocks[&func.entry_block].ops[2].opcode, OpCode::Copy);
     }
 
     // ── Refcount discipline (the soundness keystone) ───────────────────────

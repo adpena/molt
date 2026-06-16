@@ -97,11 +97,14 @@ Use these as the canonical local gates:
 
 ```bash
 molt validate --suite smoke
+molt validate --suite custody-proof
 molt validate
 ```
 
 Interpretation:
 - `molt validate --suite smoke` is the fast local presubmit matrix.
+- `molt validate --suite custody-proof` runs the targeted custody lane for
+  memory-guard, Windows process sampling, and repo process-sentinel wiring.
 - `molt validate` is the heavier full local correctness + benchmark lane.
 - Executed validation runs write a canonical JSON sidecar at
   `logs/validate-<suite>-<backend>-<profile>.json`; use `--summary-out` to

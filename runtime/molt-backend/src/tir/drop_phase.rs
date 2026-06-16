@@ -45,7 +45,8 @@
 //!   per-batch application codegen) where the whole-program module phase does NOT
 //!   run, so the per-function pipeline is the last transform and drops must be
 //!   applied after it, post-cache. It lifts each function to TIR, runs the drop
-//!   phase, and back-converts the changed ones to SimpleIR.
+//!   phase, and back-converts every function whose executable ops or RC authority
+//!   facts changed to SimpleIR.
 //!
 //! Both honor the same per-function invariants: full-function idempotency (the
 //! drop pass bails on the `drop_inserted` marker, so a re-processed
@@ -63,14 +64,15 @@ use super::target_info::TargetInfo;
 /// Run the RC drop phase on a single in-TIR function — the ONE per-function entry
 /// every terminal-phase caller funnels through (the TIR-module finalizer, the
 /// SimpleIR finalizer, and the LLVM `skip_ir_passes` branch). Returns `true` iff
-/// the phase actually changed the body (drops were inserted / elided) — i.e. the
-/// function now carries `DecRef`/`IncRef` ops and/or one of the drop fact markers
-/// that must be back-converted for SimpleIR consumers. `drop_inserted` is the
-/// full-function RC authority marker that native codegen reads to suppress its
-/// competing automatic temp-RC; `exception_region_drops_inserted` is only the
-/// handler-safe exception transport slice and must not suppress native legacy RC.
-/// A function with no droppable temporaries reports `false` (the pass restores
-/// its pre-drop snapshot) and needs no back-conversion.
+/// the phase changed the body (drops were inserted / elided) or changed an RC
+/// fact marker that must be back-converted for SimpleIR consumers.
+/// `drop_inserted` is the full-function RC authority marker that native codegen
+/// reads to suppress its competing automatic temp-RC, so an attribute-only
+/// `drop_inserted` change also counts even when no physical `DecRef`/`IncRef` op
+/// was inserted. `exception_region_drops_inserted` is only the handler-safe
+/// exception transport slice and must not suppress native legacy RC.
+/// A function with no droppable temporaries still needs back-conversion when the
+/// pass newly installs the full `drop_inserted` authority marker.
 ///
 /// `debug_assert`s that the function is not ALREADY drop-inserted on entry: the
 /// only marker producers are this phase and the round-trip that preserves it, so
@@ -88,6 +90,15 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
          — drops were placed mid-transform or the finalizer ran twice",
         func.name,
     );
+    let had_drop_inserted = matches!(
+        func.attrs.get(DROP_INSERTED_ATTR),
+        Some(AttrValue::Bool(true))
+    );
+    let had_exception_region_drops = matches!(
+        func.attrs
+            .get(super::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
+        Some(AttrValue::Bool(true))
+    );
     // Drop placement keys on repr facts (`TirLivenessResult::is_raw_scalar`
     // distinguishes raw-i64/bool/float carriers — which hold no refcount and must
     // NOT be dropped — from heap-carrying values). Those facts are derived from
@@ -103,9 +114,20 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
     let stats = super::passes::run_drop_phase(func, tti);
     let changed: usize = stats
         .iter()
-        .map(|s| s.values_changed + s.ops_removed + s.ops_added)
+        .map(super::passes::PassStats::total_changes)
         .sum();
+    let has_drop_inserted = matches!(
+        func.attrs.get(DROP_INSERTED_ATTR),
+        Some(AttrValue::Bool(true))
+    );
+    let has_exception_region_drops = matches!(
+        func.attrs
+            .get(super::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
+        Some(AttrValue::Bool(true))
+    );
     changed > 0
+        || had_drop_inserted != has_drop_inserted
+        || had_exception_region_drops != has_exception_region_drops
 }
 
 /// Terminal drop phase over a [`TirModule`] in TIR form. Runs the drop phase on
@@ -166,11 +188,9 @@ mod tests {
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::function::TirModule;
 
-    /// A function with no droppable heap temporaries reports "unchanged" from the
-    /// module drop finalizer (nothing to back-convert) — and on a non-activated
-    /// target the phase is a no-op anyway.
+    /// A function with no physical drops still reports a semantic marker change.
     #[test]
-    fn module_finalizer_reports_unchanged_for_trivial_function() {
+    fn module_finalizer_reports_drop_marker_change_for_trivial_function() {
         // A trivial `return n` function: one param, returns it. No heap temps.
         let func_ir = FunctionIR {
             name: "trivial".into(),
@@ -191,9 +211,21 @@ mod tests {
             name: "m".into(),
             functions: vec![tir],
         };
-        // native target → drop pass gated off → definitely unchanged.
         let changed = finalize_module_drops(&mut module, &TargetInfo::native_release_fast());
-        assert!(changed.is_empty());
+        assert_eq!(changed, vec!["trivial".to_string()]);
+        assert!(matches!(
+            module.functions[0].attrs.get(DROP_INSERTED_ATTR),
+            Some(AttrValue::Bool(true))
+        ));
+        assert!(
+            module.functions[0]
+                .blocks
+                .values()
+                .flat_map(|block| block.ops.iter())
+                .all(|op| op.opcode != super::super::ops::OpCode::DecRef
+                    && op.opcode != super::super::ops::OpCode::IncRef),
+            "borrowed param return needs no physical RC ops"
+        );
     }
 
     /// Extern functions are skipped by the SimpleIR finalizer (no body to drop).
@@ -210,6 +242,40 @@ mod tests {
         // Must not panic (no lift of the empty extern body).
         finalize_simple_ir_drops(&mut funcs, &TargetInfo::native_release_fast());
         assert!(funcs[0].ops.is_empty());
+    }
+
+    #[test]
+    fn simple_ir_finalizer_back_converts_zero_drop_authority_marker() {
+        let mut funcs = vec![FunctionIR {
+            name: "borrowed_param_store".into(),
+            params: vec!["self".into()],
+            ops: vec![
+                OpIR {
+                    kind: "store_var".into(),
+                    var: Some("self".into()),
+                    args: Some(vec!["self".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: Some(vec!["Any".into()]),
+            source_file: None,
+            is_extern: false,
+        }];
+
+        finalize_simple_ir_drops(&mut funcs, &TargetInfo::native_release_fast());
+
+        assert_eq!(funcs[0].ops[0].kind, DROP_INSERTED_ATTR);
+        assert!(
+            funcs[0]
+                .ops
+                .iter()
+                .all(|op| op.kind != "dec_ref" && op.kind != "inc_ref"),
+            "borrowed-param-only SimpleIR must only gain the authority marker"
+        );
     }
 
     #[test]
@@ -239,6 +305,7 @@ mod tests {
                     kind: "list_new".into(),
                     args: Some(vec!["item".into()]),
                     out: Some("bag".into()),
+                    bound_local: Some(true),
                     ..OpIR::default()
                 },
                 OpIR {

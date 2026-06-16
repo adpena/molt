@@ -134,6 +134,8 @@ mod state;
 mod utils;
 pub mod vfs;
 mod wasm_abi_exports;
+#[cfg(windows)]
+mod windows_abi;
 
 /// Public Rust API for runtime lifecycle, used by `molt-ffi` and other
 /// dependent crates that need to call init/shutdown without going through

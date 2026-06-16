@@ -851,6 +851,7 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
     let mut stats = PassStats {
         name: "escape_analysis",
         values_changed: 0,
+        attrs_changed: 0,
         ops_removed: 0,
         ops_added: 0,
     };

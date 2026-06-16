@@ -387,8 +387,11 @@ mod child_resource_tests {
 #[cfg(not(target_arch = "wasm32"))]
 fn ignore_sigpipe() {
     static IGNORE: OnceLock<()> = OnceLock::new();
-    IGNORE.get_or_init(|| unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    IGNORE.get_or_init(|| {
+        #[cfg(unix)]
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        }
     });
 }
 
@@ -410,14 +413,14 @@ fn stdio_from_fd(fd: i32) -> Option<Stdio> {
     #[cfg(windows)]
     {
         use std::os::windows::io::FromRawHandle;
-        let duped = unsafe { libc::_dup(fd as libc::c_int) };
+        let duped = unsafe { libc::dup(fd as libc::c_int) };
         if duped < 0 {
             return None;
         }
-        let handle = unsafe { libc::_get_osfhandle(duped as libc::c_int) };
+        let handle = unsafe { libc::get_osfhandle(duped as libc::c_int) };
         if handle == -1 {
             unsafe {
-                libc::_close(duped as libc::c_int);
+                libc::close(duped as libc::c_int);
             }
             return None;
         }

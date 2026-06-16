@@ -1,7 +1,7 @@
 //! Backend-neutral IR rewrite/elision passes (moved verbatim from lib.rs).
 
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Pre-process phi ops into explicit store_var/load_var pairs.
 ///
@@ -369,9 +369,46 @@ fn try_wrapper_has_except_dispatch(
     false
 }
 
-/// Collapse simple alias-only copy ops (`copy`, `copy_var`, `identity_alias`)
-/// by rewriting later uses to the original source name.
+fn alias_rewrite_var_field_is_storage_definition(op: &OpIR) -> bool {
+    matches!(
+        op.kind.as_str(),
+        "store_var"
+            | "store_fast"
+            | "store_var_slot"
+            | "store_fast_slot"
+            | "delete_var"
+            | "iter_next_unboxed"
+    )
+}
+
+fn alias_rewrite_var_field_is_value_read(op: &OpIR) -> bool {
+    if matches!(op.kind.as_str(), "copy_var" | "load_var")
+        && op.args.as_ref().is_some_and(|args| !args.is_empty())
+    {
+        return false;
+    }
+    !alias_rewrite_var_field_is_storage_definition(op)
+}
+
+fn alias_rewrite_mutable_storage_names(ops: &[OpIR]) -> BTreeSet<String> {
+    ops.iter()
+        .filter(|op| alias_rewrite_var_field_is_storage_definition(op))
+        .filter_map(|op| op.var.as_deref().or(op.out.as_deref()))
+        .filter(|name| *name != "none")
+        .map(str::to_string)
+        .collect()
+}
+
+/// Collapse simple SSA alias-only copy ops (`copy`, `copy_var`,
+/// `identity_alias`) by rewriting later uses to the original source name.
+///
+/// Python local storage names are not SSA values: a `store_var` target can be
+/// overwritten between a copy site and a later use. Treating those names as
+/// immutable aliases erases the load point and lets exception-split native
+/// blocks reuse stale SSA values. Alias collapse is therefore restricted to
+/// names that are not mutable storage targets anywhere in the function.
 pub fn rewrite_copy_aliases(ops: &mut [OpIR]) {
+    let mutable_storage_names = alias_rewrite_mutable_storage_names(ops);
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
     let resolve_alias = |name: &str, aliases: &BTreeMap<String, String>| -> String {
         let mut current = name;
@@ -382,7 +419,9 @@ pub fn rewrite_copy_aliases(ops: &mut [OpIR]) {
     };
 
     for op in ops.iter_mut() {
-        if let Some(var) = op.var.as_mut() {
+        if alias_rewrite_var_field_is_value_read(op)
+            && let Some(var) = op.var.as_mut()
+        {
             *var = resolve_alias(var, &aliases);
         }
         if let Some(args) = op.args.as_mut() {
@@ -395,6 +434,8 @@ pub fn rewrite_copy_aliases(ops: &mut [OpIR]) {
             "copy_var" if op.args.is_none() => {
                 if let (Some(src), Some(out)) = (op.var.as_ref(), op.out.as_ref())
                     && out != "none"
+                    && !mutable_storage_names.contains(out)
+                    && !mutable_storage_names.contains(src)
                 {
                     aliases.insert(out.clone(), src.clone());
                     op.kind = "nop".to_string();
@@ -406,6 +447,8 @@ pub fn rewrite_copy_aliases(ops: &mut [OpIR]) {
                 if let (Some(args), Some(out)) = (op.args.as_ref(), op.out.as_ref())
                     && let Some(src) = args.first()
                     && out != "none"
+                    && !mutable_storage_names.contains(out)
+                    && !mutable_storage_names.contains(src)
                 {
                     aliases.insert(out.clone(), src.clone());
                     op.kind = "nop".to_string();
@@ -436,5 +479,119 @@ pub fn rewrite_annotate_stubs(ir: &mut SimpleIR) {
                 ..OpIR::default()
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn name(value: &str) -> String {
+        value.to_string()
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| name(value)).collect()
+    }
+
+    #[test]
+    fn rewrite_copy_aliases_collapses_pure_ssa_copy() {
+        let mut ops = vec![
+            OpIR {
+                kind: "copy".to_string(),
+                out: Some(name("alias")),
+                args: Some(args(&["source"])),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "len".to_string(),
+                out: Some(name("length")),
+                args: Some(args(&["alias"])),
+                ..OpIR::default()
+            },
+        ];
+
+        rewrite_copy_aliases(&mut ops);
+
+        assert_eq!(ops[0].kind, "nop");
+        assert_eq!(ops[1].args.as_ref(), Some(&args(&["source"])));
+    }
+
+    #[test]
+    fn rewrite_copy_aliases_preserves_load_from_mutable_store_var() {
+        let mut ops = vec![
+            OpIR {
+                kind: "missing".to_string(),
+                out: Some(name("initial")),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some(name("bag")),
+                args: Some(args(&["initial"])),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "list_new".to_string(),
+                out: Some(name("list_value")),
+                args: Some(args(&["item"])),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some(name("bag")),
+                args: Some(args(&["list_value"])),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "copy_var".to_string(),
+                var: Some(name("bag")),
+                out: Some(name("loaded_bag")),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "len".to_string(),
+                out: Some(name("length")),
+                args: Some(args(&["loaded_bag"])),
+                ..OpIR::default()
+            },
+        ];
+
+        rewrite_copy_aliases(&mut ops);
+
+        assert_eq!(ops[4].kind, "copy_var");
+        assert_eq!(ops[4].var.as_deref(), Some("bag"));
+        assert_eq!(ops[4].out.as_deref(), Some("loaded_bag"));
+        assert_eq!(ops[5].args.as_ref(), Some(&args(&["loaded_bag"])));
+    }
+
+    #[test]
+    fn rewrite_copy_aliases_does_not_rewrite_mutable_assignment_targets() {
+        let mut ops = vec![
+            OpIR {
+                kind: "copy".to_string(),
+                out: Some(name("slot")),
+                args: Some(args(&["source"])),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some(name("slot")),
+                args: Some(args(&["replacement"])),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "len".to_string(),
+                out: Some(name("length")),
+                args: Some(args(&["slot"])),
+                ..OpIR::default()
+            },
+        ];
+
+        rewrite_copy_aliases(&mut ops);
+
+        assert_eq!(ops[0].kind, "copy");
+        assert_eq!(ops[1].var.as_deref(), Some("slot"));
+        assert_eq!(ops[2].args.as_ref(), Some(&args(&["slot"])));
     }
 }

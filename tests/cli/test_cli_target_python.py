@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,22 @@ def test_target_python_uses_project_requires_python_floor(tmp_path: Path) -> Non
     )
 
     assert target.short == "3.14"
+
+
+def test_target_python_uses_intermediate_project_requires_python_floor(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nrequires-python = ">=3.13,<3.15"\n'
+    )
+
+    target = cli._resolve_target_python_version(
+        explicit=None,
+        build_config=None,
+        project_root=tmp_path,
+    )
+
+    assert target.short == "3.13"
 
 
 def test_target_python_cli_overrides_project_requires_python(tmp_path: Path) -> None:
@@ -186,6 +203,61 @@ def test_backend_cache_variant_changes_with_target_python() -> None:
     assert "target_python=py314" in py314
 
 
+def test_wrapper_cache_manifest_input_changes_with_target_python(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "main.py"
+    source_path.write_text("print('ok')\n")
+    monkeypatch.setattr(
+        cli,
+        "_parse_source_for_target",
+        lambda source, *, filename, target_python: ast.parse(
+            source,
+            filename=filename,
+        ),
+    )
+
+    entry312, error312 = cli._resolve_wrapper_build_entry(
+        file_path=str(source_path),
+        module=None,
+        project_root=tmp_path,
+        json_output=True,
+        command="run",
+        build_args=["--python-version", "3.12"],
+    )
+    entry314, error314 = cli._resolve_wrapper_build_entry(
+        file_path=str(source_path),
+        module=None,
+        project_root=tmp_path,
+        json_output=True,
+        command="run",
+        build_args=["--python-version", "3.14"],
+    )
+
+    assert error312 is None
+    assert error314 is None
+    assert entry312 is not None
+    assert entry314 is not None
+
+    payload312, key312 = cli._wrapper_build_cache_input(
+        resolved_build_entry=entry312,
+        build_args=["--python-version", "3.12"],
+        env={},
+        project_root=tmp_path,
+    ) or ({}, "")
+    payload314, key314 = cli._wrapper_build_cache_input(
+        resolved_build_entry=entry314,
+        build_args=["--python-version", "3.14"],
+        env={},
+        project_root=tmp_path,
+    ) or ({}, "")
+
+    assert payload312["target_python"] == "py312"
+    assert payload314["target_python"] == "py314"
+    assert key312 != key314
+
+
 def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) -> None:
     source_path = tmp_path / "main.py"
     source_path.write_text("print('ok')\n")
@@ -208,7 +280,6 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
     prepared, error = cli._prepare_backend_ir(
         entry_module="__main__",
         module_graph={"__main__": source_path},
-        explicit_imports=set(),
         parse_codec="json",
         type_hint_policy="ignore",
         fallback_policy="error",
@@ -229,6 +300,7 @@ def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) 
         fail=cli._fail,
         json_output=True,
         module_order=["__main__"],
+        explicit_imports=set(),
         generated_module_source_paths={},
         spawn_enabled=False,
         pgo_profile_summary=None,

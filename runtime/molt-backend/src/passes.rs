@@ -26,12 +26,17 @@ fn alias_source_name<'a>(
             .as_ref()
             .and_then(|args| args.first())
             .map(String::as_str),
-        "copy_var" | "load_var" | "store_var" => op.var.as_deref().or_else(|| {
-            op.args
-                .as_ref()
-                .and_then(|args| args.first())
-                .map(String::as_str)
-        }),
+        "copy_var" | "load_var" => op
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .map(String::as_str)
+            .or(op.var.as_deref()),
+        "store_var" => op
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .map(String::as_str),
         "call" => {
             let callee = op.s_value.as_ref()?;
             let ReturnAliasSummary::Param(param_idx) = *summaries.get(callee)?;
@@ -2605,17 +2610,6 @@ pub fn eliminate_dead_functions(ir: &mut SimpleIR) {
         }
     }
 
-    if let Some(module_symbols) =
-        crate::stdlib_module_symbols::stdlib_module_symbols_from_env_or_panic()
-    {
-        for module_symbol in module_symbols {
-            let init_name = format!("molt_init_{module_symbol}");
-            if defined.contains(init_name.as_str()) {
-                seed(init_name, &mut reachable, &mut queue);
-            }
-        }
-    }
-
     while let Some(current) = queue.pop_front() {
         if let Some(refs) = references.get(&current) {
             for target in refs {
@@ -2983,6 +2977,11 @@ fn simple_ir_op_has_static_module_class_binding_effect_proof(op: &OpIR) -> bool 
 }
 
 fn simple_ir_var_field_is_read(op: &OpIR) -> bool {
+    if matches!(op.kind.as_str(), "copy_var" | "load_var")
+        && op.args.as_ref().is_some_and(|args| !args.is_empty())
+    {
+        return false;
+    }
     !matches!(
         op.kind.as_str(),
         // Assignment targets and fused iterator value outputs are definitions,
@@ -4846,6 +4845,38 @@ mod tests {
     }
 
     #[test]
+    fn return_alias_summary_uses_args_based_copy_var_value_source() {
+        let summaries = compute_return_alias_summaries(&[FunctionIR {
+            name: "copy_var_alias".to_string(),
+            params: vec!["value".to_string(), "metadata_slot".to_string()],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    var: Some("metadata_slot".to_string()),
+                    args: Some(vec!["value".to_string()]),
+                    out: Some("alias".to_string()),
+                    ..Default::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("alias".to_string()),
+                    args: Some(vec!["alias".to_string()]),
+                    ..Default::default()
+                },
+            ],
+        }]);
+
+        assert_eq!(
+            summaries.get("copy_var_alias"),
+            Some(&ReturnAliasSummary::Param(0)),
+            "args[0] is the copied value; var is only local-name transport metadata"
+        );
+    }
+
+    #[test]
     fn dead_op_elim_keeps_copy_var_when_output_is_consumed() {
         let mut ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -4921,6 +4952,51 @@ mod tests {
             ops.iter()
                 .any(|op| op.kind == "add" && op.out.as_deref() == Some("_sum")),
             "dead-op elimination must preserve producers consumed through copy_var.var: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn dead_op_elim_ignores_args_based_copy_var_metadata_var() {
+        let mut ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "copy_source_metadata".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    make_const_int("_source", 40),
+                    make_const_int("_metadata", 2),
+                    OpIR {
+                        kind: "copy_var".to_string(),
+                        var: Some("_metadata".to_string()),
+                        args: Some(vec!["_source".to_string()]),
+                        out: Some("_alias".to_string()),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("_alias".to_string()),
+                        args: Some(vec!["_alias".to_string()]),
+                        ..Default::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+
+        eliminate_dead_ops(&mut ir);
+
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter()
+                .any(|op| op.kind == "const" && op.out.as_deref() == Some("_source")),
+            "dead-op elimination must preserve the args[0] value source: {ops:?}"
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| op.kind == "const" && op.out.as_deref() == Some("_metadata")),
+            "copy_var.var is metadata when args[0] is present and must not keep dead producers alive: {ops:?}"
         );
     }
 
@@ -5386,7 +5462,7 @@ mod tests {
     }
 
     #[test]
-    fn eliminate_dead_functions_keeps_env_seeded_stdlib_init_roots() {
+    fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
         let prior = std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").ok();
         unsafe {
             std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]");
@@ -5443,8 +5519,8 @@ mod tests {
         }
 
         let retained: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
-        assert!(retained.contains("molt_init_sys"));
-        assert!(retained.contains("sys__helper"));
+        assert!(!retained.contains("molt_init_sys"));
+        assert!(!retained.contains("sys__helper"));
         assert!(!retained.contains("molt_init_json"));
     }
 

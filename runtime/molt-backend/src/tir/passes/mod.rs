@@ -48,8 +48,18 @@ pub mod vectorize;
 pub struct PassStats {
     pub name: &'static str,
     pub values_changed: usize,
+    /// Semantic metadata/attribute facts changed without necessarily rewriting
+    /// executable ops or SSA values. These are real pass deltas: pipeline
+    /// snapshot restore must preserve them exactly like op/value edits.
+    pub attrs_changed: usize,
     pub ops_removed: usize,
     pub ops_added: usize,
+}
+
+impl PassStats {
+    pub fn total_changes(&self) -> usize {
+        self.values_changed + self.attrs_changed + self.ops_removed + self.ops_added
+    }
 }
 
 /// Generous upper bound on the number of pass stats produced per pipeline

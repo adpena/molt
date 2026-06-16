@@ -1172,12 +1172,10 @@ impl<'a> SsaContext<'a> {
                 }
             }
         }
-        // If `var` is an input (not a local-slot mutation target), resolve it too.
-        // For the two-result ops (iter_next_unboxed, checked_add) `var` is
-        // the results[0] OUTPUT, not an input.
-        if !matches!(op.kind.as_str(), "store_var" | "delete_var")
-            && op.kind != "iter_next_unboxed"
-            && op.kind != "checked_add"
+        // If `var` is an input (not a local-slot mutation target or transport
+        // spelling), resolve it too. For `copy_var`/`load_var`, an explicit
+        // args[0] is the value source and `var` is local-name transport.
+        if simple_var_field_is_value_operand(op)
             && let Some(v) = &op.var
             && is_variable(v)
             && let Some(vid) = self.resolve_known_var(v, var_stacks)
@@ -1350,18 +1348,13 @@ impl<'a> SsaContext<'a> {
             attrs.insert("name".into(), AttrValue::Str("range".into()));
         }
 
-        // Preserve the `var` field for passthrough (Copy) ops where `var` carries
-        // metadata (a non-variable string) rather than an SSA reference.  For
-        // such ops, the var was NOT resolved to an operand above (it was either
-        // not a variable or failed resolution), so we store it as an attr.
-        if op.kind != "load_var"
-            && op.kind != "copy_var"
+        // Preserve the SimpleIR `var` spelling as transport metadata for
+        // re-emission. For `copy_var`/`load_var` it is both resolved into an SSA
+        // operand above and carried here as the original local-name fact; the
+        // operand is value authority, `_var` is stream-identity authority.
+        if simple_var_field_is_transport_fact(op.kind.as_str())
             && let Some(ref v) = op.var
         {
-            // Only store as attr if it wasn't already resolved as an SSA operand.
-            // We can detect this: if the var is a variable name that resolved,
-            // it's already in operands; if it's not a variable or didn't resolve,
-            // we need to preserve it as an attr.
             attrs.insert("_var".into(), AttrValue::Str(v.clone()));
         }
 
@@ -1782,6 +1775,25 @@ fn is_variable(name: &str) -> bool {
     !name.is_empty() && name != "none" && name != "True" && name != "False"
 }
 
+fn simple_var_field_is_transport_fact(kind: &str) -> bool {
+    !matches!(kind, "checked_add" | "iter_next_unboxed")
+}
+
+fn simple_var_field_is_value_operand(op: &OpIR) -> bool {
+    if matches!(
+        op.kind.as_str(),
+        "store_var" | "delete_var" | "checked_add" | "iter_next_unboxed"
+    ) {
+        return false;
+    }
+    if matches!(op.kind.as_str(), "copy_var" | "load_var")
+        && op.args.as_ref().is_some_and(|args| !args.is_empty())
+    {
+        return false;
+    }
+    true
+}
+
 /// Compute immediate dominators for a CFG given by `successors` and
 /// `predecessors`, rooted at `entry`. Mirrors `cfg::compute_dominators` but
 /// operates on free-form predecessor/successor slices so the SSA pass can
@@ -2064,6 +2076,97 @@ mod tests {
         assert!(
             matches!(marker.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "bag"),
             "store_var marker must preserve the Python local name"
+        );
+    }
+
+    #[test]
+    fn copy_var_preserves_source_local_name_as_transport_attr() {
+        let ops = vec![
+            OpIR {
+                kind: "const_none".to_string(),
+                out: Some("seed".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("x".to_string()),
+                args: Some(vec!["seed".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "copy_var".to_string(),
+                var: Some("x".to_string()),
+                out: Some("read_x".to_string()),
+                ..OpIR::default()
+            },
+            op_args("ret", &["read_x"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let copy = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| {
+                op.opcode == OpCode::Copy
+                    && !op.attrs.contains_key("_original_kind")
+                    && matches!(op.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "x")
+            })
+            .expect("copy_var must carry its original SimpleIR source-local name");
+        assert_eq!(
+            copy.operands.len(),
+            1,
+            "copy_var local-name metadata must not replace the SSA value operand"
+        );
+        assert_eq!(
+            copy.results.len(),
+            1,
+            "copy_var must keep the copied SSA result while carrying local-name metadata"
+        );
+    }
+
+    #[test]
+    fn copy_var_with_args_treats_var_as_transport_not_second_operand() {
+        let ops = vec![
+            OpIR {
+                kind: "const_none".to_string(),
+                out: Some("seed".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "store_var".to_string(),
+                var: Some("x".to_string()),
+                args: Some(vec!["seed".to_string()]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "copy_var".to_string(),
+                var: Some("x".to_string()),
+                args: Some(vec!["seed".to_string()]),
+                out: Some("alias".to_string()),
+                ..OpIR::default()
+            },
+            op_args("ret", &["alias"]),
+        ];
+        let cfg = CFG::build(&ops);
+        let output = convert_to_ssa(&cfg, &ops);
+
+        let copy = output
+            .blocks
+            .iter()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| {
+                op.opcode == OpCode::Copy
+                    && !op.attrs.contains_key("_original_kind")
+                    && matches!(op.attrs.get("_var"), Some(AttrValue::Str(var)) if var == "x")
+            })
+            .expect("args-based copy_var must still carry its local-name metadata");
+
+        assert_eq!(
+            copy.operands.len(),
+            1,
+            "args-based copy_var must not also resolve var as a second value operand"
         );
     }
 

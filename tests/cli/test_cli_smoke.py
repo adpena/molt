@@ -437,6 +437,73 @@ def test_default_molt_home_prefers_explicit_override(
     assert cli._default_molt_home() == explicit_home
 
 
+def test_cli_hash_seed_windows_handoff_waits_for_restarted_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Completed:
+        returncode = 81
+
+    def fake_run(argv, *, env, check):
+        captured["argv"] = list(argv)
+        captured["env"] = dict(env)
+        captured["check"] = check
+        return Completed()
+
+    def fake_execvpe(*_args):
+        raise AssertionError("Windows hash-seed restart must not use os.execvpe")
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.delenv("PYTHONHASHSEED", raising=False)
+    monkeypatch.delenv(cli._HASH_SEED_SENTINEL_ENV, raising=False)
+    monkeypatch.setenv(cli._HASH_SEED_OVERRIDE_ENV, "123")
+    monkeypatch.setattr(cli, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "_cli_hash_seed_reexec_argv",
+        lambda: [sys.executable, "-m", "molt.cli", "doctor"],
+    )
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli.os, "execvpe", fake_execvpe)
+    monkeypatch.setattr(cli.os, "_exit", fake_exit)
+
+    try:
+        cli._ensure_cli_hash_seed()
+    except SystemExit as exc:
+        assert exc.code == 81
+    else:  # pragma: no cover
+        raise AssertionError("expected Windows hash-seed handoff")
+
+    assert captured["argv"] == [sys.executable, "-m", "molt.cli", "doctor"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["PYTHONHASHSEED"] == "123"
+    assert env[cli._HASH_SEED_SENTINEL_ENV] == "1"
+    assert captured["check"] is False
+
+
+def test_cli_hash_seed_reexec_argv_uses_active_python_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli.sys, "executable", "venv-python")
+    monkeypatch.setattr(
+        cli.sys,
+        "orig_argv",
+        ["uv-base-python", "-m", "molt.cli", "doctor"],
+        raising=False,
+    )
+
+    assert cli._cli_hash_seed_reexec_argv() == [
+        "venv-python",
+        "-m",
+        "molt.cli",
+        "doctor",
+    ]
+
+
 def test_cli_doctor_json() -> None:
     res = _run_cli(["doctor", "--json"])
     assert res.returncode == 0

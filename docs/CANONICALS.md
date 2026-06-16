@@ -38,6 +38,12 @@ of truth when a claim drifts.
 - [design/foundation/27_perceus_borrow_inference.md](design/foundation/27_perceus_borrow_inference.md)
 - [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
 
+## Long-Horizon Operating Doctrine
+
+- [design/foundation/authority_manifest.toml](design/foundation/authority_manifest.toml)
+- [design/foundation/51_ten_year_roadmap.md](design/foundation/51_ten_year_roadmap.md)
+- [design/foundation/52_autonomous_operating_charter.md](design/foundation/52_autonomous_operating_charter.md)
+
 ## Proof And Validation
 
 - [BENCHMARKING.md](BENCHMARKING.md)

@@ -8,10 +8,11 @@ This corrects three things `01_E1-activation.md` got wrong or missed. Full recon
 
 ## Corrections to `01_E1-activation.md`
 
-1. **`MOLT_DISABLE_INLINING` is at `passes.rs:291` ONLY** — NOT in `run_inliner`
-   (`inliner.rs`). The blueprint §9.6 is wrong. **Before deleting `passes::inline_functions`
-   (e-4), add the env guard to `run_inliner` (`inliner.rs:1058`) or the `run_module_pipeline`
-   call site**, or the rollback lever vanishes.
+1. **Superseded by the no-rollback compiler-pass policy.** The earlier plan
+   proposed adding an environment guard to `run_inliner`; that guard is now
+   intentionally absent. Inliner activation is controlled by legality,
+   profitability, and external-linkage facts, not by an ambient process-global
+   no-op switch.
 2. **The native per-function TIR pipeline is CONTENT-HASH CACHED** (`simple_backend.rs`
    Phase 1 = 2383-2454 cache hit/miss; Phase 2 parallel = 2504-2587; Phase 3 writeback =
    2590-2594). Cached functions NEVER enter the parallel loop — they load straight into
@@ -52,9 +53,8 @@ This corrects three things `01_E1-activation.md` got wrong or missed. Full recon
 
 ## The first-cut implementation (native e-1) — bounded + safe
 
-### Step 1 — `run_inliner` exposes the changed-function set + rollback guard
+### Step 1 — `run_inliner` exposes the changed-function set
 `inliner.rs`:
-- Add at the top of `run_inliner`: `if std::env::var("MOLT_DISABLE_INLINING").is_ok() { return InlinerStats::default(); }`.
 - Change `InlinerStats` to carry `changed_functions: Vec<String>` (or return it alongside);
   push the caller name when `changed_this_fn` (the existing flag at the splice loop).
   Thread it out through `run_module_pipeline` → `ModuleAnalysis` (add `changed_functions`).
@@ -116,7 +116,9 @@ unchanged (the post-split analysis runs on the inlined SimpleIR). `split_megafun
 - Perf: `bench_sum` ≥ CPython + the helper-heavy benches (expect 10-25% on small-helper code).
 - Compile-time: `MOLT_BACKEND_TIMING=1` — the full re-lift is the cost; measure, and if >5%
   baton the "lift only inlining-participant functions" optimization.
-- Rollback: `MOLT_DISABLE_INLINING=1` build still works (inliner short-circuits).
+- Regression policy: inliner regressions are fixed through pass predicates,
+  representation facts, backend consumers, or a code revert. There is no
+  ambient env short-circuit for the production pass.
 
 ### Then e-2 (WASM, `wasm.rs:2087-2162` — same pattern + the LIR-fast-path cache-hit fix the
 recon flagged at wasm.rs:2102-2114), e-3 (LLVM held patch), e-4 (delete `inline_functions` +

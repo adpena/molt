@@ -444,12 +444,10 @@ def _compile_wasm(src: Path, out_dir: Path) -> tuple[bool, Path, str, float]:
     env = os.environ.copy()
     env["MOLT_WASM_LINKED"] = "0"
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
     # Determinism/bound env from bench_wasm.py
     env.setdefault("MOLT_SCCP_MAX_ITERS", "8")
     env.setdefault("MOLT_CSE_MAX_ITERS", "8")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "3")
-    env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
     # Ensure molt is importable
     pythonpath = str(MOLT_ROOT / "src")
     existing = env.get("PYTHONPATH", "")

@@ -275,9 +275,6 @@ def build_wasm_linked(
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
-    env.setdefault("MOLT_MIDEND_IDEMPOTENCE_CHECK", "0")
-    env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
     if allow_external and artifact_root != root:
         tmp_root = artifact_root / "tmp"
     else:

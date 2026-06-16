@@ -83,10 +83,7 @@ def _run_molt_build(
     """Run ``python -m molt.cli build`` for a given target."""
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SRC_DIR)
-    # Disable midend to keep IR comparison deterministic and fast.
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
     if target == "wasm":
         # These tests compare pre-backend IR. Skip optional linked wasm output
         # so the parity lane measures frontend/midend behavior, not linker cost.
@@ -275,7 +272,6 @@ class TestBackendOptimizationParity:
             out_dir = tmp_path / f"opt_{backend}"
             out_dir.mkdir(exist_ok=True)
             env_override = {
-                "MOLT_MIDEND_DISABLE": "0",
                 "MOLT_MIDEND_MAX_ROUNDS": "2",
             }
             try:
@@ -283,7 +279,6 @@ class TestBackendOptimizationParity:
                 env["PYTHONPATH"] = str(SRC_DIR)
                 env.update(env_override)
                 env.setdefault("MOLT_BACKEND_DAEMON", "0")
-                env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
                 if backend == "wasm":
                     env.setdefault("MOLT_WASM_LINKED", "0")
                     env.setdefault("MOLT_WASM_MODULE_CHUNK_OPS", "0")
