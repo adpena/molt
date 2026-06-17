@@ -3151,26 +3151,48 @@ def _strip_debug_sections(data: bytes) -> bytes | None:
         # Strip name, debug, producers, source-mapping and reloc sections
         if name in (
             "name",
-            ".debug_info",
-            ".debug_line",
-            ".debug_abbrev",
-            ".debug_str",
-            ".debug_ranges",
-            ".debug_loc",
-            ".debug_aranges",
-            ".debug_pubtypes",
-            ".debug_pubnames",
             "producers",
             "sourceMappingURL",
             "linking",
             "dylink.0",
-        ) or name.startswith("reloc."):
+        ) or name.startswith(".debug") or name.startswith("reloc."):
             stripped = True
             continue
         keep.append((section_id, payload))
     if not stripped:
         return None
     return _build_sections(keep)
+
+
+_STANDARD_SECTION_ORDER = {
+    1: 1,  # type
+    2: 2,  # import
+    3: 3,  # function
+    4: 4,  # table
+    5: 5,  # memory
+    6: 6,  # global
+    7: 7,  # export
+    8: 8,  # start
+    9: 9,  # element
+    12: 10,  # data count
+    10: 11,  # code
+    11: 12,  # data
+}
+
+
+def _canonicalize_standard_section_order(data: bytes) -> bytes | None:
+    sections = _parse_sections(data)
+    indexed_sections = list(enumerate(sections))
+    canonical = sorted(
+        indexed_sections,
+        key=lambda item: (
+            _STANDARD_SECTION_ORDER.get(item[1][0], 0 if item[1][0] == 0 else 100),
+            item[0],
+        ),
+    )
+    if [index for index, _section in canonical] == list(range(len(sections))):
+        return None
+    return _build_sections([section for _index, section in canonical])
 
 
 _ESSENTIAL_EXPORTS = frozenset(
@@ -5647,6 +5669,10 @@ def _run_wasm_ld(
         if stripped_debug is not None:
             work_linked.write_bytes(stripped_debug)
             linked_bytes = stripped_debug
+        canonical_sections = _canonicalize_standard_section_order(linked_bytes)
+        if canonical_sections is not None:
+            work_linked.write_bytes(canonical_sections)
+            linked_bytes = canonical_sections
         linked_ok = _validate_linked(work_linked)
         if not linked_ok:
             if split_runtime:

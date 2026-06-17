@@ -28416,7 +28416,7 @@ def _write_wasm_link_args_response_file(
     safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._-") or "runtime"
     response_path = response_root / f"{safe_label}.{digest}.rsp"
     _atomic_write_text(response_path, "\n".join(link_args) + "\n")
-    return response_path
+    return response_path.resolve(strict=False)
 
 
 def _wasm_link_args_response_rustflags(
@@ -28563,6 +28563,9 @@ def _link_runtime_staticlib_to_reloc_wasm(
                 file=sys.stderr,
             )
         return False
+    staticlib_path = staticlib_path.resolve(strict=False)
+    libc_archive = libc_archive.resolve(strict=False)
+    output_path = output_path.resolve(strict=False)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_output_path = output_path.with_name(
         f".{output_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
@@ -29644,8 +29647,9 @@ def _default_molt_cache_cached(
     cache_override: str | None,
     xdg_cache_home: str | None,
     cwd_str: str,
-    home_str: str,
+    home_str: str | None,
     platform_name: str,
+    ext_root_str: str | None,
 ) -> Path:
     if cache_override:
         path = Path(cache_override).expanduser()
@@ -29653,15 +29657,32 @@ def _default_molt_cache_cached(
             path = (Path(cwd_str) / path).absolute()
         return path
     if platform_name == "darwin":
+        if home_str is None:
+            fallback_base = Path(ext_root_str) if ext_root_str else Path(cwd_str)
+            if not fallback_base.is_absolute():
+                fallback_base = (Path(cwd_str) / fallback_base).absolute()
+            return fallback_base / ".molt_cache"
         base = Path(home_str) / "Library" / "Caches"
     else:
         if xdg_cache_home:
             base = Path(xdg_cache_home).expanduser()
             if not base.is_absolute():
                 base = (Path(cwd_str) / base).absolute()
+        elif home_str is None:
+            fallback_base = Path(ext_root_str) if ext_root_str else Path(cwd_str)
+            if not fallback_base.is_absolute():
+                fallback_base = (Path(cwd_str) / fallback_base).absolute()
+            return fallback_base / ".molt_cache"
         else:
             base = Path(home_str) / ".cache"
     return base / "molt"
+
+
+def _default_home_str() -> str | None:
+    try:
+        return os.fspath(Path.home())
+    except RuntimeError:
+        return None
 
 
 def _default_molt_cache() -> Path:
@@ -29669,8 +29690,9 @@ def _default_molt_cache() -> Path:
         os.environ.get("MOLT_CACHE"),
         os.environ.get("XDG_CACHE_HOME"),
         os.fspath(Path.cwd()),
-        os.fspath(Path.home()),
+        _default_home_str(),
         sys.platform,
+        os.environ.get("MOLT_EXT_ROOT"),
     )
 
 
@@ -29680,8 +29702,9 @@ def _default_molt_home_cached(
     cache_override: str | None,
     xdg_cache_home: str | None,
     cwd_str: str,
-    home_str: str,
+    home_str: str | None,
     platform_name: str,
+    ext_root_str: str | None,
 ) -> Path:
     if home_override:
         path = Path(home_override).expanduser()
@@ -29695,6 +29718,7 @@ def _default_molt_home_cached(
             cwd_str,
             home_str,
             platform_name,
+            ext_root_str,
         )
         / "home"
     )
@@ -29706,8 +29730,9 @@ def _default_molt_home() -> Path:
         os.environ.get("MOLT_CACHE"),
         os.environ.get("XDG_CACHE_HOME"),
         os.fspath(Path.cwd()),
-        os.fspath(Path.home()),
+        _default_home_str(),
         sys.platform,
+        os.environ.get("MOLT_EXT_ROOT"),
     )
 
 
@@ -29718,8 +29743,9 @@ def _default_molt_bin_cached(
     cache_override: str | None,
     xdg_cache_home: str | None,
     cwd_str: str,
-    home_str: str,
+    home_str: str | None,
     platform_name: str,
+    ext_root_str: str | None,
 ) -> Path:
     if bin_override:
         path = Path(bin_override).expanduser()
@@ -29734,6 +29760,7 @@ def _default_molt_bin_cached(
             cwd_str,
             home_str,
             platform_name,
+            ext_root_str,
         )
         / "bin"
     )
@@ -29746,8 +29773,9 @@ def _default_molt_bin() -> Path:
         os.environ.get("MOLT_CACHE"),
         os.environ.get("XDG_CACHE_HOME"),
         os.fspath(Path.cwd()),
-        os.fspath(Path.home()),
+        _default_home_str(),
         sys.platform,
+        os.environ.get("MOLT_EXT_ROOT"),
     )
 
 
@@ -29854,8 +29882,9 @@ def _default_build_root_cached(
     cache_override: str | None,
     xdg_cache_home: str | None,
     cwd_str: str,
-    home_str: str,
+    home_str: str | None,
     platform_name: str,
+    ext_root_str: str | None,
 ) -> Path:
     safe_base = _safe_output_base(output_base)
     home_root = _default_molt_home_cached(
@@ -29865,6 +29894,7 @@ def _default_build_root_cached(
         cwd_str,
         home_str,
         platform_name,
+        ext_root_str,
     )
     return home_root / "build" / safe_base
 
@@ -29876,8 +29906,9 @@ def _default_build_root(output_base: str) -> Path:
         os.environ.get("MOLT_CACHE"),
         os.environ.get("XDG_CACHE_HOME"),
         os.fspath(Path.cwd()),
-        os.fspath(Path.home()),
+        _default_home_str(),
         sys.platform,
+        os.environ.get("MOLT_EXT_ROOT"),
     )
 
 
@@ -29888,8 +29919,9 @@ def _resolve_cache_root_cached(
     cache_override: str | None,
     xdg_cache_home: str | None,
     cwd_str: str,
-    home_str: str,
+    home_str: str | None,
     platform_name: str,
+    ext_root_str: str | None,
 ) -> Path:
     if not cache_dir:
         return _default_molt_cache_cached(
@@ -29898,6 +29930,7 @@ def _resolve_cache_root_cached(
             cwd_str,
             home_str,
             platform_name,
+            ext_root_str,
         )
     project_root = Path(project_root_str)
     path = Path(cache_dir).expanduser()
@@ -29913,8 +29946,9 @@ def _resolve_cache_root(project_root: Path, cache_dir: str | None) -> Path:
         os.environ.get("MOLT_CACHE"),
         os.environ.get("XDG_CACHE_HOME"),
         os.fspath(Path.cwd()),
-        os.fspath(Path.home()),
+        _default_home_str(),
         sys.platform,
+        os.environ.get("MOLT_EXT_ROOT"),
     )
 
 

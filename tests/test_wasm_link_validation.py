@@ -514,6 +514,51 @@ def _module_with_linking_symbols(entries: list[bytes]) -> bytes:
     return wasm_link._build_sections([(0, custom)])
 
 
+def test_strip_debug_sections_removes_all_dwarf_custom_sections() -> None:
+    debug_info = wasm_link._build_custom_section(".debug_info", b"old")
+    debug_line_str = wasm_link._build_custom_section(".debug_line_str", b"new")
+    keep = wasm_link._build_custom_section("molt.keep", b"payload")
+    module = wasm_link._build_sections(
+        [
+            (0, debug_info),
+            (0, debug_line_str),
+            (0, keep),
+        ]
+    )
+
+    stripped = wasm_link._strip_debug_sections(module)
+
+    assert stripped is not None
+    custom_names = [
+        wasm_link._parse_custom_section(payload)[0]
+        for section_id, payload in wasm_link._parse_sections(stripped)
+        if section_id == 0
+    ]
+    assert custom_names == ["molt.keep"]
+
+
+def test_canonicalize_standard_section_order_moves_element_before_code_data() -> None:
+    sections = [
+        (1, b"type"),
+        (7, b"export"),
+        (10, b"code"),
+        (11, b"data"),
+        (9, b"elem"),
+    ]
+    module = wasm_link._build_sections(sections)
+
+    canonical = wasm_link._canonicalize_standard_section_order(module)
+
+    assert canonical is not None
+    assert [section_id for section_id, _ in wasm_link._parse_sections(canonical)] == [
+        1,
+        7,
+        9,
+        10,
+        11,
+    ]
+
+
 def _build_linked_host_table_module(table_import_name: str) -> bytes:
     write_varuint = wasm_link._write_varuint
     sections: list[tuple[int, bytes]] = []

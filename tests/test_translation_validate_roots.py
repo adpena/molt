@@ -91,6 +91,27 @@ def test_python_command_candidates_are_versioned_not_process_python(
     assert ["python3.14"] in candidates
 
 
+def test_target_python_command_prefers_uv_python_find_path(monkeypatch) -> None:
+    target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
+    translation_validate._target_python_command_cached.cache_clear()
+
+    monkeypatch.delenv("MOLT_TV_PYTHON", raising=False)
+    monkeypatch.setattr(translation_validate.shutil, "which", lambda name: "uv.exe")
+
+    def fake_run_subprocess(cmd, **kwargs):
+        if cmd[:3] == ["uv.exe", "python", "find"]:
+            return "C:/py313/python.exe\n", "", 0
+        if cmd[:2] == ["C:/py313/python.exe", "-c"]:
+            return "3.13", "", 0
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(translation_validate, "_run_subprocess", fake_run_subprocess)
+
+    assert translation_validate._target_python_command(target) == [
+        "C:/py313/python.exe"
+    ]
+
+
 def test_run_cpython_uses_verified_target_python_command(monkeypatch) -> None:
     target = translation_validate.molt_cli._SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
     calls: list[list[str]] = []
