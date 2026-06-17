@@ -470,6 +470,27 @@ def test_cfg_dead_const_elimination_removes_unused_constants() -> None:
     assert all(op.get("value") != 99 for op in lowered if op.get("kind") == "const")
 
 
+def test_dce_eliminates_cross_block_dead_pure_dependency_chain_in_one_pass() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="CONST", args=[7], result=MoltValue("predecessor")),
+        MoltOp(kind="JUMP", args=[1], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=[1], result=MoltValue("none")),
+        MoltOp(kind="CONST", args=[3], result=MoltValue("local")),
+        MoltOp(
+            kind="ADD",
+            args=[MoltValue("predecessor"), MoltValue("local")],
+            result=MoltValue("dead_sum"),
+        ),
+    ]
+
+    rewritten = gen._eliminate_dead_trivial_consts(ops)
+
+    assert [op.kind for op in rewritten] == ["JUMP", "LABEL"]
+    assert gen._eliminate_dead_trivial_consts(rewritten) == rewritten
+    assert gen.midend_stats["dce_removed_total"] == 3
+
+
 def test_cfg_const_dedupe_keeps_check_exception_users_defined() -> None:
     lowered = _lower_ops(
         [
@@ -1596,6 +1617,37 @@ def outer(values):
     assert boundary_idx < ret_idx
 
 
+def test_loop_rebind_del_boundary_loads_current_local_slot() -> None:
+    source = """
+def f(n):
+    x = []
+    i = 0
+    while i < n:
+        x = []
+        i += 1
+    return x
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
+
+    x_boundaries = [
+        (idx, op)
+        for idx, op in enumerate(ops)
+        if op.get("kind") == "del_boundary" and op.get("s_value") == "x"
+    ]
+    producers = {op.get("out"): op for op in ops if isinstance(op.get("out"), str)}
+    assert x_boundaries
+    for _idx, boundary in x_boundaries:
+        boundary_args = boundary.get("args") or []
+        assert len(boundary_args) == 1
+        slot_load = producers[boundary_args[0]]
+        assert slot_load.get("kind") == "load_var"
+        assert slot_load.get("var") == "x"
+        assert slot_load.get("out") == boundary_args[0]
+
+
 def _generator_poll_ops(source: str) -> list[dict]:
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(ast.parse(source))
@@ -2431,6 +2483,15 @@ def test_guarded_type_fact_finalizer_modules_close_cse_dce_round(
         "post_cse_dce"
     ]
     assert post_cse_stats["accepted"] >= 1
+
+
+def test_collect_type_facts_reads_python_sources_as_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "typed_utf8_source.py"
+    path.write_text("# source sentinel: ā\nvalue: int = 1\n", encoding="utf-8")
+
+    facts = collect_type_facts_from_paths([path], "guarded", infer=True)
+
+    assert facts.modules["typed_utf8_source"].globals["value"].type == "int"
 
 
 def test_midend_ignores_retired_walltime_budget_env(

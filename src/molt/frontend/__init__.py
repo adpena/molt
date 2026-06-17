@@ -7583,10 +7583,23 @@ class SimpleTIRGenerator(
             or self.is_async()
         ):
             return
+        # `self.locals[name]` is the syntactic cached producer. Across loop
+        # phis the current frame slot may be a block argument, so make the
+        # boundary read the slot at the release point instead of retaining a
+        # stale pre-loop SSA value.
+        boundary_value = MoltValue(self.next_var(), type_hint=value.type_hint)
+        self.emit(
+            MoltOp(
+                kind="LOAD_VAR",
+                args=[],
+                result=boundary_value,
+                metadata={"var": name},
+            )
+        )
         self.emit(
             MoltOp(
                 kind="DEL_BOUNDARY",
-                args=[value],
+                args=[boundary_value],
                 result=MoltValue("none"),
                 metadata={"var": name},
             )
@@ -23118,10 +23131,6 @@ class SimpleTIRGenerator(
         if not cfg.blocks:
             return []
 
-        block_ops: dict[int, list[MoltOp]] = {
-            block.id: ops[block.start : block.end] for block in cfg.blocks
-        }
-
         def normalize_anchor_arg(value: Any) -> Any:
             if isinstance(value, MoltValue):
                 return ("v", value.name)
@@ -23170,73 +23179,59 @@ class SimpleTIRGenerator(
             if count > 1 and key in anchor_first_result
         }
 
-        block_use: dict[int, set[str]] = {}
-        block_def: dict[int, set[str]] = {}
-        for block_id, current_ops in block_ops.items():
-            use, defs = self._compute_block_use_def(current_ops)
-            block_use[block_id] = use
-            block_def[block_id] = defs
-
-        in_live: dict[int, set[str]] = {block_id: set() for block_id in block_ops}
-        out_live: dict[int, set[str]] = {block_id: set() for block_id in block_ops}
-        changed = True
-        while changed:
-            changed = False
-            for block_id in reversed(range(len(cfg.blocks))):
-                if block_id not in cfg.reachable:
-                    continue
-                new_out: set[str] = set()
-                for succ in cfg.successors.get(block_id, []):
-                    new_out.update(in_live.get(succ, set()))
-                new_in = block_use[block_id].union(new_out - block_def[block_id])
-                if new_out != out_live[block_id] or new_in != in_live[block_id]:
-                    out_live[block_id] = new_out
-                    in_live[block_id] = new_in
-                    changed = True
-
-        removed_count = 0
         pure_attempted = 0
-        pure_removed = 0
-        new_block_ops: dict[int, list[MoltOp]] = {}
-        for block_id, current_ops in block_ops.items():
-            live = set(out_live.get(block_id, set()))
-            kept_reversed: list[MoltOp] = []
-            for op in reversed(current_ops):
-                out_name = op.result.name
-                uses: set[str] = set()
-                for arg in op.args:
-                    self._collect_arg_value_names(arg, uses)
+        uses_by_index: dict[int, set[str]] = {}
+        defs_by_name: dict[str, list[int]] = {}
+        removable_indices: set[int] = set()
+        required_values: set[str] = set()
+        worklist: list[str] = []
 
-                lattice_class = self._dead_op_lattice_class(op.kind)
-                if out_name != "none" and lattice_class == "pure":
+        def require_value(name: str) -> None:
+            if name == "none" or name in required_values:
+                return
+            required_values.add(name)
+            worklist.append(name)
+
+        for idx, op in enumerate(ops):
+            out_name = op.result.name
+            uses: set[str] = set()
+            for arg in op.args:
+                self._collect_arg_value_names(arg, uses)
+            uses_by_index[idx] = uses
+
+            lattice_class = self._dead_op_lattice_class(op.kind)
+            if out_name != "none":
+                defs_by_name.setdefault(out_name, []).append(idx)
+                if lattice_class == "pure":
                     pure_attempted += 1
-                is_dead_const = (
-                    out_name != "none"
-                    and out_name not in live
-                    and lattice_class == "pure"
-                )
-                if is_dead_const and out_name in preserve_anchor_results:
-                    is_dead_const = False
-                # MISSING ops are runtime sentinels (uninitialized locals,
-                # optional defaults) that downstream GETATTR/CALL sites
-                # depend on — never eliminate them.
-                if is_dead_const and op.kind == "MISSING":
-                    is_dead_const = False
-                if is_dead_const:
-                    removed_count += 1
-                    pure_removed += 1
+                    # MISSING ops are runtime sentinels (uninitialized locals,
+                    # optional defaults) that downstream GETATTR/CALL sites
+                    # depend on — never eliminate them.
+                    if out_name not in preserve_anchor_results and op.kind != "MISSING":
+                        removable_indices.add(idx)
+
+        for idx, op in enumerate(ops):
+            if idx in removable_indices:
+                continue
+            for name in uses_by_index[idx]:
+                require_value(name)
+
+        required_removable_indices: set[int] = set()
+        while worklist:
+            value_name = worklist.pop()
+            for producer_idx in defs_by_name.get(value_name, []):
+                if producer_idx not in removable_indices:
                     continue
+                if producer_idx in required_removable_indices:
+                    continue
+                required_removable_indices.add(producer_idx)
+                for dependency_name in uses_by_index[producer_idx]:
+                    require_value(dependency_name)
 
-                if out_name != "none":
-                    live.discard(out_name)
-                live.update(uses)
-                kept_reversed.append(op)
-            kept_reversed.reverse()
-            new_block_ops[block_id] = kept_reversed
-
-        out: list[MoltOp] = []
-        for block_id in range(len(cfg.blocks)):
-            out.extend(new_block_ops[block_id])
+        remove_indices = removable_indices - required_removable_indices
+        pure_removed = len(remove_indices)
+        removed_count = pure_removed
+        out = [op for idx, op in enumerate(ops) if idx not in remove_indices]
         self.midend_stats["dce_removed_total"] += removed_count
         func_stats["dce_pure_op_attempted"] += pure_attempted
         func_stats["dce_pure_op_accepted"] += pure_removed

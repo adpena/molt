@@ -54,6 +54,11 @@ def _load_numpy_adapter_module():
     return module
 
 
+def _has_env_pair_casefold(env: dict[str, str], name: str, value: str) -> bool:
+    folded = name.upper()
+    return any(key.upper() == folded and candidate == value for key, candidate in env.items())
+
+
 def _run_tool(*args: str) -> subprocess.CompletedProcess[str]:
     return run_native_test_process(
         ["python3", "tools/bench_friends.py", *args],
@@ -99,6 +104,42 @@ def test_default_output_root_is_canonical_bench_results(monkeypatch) -> None:
     output_root = module._default_output_root()
 
     assert output_root.parent == REPO_ROOT / "bench" / "results" / "friends"
+
+
+def test_base_run_env_preserves_native_toolchain_env(monkeypatch) -> None:
+    module = _load_tool_module()
+    toolchain_env = {
+        "INCLUDE": "C:/toolchain/include",
+        "LIB": "C:/toolchain/lib;C:/sdk/lib",
+        "LIBPATH": "C:/toolchain/libpath",
+        "Path": "C:/toolchain/bin",
+        "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+        "SystemRoot": "C:/Windows",
+        "UCRTVersion": "10.0.26100.0",
+        "UniversalCRTSdkDir": "C:/Program Files (x86)/Windows Kits/10/",
+        "VCToolsInstallDir": "C:/VS/VC/Tools/MSVC/14.44.35207/",
+        "VCToolsVersion": "14.44.35207",
+        "VSINSTALLDIR": "C:/VS/",
+        "VisualStudioVersion": "17.0",
+        "WindowsLibPath": "C:/Windows Kits/10/UnionMetadata",
+        "WindowsSdkBinPath": "C:/Windows Kits/10/bin/10.0.26100.0/x64",
+        "WindowsSdkDir": "C:/Windows Kits/10/",
+        "WindowsSDKLibVersion": "10.0.26100.0/",
+        "WindowsSDKVersion": "10.0.26100.0/",
+    }
+    for key, value in toolchain_env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("MOLT_BENCH_MAX_PROCESS_RSS_GB", "12")
+    monkeypatch.setenv("PYTHONPATH", "must-not-leak")
+
+    env = module._base_run_env()
+
+    for key, value in toolchain_env.items():
+        assert _has_env_pair_casefold(env, key, value)
+    assert env["MOLT_BENCH_MAX_PROCESS_RSS_GB"] == "12"
+    assert env["TMP"] == env["TMPDIR"]
+    assert env["TEMP"] == env["TMPDIR"]
+    assert not any(key.upper() == "PYTHONPATH" for key in env)
 
 
 def test_bench_friends_local_suite_runs(tmp_path: Path) -> None:

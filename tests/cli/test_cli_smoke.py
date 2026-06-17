@@ -437,6 +437,34 @@ def test_default_molt_home_prefers_explicit_override(
     assert cli._default_molt_home() == explicit_home
 
 
+def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ext_root = tmp_path / "repo"
+    ext_root.mkdir()
+    monkeypatch.delenv("MOLT_CACHE", raising=False)
+    monkeypatch.delenv("MOLT_HOME", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+    monkeypatch.setattr(
+        cli.Path,
+        "home",
+        staticmethod(
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("Could not determine home directory.")
+            )
+        ),
+    )
+    cli._default_molt_cache_cached.cache_clear()
+    cli._default_molt_home_cached.cache_clear()
+    cli._default_molt_bin_cached.cache_clear()
+    cli._default_build_root_cached.cache_clear()
+    cli._resolve_cache_root_cached.cache_clear()
+
+    assert cli._default_molt_cache() == ext_root / ".molt_cache"
+    assert cli._default_molt_home() == ext_root / ".molt_cache" / "home"
+
+
 def test_cli_hash_seed_windows_handoff_waits_for_restarted_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -786,6 +786,23 @@ def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
     assert "--export-dynamic" not in fingerprint_rustflags[-1]
 
 
+def test_wasm_link_args_response_file_path_is_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    response_path = cli._write_wasm_link_args_response_file(
+        Path("relative") / ".molt_link_args",
+        label="molt runtime reloc",
+        link_args=["--export-if-defined=molt_required_export"],
+    )
+
+    assert response_path.is_absolute()
+    assert response_path.read_text(encoding="utf-8") == (
+        "--export-if-defined=molt_required_export\n"
+    )
+
+
 def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -902,6 +919,66 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
         target_root / "wasm32-wasip1" / "release-fast" / "libmolt_runtime.a"
     )
     assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00reloc"
+
+
+def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    staticlib = Path("target") / "wasm32-wasip1" / "release" / "libmolt_runtime.a"
+    libc = Path("toolchain") / "wasm32-wasip1" / "libc.a"
+    staticlib.parent.mkdir(parents=True)
+    libc.parent.mkdir(parents=True)
+    staticlib.write_bytes(b"archive")
+    libc.write_bytes(b"libc")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "wasm-ld", raising=True)
+    monkeypatch.setattr(
+        cli, "_wasm_wasi_libc_archive", lambda: libc, raising=True
+    )
+    monkeypatch.setattr(
+        cli, "_is_valid_runtime_wasm_artifact", lambda path: True, raising=True
+    )
+
+    def fake_run_completed_command(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str] | None,
+        capture_output: bool,
+        memory_guard_prefix: str | None = None,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del env, capture_output, memory_guard_prefix, timeout
+        captured["cmd"] = list(cmd)
+        captured["cwd"] = cwd
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli, "_run_completed_command", fake_run_completed_command, raising=True
+    )
+
+    output = Path("runtime") / "molt_runtime_reloc.wasm"
+    assert cli._link_runtime_staticlib_to_reloc_wasm(
+        staticlib_path=staticlib,
+        output_path=output,
+        json_output=True,
+        link_timeout=5.0,
+        export_link_args="-C link-arg=--export-if-defined=molt_required",
+    )
+
+    cmd = captured["cmd"]
+    response_arg = next(arg for arg in cmd if arg.startswith("@"))
+    assert Path(response_arg[1:]).is_absolute()
+    assert Path(cmd[cmd.index("-o") + 1]).is_absolute()
+    assert Path(cmd[cmd.index("--whole-archive") + 1]).is_absolute()
+    assert Path(cmd[cmd.index("--no-whole-archive") + 1]).is_absolute()
+    assert captured["cwd"] == output.resolve(strict=False).parent
+    assert output.exists()
 
 
 def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explicit(

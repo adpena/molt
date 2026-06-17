@@ -1082,6 +1082,7 @@ def test_drop_insertion_delegates_conditional_result_validity_to_ownership_latti
     drop = (
         ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
     ).read_text(encoding="utf-8")
+    drop_prod = drop.split("#[cfg(test)]", 1)[0]
     assert "fn op_result_is_conditionally_valid_only_on_edge(" not in drop
     assert "opcode_result_is_conditionally_valid_only_on_edge" not in drop
     assert "OwnershipRootFacts::compute(func, &aliases)" in drop
@@ -1089,8 +1090,9 @@ def test_drop_insertion_delegates_conditional_result_validity_to_ownership_latti
     assert "ownership_lattice.is_conditionally_valid_result_root(canon(v))" in drop
     assert ".conditionally_valid_result_values()" not in drop
     assert ".conditionally_valid_result_roots()" not in drop
-    assert "OpCode::IterNextUnboxed" not in drop, (
-        "DropInsertion must not own an IterNextUnboxed result-validity hand list"
+    assert "OpCode::IterNextUnboxed" not in drop_prod.replace("`IterNextUnboxed`", ""), (
+        "DropInsertion production code must not own an IterNextUnboxed "
+        "result-validity hand list"
     )
 
 
@@ -1230,7 +1232,10 @@ def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() 
     assert (
         "python_lifetime_facts.is_statement_release_boundary_root(" not in drop
     )
-    assert "python_lifetime_facts.is_return_boundary_deferred_root(r)" in drop
+    assert (
+        "python_lifetime_facts.is_return_boundary_deferred_root(r, &drop_eligibility)"
+        in drop
+    )
     assert "python_lifetime_facts.has_explicit_release_boundary(v)" in drop
     assert "pub(crate) struct PythonLifetimeFacts" in lattice
     assert "pub(crate) fn compute(func: &TirFunction, aliases: &AliasUnionFind)" in lattice
@@ -1247,9 +1252,15 @@ def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() 
     assert "!self.local_store_roots.contains(&root)" in lattice
     assert "!self.has_explicit_release_boundary(root)" in lattice
     assert "pub(crate) fn is_return_boundary_deferred_root(" in lattice
+    return_boundary_region = lattice[
+        lattice.index("pub(crate) fn is_return_boundary_deferred_root(") :
+        lattice.index("pub(crate) fn has_explicit_release_boundary(")
+    ]
+    assert "self.bound_local_roots.contains(&root)" in return_boundary_region
+    assert "!self.named_slot_roots.contains(&root)" in return_boundary_region
     assert (
-        "self.bound_local_roots.contains(&root) && !self.named_slot_roots.contains(&root)"
-        in lattice
+        "!drop_eligibility.is_conditionally_valid_result_root(root)"
+        in return_boundary_region
     )
     assert "pub(crate) fn has_explicit_release_boundary(" in lattice
 
