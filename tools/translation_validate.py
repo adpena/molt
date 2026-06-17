@@ -126,10 +126,6 @@ def _target_python_command_candidates(
         parsed = shlex.split(explicit, posix=os.name != "nt")
         return [parsed if parsed else [explicit]]
     candidates: list[list[str]] = []
-    uv = shutil.which("uv")
-    if uv is not None:
-        candidates.append([uv, "run", "--python", target_python.short, "python3"])
-        candidates.append([uv, "run", "--python", target_python.short, "python"])
     if os.name == "nt":
         candidates.append(["py", f"-{target_python.short}"])
     candidates.append([f"python{target_python.short}"])
@@ -167,6 +163,31 @@ def _target_python_command_cached(
     target_python = molt_cli._parse_target_python_version(target_python_short)
     env = os.environ.copy()
     failures: list[str] = []
+    if not override:
+        uv = shutil.which("uv")
+        if uv is not None:
+            stdout, stderr, rc = _run_subprocess(
+                [uv, "python", "find", target_python.short],
+                timeout=10,
+                env=env,
+                cwd=_REPO_ROOT,
+            )
+            if rc == 0 and stdout.strip():
+                candidate = [stdout.splitlines()[0].strip()]
+                ok, detail = _verify_target_python_command(
+                    candidate,
+                    target_python=target_python,
+                    env=env,
+                )
+                if ok:
+                    return tuple(candidate)
+                failures.append(f"{' '.join(candidate)}: {detail}")
+            else:
+                detail = (stderr or stdout).strip()
+                failures.append(
+                    f"{uv} python find {target_python.short}: "
+                    f"{detail or f'returncode={rc}'}"
+                )
     for candidate in _target_python_command_candidates(
         target_python,
         override=override or None,
