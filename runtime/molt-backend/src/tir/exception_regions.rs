@@ -22,11 +22,32 @@ pub struct ExceptionOpPosition {
     pub op_index: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ExceptionRegionToken {
+    Labeled(i64),
+    Anonymous(ExceptionOpPosition),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExceptionMatchRefRelease {
+    pub release: ExceptionOpPosition,
+    pub owner: ExceptionRegionToken,
+    pub entry_predecessors: Vec<BlockId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExceptionMatchReleaseFact {
+    pub value: ValueId,
+    pub owner: ExceptionRegionToken,
+    pub entry_predecessors: Vec<BlockId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExceptionMatchRefFact {
     pub value: ValueId,
     pub producer: ExceptionOpPosition,
     pub releases: Vec<ExceptionOpPosition>,
+    pub release_facts: Vec<ExceptionMatchRefRelease>,
     pub source_kind: String,
 }
 
@@ -48,7 +69,14 @@ pub struct ExceptionRegionDiagnostic {
 pub struct ExceptionRegionFacts {
     pub match_refs: BTreeMap<ValueId, ExceptionMatchRefFact>,
     pub release_to_matches: BTreeMap<ExceptionOpPosition, Vec<ValueId>>,
+    pub release_to_match_facts: BTreeMap<ExceptionOpPosition, Vec<ExceptionMatchReleaseFact>>,
     pub diagnostics: Vec<ExceptionRegionDiagnostic>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExceptionPopOwnerStates {
+    pub all: BTreeSet<Option<ExceptionRegionToken>>,
+    pub by_terminator_pred: BTreeMap<BlockId, BTreeSet<Option<ExceptionRegionToken>>>,
 }
 
 pub struct ExceptionRegions;
@@ -68,6 +96,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
     let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(func)
         .into_iter()
         .collect();
+    let state_resume_stacks = compute_state_resume_stacks(func, &label_to_block);
     let mut facts = ExceptionRegionFacts::default();
     for (producer, op) in iter_ops(func) {
         let Some(source_kind) = original_kind(op) else {
@@ -79,52 +108,176 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         let Some(&value) = op.results.first() else {
             continue;
         };
-        let producer_depths: Vec<_> = path_depths_before(func, &label_to_block, producer)
-            .into_iter()
+        let producer_states: Vec<_> =
+            path_states_before(func, &label_to_block, &state_resume_stacks, producer)
+                .into_iter()
+                .collect();
+        let owning_tokens: BTreeSet<_> = producer_states
+            .iter()
+            .filter_map(|state| state.owners.last().copied())
             .collect();
-        let (release_candidates, producer_depth_ambiguous) = match producer_depths.as_slice() {
-            [0] => {
-                // Depth-zero exception reads are observers of pending/global
-                // exception state, not handler-owned MatchRefs. They have no
-                // handler-region `exception_pop` release boundary; ordinary
-                // value/lifetime tracking owns them.
+        let unowned_non_finally_reachable = producer_states
+            .iter()
+            .any(|state| state.owners.is_empty() && state.normal_closures.is_empty());
+        if producer_states
+            .iter()
+            .all(|state| state.owners.is_empty() && state.normal_closures.is_empty())
+        {
+            // Depth-zero exception reads are observers of pending/global
+            // exception state, not handler-owned MatchRefs. They have no
+            // handler-region `exception_pop` release boundary; ordinary
+            // value/lifetime tracking owns them.
+            continue;
+        }
+        if unowned_non_finally_reachable {
+            if source_kind == "exception_last" {
+                // `exception_last` is also used by module/function exception-exit
+                // cleanup blocks as a public observer of the active exception.
+                // Mixed depth-zero and handler-owned reachability at such a site
+                // does not make the value a handler MatchRef; ordinary value/drop
+                // ownership handles it.
                 continue;
             }
-            [depth] => (
-                reachable_region_pops(func, &label_to_block, producer, *depth),
-                false,
-            ),
-            many if many.len() > 1 => {
-                facts.diagnostics.push(ExceptionRegionDiagnostic {
-                    kind: ExceptionRegionDiagnosticKind::AmbiguousProducerDepth,
-                    value,
-                    position: producer,
-                    message: format!(
-                        "exception match ref v{} from {source_kind} is reachable at multiple exception-region depths: {:?}",
-                        value.0,
-                        many
-                    ),
-                });
-                (Vec::new(), true)
+            if source_kind == "exception_last_pending"
+                && !mixed_observer_has_reachable_owner_pop(
+                    func,
+                    &label_to_block,
+                    &state_resume_stacks,
+                    producer,
+                    source_kind,
+                    &owning_tokens,
+                    &producer_states,
+                )
+            {
+                // Module/function exception-exit cleanup only needs a
+                // non-consuming pending-state observation before removing
+                // incomplete import-cache entries.  When no owner path reaches
+                // an exception_pop, this value is not a handler MatchRef and
+                // must not be forced into handler-owned release accounting.
+                continue;
             }
-            _ => (Vec::new(), false),
-        };
-        let releases = match release_candidates.as_slice() {
-            [] if producer_depth_ambiguous => Vec::new(),
-            [] => {
+            facts.diagnostics.push(ExceptionRegionDiagnostic {
+                kind: ExceptionRegionDiagnosticKind::AmbiguousProducerDepth,
+                value,
+                position: producer,
+                message: format!(
+                    "exception match ref v{} from {source_kind} is reachable with ambiguous exception-region owners: {:?}",
+                    value.0, producer_states
+                ),
+            });
+            facts.match_refs.insert(
+                value,
+                ExceptionMatchRefFact {
+                    value,
+                    producer,
+                    releases: Vec::new(),
+                    release_facts: Vec::new(),
+                    source_kind: source_kind.to_string(),
+                },
+            );
+            continue;
+        }
+
+        let mut producer_states_by_owner: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        let mut unmapped_non_finally_state_reachable = false;
+        for state in &producer_states {
+            let Some(owner) = match_ref_release_owner(source_kind, state, &owning_tokens) else {
+                if state.owners.is_empty() && state.normal_closures.is_empty() {
+                    unmapped_non_finally_state_reachable = true;
+                }
+                continue;
+            };
+            producer_states_by_owner
+                .entry(owner)
+                .or_default()
+                .push(state.clone());
+        }
+
+        if producer_states_by_owner.is_empty() {
+            // Depth-zero exception reads are observers of pending/global
+            // exception state, not handler-owned MatchRefs. They have no
+            // handler-region `exception_pop` release boundary; ordinary
+            // value/lifetime tracking owns them.
+            continue;
+        }
+
+        if unmapped_non_finally_state_reachable && source_kind != "exception_last" {
+            facts.diagnostics.push(ExceptionRegionDiagnostic {
+                kind: ExceptionRegionDiagnosticKind::AmbiguousProducerDepth,
+                value,
+                position: producer,
+                message: format!(
+                    "exception match ref v{} from {source_kind} is reachable with ambiguous exception-region owners: {:?}",
+                    value.0, producer_states
+                ),
+            });
+            facts.match_refs.insert(
+                value,
+                ExceptionMatchRefFact {
+                    value,
+                    producer,
+                    releases: Vec::new(),
+                    release_facts: Vec::new(),
+                    source_kind: source_kind.to_string(),
+                },
+            );
+            continue;
+        }
+
+        let mut release_positions = BTreeSet::new();
+        let mut release_facts = BTreeSet::new();
+        let diagnostics_before = facts.diagnostics.len();
+        for (owner, owner_states) in producer_states_by_owner {
+            let release_candidates = reachable_region_pops(
+                func,
+                &label_to_block,
+                &state_resume_stacks,
+                producer,
+                owner,
+                &owner_states,
+            );
+            if release_candidates.is_empty() {
+                if source_kind == "exception_last" {
+                    continue;
+                }
                 facts.diagnostics.push(ExceptionRegionDiagnostic {
                     kind: ExceptionRegionDiagnosticKind::MatchWithoutReachablePop,
                     value,
                     position: producer,
                     message: format!(
-                        "exception match ref v{} from {source_kind} has no reachable exception_pop",
-                        value.0
+                        "exception match ref v{} from {source_kind} owned by {:?} has no reachable exception_pop",
+                        value.0, owner
                     ),
                 });
-                Vec::new()
+                continue;
             }
-            many => many.to_vec(),
-        };
+            for (release_pos, entry_predecessors) in release_candidates {
+                let entry_predecessors: Vec<_> = entry_predecessors.into_iter().collect();
+                release_positions.insert(release_pos);
+                release_facts.insert(ExceptionMatchRefRelease {
+                    release: release_pos,
+                    owner,
+                    entry_predecessors: entry_predecessors.clone(),
+                });
+                facts
+                    .release_to_match_facts
+                    .entry(release_pos)
+                    .or_default()
+                    .push(ExceptionMatchReleaseFact {
+                        value,
+                        owner,
+                        entry_predecessors,
+                    });
+            }
+        }
+        if release_facts.is_empty() && source_kind == "exception_last" {
+            continue;
+        }
+
+        let releases: Vec<_> = release_positions.into_iter().collect();
+        if releases.is_empty() && facts.diagnostics.len() == diagnostics_before {
+            continue;
+        }
         for release_pos in releases.iter().copied() {
             facts
                 .release_to_matches
@@ -138,12 +291,18 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                 value,
                 producer,
                 releases,
+                release_facts: release_facts.into_iter().collect(),
                 source_kind: source_kind.to_string(),
             },
         );
     }
     for values in facts.release_to_matches.values_mut() {
         values.sort_unstable_by_key(|value| value.0);
+        values.dedup();
+    }
+    for values in facts.release_to_match_facts.values_mut() {
+        values.sort_unstable();
+        values.dedup();
     }
     facts
 }
@@ -208,106 +367,521 @@ fn is_exception_pop(op: &TirOp) -> bool {
     op.opcode == OpCode::Copy && matches!(original_kind(op), Some("exception_pop"))
 }
 
-fn op_exception_successors(label_to_block: &BTreeMap<i64, BlockId>, op: &TirOp) -> Vec<BlockId> {
+fn op_clears_pending_exception(op: &TirOp) -> bool {
+    op.opcode == OpCode::Copy && matches!(original_kind(op), Some("exception_clear"))
+}
+
+fn op_normal_fallthrough_reachable(state_before: &ExceptionPathState, op: &TirOp) -> bool {
+    !(op.opcode == OpCode::CheckException && state_before.pending_must_transfer)
+}
+
+fn terminator_successor_state(
+    label_to_block: &BTreeMap<i64, BlockId>,
+    target: BlockId,
+    state: &ExceptionPathState,
+) -> ExceptionPathState {
+    if state.pending_must_transfer
+        && let Some((&label, _)) = label_to_block.iter().find(|(_, block)| **block == target)
+        && let Some(handler_state) = state.enter_handler(label)
+    {
+        return handler_state;
+    }
+    state.clone()
+}
+
+fn op_exception_successors_with_state(
+    label_to_block: &BTreeMap<i64, BlockId>,
+    op: &TirOp,
+    state: &ExceptionPathState,
+) -> Vec<(BlockId, ExceptionPathState)> {
     if !super::dominators::is_exception_transfer_edge(op.opcode) {
         return Vec::new();
     }
     let Some(label) = label_value(op) else {
         return Vec::new();
     };
-    label_to_block.get(&label).copied().into_iter().collect()
+    let Some(&target) = label_to_block.get(&label) else {
+        return Vec::new();
+    };
+    state
+        .enter_handler(label)
+        .into_iter()
+        .map(|succ_state| (target, succ_state))
+        .collect()
 }
 
-fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
-    dominators::terminator_successors(term)
+type ConstIntValues = BTreeMap<ValueId, i64>;
+
+type ExceptionStack = Vec<ExceptionRegionToken>;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ExceptionPathState {
+    frames: ExceptionStack,
+    owners: ExceptionStack,
+    normal_closures: ExceptionStack,
+    pending_must_transfer: bool,
+}
+
+impl ExceptionPathState {
+    fn enter_handler(&self, label: i64) -> Option<Self> {
+        let owner = ExceptionRegionToken::Labeled(label);
+        let mut next = self.clone();
+        let index = next.frames.iter().rposition(|token| *token == owner)?;
+        next.frames.truncate(index);
+        if !next.owners.contains(&owner) {
+            next.owners.push(owner);
+        }
+        next.normal_closures.retain(|token| *token != owner);
+        next.pending_must_transfer = false;
+        Some(next)
+    }
+
+    fn after_op(&self, position: ExceptionOpPosition, op: &TirOp) -> Self {
+        let mut next = self.clone();
+        if op.opcode == OpCode::TryStart {
+            let token = label_value(op)
+                .map(ExceptionRegionToken::Labeled)
+                .unwrap_or(ExceptionRegionToken::Anonymous(position));
+            if !next.frames.contains(&token) {
+                next.frames.push(token);
+            }
+            return next;
+        }
+        if op.opcode == OpCode::TryEnd {
+            if let Some(token) = label_value(op).map(ExceptionRegionToken::Labeled) {
+                if let Some(index) = next.frames.iter().rposition(|frame| *frame == token) {
+                    next.frames.truncate(index);
+                }
+                if next.owners.last().copied() != Some(token)
+                    && !next.normal_closures.contains(&token)
+                {
+                    next.normal_closures.push(token);
+                }
+            }
+            return next;
+        }
+        if is_exception_pop(op) {
+            if next.owners.pop().is_none() {
+                next.normal_closures.pop();
+            }
+            return next;
+        }
+        if op.opcode == OpCode::Raise {
+            next.pending_must_transfer = true;
+            return next;
+        }
+        if op_clears_pending_exception(op) {
+            next.pending_must_transfer = false;
+        }
+        next
+    }
+}
+
+fn current_pop_owner(state: &ExceptionPathState) -> Option<ExceptionRegionToken> {
+    state
+        .owners
+        .last()
+        .copied()
+        .or_else(|| state.normal_closures.last().copied())
+}
+
+fn match_ref_release_owner(
+    source_kind: &str,
+    state: &ExceptionPathState,
+    owning_tokens: &BTreeSet<ExceptionRegionToken>,
+) -> Option<ExceptionRegionToken> {
+    if let Some(owner) = state.owners.last().copied() {
+        return Some(owner);
+    }
+    if !matches!(source_kind, "exception_last" | "exception_last_pending") {
+        return None;
+    }
+    let owner = state.normal_closures.last().copied()?;
+    owning_tokens.contains(&owner).then_some(owner)
+}
+
+fn mixed_observer_has_reachable_owner_pop(
+    func: &TirFunction,
+    label_to_block: &BTreeMap<i64, BlockId>,
+    state_resume_stacks: &StateResumeStacks,
+    producer: ExceptionOpPosition,
+    source_kind: &str,
+    owning_tokens: &BTreeSet<ExceptionRegionToken>,
+    producer_states: &[ExceptionPathState],
+) -> bool {
+    for state in producer_states {
+        let Some(owner) = match_ref_release_owner(source_kind, state, owning_tokens) else {
+            continue;
+        };
+        let releases = reachable_region_pops(
+            func,
+            label_to_block,
+            state_resume_stacks,
+            producer,
+            owner,
+            std::slice::from_ref(state),
+        );
+        if !releases.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+type StateResumeStacks = BTreeMap<i64, BTreeSet<ExceptionPathState>>;
+
+fn collect_const_int_values(func: &TirFunction) -> ConstIntValues {
+    let mut values = ConstIntValues::new();
+    for (_, op) in iter_ops(func) {
+        if op.opcode != OpCode::ConstInt {
+            continue;
+        }
+        let (Some(&result), Some(value)) = (op.results.first(), label_value(op)) else {
+            continue;
+        };
+        values.insert(result, value);
+    }
+    values
+}
+
+fn state_id(op: &TirOp, const_int_values: &ConstIntValues) -> Option<i64> {
+    if op.opcode == OpCode::StateYield {
+        return label_value(op);
+    }
+    if op.opcode == OpCode::StateTransition
+        || op.opcode == OpCode::ChanSendYield
+        || op.opcode == OpCode::ChanRecvYield
+    {
+        return op
+            .operands
+            .last()
+            .and_then(|pending| const_int_values.get(pending))
+            .copied();
+    }
+    None
+}
+
+fn terminator_successors_with_state(
+    term: &Terminator,
+    label_to_block: &BTreeMap<i64, BlockId>,
+    state: &ExceptionPathState,
+    state_resume_stacks: &StateResumeStacks,
+    unknown_state: Option<&ExceptionPathState>,
+) -> Vec<(BlockId, ExceptionPathState)> {
+    match term {
+        Terminator::Branch { target, .. } => {
+            vec![(
+                *target,
+                terminator_successor_state(label_to_block, *target, state),
+            )]
+        }
+        Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } => vec![
+            (
+                *then_block,
+                terminator_successor_state(label_to_block, *then_block, state),
+            ),
+            (
+                *else_block,
+                terminator_successor_state(label_to_block, *else_block, state),
+            ),
+        ],
+        Terminator::Switch { cases, default, .. } => {
+            let mut successors = Vec::with_capacity(cases.len() + 1);
+            successors.extend(cases.iter().map(|(_, target, _)| {
+                (
+                    *target,
+                    terminator_successor_state(label_to_block, *target, state),
+                )
+            }));
+            successors.push((
+                *default,
+                terminator_successor_state(label_to_block, *default, state),
+            ));
+            successors
+        }
+        Terminator::StateDispatch { cases, default, .. } => {
+            let mut successors = Vec::with_capacity(cases.len() + 1);
+            successors.push((
+                *default,
+                terminator_successor_state(label_to_block, *default, state),
+            ));
+            for (state, target, _) in cases {
+                if let Some(stacks) = state_resume_stacks.get(state) {
+                    successors.extend(stacks.iter().map(|resume_stack| {
+                        (
+                            *target,
+                            terminator_successor_state(label_to_block, *target, resume_stack),
+                        )
+                    }));
+                } else if let Some(fallback_state) = unknown_state {
+                    successors.push((
+                        *target,
+                        terminator_successor_state(label_to_block, *target, fallback_state),
+                    ));
+                }
+            }
+            successors
+        }
+        Terminator::Return { .. } | Terminator::Unreachable => Vec::new(),
+    }
+}
+
+fn collect_state_resume_stacks_once(
+    func: &TirFunction,
+    label_to_block: &BTreeMap<i64, BlockId>,
+    state_resume_stacks: &StateResumeStacks,
+    const_int_values: &ConstIntValues,
+) -> StateResumeStacks {
+    let mut queue = VecDeque::new();
+    queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
+    let mut visited = BTreeSet::new();
+    let mut observed = StateResumeStacks::new();
+    while let Some((block, op_index, state)) = queue.pop_front() {
+        if !visited.insert((block, op_index, state.clone())) {
+            continue;
+        }
+        let Some(tir_block) = func.blocks.get(&block) else {
+            continue;
+        };
+        if op_index >= tir_block.ops.len() {
+            for (succ, succ_state) in terminator_successors_with_state(
+                &tir_block.terminator,
+                label_to_block,
+                &state,
+                state_resume_stacks,
+                None,
+            ) {
+                queue.push_back((succ, 0, succ_state));
+            }
+            continue;
+        }
+        let op = &tir_block.ops[op_index];
+        if let Some(resume_state) = state_id(op, const_int_values) {
+            observed
+                .entry(resume_state)
+                .or_default()
+                .insert(state.clone());
+        }
+        let pos = ExceptionOpPosition { block, op_index };
+        let next_state = state.after_op(pos, op);
+        for (succ, succ_state) in
+            op_exception_successors_with_state(label_to_block, op, &next_state)
+        {
+            queue.push_back((succ, 0, succ_state));
+        }
+        if op_normal_fallthrough_reachable(&state, op) {
+            queue.push_back((block, op_index + 1, next_state));
+        }
+    }
+    observed
+}
+
+fn compute_state_resume_stacks(
+    func: &TirFunction,
+    label_to_block: &BTreeMap<i64, BlockId>,
+) -> StateResumeStacks {
+    let const_int_values = collect_const_int_values(func);
+    let mut stacks = StateResumeStacks::new();
+    loop {
+        let observed =
+            collect_state_resume_stacks_once(func, label_to_block, &stacks, &const_int_values);
+        let mut changed = false;
+        for (state, observed_stacks) in observed {
+            let state_stacks = stacks.entry(state).or_default();
+            for stack in observed_stacks {
+                changed |= state_stacks.insert(stack);
+            }
+        }
+        if !changed {
+            return stacks;
+        }
+    }
 }
 
 fn reachable_region_pops(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
+    state_resume_stacks: &StateResumeStacks,
     producer: ExceptionOpPosition,
-    depth: usize,
-) -> Vec<ExceptionOpPosition> {
-    if depth == 0 {
-        return Vec::new();
-    }
+    owner: ExceptionRegionToken,
+    producer_states: &[ExceptionPathState],
+) -> BTreeMap<ExceptionOpPosition, BTreeSet<BlockId>> {
     let mut queue = VecDeque::new();
-    queue.push_back((producer.block, producer.op_index.saturating_add(1), depth));
+    for state in producer_states
+        .iter()
+        .filter(|state| current_pop_owner(state) == Some(owner))
+    {
+        queue.push_back((
+            producer.block,
+            producer.op_index.saturating_add(1),
+            state.clone(),
+            None,
+        ));
+    }
     let mut visited = BTreeSet::new();
-    let mut candidates = BTreeSet::new();
-    while let Some((block, op_index, path_depth)) = queue.pop_front() {
-        if !visited.insert((block, op_index, path_depth)) {
+    let mut candidates: BTreeMap<ExceptionOpPosition, BTreeSet<BlockId>> = BTreeMap::new();
+    while let Some((block, op_index, state, entry_pred)) = queue.pop_front() {
+        if !visited.insert((block, op_index, state.clone(), entry_pred)) {
             continue;
         }
         let Some(tir_block) = func.blocks.get(&block) else {
             continue;
         };
         if op_index >= tir_block.ops.len() {
-            for succ in terminator_successors(&tir_block.terminator) {
-                queue.push_back((succ, 0, path_depth));
+            for (succ, succ_state) in terminator_successors_with_state(
+                &tir_block.terminator,
+                label_to_block,
+                &state,
+                state_resume_stacks,
+                Some(&state),
+            ) {
+                queue.push_back((succ, 0, succ_state, Some(block)));
             }
             continue;
         }
         let op = &tir_block.ops[op_index];
-        if is_exception_pop(op) && path_depth == depth {
-            candidates.insert(ExceptionOpPosition { block, op_index });
+        if is_exception_pop(op) && current_pop_owner(&state) == Some(owner) {
+            if let Some(entry_pred) = entry_pred {
+                candidates
+                    .entry(ExceptionOpPosition { block, op_index })
+                    .or_default()
+                    .insert(entry_pred);
+            } else {
+                candidates
+                    .entry(ExceptionOpPosition { block, op_index })
+                    .or_default();
+            }
             continue;
         }
-        let next_depth = depth_after_op(path_depth, op);
-        for succ in op_exception_successors(label_to_block, op) {
-            queue.push_back((succ, 0, next_depth));
+        let pos = ExceptionOpPosition { block, op_index };
+        let next_state = state.after_op(pos, op);
+        for (succ, succ_state) in
+            op_exception_successors_with_state(label_to_block, op, &next_state)
+        {
+            queue.push_back((succ, 0, succ_state, None));
         }
-        queue.push_back((block, op_index + 1, next_depth));
+        if op_normal_fallthrough_reachable(&state, op) {
+            queue.push_back((block, op_index + 1, next_state, entry_pred));
+        }
     }
-    candidates.into_iter().collect()
+    candidates
 }
 
-fn path_depths_before(
+fn path_states_before(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
+    state_resume_stacks: &StateResumeStacks,
     target: ExceptionOpPosition,
-) -> BTreeSet<usize> {
+) -> BTreeSet<ExceptionPathState> {
     let mut queue = VecDeque::new();
-    queue.push_back((func.entry_block, 0usize, 0usize));
+    queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
     let mut visited = BTreeSet::new();
-    let mut depths = BTreeSet::new();
-    while let Some((block, op_index, depth)) = queue.pop_front() {
-        if !visited.insert((block, op_index, depth)) {
+    let mut states = BTreeSet::new();
+    while let Some((block, op_index, state)) = queue.pop_front() {
+        if !visited.insert((block, op_index, state.clone())) {
             continue;
         }
         if block == target.block && op_index == target.op_index {
-            depths.insert(depth);
+            states.insert(state);
             continue;
         }
         let Some(tir_block) = func.blocks.get(&block) else {
             continue;
         };
         if op_index >= tir_block.ops.len() {
-            for succ in terminator_successors(&tir_block.terminator) {
-                queue.push_back((succ, 0, depth));
+            for (succ, succ_state) in terminator_successors_with_state(
+                &tir_block.terminator,
+                label_to_block,
+                &state,
+                state_resume_stacks,
+                Some(&state),
+            ) {
+                queue.push_back((succ, 0, succ_state));
             }
             continue;
         }
         let op = &tir_block.ops[op_index];
-        let next_depth = depth_after_op(depth, op);
-        for succ in op_exception_successors(label_to_block, op) {
-            queue.push_back((succ, 0, next_depth));
+        let pos = ExceptionOpPosition { block, op_index };
+        let next_state = state.after_op(pos, op);
+        for (succ, succ_state) in
+            op_exception_successors_with_state(label_to_block, op, &next_state)
+        {
+            queue.push_back((succ, 0, succ_state));
         }
-        queue.push_back((block, op_index + 1, next_depth));
+        if op_normal_fallthrough_reachable(&state, op) {
+            queue.push_back((block, op_index + 1, next_state));
+        }
     }
-    depths
+    states
 }
 
-fn depth_after_op(depth: usize, op: &TirOp) -> usize {
-    match op.opcode {
-        OpCode::TryStart => depth.saturating_add(1),
-        // `try_end` closes the handler transfer edge, but the handler-owned
-        // exception region is released by the paired runtime `exception_pop`.
-        // Treating both as pops double-decrements loops that re-enter a protected
-        // region and makes later handler reads appear reachable at depth zero.
-        _ if is_exception_pop(op) => depth.saturating_sub(1),
-        _ => depth,
+pub fn exception_pop_owner_states(
+    func: &TirFunction,
+    target: ExceptionOpPosition,
+) -> ExceptionPopOwnerStates {
+    let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(func)
+        .into_iter()
+        .collect();
+    let state_resume_stacks = compute_state_resume_stacks(func, &label_to_block);
+    let mut queue = VecDeque::new();
+    queue.push_back((
+        func.entry_block,
+        0usize,
+        ExceptionPathState::default(),
+        None,
+    ));
+    let mut visited = BTreeSet::new();
+    let mut owners = ExceptionPopOwnerStates::default();
+    while let Some((block, op_index, state, pred_into_target)) = queue.pop_front() {
+        if !visited.insert((block, op_index, state.clone(), pred_into_target)) {
+            continue;
+        }
+        if block == target.block && op_index == target.op_index {
+            let owner = current_pop_owner(&state);
+            owners.all.insert(owner);
+            if let Some(pred) = pred_into_target {
+                owners
+                    .by_terminator_pred
+                    .entry(pred)
+                    .or_default()
+                    .insert(owner);
+            }
+            continue;
+        }
+        let Some(tir_block) = func.blocks.get(&block) else {
+            continue;
+        };
+        if op_index >= tir_block.ops.len() {
+            for (succ, succ_state) in terminator_successors_with_state(
+                &tir_block.terminator,
+                &label_to_block,
+                &state,
+                &state_resume_stacks,
+                Some(&state),
+            ) {
+                let next_pred = (succ == target.block).then_some(block);
+                queue.push_back((succ, 0, succ_state, next_pred));
+            }
+            continue;
+        }
+        let op = &tir_block.ops[op_index];
+        let pos = ExceptionOpPosition { block, op_index };
+        let next_state = state.after_op(pos, op);
+        for (succ, succ_state) in
+            op_exception_successors_with_state(&label_to_block, op, &next_state)
+        {
+            let next_pred = (succ == target.block).then_some(block);
+            queue.push_back((succ, 0, succ_state, next_pred));
+        }
+        if op_normal_fallthrough_reachable(&state, op) {
+            queue.push_back((block, op_index + 1, next_state, pred_into_target));
+        }
     }
+    owners
 }
 
 #[cfg(test)]
@@ -345,6 +919,31 @@ mod tests {
     fn try_end(label: i64) -> TirOp {
         let mut op = op(OpCode::TryEnd);
         op.attrs.insert("value".into(), AttrValue::Int(label));
+        op
+    }
+
+    fn check_exception(label: i64) -> TirOp {
+        let mut op = op(OpCode::CheckException);
+        op.attrs.insert("value".into(), AttrValue::Int(label));
+        op
+    }
+
+    fn const_int(result: ValueId, value: i64) -> TirOp {
+        let mut op = op(OpCode::ConstInt);
+        op.results = vec![result];
+        op.attrs.insert("value".into(), AttrValue::Int(value));
+        op
+    }
+
+    fn state_yield(state: i64) -> TirOp {
+        let mut op = op(OpCode::StateYield);
+        op.attrs.insert("value".into(), AttrValue::Int(state));
+        op
+    }
+
+    fn state_transition(awaitable: ValueId, slot: ValueId, pending_state: ValueId) -> TirOp {
+        let mut op = op(OpCode::StateTransition);
+        op.operands = vec![awaitable, slot, pending_state];
         op
     }
 
@@ -427,6 +1026,314 @@ mod tests {
                     original("exception_last_pending", vec![exc]),
                     original("exception_pop", vec![]),
                 ],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc)
+    }
+
+    fn mixed_exception_exit_observer_function() -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new(
+            "mixed_exception_exit_observer".into(),
+            vec![],
+            TirType::None,
+        );
+        let before_try = func.fresh_block();
+        let exit_cleanup = func.fresh_block();
+        func.label_id_map.insert(exit_cleanup.0, 3);
+        let cond = func.fresh_value();
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+            cond,
+            then_block: before_try,
+            then_args: vec![],
+            else_block: exit_cleanup,
+            else_args: vec![],
+        };
+        func.blocks.insert(
+            before_try,
+            TirBlock {
+                id: before_try,
+                args: vec![],
+                ops: vec![try_start(3), check_exception(3)],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            exit_cleanup,
+            TirBlock {
+                id: exit_cleanup,
+                args: vec![],
+                ops: vec![original("exception_last", vec![exc])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc)
+    }
+
+    fn mixed_exception_pending_exit_observer_without_pop_function() -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new(
+            "mixed_exception_pending_exit_observer_without_pop".into(),
+            vec![],
+            TirType::None,
+        );
+        let before_try = func.fresh_block();
+        let exit_cleanup = func.fresh_block();
+        func.label_id_map.insert(exit_cleanup.0, 3);
+        let cond = func.fresh_value();
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+            cond,
+            then_block: before_try,
+            then_args: vec![],
+            else_block: exit_cleanup,
+            else_args: vec![],
+        };
+        func.blocks.insert(
+            before_try,
+            TirBlock {
+                id: before_try,
+                args: vec![],
+                ops: vec![try_start(3), check_exception(3)],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            exit_cleanup,
+            TirBlock {
+                id: exit_cleanup,
+                args: vec![],
+                ops: vec![original("exception_last_pending", vec![exc])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc)
+    }
+
+    fn same_owner_with_different_outer_prefix_function() -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new(
+            "same_owner_with_different_outer_prefix".into(),
+            vec![],
+            TirType::None,
+        );
+        let direct_inner = func.fresh_block();
+        let outer_then_inner = func.fresh_block();
+        let handler_merge = func.fresh_block();
+        let handler_pop = func.fresh_block();
+        func.label_id_map.insert(handler_merge.0, 20);
+        let cond = func.fresh_value();
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
+            cond,
+            then_block: direct_inner,
+            then_args: vec![],
+            else_block: outer_then_inner,
+            else_args: vec![],
+        };
+        func.blocks.insert(
+            direct_inner,
+            TirBlock {
+                id: direct_inner,
+                args: vec![],
+                ops: vec![try_start(20), try_end(20)],
+                terminator: Terminator::Branch {
+                    target: handler_merge,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            outer_then_inner,
+            TirBlock {
+                id: outer_then_inner,
+                args: vec![],
+                ops: vec![try_start(10), try_start(20), try_end(20)],
+                terminator: Terminator::Branch {
+                    target: handler_merge,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler_merge,
+            TirBlock {
+                id: handler_merge,
+                args: vec![],
+                ops: vec![original("exception_last_pending", vec![exc])],
+                terminator: Terminator::Branch {
+                    target: handler_pop,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler_pop,
+            TirBlock {
+                id: handler_pop,
+                args: vec![],
+                ops: vec![original("exception_pop", vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc)
+    }
+
+    fn exception_edge_unwinds_to_target_handler_function() -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new(
+            "exception_edge_unwinds_to_target_handler".into(),
+            vec![],
+            TirType::None,
+        );
+        let handler = func.fresh_block();
+        let handler_pop = func.fresh_block();
+        func.label_id_map.insert(handler.0, 10);
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().ops =
+            vec![try_start(10), try_start(20), check_exception(10)];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+            Terminator::Return { values: vec![] };
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![original("exception_last_pending", vec![exc])],
+                terminator: Terminator::Branch {
+                    target: handler_pop,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler_pop,
+            TirBlock {
+                id: handler_pop,
+                args: vec![],
+                ops: vec![original("exception_pop", vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc)
+    }
+
+    fn forced_raise_check_exception_handler_branch_function() -> (TirFunction, ValueId, BlockId) {
+        let mut func = TirFunction::new(
+            "forced_raise_check_exception_handler_branch".into(),
+            vec![],
+            TirType::None,
+        );
+        let handler = func.fresh_block();
+        let handler_pop = func.fresh_block();
+        func.label_id_map.insert(handler.0, 57);
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().ops =
+            vec![try_start(57), op(OpCode::Raise), check_exception(57)];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: handler,
+            args: vec![],
+        };
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![original("exception_last_pending", vec![exc])],
+                terminator: Terminator::Branch {
+                    target: handler_pop,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler_pop,
+            TirBlock {
+                id: handler_pop,
+                args: vec![],
+                ops: vec![original("exception_pop", vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc, handler_pop)
+    }
+
+    fn explicit_raise_branch_to_labeled_handler_function() -> (TirFunction, ValueId, BlockId) {
+        let mut func = TirFunction::new(
+            "explicit_raise_branch_to_labeled_handler".into(),
+            vec![],
+            TirType::None,
+        );
+        let handler = func.fresh_block();
+        let handler_pop = func.fresh_block();
+        func.label_id_map.insert(handler.0, 61);
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().ops =
+            vec![try_start(61), check_exception(61), op(OpCode::Raise)];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: handler,
+            args: vec![],
+        };
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![original("exception_last_pending", vec![exc])],
+                terminator: Terminator::Branch {
+                    target: handler_pop,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler_pop,
+            TirBlock {
+                id: handler_pop,
+                args: vec![],
+                ops: vec![original("exception_pop", vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc, handler_pop)
+    }
+
+    fn inactive_check_exception_target_function() -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new(
+            "inactive_check_exception_target".into(),
+            vec![],
+            TirType::None,
+        );
+        let handler = func.fresh_block();
+        let handler_pop = func.fresh_block();
+        func.label_id_map.insert(handler.0, 73);
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![check_exception(73)];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+            Terminator::Return { values: vec![] };
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![original("exception_last_pending", vec![exc])],
+                terminator: Terminator::Branch {
+                    target: handler_pop,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler_pop,
+            TirBlock {
+                id: handler_pop,
+                args: vec![],
+                ops: vec![original("exception_pop", vec![])],
                 terminator: Terminator::Return { values: vec![] },
             },
         );
@@ -518,6 +1425,61 @@ mod tests {
             );
         }
         (func, exc)
+    }
+
+    fn finally_cleanup_join_function() -> (TirFunction, ValueId, BlockId) {
+        finally_cleanup_join_function_with_source("exception_last_pending")
+    }
+
+    fn finally_cleanup_join_function_with_source(
+        source_kind: &str,
+    ) -> (TirFunction, ValueId, BlockId) {
+        let mut func = TirFunction::new("finally_cleanup_join".into(), vec![], TirType::None);
+        let normal = func.fresh_block();
+        let cleanup = func.fresh_block();
+        let pop = func.fresh_block();
+        func.label_id_map.insert(cleanup.0, 20);
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(20)];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: normal,
+            args: vec![],
+        };
+        func.blocks.insert(
+            normal,
+            TirBlock {
+                id: normal,
+                args: vec![],
+                ops: vec![try_end(20)],
+                terminator: Terminator::Branch {
+                    target: cleanup,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            cleanup,
+            TirBlock {
+                id: cleanup,
+                args: vec![],
+                ops: vec![original(source_kind, vec![exc])],
+                terminator: Terminator::Branch {
+                    target: pop,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            pop,
+            TirBlock {
+                id: pop,
+                args: vec![],
+                ops: vec![original("exception_pop", vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc, pop)
     }
 
     fn depth_zero_observer_after_pop_function() -> (TirFunction, ValueId) {
@@ -629,6 +1591,146 @@ mod tests {
         (func, exc)
     }
 
+    fn state_resume_inside_try_function() -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new("state_resume_inside_try".into(), vec![], TirType::None);
+        let initial = func.fresh_block();
+        let resume = func.fresh_block();
+        let handler = func.fresh_block();
+        let match_block = func.fresh_block();
+        let handler_pop = func.fresh_block();
+        func.label_id_map.insert(handler.0, 94);
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
+            cases: vec![(197, resume, vec![])],
+            default: initial,
+            default_args: vec![],
+        };
+        func.blocks.insert(
+            initial,
+            TirBlock {
+                id: initial,
+                args: vec![],
+                ops: vec![try_start(94), state_yield(197)],
+                terminator: Terminator::Unreachable,
+            },
+        );
+        func.blocks.insert(
+            resume,
+            TirBlock {
+                id: resume,
+                args: vec![],
+                ops: vec![check_exception(94)],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![try_end(94)],
+                terminator: Terminator::Branch {
+                    target: match_block,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            match_block,
+            TirBlock {
+                id: match_block,
+                args: vec![],
+                ops: vec![original("exception_last_pending", vec![exc])],
+                terminator: Terminator::Branch {
+                    target: handler_pop,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler_pop,
+            TirBlock {
+                id: handler_pop,
+                args: vec![],
+                ops: vec![original("exception_pop", vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc)
+    }
+
+    fn repoll_state_resume_inside_try_function() -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new(
+            "repoll_state_resume_inside_try".into(),
+            vec![],
+            TirType::None,
+        );
+        let initial = func.fresh_block();
+        let resume = func.fresh_block();
+        let handler = func.fresh_block();
+        let handler_pop = func.fresh_block();
+        func.label_id_map.insert(handler.0, 46);
+        let awaitable = func.fresh_value();
+        let slot = func.fresh_value();
+        let pending = func.fresh_value();
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
+            cases: vec![(47, resume, vec![])],
+            default: initial,
+            default_args: vec![],
+        };
+        func.blocks.insert(
+            initial,
+            TirBlock {
+                id: initial,
+                args: vec![],
+                ops: vec![
+                    try_start(46),
+                    const_int(slot, 64),
+                    const_int(pending, 47),
+                    state_transition(awaitable, slot, pending),
+                ],
+                terminator: Terminator::Branch {
+                    target: resume,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            resume,
+            TirBlock {
+                id: resume,
+                args: vec![],
+                ops: vec![check_exception(46)],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![try_end(46), original("exception_last", vec![exc])],
+                terminator: Terminator::Branch {
+                    target: handler_pop,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            handler_pop,
+            TirBlock {
+                id: handler_pop,
+                args: vec![],
+                ops: vec![original("exception_pop", vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc)
+    }
+
     #[test]
     fn exception_region_pairs_match_ref_with_reachable_handler_pop() {
         let func = split_cleanup_function();
@@ -655,6 +1757,17 @@ mod tests {
                 op_index: 0,
             }],
             vec![exc],
+        );
+        assert_eq!(
+            facts.release_to_match_facts[&ExceptionOpPosition {
+                block: BlockId(3),
+                op_index: 0,
+            }],
+            vec![ExceptionMatchReleaseFact {
+                value: exc,
+                owner: ExceptionRegionToken::Labeled(4),
+                entry_predecessors: vec![BlockId(2)],
+            }],
         );
     }
 
@@ -706,6 +1819,38 @@ mod tests {
     }
 
     #[test]
+    fn exception_region_ignores_owned_exception_last_exit_observer_without_pop() {
+        let mut func = TirFunction::new(
+            "owned_exception_last_exit_observer".into(),
+            vec![],
+            TirType::None,
+        );
+        let cleanup = func.fresh_block();
+        func.label_id_map.insert(cleanup.0, 3);
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(3)];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+            Terminator::Return { values: vec![] };
+        func.blocks.insert(
+            cleanup,
+            TirBlock {
+                id: cleanup,
+                args: vec![],
+                ops: vec![original("exception_last", vec![exc])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert!(!facts.match_refs.contains_key(&exc));
+        assert!(facts.release_to_matches.is_empty());
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
     fn exception_region_reports_ambiguous_producer_depth_without_selecting_release() {
         let (func, exc) = ambiguous_depth_function();
 
@@ -730,6 +1875,146 @@ mod tests {
             facts.diagnostics
         );
         assert!(verify_exception_regions(&func).is_err());
+    }
+
+    #[test]
+    fn exception_region_ignores_mixed_exception_last_exit_observer() {
+        let (func, exc) = mixed_exception_exit_observer_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert!(!facts.match_refs.contains_key(&exc));
+        assert!(facts.release_to_matches.is_empty());
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_ignores_mixed_pending_exit_observer_without_owner_pop() {
+        let (func, exc) = mixed_exception_pending_exit_observer_without_pop_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert!(!facts.match_refs.contains_key(&exc));
+        assert!(facts.release_to_matches.is_empty());
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_uses_top_region_owner_not_outer_stack_depth() {
+        let (func, exc) = same_owner_with_different_outer_prefix_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: BlockId(4),
+                op_index: 0,
+            }]
+        );
+        assert_eq!(
+            facts.release_to_matches[&ExceptionOpPosition {
+                block: BlockId(4),
+                op_index: 0,
+            }],
+            vec![exc],
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_exception_edge_unwinds_to_target_handler_owner() {
+        let (func, exc) = exception_edge_unwinds_to_target_handler_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: BlockId(2),
+                op_index: 0,
+            }]
+        );
+        assert_eq!(
+            facts.release_to_matches[&ExceptionOpPosition {
+                block: BlockId(2),
+                op_index: 0,
+            }],
+            vec![exc],
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_forced_raise_check_exception_has_no_fallthrough_owner() {
+        let (func, exc, pop) = forced_raise_check_exception_handler_branch_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: pop,
+                op_index: 0,
+            }]
+        );
+        assert_eq!(
+            facts.release_to_match_facts[&ExceptionOpPosition {
+                block: pop,
+                op_index: 0,
+            }],
+            vec![ExceptionMatchReleaseFact {
+                value: exc,
+                owner: ExceptionRegionToken::Labeled(57),
+                entry_predecessors: vec![BlockId(1)],
+            }],
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_pending_raise_branch_enters_labeled_handler_owner() {
+        let (func, exc, pop) = explicit_raise_branch_to_labeled_handler_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: pop,
+                op_index: 0,
+            }]
+        );
+        assert_eq!(
+            facts.release_to_match_facts[&ExceptionOpPosition {
+                block: pop,
+                op_index: 0,
+            }],
+            vec![ExceptionMatchReleaseFact {
+                value: exc,
+                owner: ExceptionRegionToken::Labeled(61),
+                entry_predecessors: vec![BlockId(1)],
+            }],
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_inactive_check_exception_target_does_not_fabricate_owner() {
+        let (func, exc) = inactive_check_exception_target_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert!(!facts.match_refs.contains_key(&exc));
+        assert!(facts.release_to_matches.is_empty());
+        assert!(verify_exception_regions(&func).is_ok());
     }
 
     #[test]
@@ -794,6 +2079,47 @@ mod tests {
     }
 
     #[test]
+    fn exception_region_allows_finally_normal_and_exceptional_cleanup_join() {
+        let (func, exc, pop) = finally_cleanup_join_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: pop,
+                op_index: 0,
+            }]
+        );
+        assert_eq!(
+            facts.release_to_matches[&ExceptionOpPosition {
+                block: pop,
+                op_index: 0,
+            }],
+            vec![exc],
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_allows_exception_last_finally_cleanup_join() {
+        let (func, exc, pop) = finally_cleanup_join_function_with_source("exception_last");
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: pop,
+                op_index: 0,
+            }]
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
     fn exception_region_allows_depth_zero_observer_after_handler_pop() {
         let (func, exc) = depth_zero_observer_after_pop_function();
 
@@ -837,6 +2163,94 @@ mod tests {
                 op_index: 0,
             }],
             vec![exc],
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_state_resume_preserves_suspended_try_depth() {
+        let (func, exc) = state_resume_inside_try_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: BlockId(5),
+                op_index: 0,
+            }]
+        );
+        assert_eq!(
+            facts.release_to_matches[&ExceptionOpPosition {
+                block: BlockId(5),
+                op_index: 0,
+            }],
+            vec![exc],
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_repoll_state_resume_uses_pending_state_depth() {
+        let (func, exc) = repoll_state_resume_inside_try_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: BlockId(4),
+                op_index: 0,
+            }]
+        );
+        assert_eq!(
+            facts.release_to_matches[&ExceptionOpPosition {
+                block: BlockId(4),
+                op_index: 0,
+            }],
+            vec![exc],
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_state_resume_stacks_are_bounded_by_lexical_try_token() {
+        let mut func = TirFunction::new("state_resume_stack_cycle".into(), vec![], TirType::None);
+        let initial = func.fresh_block();
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
+            cases: vec![(7, initial, vec![])],
+            default: initial,
+            default_args: vec![],
+        };
+        func.blocks.insert(
+            initial,
+            TirBlock {
+                id: initial,
+                args: vec![],
+                ops: vec![try_start(99), state_yield(7)],
+                terminator: Terminator::Branch {
+                    target: func.entry_block,
+                    args: vec![],
+                },
+            },
+        );
+
+        let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(&func)
+            .into_iter()
+            .collect();
+        let stacks = compute_state_resume_stacks(&func, &label_to_block);
+
+        assert_eq!(
+            stacks.get(&7).cloned().unwrap_or_default(),
+            BTreeSet::from([ExceptionPathState {
+                frames: vec![ExceptionRegionToken::Labeled(99)],
+                owners: Vec::new(),
+                normal_closures: Vec::new(),
+                pending_must_transfer: false,
+            }]),
+            "state-dispatch cycles must not manufacture duplicate lexical exception frames"
         );
         assert!(verify_exception_regions(&func).is_ok());
     }

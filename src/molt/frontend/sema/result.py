@@ -48,13 +48,14 @@ class FunctionMeta:
     """Per-top-level-function metadata computed pre-walk.
 
     * ``declared_funcs`` maps each top-level ``def``/``async def`` name to its
-      kind (``"sync"`` / ``"async"`` / ``"gen"``).
+      kind (``"sync"`` / ``"async"`` / ``"gen"`` / ``"asyncgen"``).
     * ``declared_classes`` is the set of top-level ``class`` names.
     * ``defaults`` maps each top-level function name to its default/param-shape
-      spec (param count, default specs, posonly/kwonly counts, or the
-      ``{"has_vararg": True}`` marker).  This mirrors the AST-derived value the
-      walk computes; an externally-supplied ``known_func_defaults`` override is
-      applied by the populate-shim, not here.
+      spec (param count, default specs, posonly/kwonly counts, function kind,
+      decorator presence, or the ``{"has_vararg": True}`` marker).  This
+      mirrors the AST-derived value the walk computes; an externally-supplied
+      ``known_func_defaults`` override is applied by the populate-shim, not
+      here.
     """
 
     declared_funcs: dict[str, str]

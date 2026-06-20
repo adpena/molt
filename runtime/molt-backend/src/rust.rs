@@ -777,7 +777,7 @@ impl RustBackend {
                 "        fields.iter().any(|(key, value)| matches!((key, value), (MoltValue::Str(k), MoltValue::Str(v)) if k == \"__molt_type__\" && v == \"code\"))\n",
                 "    } else { false }\n",
                 "}\n\n",
-                "fn molt_code_new(filename: &MoltValue, name: &MoltValue, firstlineno: &MoltValue, linetable: &MoltValue, varnames: &MoltValue, argcount: &MoltValue, posonlyargcount: &MoltValue, kwonlyargcount: &MoltValue) -> MoltValue {\n",
+                "fn molt_code_new(filename: &MoltValue, name: &MoltValue, firstlineno: &MoltValue, linetable: &MoltValue, varnames: &MoltValue, names: &MoltValue, argcount: &MoltValue, posonlyargcount: &MoltValue, kwonlyargcount: &MoltValue) -> MoltValue {\n",
                 "    let filename = molt_expect_code_str(filename, \"filename\");\n",
                 "    let name = molt_expect_code_str(name, \"name\");\n",
                 "    let firstlineno = molt_int(firstlineno);\n",
@@ -791,6 +791,7 @@ impl RustBackend {
                 "        (MoltValue::Str(\"co_firstlineno\".to_string()), MoltValue::Int(firstlineno)),\n",
                 "        (MoltValue::Str(\"co_linetable\".to_string()), linetable.clone()),\n",
                 "        (MoltValue::Str(\"co_varnames\".to_string()), varnames.clone()),\n",
+                "        (MoltValue::Str(\"co_names\".to_string()), names.clone()),\n",
                 "        (MoltValue::Str(\"co_argcount\".to_string()), MoltValue::Int(argcount)),\n",
                 "        (MoltValue::Str(\"co_posonlyargcount\".to_string()), MoltValue::Int(posonlyargcount)),\n",
                 "        (MoltValue::Str(\"co_kwonlyargcount\".to_string()), MoltValue::Int(kwonlyargcount)),\n",
@@ -2710,19 +2711,20 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
             "code_new" => {
                 let o = out();
                 let args = op.args.as_deref().unwrap_or(&[]);
-                if args.len() >= 8 {
+                if args.len() >= 9 {
                     let filename = rust_ident(&args[0]);
                     let name = rust_ident(&args[1]);
                     let firstlineno = rust_ident(&args[2]);
                     let linetable = rust_ident(&args[3]);
                     let varnames = rust_ident(&args[4]);
-                    let argcount = rust_ident(&args[5]);
-                    let posonlyargcount = rust_ident(&args[6]);
-                    let kwonlyargcount = rust_ident(&args[7]);
+                    let names = rust_ident(&args[5]);
+                    let argcount = rust_ident(&args[6]);
+                    let posonlyargcount = rust_ident(&args[7]);
+                    let kwonlyargcount = rust_ident(&args[8]);
                     self.emit_line(&declare(
                         &o,
                         &format!(
-                            "molt_code_new(&{filename}, &{name}, &{firstlineno}, &{linetable}, &{varnames}, &{argcount}, &{posonlyargcount}, &{kwonlyargcount})"
+                            "molt_code_new(&{filename}, &{name}, &{firstlineno}, &{linetable}, &{varnames}, &{names}, &{argcount}, &{posonlyargcount}, &{kwonlyargcount})"
                         ),
                         &self.hoisted_vars.clone(),
                     ));
@@ -4330,6 +4332,7 @@ mod tests {
                     "firstlineno".to_string(),
                     "linetable".to_string(),
                     "varnames".to_string(),
+                    "names".to_string(),
                     "argcount".to_string(),
                     "posonlyargcount".to_string(),
                     "kwonlyargcount".to_string(),
@@ -4350,6 +4353,7 @@ mod tests {
                             "firstlineno".to_string(),
                             "linetable".to_string(),
                             "varnames".to_string(),
+                            "names".to_string(),
                             "argcount".to_string(),
                             "posonlyargcount".to_string(),
                             "kwonlyargcount".to_string(),
@@ -4449,7 +4453,7 @@ mod tests {
         assert!(source.contains("fn molt_code_slot_set("));
         assert!(source.contains("molt_code_slots_init(4);"));
         assert!(source.contains(
-            "let mut code: MoltValue = molt_code_new(&filename, &name, &firstlineno, &linetable, &varnames, &argcount, &posonlyargcount, &kwonlyargcount);"
+            "let mut code: MoltValue = molt_code_new(&filename, &name, &firstlineno, &linetable, &varnames, &names, &argcount, &posonlyargcount, &kwonlyargcount);"
         ));
         assert!(source.contains("let mut owned_code: MoltValue = code.clone();"));
         assert!(source.contains("molt_code_slot_set(2, &owned_code);"));

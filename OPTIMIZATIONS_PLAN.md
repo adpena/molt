@@ -441,9 +441,15 @@ adjusted from telemetry after landing PR-5/PR-6.
   - lexical order of module/function symbols for deterministic assignment.
 
 ### Per-Function Budget Algorithm (V1)
-- Budget formula:
+- Telemetry formula:
   - `budget_ms = base_ms(profile,tier) + alpha * op_count + beta * block_count`
   - initial constants: `alpha=0.03`, `beta=0.75`.
+  - `budget_ms` is wall-clock telemetry only; it never controls pass selection.
+- Enforcement formula:
+  - `work_budget` is a deterministic function of profile, tier, op count,
+    block count, max rounds, and the calibrated per-round checkpoint count.
+  - `MOLT_MIDEND_WORK_BUDGET` can override the deterministic work-unit budget
+    for diagnostics and focused repros.
 - Enforcement checkpoints:
   - after each pass in a round,
   - after each round.
@@ -454,7 +460,7 @@ adjusted from telemetry after landing PR-5/PR-6.
   4. Disable LICM and region-wide guard hoist.
   5. Keep verifier + structural safety; emit degrade event.
 - Required degrade reasons:
-  - `budget_exceeded`,
+  - `work_budget_exceeded`,
   - `round_cap_hit`,
   - `iteration_cap_hit`,
   - `policy_tier_limit`,
@@ -473,7 +479,14 @@ adjusted from telemetry after landing PR-5/PR-6.
 ```json
 {
   "optimization_policy": {"profile": "release", "tier": "B"},
-  "function_budget": {"budget_ms": 143.2, "spent_ms": 167.4, "degraded": true, "reason": "budget_exceeded"},
+  "function_budget": {
+    "budget_ms": 143.2,
+    "spent_ms": 167.4,
+    "work_budget": 1200.0,
+    "work_units_spent": 1430.0,
+    "degraded": true,
+    "reason": "work_budget_exceeded"
+  },
   "passes": {
     "sccp": {"attempted": 3, "accepted": 2, "rejected": 1, "degraded": 1, "ms_total": 74.5, "ms_p95": 31.2},
     "cse": {"attempted": 2, "accepted": 1, "rejected": 1, "degraded": 1, "ms_total": 28.9, "ms_p95": 17.4}
@@ -551,7 +564,7 @@ adjusted from telemetry after landing PR-5/PR-6.
 ### TODO Contracts (Mirrored in `ROADMAP.md` and `docs/spec/STATUS.md`)
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): ship profile-gated mid-end policy matrix (`dev` correctness-first cheap opts; `release` full fixed-point) with deterministic pass ordering and explicit diagnostics (profile plumbing into frontend policy is landed; diagnostics sink now also surfaces active midend policy config and heuristic knobs; remaining work is broader tuning closure and any additional triage UX).
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add tiered optimization policy (Tier A entry/hot functions, Tier B normal user functions, Tier C heavy stdlib/dependency functions) with deterministic classification and override knobs (baseline classifier + env override knobs are landed; runtime-feedback and PGO hot-function promotion are now wired through the existing tier promotion path).
-- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): enforce per-function mid-end wall-time budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (budget/degrade ladder is landed in fixed-point loop; tuning heuristics and function-level diagnostics surfacing remain).
+- TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): enforce per-function deterministic mid-end work budgets with an automatic degrade ladder that disables expensive transforms before correctness gates and records degrade reasons (`MOLT_MIDEND_WORK_BUDGET`, `work_budget`, and `work_units_spent` are landed; tuning heuristics and function-level diagnostics surfacing remain).
 - TODO(compiler, owner:compiler, milestone:LF2, priority:P0, status:partial): add per-pass wall-time telemetry (`attempted`/`accepted`/`rejected`/`degraded`, `ms_total`, `ms_p95`) plus top-offender diagnostics by module/function/pass (frontend pass telemetry, CLI/JSON sink wiring, and hotspot rendering are landed).
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): surface active optimization profile/tier policy and degrade events in CLI build diagnostics and JSON outputs for deterministic triage (diagnostics sink is landed for policy/tier/degrade + pass hotspots, and stderr verbosity partitioning is landed; remaining work is richer CLI UX controls beyond verbosity).
 - TODO(tooling, owner:tooling, milestone:TL2, priority:P1, status:partial): add process-level parallel frontend module-lowering and deterministic merge ordering, then extend to large-function optimization workers where dependency-safe (dependency-layer process-pool lowering is landed behind `MOLT_FRONTEND_PARALLEL_MODULES`; remaining work is broader eligibility + worker telemetry/perf tuning).

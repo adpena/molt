@@ -264,16 +264,16 @@ fn set_class_attr_none(_py: &PyToken<'_>, class_bits: u64, name: &[u8]) {
     dec_ref_bits(_py, name_bits);
 }
 
-fn init_int_subclass_layout(_py: &PyToken<'_>, int_bits: u64) {
-    let Some(int_ptr) = obj_from_bits(int_bits).as_ptr() else {
+fn init_scalar_subclass_layout(_py: &PyToken<'_>, class_bits: u64, slot_name: &[u8]) {
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
         return;
     };
     unsafe {
-        if object_type_id(int_ptr) != TYPE_ID_TYPE {
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
             return;
         }
     }
-    let dict_bits = unsafe { class_dict_bits(int_ptr) };
+    let dict_bits = unsafe { class_dict_bits(class_ptr) };
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
         return;
     };
@@ -292,7 +292,7 @@ fn init_int_subclass_layout(_py: &PyToken<'_>, int_bits: u64) {
         &runtime_state(_py).interned.molt_layout_size,
         b"__molt_layout_size__",
     );
-    let Some(slot_name_bits) = attr_name_bits_from_bytes(_py, b"__molt_int_value__") else {
+    let Some(slot_name_bits) = attr_name_bits_from_bytes(_py, slot_name) else {
         return;
     };
     let offset_bits = MoltObject::from_int(0).bits();
@@ -307,10 +307,18 @@ fn init_int_subclass_layout(_py: &PyToken<'_>, int_bits: u64) {
     let layout_bits = MoltObject::from_int(16).bits();
     unsafe {
         dict_set_in_place(_py, dict_ptr, layout_name_bits, layout_bits);
-        class_bump_layout_version(int_ptr);
+        class_bump_layout_version(class_ptr);
     }
     dec_ref_bits(_py, offsets_bits);
     dec_ref_bits(_py, slot_name_bits);
+}
+
+fn init_int_subclass_layout(_py: &PyToken<'_>, int_bits: u64) {
+    init_scalar_subclass_layout(_py, int_bits, b"__molt_int_value__");
+}
+
+fn init_float_subclass_layout(_py: &PyToken<'_>, float_bits: u64) {
+    init_scalar_subclass_layout(_py, float_bits, b"__molt_float_value__");
 }
 
 fn init_dict_subclass_layout(_py: &PyToken<'_>, dict_bits: u64) {
@@ -543,6 +551,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> BuiltinClasses {
     let _ = molt_class_set_base(complex, object);
     let _ = molt_class_set_base(bool, int);
     init_int_subclass_layout(_py, int);
+    init_float_subclass_layout(_py, float);
     let _ = molt_class_set_base(str, object);
     let _ = molt_class_set_base(bytes, object);
     let _ = molt_class_set_base(bytearray, object);

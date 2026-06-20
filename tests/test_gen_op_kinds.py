@@ -179,6 +179,65 @@ def test_audit_sources_backend_vocab_from_registry() -> None:
     assert set(res.fresh_value_prefixes) == set(data["classifier_fresh_value_prefixes"])
 
 
+def test_guarded_field_init_has_one_wire_spelling() -> None:
+    """`GUARDED_SETATTR_INIT` has one cross-component wire spelling.
+
+    `guarded_field_set_init` was a dead registry spelling while the frontend and
+    SimpleIR backends used `guarded_field_init`. Pin the chosen spelling across
+    the registry, generated mapper tables, frontend audit, LLVM StoreAttr
+    lowering text, native/WASM arm extraction, and the dangerous-cell baseline.
+    """
+    gen = _gen()
+    audit = _audit()
+    data = gen.load_table()
+    current = "guarded_field_init"
+    rejected = "guarded_field_set_init"
+
+    store_attr = next(row for row in data["kind"] if row["canonical"] == "set_attr")
+    aliases = set(store_attr.get("aliases", []))
+    assert current in aliases
+    assert rejected not in aliases
+
+    generated_rs = OUT_RS.read_text()
+    generated_py = OUT_PY.read_text()
+    assert f'"{current}"' in generated_rs
+    assert f'"{rejected}"' not in generated_rs
+    assert f'"{current}"' in generated_py
+    assert f'"{rejected}"' not in generated_py
+
+    res = audit.run_audit()
+    assert current in res.frontend.all
+    assert rejected not in res.frontend.all
+    assert current in res.mapper_kinds
+    assert rejected not in res.mapper_kinds
+    assert res.rows[current].frontend_emits
+    assert res.rows[current].mapper_maps
+    assert res.rows[current].native_arm
+    assert res.rows[current].wasm_arm
+
+    llvm_lowering = (
+        ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
+    ).read_text()
+    assert f'Some("{current}")' in llvm_lowering
+    assert f'Some("{rejected}")' not in llvm_lowering
+
+    current_guarded_danger = {
+        kind
+        for kinds in res.dangerous().values()
+        for kind in kinds
+        if kind.startswith("guarded_field")
+    }
+    baseline = json.loads((ROOT / "tools/op_kinds_baseline.json").read_text())
+    baseline_guarded_danger = {
+        kind
+        for kinds in baseline["dangerous"].values()
+        for kind in kinds
+        if kind.startswith("guarded_field")
+    }
+    assert current_guarded_danger == set()
+    assert baseline_guarded_danger == set()
+
+
 def test_effects_rs_delegates_to_generated_tables() -> None:
     """The effect oracle in effects.rs must DELEGATE to the generated tables (no
     hand-maintained `matches!` of opcodes), and the generated tables must embed a
@@ -409,6 +468,20 @@ def test_frontend_emitter_fully_resolved_and_no_new_drift() -> None:
     assert not fails, f"audit self-validation failed: {fails}"
 
 
+def test_dangerous_cell_baseline_matches_current_audit() -> None:
+    """The dangerous-cell baseline is exact, not an allowlist superset.
+
+    Baseline-only stale entries mask future regressions: if a kind is removed
+    from the live dangerous sets, it must leave the committed baseline in the
+    same change.
+    """
+    audit = _audit()
+    res = audit.run_audit()
+    baseline = json.loads((ROOT / "tools/op_kinds_baseline.json").read_text())
+
+    assert baseline.get("dangerous", {}) == res.dangerous()
+
+
 # ---------------------------------------------------------------------------
 # Drift-detection mutation guards (negative tests): mutating either side reds.
 # ---------------------------------------------------------------------------
@@ -458,6 +531,11 @@ def _re_search(src: str, fn_sig: str) -> str:
     return src.split(fn_sig, 1)[1]
 
 
+def _rust_tokens(src: str) -> str:
+    """Collapse generated Rust layout without weakening token-order checks."""
+    return " ".join(src.split())
+
+
 def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
     """Every OpCode gets an `operand_ownership` arm in
     `opcode_operand_ownership_table` (EXHAUSTIVE over the enum — the kill for a
@@ -473,6 +551,7 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
     region = _re_search(rendered, "fn opcode_operand_ownership_table").split(
         "fn opcode_borrows_source_operand"
     )[0]
+    region_tokens = _rust_tokens(region)
     # The behavior-preserving seed (ladder #73): every opcode is `all_borrowed`
     # EXCEPT the two interior-borrowing reads and the explicit DecRef consume.
     # `LoadAttr` interior-borrows its single operand; `Index` interior-borrows
@@ -491,19 +570,19 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
         "Index": (
             "OpCode::Index => match operand_idx { "
             "0 => OperandOwnership::InteriorBorrowKeepAlive, "
-            "_ => OperandOwnership::Borrowed },"
+            "_ => OperandOwnership::Borrowed, },"
         ),
         "StoreIndex": (
             "OpCode::StoreIndex => match operand_idx { "
             "0 => OperandOwnership::Borrowed, "
             "1 => OperandOwnership::Borrowed, "
-            "_ => OperandOwnership::ContainerAbsorb },"
+            "_ => OperandOwnership::ContainerAbsorb, },"
         ),
         "ModuleSetAttr": (
             "OpCode::ModuleSetAttr => match operand_idx { "
             "0 => OperandOwnership::Borrowed, "
             "1 => OperandOwnership::Borrowed, "
-            "_ => OperandOwnership::ContainerAbsorb },"
+            "_ => OperandOwnership::ContainerAbsorb, },"
         ),
     }
     for row in data["opcode"]:
@@ -514,7 +593,7 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
                 f"!= {interior[name]!r} (ladder #73 must stay byte-identical to the "
                 "op_borrow_source LoadAttr|Index→operand-0 fact)"
             )
-            assert expected_arm[name] in region, (
+            assert _rust_tokens(expected_arm[name]) in region_tokens, (
                 f"opcode_operand_ownership_table missing/incorrect {name} arm"
             )
         elif name in container_absorb:
@@ -522,7 +601,7 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
                 f"{name} container-absorb seed drifted: {row['operand_ownership']!r} "
                 f"!= {container_absorb[name]!r}"
             )
-            assert expected_arm[name] in region, (
+            assert _rust_tokens(expected_arm[name]) in region_tokens, (
                 f"opcode_operand_ownership_table missing/incorrect {name} arm"
             )
         elif name in consumed:
@@ -551,7 +630,7 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
         "    InteriorBorrowKeepAlive,\n"
         "    ContainerAbsorb,\n"
         "    ConditionalValidOnlyOnEdge,\n"
-        "    NoOperandOwnership,\n"
+        "    NoOperand,\n"
         "}"
     ) in rendered
 
@@ -606,8 +685,7 @@ def test_container_absorbing_kind_table_renders_storage_boundaries() -> None:
     region = _re_search(rendered, "fn kind_container_absorbed_operand_table")
 
     absorbing = {
-        row["kind"]: row["absorbed_operand"]
-        for row in data["absorbing_operand_kind"]
+        row["kind"]: row["absorbed_operand"] for row in data["absorbing_operand_kind"]
     }
     assert absorbing == {
         "list_append": 1,
@@ -638,21 +716,17 @@ def test_result_finalizer_source_kind_table_renders_list_pop_boundary() -> None:
 
 
 def test_result_absorption_tables_render_container_authority() -> None:
-    """Container result absorption is a generated ownership fact, split between
-    first-class Build* opcodes and Copy-preserved constructor spellings."""
+    """Result absorption is generated for first-class Build* opcodes and
+    Copy-preserved constructor/class-definition spellings."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
     opcode_region = _re_search(
         rendered, "fn opcode_result_absorbs_operand_ownership_table"
     ).split("fn kind_result_absorbs_operand_ownership_table")[0]
-    kind_region = _re_search(
-        rendered, "fn kind_result_absorbs_operand_ownership_table"
-    )
+    kind_region = _re_search(rendered, "fn kind_result_absorbs_operand_ownership_table")
 
-    truthy = {
-        row["name"] for row in data["opcode"] if row["result_absorbs_operands"]
-    }
+    truthy = {row["name"] for row in data["opcode"] if row["result_absorbs_operands"]}
     assert truthy == {"BuildList", "BuildDict", "BuildTuple", "BuildSet"}
     for name in truthy:
         assert f"OpCode::{name} => true," in opcode_region
@@ -661,7 +735,14 @@ def test_result_absorption_tables_render_container_authority() -> None:
             assert f"OpCode::{row['name']} => false," in opcode_region
 
     absorbing = {row["kind"] for row in data["absorbing_kind"]}
-    assert absorbing == {"dict_new", "frozenset_new", "list_new", "set_new", "tuple_new"}
+    assert absorbing == {
+        "class_def",
+        "dict_new",
+        "frozenset_new",
+        "list_new",
+        "set_new",
+        "tuple_new",
+    }
     for kind in absorbing:
         assert f'"{kind}"' in kind_region
 
@@ -706,7 +787,12 @@ def test_ownership_lattice_uses_generated_result_absorption_tables() -> None:
     body = source[start:end]
     assert "opcode_result_absorbs_operand_ownership_table" in body
     assert "kind_result_absorbs_operand_ownership_table" in body
-    for stale in ("OpCode::BuildList", "OpCode::BuildTuple", "OpCode::BuildDict", "OpCode::BuildSet"):
+    for stale in (
+        "OpCode::BuildList",
+        "OpCode::BuildTuple",
+        "OpCode::BuildDict",
+        "OpCode::BuildSet",
+    ):
         assert stale not in body
 
 
@@ -719,9 +805,7 @@ def test_drop_insertion_delegates_consume_to_generated_table() -> None:
     Scoped to the FUNCTION BODY (not the whole file) so a legitimate #[cfg(test)]
     fixture that constructs a `call_bind` op — the consume-path regression — is
     not mistaken for the deleted production hand list."""
-    drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
-    ).read_text()
+    drop = (ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs").read_text()
     assert "op_kinds_generated::" in drop, (
         "drop_insertion.rs must reference the generated op_kinds tables"
     )
@@ -913,9 +997,7 @@ def test_op_borrow_source_delegates_to_generated_table() -> None:
     Index references elsewhere in alias_analysis.rs (load-purity classification,
     the borrow-provenance unit-test fixtures) are not mistaken for the deleted
     hand-coded match."""
-    alias = (
-        ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
-    ).read_text()
+    alias = (ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs").read_text()
     marker = "fn op_borrow_source("
     assert marker in alias, "op_borrow_source not found"
     start = alias.index(marker)
@@ -1008,7 +1090,7 @@ def test_terminator_table_renders_transferred_and_borrowed() -> None:
     with the design-27 §2.4 transfer set: `Return` value + every branch-arg are
     `Transferred`; the `CondBranch`/`Switch` predicate is `Borrowed`;
     `StateDispatch` has no direct SSA predicate; absent categories are
-    `NoOperandOwnership`. This is the behavior-preserving seed of
+    `NoOperand`. This is the behavior-preserving seed of
     the migrated transfer carve-out — and the first construction of the
     `Transferred` variant by a generated table (not just `from_str`)."""
     gen = _gen()
@@ -1017,11 +1099,12 @@ def test_terminator_table_renders_transferred_and_borrowed() -> None:
     region = _re_search(rendered, "fn terminator_operand_ownership_table").split(
         "fn terminator_operand_is_transferred"
     )[0]
+    region_tokens = _rust_tokens(region)
 
     variant = {
         "borrowed": "OperandOwnership::Borrowed",
         "transferred": "OperandOwnership::Transferred",
-        "none": "OperandOwnership::NoOperandOwnership",
+        "none": "OperandOwnership::NoOperand",
     }
     # The behavior-preserving seed (matches the prior hand-coded carve-out
     # exactly): branch-arg forwarders transfer; Return value transfers; the
@@ -1037,19 +1120,32 @@ def test_terminator_table_renders_transferred_and_borrowed() -> None:
         "Unreachable": {"direct": "none", "branch_arg": "none"},
     }
     table = {row["name"]: row for row in data["terminator"]}
-    assert {k: {"direct": v["direct"], "branch_arg": v["branch_arg"]} for k, v in table.items()} == expected, (
+    assert {
+        k: {"direct": v["direct"], "branch_arg": v["branch_arg"]}
+        for k, v in table.items()
+    } == expected, (
         "[[terminator]] drifted from the design-27 §2.4 transfer-site seed "
         "(the migrated terminator_branch_args + terminator_uses_root carve-out)"
     )
     for name, cats in expected.items():
-        assert (
+        direct_expr = _rust_tokens(
             f"(TerminatorKind::{name}, OperandCategory::Direct) => {variant[cats['direct']]},"
-            in region
-        ), f"terminator_operand_ownership_table missing Direct arm for {name}"
-        assert (
+        )
+        direct_block = _rust_tokens(
+            f"(TerminatorKind::{name}, OperandCategory::Direct) => {{ {variant[cats['direct']]} }}"
+        )
+        assert direct_expr in region_tokens or direct_block in region_tokens, (
+            f"terminator_operand_ownership_table missing Direct arm for {name}"
+        )
+        branch_expr = _rust_tokens(
             f"(TerminatorKind::{name}, OperandCategory::BranchArg) => {variant[cats['branch_arg']]},"
-            in region
-        ), f"terminator_operand_ownership_table missing BranchArg arm for {name}"
+        )
+        branch_block = _rust_tokens(
+            f"(TerminatorKind::{name}, OperandCategory::BranchArg) => {{ {variant[cats['branch_arg']]} }}"
+        )
+        assert branch_expr in region_tokens or branch_block in region_tokens, (
+            f"terminator_operand_ownership_table missing BranchArg arm for {name}"
+        )
 
     # `Transferred` is constructed by the generated table — it is GENUINELY LIVE
     # now, not a `from_str`-only forward-compat variant.
@@ -1166,9 +1262,7 @@ def test_drop_insertion_delegates_transfer_to_generated_authority() -> None:
     Scoped to the two transfer-helper FUNCTION BODIES so the structural shape
     match (which fields carry args — legitimately in the pass) is not mistaken for
     a hand-coded transfer fact."""
-    drop = (
-        ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs"
-    ).read_text()
+    drop = (ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs").read_text()
 
     def _fn_body(src: str, marker: str) -> str:
         assert marker in src, f"{marker} not found in drop_insertion.rs"

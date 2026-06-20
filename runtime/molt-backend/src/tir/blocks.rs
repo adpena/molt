@@ -2,13 +2,15 @@ use super::ops::TirOp;
 use super::values::{TirValue, ValueId};
 
 /// Unique identifier for a basic block within a function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize, serde::Serialize,
+)]
 pub struct BlockId(pub u32);
 
 /// Structural loop role for a basic block, used to preserve loop markers
 /// across the TIR roundtrip so downstream backends (Cranelift, WASM) can
 /// reconstruct structured loop constructs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum LoopRole {
     /// Not part of loop boundary structure.
     None,
@@ -19,14 +21,14 @@ pub enum LoopRole {
 }
 
 /// Preserved polarity of the original structured loop exit op.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum LoopBreakKind {
     BreakIfTrue,
     BreakIfFalse,
 }
 
 /// A basic block in SSA form with block arguments (MLIR-style, no phi nodes).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TirBlock {
     pub id: BlockId,
     /// Block arguments — these replace phi nodes. Predecessor branches
@@ -39,7 +41,7 @@ pub struct TirBlock {
 }
 
 /// Block terminator — controls transfer at the end of a basic block.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum Terminator {
     /// Unconditional branch to a target block, passing arguments.
     Branch { target: BlockId, args: Vec<ValueId> },

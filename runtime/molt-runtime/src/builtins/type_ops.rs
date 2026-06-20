@@ -16,6 +16,150 @@ fn debug_exception_match() -> bool {
     *FLAG.get_or_init(|| std::env::var("MOLT_DEBUG_EXCEPTION_MATCH").as_deref() == Ok("1"))
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ClassInfoProtocol {
+    Instance,
+    Subclass,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RuntimeClassInfo {
+    Type(u64),
+    Protocol(u64),
+}
+
+#[inline]
+fn classinfo_protocol_name_bits(_py: &PyToken<'_>, protocol: ClassInfoProtocol) -> u64 {
+    match protocol {
+        ClassInfoProtocol::Instance => intern_static_name(
+            _py,
+            &runtime_state(_py).interned.instancecheck_name,
+            b"__instancecheck__",
+        ),
+        ClassInfoProtocol::Subclass => intern_static_name(
+            _py,
+            &runtime_state(_py).interned.subclasscheck_name,
+            b"__subclasscheck__",
+        ),
+    }
+}
+
+#[inline]
+fn classinfo_type_error_message(protocol: ClassInfoProtocol) -> &'static str {
+    match protocol {
+        ClassInfoProtocol::Instance => "isinstance() arg 2 must be a type or tuple of types",
+        ClassInfoProtocol::Subclass => "issubclass() arg 2 must be a class or tuple of classes",
+    }
+}
+
+fn classinfo_has_protocol(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    protocol: ClassInfoProtocol,
+) -> bool {
+    unsafe {
+        let name_bits = classinfo_protocol_name_bits(_py, protocol);
+        let Some(check_bits) = attr_lookup_ptr_allow_missing(_py, class_ptr, name_bits) else {
+            return false;
+        };
+        dec_ref_bits(_py, check_bits);
+        true
+    }
+}
+
+pub(crate) fn collect_runtime_classinfo(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    protocol: ClassInfoProtocol,
+    out: &mut Vec<RuntimeClassInfo>,
+) {
+    let obj = obj_from_bits(class_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        return raise_exception::<_>(_py, "TypeError", classinfo_type_error_message(protocol));
+    };
+    unsafe {
+        match object_type_id(ptr) {
+            TYPE_ID_TYPE => out.push(RuntimeClassInfo::Type(class_bits)),
+            TYPE_ID_TUPLE => {
+                let items = seq_vec_ref(ptr);
+                for item in items.iter() {
+                    collect_runtime_classinfo(_py, *item, protocol, out);
+                    if exception_pending(_py) {
+                        break;
+                    }
+                }
+            }
+            TYPE_ID_UNION => {
+                let args_bits = union_type_args_bits(ptr);
+                let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        classinfo_type_error_message(protocol),
+                    );
+                };
+                if object_type_id(args_ptr) != TYPE_ID_TUPLE {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        classinfo_type_error_message(protocol),
+                    );
+                }
+                let items = seq_vec_ref(args_ptr);
+                for item in items.iter() {
+                    collect_runtime_classinfo(_py, *item, protocol, out);
+                    if exception_pending(_py) {
+                        break;
+                    }
+                }
+            }
+            _ => {
+                if classinfo_has_protocol(_py, ptr, protocol) {
+                    out.push(RuntimeClassInfo::Protocol(class_bits));
+                } else if !exception_pending(_py) {
+                    raise_exception::<()>(_py, "TypeError", classinfo_type_error_message(protocol));
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn runtime_classinfo_protocol_match(
+    _py: &PyToken<'_>,
+    class_bits: u64,
+    arg_bits: u64,
+    protocol: ClassInfoProtocol,
+) -> Option<bool> {
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return raise_exception::<Option<bool>>(
+            _py,
+            "TypeError",
+            classinfo_type_error_message(protocol),
+        );
+    };
+    unsafe {
+        let name_bits = classinfo_protocol_name_bits(_py, protocol);
+        let Some(check_bits) = attr_lookup_ptr_allow_missing(_py, class_ptr, name_bits) else {
+            if exception_pending(_py) {
+                return None;
+            }
+            return raise_exception::<Option<bool>>(
+                _py,
+                "TypeError",
+                classinfo_type_error_message(protocol),
+            );
+        };
+        let res_bits = call_callable1(_py, check_bits, arg_bits);
+        dec_ref_bits(_py, check_bits);
+        if exception_pending(_py) {
+            return None;
+        }
+        let res = is_truthy(_py, obj_from_bits(res_bits));
+        dec_ref_bits(_py, res_bits);
+        Some(res)
+    }
+}
+
 pub(crate) unsafe fn class_mro_ref(class_ptr: *mut u8) -> Option<&'static Vec<u64>> {
     unsafe {
         let mro_bits = class_mro_bits(class_ptr);
@@ -323,6 +467,27 @@ fn collect_classinfo_isinstance(_py: &PyToken<'_>, class_bits: u64, out: &mut Ve
                     collect_classinfo_isinstance(_py, *item, out);
                 }
             }
+            TYPE_ID_UNION => {
+                let args_bits = union_type_args_bits(ptr);
+                let Some(args_ptr) = obj_from_bits(args_bits).as_ptr() else {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "isinstance() arg 2 must be a type or tuple of types",
+                    );
+                };
+                if object_type_id(args_ptr) != TYPE_ID_TUPLE {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "isinstance() arg 2 must be a type or tuple of types",
+                    );
+                }
+                let items = seq_vec_ref(args_ptr);
+                for item in items.iter() {
+                    collect_classinfo_isinstance(_py, *item, out);
+                }
+            }
             _ => raise_exception::<_>(
                 _py,
                 "TypeError",
@@ -555,7 +720,7 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
     let mut saw_new_exception = false;
     let mut matched = false;
     let mut classes = Vec::new();
-    collect_classinfo_isinstance(_py, class_bits, &mut classes);
+    collect_runtime_classinfo(_py, class_bits, ClassInfoProtocol::Instance, &mut classes);
     let debug_match = debug_exception_match();
     if debug_match && has_saved_exc && classes.is_empty() {
         let class_type = class_name_for_error(type_of_bits(_py, class_bits));
@@ -564,7 +729,31 @@ pub(crate) fn isinstance_runtime(_py: &PyToken<'_>, val_bits: u64, class_bits: u
             class_type
         );
     }
-    for class_bits in classes {
+    for class_info in classes {
+        let class_bits = match class_info {
+            RuntimeClassInfo::Type(class_bits) => class_bits,
+            RuntimeClassInfo::Protocol(class_bits) => {
+                if skip_clear {
+                    continue;
+                }
+                match runtime_classinfo_protocol_match(
+                    _py,
+                    class_bits,
+                    val_bits,
+                    ClassInfoProtocol::Instance,
+                ) {
+                    Some(true) => {
+                        matched = true;
+                        break;
+                    }
+                    Some(false) => continue,
+                    None => {
+                        saw_new_exception = true;
+                        break;
+                    }
+                }
+            }
+        };
         let class_obj = obj_from_bits(class_bits);
         let Some(class_ptr) = class_obj.as_ptr() else {
             continue;

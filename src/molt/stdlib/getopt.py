@@ -31,13 +31,7 @@ del _MOLT_IMPORT_SMOKE_RUNTIME_READY
 __all__ = ["GetoptError", "error", "getopt", "gnu_getopt"]
 
 import os
-
-try:
-    from gettext import gettext as _
-except ImportError:
-
-    def _(s):
-        return s
+from gettext import gettext as _
 
 
 class GetoptError(Exception):

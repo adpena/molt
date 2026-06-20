@@ -157,6 +157,8 @@ def run_process_sentinel(
         "--once",
         "--kill-all",
     ]
+    if capture_output:
+        cmd.append("--json")
     return _guarded_dev_cleanup_process(
         repo_root,
         cmd,
@@ -193,6 +195,19 @@ def _git_clean_entries(stdout: str) -> list[dict[str, str]]:
         elif line:
             entries.append({"action": "output", "line": line})
     return entries
+
+
+def _json_lines(text: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        decoded = json.loads(line)
+        if not isinstance(decoded, dict):
+            raise ValueError("expected JSON object per process sentinel line")
+        events.append(decoded)
+    return events
 
 
 def _emit_json(payload: dict[str, object]) -> None:
@@ -301,6 +316,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                     }
                 )
             return sentinel_result.returncode
+    sentinel_events: list[dict[str, object]] = []
+    if sentinel_result is not None and args.json:
+        try:
+            sentinel_events = _json_lines(sentinel_result.stdout or "")
+        except ValueError as exc:
+            _emit_json(
+                {
+                    "command": "artifact_cleanup",
+                    "status": "error",
+                    "data": {
+                        "mode": mode,
+                        "repo_root": str(repo_root),
+                        "pathspecs": pathspecs,
+                        "sentinel_returncode": sentinel_result.returncode,
+                    },
+                    "errors": [f"process sentinel emitted malformed JSON: {exc}"],
+                }
+            )
+            return 2
+        if sentinel_result.returncode == 1 and not sentinel_events:
+            _emit_json(
+                {
+                    "command": "artifact_cleanup",
+                    "status": "error",
+                    "data": {
+                        "mode": mode,
+                        "repo_root": str(repo_root),
+                        "pathspecs": pathspecs,
+                        "sentinel_returncode": sentinel_result.returncode,
+                    },
+                    "errors": [
+                        "process sentinel reported a violation but emitted no JSON events"
+                    ],
+                }
+            )
+            return 2
     result = run_git_clean(
         repo_root,
         apply=args.apply,
@@ -319,6 +370,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         if sentinel_result is not None:
             data["sentinel_returncode"] = sentinel_result.returncode
+            if sentinel_events:
+                data["sentinel_events"] = sentinel_events
         if args.verbose:
             data["stdout"] = stdout.splitlines()
             data["stderr"] = stderr.splitlines()

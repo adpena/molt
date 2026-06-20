@@ -194,7 +194,7 @@ fn is_alloc_site(opcode: OpCode) -> bool {
 fn store_attr_value_operand_index(attrs: &AttrDict, operand_count: usize) -> Option<usize> {
     let value_index = match attr_str(attrs, "_original_kind") {
         Some("set_attr_name") => 2,
-        Some("guarded_field_set") | Some("guarded_field_set_init") => 3,
+        Some("guarded_field_set") | Some("guarded_field_init") => 3,
         Some("set_attr") | Some("store_attr") if operand_count >= 3 => 2,
         _ => 1,
     };
@@ -853,6 +853,7 @@ pub fn apply(func: &mut TirFunction, escapes: &HashMap<ValueId, EscapeState>) ->
         values_changed: 0,
         ops_removed: 0,
         ops_added: 0,
+        facts_changed: 0,
     };
 
     // The escape map now tracks container / task allocation sites too (so the

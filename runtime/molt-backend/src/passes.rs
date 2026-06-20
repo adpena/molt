@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
     not(any(feature = "native-backend", feature = "llvm")),
     allow(dead_code)
 )]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum ReturnAliasSummary {
     Param(usize),
 }
@@ -3130,6 +3130,43 @@ fn split_defined_before_sets(ops: &[OpIR]) -> Vec<BTreeSet<String>> {
     defined_before
 }
 
+fn split_suffix_external_reads(ops: &[OpIR]) -> BTreeSet<String> {
+    let mut defined = BTreeSet::new();
+    let mut external_reads = BTreeSet::new();
+    for op in ops {
+        for name in split_ir_read_names(op) {
+            if !defined.contains(&name) {
+                external_reads.insert(name);
+            }
+        }
+        for name in split_ir_defined_names(op) {
+            defined.insert(name);
+        }
+    }
+    external_reads
+}
+
+fn split_available_names_for_suffix_clone(
+    params: &[String],
+    live_before: &[BTreeSet<String>],
+    ops: &[OpIR],
+    start: usize,
+    end: usize,
+) -> BTreeSet<String> {
+    let mut available: BTreeSet<String> = params
+        .iter()
+        .filter(|name| name.as_str() != "none")
+        .cloned()
+        .collect();
+    available.extend(live_before[start].iter().cloned());
+    for op in &ops[start..end] {
+        for name in split_ir_defined_names(op) {
+            available.insert(name.to_string());
+        }
+    }
+    available
+}
+
 fn split_collect_names(ops: &[OpIR], params: &[String]) -> BTreeSet<String> {
     let mut names: BTreeSet<String> = params
         .iter()
@@ -3298,6 +3335,14 @@ fn verify_split_generated_ops(func: &FunctionIR) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn is_drop_fact_marker_op(op: &OpIR) -> bool {
+    matches!(
+        op.kind.as_str(),
+        crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR
+            | crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR
+    )
 }
 
 /// Eliminate dead ops within each function of the SimpleIR.
@@ -3498,6 +3543,15 @@ pub fn split_large_function(
     if func.ops.len() <= max_ops {
         return Err(Box::new(func));
     }
+    let original_for_split_failure = func.clone();
+    let all_ops = &func.ops;
+    let drop_fact_markers: Vec<OpIR> = all_ops
+        .iter()
+        .take_while(|op| is_drop_fact_marker_op(op))
+        .cloned()
+        .collect();
+    let live_before = split_live_before_sets(all_ops);
+    let defined_before = split_defined_before_sets(all_ops);
 
     // Exception handling ops (check_exception) are protected by the
     // forbidden-range mechanism below — the splitter never separates a
@@ -3549,7 +3603,7 @@ pub fn split_large_function(
     }
     // Compute forbidden ranges: a split point at index `sp` is forbidden
     // if it falls strictly between a label reference and its definition.
-    let mut label_forbidden_ranges: Vec<(usize, usize, usize)> = Vec::new();
+    let mut label_forbidden_ranges: Vec<(usize, usize, i64, usize)> = Vec::new();
     let cloneable_suffix_labels: std::collections::BTreeMap<i64, usize> = label_positions
         .iter()
         .filter_map(|(label_id, &label_idx)| {
@@ -3561,11 +3615,21 @@ pub fn split_large_function(
             }
         })
         .collect();
+    let suffix_external_reads: std::collections::BTreeMap<i64, BTreeSet<String>> =
+        cloneable_suffix_labels
+            .iter()
+            .map(|(&label_id, &label_idx)| {
+                (
+                    label_id,
+                    split_suffix_external_reads(&func.ops[label_idx..]),
+                )
+            })
+            .collect();
     for (label_id, (earliest_ref, latest_ref)) in &label_refs {
         if let Some(&label_idx) = label_positions.get(label_id) {
             let range_start = (*earliest_ref).min(label_idx);
             let range_end = (*latest_ref).max(label_idx);
-            label_forbidden_ranges.push((range_start, range_end, label_idx));
+            label_forbidden_ranges.push((range_start, range_end, *label_id, label_idx));
         }
     }
 
@@ -3590,7 +3654,62 @@ pub fn split_large_function(
         }
     }
 
-    let is_forbidden = |sp: usize| -> bool {
+    let control_target = |op: &OpIR| -> Option<i64> {
+        matches!(op.kind.as_str(), "check_exception" | "jump" | "br_if")
+            .then_some(op.value)
+            .flatten()
+    };
+
+    let suffix_can_clone_into_range =
+        |label_id: i64, chunk_start: usize, chunk_end: usize| -> bool {
+            let Some(&label_idx) = cloneable_suffix_labels.get(&label_id) else {
+                return false;
+            };
+            if label_idx < chunk_end {
+                return false;
+            }
+            let Some(required) = suffix_external_reads.get(&label_id) else {
+                return false;
+            };
+            let available = split_available_names_for_suffix_clone(
+                &func.params,
+                &live_before,
+                all_ops,
+                chunk_start,
+                chunk_end,
+            );
+            required.iter().all(|name| available.contains(name))
+        };
+
+    let chunk_refs_label = |chunk_start: usize, chunk_end: usize, label_id: i64| -> bool {
+        all_ops[chunk_start..chunk_end]
+            .iter()
+            .any(|op| control_target(op) == Some(label_id))
+    };
+
+    let chunk_has_external_control_without_safe_clone =
+        |chunk_start: usize, chunk_end: usize| -> bool {
+            for op in &all_ops[chunk_start..chunk_end] {
+                let Some(target_id) = control_target(op) else {
+                    continue;
+                };
+                let Some(&label_idx) = label_positions.get(&target_id) else {
+                    return true;
+                };
+                if (chunk_start..chunk_end).contains(&label_idx) {
+                    continue;
+                }
+                if label_idx >= chunk_end
+                    && suffix_can_clone_into_range(target_id, chunk_start, chunk_end)
+                {
+                    continue;
+                }
+                return true;
+            }
+            false
+        };
+
+    let is_forbidden = |sp: usize, chunk_start: usize| -> bool {
         for &(start, end) in &structural_forbidden_ranges {
             // sp is the first index of the new chunk; splitting here means
             // indices [0..sp) go to one chunk and [sp..) go to the next.
@@ -3599,24 +3718,23 @@ pub fn split_large_function(
                 return true;
             }
         }
-        for &(start, end, label_idx) in &label_forbidden_ranges {
-            if start < sp && sp <= end
-                // Suffix exception/cleanup handlers can be cloned into the
-                // new chunk; only forbid ranges whose target label already
-                // lives before the split point or whose suffix is not safe
-                // to clone into a non-returning chunk.
-                && (label_idx < sp
-                    || !cloneable_suffix_labels
-                        .values()
-                        .any(|&clone_idx| clone_idx == label_idx))
-            {
-                return true;
+        for &(start, end, label_id, label_idx) in &label_forbidden_ranges {
+            if start < sp && sp <= end {
+                if label_idx < sp {
+                    return true;
+                }
+                if chunk_refs_label(chunk_start, sp, label_id)
+                    && !suffix_can_clone_into_range(label_id, chunk_start, sp)
+                {
+                    return true;
+                }
             }
         }
-        false
+        chunk_has_external_control_without_safe_clone(chunk_start, sp)
     };
 
-    let mut split_candidates: Vec<usize> = Vec::new();
+    let mut selected: Vec<usize> = Vec::new();
+    let mut last_split = 0usize;
     let mut depth: i32 = 0;
 
     for (idx, op) in func.ops.iter().enumerate() {
@@ -3626,8 +3744,14 @@ pub fn split_large_function(
         // increasing structured-control depth, so splitting at an arbitrary
         // op boundary can sever one logical statement across chunks.
         let is_stmt_boundary = op.kind == "line";
-        if depth == 0 && idx > 0 && is_stmt_boundary && !is_forbidden(idx) {
-            split_candidates.push(idx);
+        if depth == 0
+            && idx > 0
+            && is_stmt_boundary
+            && idx - last_split >= max_ops
+            && !is_forbidden(idx, last_split)
+        {
+            selected.push(idx);
+            last_split = idx;
         }
 
         match op.kind.as_str() {
@@ -3645,26 +3769,9 @@ pub fn split_large_function(
         }
     }
 
-    if split_candidates.is_empty() {
-        return Err(Box::new(func));
-    }
-
-    // ---------------------------------------------------------------
-    // 2. Select split points to keep chunks roughly <= max_ops.
-    // ---------------------------------------------------------------
-    let mut selected: Vec<usize> = Vec::new();
-    let mut last_split = 0usize;
-    for &sp in &split_candidates {
-        let chunk_len = sp - last_split;
-        if chunk_len >= max_ops {
-            selected.push(sp);
-            last_split = sp;
-        }
-    }
-
     // If no selected splits, the function is too deeply nested to split.
     if selected.is_empty() {
-        return Err(Box::new(func));
+        return Err(Box::new(original_for_split_failure));
     }
 
     // ---------------------------------------------------------------
@@ -3682,7 +3789,7 @@ pub fn split_large_function(
         if chunk_size > max_ops * 2 {
             // Allow up to 2x max_ops for the final chunk — beyond that,
             // return Err to fall back to single-module compilation.
-            return Err(Box::new(func));
+            return Err(Box::new(original_for_split_failure));
         }
     }
 
@@ -3690,10 +3797,6 @@ pub fn split_large_function(
         .name
         .replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
 
-    let original_for_split_failure = func.clone();
-    let all_ops = &func.ops;
-    let live_before = split_live_before_sets(all_ops);
-    let defined_before = split_defined_before_sets(all_ops);
     let func_returns_value = func.ops.iter().any(|op| op.kind == "ret");
     for (idx, op) in func.ops.iter().enumerate() {
         if matches!(op.kind.as_str(), "ret" | "ret_void") && idx + 1 != func.ops.len() {
@@ -3741,6 +3844,12 @@ pub fn split_large_function(
         let start = boundaries[i];
         let end = boundaries[i + 1];
         let mut chunk_ops: Vec<OpIR> = all_ops[start..end].to_vec();
+        if !drop_fact_markers.is_empty() {
+            chunk_ops.retain(|op| !is_drop_fact_marker_op(op));
+            let mut prefixed = drop_fact_markers.clone();
+            prefixed.extend(chunk_ops);
+            chunk_ops = prefixed;
+        }
         let live_in: BTreeSet<String> = live_before[start]
             .iter()
             .filter(|name| frame_slot_for.contains_key(*name))
@@ -3774,7 +3883,8 @@ pub fn split_large_function(
                     return None;
                 }
                 let &label_idx = cloneable_suffix_labels.get(&target_id)?;
-                (label_idx >= end).then_some(label_idx)
+                (label_idx >= end && suffix_can_clone_into_range(target_id, start, end))
+                    .then_some(label_idx)
             })
             .min();
         if let Some(suffix_start) = suffix_clone_start {
@@ -3802,16 +3912,11 @@ pub fn split_large_function(
             }
         }
 
-        // Strip check_exception ops that reference labels NOT in this chunk.
-        // These are dead code — the target label is in another chunk.
-        chunk_ops.retain(|op| {
-            if op.kind == "check_exception"
-                && let Some(target_id) = op.value
-            {
-                return chunk_labels.contains(&target_id);
-            }
-            true
-        });
+        if chunk_ops.iter().any(|op| {
+            control_target(op).is_some_and(|target_id| !chunk_labels.contains(&target_id))
+        }) {
+            return Err(Box::new(original_for_split_failure.clone()));
+        }
 
         let chunk_name = format!("__molt_chunk_{sanitized_name}_{i}");
         let (returns_value, returns_control_status) = if func_returns_value {
@@ -4467,10 +4572,9 @@ pub fn compute_intrinsic_manifest(
         for op in &func_ir.ops {
             if op.kind == "const_str"
                 && let Some(val) = op.s_value.as_deref()
+                && is_candidate_intrinsic_name(val, runtime_intrinsic_symbols)
             {
-                if is_candidate_intrinsic_name(val, runtime_intrinsic_symbols) {
-                    manifest_intrinsic_names.insert(val.to_owned());
-                }
+                manifest_intrinsic_names.insert(val.to_owned());
             }
         }
     }
@@ -5613,6 +5717,84 @@ mod tests {
     }
 
     #[test]
+    fn split_large_function_preserves_drop_authority_on_chunks_only() {
+        let func = FunctionIR {
+            name: "drop_inserted_large".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                make_op(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+                OpIR {
+                    kind: "line".to_string(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("a".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "dec_ref".to_string(),
+                    args: Some(vec!["a".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".to_string(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("b".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "dec_ref".to_string(),
+                    args: Some(vec!["b".to_string()]),
+                    ..OpIR::default()
+                },
+                make_op("ret_void"),
+            ],
+        };
+
+        let (stub, chunks) = split_large_function(func, 2).expect("expected split");
+
+        assert!(
+            !stub.ops.iter().any(is_drop_fact_marker_op),
+            "synthetic split stub creates its own frame values and must not inherit full-RC authority"
+        );
+        let chunks_with_dec_ref = chunks
+            .iter()
+            .filter(|chunk| chunk.ops.iter().any(|op| op.kind == "dec_ref"))
+            .count();
+        assert!(
+            chunks_with_dec_ref > 0,
+            "test must exercise extracted chunks containing TIR-inserted drops"
+        );
+        for chunk in &chunks {
+            assert_eq!(
+                chunk.ops.first().map(|op| op.kind.as_str()),
+                Some(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
+                "chunk {} must start with the full-RC authority marker",
+                chunk.name
+            );
+            assert_eq!(
+                chunk
+                    .ops
+                    .iter()
+                    .filter(|op| is_drop_fact_marker_op(op))
+                    .count(),
+                1,
+                "chunk {} must not duplicate transport markers",
+                chunk.name
+            );
+        }
+    }
+
+    #[test]
     fn split_large_function_threads_cross_chunk_builtin_type_tag() {
         let func = FunctionIR {
             name: "threading__molt_module_chunk_3".to_string(),
@@ -5944,6 +6126,89 @@ mod tests {
         assert!(
             observed_cloned_suffix_stop_return,
             "cloned terminal suffixes must tell the stub not to run later chunks"
+        );
+    }
+
+    #[test]
+    fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() {
+        let mut ops = vec![
+            OpIR {
+                kind: "line".to_string(),
+                value: Some(1),
+                ..OpIR::default()
+            },
+            make_const_int("early", 1),
+            OpIR {
+                kind: "check_exception".to_string(),
+                value: Some(90),
+                ..OpIR::default()
+            },
+        ];
+        for i in 0..5 {
+            ops.push(make_const_int(&format!("filler_{i}"), i));
+        }
+        ops.push(OpIR {
+            kind: "line".to_string(),
+            value: Some(2),
+            ..OpIR::default()
+        });
+        ops.push(make_const_int("cleanup_owned", 99));
+        ops.push(OpIR {
+            kind: "line".to_string(),
+            value: Some(3),
+            ..OpIR::default()
+        });
+        ops.push(OpIR {
+            kind: "label".to_string(),
+            value: Some(90),
+            ..OpIR::default()
+        });
+        ops.push(make_ref_op("dec_ref", "cleanup_owned"));
+        ops.push(make_op("ret_void"));
+
+        let func = FunctionIR {
+            name: "cleanup_suffix".to_string(),
+            params: vec![],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops,
+        };
+
+        let (stub, chunks) = split_large_function(func, 8)
+            .expect("later safe split point should carry cleanup suffix inputs");
+
+        assert_eq!(stub.name, "cleanup_suffix");
+        assert_eq!(
+            chunks.len(),
+            2,
+            "the first eligible line boundary is unsafe, so splitting must wait for the cleanup input definition"
+        );
+        for chunk in &chunks {
+            verify_split_function_def_use(chunk).expect("chunk def-use must verify");
+        }
+        verify_split_function_def_use(&stub).expect("stub def-use must verify");
+
+        let first = &chunks[0];
+        let cleanup_def = first
+            .ops
+            .iter()
+            .position(|op| op.out.as_deref() == Some("cleanup_owned"))
+            .expect("safe chunk must include the cleanup-owned definition");
+        let cleanup_drop = first
+            .ops
+            .iter()
+            .position(|op| {
+                op.kind == "dec_ref"
+                    && op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args.iter().any(|arg| arg == "cleanup_owned"))
+            })
+            .expect("safe chunk must clone the cleanup drop");
+        assert!(
+            cleanup_def < cleanup_drop,
+            "cloned cleanup suffix must not read a value before the extracted chunk defines it"
         );
     }
 

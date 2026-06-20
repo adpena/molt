@@ -109,7 +109,9 @@ def _audit_loaded_numpy_modules(
                 }
             )
             continue
-        under_required_root = None if root is None else _path_is_relative_to(origin, root)
+        under_required_root = (
+            None if root is None else _path_is_relative_to(origin, root)
+        )
         entry: dict[str, Any] = {
             "name": name,
             "origin": str(origin),
@@ -127,8 +129,7 @@ def _audit_loaded_numpy_modules(
 
     if violations:
         raise RuntimeError(
-            "loaded NumPy module origin custody violations:\n"
-            + "\n".join(violations)
+            "loaded NumPy module origin custody violations:\n" + "\n".join(violations)
         )
     return {
         "required_root": str(root) if root is not None else None,
@@ -175,7 +176,10 @@ def _import_numpy(
             raise RuntimeError(
                 f"imported numpy module {module_file} is outside required root {root}"
             )
-    if require_version is not None and getattr(np, "__version__", None) != require_version:
+    if (
+        require_version is not None
+        and getattr(np, "__version__", None) != require_version
+    ):
         raise RuntimeError(
             f"imported numpy version {getattr(np, '__version__', None)!r} "
             f"!= required {require_version!r}"
@@ -256,7 +260,9 @@ def _selected_workloads(name: str) -> list[str]:
     if name == "all":
         return sorted(WORKLOADS)
     if name not in WORKLOADS:
-        raise ValueError(f"unknown workload {name!r}; expected one of {sorted(WORKLOADS)}")
+        raise ValueError(
+            f"unknown workload {name!r}; expected one of {sorted(WORKLOADS)}"
+        )
     return [name]
 
 
@@ -292,7 +298,11 @@ def main(argv: list[str] | None = None) -> int:
         source_audit = _audit_source_tree(args.suite_root)
         if args.workload == "none":
             payload = {"status": "ok", "source_tree": source_audit}
-            print(json.dumps(payload, indent=2, sort_keys=True) if args.json else "source tree ok")
+            print(
+                json.dumps(payload, indent=2, sort_keys=True)
+                if args.json
+                else "source tree ok"
+            )
             return 0
 
     np = _import_numpy(
@@ -325,7 +335,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         for name, entry in results.items():
-            print(f"{name}: {entry['elapsed_s']:.6f}s ({entry['iterations']} iterations)")
+            print(
+                f"{name}: {entry['elapsed_s']:.6f}s ({entry['iterations']} iterations)"
+            )
     return 0
 
 

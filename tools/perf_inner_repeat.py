@@ -55,7 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "tools"))
 
-import harness_memory_guard
+import harness_memory_guard  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,9 @@ def _entry_is_repeat_safe(func: ast.FunctionDef) -> tuple[bool, str | None]:
     return True, None
 
 
-def analyze(source: str, *, inner_loops: int, entry: str = _DEFAULT_ENTRY) -> InnerRepeatPlan:
+def analyze(
+    source: str, *, inner_loops: int, entry: str = _DEFAULT_ENTRY
+) -> InnerRepeatPlan:
     """Analyze ``source`` and, if eligible, return a looped variant.
 
     ``inner_loops`` (>=2) is the wrap factor N. ``entry`` is the function the
@@ -157,9 +159,7 @@ def analyze(source: str, *, inner_loops: int, entry: str = _DEFAULT_ENTRY) -> In
 
     # Locate the single top-level entry function and the single __main__ guard.
     entry_funcs = [
-        n
-        for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == entry
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == entry
     ]
     guards = [n for n in tree.body if _is_main_guard(n)]
 
@@ -238,10 +238,7 @@ __all__ = ["InnerRepeatPlan", "analyze"]
 
 def _self_test() -> int:
     """Tiny self-check: the canonical shape wraps; the unsafe shapes refuse."""
-    ok_src = (
-        "def main():\n    print(1)\n"
-        '\nif __name__ == "__main__":\n    main()\n'
-    )
+    ok_src = 'def main():\n    print(1)\n\nif __name__ == "__main__":\n    main()\n'
     plan = analyze(ok_src, inner_loops=7)
     assert plan.ok and plan.inner_loops == 7 and "for _ in range(7):" in plan.source
     # Semantics-preserving: looped source prints the one-shot output N times.
@@ -272,10 +269,11 @@ def _self_test() -> int:
     assert looped == one * 7, (looped, one)
     # Refusals (fail-closed).
     for bad, needle in (
-        ("g=0\ndef main():\n global g\n g+=1\n"
-         'if __name__ == "__main__":\n main()\n', "global"),
-        ("def main(x):\n pass\n"
-         'if __name__ == "__main__":\n main()\n', "argument"),
+        (
+            'g=0\ndef main():\n global g\n g+=1\nif __name__ == "__main__":\n main()\n',
+            "global",
+        ),
+        ('def main(x):\n pass\nif __name__ == "__main__":\n main()\n', "argument"),
         ("def main():\n pass\nmain()\n", "guard"),
     ):
         r = analyze(bad, inner_loops=5)

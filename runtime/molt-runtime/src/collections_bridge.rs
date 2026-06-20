@@ -401,3 +401,76 @@ pub extern "C" fn __molt_collections_call_callable0(call_bits: u64) -> u64 {
         unsafe { crate::call::dispatch::call_callable0(_py, call_bits) }
     })
 }
+
+#[cfg(all(test, feature = "stdlib_collections"))]
+mod tests {
+    use crate::object::builders::alloc_function_obj;
+    use crate::{TYPE_ID_FUNCTION, dec_ref_bits, obj_from_bits, object_type_id};
+    use molt_obj_model::MoltObject;
+    use std::sync::Once;
+    use std::sync::atomic::Ordering;
+
+    static INIT: Once = Once::new();
+
+    fn init_runtime() {
+        INIT.call_once(|| {
+            assert_ne!(crate::lifecycle::init(), 0);
+        });
+        let _ = crate::molt_exception_clear();
+    }
+
+    extern "C" fn default_factory_marker() -> i64 {
+        MoltObject::from_int(42).bits() as i64
+    }
+
+    #[test]
+    fn defaultdict_handle_owns_factory_after_caller_releases_local() {
+        init_runtime();
+
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr =
+                alloc_function_obj(_py, default_factory_marker as *const () as usize as u64, 0);
+            assert!(!func_ptr.is_null());
+            assert_eq!(unsafe { object_type_id(func_ptr) }, TYPE_ID_FUNCTION);
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+
+            let handle_bits =
+                crate::molt_runtime_collections::collections_ext::molt_defaultdict_new(func_bits);
+            assert!(!obj_from_bits(handle_bits).is_none());
+
+            dec_ref_bits(_py, func_bits);
+            assert!(
+                obj_from_bits(func_bits).as_ptr().is_some(),
+                "defaultdict handle must keep the factory function live"
+            );
+            let rc_after_caller_drop = unsafe {
+                (*crate::object::header_from_obj_ptr(func_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+            assert_eq!(
+                rc_after_caller_drop, 1,
+                "the handle must be the remaining factory owner"
+            );
+
+            let key_bits = MoltObject::from_int(7).bits();
+            let produced =
+                crate::molt_runtime_collections::collections_ext::molt_defaultdict_missing(
+                    handle_bits,
+                    key_bits,
+                );
+            assert_eq!(obj_from_bits(produced).as_int(), Some(42));
+
+            let returned_factory =
+                crate::molt_runtime_collections::collections_ext::molt_defaultdict_factory(
+                    handle_bits,
+                );
+            assert_eq!(returned_factory, func_bits);
+            dec_ref_bits(_py, returned_factory);
+
+            let _ = crate::molt_runtime_collections::collections_ext::molt_defaultdict_drop(
+                handle_bits,
+            );
+        });
+    }
+}

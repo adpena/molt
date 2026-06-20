@@ -27,6 +27,7 @@ stdlib_full = [
     "stdlib_logging_ext", "stdlib_stringprep", "stdlib_xml", "stdlib_ipaddress", "stdlib_zoneinfo",
     "builtin_fcntl",
     "sqlite",
+    "molt_gpu_primitives",
 ]
 stdlib_unicode_names = ["dep:unicode_names2", "molt-runtime-text?/stdlib_unicode_names"]
 

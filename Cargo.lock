@@ -3019,6 +3019,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tikv-jemallocator",
  "wasm-encoder 0.245.1",
  "wasmparser 0.245.1",
@@ -3243,6 +3244,8 @@ dependencies = [
  "libc",
  "molt-lang-obj-model",
  "molt-runtime-core",
+ "num-bigint",
+ "num-traits",
  "rustls",
  "webpki-roots 1.0.6",
 ]

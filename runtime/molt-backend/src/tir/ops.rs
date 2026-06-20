@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use super::values::ValueId;
 
 /// Dialect namespace for operations (MLIR-style).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 pub enum Dialect {
     /// Core Molt operations (arithmetic, memory, call, etc.).
     Molt,
@@ -18,7 +18,7 @@ pub enum Dialect {
 }
 
 /// Operation code within a dialect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 pub enum OpCode {
     // Arithmetic
     Add,
@@ -300,7 +300,7 @@ pub enum OpCode {
 }
 
 /// Attribute value for operation metadata.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum AttrValue {
     Int(i64),
     Float(f64),
@@ -313,7 +313,7 @@ pub enum AttrValue {
 pub type AttrDict = HashMap<String, AttrValue>;
 
 /// A single operation in the TIR.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TirOp {
     /// Dialect this operation belongs to.
     pub dialect: Dialect,

@@ -609,6 +609,70 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_new(cls_bits: u64, val_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let cls_obj = obj_from_bits(cls_bits);
+        let Some(cls_ptr) = cls_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "float.__new__ expects type");
+        };
+        unsafe {
+            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+                return raise_exception::<_>(_py, "TypeError", "float.__new__ expects type");
+            }
+        }
+        let builtins = builtin_classes(_py);
+        if cls_bits != builtins.float && !issubclass_bits(cls_bits, builtins.float) {
+            let type_label = class_name_for_error(cls_bits);
+            let msg = format!("float.__new__ expects type, got {}", type_label);
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        let float_bits = molt_float_from_obj(val_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        if cls_bits == builtins.float {
+            return float_bits;
+        }
+        let inst_bits = unsafe { alloc_instance_for_class(_py, cls_ptr) };
+        let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
+            if obj_from_bits(float_bits).as_ptr().is_some() {
+                dec_ref_bits(_py, float_bits);
+            }
+            return MoltObject::none().bits();
+        };
+        let Some(slot_name_bits) = attr_name_bits_from_bytes(_py, b"__molt_float_value__") else {
+            if obj_from_bits(float_bits).as_ptr().is_some() {
+                dec_ref_bits(_py, float_bits);
+            }
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "float subclass layout missing value slot",
+            );
+        };
+        let Some(offset) = (unsafe { class_field_offset(_py, cls_ptr, slot_name_bits) }) else {
+            dec_ref_bits(_py, slot_name_bits);
+            if obj_from_bits(float_bits).as_ptr().is_some() {
+                dec_ref_bits(_py, float_bits);
+            }
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "float subclass layout missing value slot",
+            );
+        };
+        dec_ref_bits(_py, slot_name_bits);
+        unsafe {
+            let _ = object_field_init_ptr_raw(_py, inst_ptr, offset, float_bits);
+        }
+        if obj_from_bits(float_bits).as_ptr().is_some() {
+            dec_ref_bits(_py, float_bits);
+        }
+        inst_bits
+    })
+}
+
 fn parse_float_fromhex_text(text: &str) -> Result<f64, ()> {
     let mut src = text.trim();
     if src.is_empty() {
@@ -704,10 +768,19 @@ fn float_hex_string(value: f64) -> String {
     format!("{sign}0x{lead:x}.{frac_bits:013x}p{exponent:+}")
 }
 
-fn float_value_or_descriptor_error(_py: &PyToken<'_>, self_bits: u64, method: &str) -> Option<f64> {
+fn float_value_bits_or_descriptor_error(
+    _py: &PyToken<'_>,
+    self_bits: u64,
+    method: &str,
+) -> Option<u64> {
     let obj = obj_from_bits(self_bits);
-    if let Some(value) = as_float_extended(obj) {
-        return Some(value);
+    if as_float_extended(obj).is_some() {
+        return Some(self_bits);
+    }
+    if let Some(bits) = float_subclass_value_bits_raw(self_bits)
+        && as_float_extended(obj_from_bits(bits)).is_some()
+    {
+        return Some(bits);
     }
     let type_label = class_name_for_error(type_of_bits(_py, self_bits));
     let msg = format!(
@@ -715,6 +788,24 @@ fn float_value_or_descriptor_error(_py: &PyToken<'_>, self_bits: u64, method: &s
     );
     let _ = raise_exception::<u64>(_py, "TypeError", &msg);
     None
+}
+
+fn float_value_or_descriptor_error(_py: &PyToken<'_>, self_bits: u64, method: &str) -> Option<f64> {
+    let bits = float_value_bits_or_descriptor_error(_py, self_bits, method)?;
+    as_float_extended(obj_from_bits(bits))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_float(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(bits) = float_value_bits_or_descriptor_error(_py, self_bits, "__float__") else {
+            return MoltObject::none().bits();
+        };
+        if obj_from_bits(bits).as_ptr().is_some() {
+            inc_ref_bits(_py, bits);
+        }
+        bits
+    })
 }
 
 #[unsafe(no_mangle)]

@@ -54,6 +54,10 @@ Introduce a `RuntimeState` struct that owns all runtime-global state:
   teardown, including fallback `configparser` parser handles and fallback
   `csv` reader/writer handles, dialect registry, field-size limit, and
   `random.Random` generator handles.
+- Runtime extension registries, including `molt-runtime-collections`
+  defaultdict factory-handle state. These registries must retain heap values
+  they store, return independent owners when exposing them back to Python, and
+  release all retained handles during runtime-state clear/drop.
 - C-API extension module metadata and per-module state registries.
 - Call binding provenance state for heap-backed `CallArgs` builders.
 

@@ -400,11 +400,11 @@ pub use crate::builtins::concurrent::*;
 #[cfg(not(feature = "stdlib_serial"))]
 pub use crate::builtins::configparser::*;
 pub(crate) use crate::builtins::containers::{
-    dict_len, dict_method_bits, dict_order, dict_order_ptr, dict_table, dict_table_ptr,
-    dict_view_as_set_bits, dict_view_dict_bits, dict_view_entry, dict_view_len,
-    frozenset_method_bits, is_set_inplace_rhs_type, is_set_like_type, is_set_view_type, list_len,
-    list_method_bits, set_len, set_method_bits, set_order, set_order_ptr, set_table, set_table_ptr,
-    tuple_len,
+    dict_hashes, dict_hashes_ptr, dict_len, dict_method_bits, dict_order, dict_order_ptr,
+    dict_table, dict_table_ptr, dict_view_as_set_bits, dict_view_dict_bits, dict_view_entry,
+    dict_view_len, frozenset_method_bits, is_set_inplace_rhs_type, is_set_like_type,
+    is_set_view_type, list_len, list_method_bits, set_hashes, set_hashes_ptr, set_len,
+    set_method_bits, set_order, set_order_ptr, set_table, set_table_ptr, tuple_len,
 };
 pub(crate) use crate::builtins::containers_alloc::{DictSeqError, dict_pair_from_item};
 pub use crate::builtins::containers_alloc::{
@@ -449,8 +449,9 @@ pub(crate) use crate::builtins::exceptions::{
     exception_store_args_and_message, exception_suppress_bits, exception_trace_bits,
     exception_type_bits, exception_type_bits_from_name, exception_value_bits,
     exceptions_clear_runtime_state, format_exception, format_exception_message,
-    format_exception_with_traceback, frame_stack_pop, frame_stack_push, frame_stack_push_owned,
-    frame_stack_set_line, generator_exception_stack_drop, generator_exception_stack_store,
+    format_exception_with_traceback, frame_stack_active_globals_bits, frame_stack_pop,
+    frame_stack_push_function, frame_stack_push_owned, frame_stack_set_line,
+    generator_exception_stack_drop, generator_exception_stack_store,
     generator_exception_stack_take, generator_raise_active, global_last_exception_bits_noinc,
     handle_system_exit, molt_exception_active, molt_exception_clear, molt_exception_kind,
     molt_exception_last, molt_exception_pending, molt_exception_set_last, molt_getframe,
@@ -514,9 +515,10 @@ pub(crate) use crate::builtins::numbers::{
     ComplexParts, bigint_bits, bigint_from_f64_trunc, bigint_ptr_from_bits, bigint_ref,
     bigint_to_inline, compare_numbers, complex_bits, complex_from_obj_lossy,
     complex_from_obj_strict, complex_ptr_from_bits, complex_ref, float_pair_from_obj,
-    index_bigint_from_obj, index_i64_from_obj, index_i64_with_overflow, inline_int_from_i128,
-    int_bits_from_bigint, int_bits_from_i64, int_bits_from_i128, int_subclass_value_bits_raw,
-    round_float_ndigits, round_half_even, split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
+    float_subclass_value_bits_raw, index_bigint_from_obj, index_i64_from_obj,
+    index_i64_with_overflow, inline_int_from_i128, int_bits_from_bigint, int_bits_from_i64,
+    int_bits_from_i128, int_subclass_value_bits_raw, round_float_ndigits, round_half_even,
+    split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
 };
 pub use crate::builtins::operator::*;
 #[cfg(not(feature = "stdlib_path"))]
@@ -560,8 +562,9 @@ pub use crate::builtins::tempfile_mod::*;
 #[cfg(feature = "stdlib_tk")]
 pub use crate::builtins::tkinter_core::*;
 pub(crate) use crate::builtins::type_ops::{
-    class_bases_vec, class_mro_ref, class_mro_vec, isinstance_bits, isinstance_runtime,
-    issubclass_bits, issubclass_runtime, type_of_bits,
+    ClassInfoProtocol, RuntimeClassInfo, class_bases_vec, class_mro_ref, class_mro_vec,
+    collect_runtime_classinfo, isinstance_bits, isinstance_runtime, issubclass_bits,
+    issubclass_runtime, runtime_classinfo_protocol_match, type_of_bits,
 };
 pub use crate::builtins::types::*;
 #[cfg(not(feature = "stdlib_text"))]
@@ -586,7 +589,7 @@ pub(crate) use crate::call::dispatch::{
     call_callable0, call_callable1, call_callable2, call_callable3, callable_arity,
 };
 pub(crate) use crate::call::function::{
-    call_function_obj_vec, call_function_obj0, call_function_obj1, call_function_obj2,
+    call_function_obj_bound_vec, call_function_obj_vec, call_function_obj1, call_function_obj2,
     call_function_obj3, refresh_function_task_trampoline_cache,
 };
 pub(crate) use crate::call::lookup_call_attr;
@@ -609,17 +612,20 @@ pub(crate) use crate::object::layout::{
     class_bump_layout_version, class_dict_bits, class_layout_version_bits, class_mro_bits,
     class_name_bits, class_qualname_bits, class_set_annotate_bits, class_set_annotations_bits,
     class_set_bases_bits, class_set_layout_version_bits, class_set_mro_bits, class_set_name_bits,
-    class_set_qualname_bits, classmethod_func_bits, code_argcount, code_filename_bits,
-    code_firstlineno, code_kwonlyargcount, code_linetable_bits, code_name_bits,
-    code_posonlyargcount, code_varnames_bits, ensure_function_code_bits, enumerate_cached_inner,
-    enumerate_cached_outer, enumerate_index_bits, enumerate_set_cached_inner,
-    enumerate_set_cached_outer, enumerate_set_index_bits, enumerate_target_bits, filter_func_bits,
-    filter_iter_bits, function_annotate_bits, function_annotations_bits, function_arity,
-    function_bump_defaults_version, function_closure_bits, function_code_bits,
-    function_defaults_version, function_dict_bits, function_fn_ptr, function_globals_bits,
-    function_name_bits, function_set_annotate_bits, function_set_annotations_bits,
-    function_set_closure_bits, function_set_code_bits, function_set_dict_bits,
-    function_set_globals_bits, function_set_trampoline_ptr, function_trampoline_ptr,
+    class_set_qualname_bits, classmethod_func_bits, code_arg_names_bits, code_argcount,
+    code_callable_arity, code_callable_fn_ptr, code_callable_trampoline_ptr, code_filename_bits,
+    code_firstlineno, code_kwonly_names_bits, code_kwonlyargcount, code_linetable_bits,
+    code_name_bits, code_names_bits, code_posonlyargcount, code_signature_posonly_bits,
+    code_vararg_bits, code_varkw_bits, code_varnames_bits, ensure_function_code_bits,
+    enumerate_cached_inner, enumerate_cached_outer, enumerate_index_bits,
+    enumerate_set_cached_inner, enumerate_set_cached_outer, enumerate_set_index_bits,
+    enumerate_target_bits, filter_func_bits, filter_iter_bits, function_annotate_bits,
+    function_annotations_bits, function_arity, function_bump_defaults_version,
+    function_closure_bits, function_code_bits, function_defaults_version, function_dict_bits,
+    function_fn_ptr, function_globals_bits, function_globals_override_enabled, function_name_bits,
+    function_set_annotate_bits, function_set_annotations_bits, function_set_closure_bits,
+    function_set_code_bits, function_set_dict_bits, function_set_globals_bits,
+    function_set_globals_override_enabled, function_set_trampoline_ptr, function_trampoline_ptr,
     generic_alias_args_bits, generic_alias_origin_bits, iter_cached_tuple, iter_index,
     iter_set_cached_tuple, iter_set_index, iter_target_bits, map_cached_tuple, map_func_bits,
     map_iters_ptr, map_set_cached_tuple, module_dict_bits, module_name_bits, property_del_bits,
@@ -644,12 +650,12 @@ pub(crate) use crate::object::ops::{
     DecodeTextError, HashContext, class_break_cycles, decode_bytes_text, decode_string_list,
     decode_value_list, dict_clear_in_place, dict_clear_method, dict_copy_method, dict_del_in_place,
     dict_find_entry, dict_find_entry_kv_in_place, dict_fromkeys_method, dict_get_in_place,
-    dict_get_method, dict_items_method, dict_keys_method, dict_pop_method, dict_popitem_method,
-    dict_set_in_place, dict_setdefault_method, dict_table_capacity, dict_update_method,
-    dict_update_set_via_store, dict_values_method, format_obj, format_obj_str,
-    frozenset_from_iter_bits, hash_slice_bits, is_truthy, list_from_iter_bits, obj_eq,
-    set_add_in_place, set_del_in_place, set_find_entry, set_replace_entries, set_table_capacity,
-    tuple_from_isize_slice, tuple_from_iter_bits, type_name,
+    dict_get_method, dict_items_method, dict_keys_method, dict_popitem_method, dict_set_in_place,
+    dict_setdefault_method, dict_table_capacity, dict_update_method, dict_update_set_via_store,
+    dict_values_method, format_obj, format_obj_str, frozenset_from_iter_bits, hash_slice_bits,
+    is_truthy, list_from_iter_bits, obj_eq, set_add_in_place, set_del_in_place, set_find_entry,
+    set_replace_entries, set_table_capacity, tuple_from_isize_slice, tuple_from_iter_bits,
+    type_name,
 };
 pub use crate::object::ops_arith::*;
 pub use crate::object::ops_builtins::*;
@@ -686,17 +692,18 @@ pub use crate::object::weakref::{
 };
 pub(crate) use crate::object::{
     Buffer2D, DataclassDesc, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING,
-    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED,
-    HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED, HEADER_FLAG_SKIP_CLASS_DECREF,
-    HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE, HEADER_FLAG_TASK_QUEUED,
-    HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING, HEADER_FLAG_TRACEBACK_SUPPRESSED,
-    MemoryView, MemoryViewFormat, MemoryViewFormatKind, MoltFileHandle, MoltFileState, PtrSlot,
-    alloc_object, alloc_object_zeroed, bits_from_ptr, buffer2d_ptr, bytes_data, bytes_len,
-    dataclass_desc_ptr, dataclass_dict_bits, dataclass_fields_mut, dataclass_fields_ref,
-    dataclass_set_dict_bits, dec_ref_bits, file_handle_ptr, header_from_obj_ptr, inc_ref_bits,
-    init_atomic_bits, instance_dict_bits, instance_set_dict_bits, intarray_len, intarray_slice,
-    maybe_ptr_from_bits, memoryview_format_bits, memoryview_itemsize, memoryview_len,
-    memoryview_ndim, memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
+    HEADER_FLAG_FUNC_REQUIRES_BINDER, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
+    HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, HEADER_FLAG_GEN_RUNNING, HEADER_FLAG_GEN_STARTED,
+    HEADER_FLAG_SKIP_CLASS_DECREF, HEADER_FLAG_SPAWN_RETAIN, HEADER_FLAG_TASK_DONE,
+    HEADER_FLAG_TASK_QUEUED, HEADER_FLAG_TASK_RUNNING, HEADER_FLAG_TASK_WAKE_PENDING,
+    HEADER_FLAG_TRACEBACK_SUPPRESSED, MemoryView, MemoryViewFormat, MemoryViewFormatKind,
+    MoltFileHandle, MoltFileState, PtrSlot, alloc_object, alloc_object_zeroed, bits_from_ptr,
+    buffer2d_ptr, bytes_data, bytes_len, dataclass_desc_ptr, dataclass_dict_bits,
+    dataclass_fields_mut, dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits,
+    file_handle_ptr, header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits,
+    instance_set_dict_bits, intarray_len, intarray_slice, maybe_ptr_from_bits,
+    memoryview_format_bits, memoryview_itemsize, memoryview_len, memoryview_ndim,
+    memoryview_offset, memoryview_owner_bits, memoryview_ptr, memoryview_readonly,
     memoryview_shape, memoryview_stride, memoryview_strides, obj_from_bits, object_class_bits,
     object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size, object_set_class_bits,
     object_type_id, pending_bits_i64, ptr_from_bits, string_bytes, string_len,

@@ -11,7 +11,8 @@
 ## Progress Summary (Generated)
 - Total audited modules: `916`
 - `intrinsic-backed`: `41`
-- `intrinsic-partial`: `875`
+- `intrinsic-partial`: `874`
+- `policy-gate`: `1`
 - `probe-only`: `0`
 - `python-only`: `0`
 
@@ -823,7 +824,6 @@
 - `tinygrad`
 - `tinygrad.ddtree`
 - `tinygrad.device`
-- `tinygrad.dflash`
 - `tinygrad.dtypes`
 - `tinygrad.eagle`
 - `tinygrad.examples`
@@ -980,20 +980,23 @@
 - `zoneinfo._tzpath`
 - `zoneinfo._zoneinfo`
 
+### Fail-closed policy-gate modules
+- `tinygrad.dflash`
+
 ### Probe-only modules (thin wrappers + policy gate only)
 
 ### Python-only modules (intrinsic missing)
 
 ## Core Lane Gate
 - Required lane: `tests/differential/basic/CORE_TESTS.txt` (import closure).
-- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`) with zero `probe-only` and zero `python-only` modules.
+- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`) or an explicitly allowlisted fail-closed `policy-gate`, with zero `probe-only` and zero `python-only` modules.
 - Enforced by: `python3 tools/check_core_lane_lowering.py`.
 
 ## Bootstrap Gate
 - Strict roots: `builtins`, `sys`, `types`, `importlib`, `importlib.machinery`, `importlib.util`
-- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`).
+- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`); fail-closed `policy-gate` modules are not intrinsic implementations.
 - Required modules: `__future__`, `_abc`, `_collections_abc`, `_weakrefset`, `abc`, `collections.abc`, `copy`, `copyreg`, `dataclasses`, `keyword`, `linecache`, `re`, `reprlib`, `types`, `typing`, `warnings`, `weakref`
-- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`).
+- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`); fail-closed `policy-gate` modules are not bootstrap support.
 
 ## Critical Strict-Import Gate
 - Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.

@@ -168,6 +168,26 @@ pub extern "C" fn molt_itertools_class_set_iter_next(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_class_set_new(class_bits: u64, new_fn_bits: u64) {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+            return;
+        };
+        let dict_bits = unsafe { class_dict_bits(class_ptr) };
+        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+        {
+            let new_name = intern_static_name(
+                _py,
+                &crate::runtime_state(_py).interned.new_name,
+                b"__new__",
+            );
+            unsafe { dict_set_in_place(_py, dict_ptr, new_name, new_fn_bits) };
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = alloc_function_obj(_py, fn_ptr, arity);
@@ -175,6 +195,45 @@ pub extern "C" fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64 
             return MoltObject::none().bits();
         }
         unsafe {
+            let builtins = builtin_classes(_py);
+            let old_bits = object_class_bits(ptr);
+            if old_bits != builtins.builtin_function_or_method {
+                if old_bits != 0 {
+                    dec_ref_bits(_py, old_bits);
+                }
+                object_set_class_bits(_py, ptr, builtins.builtin_function_or_method);
+                inc_ref_bits(_py, builtins.builtin_function_or_method);
+            }
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_alloc_function_with_defaults(
+    fn_ptr: u64,
+    arity: u64,
+    defaults_ptr: *const u64,
+    defaults_len: usize,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            let defaults = std::slice::from_raw_parts(defaults_ptr, defaults_len);
+            let defaults_tuple_ptr = alloc_tuple(_py, defaults);
+            if !defaults_tuple_ptr.is_null() {
+                let defaults_name = intern_static_name(
+                    _py,
+                    &crate::runtime_state(_py).interned.defaults_name,
+                    b"__defaults__",
+                );
+                let defaults_bits = MoltObject::from_ptr(defaults_tuple_ptr).bits();
+                function_set_attr_bits(_py, ptr, defaults_name, defaults_bits);
+            }
             let builtins = builtin_classes(_py);
             let old_bits = object_class_bits(ptr);
             if old_bits != builtins.builtin_function_or_method {

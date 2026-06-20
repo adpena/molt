@@ -12,6 +12,7 @@ use sha1::Sha1;
 use sha2::Sha256;
 
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_capability_decision, audit_emit};
+use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::builtins::io::{
     path_basename_text, path_dirname_text, path_join_text, path_normpath_text,
 };
@@ -5471,10 +5472,25 @@ fn importlib_dict_get_string_key_bits(
 }
 
 fn importlib_dict_del_string_key(_py: &PyToken<'_>, dict_ptr: *mut u8, key_bits: u64) {
+    let saved_exc_bits = if exception_pending(_py) {
+        let bits = molt_exception_last_pending();
+        clear_exception(_py);
+        Some(bits)
+    } else {
+        None
+    };
     unsafe {
         let _ = dict_del_in_place(_py, dict_ptr, key_bits);
     }
-    if exception_pending(_py) {
+    if let Some(bits) = saved_exc_bits {
+        if exception_pending(_py) {
+            clear_exception(_py);
+        }
+        if !obj_from_bits(bits).is_none() {
+            let _ = crate::molt_exception_set_last(bits);
+        }
+        dec_ref_bits(_py, bits);
+    } else if exception_pending(_py) {
         clear_exception(_py);
     }
 }
@@ -6008,7 +6024,7 @@ fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> Option<(String, Stri
     if !exception_pending(_py) {
         return None;
     }
-    let exc_bits = molt_exception_last();
+    let exc_bits = molt_exception_last_pending();
     let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) else {
         if !obj_from_bits(exc_bits).is_none() {
             dec_ref_bits(_py, exc_bits);
@@ -6029,6 +6045,27 @@ fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> Option<(String, Stri
     Some((kind, message))
 }
 
+fn missing_module_name_from_message(message: &str) -> Option<&str> {
+    for (prefix, quote) in [("No module named '", '\''), ("No module named \"", '"')] {
+        let Some(rest) = message.strip_prefix(prefix) else {
+            continue;
+        };
+        let end = rest.find(quote)?;
+        return Some(&rest[..end]);
+    }
+    message
+        .strip_prefix("No module named ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .filter(|name| !name.is_empty())
+}
+
+fn missing_module_matches_import(missing: &str, resolved: &str) -> bool {
+    missing == resolved
+        || resolved
+            .strip_prefix(missing)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
 fn importlib_rethrow_pending_exception(_py: &PyToken<'_>) {
     let Some((kind, message)) = pending_exception_kind_and_message(_py) else {
         return;
@@ -6037,15 +6074,14 @@ fn importlib_rethrow_pending_exception(_py: &PyToken<'_>) {
     let _ = raise_exception::<u64>(_py, &kind, &message);
 }
 
-fn importlib_exception_should_fallback(_py: &PyToken<'_>) -> bool {
+fn importlib_exception_should_fallback(_py: &PyToken<'_>, resolved: &str) -> bool {
     let Some((kind, message)) = pending_exception_kind_and_message(_py) else {
         return false;
     };
     if kind == "ImportError" || kind == "ModuleNotFoundError" {
-        let is_missing_module = message.starts_with("No module named ")
-            || message.contains("No module named '")
-            || message.contains("No module named \"");
-        if is_missing_module {
+        if missing_module_name_from_message(&message)
+            .is_some_and(|missing| missing_module_matches_import(missing, resolved))
+        {
             clear_exception(_py);
             return true;
         }
@@ -6860,162 +6896,315 @@ fn importlib_import_via_spec_with_support(
         return Err(err);
     }
 
-    let module_from_spec_bits = importlib_required_callable(
+    let preseed_modules =
+        importlib_spec_transaction_should_preseed(_py, spec_bits, machinery_bits)?;
+    let out_bits = importlib_spec_execution_transaction(
         _py,
-        util_bits,
-        runtime_static_name_slot(_py, b"module_from_spec"),
-        b"module_from_spec",
-        "importlib.util",
+        resolved,
+        resolved_bits,
+        spec_bits,
+        modules_ptr,
+        ImportlibSpecExecutionOptions {
+            reuse_existing: false,
+            preseed_new_module: preseed_modules,
+            allow_load_module_fallback: true,
+        },
     )?;
-    let mut module_bits = unsafe { call_callable1(_py, module_from_spec_bits, spec_bits) };
-    dec_ref_bits(_py, module_from_spec_bits);
-    if exception_pending(_py) {
-        if !obj_from_bits(spec_bits).is_none() {
-            dec_ref_bits(_py, spec_bits);
+    if !obj_from_bits(spec_bits).is_none() {
+        dec_ref_bits(_py, spec_bits);
+    }
+    Ok(out_bits)
+}
+
+#[derive(Clone, Copy)]
+struct ImportlibSpecExecutionOptions {
+    reuse_existing: bool,
+    preseed_new_module: bool,
+    allow_load_module_fallback: bool,
+}
+
+fn importlib_spec_transaction_should_preseed(
+    _py: &PyToken<'_>,
+    spec_bits: u64,
+    machinery_bits: u64,
+) -> Result<bool, u64> {
+    let loader_name = intern_runtime_static_name(_py, b"loader");
+    let Some(loader_bits) = getattr_optional_bits(_py, spec_bits, loader_name)? else {
+        return Ok(true);
+    };
+    let out = if obj_from_bits(loader_bits).is_none() {
+        true
+    } else {
+        !importlib_loader_is_molt_loader(_py, loader_bits, machinery_bits)?
+    };
+    if !obj_from_bits(loader_bits).is_none() {
+        dec_ref_bits(_py, loader_bits);
+    }
+    Ok(out)
+}
+
+fn importlib_spec_execution_cleanup(
+    _py: &PyToken<'_>,
+    modules_ptr: *mut u8,
+    name_bits: u64,
+    inserted_new_module: bool,
+    loader_bits: u64,
+    module_bits: u64,
+) {
+    if inserted_new_module {
+        importlib_dict_del_string_key(_py, modules_ptr, name_bits);
+    }
+    if !obj_from_bits(loader_bits).is_none() {
+        dec_ref_bits(_py, loader_bits);
+    }
+    if !obj_from_bits(module_bits).is_none() {
+        dec_ref_bits(_py, module_bits);
+    }
+}
+
+fn importlib_spec_execution_transaction(
+    _py: &PyToken<'_>,
+    module_name: &str,
+    name_bits: u64,
+    spec_bits: u64,
+    modules_ptr: *mut u8,
+    options: ImportlibSpecExecutionOptions,
+) -> Result<u64, u64> {
+    let existing_bits = if options.reuse_existing {
+        importlib_dict_get_string_key_bits(_py, modules_ptr, name_bits)?
+    } else {
+        None
+    };
+    let mut module_bits = if let Some(bits) = existing_bits {
+        inc_ref_bits(_py, bits);
+        bits
+    } else {
+        let bits = importlib_ffi::importlib_module_from_spec_impl(_py, spec_bits);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
         }
-        return Err(MoltObject::none().bits());
+        bits
+    };
+    let using_existing = existing_bits.is_some();
+    let mut inserted_new_module = false;
+
+    if !using_existing && options.preseed_new_module {
+        if let Err(err) = importlib_dict_set_string_key(_py, modules_ptr, name_bits, module_bits) {
+            importlib_spec_execution_cleanup(
+                _py,
+                modules_ptr,
+                name_bits,
+                false,
+                MoltObject::none().bits(),
+                module_bits,
+            );
+            return Err(err);
+        }
+        inserted_new_module = true;
     }
 
     let loader_name = intern_runtime_static_name(_py, b"loader");
     let loader_attr = match getattr_optional_bits(_py, spec_bits, loader_name) {
         Ok(value) => value,
         Err(err) => {
-            if !obj_from_bits(spec_bits).is_none() {
-                dec_ref_bits(_py, spec_bits);
-            }
-            if !obj_from_bits(module_bits).is_none() {
-                dec_ref_bits(_py, module_bits);
-            }
+            importlib_spec_execution_cleanup(
+                _py,
+                modules_ptr,
+                name_bits,
+                inserted_new_module,
+                MoltObject::none().bits(),
+                module_bits,
+            );
             return Err(err);
         }
     };
     let loader_bits = loader_attr.unwrap_or_else(|| MoltObject::none().bits());
-    let loader_present = !obj_from_bits(loader_bits).is_none();
 
-    let mut preseed_modules = true;
-    if loader_present {
-        match importlib_loader_is_molt_loader(_py, loader_bits, machinery_bits) {
-            Ok(is_molt_loader) => {
-                if is_molt_loader {
-                    preseed_modules = false;
-                }
-            }
-            Err(err) => {
-                if !obj_from_bits(loader_bits).is_none() {
-                    dec_ref_bits(_py, loader_bits);
-                }
-                if !obj_from_bits(spec_bits).is_none() {
-                    dec_ref_bits(_py, spec_bits);
-                }
-                if !obj_from_bits(module_bits).is_none() {
-                    dec_ref_bits(_py, module_bits);
-                }
-                return Err(err);
-            }
-        }
-    }
-
-    if preseed_modules {
-        unsafe {
-            dict_set_in_place(_py, modules_ptr, resolved_bits, module_bits);
-        }
-        if exception_pending(_py) {
-            if !obj_from_bits(loader_bits).is_none() {
-                dec_ref_bits(_py, loader_bits);
-            }
-            if !obj_from_bits(spec_bits).is_none() {
-                dec_ref_bits(_py, spec_bits);
-            }
-            if !obj_from_bits(module_bits).is_none() {
-                dec_ref_bits(_py, module_bits);
-            }
-            return Err(MoltObject::none().bits());
-        }
-    }
-
-    if loader_present {
+    if !obj_from_bits(loader_bits).is_none() {
         let exec_name = intern_runtime_static_name(_py, b"exec_module");
         let load_name = intern_runtime_static_name(_py, b"load_module");
-        if let Some(exec_bits) = importlib_reader_lookup_callable(_py, loader_bits, exec_name)? {
+        let exec_lookup = match importlib_reader_lookup_callable(_py, loader_bits, exec_name) {
+            Ok(value) => value,
+            Err(err) => {
+                importlib_spec_execution_cleanup(
+                    _py,
+                    modules_ptr,
+                    name_bits,
+                    inserted_new_module,
+                    loader_bits,
+                    module_bits,
+                );
+                return Err(err);
+            }
+        };
+        if let Some(exec_bits) = exec_lookup {
             let out_bits = unsafe { call_callable1(_py, exec_bits, module_bits) };
             dec_ref_bits(_py, exec_bits);
             if exception_pending(_py) {
-                importlib_dict_del_string_key(_py, modules_ptr, resolved_bits);
                 if !obj_from_bits(out_bits).is_none() {
                     dec_ref_bits(_py, out_bits);
                 }
-                if !obj_from_bits(loader_bits).is_none() {
-                    dec_ref_bits(_py, loader_bits);
-                }
-                if !obj_from_bits(spec_bits).is_none() {
-                    dec_ref_bits(_py, spec_bits);
-                }
-                if !obj_from_bits(module_bits).is_none() {
-                    dec_ref_bits(_py, module_bits);
-                }
+                importlib_spec_execution_cleanup(
+                    _py,
+                    modules_ptr,
+                    name_bits,
+                    inserted_new_module,
+                    loader_bits,
+                    module_bits,
+                );
                 return Err(MoltObject::none().bits());
             }
             if !obj_from_bits(out_bits).is_none() {
                 dec_ref_bits(_py, out_bits);
             }
-        } else if let Some(load_bits) =
-            importlib_reader_lookup_callable(_py, loader_bits, load_name)?
-        {
-            let loaded_bits = unsafe { call_callable1(_py, load_bits, resolved_bits) };
-            dec_ref_bits(_py, load_bits);
-            if exception_pending(_py) {
-                importlib_dict_del_string_key(_py, modules_ptr, resolved_bits);
-                if !obj_from_bits(loader_bits).is_none() {
-                    dec_ref_bits(_py, loader_bits);
+        } else if options.allow_load_module_fallback {
+            let load_lookup = match importlib_reader_lookup_callable(_py, loader_bits, load_name) {
+                Ok(value) => value,
+                Err(err) => {
+                    importlib_spec_execution_cleanup(
+                        _py,
+                        modules_ptr,
+                        name_bits,
+                        inserted_new_module,
+                        loader_bits,
+                        module_bits,
+                    );
+                    return Err(err);
                 }
-                if !obj_from_bits(spec_bits).is_none() {
-                    dec_ref_bits(_py, spec_bits);
+            };
+            if let Some(load_bits) = load_lookup {
+                let loaded_bits = unsafe { call_callable1(_py, load_bits, name_bits) };
+                dec_ref_bits(_py, load_bits);
+                if exception_pending(_py) {
+                    importlib_spec_execution_cleanup(
+                        _py,
+                        modules_ptr,
+                        name_bits,
+                        inserted_new_module,
+                        loader_bits,
+                        module_bits,
+                    );
+                    return Err(MoltObject::none().bits());
                 }
-                if !obj_from_bits(module_bits).is_none() {
-                    dec_ref_bits(_py, module_bits);
+                if !obj_from_bits(loaded_bits).is_none() {
+                    if !obj_from_bits(module_bits).is_none() {
+                        dec_ref_bits(_py, module_bits);
+                    }
+                    module_bits = loaded_bits;
                 }
-                return Err(MoltObject::none().bits());
             }
-            if !obj_from_bits(loaded_bits).is_none() {
-                if !obj_from_bits(module_bits).is_none() {
-                    dec_ref_bits(_py, module_bits);
-                }
-                module_bits = loaded_bits;
-            }
+        } else {
+            importlib_spec_execution_cleanup(
+                _py,
+                modules_ptr,
+                name_bits,
+                inserted_new_module,
+                loader_bits,
+                module_bits,
+            );
+            return Err(raise_exception::<_>(_py, "ImportError", ""));
         }
-        dec_ref_bits(_py, loader_bits);
+    } else if !options.allow_load_module_fallback {
+        importlib_spec_execution_cleanup(
+            _py,
+            modules_ptr,
+            name_bits,
+            inserted_new_module,
+            loader_bits,
+            module_bits,
+        );
+        return Err(raise_exception::<_>(_py, "ImportError", ""));
     }
 
-    if !preseed_modules {
-        unsafe {
-            dict_set_in_place(_py, modules_ptr, resolved_bits, module_bits);
+    if !using_existing && !options.preseed_new_module {
+        if let Err(err) = importlib_dict_set_string_key(_py, modules_ptr, name_bits, module_bits) {
+            importlib_spec_execution_cleanup(
+                _py,
+                modules_ptr,
+                name_bits,
+                false,
+                loader_bits,
+                module_bits,
+            );
+            return Err(err);
         }
-        if exception_pending(_py) {
-            importlib_dict_del_string_key(_py, modules_ptr, resolved_bits);
-            if !obj_from_bits(spec_bits).is_none() {
-                dec_ref_bits(_py, spec_bits);
-            }
-            if !obj_from_bits(module_bits).is_none() {
-                dec_ref_bits(_py, module_bits);
-            }
-            return Err(MoltObject::none().bits());
-        }
+        inserted_new_module = true;
     }
 
-    let out_bits = match importlib_dict_get_string_key_bits(_py, modules_ptr, resolved_bits)? {
-        Some(bits) => {
+    let out_bits = match importlib_dict_get_string_key_bits(_py, modules_ptr, name_bits) {
+        Err(err) => {
+            importlib_spec_execution_cleanup(
+                _py,
+                modules_ptr,
+                name_bits,
+                inserted_new_module,
+                loader_bits,
+                module_bits,
+            );
+            return Err(err);
+        }
+        Ok(None) => {
+            inc_ref_bits(_py, module_bits);
+            module_bits
+        }
+        Ok(Some(bits)) => {
             inc_ref_bits(_py, bits);
             bits
         }
-        None => module_bits,
     };
-    if out_bits != module_bits && !obj_from_bits(module_bits).is_none() {
+    if !obj_from_bits(loader_bits).is_none() {
+        dec_ref_bits(_py, loader_bits);
+    }
+    if !obj_from_bits(module_bits).is_none() {
         dec_ref_bits(_py, module_bits);
     }
-    if !obj_from_bits(spec_bits).is_none() {
-        dec_ref_bits(_py, spec_bits);
-    }
+    let _ = module_name;
     Ok(out_bits)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_importlib_load_module_from_spec(
+    loader_bits: u64,
+    fullname_bits: u64,
+    spec_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let fullname = match string_arg_from_bits(_py, fullname_bits, "fullname") {
+            Ok(value) => value,
+            Err(bits) => return bits,
+        };
+        if obj_from_bits(loader_bits).is_none() {
+            return raise_exception::<_>(_py, "ImportError", "");
+        }
+        let modules_bits = match importlib_runtime_modules_bits(_py) {
+            Ok(bits) => bits,
+            Err(err) => return err,
+        };
+        let out = (|| -> Result<u64, u64> {
+            let Some(modules_ptr) = obj_from_bits(modules_bits).as_ptr() else {
+                return Err(importlib_modules_runtime_error(_py));
+            };
+            importlib_spec_execution_transaction(
+                _py,
+                &fullname,
+                fullname_bits,
+                spec_bits,
+                modules_ptr,
+                ImportlibSpecExecutionOptions {
+                    reuse_existing: true,
+                    preseed_new_module: true,
+                    allow_load_module_fallback: false,
+                },
+            )
+        })();
+        if !obj_from_bits(modules_bits).is_none() {
+            dec_ref_bits(_py, modules_bits);
+        }
+        match out {
+            Ok(bits) => bits,
+            Err(err) => err,
+        }
+    })
 }
 
 fn importlib_import_with_fallback(
@@ -7029,7 +7218,7 @@ fn importlib_import_with_fallback(
     // If every import mechanism failed with ModuleNotFoundError, try loading a
     // native C extension (.so / .dylib) from sys.path before giving up.
     #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
-    if result.is_err() && importlib_exception_should_fallback(_py) {
+    if result.is_err() && importlib_exception_should_fallback(_py, resolved) {
         if let Some(module_bits) = importlib_try_cext_on_sys_path(_py, resolved, modules_ptr) {
             return Ok(module_bits);
         }
@@ -7056,7 +7245,7 @@ fn importlib_import_with_fallback_inner(
 
     let module_bits = crate::molt_module_import(resolved_bits);
     if exception_pending(_py) {
-        if importlib_exception_should_fallback(_py) {
+        if importlib_exception_should_fallback(_py, resolved) {
             if !obj_from_bits(module_bits).is_none() {
                 dec_ref_bits(_py, module_bits);
             }

@@ -104,11 +104,74 @@ from molt.debug.verify import build_verify_result_payload, run_default_verify_ch
 from molt.debug.bisect import bisect_backend_profile_ic, bisect_first_bad_pass
 from molt.dx import DxConfigError, DxProject
 from molt.frontend import MoltValue, SimpleTIRGenerator
+from molt.frontend.sema.funcmeta import collect_module_func_defaults
 from molt.type_facts import (
     TypeFacts,
     collect_type_facts_from_paths,
     load_type_facts,
     write_type_facts,
+)
+
+from molt.cli_completion import _completion_script
+from molt.cli_maintenance import _load_artifact_cleanup_module, clean, show_config
+from molt.cli_deps import (
+    _NoRedirectHandler,
+    _append_feature_notes,
+    _classify_tier,
+    _clone_git_source,
+    _collect_dep_specs,
+    _collect_deps,
+    _dep_allowlists,
+    _download_artifact,
+    _git_ref_from_source,
+    _is_private_ip,
+    _load_toml,
+    _lock_package_graph,
+    _lock_packages,
+    _marker_environment,
+    _marker_satisfied,
+    _normalize_name,
+    _parse_requirement,
+    _pick_vendor_artifact,
+    _read_cached_artifact,
+    _resolve_dependency_closure,
+    _resolve_git_ref,
+    _run_git_source_command,
+    _summarize_tiers,
+    _vendor_cache_path,
+    _write_cached_artifact,
+    deps as deps_command,
+    install as install_command,
+    install_add as install_add_command,
+    vendor as vendor_command,
+)
+from molt.cli_native_toolchain import (
+    _append_darwin_runtime_frameworks,
+    _codesign_binary,
+    _detect_macos_arch,
+    _detect_macos_deployment_target,
+    _run_bolt_post_link,
+    _strip_arch_flags,
+    _zig_target_query,
+)
+from molt.cli_wasm_split import (
+    _build_wasm_sections,
+    _collect_wasm_active_table_function_slots,
+    _effective_split_worker_table_base,
+    _export_wasm_table_refs,
+    _infer_wasm_table_base_from_export_names,
+    _parse_wasm_sections,
+    _read_wasm_ref_func_expr,
+    _reserved_wasm_runtime_callable_count,
+    _skip_wasm_init_expr,
+    _generate_split_worker_js,
+    _generate_split_wrangler_jsonc,
+    _wasm_export_function_signatures,
+    _wasm_import_function_result_kinds,
+    _wasm_import_function_signatures,
+    _wasm_import_minima,
+    _write_wasm_string,
+    _write_wasm_varuint,
 )
 
 Target = str
@@ -137,6 +200,7 @@ STDLIB_NESTED_IMPORT_SCAN_MODULES = {
 PLATFORM_EXCLUDED_SUBMODULES = ("urllib3.contrib.emscripten",)
 ENTRY_OVERRIDE_ENV = "MOLT_ENTRY_MODULE"
 ENTRY_OVERRIDE_SPAWN = "multiprocessing.spawn"
+STATIC_IMPORT_MODULES_ENV = "MOLT_STATIC_IMPORT_MODULES"
 IMPORTER_MODULE_NAME = "_molt_importer"
 _RUNTIME_IMPORT_PROTOCOL_MARKERS = (
     "import ",
@@ -169,18 +233,27 @@ REMOTE_REGISTRY_SCHEMES = {"http", "https"}
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 _PERSISTED_JSON_OBJECT_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 # Session-level cache: once we have verified (and possibly built) the release
-# runtime for a given (path, profile, triple) key, skip the check for the rest
-# of this process lifetime.
+# runtime for a given path/profile/target key and exact source/config
+# fingerprint, skip the artifact check for that same proof identity.
 _RUNTIME_LIB_VERIFIED: set[
-    tuple[str, str, str, str, str | None, str, tuple[str, ...]]
+    tuple[
+        str,
+        str,
+        str,
+        str,
+        str | None,
+        str,
+        tuple[str, ...],
+        tuple[str | None, str | None, str | None, str | None],
+    ]
 ] = set()
 _LOCK_CHECK_CACHE_VERSION = 1
 _HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
 _HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
-_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 3
-_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 1
-_BACKEND_REQUEST_ENV_KNOBS = (
+_BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION = 4
+_DAEMON_CONFIG_DIGEST_SCHEMA_VERSION = 3
+_BACKEND_CODEGEN_REQUEST_ENV_KNOBS = (
     "MOLT_DISABLE_DEAD_FUNC_ELIM",
     "MOLT_BACKEND_BATCH_SIZE",
     "MOLT_BACKEND_BATCH_OP_BUDGET",
@@ -222,7 +295,24 @@ _BACKEND_REQUEST_ENV_KNOBS = (
     "MOLT_DEBUG_LOWER_FUNC",
     "MOLT_TIR_DUMP",
 )
-_NATIVE_CODEGEN_ENV_KNOBS = _BACKEND_REQUEST_ENV_KNOBS + (
+_BACKEND_RESOURCE_ENV_KNOBS = (
+    "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+    "MOLT_CLI_MEMORY_AVAILABLE_GB",
+    "MOLT_CLI_MEM_AVAILABLE_GB",
+    "MOLT_MEMORY_AVAILABLE_GB",
+    "MOLT_MEM_AVAILABLE_GB",
+    "MOLT_BACKEND_MAX_RSS_GB",
+    "MOLT_BACKEND_MEMORY_RESERVE_GB",
+    "MOLT_CLI_MEMORY_RESERVE_GB",
+    "MOLT_CLI_MEM_RESERVE_GB",
+    "MOLT_MEMORY_RESERVE_GB",
+    "MOLT_MEM_RESERVE_GB",
+    "RAYON_NUM_THREADS",
+)
+_BACKEND_REQUEST_ENV_KNOBS = (
+    _BACKEND_CODEGEN_REQUEST_ENV_KNOBS + _BACKEND_RESOURCE_ENV_KNOBS
+)
+_NATIVE_CODEGEN_ENV_KNOBS = _BACKEND_CODEGEN_REQUEST_ENV_KNOBS + (
     "MOLT_BACKEND_OPT_LEVEL",
     "MOLT_BACKEND_REGALLOC_ALGORITHM",
     "MOLT_BACKEND_MIN_FUNCTION_ALIGNMENT_LOG2",
@@ -239,6 +329,7 @@ _WASM_CODEGEN_ENV_KNOBS = (
     "MOLT_WASM_SPLIT_RUNTIME_RUNTIME_TABLE_MIN",
     "MOLT_WASM_TABLE_BASE",
 )
+_NATIVE_RELOCATABLE_LINKER_ENV_KEYS = ("MOLT_LINKER", "LD", "CC")
 CAPABILITY_PROFILES: dict[str, list[str]] = {
     "core": [],
     "fs": ["fs.read", "fs.write"],
@@ -852,6 +943,7 @@ _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_HASH_SEED",
     "MOLT_HERMETIC_MODULE_ROOTS",
     "MOLT_MODULE_ROOTS",
+    STATIC_IMPORT_MODULES_ENV,
     "MOLT_TRUSTED",
     "PYTHONHASHSEED",
     "PYTHONPATH",
@@ -884,6 +976,7 @@ def _wrapper_build_dependency_fingerprints(
     *,
     resolved_build_entry: _ResolvedBuildEntry,
     project_root: Path,
+    capability_config_digest: str = "",
 ) -> list[dict[str, Any]] | None:
     stdlib_root = _stdlib_root_path()
     module_roots = list(resolved_build_entry.module_roots)
@@ -904,6 +997,8 @@ def _wrapper_build_dependency_fingerprints(
         admitted_external_packages=admitted_packages,
         native_artifact_plan=native_plan,
     )
+    stdlib_allowlist = _stdlib_allowlist()
+    resolution_cache = _ModuleResolutionCache()
     try:
         graph, _explicit_imports = _discover_module_graph(
             resolved_build_entry.source_path,
@@ -911,11 +1006,35 @@ def _wrapper_build_dependency_fingerprints(
             module_roots,
             stdlib_root,
             project_root,
-            _stdlib_allowlist(),
+            stdlib_allowlist,
+            resolver_cache=resolution_cache,
             import_admission_policy=import_admission_policy,
             target_python=resolved_build_entry.target_python,
+            capability_config_digest=capability_config_digest,
         )
     except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+    static_import_modules, static_import_error = _parse_static_import_modules(
+        os.environ.get(STATIC_IMPORT_MODULES_ENV, "")
+    )
+    if static_import_error is not None:
+        return None
+    static_import_errors = _extend_module_graph_with_static_import_modules(
+        module_graph=graph,
+        explicit_imports=_explicit_imports,
+        module_names=static_import_modules,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        project_root=project_root,
+        stdlib_allowlist=stdlib_allowlist,
+        resolver_cache=resolution_cache,
+        diagnostics_enabled=False,
+        module_reasons={},
+        import_admission_policy=import_admission_policy,
+        target_python=resolved_build_entry.target_python,
+    )
+    if static_import_errors:
         return None
     dependencies: list[dict[str, Any]] = []
     for module_name, path in sorted(graph.items()):
@@ -978,9 +1097,11 @@ def _wrapper_build_cache_input(
     source_hash = _source_content_sha256(resolved_source_path)
     if source_hash is None:
         return None
+    capability_config_digest = _capability_config_cache_digest_from_env(env)
     dependencies = _wrapper_build_dependency_fingerprints(
         resolved_build_entry=resolved_build_entry,
         project_root=project_root,
+        capability_config_digest=capability_config_digest,
     )
     if dependencies is None:
         return None
@@ -993,6 +1114,7 @@ def _wrapper_build_cache_input(
         "project_root": os.fspath(project_root.resolve()),
         "build_args": list(build_args),
         "semantic_env": _wrapper_build_cache_semantic_env(env),
+        "capability_config_digest": capability_config_digest,
         "runtime_backend_fingerprint": _cache_fingerprint(),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,
@@ -1743,7 +1865,7 @@ class _FrontendLayerRunResult:
 @dataclass(frozen=True)
 class _FrontendLayerExecutionContext:
     syntax_error_modules: Mapping[str, Any]
-    module_graph: dict[str, Path]
+    module_graph: Mapping[str, Path]
     module_source_catalog: _ModuleSourceCatalog
     project_root: Path | None
     module_resolution_cache: "_ModuleResolutionCache"
@@ -2003,9 +2125,7 @@ class _ExternalPackageNativeArtifactPlan:
     artifacts: tuple[_ExternalPackageNativeArtifact, ...] = ()
 
     def digest_payload(self) -> dict[str, Any]:
-        return {
-            "artifacts": [artifact.digest_payload() for artifact in self.artifacts]
-        }
+        return {"artifacts": [artifact.digest_payload() for artifact in self.artifacts]}
 
     def digest(self) -> str:
         payload = json.dumps(
@@ -2045,9 +2165,7 @@ class _StagedExternalPackageNativeArtifact:
             "source_manifest_path": str(self.source_manifest_path),
             "staged_path": str(self.staged_path),
             "staged_manifest_path": str(self.staged_manifest_path),
-            "staged_support_paths": [
-                str(path) for path in self.staged_support_paths
-            ],
+            "staged_support_paths": [str(path) for path in self.staged_support_paths],
             "extension_sha256": self.extension_sha256,
             "manifest_sha256": self.manifest_sha256,
             "capabilities": list(self.capabilities),
@@ -2157,6 +2275,7 @@ class _PreparedBuildModuleOutputs:
 class _ImportPlan:
     stdlib_allowlist: frozenset[str]
     roots: tuple[Path, ...]
+    stdlib_root: Path
     module_resolution_cache: "_ModuleResolutionCache"
     module_graph: Mapping[str, Path]
     explicit_imports: frozenset[str]
@@ -2193,6 +2312,7 @@ class _PreparedBuildConfig:
     capability_profiles: list[str]
     capabilities_source: str | None
     manifest_env_vars: dict[str, str]
+    capability_config_cache_digest: str
     target_python: TargetPythonVersion
 
 
@@ -2253,8 +2373,8 @@ class _PreparedFrontendLoweringConfig:
     known_classes: dict[str, Any]
     scoped_lowering_inputs: _ScopedLoweringInputs
     module_graph_metadata: _ModuleGraphMetadata
-    frontend_module_costs: dict[str, float]
-    stdlib_like_by_module: dict[str, bool]
+    frontend_module_costs: Mapping[str, float]
+    stdlib_like_by_module: Mapping[str, bool]
     enable_phi: bool
     module_chunk_max_ops: int
     module_chunking: bool
@@ -2273,6 +2393,31 @@ class _PreparedFrontendRunTicket:
     frontend_parallel_details: dict[str, Any]
     frontend_layer_execution_context: _FrontendLayerExecutionContext
     frontend_layer_runtime_hooks: _FrontendLayerRuntimeHooks
+
+
+_PreparedFrontendPipelineBundle = tuple[
+    _PreparedFrontendRunTicket,
+    Mapping[str, Path],
+    Collection[str],
+    Collection[str],
+    bool,
+    _BuildOutputLayout,
+    Collection[str],
+    Mapping[str, str],
+    dict[str, dict[str, dict[str, Any]]],
+    list[str],
+    TypeFacts | None,
+    dict[str, Any],
+    bool,
+    int,
+    bool,
+    _FrontendIntegrationState,
+    _MidendDiagnosticsState,
+    Callable[..., None],
+    Callable[[], tuple[dict[str, Any] | None, Path | None]],
+    Path,
+    _ExternalPackageNativeArtifactPlan,
+]
 
 
 @dataclass(frozen=True)
@@ -4696,6 +4841,11 @@ def _prepare_build_config(
                 json_output,
                 command="build",
             )
+    capability_config_cache_digest = _capability_config_cache_digest(
+        capabilities_list=capabilities_list,
+        capability_profiles=capability_profiles,
+        manifest_env_vars=manifest_env_vars,
+    )
 
     return _PreparedBuildConfig(
         pgo_profile_summary=pgo_profile_summary,
@@ -4717,6 +4867,7 @@ def _prepare_build_config(
         capability_profiles=capability_profiles,
         capabilities_source=capabilities_source,
         manifest_env_vars=manifest_env_vars,
+        capability_config_cache_digest=capability_config_cache_digest,
         target_python=target_python,
     ), None
 
@@ -5089,6 +5240,23 @@ def _parse_external_static_packages(raw: str) -> tuple[frozenset[str], str | Non
     return frozenset(packages), None
 
 
+def _parse_static_import_modules(raw: str) -> tuple[frozenset[str], str | None]:
+    modules: set[str] = set()
+    for part in re.split(r"[\s,]+", raw.strip()):
+        if not part:
+            continue
+        if not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*",
+            part,
+        ):
+            return frozenset(), (
+                f"{STATIC_IMPORT_MODULES_ENV} must contain comma/space-separated "
+                f"Python module names; invalid entry: {part!r}"
+            )
+        modules.add(part)
+    return frozenset(modules), None
+
+
 _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES = (".so", ".pyd")
 _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS = {
     ".git",
@@ -5117,7 +5285,9 @@ def _external_package_dir(root: Path, package: str) -> Path | None:
 
 def _is_external_package_native_artifact(path: Path) -> bool:
     name = path.name.lower()
-    return any(name.endswith(suffix) for suffix in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES)
+    return any(
+        name.endswith(suffix) for suffix in _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_SUFFIXES
+    )
 
 
 def _iter_external_package_native_artifacts(package_dir: Path) -> list[Path]:
@@ -5169,10 +5339,9 @@ def _extension_path_matches_manifest(
     manifest_path = Path(expected_norm)
     if manifest_path.is_absolute():
         return manifest_path.resolve() == artifact_path
-    return (
-        (manifest_dir / manifest_path).resolve() == artifact_path
-        or (package_dir / manifest_path).resolve() == artifact_path
-    )
+    return (manifest_dir / manifest_path).resolve() == artifact_path or (
+        package_dir / manifest_path
+    ).resolve() == artifact_path
 
 
 def _find_external_extension_manifest(
@@ -5232,7 +5401,9 @@ def _validate_external_package_native_artifact(
     except (OSError, json.JSONDecodeError) as exc:
         return None, [f"{package}: invalid extension manifest {manifest_path}: {exc}"]
     if not isinstance(manifest, dict):
-        return None, [f"{package}: extension manifest {manifest_path} must be an object"]
+        return None, [
+            f"{package}: extension manifest {manifest_path} must be an object"
+        ]
     validation = _validate_extension_manifest(
         manifest,
         manifest_dir=manifest_path.parent,
@@ -5319,7 +5490,9 @@ def _resolve_external_package_native_artifact_plan(
         return None, errors
     return (
         _ExternalPackageNativeArtifactPlan(
-            artifacts=tuple(sorted(artifacts, key=lambda item: (item.module, str(item.path))))
+            artifacts=tuple(
+                sorted(artifacts, key=lambda item: (item.module, str(item.path)))
+            )
         ),
         [],
     )
@@ -6048,6 +6221,187 @@ def _collect_imports(
     return imports
 
 
+def _static_string_sequence(node: ast.expr) -> tuple[str, ...] | None:
+    if not isinstance(node, (ast.Tuple, ast.List)):
+        return None
+    out: list[str] = []
+    for item in node.elts:
+        if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+            return None
+        out.append(item.value)
+    return tuple(out)
+
+
+def _static_module_all_exports(tree: ast.AST) -> tuple[str, ...] | None:
+    body = getattr(tree, "body", ())
+    exports: tuple[str, ...] | None = None
+    for stmt in body:
+        if isinstance(stmt, ast.Assign):
+            if not any(
+                isinstance(target, ast.Name) and target.id == "__all__"
+                for target in stmt.targets
+            ):
+                continue
+            sequence = _static_string_sequence(stmt.value)
+            if sequence is None:
+                return None
+            exports = sequence
+            continue
+        if isinstance(stmt, ast.AnnAssign):
+            if not isinstance(stmt.target, ast.Name) or stmt.target.id != "__all__":
+                continue
+            if stmt.value is None:
+                return None
+            sequence = _static_string_sequence(stmt.value)
+            if sequence is None:
+                return None
+            exports = sequence
+            continue
+        if isinstance(stmt, (ast.AugAssign, ast.Delete)):
+            targets = [stmt.target] if isinstance(stmt, ast.AugAssign) else stmt.targets
+            if any(
+                isinstance(target, ast.Name) and target.id == "__all__"
+                for target in targets
+            ):
+                return None
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            func = stmt.value.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr
+                in {"append", "extend", "insert", "remove", "pop", "clear"}
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "__all__"
+            ):
+                return None
+    return exports
+
+
+def _collect_import_star_modules(
+    tree: ast.AST,
+    module_name: str | None = None,
+    is_package: bool = False,
+    *,
+    import_scan_mode: ImportScanMode = "full",
+) -> tuple[str, ...]:
+    if import_scan_mode not in {"full", "module_init"}:
+        raise ValueError(f"unknown import scan mode: {import_scan_mode}")
+    (
+        package_override_set,
+        package_override,
+        spec_override_set,
+        spec_override,
+        spec_override_is_package,
+    ) = _infer_module_overrides(tree)
+    scan_nodes = (
+        tuple(ast.walk(tree))
+        if import_scan_mode == "full"
+        else _module_init_scan_nodes(tree)
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for node in scan_nodes:
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if not any(alias.name == "*" for alias in node.names):
+            continue
+        resolved: str | None
+        if node.level:
+            if not module_name:
+                continue
+            resolved = _resolve_relative_import(
+                module_name,
+                is_package=is_package,
+                level=node.level,
+                module=node.module,
+                package_override=package_override,
+                package_override_set=package_override_set,
+                spec_override=spec_override,
+                spec_override_set=spec_override_set,
+                spec_override_is_package=spec_override_is_package,
+            )
+        else:
+            resolved = node.module
+        if resolved and resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+    return tuple(out)
+
+
+def _expand_imports_with_static_package_all_star_children(
+    imports: Collection[str],
+    tree: ast.AST,
+    *,
+    module_name: str | None,
+    is_package: bool,
+    import_scan_mode: ImportScanMode,
+    roots: Sequence[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+    resolution_cache: "_ModuleResolutionCache",
+    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+) -> tuple[str, ...]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+
+    for name in imports:
+        add(name)
+    star_modules = _collect_import_star_modules(
+        tree,
+        module_name,
+        is_package,
+        import_scan_mode=import_scan_mode,
+    )
+    if not star_modules:
+        return tuple(out)
+
+    roots_list = list(roots)
+    for star_module in star_modules:
+        package_path = resolution_cache.resolve_module(
+            star_module,
+            roots_list,
+            stdlib_root,
+            stdlib_allowlist,
+        )
+        if package_path is None or package_path.name != "__init__.py":
+            continue
+        try:
+            package_source = resolution_cache.read_module_source(
+                package_path,
+                retain=False,
+            )
+            package_tree = resolution_cache.parse_module_ast(
+                package_path,
+                package_source,
+                filename=str(package_path),
+                retain=False,
+                target_python=target_python,
+            )
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        exports = _static_module_all_exports(package_tree)
+        if exports is None:
+            continue
+        for export_name in exports:
+            child_name = f"{star_module}.{export_name}"
+            if (
+                resolution_cache.resolve_module(
+                    child_name,
+                    roots_list,
+                    stdlib_root,
+                    stdlib_allowlist,
+                )
+                is not None
+            ):
+                add(child_name)
+    return tuple(out)
+
+
 def _source_may_use_runtime_import_protocol(source: str) -> bool:
     return any(marker in source for marker in _RUNTIME_IMPORT_PROTOCOL_MARKERS)
 
@@ -6486,48 +6840,10 @@ def _syntax_error_stub_ast(info: ModuleSyntaxErrorInfo) -> ast.Module:
     return ast.fix_missing_locations(module)
 
 
-def _default_spec_for_expr(expr: ast.expr) -> dict[str, Any]:
-    if isinstance(expr, ast.Constant):
-        return {"const": True, "value": expr.value}
-    return {"const": False}
-
-
-def _default_specs_from_args(args: ast.arguments) -> list[dict[str, Any]]:
-    default_specs = [_default_spec_for_expr(expr) for expr in args.defaults]
-    if not args.kwonlyargs or not args.kw_defaults:
-        return default_specs
-    kwonly_names = [arg.arg for arg in args.kwonlyargs]
-    kwonly_pairs = list(zip(kwonly_names, args.kw_defaults))
-    suffix: list[tuple[str, ast.expr]] = []
-    for name, expr in reversed(kwonly_pairs):
-        if expr is None:
-            break
-        suffix.append((name, expr))
-    for name, expr in reversed(suffix):
-        spec = _default_spec_for_expr(expr)
-        spec["kwonly"] = True
-        spec["name"] = name
-        default_specs.append(spec)
-    return default_specs
-
-
 def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:
-    defaults: dict[str, dict[str, Any]] = {}
     if not isinstance(tree, ast.Module):
-        return defaults
-    for stmt in tree.body:
-        if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if stmt.args.vararg or stmt.args.kwarg:
-            defaults[stmt.name] = {"has_vararg": True}
-            continue
-        params = [
-            arg.arg
-            for arg in (stmt.args.posonlyargs + stmt.args.args + stmt.args.kwonlyargs)
-        ]
-        default_specs = _default_specs_from_args(stmt.args)
-        defaults[stmt.name] = {"params": len(params), "defaults": default_specs}
-    return defaults
+        return {}
+    return collect_module_func_defaults(tree)
 
 
 def _topo_sort_modules(
@@ -7127,6 +7443,36 @@ _INTRINSIC_CALL_NAMES = {
     "_require_callable_intrinsic",
 }
 _STDLIB_PROBE_INTRINSIC = "molt_stdlib_probe"
+_STDLIB_POLICY_GATE_STATUS = "policy-gate"
+
+
+def _is_fail_closed_import_policy_gate(text: str) -> bool:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    body = list(tree.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    while (
+        body and isinstance(body[0], ast.ImportFrom) and body[0].module == "__future__"
+    ):
+        body = body[1:]
+    if len(body) != 1 or not isinstance(body[0], ast.Raise):
+        return False
+    exc = body[0].exc
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    if isinstance(exc, ast.Name):
+        return exc.id == "ImportError"
+    if isinstance(exc, ast.Attribute):
+        return exc.attr == "ImportError"
+    return False
 
 
 def _module_required_intrinsic_names(path: Path) -> frozenset[str]:
@@ -7180,12 +7526,14 @@ def _stdlib_module_intrinsic_status(path: Path) -> str:
     if path.name == "_intrinsics.py":
         return "intrinsic-backed"
     try:
-        path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except Exception:
         return "python-only"
 
     intrinsic_names = _module_required_intrinsic_names(path)
     if not intrinsic_names:
+        if _is_fail_closed_import_policy_gate(text):
+            return _STDLIB_POLICY_GATE_STATUS
         return "python-only"
     if intrinsic_names == {_STDLIB_PROBE_INTRINSIC}:
         return "probe-only"
@@ -7446,6 +7794,7 @@ def _extend_module_graph_with_closure(
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> None:
     if not entry_paths:
         return
@@ -7463,6 +7812,7 @@ def _extend_module_graph_with_closure(
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=allow_entry_external_imports,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     if diagnostics_enabled:
         for name, path in closure_graph.items():
@@ -7471,6 +7821,95 @@ def _extend_module_graph_with_closure(
         return
     for name, path in closure_graph.items():
         module_graph.setdefault(name, path)
+
+
+def _resolve_static_import_module_paths(
+    *,
+    module_names: Collection[str],
+    roots: Sequence[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
+    resolver_cache: "_ModuleResolutionCache",
+    import_admission_policy: _ImportAdmissionPolicy | None,
+) -> tuple[dict[str, Path], list[str]]:
+    resolved: dict[str, Path] = {}
+    errors: list[str] = []
+    for module_name in sorted(module_names):
+        path = resolver_cache.resolve_module(
+            module_name,
+            list(roots),
+            stdlib_root,
+            stdlib_allowlist,
+        )
+        if path is None:
+            errors.append(
+                f"{STATIC_IMPORT_MODULES_ENV} module {module_name!r} was not found"
+            )
+            continue
+        if import_admission_policy is not None and not (
+            import_admission_policy.admits_import(
+                module_name,
+                path,
+                from_entry_path=False,
+            )
+        ):
+            errors.append(
+                f"{STATIC_IMPORT_MODULES_ENV} module {module_name!r} resolves under "
+                "an external root but is not within an admitted external static package"
+            )
+            continue
+        resolved[module_name] = path
+    return resolved, errors
+
+
+def _extend_module_graph_with_static_import_modules(
+    *,
+    module_graph: MutableMapping[str, Path],
+    explicit_imports: set[str],
+    module_names: Collection[str],
+    roots: Sequence[Path],
+    module_roots: Sequence[Path],
+    stdlib_root: Path,
+    project_root: Path | None,
+    stdlib_allowlist: set[str],
+    resolver_cache: "_ModuleResolutionCache",
+    diagnostics_enabled: bool,
+    module_reasons: MutableMapping[str, set[str]],
+    import_admission_policy: _ImportAdmissionPolicy | None,
+    target_python: TargetPythonVersion,
+    capability_config_digest: str = "",
+) -> list[str]:
+    if not module_names:
+        return []
+    resolved, errors = _resolve_static_import_module_paths(
+        module_names=module_names,
+        roots=roots,
+        stdlib_root=stdlib_root,
+        stdlib_allowlist=stdlib_allowlist,
+        resolver_cache=resolver_cache,
+        import_admission_policy=import_admission_policy,
+    )
+    if errors:
+        return errors
+    explicit_imports.update(module_names)
+    _extend_module_graph_with_closure(
+        module_graph,
+        entry_paths=tuple(resolved.values()),
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        project_root=project_root,
+        stdlib_allowlist=stdlib_allowlist,
+        resolver_cache=resolver_cache,
+        diagnostics_enabled=diagnostics_enabled,
+        module_reasons=module_reasons,
+        reason="explicit_static_import",
+        import_admission_policy=import_admission_policy,
+        allow_entry_external_imports=False,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    return []
 
 
 def _record_new_module_reasons(
@@ -7730,6 +8169,12 @@ def _emit_build_diagnostics(
                     f"- midend.policy.budget_override_ms: {budget_override_ms:.4f}",
                     file=sys.stderr,
                 )
+            work_budget_override = policy_config.get("work_budget_override")
+            if isinstance(work_budget_override, (int, float)):
+                print(
+                    f"- midend.policy.work_budget_override: {work_budget_override:.4f}",
+                    file=sys.stderr,
+                )
             budget_alpha = policy_config.get("budget_alpha")
             budget_beta = policy_config.get("budget_beta")
             budget_scale = policy_config.get("budget_scale")
@@ -7810,11 +8255,14 @@ def _emit_build_diagnostics(
                 function_name = str(item.get("function", ""))
                 spent_ms = float(item.get("spent_ms", 0.0))
                 budget_ms = float(item.get("budget_ms", 0.0))
+                work_units = float(item.get("work_units_spent", 0.0))
+                work_budget = float(item.get("work_budget", 0.0))
                 degraded = bool(item.get("degraded", False))
                 print(
                     "- midend.function_hotspot."
                     f"{idx}: {module_name}::{function_name} "
                     f"spent_ms={spent_ms:.3f} budget_ms={budget_ms:.3f} "
+                    f"work_units={work_units:.3f} work_budget={work_budget:.3f} "
                     f"degraded={degraded}",
                     file=sys.stderr,
                 )
@@ -7855,39 +8303,69 @@ def _emit_build_diagnostics(
                     f"action={action} spent_ms={spent_ms:.3f}",
                     file=sys.stderr,
                 )
-        budget_util_avg = midend.get("budget_utilization_avg")
-        budget_util_p95 = midend.get("budget_utilization_p95")
-        over_budget = midend.get("functions_over_budget")
-        under_50 = midend.get("functions_under_50pct_budget")
-        if isinstance(budget_util_avg, (int, float)):
+        telemetry_budget_util_avg = midend.get("telemetry_budget_utilization_avg")
+        telemetry_budget_util_p95 = midend.get("telemetry_budget_utilization_p95")
+        over_telemetry_budget = midend.get("functions_over_telemetry_budget")
+        under_50_telemetry_budget = midend.get("functions_under_50pct_telemetry_budget")
+        work_budget_util_avg = midend.get("work_budget_utilization_avg")
+        work_budget_util_p95 = midend.get("work_budget_utilization_p95")
+        over_work_budget = midend.get("functions_over_work_budget")
+        under_50_work_budget = midend.get("functions_under_50pct_work_budget")
+        if isinstance(telemetry_budget_util_avg, (int, float)):
             print(
-                f"- midend.budget_utilization_avg: {budget_util_avg:.4f}",
+                "- midend.telemetry_budget_utilization_avg: "
+                f"{telemetry_budget_util_avg:.4f}",
                 file=sys.stderr,
             )
-        if isinstance(budget_util_p95, (int, float)):
+        if isinstance(telemetry_budget_util_p95, (int, float)):
             print(
-                f"- midend.budget_utilization_p95: {budget_util_p95:.4f}",
+                "- midend.telemetry_budget_utilization_p95: "
+                f"{telemetry_budget_util_p95:.4f}",
                 file=sys.stderr,
             )
-        if isinstance(over_budget, int):
+        if isinstance(over_telemetry_budget, int):
             print(
-                f"- midend.functions_over_budget: {over_budget}",
+                f"- midend.functions_over_telemetry_budget: {over_telemetry_budget}",
                 file=sys.stderr,
             )
-        if isinstance(under_50, int):
+        if isinstance(under_50_telemetry_budget, int):
             print(
-                f"- midend.functions_under_50pct_budget: {under_50}",
+                "- midend.functions_under_50pct_telemetry_budget: "
+                f"{under_50_telemetry_budget}",
                 file=sys.stderr,
             )
-        budget_ranked_functions: list[dict[str, Any]] = []
+        if isinstance(work_budget_util_avg, (int, float)):
+            print(
+                f"- midend.work_budget_utilization_avg: {work_budget_util_avg:.4f}",
+                file=sys.stderr,
+            )
+        if isinstance(work_budget_util_p95, (int, float)):
+            print(
+                f"- midend.work_budget_utilization_p95: {work_budget_util_p95:.4f}",
+                file=sys.stderr,
+            )
+        if isinstance(over_work_budget, int):
+            print(
+                f"- midend.functions_over_work_budget: {over_work_budget}",
+                file=sys.stderr,
+            )
+        if isinstance(under_50_work_budget, int):
+            print(
+                f"- midend.functions_under_50pct_work_budget: {under_50_work_budget}",
+                file=sys.stderr,
+            )
+        telemetry_budget_ranked_functions: list[dict[str, Any]] = []
+        work_budget_ranked_functions: list[dict[str, Any]] = []
         if not summary_only and isinstance(function_hotspots, list):
             for item in function_hotspots:
                 if not isinstance(item, dict):
                     continue
                 b_ms = float(item.get("budget_ms", 0.0))
                 s_ms = float(item.get("spent_ms", 0.0))
+                work_units = float(item.get("work_units_spent", 0.0))
+                work_budget = float(item.get("work_budget", 0.0))
                 if b_ms > 0.0:
-                    budget_ranked_functions.append(
+                    telemetry_budget_ranked_functions.append(
                         {
                             "module": str(item.get("module", "")),
                             "function": str(item.get("function", "")),
@@ -7896,15 +8374,37 @@ def _emit_build_diagnostics(
                             "budget_ms": b_ms,
                         }
                     )
-            budget_ranked_functions.sort(key=lambda x: -x["ratio"])
+                if work_budget > 0.0:
+                    work_budget_ranked_functions.append(
+                        {
+                            "module": str(item.get("module", "")),
+                            "function": str(item.get("function", "")),
+                            "ratio": work_units / work_budget,
+                            "work_units": work_units,
+                            "work_budget": work_budget,
+                        }
+                    )
+            telemetry_budget_ranked_functions.sort(key=lambda x: -x["ratio"])
+            work_budget_ranked_functions.sort(key=lambda x: -x["ratio"])
             limit = 10 if full_details else 5
-            for idx, item in enumerate(budget_ranked_functions[:limit], start=1):
+            for idx, item in enumerate(
+                telemetry_budget_ranked_functions[:limit], start=1
+            ):
                 print(
-                    "- midend.budget_top."
+                    "- midend.telemetry_budget_top."
                     f"{idx}: {item['module']}::{item['function']} "
                     f"ratio={item['ratio']:.4f} "
                     f"spent_ms={item['spent_ms']:.3f} "
                     f"budget_ms={item['budget_ms']:.3f}",
+                    file=sys.stderr,
+                )
+            for idx, item in enumerate(work_budget_ranked_functions[:limit], start=1):
+                print(
+                    "- midend.work_budget_top."
+                    f"{idx}: {item['module']}::{item['function']} "
+                    f"ratio={item['ratio']:.4f} "
+                    f"work_units={item['work_units']:.3f} "
+                    f"work_budget={item['work_budget']:.3f}",
                     file=sys.stderr,
                 )
         pass_wall_ranked = midend.get("pass_wall_time_ranked")
@@ -7951,6 +8451,13 @@ def _midend_policy_config_snapshot() -> dict[str, Any]:
             budget_override_ms = max(0.0, float(budget_override_raw))
         except ValueError:
             budget_override_ms = None
+    work_budget_override_raw = os.environ.get("MOLT_MIDEND_WORK_BUDGET", "").strip()
+    work_budget_override: float | None = None
+    if work_budget_override_raw:
+        try:
+            work_budget_override = max(0.0, float(work_budget_override_raw))
+        except ValueError:
+            work_budget_override = None
     hot_promotion_enabled = os.environ.get(
         "MOLT_MIDEND_HOT_TIER_PROMOTION", "1"
     ).strip().lower() not in {"0", "false", "no", "off"}
@@ -7968,6 +8475,7 @@ def _midend_policy_config_snapshot() -> dict[str, Any]:
         "profile_override": profile_override or None,
         "hot_tier_promotion_enabled": hot_promotion_enabled,
         "budget_override_ms": budget_override_ms,
+        "work_budget_override": work_budget_override,
         "budget_alpha": _float_env("MOLT_MIDEND_BUDGET_ALPHA", 0.03),
         "budget_beta": _float_env("MOLT_MIDEND_BUDGET_BETA", 0.75),
         "budget_scale": _float_env("MOLT_MIDEND_BUDGET_SCALE", 1.0),
@@ -8091,6 +8599,8 @@ def _build_midend_diagnostics_payload(
                 )
         spent_ms = float(raw_outcome.get("spent_ms", 0.0))
         budget_ms = float(raw_outcome.get("budget_ms", 0.0))
+        work_budget = float(raw_outcome.get("work_budget", 0.0))
+        work_units_spent = float(raw_outcome.get("work_units_spent", 0.0))
         function_hotspots.append(
             {
                 "module": module_name,
@@ -8100,6 +8610,8 @@ def _build_midend_diagnostics_payload(
                 "tier_base": tier_base,
                 "spent_ms": round(max(0.0, spent_ms), 6),
                 "budget_ms": round(max(0.0, budget_ms), 6),
+                "work_budget": round(max(0.0, work_budget), 6),
+                "work_units_spent": round(max(0.0, work_units_spent), 6),
                 "degraded": degraded,
                 "promoted": promoted,
             }
@@ -8127,6 +8639,8 @@ def _build_midend_diagnostics_payload(
             "promotion_signal": promotion_signal,
             "budget_ms": budget_ms,
             "spent_ms": spent_ms,
+            "work_budget": work_budget,
+            "work_units_spent": work_units_spent,
             "degraded": degraded,
             "degrade_events": degrade_events,
         }
@@ -8198,9 +8712,12 @@ def _build_midend_diagnostics_payload(
     )
 
     promotion_candidates: list[dict[str, Any]] = []
-    budget_utilizations: list[float] = []
-    functions_over_budget = 0
-    functions_under_50pct_budget = 0
+    telemetry_budget_utilizations: list[float] = []
+    work_budget_utilizations: list[float] = []
+    functions_over_telemetry_budget = 0
+    functions_under_50pct_telemetry_budget = 0
+    functions_over_work_budget = 0
+    functions_under_50pct_work_budget = 0
     for function_key in sorted(policy_outcomes_by_function):
         raw_outcome = policy_outcomes_by_function[function_key]
         module_name, _, function_name = function_key.partition("::")
@@ -8218,17 +8735,33 @@ def _build_midend_diagnostics_payload(
                     "spent_ms": round(
                         max(0.0, float(raw_outcome.get("spent_ms", 0.0))), 6
                     ),
+                    "work_budget": round(
+                        max(0.0, float(raw_outcome.get("work_budget", 0.0))), 6
+                    ),
+                    "work_units_spent": round(
+                        max(0.0, float(raw_outcome.get("work_units_spent", 0.0))),
+                        6,
+                    ),
                 }
             )
         s_ms = max(0.0, float(raw_outcome.get("spent_ms", 0.0)))
         b_ms = max(0.0, float(raw_outcome.get("budget_ms", 0.0)))
         if b_ms > 0.0:
             utilization = s_ms / b_ms
-            budget_utilizations.append(utilization)
+            telemetry_budget_utilizations.append(utilization)
             if s_ms > b_ms:
-                functions_over_budget += 1
+                functions_over_telemetry_budget += 1
             if s_ms < 0.5 * b_ms:
-                functions_under_50pct_budget += 1
+                functions_under_50pct_telemetry_budget += 1
+        work_units = max(0.0, float(raw_outcome.get("work_units_spent", 0.0)))
+        work_budget = max(0.0, float(raw_outcome.get("work_budget", 0.0)))
+        if work_budget > 0.0:
+            work_utilization = work_units / work_budget
+            work_budget_utilizations.append(work_utilization)
+            if work_units > work_budget:
+                functions_over_work_budget += 1
+            if work_units < 0.5 * work_budget:
+                functions_under_50pct_work_budget += 1
     promotion_candidates.sort(
         key=lambda item: (
             -float(item["spent_ms"]),
@@ -8236,11 +8769,24 @@ def _build_midend_diagnostics_payload(
             item["function"],
         )
     )
-    budget_utilization_avg = 0.0
-    budget_utilization_p95 = 0.0
-    if budget_utilizations:
-        budget_utilization_avg = sum(budget_utilizations) / len(budget_utilizations)
-        budget_utilization_p95 = _midend_sample_percentile(budget_utilizations, 0.95)
+    telemetry_budget_utilization_avg = 0.0
+    telemetry_budget_utilization_p95 = 0.0
+    if telemetry_budget_utilizations:
+        telemetry_budget_utilization_avg = sum(telemetry_budget_utilizations) / len(
+            telemetry_budget_utilizations
+        )
+        telemetry_budget_utilization_p95 = _midend_sample_percentile(
+            telemetry_budget_utilizations, 0.95
+        )
+    work_budget_utilization_avg = 0.0
+    work_budget_utilization_p95 = 0.0
+    if work_budget_utilizations:
+        work_budget_utilization_avg = sum(work_budget_utilizations) / len(
+            work_budget_utilizations
+        )
+        work_budget_utilization_p95 = _midend_sample_percentile(
+            work_budget_utilizations, 0.95
+        )
 
     pass_aggregate_wall_ms: dict[str, float] = {}
     for function_key in pass_stats_by_function:
@@ -8273,10 +8819,16 @@ def _build_midend_diagnostics_payload(
         "degrade_reason_summary": {
             name: reason_summary[name] for name in sorted(reason_summary)
         },
-        "budget_utilization_avg": round(budget_utilization_avg, 6),
-        "budget_utilization_p95": round(budget_utilization_p95, 6),
-        "functions_over_budget": functions_over_budget,
-        "functions_under_50pct_budget": functions_under_50pct_budget,
+        "telemetry_budget_utilization_avg": round(telemetry_budget_utilization_avg, 6),
+        "telemetry_budget_utilization_p95": round(telemetry_budget_utilization_p95, 6),
+        "functions_over_telemetry_budget": functions_over_telemetry_budget,
+        "functions_under_50pct_telemetry_budget": (
+            functions_under_50pct_telemetry_budget
+        ),
+        "work_budget_utilization_avg": round(work_budget_utilization_avg, 6),
+        "work_budget_utilization_p95": round(work_budget_utilization_p95, 6),
+        "functions_over_work_budget": functions_over_work_budget,
+        "functions_under_50pct_work_budget": functions_under_50pct_work_budget,
         "promotion_candidates": promotion_candidates[:20],
         "pass_wall_time_ranked": [
             {"pass": name, "ms_total": round(ms, 6)} for name, ms in pass_wall_ranked
@@ -8410,9 +8962,7 @@ def _build_module_source_catalog(
                 module_path, inline_source, path_stat
             )
         else:
-            leases[module_name] = _ModuleSourceLease.path_backed(
-                module_path, path_stat
-            )
+            leases[module_name] = _ModuleSourceLease.path_backed(module_path, path_stat)
     return _ModuleSourceCatalog(leases=leases)
 
 
@@ -8719,20 +9269,21 @@ def _module_order_has_back_edges(
 def _read_worker_source_lease(raw_lease: object) -> str:
     if not isinstance(raw_lease, Mapping):
         raise ValueError("missing source lease")
-    kind = raw_lease.get("kind")
+    lease = cast(Mapping[str, object], raw_lease)
+    kind = lease.get("kind")
     if kind == "inline":
-        source = raw_lease.get("source")
+        source = lease.get("source")
         if not isinstance(source, str):
             raise ValueError("inline source lease is missing source text")
         return source
     if kind != "path":
         raise ValueError(f"unsupported source lease kind: {kind!r}")
-    raw_path = raw_lease.get("path")
+    raw_path = lease.get("path")
     if not isinstance(raw_path, str) or not raw_path:
         raise ValueError("path source lease is missing path")
     path = Path(raw_path)
-    expected_size = raw_lease.get("source_size")
-    expected_mtime_ns = raw_lease.get("mtime_ns")
+    expected_size = lease.get("source_size")
+    expected_mtime_ns = lease.get("mtime_ns")
     if expected_size is not None or expected_mtime_ns is not None:
         stat = path.stat()
         if isinstance(expected_size, int) and stat.st_size != expected_size:
@@ -8924,6 +9475,7 @@ def _discover_module_graph_from_paths(
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> tuple[dict[str, Path], set[str]]:
     entry_paths = tuple(entry_paths)
     if not entry_paths:
@@ -8967,6 +9519,7 @@ def _discover_module_graph_from_paths(
             allow_entry_external_imports=allow_entry_external_imports,
             resolution_cache=resolution_cache,
             target_python=target_python,
+            capability_config_digest=capability_config_digest,
         )
         if persisted_graph is not None:
             if not persisted_graph.dirty_modules:
@@ -9016,6 +9569,7 @@ def _discover_module_graph_from_paths(
                         import_scan_mode=import_scan_mode,
                         imports=imports,
                         target_python=target_python,
+                        capability_config_digest=capability_config_digest,
                     )
         else:
             persisted_imports = None
@@ -9027,6 +9581,7 @@ def _discover_module_graph_from_paths(
                     is_package=is_package,
                     import_scan_mode=import_scan_mode,
                     target_python=target_python,
+                    capability_config_digest=capability_config_digest,
                 )
             if persisted_imports is None:
                 try:
@@ -9051,7 +9606,11 @@ def _discover_module_graph_from_paths(
                     tree=tree,
                     resolution_cache=resolution_cache,
                     project_root=project_root,
+                    roots=roots,
+                    stdlib_root=stdlib_root,
+                    stdlib_allowlist=stdlib_allowlist,
                     target_python=target_python,
+                    capability_config_digest=capability_config_digest,
                 )
             else:
                 imports = persisted_imports
@@ -9103,6 +9662,7 @@ def _discover_module_graph_from_paths(
                 graph=graph,
                 explicit_imports=explicit_imports,
                 target_python=target_python,
+                capability_config_digest=capability_config_digest,
             )
     return graph, explicit_imports
 
@@ -9121,6 +9681,7 @@ def _discover_module_graph(
     precomputed_imports: Collection[str] | None = None,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> tuple[dict[str, Path], set[str]]:
     precomputed_imports_by_path = (
         {entry_path: precomputed_imports} if precomputed_imports is not None else None
@@ -9139,6 +9700,7 @@ def _discover_module_graph(
         precomputed_imports_by_path=precomputed_imports_by_path,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
 
 
@@ -9185,10 +9747,11 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
     ).hexdigest()[:24]
 
 
-_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 6
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 4
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 4
+_MODULE_GRAPH_CACHE_SCHEMA_VERSION = 7
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 6
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 7
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
+_MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
 
 _RUNTIME_STDLIB_PROFILE_ALIASES = {
     "micro": "stdlib_micro",
@@ -9253,22 +9816,26 @@ def _module_graph_cache_key(
     stdlib_allowlist_digest: str,
     compiler_fingerprint: str,
     target_python_tag: str = _DEFAULT_TARGET_PYTHON_VERSION.tag,
+    capability_config_digest: str = "",
 ) -> str:
+    payload: dict[str, Any] = {
+        "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
+        "compiler_fingerprint": compiler_fingerprint,
+        "entry_path": str(Path(entry_path).resolve()),
+        "roots": [str(Path(path).resolve()) for path in roots],
+        "module_roots": [str(Path(path).resolve()) for path in module_roots],
+        "stdlib_root": str(Path(stdlib_root).resolve()),
+        "skip_modules": list(skip_modules),
+        "stub_parents": list(stub_parents),
+        "nested_stdlib_scan_modules": list(nested_stdlib_scan_modules),
+        "stdlib_allowlist_digest": stdlib_allowlist_digest,
+        "target_python": target_python_tag,
+    }
+    if capability_config_digest:
+        payload["capability_config_digest"] = capability_config_digest
     return hashlib.sha256(
         json.dumps(
-            {
-                "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
-                "compiler_fingerprint": compiler_fingerprint,
-                "entry_path": str(Path(entry_path).resolve()),
-                "roots": [str(Path(path).resolve()) for path in roots],
-                "module_roots": [str(Path(path).resolve()) for path in module_roots],
-                "stdlib_root": str(Path(stdlib_root).resolve()),
-                "skip_modules": list(skip_modules),
-                "stub_parents": list(stub_parents),
-                "nested_stdlib_scan_modules": list(nested_stdlib_scan_modules),
-                "stdlib_allowlist_digest": stdlib_allowlist_digest,
-                "target_python": target_python_tag,
-            },
+            payload,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -9691,6 +10258,7 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "stdlib_archive",
     "stdlib_ast",
     "stdlib_unicode_names",
+    "stdlib_stringprep",
     "stdlib_fs_extra",
     "sqlite",
     "molt_gpu_primitives",
@@ -10483,10 +11051,11 @@ def _read_shared_stdlib_partition_functions(
         isinstance(name, str) and name for name in raw_functions
     ):
         return None
+    functions = cast(list[str], raw_functions)
     function_count = payload.get("function_count")
-    if isinstance(function_count, int) and function_count != len(raw_functions):
+    if isinstance(function_count, int) and function_count != len(functions):
         return None
-    return frozenset(raw_functions)
+    return frozenset(functions)
 
 
 def _unresolved_stdlib_module_symbols(
@@ -11597,22 +12166,39 @@ def _expand_capabilities(items: list[str]) -> tuple[list[str], list[str]]:
 @functools.lru_cache(maxsize=128)
 def _runtime_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
     project_root = Path(project_root_str)
-    return (
+    runtime_root = project_root / "runtime"
+    paths: list[Path] = [
         project_root / "runtime/molt-runtime/src",
         project_root / "runtime/molt-runtime/Cargo.toml",
         project_root / "runtime/molt-runtime/build.rs",
         project_root / "runtime/molt-obj-model/src",
         project_root / "runtime/molt-obj-model/Cargo.toml",
         project_root / "runtime/molt-obj-model/build.rs",
-        # molt-runtime-tk is linked into the runtime staticlib via the
-        # `stdlib_tk` feature, so its sources must participate in the runtime
-        # fingerprint — otherwise edits to the Tk/Tcl bridge are silently cached
-        # and never recompiled into libmolt_runtime.a.
-        project_root / "runtime/molt-runtime-tk/src",
-        project_root / "runtime/molt-runtime-tk/Cargo.toml",
-        project_root / "Cargo.toml",
-        project_root / "Cargo.lock",
+    ]
+    for crate_dir in sorted(runtime_root.glob("molt-runtime-*")):
+        paths.extend(
+            (
+                crate_dir / "src",
+                crate_dir / "Cargo.toml",
+                crate_dir / "build.rs",
+            )
+        )
+    paths.extend(
+        (
+            project_root / "runtime/Cargo.toml",
+            project_root / "runtime/Cargo.lock",
+            project_root / "Cargo.toml",
+            project_root / "Cargo.lock",
+        )
     )
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        deduped.append(path)
+    return tuple(deduped)
 
 
 def _runtime_source_paths(project_root: Path) -> list[Path]:
@@ -11691,1706 +12277,6 @@ def _backend_bin_path_cached(
         features_tag = "_".join(sorted(backend_features)).replace("-", "_")
         return target_root / profile_dir / f"molt-backend.{features_tag}{exe_suffix}"
     return target_root / profile_dir / f"molt-backend{exe_suffix}"
-
-
-def _codesign_binary(binary_path: Path) -> None:
-    """Ad-hoc codesign a binary on macOS.
-
-    macOS Gatekeeper may kill unsigned binaries with SIGKILL (exit 137).
-    After cargo build or binary copy, re-sign with an ad-hoc signature.
-    No-op on non-macOS platforms.
-    """
-    if sys.platform != "darwin":
-        return
-    try:
-        _run_completed_command(
-            ["codesign", "-f", "-s", "-", str(binary_path)],
-            capture_output=True,
-            env=None,
-            cwd=binary_path.parent,
-            memory_guard_prefix="MOLT_BUILD",
-            timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass  # codesign not available or failed — proceed optimistically
-
-
-def _run_bolt_post_link(
-    *,
-    bolt_requested: bool,
-    bolt_training_cmd: str | None,
-    target: str,
-    output: str | None,
-    out_dir: str | None,
-    build_rc: int,
-    json_output: bool,
-) -> int:
-    """Run BOLT post-link optimization after a successful native build.
-
-    Returns 0 when BOLT was not requested or ran successfully, or a nonzero
-    return code on failure.
-    """
-    if not bolt_requested:
-        return 0
-    if build_rc != 0:
-        return 0  # build already failed — skip BOLT
-
-    # BOLT only applies to native targets.
-    is_native = target in {"native"} or (
-        target is not None
-        and "-" in target
-        and "wasm" not in target
-        and "luau" not in target
-    )
-    if not is_native:
-        if not json_output:
-            print(
-                "Warning: --bolt is only supported for native targets; skipping.",
-                file=sys.stderr,
-            )
-        return 0
-
-    # Locate the BOLT wrapper script.
-    bolt_script = Path(__file__).resolve().parents[2] / "tools" / "bolt_optimize.sh"
-    if not bolt_script.exists():
-        msg = f"BOLT script not found: {bolt_script}"
-        if json_output:
-            _emit_json(
-                _json_payload("build", "error", errors=[msg]),
-                json_output,
-            )
-        else:
-            print(msg, file=sys.stderr)
-        return 1
-
-    # Determine the output binary path.  When --output is given we can
-    # resolve it directly; otherwise BOLT requires it explicitly because
-    # the default output path lives inside internal build state.
-    if output:
-        binary_path = Path(output).expanduser()
-        if not binary_path.is_absolute():
-            base = Path(out_dir) if out_dir else Path.cwd()
-            binary_path = base / binary_path
-    else:
-        if not json_output:
-            print(
-                "Error: --bolt requires an explicit --output path so BOLT "
-                "can locate the binary.",
-                file=sys.stderr,
-            )
-        return 1
-
-    if not binary_path.exists():
-        msg = f"BOLT: output binary not found at {binary_path}"
-        if not json_output:
-            print(msg, file=sys.stderr)
-        return 1
-
-    # Build the bolt command.
-    bolt_cmd: list[str] = ["bash", str(bolt_script), str(binary_path)]
-    if bolt_training_cmd:
-        bolt_cmd.append(bolt_training_cmd)
-
-    if not json_output:
-        print(
-            f"==> Running BOLT post-link optimization on {binary_path}...",
-            file=sys.stderr,
-        )
-
-    try:
-        bolt_proc = _run_completed_command(
-            bolt_cmd,
-            cwd=binary_path.parent,
-            env=None,
-            capture_output=not json_output,
-            memory_guard_prefix="MOLT_BUILD",
-            timeout=300,  # 5 min ceiling
-        )
-    except FileNotFoundError:
-        if not json_output:
-            print("BOLT: bash not found", file=sys.stderr)
-        return 1
-    except subprocess.TimeoutExpired:
-        if not json_output:
-            print("BOLT: optimization timed out (300s)", file=sys.stderr)
-        return 1
-
-    if bolt_proc.returncode != 0:
-        if not json_output:
-            stderr_text = (
-                bolt_proc.stderr
-                if isinstance(bolt_proc.stderr, str)
-                else (
-                    bolt_proc.stderr.decode("utf-8", errors="replace")
-                    if bolt_proc.stderr
-                    else ""
-                )
-            )
-            if stderr_text:
-                print(stderr_text, file=sys.stderr)
-            print("BOLT optimization failed", file=sys.stderr)
-        return bolt_proc.returncode
-
-    # Replace the original binary with the BOLT-optimized one.
-    bolt_binary = Path(f"{binary_path}.bolt")
-    if bolt_binary.exists():
-        try:
-            _atomic_copy_file(bolt_binary, binary_path, codesign=True)
-            bolt_binary.unlink()
-        except OSError as exc:
-            if not json_output:
-                print(
-                    f"BOLT: failed to publish optimized binary: {exc}",
-                    file=sys.stderr,
-                )
-            return 1
-        if not json_output:
-            print(
-                f"==> BOLT-optimized binary installed: {binary_path}",
-                file=sys.stderr,
-            )
-
-    return 0
-
-
-def _read_wasm_varuint(data: bytes, offset: int) -> tuple[int, int]:
-    result = 0
-    shift = 0
-    while True:
-        if offset >= len(data):
-            raise ValueError("Unexpected EOF while reading wasm varuint")
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if byte & 0x80 == 0:
-            return result, offset
-        shift += 7
-    raise AssertionError("unreachable")
-
-
-def _read_wasm_string(data: bytes, offset: int) -> tuple[str, int]:
-    length, offset = _read_wasm_varuint(data, offset)
-    end = offset + length
-    if end > len(data):
-        raise ValueError("Unexpected EOF while reading wasm string")
-    return data[offset:end].decode("utf-8"), end
-
-
-def _write_wasm_varuint(value: int) -> bytes:
-    if value < 0:
-        raise ValueError("wasm varuint must be non-negative")
-    out = bytearray()
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if value:
-            out.append(byte | 0x80)
-        else:
-            out.append(byte)
-            return bytes(out)
-
-
-def _write_wasm_string(value: str) -> bytes:
-    encoded = value.encode("utf-8")
-    return _write_wasm_varuint(len(encoded)) + encoded
-
-
-def _parse_wasm_sections(data: bytes) -> list[tuple[int, bytes]]:
-    if len(data) < 8 or data[:4] != b"\x00asm":
-        raise ValueError("Invalid wasm binary")
-    offset = 8
-    sections: list[tuple[int, bytes]] = []
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        section_size, offset = _read_wasm_varuint(data, offset)
-        section_end = offset + section_size
-        if section_end > len(data):
-            raise ValueError("Invalid wasm section length")
-        sections.append((section_id, data[offset:section_end]))
-        offset = section_end
-    return sections
-
-
-def _build_wasm_sections(sections: Sequence[tuple[int, bytes]]) -> bytes:
-    out = bytearray(b"\x00asm\x01\x00\x00\x00")
-    for section_id, payload in sections:
-        out.append(section_id)
-        out.extend(_write_wasm_varuint(len(payload)))
-        out.extend(payload)
-    return bytes(out)
-
-
-def _skip_wasm_init_expr(data: bytes, offset: int) -> tuple[int, int | None]:
-    opcode = data[offset]
-    offset += 1
-    value: int | None = None
-    if opcode == 0x41:  # i32.const
-        value, offset = _read_wasm_varuint(data, offset)
-    elif opcode == 0x23:  # global.get
-        _, offset = _read_wasm_varuint(data, offset)
-    else:
-        raise ValueError(f"Unsupported wasm init expr opcode 0x{opcode:02x}")
-    if offset >= len(data) or data[offset] != 0x0B:
-        raise ValueError("Malformed wasm init expr")
-    return offset + 1, value
-
-
-def _read_wasm_ref_func_expr(data: bytes, offset: int) -> tuple[int, int | None]:
-    opcode = data[offset]
-    offset += 1
-    func_index: int | None = None
-    if opcode == 0xD2:  # ref.func
-        func_index, offset = _read_wasm_varuint(data, offset)
-    elif opcode == 0xD0:  # ref.null
-        offset += 1
-    else:
-        raise ValueError(f"Unsupported wasm element expr opcode 0x{opcode:02x}")
-    if offset >= len(data) or data[offset] != 0x0B:
-        raise ValueError("Malformed wasm ref.func expr")
-    return offset + 1, func_index
-
-
-def _collect_wasm_active_table_function_slots(data: bytes) -> dict[int, int]:
-    sections = _parse_wasm_sections(data)
-    slots: dict[int, int] = {}
-    for section_id, payload in sections:
-        if section_id != 9:
-            continue
-        offset = 0
-        count, offset = _read_wasm_varuint(payload, offset)
-        for _ in range(count):
-            flags, offset = _read_wasm_varuint(payload, offset)
-            table_index = 0
-            base_offset: int | None = None
-            if flags == 0:
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                if offset < len(payload) and payload[offset] == 0x00:
-                    offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    func_index, offset = _read_wasm_varuint(payload, offset)
-                    if base_offset is not None:
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 1:
-                if offset < len(payload) and payload[offset] == 0x00:
-                    offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    _, offset = _read_wasm_varuint(payload, offset)
-            elif flags == 2:
-                table_index, offset = _read_wasm_varuint(payload, offset)
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                if offset < len(payload) and payload[offset] == 0x00:
-                    offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    func_index, offset = _read_wasm_varuint(payload, offset)
-                    if table_index == 0 and base_offset is not None:
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 3:
-                if offset < len(payload) and payload[offset] == 0x00:
-                    offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    _, offset = _read_wasm_varuint(payload, offset)
-            elif flags == 4:
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                offset += 1  # reftype
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    offset, func_index = _read_wasm_ref_func_expr(payload, offset)
-                    if func_index is not None and base_offset is not None:
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 5:
-                offset += 1  # reftype
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    offset, _ = _read_wasm_ref_func_expr(payload, offset)
-            elif flags == 6:
-                table_index, offset = _read_wasm_varuint(payload, offset)
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                offset += 1  # reftype
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    offset, func_index = _read_wasm_ref_func_expr(payload, offset)
-                    if (
-                        table_index == 0
-                        and func_index is not None
-                        and base_offset is not None
-                    ):
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 7:
-                offset += 1  # reftype
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    offset, _ = _read_wasm_ref_func_expr(payload, offset)
-            else:
-                raise ValueError(f"Unsupported wasm element flags {flags}")
-    return slots
-
-
-def _export_wasm_table_refs(path: Path) -> None:
-    data = path.read_bytes()
-    sections = _parse_wasm_sections(data)
-    slot_to_func = _collect_wasm_active_table_function_slots(data)
-    if not slot_to_func:
-        return
-
-    exports: list[tuple[str, int, int]] = []
-    existing_names: set[str] = set()
-    new_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id != 7:
-            new_sections.append((section_id, payload))
-            continue
-        offset = 0
-        count, offset = _read_wasm_varuint(payload, offset)
-        for _ in range(count):
-            name, offset = _read_wasm_string(payload, offset)
-            kind = payload[offset]
-            offset += 1
-            index, offset = _read_wasm_varuint(payload, offset)
-            exports.append((name, kind, index))
-            existing_names.add(name)
-
-    additions = [
-        (f"__molt_table_ref_{slot}", 0, func_index)
-        for slot, func_index in sorted(slot_to_func.items())
-        if f"__molt_table_ref_{slot}" not in existing_names
-    ]
-    if not additions:
-        return
-
-    export_payload = bytearray()
-    merged = exports + additions
-    export_payload.extend(_write_wasm_varuint(len(merged)))
-    for name, kind, index in merged:
-        export_payload.extend(_write_wasm_string(name))
-        export_payload.append(kind)
-        export_payload.extend(_write_wasm_varuint(index))
-
-    inserted = False
-    rebuilt_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in sections:
-        if section_id == 7:
-            rebuilt_sections.append((7, bytes(export_payload)))
-            inserted = True
-            continue
-        if not inserted and section_id > 7:
-            rebuilt_sections.append((7, bytes(export_payload)))
-            inserted = True
-        rebuilt_sections.append((section_id, payload))
-    if not inserted:
-        rebuilt_sections.append((7, bytes(export_payload)))
-    _atomic_write_bytes(path, _build_wasm_sections(rebuilt_sections))
-
-
-def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
-    data = path.read_bytes()
-    if len(data) < 8 or data[:4] != b"\x00asm":
-        raise ValueError(f"Invalid wasm binary: {path}")
-
-    memory_min: int | None = None
-    table_min: int | None = None
-    offset = 8
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        section_size, offset = _read_wasm_varuint(data, offset)
-        section_end = offset + section_size
-        if section_end > len(data):
-            raise ValueError(f"Invalid wasm section length in {path}")
-        if section_id == 2:
-            count, cursor = _read_wasm_varuint(data, offset)
-            for _ in range(count):
-                module_name, cursor = _read_wasm_string(data, cursor)
-                field_name, cursor = _read_wasm_string(data, cursor)
-                kind = data[cursor]
-                cursor += 1
-                if kind == 0:
-                    _, cursor = _read_wasm_varuint(data, cursor)
-                elif kind == 1:
-                    cursor += 1  # elemtype
-                    flags, cursor = _read_wasm_varuint(data, cursor)
-                    minimum, cursor = _read_wasm_varuint(data, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(data, cursor)
-                    if (
-                        module_name == "env"
-                        and field_name == "__indirect_function_table"
-                    ):
-                        table_min = minimum
-                elif kind == 2:
-                    flags, cursor = _read_wasm_varuint(data, cursor)
-                    minimum, cursor = _read_wasm_varuint(data, cursor)
-                    if flags & 0x1:
-                        _, cursor = _read_wasm_varuint(data, cursor)
-                    if module_name == "env" and field_name == "memory":
-                        memory_min = minimum
-                elif kind == 3:
-                    cursor += 2
-                elif kind == 4:
-                    cursor += 1
-                    _, cursor = _read_wasm_varuint(data, cursor)
-                else:
-                    raise ValueError(f"Unknown wasm import kind {kind} in {path}")
-            break
-        offset = section_end
-    return memory_min, table_min
-
-
-def _wasm_import_function_result_kinds(
-    path: Path, *, module_name: str
-) -> dict[str, str]:
-    wasm_objdump = shutil.which("wasm-objdump")
-    if wasm_objdump is None:
-        return {}
-    result = _run_completed_command(
-        [wasm_objdump, "-x", str(path)],
-        capture_output=True,
-        env=None,
-        cwd=path.parent,
-        memory_guard_prefix="MOLT_BUILD",
-    )
-    text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
-    if not text:
-        return {}
-
-    type_kinds: dict[int, str] = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*-\s*type\[(\d+)\]\s+\(.*\)\s+->\s+(.+)", line)
-        if not match:
-            continue
-        type_kinds[int(match.group(1))] = match.group(2).strip()
-
-    result_kinds: dict[str, str] = {}
-    import_re = re.compile(
-        rf"\s*-\s*func\[\d+\]\s+sig=(\d+)\s+<{re.escape(module_name)}\.([^>]+)>\s+<-\s+{re.escape(module_name)}\.[^\s]+"
-    )
-    for line in text.splitlines():
-        match = import_re.match(line)
-        if not match:
-            continue
-        sig = int(match.group(1))
-        name = match.group(2)
-        result_kind = type_kinds.get(sig)
-        if result_kind:
-            result_kinds[name] = result_kind
-    return result_kinds
-
-
-def _wasm_import_function_signatures(
-    path: Path, *, module_name: str
-) -> dict[str, dict[str, object]]:
-    wasm_objdump = shutil.which("wasm-objdump")
-    if wasm_objdump is None:
-        return {}
-    result = _run_completed_command(
-        [wasm_objdump, "-x", str(path)],
-        capture_output=True,
-        env=None,
-        cwd=path.parent,
-        memory_guard_prefix="MOLT_BUILD",
-    )
-    text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
-    if not text:
-        return {}
-
-    type_signatures: dict[int, tuple[list[str], str]] = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*-\s*type\[(\d+)\]\s+\((.*)\)\s+->\s+(.+)", line)
-        if not match:
-            continue
-        type_index = int(match.group(1))
-        raw_params = match.group(2).strip()
-        params = [part.strip() for part in raw_params.split(",") if part.strip()]
-        result_kind = match.group(3).strip()
-        type_signatures[type_index] = (params, result_kind)
-
-    signatures: dict[str, dict[str, object]] = {}
-    import_re = re.compile(
-        rf"\s*-\s*func\[\d+\]\s+sig=(\d+)\s+<{re.escape(module_name)}\.([^>]+)>\s+<-\s+{re.escape(module_name)}\.[^\s]+"
-    )
-    for line in text.splitlines():
-        match = import_re.match(line)
-        if not match:
-            continue
-        sig = int(match.group(1))
-        name = match.group(2)
-        signature = type_signatures.get(sig)
-        if signature is None:
-            continue
-        params, result_kind = signature
-        signatures[name] = {"params": params, "result": result_kind}
-    return signatures
-
-
-def _wasm_export_function_signatures(
-    path: Path, *, export_name_prefix: str
-) -> dict[str, dict[str, object]]:
-    wasm_objdump = shutil.which("wasm-objdump")
-    if wasm_objdump is None:
-        return {}
-    result = _run_completed_command(
-        [wasm_objdump, "-x", str(path)],
-        capture_output=True,
-        env=None,
-        cwd=path.parent,
-        memory_guard_prefix="MOLT_BUILD",
-    )
-    text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
-    if not text:
-        return {}
-
-    type_signatures: dict[int, tuple[list[str], str]] = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*-\s*type\[(\d+)\]\s+\((.*)\)\s+->\s+(.+)", line)
-        if not match:
-            continue
-        type_index = int(match.group(1))
-        raw_params = match.group(2).strip()
-        params = [part.strip() for part in raw_params.split(",") if part.strip()]
-        result_kind = match.group(3).strip()
-        type_signatures[type_index] = (params, result_kind)
-
-    func_type_indices: dict[int, int] = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*-\s*func\[(\d+)\]\s+sig=(\d+)", line)
-        if not match:
-            continue
-        func_type_indices[int(match.group(1))] = int(match.group(2))
-
-    export_signatures: dict[str, dict[str, object]] = {}
-    export_re = re.compile(r'\s*-\s*func\[(\d+)\]\s+<[^>]+>\s+->\s+"([^"]+)"')
-    for line in text.splitlines():
-        match = export_re.match(line)
-        if not match:
-            continue
-        func_index = int(match.group(1))
-        export_name = match.group(2)
-        if not export_name.startswith(export_name_prefix):
-            continue
-        type_index = func_type_indices.get(func_index)
-        if type_index is None:
-            continue
-        signature = type_signatures.get(type_index)
-        if signature is None:
-            continue
-        params, result_kind = signature
-        export_signatures[export_name] = {
-            "params": params,
-            "result": result_kind,
-        }
-    return export_signatures
-
-
-def _infer_wasm_table_base_from_export_names(
-    export_signatures: Mapping[str, Mapping[str, object]],
-    *,
-    export_name_prefix: str,
-) -> int | None:
-    slots: list[int] = []
-    for name in export_signatures:
-        if not name.startswith(export_name_prefix):
-            continue
-        raw = name[len(export_name_prefix) :]
-        try:
-            slot = int(raw)
-        except ValueError:
-            continue
-        if slot > 0:
-            slots.append(slot)
-    if not slots:
-        return None
-    return min(slots)
-
-
-def _effective_split_worker_table_base(
-    *,
-    wasm_table_base: int | None,
-    runtime_table_min: int | None,
-    app_table_ref_signatures: Mapping[str, Mapping[str, object]],
-) -> int | None:
-    if wasm_table_base is not None:
-        return wasm_table_base
-    inferred = _infer_wasm_table_base_from_export_names(
-        app_table_ref_signatures,
-        export_name_prefix="__molt_table_ref_",
-    )
-    if inferred is not None:
-        return inferred
-    return runtime_table_min
-
-
-@functools.lru_cache(maxsize=1)
-def _reserved_wasm_runtime_callable_count() -> int:
-    include_path = (
-        Path(__file__).resolve().parents[2] / "runtime" / "wasm_runtime_callables.inc"
-    )
-    pattern = re.compile(r"^\s*\((\d+),")
-    count = 0
-    for line in include_path.read_text().splitlines():
-        if pattern.match(line):
-            count += 1
-    return count
-
-
-def _generate_split_worker_js(
-    *,
-    shared_memory_initial_pages: int,
-    shared_table_initial: int,
-    shared_table_base: int | None,
-    runtime_import_result_kinds: Mapping[str, str] | None = None,
-    runtime_import_signatures: Mapping[str, Mapping[str, object]] | None = None,
-    app_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
-    runtime_table_ref_signatures: Mapping[str, Mapping[str, object]] | None = None,
-) -> str:
-    """Generate a Cloudflare Workers shim for split-runtime deployment.
-
-    The runtime WASM module is loaded separately and can be cached by the
-    CDN independently of the app module.  Both modules share linear memory
-    through WASI imports.
-    """
-    runtime_import_result_kinds_json = json.dumps(
-        dict(runtime_import_result_kinds or {}), sort_keys=True
-    )
-    runtime_import_signatures_json = json.dumps(
-        dict(runtime_import_signatures or {}), sort_keys=True
-    )
-    app_table_ref_signatures_json = json.dumps(
-        dict(app_table_ref_signatures or {}), sort_keys=True
-    )
-    runtime_table_ref_signatures_json = json.dumps(
-        dict(runtime_table_ref_signatures or {}), sort_keys=True
-    )
-    legacy_wasm_table_base = 256
-    reserved_runtime_callable_base = 33
-    reserved_runtime_shared_prefix_len = (
-        reserved_runtime_callable_base + _reserved_wasm_runtime_callable_count() * 2
-    )
-    worker_js = """// Molt split-runtime Cloudflare Workers shim
-// Runtime module is cached independently by the CDN.
-import "./molt_vfs_browser.js";
-import runtimeModule from "./molt_runtime.wasm";
-import appModule from "./app.wasm";
-
-class ProcExit { constructor(code) { this.code = code; } }
-
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const urlPath = url.pathname;
-    const queryString = url.search ? url.search.slice(1) : "";
-
-    const stdoutChunks = [];
-    const stderrChunks = [];
-    const stdoutDecoder = new TextDecoder();
-    const stderrDecoder = new TextDecoder();
-    const utf8Decoder = new TextDecoder();
-    const encoder = new TextEncoder();
-    const wasmMemory = new WebAssembly.Memory({ initial: __MOLT_SHARED_MEMORY_PAGES__ });
-    const vfs = new globalThis.MoltVfs();
-    let appInstance = null;
-
-    const assetBytes = async (name) => {
-      if (!env.__STATIC_CONTENT || typeof env.__STATIC_CONTENT.get !== "function") {
-        return null;
-      }
-      const asset = await env.__STATIC_CONTENT.get(name);
-      if (!asset) return null;
-      if (asset instanceof Uint8Array) return asset;
-      if (asset instanceof ArrayBuffer) return new Uint8Array(asset);
-      if (typeof asset.arrayBuffer === "function") {
-        return new Uint8Array(await asset.arrayBuffer());
-      }
-      if (typeof asset.bytes === "function") {
-        return new Uint8Array(await asset.bytes());
-      }
-      return null;
-    };
-
-    const readPathUtf8 = (pathPtr, pathLen) =>
-      utf8Decoder.decode(
-        new Uint8Array(wasmMemory.buffer, pathPtr >>> 0, pathLen >>> 0)
-      );
-
-    const writeErrno = (err, fallback) => {
-      if (err && typeof err.message === "string") {
-        if (err.message.startsWith("ENOENT")) return ENOENT;
-        if (err.message.startsWith("ENOSPC")) return 28;
-        if (err.message.startsWith("EINVAL")) return EINVAL;
-      }
-      return fallback;
-    };
-
-    const wasiArgs = ["molt", urlPath, queryString];
-    const argsEncoded = wasiArgs.map(a => encoder.encode(a + "\\0"));
-    const argsTotalSize = argsEncoded.reduce((s, a) => s + a.length, 0);
-
-    const envVars = [
-      "MOLT_TRUSTED=1",
-      ...(__MOLT_SHARED_TABLE_BASE__ !== null
-        ? [`MOLT_WASM_TABLE_BASE=${__MOLT_SHARED_TABLE_BASE__}`]
-        : []),
-      ...(queryString ? [`QUERY_STRING=${queryString}`] : []),
-    ];
-    const envEncoded = envVars.map(e => encoder.encode(e + "\\0"));
-    const envTotalSize = envEncoded.reduce((s, e) => s + e.length, 0);
-    const ENOSYS = 38;
-    const EINVAL = 22;
-    const EBADF = 9;
-    const ENOENT = 2;
-    const ENOSPC = 28;
-    const EROFS = 30;
-    const EISDIR = 21;
-    const ENOTDIR = 20;
-    const ESPIPE = 29;
-    const QNAN = 0x7ff8000000000000n;
-    const TAG_INT = 0x0001000000000000n;
-    const TAG_NONE = 0x0003000000000000n;
-    const INT_MASK = (1n << 47n) - 1n;
-    const NONE_BITS = QNAN | TAG_NONE;
-    const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
-    const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
-    const appTableRefSignatures = __MOLT_APP_TABLE_REF_SIGNATURES__;
-    const runtimeTableRefSignatures = __MOLT_RUNTIME_TABLE_REF_SIGNATURES__;
-    const LEGACY_WASM_TABLE_BASE = __MOLT_LEGACY_WASM_TABLE_BASE__;
-    const RESERVED_RUNTIME_CALLABLE_BASE = __MOLT_RESERVED_RUNTIME_CALLABLE_BASE__;
-    const RESERVED_RUNTIME_SHARED_PREFIX_LEN = __MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__;
-    const WASI_FILETYPE_CHARACTER_DEVICE = 2;
-    const WASI_FILETYPE_DIRECTORY = 3;
-    const WASI_FILETYPE_REGULAR_FILE = 4;
-    const WASI_PREOPENTYPE_DIR = 0;
-    const WASI_RIGHTS_ALL = 0xffffffffffffffffn;
-    const WASI_OFLAGS_CREAT = 1;
-    const WASI_OFLAGS_DIRECTORY = 2;
-    const WASI_OFLAGS_EXCL = 4;
-    const WASI_OFLAGS_TRUNC = 8;
-    const WASI_WHENCE_SET = 0;
-    const WASI_WHENCE_CUR = 1;
-    const WASI_WHENCE_END = 2;
-    const WASI_ERRNO_BADF = 8;
-    const WASI_ERRNO_INVAL = 28;
-    const WASI_ERRNO_ISDIR = 31;
-    const WASI_ERRNO_NOENT = 44;
-    const WASI_ERRNO_NOSYS = 52;
-    const WASI_ERRNO_NOTDIR = 54;
-    const WASI_ERRNO_ROFS = 69;
-    const WASI_ERRNO_SPIPE = 70;
-    const wasiFiles = new Map();
-    const wasiPreopens = [
-      { fd: 3, path: "/bundle" },
-      { fd: 4, path: "/tmp" },
-      { fd: 5, path: "/dev" },
-    ];
-    let wasiNextFd = 6;
-
-    const toNumber = (value) =>
-      typeof value === "bigint" ? Number(value) : Number(value >>> 0);
-
-    const writeBytesToMemory = (memory, ptr, bytes) => {
-      if (!memory) return false;
-      const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-      const start = Number(ptr);
-      const end = start + data.length;
-      if (start < 0 || end > memory.buffer.byteLength) return false;
-      new Uint8Array(memory.buffer, start, data.length).set(data);
-      return true;
-    };
-
-    const writeWasiU32 = (ptr, value) => {
-      if (!wasmMemory) return false;
-      new DataView(wasmMemory.buffer).setUint32(Number(ptr), Number(value) >>> 0, true);
-      return true;
-    };
-
-    const writeWasiU64 = (ptr, value) => {
-      if (!wasmMemory) return false;
-      new DataView(wasmMemory.buffer).setBigUint64(Number(ptr), BigInt(value), true);
-      return true;
-    };
-
-    const writeFilestat = (ptr, stat) => {
-      if (!wasmMemory) return false;
-      const view = new DataView(wasmMemory.buffer);
-      const base = Number(ptr);
-      new Uint8Array(wasmMemory.buffer, base, 64).fill(0);
-      view.setUint8(
-        base + 16,
-        stat.isDir ? WASI_FILETYPE_DIRECTORY : WASI_FILETYPE_REGULAR_FILE,
-      );
-      view.setBigUint64(base + 32, BigInt(stat.size || 0), true);
-      view.setBigUint64(base + 40, BigInt(stat.size || 0), true);
-      view.setBigUint64(base + 48, 0n, true);
-      view.setBigUint64(base + 56, 0n, true);
-      return true;
-    };
-
-    const wasiUnsupported = () => WASI_ERRNO_NOSYS;
-    const preopenByFd = (fdNum) =>
-      wasiPreopens.find((entry) => entry.fd === fdNum) || null;
-    const readGuestPath = (ptr, len) => {
-      if (!wasmMemory) return null;
-      return utf8Decoder.decode(
-        new Uint8Array(wasmMemory.buffer, Number(ptr), Number(len)),
-      );
-    };
-    const normalizeRelativePath = (rawPath) => {
-      const parts = [];
-      for (const part of rawPath.split("/")) {
-        if (!part || part === ".") continue;
-        if (part === "..") {
-          if (parts.length === 0) return null;
-          parts.pop();
-          continue;
-        }
-        parts.push(part);
-      }
-      return parts.join("/");
-    };
-    const absoluteVfsPath = (preopen, relativePath) =>
-      relativePath ? `${preopen.path}/${relativePath}` : preopen.path;
-    const statResolvedPath = (absolutePath) => {
-      const resolved = vfs.resolve(absolutePath);
-      if (!resolved || !resolved.mount || typeof resolved.mount.stat !== "function") {
-        return null;
-      }
-      const stat = resolved.mount.stat(resolved.rel);
-      if (!stat) return null;
-      return { resolved, stat };
-    };
-    const openResolvedPath = (preopen, relativePath, oflags) => {
-      const wantDirectory = (oflags & WASI_OFLAGS_DIRECTORY) !== 0;
-      const absolutePath = absoluteVfsPath(preopen, relativePath);
-      let info = statResolvedPath(absolutePath);
-      if (!info) {
-        if ((oflags & WASI_OFLAGS_CREAT) === 0) {
-          return { errno: WASI_ERRNO_NOENT };
-        }
-        if (preopen.path !== "/tmp" || !vfs.tmp) {
-          return { errno: WASI_ERRNO_ROFS };
-        }
-        vfs.tmp.write(relativePath, new Uint8Array(0));
-        info = statResolvedPath(absolutePath);
-        if (!info) {
-          return { errno: WASI_ERRNO_NOENT };
-        }
-      } else if ((oflags & WASI_OFLAGS_EXCL) !== 0 && (oflags & WASI_OFLAGS_CREAT) !== 0) {
-        return { errno: WASI_ERRNO_INVAL };
-      }
-      if (info.stat.isDir) {
-        if (!wantDirectory) return { errno: WASI_ERRNO_ISDIR };
-        const fd = wasiNextFd++;
-        wasiFiles.set(fd, {
-          kind: "dir",
-          absolutePath,
-          resolved: info.resolved,
-          readable: true,
-          writable: false,
-          pos: 0,
-        });
-        return { errno: 0, fd };
-      }
-      if (wantDirectory) {
-        return { errno: WASI_ERRNO_NOTDIR };
-      }
-      if ((oflags & WASI_OFLAGS_TRUNC) !== 0) {
-        if (info.resolved.prefix !== "/tmp") {
-          return { errno: WASI_ERRNO_ROFS };
-        }
-        info.resolved.mount.write(info.resolved.rel, new Uint8Array(0));
-        info = statResolvedPath(absolutePath);
-        if (!info) {
-          return { errno: WASI_ERRNO_NOENT };
-        }
-      }
-      let buffer;
-      try {
-        buffer = info.resolved.mount.read(info.resolved.rel);
-      } catch {
-        return { errno: WASI_ERRNO_NOENT };
-      }
-      const fd = wasiNextFd++;
-      wasiFiles.set(fd, {
-        kind: "file",
-        absolutePath,
-        resolved: info.resolved,
-        readable: true,
-        writable: info.resolved.prefix === "/tmp",
-        pos: 0,
-        buffer: new Uint8Array(buffer),
-      });
-      return { errno: 0, fd };
-    };
-    const syncWritableFile = (entry) => {
-      if (!entry || entry.kind !== "file" || !entry.writable) {
-        return 0;
-      }
-      try {
-        entry.resolved.mount.write(entry.resolved.rel, entry.buffer);
-        return 0;
-      } catch {
-        return WASI_ERRNO_INVAL;
-      }
-    };
-    const writeFdstat = (statPtr, filetype) => {
-      if (!wasmMemory) return WASI_ERRNO_NOSYS;
-      const view = new DataView(wasmMemory.buffer);
-      const base = Number(statPtr);
-      view.setUint8(base, filetype);
-      view.setUint16(base + 2, 0, true);
-      view.setBigUint64(base + 8, WASI_RIGHTS_ALL, true);
-      view.setBigUint64(base + 16, WASI_RIGHTS_ALL, true);
-      return 0;
-    };
-
-    const wasi = {
-      fd_write(fd, iovs, iovsLen, nwritten) {
-        if ((fd === 1 || fd === 2) && wasmMemory) {
-          const view = new DataView(wasmMemory.buffer);
-          let totalWritten = 0;
-          for (let i = 0; i < iovsLen; i++) {
-            const ptr = view.getUint32(iovs + i * 8, true);
-            const len = view.getUint32(iovs + i * 8 + 4, true);
-            const bytes = new Uint8Array(wasmMemory.buffer, ptr, len);
-            const decoder = (fd === 1) ? stdoutDecoder : stderrDecoder;
-            const text = decoder.decode(bytes, { stream: true });
-            if (fd === 1) stdoutChunks.push(text);
-            else stderrChunks.push(text);
-            totalWritten += len;
-          }
-          view.setUint32(nwritten, totalWritten, true);
-        }
-        return 0;
-      },
-      fd_read(fd, iovsPtr, iovsLen, outReadPtr) {
-        if (!wasmMemory) return WASI_ERRNO_NOSYS;
-        const fdNum = toNumber(fd);
-        const view = new DataView(wasmMemory.buffer);
-        if (fdNum === 0 && vfs.dev) {
-          const basePtr = toNumber(iovsPtr);
-          const count = toNumber(iovsLen);
-          let totalRead = 0;
-          for (let index = 0; index < count; index += 1) {
-            const ptr = view.getUint32(basePtr + index * 8, true);
-            const len = view.getUint32(basePtr + index * 8 + 4, true);
-            if (len === 0) continue;
-            const chunk = vfs.dev.readStdin(len);
-            new Uint8Array(wasmMemory.buffer, ptr, chunk.length).set(chunk);
-            totalRead += chunk.length;
-            if (chunk.length < len) break;
-          }
-          if (outReadPtr) {
-            view.setUint32(Number(outReadPtr), totalRead >>> 0, true);
-          }
-          return 0;
-        }
-        const entry = wasiFiles.get(fdNum);
-        if (!entry || entry.kind !== "file" || !entry.readable) {
-          return WASI_ERRNO_BADF;
-        }
-        const basePtr = toNumber(iovsPtr);
-        const count = toNumber(iovsLen);
-        let totalRead = 0;
-        for (let index = 0; index < count; index += 1) {
-          const ptr = view.getUint32(basePtr + index * 8, true);
-          const len = view.getUint32(basePtr + index * 8 + 4, true);
-          if (len === 0) continue;
-          const remaining = entry.buffer.subarray(entry.pos, entry.pos + len);
-          new Uint8Array(wasmMemory.buffer, ptr, remaining.length).set(remaining);
-          entry.pos += remaining.length;
-          totalRead += remaining.length;
-          if (remaining.length < len) break;
-        }
-        if (outReadPtr) {
-          view.setUint32(Number(outReadPtr), totalRead >>> 0, true);
-        }
-        return 0;
-      },
-      fd_close(fd) {
-        const fdNum = toNumber(fd);
-        const entry = wasiFiles.get(fdNum);
-        if (!entry) return 0;
-        const rc = syncWritableFile(entry);
-        if (rc !== 0) return rc;
-        wasiFiles.delete(fdNum);
-        return 0;
-      },
-      fd_seek(fd, offset, whence, outOffsetPtr) {
-        const fdNum = toNumber(fd);
-        const entry = wasiFiles.get(fdNum);
-        if (!entry || entry.kind !== "file") {
-          return WASI_ERRNO_BADF;
-        }
-        const delta = typeof offset === "bigint" ? Number(offset) : Number(offset);
-        let next = 0;
-        if (whence === WASI_WHENCE_SET) {
-          next = delta;
-        } else if (whence === WASI_WHENCE_CUR) {
-          next = entry.pos + delta;
-        } else if (whence === WASI_WHENCE_END) {
-          next = entry.buffer.length + delta;
-        } else {
-          return WASI_ERRNO_INVAL;
-        }
-        if (next < 0) return WASI_ERRNO_INVAL;
-        entry.pos = next;
-        if (outOffsetPtr) writeWasiU64(outOffsetPtr, BigInt(next));
-        return 0;
-      },
-      fd_prestat_get(fd, prestatPtr) {
-        if (!wasmMemory) return WASI_ERRNO_NOSYS;
-        const fdNum = toNumber(fd);
-        const preopen = preopenByFd(fdNum);
-        if (!preopen) return WASI_ERRNO_BADF;
-        const view = new DataView(wasmMemory.buffer);
-        view.setUint8(Number(prestatPtr), WASI_PREOPENTYPE_DIR);
-        view.setUint8(Number(prestatPtr) + 1, 0);
-        view.setUint8(Number(prestatPtr) + 2, 0);
-        view.setUint8(Number(prestatPtr) + 3, 0);
-        view.setUint32(Number(prestatPtr) + 4, preopen.path.length, true);
-        return 0;
-      },
-      fd_prestat_dir_name(fd, pathPtr, pathLen) {
-        if (!wasmMemory) return WASI_ERRNO_NOSYS;
-        const fdNum = toNumber(fd);
-        const preopen = preopenByFd(fdNum);
-        if (!preopen) return WASI_ERRNO_BADF;
-        const bytes = encoder.encode(preopen.path);
-        if (toNumber(pathLen) < bytes.length) return WASI_ERRNO_INVAL;
-        return writeBytesToMemory(wasmMemory, pathPtr, bytes) ? 0 : WASI_ERRNO_INVAL;
-      },
-      fd_fdstat_get(fd, statPtr) {
-        const fdNum = toNumber(fd);
-        if (fdNum === 0 || fdNum === 1 || fdNum === 2) {
-          return writeFdstat(statPtr, WASI_FILETYPE_CHARACTER_DEVICE);
-        }
-        if (preopenByFd(fdNum)) {
-          return writeFdstat(statPtr, WASI_FILETYPE_DIRECTORY);
-        }
-        const entry = wasiFiles.get(fdNum);
-        if (!entry) return WASI_ERRNO_BADF;
-        return writeFdstat(
-          statPtr,
-          entry.kind === "dir" ? WASI_FILETYPE_DIRECTORY : WASI_FILETYPE_REGULAR_FILE,
-        );
-      },
-      fd_tell(fd, outOffsetPtr) {
-        const fdNum = toNumber(fd);
-        const entry = wasiFiles.get(fdNum);
-        if (!entry || entry.kind !== "file") {
-          return WASI_ERRNO_SPIPE;
-        }
-        return writeWasiU64(outOffsetPtr, BigInt(entry.pos)) ? 0 : WASI_ERRNO_NOSYS;
-      },
-      fd_filestat_get(fd, bufPtr) {
-        const fdNum = toNumber(fd);
-        if (preopenByFd(fdNum)) {
-          return writeFilestat(bufPtr, { isDir: true, isFile: false, size: 0 })
-            ? 0
-            : WASI_ERRNO_NOSYS;
-        }
-        const entry = wasiFiles.get(fdNum);
-        if (!entry) return WASI_ERRNO_BADF;
-        const stat =
-          entry.kind === "dir"
-            ? { isDir: true, isFile: false, size: 0 }
-            : { isDir: false, isFile: true, size: entry.buffer.length };
-        return writeFilestat(bufPtr, stat) ? 0 : WASI_ERRNO_NOSYS;
-      },
-      fd_filestat_set_size: wasiUnsupported,
-      fd_filestat_set_times: wasiUnsupported,
-      fd_readdir: wasiUnsupported,
-      fd_advise: wasiUnsupported,
-      fd_datasync: wasiUnsupported,
-      fd_fdstat_set_flags: wasiUnsupported,
-      fd_fdstat_set_rights: wasiUnsupported,
-      fd_pread: wasiUnsupported,
-      fd_pwrite: wasiUnsupported,
-      fd_allocate: wasiUnsupported,
-      fd_renumber: wasiUnsupported,
-      fd_sync: wasiUnsupported,
-      path_filestat_set_times: wasiUnsupported,
-      path_link: wasiUnsupported,
-      path_symlink: wasiUnsupported,
-      sock_accept: wasiUnsupported,
-      sock_recv: wasiUnsupported,
-      sock_send: wasiUnsupported,
-      sock_shutdown: wasiUnsupported,
-      environ_sizes_get(countPtr, sizePtr) {
-        if (wasmMemory) {
-          const view = new DataView(wasmMemory.buffer);
-          view.setUint32(countPtr, envVars.length, true);
-          view.setUint32(sizePtr, envTotalSize, true);
-        }
-        return 0;
-      },
-      environ_get(environPtr, environBufPtr) {
-        if (wasmMemory) {
-          const view = new DataView(wasmMemory.buffer);
-          let bufOffset = environBufPtr;
-          for (let i = 0; i < envEncoded.length; i++) {
-            view.setUint32(environPtr + i * 4, bufOffset, true);
-            new Uint8Array(wasmMemory.buffer, bufOffset, envEncoded[i].length).set(envEncoded[i]);
-            bufOffset += envEncoded[i].length;
-          }
-        }
-        return 0;
-      },
-      args_sizes_get(countPtr, sizePtr) {
-        if (wasmMemory) {
-          const view = new DataView(wasmMemory.buffer);
-          view.setUint32(countPtr, wasiArgs.length, true);
-          view.setUint32(sizePtr, argsTotalSize, true);
-        }
-        return 0;
-      },
-      args_get(argvPtr, argvBufPtr) {
-        if (wasmMemory) {
-          const view = new DataView(wasmMemory.buffer);
-          let bufOffset = argvBufPtr;
-          for (let i = 0; i < argsEncoded.length; i++) {
-            view.setUint32(argvPtr + i * 4, bufOffset, true);
-            new Uint8Array(wasmMemory.buffer, bufOffset, argsEncoded[i].length).set(argsEncoded[i]);
-            bufOffset += argsEncoded[i].length;
-          }
-        }
-        return 0;
-      },
-      clock_time_get(id, precision, outPtr) {
-        if (wasmMemory) {
-          new DataView(wasmMemory.buffer).setBigUint64(outPtr, BigInt(Date.now()) * 1000000n, true);
-        }
-        return 0;
-      },
-      clock_res_get(id, outPtr) {
-        if (wasmMemory) {
-          new DataView(wasmMemory.buffer).setBigUint64(outPtr, 1000000n, true);
-        }
-        return 0;
-      },
-      random_get(ptr, len) {
-        if (wasmMemory) crypto.getRandomValues(new Uint8Array(wasmMemory.buffer, ptr, len));
-        return 0;
-      },
-      proc_exit(code) { throw new ProcExit(code); },
-      proc_raise() { return WASI_ERRNO_NOSYS; },
-      sched_yield() { return 0; },
-      poll_oneoff() { return 0; },
-      path_open(fd, _dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, _fdflags, openedFdPtr) {
-        const fdNum = toNumber(fd);
-        const preopen = preopenByFd(fdNum);
-        if (!preopen) return WASI_ERRNO_BADF;
-        const rawPath = readGuestPath(pathPtr, pathLen);
-        if (rawPath === null) return WASI_ERRNO_NOSYS;
-        const relativePath = normalizeRelativePath(rawPath);
-        if (relativePath === null) return WASI_ERRNO_INVAL;
-        const opened = openResolvedPath(preopen, relativePath, toNumber(oflags));
-        if (opened.errno !== 0) return opened.errno;
-        return writeWasiU32(openedFdPtr, opened.fd) ? 0 : WASI_ERRNO_NOSYS;
-      },
-      path_filestat_get(fd, _flags, pathPtr, pathLen, bufPtr) {
-        const fdNum = toNumber(fd);
-        const preopen = preopenByFd(fdNum);
-        if (!preopen) return WASI_ERRNO_BADF;
-        const rawPath = readGuestPath(pathPtr, pathLen);
-        if (rawPath === null) return WASI_ERRNO_NOSYS;
-        const relativePath = normalizeRelativePath(rawPath);
-        if (relativePath === null) return WASI_ERRNO_INVAL;
-        const info = statResolvedPath(absoluteVfsPath(preopen, relativePath));
-        if (!info) return WASI_ERRNO_NOENT;
-        return writeFilestat(bufPtr, info.stat) ? 0 : WASI_ERRNO_NOSYS;
-      },
-      path_rename: wasiUnsupported,
-      path_readlink: wasiUnsupported,
-      path_unlink_file: wasiUnsupported,
-      path_create_directory: wasiUnsupported,
-      path_remove_directory: wasiUnsupported,
-    };
-
-    const boxInt = (value) => {
-      let v = BigInt(value);
-      if (v < 0n) {
-        v = (1n << 47n) + v;
-      }
-      return QNAN | TAG_INT | (v & INT_MASK);
-    };
-
-    const normalizeI64Result = (value) =>
-      value === undefined || value === null
-        ? NONE_BITS
-        : typeof value === "bigint"
-          ? value
-          : BigInt(value);
-
-    const normalizeImportResult = (value, resultKind) => {
-      if (resultKind === "i64") {
-        return normalizeI64Result(value);
-      }
-      if (resultKind === "i32") {
-        return typeof value === "bigint" ? Number(value) : Number(value);
-      }
-      return value;
-    };
-
-    const normalizeValueForKind = (value, kind) => {
-      if (kind === "i64") {
-        return normalizeI64Result(value);
-      }
-      if (kind === "i32") {
-        return typeof value === "bigint" ? Number(value) : Number(value);
-      }
-      return value;
-    };
-
-    const formatDebugValue = (value) => {
-      if (typeof value === "bigint") {
-        return `${value}n`;
-      }
-      if (Array.isArray(value)) {
-        return `[${value.map((item) => formatDebugValue(item)).join(", ")}]`;
-      }
-      if (value && typeof value === "object") {
-        return Object.prototype.toString.call(value);
-      }
-      return String(value);
-    };
-
-    const callWithSignature = (fn, signature, args) => {
-      if (!signature || !Array.isArray(signature.params)) {
-        return fn(...args);
-      }
-      const callArgs = args.map((value, index) =>
-        normalizeValueForKind(value, signature.params[index] || null),
-      );
-      const out = fn(...callArgs);
-      return normalizeImportResult(out, signature.result || null);
-    };
-
-    const installTableRefs = (instance, table) => {
-      if (!instance || !table) {
-        return;
-      }
-      const refs = [];
-      for (const [name, value] of Object.entries(instance.exports)) {
-        const match = /^__molt_table_ref_(\\d+)$/.exec(name);
-        if (!match || typeof value !== "function") {
-          continue;
-        }
-        refs.push({ index: Number(match[1]), fn: value });
-      }
-      if (refs.length === 0) {
-        return;
-      }
-      refs.sort((a, b) => a.index - b.index);
-      const maxIndex = refs[refs.length - 1].index;
-      if (maxIndex >= table.length) {
-        table.grow(maxIndex + 1 - table.length);
-      }
-      for (const ref of refs) {
-        table.set(ref.index, ref.fn);
-      }
-    };
-
-    const ensureTableCapacityForExportedRefs = (instance, table) => {
-      if (!instance || !table) {
-        return;
-      }
-      let maxIndex = -1;
-      for (const name of Object.keys(instance.exports)) {
-        const match = /^__molt_table_ref_(\\d+)$/.exec(name);
-        if (!match) {
-          continue;
-        }
-        const idx = Number(match[1]);
-        if (Number.isInteger(idx) && idx > maxIndex) {
-          maxIndex = idx;
-        }
-      }
-      if (maxIndex < 0 || maxIndex < table.length) {
-        return;
-      }
-      table.grow(maxIndex + 1 - table.length);
-    };
-
-    const remapLegacyRuntimeSharedIdx = (idx) => {
-      if (__MOLT_SHARED_TABLE_BASE__ === null || __MOLT_SHARED_TABLE_BASE__ <= LEGACY_WASM_TABLE_BASE) {
-        return idx;
-      }
-      if (
-        idx >= LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_CALLABLE_BASE &&
-        idx < LEGACY_WASM_TABLE_BASE + RESERVED_RUNTIME_SHARED_PREFIX_LEN
-      ) {
-        return idx - LEGACY_WASM_TABLE_BASE + __MOLT_SHARED_TABLE_BASE__;
-      }
-      return idx;
-    };
-
-    const buildRuntimeImports = (module, runtimeInstance) => {
-      const imports = {};
-      const callBindIc = runtimeInstance.exports.molt_call_bind_ic;
-      const callargsNew = runtimeInstance.exports.molt_callargs_new;
-      const callargsPushPos = runtimeInstance.exports.molt_callargs_push_pos;
-      const dictSet = runtimeInstance.exports.molt_dict_set;
-      const dictGetitemBorrowed = runtimeInstance.exports.molt_dict_getitem_borrowed;
-      const tupleGetitemBorrowed = runtimeInstance.exports.molt_tuple_getitem_borrowed;
-      const makeCallBindFallback = (arity) => {
-        if (
-          typeof callBindIc !== "function" ||
-          typeof callargsNew !== "function" ||
-          typeof callargsPushPos !== "function"
-        ) {
-          return null;
-        }
-        return (methodBits, ...argBits) => {
-          const builderBits = callargsNew(boxInt(arity), boxInt(0));
-          for (const argBitsValue of argBits) {
-            callargsPushPos(builderBits, argBitsValue);
-          }
-          return callBindIc(boxInt(0), methodBits, builderBits);
-        };
-      };
-      for (const entry of WebAssembly.Module.imports(module)) {
-        if (entry.module !== "molt_runtime") continue;
-        const exportName = entry.name.startsWith("molt_")
-          ? entry.name
-          : `molt_${entry.name}`;
-        let fn = runtimeInstance.exports[exportName];
-        if (typeof fn !== "function") {
-          if (entry.name === "fast_list_append") {
-            fn = makeCallBindFallback(1);
-          } else if (entry.name === "fast_str_join") {
-            fn = makeCallBindFallback(1);
-          } else if (entry.name === "fast_dict_get") {
-            fn = makeCallBindFallback(2);
-          } else if (entry.name === "dict_setitem") {
-            fn = typeof dictSet === "function" ? dictSet : null;
-          } else if (entry.name === "dict_getitem") {
-            fn = typeof dictGetitemBorrowed === "function" ? dictGetitemBorrowed : null;
-          } else if (entry.name === "tuple_getitem") {
-            fn = typeof tupleGetitemBorrowed === "function" ? tupleGetitemBorrowed : null;
-          }
-        }
-        if (typeof fn !== "function") {
-          throw new Error(`molt_runtime missing export ${exportName}`);
-        }
-        const signature = runtimeImportSignatures[entry.name] || null;
-        const resultKind = runtimeImportResultKinds[entry.name] || null;
-        imports[entry.name] = (...args) => {
-          const callArgs = signature && Array.isArray(signature.params)
-            ? args.map((value, index) => normalizeValueForKind(value, signature.params[index] || null))
-            : args;
-          let out;
-          try {
-            out = fn(...callArgs);
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            throw new Error(
-              `runtime import ${entry.name} failed: ${detail}; args=${formatDebugValue(callArgs)}; signature=${formatDebugValue(signature)}`,
-            );
-          }
-          return normalizeImportResult(out, resultKind);
-        };
-      }
-      return imports;
-    };
-
-    const hostEnv = {
-      memory: wasmMemory,
-      molt_vfs_read(pathPtr, pathLen, outPtr, outCapacity, outLenPtr) {
-        if (!wasmMemory) return -ENOSYS;
-        const path = readPathUtf8(pathPtr, pathLen);
-        const resolved = vfs.resolve(path);
-        if (!resolved || !resolved.mount || typeof resolved.mount.read !== "function") {
-          return -ENOENT;
-        }
-        try {
-          const data = resolved.mount.read(resolved.rel);
-          const cap = outCapacity >>> 0;
-          if (data.byteLength > cap) return -EINVAL;
-          new Uint8Array(wasmMemory.buffer, outPtr >>> 0, data.byteLength).set(data);
-          new DataView(wasmMemory.buffer).setUint32(outLenPtr >>> 0, data.byteLength, true);
-          return 0;
-        } catch (err) {
-          return writeErrno(err, ENOENT) * -1;
-        }
-      },
-      molt_vfs_write(pathPtr, pathLen, dataPtr, dataLen) {
-        if (!wasmMemory) return -ENOSYS;
-        const path = readPathUtf8(pathPtr, pathLen);
-        const resolved = vfs.resolve(path);
-        if (!resolved || !resolved.mount || typeof resolved.mount.write !== "function") {
-          return -EINVAL;
-        }
-        const bytes = new Uint8Array(wasmMemory.buffer, dataPtr >>> 0, dataLen >>> 0);
-        try {
-          resolved.mount.write(resolved.rel, bytes);
-          return 0;
-        } catch (err) {
-          return writeErrno(err, EINVAL) * -1;
-        }
-      },
-      molt_vfs_exists(pathPtr, pathLen) {
-        if (!wasmMemory) return 0;
-        const path = readPathUtf8(pathPtr, pathLen);
-        const resolved = vfs.resolve(path);
-        if (!resolved || !resolved.mount || typeof resolved.mount.exists !== "function") {
-          return 0;
-        }
-        return resolved.mount.exists(resolved.rel) ? 1 : 0;
-      },
-      molt_vfs_unlink(pathPtr, pathLen) {
-        if (!wasmMemory) return -ENOSYS;
-        const path = readPathUtf8(pathPtr, pathLen);
-        const resolved = vfs.resolve(path);
-        if (!resolved || !resolved.mount || typeof resolved.mount.unlink !== "function") {
-          return -EINVAL;
-        }
-        try {
-          resolved.mount.unlink(resolved.rel);
-          return 0;
-        } catch (err) {
-          return writeErrno(err, EINVAL) * -1;
-        }
-      },
-      molt_isolate_import(...args) {
-        if (!appInstance || !appInstance.exports.molt_isolate_import) {
-          throw new Error("molt_isolate_import called before app instantiation");
-        }
-        return normalizeI64Result(appInstance.exports.molt_isolate_import(...args));
-      },
-      molt_time_timezone_host()  { return 0n; },
-      molt_time_local_offset_host() { return 0n; },
-      molt_getpid_host()         { return 1n; },
-      molt_socket_clone_host()   { return -1n; },
-      molt_socket_detach_host()  { return -1n; },
-      molt_socket_accept_host()  { return -1n; },
-      molt_socket_new_host()     { return -1n; },
-      molt_time_tzname_host()    { return -1; },
-      molt_process_write_host()  { return -1; },
-      molt_process_close_stdin_host() { return -1; },
-      molt_socket_wait_host()    { return -1; },
-      molt_db_exec_host()        { return -1; },
-      molt_db_query_host()       { return -1; },
-      molt_ws_recv_host()        { return -1; },
-      molt_ws_send_host()        { return -1; },
-      molt_ws_close_host()       { return -1; },
-      molt_socket_poll_host()    { return 0; },
-      molt_ws_poll_host()        { return 0; },
-      molt_process_terminate_host() { return -1; },
-      molt_os_close_host()       { return 0; },
-      molt_process_kill_host()   { return -1; },
-      molt_process_wait_host()   { return -1; },
-      molt_process_spawn_host()  { return -1; },
-      molt_process_stdio_host()  { return -1; },
-      molt_socket_bind_host()    { return -1; },
-      molt_socket_close_host()   { return 0; },
-      molt_socket_connect_host() { return -1; },
-      molt_socket_connect_ex_host() { return -1; },
-      molt_socket_getaddrinfo_host() { return -1; },
-      molt_socket_gethostname_host() { return -1; },
-      molt_socket_getpeername_host() { return -1; },
-      molt_socket_getservbyname_host() { return -1; },
-      molt_socket_getservbyport_host() { return -1; },
-      molt_socket_getsockname_host() { return -1; },
-      molt_socket_getsockopt_host() { return -1; },
-      molt_socket_has_ipv6_host() { return 0; },
-      molt_socket_listen_host()  { return -1; },
-      molt_socket_recv_host()    { return -1; },
-      molt_socket_recvfrom_host() { return -1; },
-      molt_socket_recvmsg_host() { return -1; },
-      molt_socket_send_host()    { return -1; },
-      molt_socket_sendmsg_host() { return -1; },
-      molt_socket_sendto_host()  { return -1; },
-      molt_socket_setsockopt_host() { return -1; },
-      molt_socket_shutdown_host() { return -1; },
-      molt_socket_socketpair_host() { return -1; },
-      molt_db_host_poll()        { return 0; },
-      molt_process_host_poll()   { return 0; },
-      molt_ws_connect_host()     { return -1; },
-      molt_gpu_webgpu_dispatch_host() { return -38; },
-    };
-
-    for (let arity = 0; arity <= 13; arity++) {
-      hostEnv[`molt_call_indirect${arity}`] = (fnIndex, ...args) => {
-        const indirectName = `molt_call_indirect${arity}`;
-        const idx = Number(fnIndex);
-        const dispatchIdx = remapLegacyRuntimeSharedIdx(idx);
-        const directName = `__molt_table_ref_${dispatchIdx}`;
-        const indirectFn = appInstance?.exports?.[indirectName];
-        if (typeof indirectFn === "function") {
-          try {
-            return indirectFn(fnIndex, ...args);
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            throw new Error(`${indirectName} app export failed at idx=${idx}: ${detail}; fnLen=${indirectFn.length}; argsLen=${args.length}`);
-          }
-        }
-        const tableFn = sharedTable.get(dispatchIdx);
-        if (typeof tableFn === "function") {
-          try {
-            const signature = appTableRefSignatures[directName] || runtimeTableRefSignatures[directName] || null;
-            return callWithSignature(tableFn, signature, args);
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            const fnName = tableFn.name || "<anon>";
-            throw new Error(`${indirectName} shared-table entry failed at idx=${dispatchIdx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
-          }
-        }
-        const rtDirectFn = rtInstance?.exports?.[directName];
-        if (typeof rtDirectFn === "function") {
-          try {
-            return callWithSignature(rtDirectFn, runtimeTableRefSignatures[directName] || null, args);
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            throw new Error(`${indirectName} runtime direct export ${directName} failed: ${detail}; fnLen=${rtDirectFn.length}; argsLen=${args.length}`);
-          }
-        }
-        if (typeof tableFn !== "function") {
-          throw new Error(`${indirectName} missing table entry at ${dispatchIdx}`);
-        }
-        return tableFn(...args);
-      };
-    }
-
-    // Shared table for indirect calls — both modules reference the same table.
-    const sharedTable = new WebAssembly.Table({ initial: __MOLT_SHARED_TABLE_INITIAL__, element: "anyfunc" });
-
-    let rtInstance = null;
-    let pendingError = null;
-    let procExit = null;
-    try {
-      const bundleBytes = await assetBytes("bundle.tar");
-      if (bundleBytes) {
-        vfs.loadBundleFromTar(bundleBytes);
-      }
-      // 1. Instantiate the runtime module first.
-      //    The runtime imports host-owned shared memory/table plus host bridges.
-      const rtImports = {
-        wasi_snapshot_preview1: wasi,
-        env: { ...hostEnv, __indirect_function_table: sharedTable },
-      };
-      rtInstance = await WebAssembly.instantiate(runtimeModule, rtImports);
-      if (__MOLT_SHARED_TABLE_BASE__ !== null && rtInstance.exports.molt_set_wasm_table_base) {
-        rtInstance.exports.molt_set_wasm_table_base(BigInt(__MOLT_SHARED_TABLE_BASE__));
-      }
-      installTableRefs(rtInstance, sharedTable);
-      // 2. Instantiate the app module.
-      //    It imports the runtime ABI exports plus the same host-owned memory/table.
-      const appImports = {
-        wasi_snapshot_preview1: wasi,
-        env: {
-          ...hostEnv,
-          memory: wasmMemory,
-          __indirect_function_table: sharedTable,
-        },
-        molt_runtime: buildRuntimeImports(appModule, rtInstance),
-      };
-      appInstance = await WebAssembly.instantiate(appModule, appImports);
-      ensureTableCapacityForExportedRefs(appInstance, sharedTable);
-
-      // 3. Initialize and run
-      if (rtInstance.exports._initialize) rtInstance.exports._initialize();
-      if (appInstance.exports.molt_table_init) appInstance.exports.molt_table_init();
-      installTableRefs(appInstance, sharedTable);
-      if (appInstance.exports.molt_main) appInstance.exports.molt_main();
-      else if (appInstance.exports._start) appInstance.exports._start();
-    } catch (err) {
-      if (err instanceof ProcExit) procExit = err;
-      else pendingError = err;
-    } finally {
-      if (rtInstance && rtInstance.exports.molt_runtime_shutdown) {
-        try {
-          rtInstance.exports.molt_runtime_shutdown();
-        } catch (shutdownErr) {
-          if (!pendingError) pendingError = shutdownErr;
-        }
-      }
-      vfs.clear();
-    }
-
-    const stdoutTail = stdoutDecoder.decode();
-    if (stdoutTail) stdoutChunks.push(stdoutTail);
-    const stderrTail = stderrDecoder.decode();
-    if (stderrTail) stderrChunks.push(stderrTail);
-
-    if (pendingError) throw pendingError;
-
-    const output = stdoutChunks.join("");
-    const trimmed = output.trimStart();
-    const contentType = (trimmed.startsWith("<!DOCTYPE html>") || trimmed.startsWith("<html"))
-      ? "text/html; charset=utf-8"
-      : "text/plain; charset=utf-8";
-    return new Response(output, {
-      status: procExit && procExit.code !== 0 ? 500 : 200,
-      headers: { "content-type": contentType },
-    });
-  }
-};
-"""
-    return (
-        worker_js.replace(
-            "__MOLT_SHARED_MEMORY_PAGES__", str(shared_memory_initial_pages)
-        )
-        .replace("__MOLT_SHARED_TABLE_INITIAL__", str(shared_table_initial))
-        .replace(
-            "__MOLT_RUNTIME_IMPORT_RESULT_KINDS__",
-            runtime_import_result_kinds_json,
-        )
-        .replace(
-            "__MOLT_RUNTIME_IMPORT_SIGNATURES__",
-            runtime_import_signatures_json,
-        )
-        .replace(
-            "__MOLT_APP_TABLE_REF_SIGNATURES__",
-            app_table_ref_signatures_json,
-        )
-        .replace(
-            "__MOLT_RUNTIME_TABLE_REF_SIGNATURES__",
-            runtime_table_ref_signatures_json,
-        )
-        .replace(
-            "__MOLT_LEGACY_WASM_TABLE_BASE__",
-            str(legacy_wasm_table_base),
-        )
-        .replace(
-            "__MOLT_RESERVED_RUNTIME_CALLABLE_BASE__",
-            str(reserved_runtime_callable_base),
-        )
-        .replace(
-            "__MOLT_RESERVED_RUNTIME_SHARED_PREFIX_LEN__",
-            str(reserved_runtime_shared_prefix_len),
-        )
-        .replace(
-            "__MOLT_SHARED_TABLE_BASE__",
-            "null" if shared_table_base is None else str(shared_table_base),
-        )
-    )
-
-
-def _generate_split_wrangler_jsonc(compatibility_date: str) -> str:
-    return (
-        "{\n"
-        '  "name": "molt-app",\n'
-        '  "main": "worker.js",\n'
-        f'  "compatibility_date": "{compatibility_date}",\n'
-        '  "no_bundle": true,\n'
-        '  "find_additional_modules": true,\n'
-        '  "rules": [\n'
-        "    {\n"
-        '      "type": "ESModule",\n'
-        '      "globs": ["worker.js", "molt_vfs_browser.js"],\n'
-        '      "fallthrough": false\n'
-        "    },\n"
-        "    {\n"
-        '      "type": "CompiledWasm",\n'
-        '      "globs": ["app.wasm", "molt_runtime.wasm"],\n'
-        '      "fallthrough": false\n'
-        "    }\n"
-        "  ]\n"
-        "}\n"
-    )
 
 
 def _backend_bin_path(
@@ -13821,16 +12707,59 @@ def _backend_codegen_env_inputs(
     return {name: payload[name] for name in sorted(payload)}
 
 
+def _native_relocatable_linker_selection(
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str]:
+    source = env if env is not None else os.environ
+    for key in _NATIVE_RELOCATABLE_LINKER_ENV_KEYS:
+        value = (source.get(key) or "").strip()
+        if value:
+            return key, value
+    return "default", "ld"
+
+
+def _command_has_path_separator(command: str) -> bool:
+    return os.sep in command or (os.altsep is not None and os.altsep in command)
+
+
+def _native_relocatable_linker_identity(
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    source = env if env is not None else os.environ
+    selected_from, command = _native_relocatable_linker_selection(env)
+    path_env = source.get("PATH")
+    payload: dict[str, object] = {
+        "schema": "native-relocatable-linker-v1",
+        "selected_from": selected_from,
+        "command": command,
+    }
+    if _command_has_path_separator(command):
+        resolved_path = Path(command)
+    else:
+        resolved = shutil.which(command, path=path_env)
+        if resolved is None:
+            payload["search_path_sha256"] = hashlib.sha256(
+                (path_env or "").encode("utf-8")
+            ).hexdigest()
+            resolved_path = Path(command)
+        else:
+            resolved_path = Path(resolved)
+    payload["binary"] = _path_freshness_fingerprint(resolved_path)
+    return payload
+
+
 def _backend_codegen_env_digest(
     *,
     is_wasm: bool,
     env: Mapping[str, str] | None = None,
 ) -> str:
-    payload = {
+    payload: dict[str, object] = {
         "schema": _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION,
         "target": "wasm" if is_wasm else "native",
         "inputs": _backend_codegen_env_inputs(is_wasm=is_wasm, env=env),
     }
+    if not is_wasm:
+        payload["native_relocatable_linker"] = _native_relocatable_linker_identity(env)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -13840,15 +12769,120 @@ def _backend_daemon_config_digest(
     cargo_profile: str,
     *,
     env: Mapping[str, str] | None = None,
+    backend_bin: Path | None = None,
+    target_triple: str | None = None,
 ) -> str:
     payload = {
         "schema": _DAEMON_CONFIG_DIGEST_SCHEMA_VERSION,
         "project_root": str(project_root.resolve()),
         "cargo_profile": cargo_profile,
         "codegen": _backend_codegen_env_inputs(is_wasm=False, env=env),
+        "native_relocatable_linker": _native_relocatable_linker_identity(env),
+        "compiler_runtime_backend_fingerprint": _cache_fingerprint(),
+        "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
     }
+    if backend_bin is not None:
+        payload["freshness"] = _backend_daemon_freshness_inputs(
+            project_root,
+            backend_bin,
+            target_triple=target_triple,
+        )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _path_freshness_fingerprint(path: Path) -> dict[str, object]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return {
+            "path": os.fspath(path),
+            "exists": False,
+        }
+    return {
+        "path": os.fspath(path),
+        "exists": True,
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
+    }
+
+
+def _source_tree_freshness_fingerprint(root: Path, pattern: str) -> dict[str, object]:
+    newest_path: str | None = None
+    newest_mtime_ns = 0
+    file_count = 0
+    try:
+        if not root.is_dir():
+            return {
+                "root": os.fspath(root),
+                "exists": False,
+                "pattern": pattern,
+                "file_count": 0,
+                "newest_mtime_ns": 0,
+                "newest_path": None,
+            }
+        for path in root.rglob(pattern):
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            file_count += 1
+            if stat.st_mtime_ns > newest_mtime_ns:
+                newest_mtime_ns = stat.st_mtime_ns
+                newest_path = os.fspath(path)
+    except OSError:
+        return {
+            "root": os.fspath(root),
+            "exists": False,
+            "pattern": pattern,
+            "file_count": file_count,
+            "newest_mtime_ns": newest_mtime_ns,
+            "newest_path": newest_path,
+        }
+    return {
+        "root": os.fspath(root),
+        "exists": True,
+        "pattern": pattern,
+        "file_count": file_count,
+        "newest_mtime_ns": newest_mtime_ns,
+        "newest_path": newest_path,
+    }
+
+
+def _backend_daemon_freshness_inputs(
+    project_root: Path,
+    backend_bin: Path,
+    *,
+    target_triple: str | None = None,
+) -> dict[str, object]:
+    target_root = _cargo_target_root(project_root)
+    runtime_candidates = [
+        _path_freshness_fingerprint(path)
+        for path in _runtime_lib_freshness_candidates(
+            target_root,
+            target_triple=target_triple,
+        )
+        if path.exists()
+    ]
+    return {
+        "backend_bin": _path_freshness_fingerprint(backend_bin),
+        "target_root": os.fspath(target_root),
+        "target_triple": target_triple,
+        "runtime_libs": runtime_candidates,
+        "frontend_init": _path_freshness_fingerprint(
+            project_root / "src" / "molt" / "frontend" / "__init__.py"
+        ),
+        "backend_rs": _source_tree_freshness_fingerprint(
+            project_root / "runtime" / "molt-backend" / "src",
+            "*.rs",
+        ),
+        "runtime_rs": _source_tree_freshness_fingerprint(
+            project_root / "runtime" / "molt-runtime" / "src",
+            "*.rs",
+        ),
+    }
 
 
 @functools.lru_cache(maxsize=32)
@@ -14279,29 +13313,6 @@ def _remove_backend_daemon_identity(identity_path: Path) -> None:
     _daemon_custody.remove_backend_daemon_identity(identity_path)
 
 
-def _kill_stale_backend_daemon(project_root: Path, cargo_profile: str) -> None:
-    """Kill canonical backend daemon processes for this project/profile."""
-    daemon_root = _build_state_root(project_root) / "backend_daemon"
-    try:
-        identity_files = list(
-            daemon_root.glob(f"molt-backend.{cargo_profile}*.identity.json")
-        )
-        legacy_pid_files = list(daemon_root.glob(f"molt-backend.{cargo_profile}*.pid"))
-    except OSError:
-        return
-    for identity_file in identity_files:
-        identity = _read_backend_daemon_identity(identity_file)
-        if identity is not None:
-            _terminate_backend_daemon_identity(identity, grace=1.0)
-            with contextlib.suppress(OSError):
-                if identity.socket_path.exists():
-                    identity.socket_path.unlink()
-        _remove_backend_daemon_identity(identity_file)
-    for legacy_pid_file in legacy_pid_files:
-        with contextlib.suppress(OSError):
-            legacy_pid_file.unlink()
-
-
 def _sweep_orphaned_backend_daemon_locks(
     project_root: Path,
     *,
@@ -14532,7 +13543,7 @@ def _backend_daemon_health_probe(
     timeout: float | None,
 ) -> tuple[bool, dict[str, Any] | None]:
     if timeout is None:
-        return _backend_daemon_ping_health(socket_path)
+        return _backend_daemon_ping_health(socket_path, timeout=None)
     return _backend_daemon_ping_health(socket_path, timeout=timeout)
 
 
@@ -14836,11 +13847,7 @@ def _materialize_cached_backend_artifact(
     sync_source_key = source_key
     try:
         _atomic_link_or_copy_file(candidate, output_artifact)
-        if (
-            tier == "function"
-            and cache_path is not None
-            and candidate != cache_path
-        ):
+        if tier == "function" and cache_path is not None and candidate != cache_path:
             with contextlib.suppress(OSError):
                 published_module_cache = _publish_immutable_backend_cache_artifact(
                     candidate,
@@ -14888,6 +13895,25 @@ def _native_artifact_source_key(
     if is_wasm or not stdlib_object_cache_key:
         return key
     return f"{key}|stdlib:{stdlib_object_cache_key}"
+
+
+def _backend_cache_artifact_path(
+    cache_root: Path,
+    base_key: str | None,
+    *,
+    ext: str,
+    stdlib_object_cache_key: str | None,
+    is_wasm: bool,
+) -> Path | None:
+    source_key = _native_artifact_source_key(
+        base_key,
+        stdlib_object_cache_key=stdlib_object_cache_key,
+        is_wasm=is_wasm,
+    )
+    if not source_key:
+        return None
+    filename_key = source_key.replace("|stdlib:", ".stdlib-")
+    return cache_root / f"{filename_key}.{ext}"
 
 
 def _try_cached_backend_candidates(
@@ -14959,7 +13985,11 @@ def _try_cached_backend_candidates(
                 is_wasm=is_wasm,
             ),
             cache_path=cache_path,
-            module_cache_key=cache_key,
+            module_cache_key=_native_artifact_source_key(
+                cache_key,
+                stdlib_object_cache_key=stdlib_object_cache_key,
+                is_wasm=is_wasm,
+            ),
             warnings=warnings,
             state_path=state_path,
             state=state,
@@ -15454,7 +14484,54 @@ def _backend_daemon_health_from_response(
         value = raw.get(field_name)
         if isinstance(value, int):
             health[field_name] = value
+    string_fields = {
+        "spawn_config_digest",
+        "active_config_digest",
+    }
+    for field_name in string_fields:
+        value = raw.get(field_name)
+        if isinstance(value, str) and value:
+            health[field_name] = value
     return health or None
+
+
+def _backend_daemon_text_field(
+    payload: Mapping[str, Any],
+    field_name: str,
+) -> str | None:
+    value = payload.get(field_name)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _backend_daemon_job_failure_message(job: Mapping[str, Any]) -> str | None:
+    for field_name in ("message", "error"):
+        message = _backend_daemon_text_field(job, field_name)
+        if message is not None:
+            return message
+    return None
+
+
+def _backend_daemon_response_failure_message(
+    response: Mapping[str, Any],
+    *,
+    default: str,
+) -> str:
+    response_jobs = response.get("jobs")
+    if isinstance(response_jobs, list):
+        for raw_job in response_jobs:
+            if not isinstance(raw_job, dict) or bool(raw_job.get("ok")):
+                continue
+            message = _backend_daemon_job_failure_message(raw_job)
+            if message is not None:
+                return message
+    for field_name in ("error", "message"):
+        message = _backend_daemon_text_field(response, field_name)
+        if message is not None:
+            return message
+    return default
 
 
 def _backend_daemon_ping_health(
@@ -15569,22 +14646,14 @@ def _start_backend_daemon(
                 identity_path=identity_path,
                 target_triple=target_triple,
             ):
-                if not json_output:
-                    print(
-                        "Backend binary changed; restarting daemon...",
-                        file=sys.stderr,
-                    )
-                _terminate_backend_daemon_identity(
-                    existing_identity,
-                    grace=1.0,
+                _report_daemon_issue(
+                    "Backend daemon freshness changed for "
+                    f"{identity_path}; preserving verified pid "
+                    f"{existing_identity.pid} and using one-shot backend compile "
+                    "for this request. Production daemon paths must encode the "
+                    "backend/runtime/source freshness digest."
                 )
-                _remove_backend_daemon_identity(identity_path)
-                try:
-                    if socket_path.exists():
-                        socket_path.unlink()
-                except OSError:
-                    pass
-                existing_identity = None
+                return False
             else:
                 if socket_path.exists():
                     probe_window = _backend_daemon_spawn_probe_timeout(startup_wait)
@@ -15696,6 +14765,8 @@ def _start_backend_daemon(
         repo_root=project_root,
     )
     daemon_env = dict(daemon_context.env)
+    if config_digest:
+        daemon_env["MOLT_BACKEND_DAEMON_CONFIG_DIGEST"] = config_digest
     daemon_popen_kwargs: dict[str, Any] = {"start_new_session": True}
     daemon_popen_kwargs.update(daemon_context.process_group_kwargs())
     daemon_sentinel = daemon_context.start_repo_sentinel(
@@ -15956,14 +15027,12 @@ def _compile_with_backend_daemon(
         )
     health = _backend_daemon_health_from_response(response)
     if not bool(response.get("ok")):
-        error = response.get("error")
-        if isinstance(error, str) and error:
-            return _BackendDaemonCompileResult(
-                False, error, health, None, None, True, False, full_request_sent
-            )
         return _BackendDaemonCompileResult(
             False,
-            "backend daemon compile request failed",
+            _backend_daemon_response_failure_message(
+                response,
+                default="backend daemon compile request failed",
+            ),
             health,
             None,
             None,
@@ -16044,14 +15113,12 @@ def _compile_with_backend_daemon(
             )
         health = _backend_daemon_health_from_response(response)
         if not bool(response.get("ok")):
-            error = response.get("error")
-            if isinstance(error, str) and error:
-                return _BackendDaemonCompileResult(
-                    False, error, health, None, None, True, False, full_request_sent
-                )
             return _BackendDaemonCompileResult(
                 False,
-                "backend daemon compile request failed",
+                _backend_daemon_response_failure_message(
+                    response,
+                    default="backend daemon compile request failed",
+                ),
                 health,
                 None,
                 None,
@@ -16095,8 +15162,8 @@ def _compile_with_backend_daemon(
         )
         output_exists = not output_written
     if not bool(first.get("ok")):
-        message = first.get("message")
-        if isinstance(message, str) and message:
+        message = _backend_daemon_job_failure_message(first)
+        if message is not None:
             return _BackendDaemonCompileResult(
                 False,
                 message,
@@ -16187,6 +15254,10 @@ def _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path: Path) -> 
     return stdlib_object_path.with_suffix(".partition.json")
 
 
+def _stdlib_object_digest_sidecar_path(stdlib_object_path: Path) -> Path:
+    return stdlib_object_path.with_suffix(".sha256")
+
+
 def _shared_stdlib_publish_lock_path(stdlib_object_path: Path) -> Path:
     return stdlib_object_path.with_name(f"{stdlib_object_path.name}.publish.lock")
 
@@ -16249,12 +15320,14 @@ def _stage_shared_stdlib_object_for_link(
     staged_partition_manifest_path = _stdlib_object_partition_manifest_sidecar_path(
         staged_stdlib_obj
     )
+    staged_digest_path = _stdlib_object_digest_sidecar_path(staged_stdlib_obj)
     source_key_path = _stdlib_object_key_sidecar_path(stdlib_object_path)
     source_count_path = _stdlib_object_count_sidecar_path(stdlib_object_path)
     source_manifest_path = _stdlib_object_manifest_sidecar_path(stdlib_object_path)
     source_partition_manifest_path = _stdlib_object_partition_manifest_sidecar_path(
         stdlib_object_path
     )
+    source_digest_path = _stdlib_object_digest_sidecar_path(stdlib_object_path)
     try:
         with _shared_stdlib_cache_lock(stdlib_object_path):
             if not _shared_stdlib_cache_matches_key(
@@ -16303,6 +15376,13 @@ def _stage_shared_stdlib_object_for_link(
                 raise OSError(
                     "Shared stdlib cache contract mismatch during staging: "
                     f"missing partition manifest sidecar for {stdlib_object_path}"
+                )
+            if source_digest_path.exists():
+                _atomic_link_or_copy_file(source_digest_path, staged_digest_path)
+            else:
+                raise OSError(
+                    "Shared stdlib cache contract mismatch during staging: "
+                    f"missing object digest sidecar for {stdlib_object_path}"
                 )
     except OSError:
         _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
@@ -16527,6 +15607,8 @@ def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
         _stdlib_object_manifest_sidecar_path(stdlib_object_path).unlink()
     with contextlib.suppress(OSError):
         _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).unlink()
+    with contextlib.suppress(OSError):
+        _stdlib_object_digest_sidecar_path(stdlib_object_path).unlink()
 
 
 def _shared_stdlib_cache_matches_key(
@@ -16561,6 +15643,18 @@ def _shared_stdlib_cache_matches_key(
     if cached_manifest.strip() != stdlib_object_manifest:
         return False
     if not _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).exists():
+        return False
+    try:
+        cached_object_digest = _stdlib_object_digest_sidecar_path(
+            stdlib_object_path
+        ).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        actual_object_digest = _sha256_file(stdlib_object_path)
+    except OSError:
+        return False
+    if cached_object_digest.strip().lower() != actual_object_digest.lower():
         return False
     return (
         _shared_stdlib_native_symbol_closure_issue(
@@ -16847,18 +15941,24 @@ def _import_scan_cache_path(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
         "import_scan_cache",
     )
-    cache_key = _resolved_module_cache_key(
-        os.fspath(path),
+    key_parts = [
         module_name,
         "pkg" if is_package else "mod",
         import_scan_mode,
         target_python.tag,
         _cache_tooling_fingerprint(),
+    ]
+    if capability_config_digest:
+        key_parts.append(f"capability_config={capability_config_digest}")
+    cache_key = _resolved_module_cache_key(
+        os.fspath(path),
+        *key_parts,
     )
     return root / f"{path.stem}.{cache_key}.json"
 
@@ -16872,20 +15972,26 @@ def _module_analysis_cache_path(
     is_package: bool | None = None,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
         kind,
     )
     package_kind = "pkg" if is_package else "mod" if is_package is not None else "-"
-    cache_key = _resolved_module_cache_key(
-        os.fspath(path),
+    key_parts = [
         module_name,
         package_kind,
         import_scan_mode,
         kind,
         target_python.tag,
         _cache_tooling_fingerprint(),
+    ]
+    if capability_config_digest:
+        key_parts.append(f"capability_config={capability_config_digest}")
+    cache_key = _resolved_module_cache_key(
+        os.fspath(path),
+        *key_parts,
     )
     return root / f"{path.stem}.{cache_key}.json"
 
@@ -16925,6 +16031,7 @@ def _module_graph_cache_path(
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> Path:
     root = _build_state_subdir_cached(
         os.fspath(_build_state_root(project_root)),
@@ -16945,6 +16052,7 @@ def _module_graph_cache_path(
         ),
         _cache_tooling_fingerprint(),
         target_python.tag,
+        capability_config_digest=capability_config_digest,
     )
     return root / f"{entry_path.stem}.{cache_key}.json"
 
@@ -16964,6 +16072,7 @@ def _read_persisted_module_graph(
     allow_entry_external_imports: bool = True,
     resolution_cache: _ModuleResolutionCache | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> _PersistedModuleGraphState | None:
     cache_path = _module_graph_cache_path(
         project_root,
@@ -16978,6 +16087,7 @@ def _read_persisted_module_graph(
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=allow_entry_external_imports,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     payload = _read_cached_json_object(cache_path)
     if payload is None:
@@ -16986,6 +16096,7 @@ def _read_persisted_module_graph(
         not isinstance(payload, dict)
         or payload.get("version") != _MODULE_GRAPH_CACHE_SCHEMA_VERSION
         or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
+        or payload.get("capability_config_digest", "") != capability_config_digest
     ):
         return None
     raw_modules = payload.get("modules")
@@ -17059,6 +16170,7 @@ def _write_persisted_module_graph(
     graph: dict[str, Path],
     explicit_imports: set[str],
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> None:
     modules: list[dict[str, Any]] = []
     for module_name, path in sorted(graph.items()):
@@ -17080,6 +16192,7 @@ def _write_persisted_module_graph(
     payload = {
         "version": _MODULE_GRAPH_CACHE_SCHEMA_VERSION,
         "compiler_fingerprint": _cache_tooling_fingerprint(),
+        "capability_config_digest": capability_config_digest,
         "modules": modules,
         "explicit_imports": sorted(explicit_imports),
     }
@@ -17096,6 +16209,7 @@ def _write_persisted_module_graph(
         import_admission_policy=import_admission_policy,
         allow_entry_external_imports=allow_entry_external_imports,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_cached_json_object(cache_path, payload)
@@ -17110,6 +16224,7 @@ def _read_persisted_import_scan(
     import_scan_mode: ImportScanMode,
     path_stat: os.stat_result | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> tuple[str, ...] | None:
     cache_path = _import_scan_cache_path(
         project_root,
@@ -17118,6 +16233,7 @@ def _read_persisted_import_scan(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
@@ -17126,6 +16242,7 @@ def _read_persisted_import_scan(
         payload.get("version") != _IMPORT_SCAN_CACHE_SCHEMA_VERSION
         or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
         or payload.get("import_scan_mode") != import_scan_mode
+        or payload.get("capability_config_digest", "") != capability_config_digest
     ):
         return None
     if path_stat is None:
@@ -17152,6 +16269,7 @@ def _write_persisted_import_scan(
     import_scan_mode: ImportScanMode,
     imports: Iterable[str],
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> None:
     cache_path = _import_scan_cache_path(
         project_root,
@@ -17160,6 +16278,7 @@ def _write_persisted_import_scan(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     stat = path.stat()
     source_sha256 = _source_content_sha256(path, stat)
@@ -17168,6 +16287,7 @@ def _write_persisted_import_scan(
     payload = {
         "version": _IMPORT_SCAN_CACHE_SCHEMA_VERSION,
         "compiler_fingerprint": _cache_tooling_fingerprint(),
+        "capability_config_digest": capability_config_digest,
         "module_name": module_name,
         "is_package": is_package,
         "import_scan_mode": import_scan_mode,
@@ -17191,6 +16311,7 @@ def _read_persisted_module_analysis(
     path_stat: os.stat_result | None = None,
     validate_stat: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> tuple[dict[str, dict[str, Any]], tuple[str, ...] | None] | None:
     cache_path = _module_analysis_cache_path(
         project_root,
@@ -17199,6 +16320,7 @@ def _read_persisted_module_analysis(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     payload = _read_artifact_sync_state(cache_path)
     if payload is None:
@@ -17207,6 +16329,7 @@ def _read_persisted_module_analysis(
         payload.get("version") != _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION
         or payload.get("compiler_fingerprint") != _cache_tooling_fingerprint()
         or payload.get("import_scan_mode") != import_scan_mode
+        or payload.get("capability_config_digest", "") != capability_config_digest
     ):
         return None
     raw_defaults = payload.get("func_defaults")
@@ -17233,9 +16356,13 @@ def _read_persisted_module_analysis(
     for func_name, func_payload in raw_defaults.items():
         if not isinstance(func_name, str) or not isinstance(func_payload, dict):
             return None
-        normalized[func_name] = cast(
-            dict[str, Any], _decode_cached_json_value(func_payload)
+        decoded_payload = cast(
+            dict[str, Any],
+            _decode_cached_json_value(func_payload),
         )
+        if not _validate_module_func_default_payload(decoded_payload):
+            return None
+        normalized[func_name] = decoded_payload
     return normalized, cached_imports
 
 
@@ -17249,6 +16376,7 @@ def _write_persisted_module_analysis(
     func_defaults: dict[str, dict[str, Any]],
     imports: Iterable[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> None:
     cache_path = _module_analysis_cache_path(
         project_root,
@@ -17257,6 +16385,7 @@ def _write_persisted_module_analysis(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     stat = path.stat()
     source_sha256 = _source_content_sha256(path, stat)
@@ -17265,6 +16394,7 @@ def _write_persisted_module_analysis(
     payload: dict[str, Any] = {
         "version": _MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
         "compiler_fingerprint": _cache_tooling_fingerprint(),
+        "capability_config_digest": capability_config_digest,
         "module_name": module_name,
         "is_package": is_package,
         "import_scan_mode": import_scan_mode,
@@ -17278,6 +16408,28 @@ def _write_persisted_module_analysis(
         payload["imports"] = list(imports)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     _write_artifact_sync_payload(cache_path, payload, default=_json_ir_default)
+
+
+def _validate_module_func_default_payload(payload: dict[str, Any]) -> bool:
+    kind = payload.get("kind")
+    if kind not in _MODULE_ANALYSIS_FUNC_KINDS:
+        return False
+    if not isinstance(payload.get("has_decorators"), bool):
+        return False
+    has_vararg = payload.get("has_vararg", False)
+    if not isinstance(has_vararg, bool):
+        return False
+    if has_vararg:
+        return True
+    if not isinstance(payload.get("params"), int):
+        return False
+    if not isinstance(payload.get("defaults"), list):
+        return False
+    if not isinstance(payload.get("posonly"), int):
+        return False
+    if not isinstance(payload.get("kwonly"), int):
+        return False
+    return True
 
 
 def _decode_cached_json_value(value: Any) -> Any:
@@ -17321,7 +16473,11 @@ def _load_module_imports(
     tree: ast.AST,
     resolution_cache: _ModuleResolutionCache,
     project_root: Path | None,
+    roots: Sequence[Path] | None = None,
+    stdlib_root: Path | None = None,
+    stdlib_allowlist: set[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> tuple[str, ...]:
     if project_root is not None:
         persisted_imports = _read_persisted_import_scan(
@@ -17331,6 +16487,7 @@ def _load_module_imports(
             is_package=is_package,
             import_scan_mode=import_scan_mode,
             target_python=target_python,
+            capability_config_digest=capability_config_digest,
         )
         if persisted_imports is not None:
             return persisted_imports
@@ -17341,6 +16498,19 @@ def _load_module_imports(
         is_package=is_package,
         import_scan_mode=import_scan_mode,
     )
+    if roots is not None and stdlib_root is not None and stdlib_allowlist is not None:
+        imports = _expand_imports_with_static_package_all_star_children(
+            imports,
+            tree,
+            module_name=module_name,
+            is_package=is_package,
+            import_scan_mode=import_scan_mode,
+            roots=roots,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
+            resolution_cache=resolution_cache,
+            target_python=target_python,
+        )
     if project_root is not None:
         with contextlib.suppress(OSError):
             _write_persisted_import_scan(
@@ -17351,6 +16521,7 @@ def _load_module_imports(
                 import_scan_mode=import_scan_mode,
                 imports=imports,
                 target_python=target_python,
+                capability_config_digest=capability_config_digest,
             )
     return imports
 
@@ -17368,7 +16539,11 @@ def _load_module_analysis(
     path_stat: os.stat_result | None = None,
     retain_source: bool = True,
     retain_tree: bool = True,
+    roots: Sequence[Path] | None = None,
+    stdlib_root: Path | None = None,
+    stdlib_allowlist: set[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> tuple[
     ast.AST | None,
     tuple[str, ...],
@@ -17390,6 +16565,7 @@ def _load_module_analysis(
             import_scan_mode=import_scan_mode,
             path_stat=path_stat,
             target_python=target_python,
+            capability_config_digest=capability_config_digest,
         )
         if project_root is not None
         else None
@@ -17403,6 +16579,7 @@ def _load_module_analysis(
             import_scan_mode=import_scan_mode,
             validate_stat=False,
             target_python=target_python,
+            capability_config_digest=capability_config_digest,
         )
         if project_root is not None
         else None
@@ -17423,6 +16600,7 @@ def _load_module_analysis(
             import_scan_mode=import_scan_mode,
             path_stat=path_stat,
             target_python=target_python,
+            capability_config_digest=capability_config_digest,
         )
     if persisted_imports is not None and persisted_defaults is not None:
         return None, persisted_imports, persisted_defaults, None, True, False, path_stat
@@ -17447,7 +16625,11 @@ def _load_module_analysis(
             tree=tree,
             resolution_cache=resolution_cache,
             project_root=project_root,
+            roots=roots,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
             target_python=target_python,
+            capability_config_digest=capability_config_digest,
         )
     func_defaults = persisted_defaults
     if func_defaults is None:
@@ -17463,6 +16645,7 @@ def _load_module_analysis(
                     func_defaults=func_defaults,
                     imports=imports,
                     target_python=target_python,
+                    capability_config_digest=capability_config_digest,
                 )
     interface_changed = True
     if stale_analysis is not None:
@@ -18473,6 +17656,8 @@ def _append_module_code_slot_ops(
     next_var += 1
     varnames_var = f"v{next_var}"
     next_var += 1
+    names_var = f"v{next_var}"
+    next_var += 1
     argcount_var = f"v{next_var}"
     next_var += 1
     posonly_var = f"v{next_var}"
@@ -18492,6 +17677,7 @@ def _append_module_code_slot_ops(
             {"kind": "const", "value": 1, "out": line_var},
             {"kind": "const_none", "out": linetable_var},
             {"kind": "tuple_new", "args": [], "out": varnames_var},
+            {"kind": "tuple_new", "args": [], "out": names_var},
             {"kind": "const", "value": 0, "out": argcount_var},
             {"kind": "const", "value": 0, "out": posonly_var},
             {"kind": "const", "value": 0, "out": kwonly_var},
@@ -18503,6 +17689,7 @@ def _append_module_code_slot_ops(
                     line_var,
                     linetable_var,
                     varnames_var,
+                    names_var,
                     argcount_var,
                     posonly_var,
                     kwonly_var,
@@ -18853,6 +18040,7 @@ def _build_isolate_import_ops(
         import_var_idx += 1
         return name
 
+    import_failed_label = 1
     name_var = "p0"
     module_var = import_var()
     import_ops.append(
@@ -18897,6 +18085,7 @@ def _build_isolate_import_ops(
                     "value": register_global_code_id(init_symbol),
                 }
             )
+            import_ops.append({"kind": "check_exception", "value": import_failed_label})
             if idx < len(module_order) - 1:
                 import_ops.append({"kind": "else"})
         import_ops.extend({"kind": "end_if"} for _ in module_order)
@@ -18906,6 +18095,10 @@ def _build_isolate_import_ops(
         {"kind": "module_cache_get", "args": [name_var], "out": loaded_var}
     )
     import_ops.append({"kind": "ret", "args": [loaded_var]})
+    failed_var = import_var()
+    import_ops.append({"kind": "label", "value": import_failed_label})
+    import_ops.append({"kind": "const_none", "out": failed_var})
+    import_ops.append({"kind": "ret", "args": [failed_var]})
     return import_ops
 
 
@@ -19077,18 +18270,20 @@ def _static_backend_ir_module_call_targets(
     for func in functions:
         if not isinstance(func, Mapping):
             continue
-        func_name = func.get("name")
+        func_map = cast(Mapping[str, object], func)
+        func_name = func_map.get("name")
         if not isinstance(func_name, str) or not func_name:
             func_name = "<unknown>"
-        ops = func.get("ops")
+        ops = func_map.get("ops")
         if not isinstance(ops, list):
             continue
         for index, op in enumerate(ops):
             if not isinstance(op, Mapping):
                 continue
-            if op.get("kind") != "call":
+            op_map = cast(Mapping[str, object], op)
+            if op_map.get("kind") != "call":
                 continue
-            symbol_name = op.get("s_value")
+            symbol_name = op_map.get("s_value")
             if not isinstance(symbol_name, str) or symbol_name.startswith("molt_"):
                 continue
             module_name = _module_owned_symbol_name(symbol_name, module_by_symbol)
@@ -19710,7 +18905,7 @@ def _stdlib_object_cache_path(
     """Return a shared stdlib cache path scoped to exact stdlib IR identity."""
     if cache_path is None or stdlib_cache_key is None:
         return None
-    cache_root = _default_molt_cache()
+    cache_root = cache_path.parent
     cache_root.mkdir(parents=True, exist_ok=True)
     return cache_root / f"stdlib_shared_{stdlib_cache_key}.o"
 
@@ -19975,8 +19170,7 @@ def _render_native_main_stub(
     runtime_module_roots: Sequence[Path] = (),
 ) -> str:
     runtime_module_roots_literals = tuple(
-        json.dumps(str(path.resolve()))
-        for path in dict.fromkeys(runtime_module_roots)
+        json.dumps(str(path.resolve())) for path in dict.fromkeys(runtime_module_roots)
     )
     (
         trusted_snippet,
@@ -21700,6 +20894,7 @@ def _materialize_import_plan(
     return _ImportPlan(
         stdlib_allowlist=frozenset(stdlib_allowlist),
         roots=tuple(prepared_module_graph.roots),
+        stdlib_root=stdlib_root,
         module_resolution_cache=prepared_module_graph.module_resolution_cache,
         module_graph=MappingProxyType(dict(module_graph)),
         explicit_imports=frozenset(prepared_module_graph.explicit_imports),
@@ -21734,6 +20929,7 @@ def _augment_module_graph_for_entry_and_runtime(
     target: str,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> tuple[_ModuleGraphAugmentation, _CliFailure | None]:
     roots = list(roots)
     module_roots = list(module_roots)
@@ -21767,6 +20963,7 @@ def _augment_module_graph_for_entry_and_runtime(
         stub_parents=stub_parents,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     spawn_enabled = False
     spawn_required = target != "wasm" and _requires_spawn_entry_override(
@@ -21809,6 +21006,7 @@ def _augment_module_graph_for_entry_and_runtime(
             stub_parents=stub_parents,
             import_admission_policy=import_admission_policy,
             target_python=target_python,
+            capability_config_digest=capability_config_digest,
         )
     return _ModuleGraphAugmentation(
         spawn_enabled=spawn_enabled,
@@ -21831,12 +21029,23 @@ def _prepare_entry_module_graph(
     target: str,
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
+    capability_config_digest: str = "",
 ) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
     stdlib_allowlist = _stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _ModuleResolutionCache()
-    entry_imports = tuple(
-        _collect_imports(entry_tree, entry_module, source_path.name == "__init__.py")
+    entry_is_package = source_path.name == "__init__.py"
+    entry_imports = _expand_imports_with_static_package_all_star_children(
+        tuple(_collect_imports(entry_tree, entry_module, entry_is_package)),
+        entry_tree,
+        module_name=entry_module,
+        is_package=entry_is_package,
+        import_scan_mode="full",
+        roots=roots,
+        stdlib_root=stdlib_root,
+        stdlib_allowlist=stdlib_allowlist,
+        resolution_cache=module_resolution_cache,
+        target_python=target_python,
     )
     module_graph, explicit_imports = _discover_module_graph(
         source_path,
@@ -21851,10 +21060,38 @@ def _prepare_entry_module_graph(
         precomputed_imports=entry_imports,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     if diagnostics_enabled:
         for name in module_graph:
             _record_module_reason(module_reasons, name, "entry_closure")
+    static_import_modules, static_import_error = _parse_static_import_modules(
+        os.environ.get(STATIC_IMPORT_MODULES_ENV, "")
+    )
+    if static_import_error is not None:
+        return None, _fail(static_import_error, json_output, command="build")
+    static_import_errors = _extend_module_graph_with_static_import_modules(
+        module_graph=module_graph,
+        explicit_imports=explicit_imports,
+        module_names=static_import_modules,
+        roots=roots,
+        module_roots=module_roots,
+        stdlib_root=stdlib_root,
+        project_root=project_root,
+        stdlib_allowlist=stdlib_allowlist,
+        resolver_cache=module_resolution_cache,
+        diagnostics_enabled=diagnostics_enabled,
+        module_reasons=module_reasons,
+        import_admission_policy=import_admission_policy,
+        target_python=target_python,
+        capability_config_digest=capability_config_digest,
+    )
+    if static_import_errors:
+        return None, _fail(
+            "; ".join(static_import_errors),
+            json_output,
+            command="build",
+        )
     while True:
         package_before = set(module_graph)
         added_package_parents = _collect_package_parents(
@@ -21897,6 +21134,7 @@ def _prepare_entry_module_graph(
             import_admission_policy=import_admission_policy,
             allow_entry_external_imports=False,
             target_python=target_python,
+            capability_config_digest=capability_config_digest,
         )
         if diagnostics_enabled:
             _record_new_module_reasons(
@@ -21940,7 +21178,7 @@ def _prepare_entry_module_graph(
         roots=roots,
         project_root=project_root,
         stdlib_allowlist=stdlib_allowlist,
-        entry_imports=entry_imports,
+        entry_imports=explicit_imports,
         module_resolution_cache=module_resolution_cache,
         module_graph=module_graph,
         module_reasons=module_reasons,
@@ -21949,6 +21187,7 @@ def _prepare_entry_module_graph(
         target=target,
         import_admission_policy=import_admission_policy,
         target_python=target_python,
+        capability_config_digest=capability_config_digest,
     )
     if augmentation_error is not None:
         return None, augmentation_error
@@ -22074,10 +21313,14 @@ def _prepare_frontend_analysis(
     module_graph: Mapping[str, Path],
     module_graph_metadata: _ModuleGraphMetadata,
     module_resolution_cache: "_ModuleResolutionCache",
+    roots: Sequence[Path],
+    stdlib_root: Path,
+    stdlib_allowlist: set[str],
     project_root: Path,
     entry_module: str,
     json_output: bool,
     target_python: TargetPythonVersion,
+    capability_config_digest: str = "",
 ) -> tuple[_PreparedFrontendAnalysis | None, _CliFailure | None]:
     module_deps: dict[str, set[str]] = {}
     module_sources: dict[str, str] = {}
@@ -22113,7 +21356,11 @@ def _prepare_frontend_analysis(
                 project_root=project_root,
                 retain_source=False,
                 retain_tree=False,
+                roots=roots,
+                stdlib_root=stdlib_root,
+                stdlib_allowlist=stdlib_allowlist,
                 target_python=target_python,
+                capability_config_digest=capability_config_digest,
             )
             module_path_stats[module_name] = path_stat
             module_source_leases[module_name] = _ModuleSourceLease.path_backed(
@@ -22200,12 +21447,12 @@ def _prepare_frontend_lowering_config(
     module_deps: dict[str, set[str]],
     module_dep_closures: dict[str, frozenset[str]],
     has_back_edges: bool,
-    known_modules: set[str],
+    known_modules: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     pgo_hot_function_names: set[str],
-    generated_module_source_paths: dict[str, str],
+    generated_module_source_paths: Mapping[str, str],
     entry_module: str,
-    namespace_module_names: set[str],
+    namespace_module_names: Collection[str],
     module_source_catalog: _ModuleSourceCatalog,
     is_wasm: bool,
     target_triple: str | None,
@@ -22342,7 +21589,7 @@ def _prepare_frontend_lowering_config(
 def _prepare_frontend_execution(
     *,
     syntax_error_modules: dict[str, "ModuleSyntaxErrorInfo"],
-    module_graph: dict[str, Path],
+    module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path,
     module_resolution_cache: "_ModuleResolutionCache",
@@ -22351,8 +21598,8 @@ def _prepare_frontend_execution(
     fallback_policy: FallbackPolicy,
     type_facts: TypeFacts | None,
     enable_phi: bool,
-    known_modules: set[str],
-    stdlib_allowlist: set[str],
+    known_modules: Collection[str],
+    stdlib_allowlist: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
     module_deps: dict[str, set[str]],
     module_chunk_max_ops: int,
@@ -22367,11 +21614,11 @@ def _prepare_frontend_execution(
     module_chunking: bool,
     scoped_lowering_inputs: _ScopedLoweringInputs,
     dirty_lowering_modules: set[str],
-    frontend_module_costs: dict[str, float],
-    stdlib_like_by_module: dict[str, bool],
+    frontend_module_costs: Mapping[str, float],
+    stdlib_like_by_module: Mapping[str, bool],
     known_classes: dict[str, Any],
     module_trees: dict[str, ast.AST],
-    generated_module_source_paths: dict[str, str],
+    generated_module_source_paths: Mapping[str, str],
     frontend_phase_timeout: float | None,
     record_frontend_timing: Callable[..., None],
     fail: Callable[..., int],
@@ -22605,6 +21852,10 @@ def _prepare_backend_setup(
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
     resolved_modules: set[str] | frozenset[str] | None = None,
+    capabilities_list: Sequence[str] | None = None,
+    capability_profiles: Sequence[str] | None = None,
+    manifest_env_vars: Mapping[str, str] | None = None,
+    capability_config_digest: str | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
     runtime_state = _initialize_runtime_artifact_state(
         is_rust_transpile=is_rust_transpile or is_luau_transpile,
@@ -22652,6 +21903,10 @@ def _prepare_backend_setup(
         stdlib_profile=stdlib_profile,
         native_artifact_plan=native_artifact_plan,
         runtime_intrinsic_symbols_digest=runtime_intrinsic_symbols_digest,
+        capabilities_list=capabilities_list,
+        capability_profiles=capability_profiles,
+        manifest_env_vars=manifest_env_vars,
+        capability_config_digest=capability_config_digest,
     )
     if emit_mode != "obj" and not runtime_intrinsic_symbols_digest:
         _maybe_start_native_runtime_lib_ready_async(
@@ -22952,7 +22207,10 @@ def _prepare_backend_dispatch(
     daemon_config_digest = backend_daemon_config_digest
     if not is_rust_transpile and not is_luau_transpile and _backend_daemon_enabled():
         daemon_config_digest = _backend_daemon_config_digest(
-            molt_root, backend_cargo_profile
+            molt_root,
+            backend_cargo_profile,
+            backend_bin=backend_bin,
+            target_triple=target_triple,
         )
         if diagnostics_enabled and "backend_daemon_setup" not in phase_starts:
             phase_starts["backend_daemon_setup"] = time.perf_counter()
@@ -23245,7 +22503,10 @@ def _execute_backend_compile(
                     if daemon_health is not None:
                         backend_daemon_health = daemon_health
             if not backend_compiled:
-                detail = daemon_error or "backend daemon returned no successful compile result"
+                detail = (
+                    daemon_error
+                    or "backend daemon returned no successful compile result"
+                )
                 return None, _fail(
                     f"Backend daemon compile failed: {detail}",
                     json_output,
@@ -23728,29 +22989,7 @@ def _run_backend_pipeline(
     prepared_build_roots: _PreparedBuildRoots,
     prepared_build_config: _PreparedBuildConfig,
     resolved_build_entry: _ResolvedBuildEntry,
-    prepared_frontend_pipeline_bundle: tuple[
-        _PreparedFrontendRunTicket,
-        dict[str, Path],
-        set[str],
-        set[str],
-        bool,
-        _BuildOutputLayout,
-        set[str],
-        dict[str, str],
-        dict[str, dict[str, dict[str, Any]]],
-        list[str],
-        TypeFacts | None,
-        dict[str, Any],
-        bool,
-        int,
-        bool,
-        _FrontendIntegrationState,
-        _MidendDiagnosticsState,
-        Callable[..., None],
-        Callable[[], tuple[dict[str, Any] | None, Path | None]],
-        Path,
-        _ExternalPackageNativeArtifactPlan,
-    ],
+    prepared_frontend_pipeline_bundle: _PreparedFrontendPipelineBundle,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -23872,6 +23111,10 @@ def _run_backend_pipeline(
         stdlib_profile=stdlib_profile,
         native_artifact_plan=native_artifact_plan,
         resolved_modules=resolved_modules,
+        capabilities_list=prepared_build_config.capabilities_list,
+        capability_profiles=prepared_build_config.capability_profiles,
+        manifest_env_vars=prepared_build_config.manifest_env_vars,
+        capability_config_digest=prepared_build_config.capability_config_cache_digest,
     )
     if prepared_backend_setup_error is not None:
         return prepared_backend_setup_error
@@ -24384,10 +23627,7 @@ def _prepare_non_native_build_result(
                         memory_guard_prefix="MOLT_WASM_LINK",
                     )
                     if link_process.returncode != 0:
-                        err = (
-                            link_process.stderr.strip()
-                            or link_process.stdout.strip()
-                        )
+                        err = link_process.stderr.strip() or link_process.stdout.strip()
                         msg = "Wasm link failed"
                         if err:
                             msg = f"{msg}: {err}"
@@ -24621,7 +23861,7 @@ def _prepare_non_native_build_result(
                     runtime_import_signatures=app_runtime_import_signatures,
                     app_table_ref_signatures=app_table_ref_signatures,
                     runtime_table_ref_signatures=runtime_table_ref_signatures,
-                )
+                ),
             )
             vfs_support_src = molt_root / "wasm" / "molt_vfs_browser.js"
             vfs_support_dst = split_dir / "molt_vfs_browser.js"
@@ -24640,7 +23880,7 @@ def _prepare_non_native_build_result(
             wrangler_jsonc = split_dir / "wrangler.jsonc"
             _atomic_write_text(
                 wrangler_jsonc,
-                _generate_split_wrangler_jsonc(dt.date.today().isoformat())
+                _generate_split_wrangler_jsonc(dt.date.today().isoformat()),
             )
             legacy_wrangler_toml = split_dir / "wrangler.toml"
             if legacy_wrangler_toml.exists():
@@ -24982,29 +24222,7 @@ def _run_build_pipeline(
     prepared_build_roots: _PreparedBuildRoots,
     prepared_build_config: _PreparedBuildConfig,
     resolved_build_entry: _ResolvedBuildEntry,
-    prepared_frontend_pipeline_bundle: tuple[
-        _PreparedFrontendRunTicket,
-        dict[str, Path],
-        set[str],
-        set[str],
-        bool,
-        _BuildOutputLayout,
-        set[str],
-        dict[str, str],
-        dict[str, dict[str, dict[str, Any]]],
-        list[str],
-        TypeFacts | None,
-        dict[str, Any],
-        bool,
-        int,
-        bool,
-        _FrontendIntegrationState,
-        _MidendDiagnosticsState,
-        Callable[..., None],
-        Callable[[], tuple[dict[str, Any] | None, Path | None]],
-        Path,
-        _ExternalPackageNativeArtifactPlan,
-    ],
+    prepared_frontend_pipeline_bundle: _PreparedFrontendPipelineBundle,
     parse_codec: ParseCodec,
     type_hint_policy: TypeHintPolicy,
     fallback_policy: FallbackPolicy,
@@ -25307,6 +24525,7 @@ def _prepare_frontend_stage_state(
         target=target,
         import_admission_policy=import_admission_policy,
         target_python=prepared_build_config.target_python,
+        capability_config_digest=prepared_build_config.capability_config_cache_digest,
     )
     if prepared_module_graph_error is not None:
         return None, prepared_module_graph_error
@@ -25378,10 +24597,14 @@ def _prepare_frontend_stage_state(
             module_graph=import_plan.module_graph,
             module_graph_metadata=import_plan.module_graph_metadata,
             module_resolution_cache=import_plan.module_resolution_cache,
+            roots=import_plan.roots,
+            stdlib_root=import_plan.stdlib_root,
+            stdlib_allowlist=set(import_plan.stdlib_allowlist),
             project_root=project_root,
             entry_module=entry_module,
             json_output=json_output,
             target_python=prepared_build_config.target_python,
+            capability_config_digest=prepared_build_config.capability_config_cache_digest,
         )
     )
     if prepared_frontend_analysis_error is not None:
@@ -25453,32 +24676,7 @@ def _prepare_frontend_pipeline(
     output: str | None,
     emit_ir: str | None,
     type_facts_path: str | None,
-) -> tuple[
-    tuple[
-        _PreparedFrontendRunTicket,
-        dict[str, Path],
-        set[str],
-        set[str],
-        bool,
-        _BuildOutputLayout,
-        set[str],
-        dict[str, str],
-        dict[str, dict[str, dict[str, Any]]],
-        list[str],
-        TypeFacts | None,
-        dict[str, Any],
-        bool,
-        int,
-        bool,
-        _FrontendIntegrationState,
-        _MidendDiagnosticsState,
-        Callable[..., None],
-        Callable[[], tuple[dict[str, Any] | None, Path | None]],
-        Path,
-    ]
-    | None,
-    _CliFailure | None,
-]:
+) -> tuple[_PreparedFrontendPipelineBundle | None, _CliFailure | None]:
     prepared_frontend_stage_bundle, prepared_frontend_stage_state_error = (
         _prepare_frontend_stage_state(
             prepared_build_preamble=prepared_build_preamble,
@@ -25680,6 +24878,7 @@ def _build_cache_variant(
     backend_binary_identity: str = "",
     external_static_packages_digest: str = "",
     runtime_intrinsic_symbols_digest: str = "",
+    capability_config_digest: str = "",
 ) -> str:
     """Build a cache variant key from build configuration.
 
@@ -25733,7 +24932,66 @@ def _build_cache_variant(
         parts.append(f"external_static_packages={external_static_packages_digest}")
     if runtime_intrinsic_symbols_digest:
         parts.append(f"runtime_intrinsics={runtime_intrinsic_symbols_digest}")
+    if capability_config_digest:
+        parts.append(f"capability_config={capability_config_digest}")
     return ";".join(parts)
+
+
+def _capability_ambient_env_for_cache(env: Mapping[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in sorted(env.items())
+        if key in {"MOLT_CAPABILITIES", "MOLT_CAPABILITY_TIER", "MOLT_IO_MODE"}
+        or key.startswith("MOLT_RESOURCE_")
+        or key.startswith("MOLT_AUDIT_")
+    }
+
+
+def _capability_config_cache_digest_from_env(env: Mapping[str, str]) -> str:
+    ambient_env = _capability_ambient_env_for_cache(env)
+    if not ambient_env:
+        return ""
+    payload = {
+        "ambient_env": ambient_env,
+        "capabilities": None,
+        "capability_profiles": [],
+        "manifest_env": {},
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _capability_config_cache_digest(
+    *,
+    capabilities_list: Sequence[str] | None,
+    capability_profiles: Sequence[str] | None,
+    manifest_env_vars: Mapping[str, str] | None,
+) -> str:
+    ambient_env = _capability_ambient_env_for_cache(os.environ)
+    if (
+        capabilities_list is None
+        and not capability_profiles
+        and not manifest_env_vars
+        and not ambient_env
+    ):
+        return ""
+    payload = {
+        "ambient_env": ambient_env,
+        "capabilities": (
+            sorted(str(capability) for capability in capabilities_list)
+            if capabilities_list is not None
+            else None
+        ),
+        "capability_profiles": sorted(
+            str(profile) for profile in (capability_profiles or ())
+        ),
+        "manifest_env": {
+            str(key): str(value)
+            for key, value in sorted((manifest_env_vars or {}).items())
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _prepare_backend_cache_setup(
@@ -25760,6 +25018,10 @@ def _prepare_backend_cache_setup(
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
     runtime_intrinsic_symbols_digest: str = "",
+    capabilities_list: Sequence[str] | None = None,
+    capability_profiles: Sequence[str] | None = None,
+    manifest_env_vars: Mapping[str, str] | None = None,
+    capability_config_digest: str | None = None,
 ) -> _BackendCacheSetup:
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
@@ -25782,6 +25044,12 @@ def _prepare_backend_cache_setup(
         _backend_features_for_build_target(target=target, is_wasm=is_wasm),
     )
     backend_binary_identity = _backend_binary_identity(backend_bin)
+    if capability_config_digest is None:
+        capability_config_digest = _capability_config_cache_digest(
+            capabilities_list=capabilities_list,
+            capability_profiles=capability_profiles,
+            manifest_env_vars=manifest_env_vars,
+        )
     cache_variant = _build_cache_variant(
         profile=profile,
         runtime_cargo=runtime_cargo_profile,
@@ -25795,6 +25063,7 @@ def _prepare_backend_cache_setup(
         backend_binary_identity=backend_binary_identity,
         external_static_packages_digest=native_artifact_plan.digest(),
         runtime_intrinsic_symbols_digest=runtime_intrinsic_symbols_digest,
+        capability_config_digest=capability_config_digest,
     )
     if not cache_enabled:
         # Even with cache disabled, compute stdlib_object_path so the
@@ -25886,11 +25155,6 @@ def _prepare_backend_cache_setup(
             stdlib_module_symbols_json=stdlib_module_symbols_json,
             stdlib_module_symbols=frozenset(stdlib_module_symbols),
         )
-    ext = "wasm" if is_wasm else "o"
-    cache_path = cache_root / f"{cache_key}.{ext}"
-    function_cache_path = None
-    if function_cache_key and function_cache_key != cache_key:
-        function_cache_path = cache_root / f"{function_cache_key}.{ext}"
     stdlib_object_path = None
     stdlib_object_cache_key = None
     stdlib_object_manifest = None
@@ -25907,6 +25171,25 @@ def _prepare_backend_cache_setup(
             cache_variant=cache_variant,
             target_triple=target_triple,
         )
+    ext = "wasm" if is_wasm else "o"
+    cache_path = _backend_cache_artifact_path(
+        cache_root,
+        cache_key,
+        ext=ext,
+        stdlib_object_cache_key=stdlib_object_cache_key,
+        is_wasm=is_wasm,
+    )
+    function_cache_path = None
+    if function_cache_key and function_cache_key != cache_key:
+        function_cache_path = _backend_cache_artifact_path(
+            cache_root,
+            function_cache_key,
+            ext=ext,
+            stdlib_object_cache_key=stdlib_object_cache_key,
+            is_wasm=is_wasm,
+        )
+    if split_stdlib_object and stdlib_object_cache_key is not None:
+        assert cache_path is not None
         stdlib_object_path = _stdlib_object_cache_path(
             cache_path, stdlib_object_cache_key
         )
@@ -26269,7 +25552,7 @@ def _run_frontend_parallel_layer_batches(
     layer_workers: int,
     executor: Any,
     known_classes_snapshot_source: Mapping[str, Any],
-    module_graph: dict[str, Path],
+    module_graph: Mapping[str, Path],
     module_source_catalog: _ModuleSourceCatalog,
     project_root: Path | None,
     module_resolution_cache: _ModuleResolutionCache,
@@ -27244,7 +26527,7 @@ def _module_worker_payload(
 def _prepare_frontend_parallel_batch(
     batch: list[str],
     *,
-    module_graph: dict[str, Path],
+    module_graph: Mapping[str, Path],
     module_sources: dict[str, str] | None = None,
     module_source_catalog: _ModuleSourceCatalog | None = None,
     project_root: Path | None,
@@ -27735,9 +27018,6 @@ def _ensure_backend_binary(
                 return True
         if not json_output:
             print("Backend sources changed; rebuilding backend...", file=sys.stderr)
-        # Kill any running backend daemon so it doesn't serve stale code
-        # after the binary is rebuilt.
-        _kill_stale_backend_daemon(project_root, cargo_profile)
         # Cache entries include backend/tooling/runtime identity in their keys.
         # A backend rebuild therefore invalidates by selecting new keys, not by
         # deleting shared immutable cache artifacts that concurrent sessions may
@@ -27891,6 +27171,48 @@ def _artifact_newer_than_sources(
     return newest_src > 0 and lib_mtime > newest_src
 
 
+def _runtime_lib_verified_session_key(
+    *,
+    project_root: Path,
+    runtime_lib: Path,
+    fingerprint_path: Path,
+    cargo_profile: str,
+    target_triple: str | None,
+    rustflags: str,
+    fingerprint_features: tuple[str, ...],
+    fingerprint: Mapping[str, str | None] | None,
+) -> (
+    tuple[
+        str,
+        str,
+        str,
+        str,
+        str | None,
+        str,
+        tuple[str, ...],
+        tuple[str | None, str | None, str | None, str | None],
+    ]
+    | None
+):
+    if fingerprint is None:
+        return None
+    return (
+        os.fspath(project_root),
+        os.fspath(runtime_lib),
+        os.fspath(fingerprint_path),
+        cargo_profile,
+        target_triple,
+        rustflags,
+        fingerprint_features,
+        (
+            fingerprint.get("hash"),
+            fingerprint.get("rustc"),
+            fingerprint.get("inputs_digest"),
+            fingerprint.get("meta_digest"),
+        ),
+    )
+
+
 def _ensure_runtime_lib(
     runtime_lib: Path,
     target_triple: str | None,
@@ -27926,26 +27248,11 @@ def _ensure_runtime_lib(
     fingerprint_path = _runtime_fingerprint_path(
         project_root, runtime_lib, cargo_profile, target_triple
     )
-    # Session-level short-circuit: once we have verified (and possibly built)
-    # the runtime for the exact linkable alias and fingerprint-driving feature
-    # set, do not repeat the fingerprint/stat dance in this process.
-    session_key = (
-        os.fspath(project_root),
-        os.fspath(runtime_lib),
-        os.fspath(fingerprint_path),
-        cargo_profile,
-        target_triple,
-        rustflags,
-        fingerprint_features,
-    )
-    if session_key in _RUNTIME_LIB_VERIFIED:
-        return True
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
     # Use when you have already run `cargo build` manually and want to avoid
     # the ~90s overhead of the CLI re-running cargo.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
         if runtime_lib.exists():
-            _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
     stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     fingerprint = _runtime_fingerprint(
@@ -27956,13 +27263,31 @@ def _ensure_runtime_lib(
         runtime_features=fingerprint_features,
         stored_fingerprint=stored_fingerprint,
     )
+    session_key = _runtime_lib_verified_session_key(
+        project_root=project_root,
+        runtime_lib=runtime_lib,
+        fingerprint_path=fingerprint_path,
+        cargo_profile=cargo_profile,
+        target_triple=target_triple,
+        rustflags=rustflags,
+        fingerprint_features=fingerprint_features,
+        fingerprint=fingerprint,
+    )
+    if session_key is not None and session_key in _RUNTIME_LIB_VERIFIED:
+        return True
     lock_target = target_triple or "native"
     lock_name = f"runtime.{cargo_profile}.{lock_target}"
     with _build_lock(project_root, lock_name):
         if stored_fingerprint is None:
             stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
-        if not _artifact_needs_rebuild(runtime_lib, fingerprint, stored_fingerprint):
-            _RUNTIME_LIB_VERIFIED.add(session_key)
+        if _runtime_artifact_fingerprint_matches(
+            runtime_lib,
+            fingerprint,
+            fingerprint_path,
+            require_artifact_digest=True,
+        ):
+            if session_key is not None:
+                _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
         canonical_target_root = _canonical_target_root(project_root)
         profile_dir = _cargo_profile_dir(cargo_profile)
@@ -27990,8 +27315,10 @@ def _ensure_runtime_lib(
             fingerprint_path=fingerprint_path,
             candidate_artifact=canonical_runtime_lib,
             candidate_fingerprint_path=canonical_fingerprint_path,
+            require_artifact_digest=True,
         ):
-            _RUNTIME_LIB_VERIFIED.add(session_key)
+            if session_key is not None:
+                _RUNTIME_LIB_VERIFIED.add(session_key)
             return True
         first_build = not runtime_lib.exists()
         if not json_output:
@@ -28090,14 +27417,19 @@ def _ensure_runtime_lib(
         if fingerprint is not None:
             try:
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
-                _write_runtime_fingerprint(fingerprint_path, fingerprint)
+                _write_runtime_fingerprint(
+                    fingerprint_path,
+                    fingerprint,
+                    artifact=runtime_lib,
+                )
             except OSError:
                 if not json_output:
                     print(
                         "Warning: failed to write runtime fingerprint metadata.",
                         file=sys.stderr,
                     )
-        _RUNTIME_LIB_VERIFIED.add(session_key)
+        if session_key is not None:
+            _RUNTIME_LIB_VERIFIED.add(session_key)
     return True
 
 
@@ -28261,8 +27593,7 @@ def _reported_runtime_artifact_matches(
     except OSError:
         return False
     if not (
-        resolved_path == resolved_root
-        or resolved_path.is_relative_to(resolved_root)
+        resolved_path == resolved_root or resolved_path.is_relative_to(resolved_root)
     ):
         return False
     name = resolved_path.name
@@ -28618,9 +27949,7 @@ def _ensure_runtime_wasm(
         if (
             not reloc
             and target_runtime_wasm_current is not None
-            and (
-                target_runtime_wasm := target_runtime_wasm_current[0]
-            )
+            and (target_runtime_wasm := target_runtime_wasm_current[0])
             and _inspect_wasm_binary(target_runtime_wasm) == "valid"
             and _is_valid_shared_runtime_wasm_artifact(target_runtime_wasm)
             and (
@@ -28631,6 +27960,7 @@ def _ensure_runtime_wasm(
                 )
             )
         ):
+            assert fingerprint is not None
             target_runtime_wasm_fingerprint_path = target_runtime_wasm_current[1]
             runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
             _atomic_copy_file(target_runtime_wasm, runtime_wasm)
@@ -28674,6 +28004,7 @@ def _ensure_runtime_wasm(
             fingerprint=fingerprint,
         )
         if reloc and target_runtime_staticlib_current is not None:
+            assert fingerprint is not None
             target_runtime_staticlib, target_runtime_staticlib_fingerprint_path = (
                 target_runtime_staticlib_current
             )
@@ -28728,6 +28059,7 @@ def _ensure_runtime_wasm(
                 or _runtime_wasm_exports_satisfy(runtime_wasm, required_exports)
             )
         ):
+            assert fingerprint is not None
             try:
                 _write_runtime_wasm_integrity_sidecar(runtime_wasm)
                 fingerprint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -28865,13 +28197,11 @@ def _ensure_runtime_wasm(
                     fingerprint,
                     artifact=runtime_wasm,
                 )
-                reported_staticlib_fingerprint_path = (
-                    _runtime_target_fingerprint_path(
-                        target_build_state_root,
-                        src,
-                        cargo_profile=cargo_profile,
-                        target_label=target_label,
-                    )
+                reported_staticlib_fingerprint_path = _runtime_target_fingerprint_path(
+                    target_build_state_root,
+                    src,
+                    cargo_profile=cargo_profile,
+                    target_label=target_label,
                 )
                 reported_staticlib_fingerprint_path.parent.mkdir(
                     parents=True,
@@ -30717,294 +30047,13 @@ def _ensure_rustup_target(target_triple: str, warnings: list[str]) -> bool:
             memory_guard_prefix="MOLT_BUILD",
         )
     except OSError as exc:
-        warnings.append(f"Failed to add rustup target {target_triple}: {exc}")
+        warnings.append(f"Failed to install rustup target {target_triple}: {exc}")
         return False
     if add.returncode != 0:
         detail = (add.stderr or add.stdout).strip() or "unknown error"
         warnings.append(f"rustup target add failed for {target_triple}: {detail}")
         return False
     return True
-
-
-def _strip_arch_flags(args: list[str]) -> list[str]:
-    cleaned: list[str] = []
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "-arch":
-            skip_next = True
-            continue
-        if arg.startswith("-arch="):
-            continue
-        cleaned.append(arg)
-    return cleaned
-
-
-def _zig_target_query(target_triple: str) -> str:
-    triple = target_triple.strip()
-    if not triple:
-        return target_triple
-    parts = [part for part in triple.split("-") if part]
-    if len(parts) < 2:
-        return target_triple
-
-    arch_aliases = {
-        "amd64": "x86_64",
-        "x64": "x86_64",
-        "arm64": "aarch64",
-        "armv7l": "armv7",
-        "i386": "x86",
-        "i486": "x86",
-        "i586": "x86",
-        "i686": "x86",
-    }
-    os_aliases = {
-        "darwin": "macos",
-        "macosx": "macos",
-        "win32": "windows",
-        "mingw32": "windows",
-        "mingw64": "windows",
-        "cygwin": "windows",
-    }
-    abi_aliases = {
-        "sim": "simulator",
-        "androideabi": "android",
-    }
-    abi_tokens = {
-        "gnu",
-        "gnueabi",
-        "gnueabihf",
-        "gnuabi64",
-        "gnux32",
-        "musl",
-        "musleabi",
-        "musleabihf",
-        "msvc",
-        "eabi",
-        "eabihf",
-        "android",
-        "simulator",
-        "sim",
-        "ilp32",
-        "uclibc",
-        "ohos",
-        "macabi",
-        "androideabi",
-    }
-    os_tokens = {
-        "linux",
-        "windows",
-        "darwin",
-        "macos",
-        "macosx",
-        "ios",
-        "tvos",
-        "watchos",
-        "freebsd",
-        "netbsd",
-        "openbsd",
-        "dragonfly",
-        "solaris",
-        "haiku",
-        "hurd",
-        "android",
-        "wasi",
-        "emscripten",
-        "fuchsia",
-        "uefi",
-        "mingw32",
-        "mingw64",
-        "cygwin",
-        "illumos",
-        "aix",
-    }
-
-    def is_os_token(token: str) -> bool:
-        lowered = token.lower()
-        return lowered in os_tokens or lowered in os_aliases
-
-    arch = arch_aliases.get(parts[0].lower(), parts[0].lower())
-    remainder = [part.lower() for part in parts[1:]]
-    abi = None
-    if remainder:
-        last = remainder[-1]
-        if len(remainder) >= 2 and last in abi_tokens and is_os_token(remainder[-2]):
-            abi = abi_aliases.get(last, last)
-            remainder = remainder[:-1]
-        elif last in abi_tokens and last not in os_tokens:
-            abi = abi_aliases.get(last, last)
-            remainder = remainder[:-1]
-    os_part = remainder[-1] if remainder else None
-    vendor_parts = remainder[:-1] if len(remainder) > 1 else []
-    if os_part is None:
-        return f"{arch}-{abi}" if abi else arch
-    os_token = os_part.lower()
-    match = re.match(r"^(darwin|macosx|macos|ios|tvos|watchos)([0-9].*)$", os_token)
-    if match:
-        os_token = match.group(1)
-    os_name = os_aliases.get(os_token, os_token)
-    if os_name in {"unknown", "none"}:
-        os_name = "freestanding"
-    if os_name == "windows" and abi is None:
-        if any(token in {"w64", "mingw32", "mingw64"} for token in vendor_parts):
-            abi = "gnu"
-    if os_name in {"mingw32", "mingw64"}:
-        os_name = "windows"
-        if abi is None:
-            abi = "gnu"
-    if os_name in {"macos", "ios", "tvos", "watchos"}:
-        if abi == "sim":
-            abi = "simulator"
-        elif os_name == "macos":
-            abi = None
-        elif abi in {
-            "gnu",
-            "gnueabi",
-            "gnueabihf",
-            "gnuabi64",
-            "gnux32",
-            "musl",
-            "musleabi",
-            "musleabihf",
-            "msvc",
-            "android",
-            "eabi",
-            "eabihf",
-            "uclibc",
-        }:
-            abi = None
-
-    if abi:
-        return f"{arch}-{os_name}-{abi}"
-    return f"{arch}-{os_name}"
-
-
-def _detect_macos_arch(obj_path: Path) -> str | None:
-    try:
-        result = _run_completed_command(
-            ["lipo", "-archs", str(obj_path)],
-            capture_output=True,
-            env=None,
-            cwd=obj_path.parent,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    archs = result.stdout.strip().split()
-    return archs[0] if archs else None
-
-
-def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
-    env_target = os.environ.get("MOLT_MACOSX_DEPLOYMENT_TARGET")
-    if env_target:
-        return env_target
-    env_target = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
-    if env_target:
-        return env_target
-    # Stable per-arch baselines when no environment override is present.
-    if arch in ("x86_64", "amd64"):
-        return "10.13"
-    # arm64, aarch64, and any unknown arch: use the SDK version reported
-    # by xcrun, which matches what Rust/C dependencies were compiled
-    # against.  Using platform.mac_ver() (OS version) can be lower than
-    # the SDK, causing hundreds of linker version-mismatch warnings.
-    try:
-        result = _run_completed_command(
-            ["xcrun", "--show-sdk-version"],
-            capture_output=True,
-            env=None,
-            cwd=None,
-            memory_guard_prefix="MOLT_BUILD",
-            timeout=5,
-        )
-        sdk_ver = result.stdout.strip()
-        if sdk_ver:
-            return sdk_ver
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
-    # Fallback to OS version if xcrun unavailable
-    import platform as _platform
-
-    ver = _platform.mac_ver()[0]
-    if ver:
-        parts = ver.split(".")
-        return ".".join(parts[:2]) if len(parts) >= 2 else ver
-    return "11.0"
-
-
-def _append_darwin_runtime_frameworks(
-    args: list[str],
-    *,
-    target_triple: str | None = None,
-) -> None:
-    """Append macOS framework flags when targeting Darwin.
-
-    For cross-target builds (e.g. building x86_64-apple-darwin from an
-    aarch64 host) the linker is invoked without rustc's host-SDK
-    auto-discovery, so the framework search path is empty and `-framework
-    Security` fails to resolve. Inject `-F <sdk>/System/Library/Frameworks`
-    explicitly when we have a target triple in hand.
-    """
-    is_darwin = False
-    if target_triple:
-        is_darwin = "apple" in target_triple or "darwin" in target_triple
-    else:
-        is_darwin = sys.platform == "darwin"
-    if is_darwin:
-        # Only inject SDK paths when cross-targeting; native builds get
-        # the search paths for free from rustc's default SDK probing.
-        if target_triple:
-            sdk_root = _resolve_macos_sdk_root()
-            if sdk_root:
-                # -isysroot points the linker at the cross-target SDK so
-                # libSystem / libobjc / libc++ resolve from the SDK's
-                # usr/lib instead of the host's /usr/lib (which is a
-                # different ABI on a non-host arch).
-                if "-isysroot" not in args:
-                    args.extend(["-isysroot", sdk_root])
-                framework_dir = f"{sdk_root}/System/Library/Frameworks"
-                if framework_dir not in args:
-                    args.extend(["-F", framework_dir])
-                lib_dir = f"{sdk_root}/usr/lib"
-                if lib_dir not in args:
-                    args.extend(["-L", lib_dir])
-        args.extend(["-framework", "Security", "-framework", "CoreFoundation"])
-        if _coerce_bool(os.environ.get("MOLT_RUNTIME_GPU_METAL"), False):
-            args.extend(["-framework", "Metal", "-lobjc"])
-        if _coerce_bool(os.environ.get("MOLT_RUNTIME_GPU_WEBGPU"), False):
-            args.extend(
-                [
-                    "-framework",
-                    "Metal",
-                    "-framework",
-                    "Foundation",
-                    "-framework",
-                    "QuartzCore",
-                    "-framework",
-                    "AppKit",
-                    "-lobjc",
-                ]
-            )
-
-
-def _resolve_macos_sdk_root() -> str | None:
-    """Return the active macOS SDK root via xcrun, or None if unavailable."""
-    try:
-        result = _run_completed_command(
-            ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
-            capture_output=True,
-            env=None,
-            cwd=None,
-            memory_guard_prefix="MOLT_BUILD",
-            timeout=5,
-        )
-        return result.stdout.strip() or None
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
 
 
 def build(
@@ -34173,8 +33222,7 @@ class _ExtensionScanSurface:
 
 def _extract_numpy_fail_fast_symbols(text: str) -> set[str]:
     return {
-        match.group("symbol")
-        for match in _NUMPY_FAIL_FAST_SYMBOL_RE.finditer(text)
+        match.group("symbol") for match in _NUMPY_FAIL_FAST_SYMBOL_RE.finditer(text)
     }
 
 
@@ -34259,7 +33307,10 @@ def _iter_extension_scan_dir_sources(root: Path) -> list[Path]:
         current = Path(current_root)
         for filename in sorted(filenames):
             path = current / filename
-            if path.is_symlink() or path.suffix.lower() not in _EXTENSION_SCAN_SOURCE_SUFFIXES:
+            if (
+                path.is_symlink()
+                or path.suffix.lower() not in _EXTENSION_SCAN_SOURCE_SUFFIXES
+            ):
                 continue
             source_paths.append(path.resolve())
     return source_paths
@@ -34356,9 +33407,7 @@ def extension_scan(
     if root_error is not None:
         return root_error
 
-    scan_surface, header_path, header_error = _load_py_c_api_scan_surface(
-        molt_root
-    )
+    scan_surface, header_path, header_error = _load_py_c_api_scan_surface(molt_root)
     if header_error is not None:
         return _fail(
             f"Failed to read libmolt Python.h surface ({header_path}): {header_error}",
@@ -34505,8 +33554,7 @@ def extension_scan(
         if verbose:
             for file_path in sorted(fail_fast_by_file):
                 print(
-                    f"{file_path} fail-fast: "
-                    f"{', '.join(fail_fast_by_file[file_path])}"
+                    f"{file_path} fail-fast: {', '.join(fail_fast_by_file[file_path])}"
                 )
             for file_path in sorted(missing_by_file):
                 print(f"{file_path} missing: {', '.join(missing_by_file[file_path])}")
@@ -36336,1278 +35384,6 @@ def verify(
         if not errors and verbose:
             print("Verification passed")
     return 0 if not errors else 1
-
-
-def _summarize_tiers(rows: list[dict[str, Any]]) -> dict[str, int]:
-    summary: dict[str, int] = {"Tier A": 0, "Tier B": 0, "Tier C": 0}
-    for row in rows:
-        tier = row.get("tier")
-        if tier in summary:
-            summary[tier] += 1
-    return summary
-
-
-def _git_ref_from_source(source: dict[str, Any]) -> tuple[str | None, str | None]:
-    for key in ("rev", "revision", "commit", "reference"):
-        value = source.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip(), key
-    for key in ("tag", "branch"):
-        value = source.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip(), key
-    return None, None
-
-
-_GIT_SOURCE_COMMAND_TIMEOUT_SEC = 300.0
-
-
-def _run_git_source_command(
-    cmd: list[str],
-    *,
-    cwd: Path,
-    timeout: float = _GIT_SOURCE_COMMAND_TIMEOUT_SEC,
-) -> subprocess.CompletedProcess[str]:
-    return _run_completed_command(
-        cmd,
-        cwd=cwd,
-        env=None,
-        capture_output=True,
-        memory_guard_prefix="MOLT_BUILD",
-        timeout=timeout,
-    )
-
-
-def _resolve_git_ref(
-    url: str,
-    ref: str,
-    *,
-    project_root: Path,
-) -> tuple[str | None, str | None]:
-    try:
-        result = _run_git_source_command(
-            ["git", "ls-remote", url, ref],
-            cwd=project_root,
-            timeout=60.0,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return None, f"Failed to resolve git ref {ref}: {exc}"
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip() or "unknown error"
-        return None, f"Failed to resolve git ref {ref}: {detail}"
-    line = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
-    if not line:
-        return None, f"Failed to resolve git ref {ref}: empty response"
-    commit = line.split()[0]
-    if not commit:
-        return None, f"Failed to resolve git ref {ref}: empty commit"
-    return commit, None
-
-
-def _clone_git_source(
-    url: str,
-    ref: str,
-    dest: Path,
-    *,
-    project_root: Path,
-    subdirectory: str | None = None,
-) -> tuple[str, str]:
-    tmp_root = dest.parent
-    with tempfile.TemporaryDirectory(dir=tmp_root, prefix="git_vendor_") as tmpdir:
-        repo_dir = Path(tmpdir) / "repo"
-        try:
-            clone = _run_git_source_command(
-                [
-                    "git",
-                    "clone",
-                    "--filter=blob:none",
-                    "--no-checkout",
-                    url,
-                    str(repo_dir),
-                ],
-                cwd=project_root,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError(f"Failed to clone git repo {url}: {exc}") from exc
-        if clone.returncode != 0:
-            detail = (clone.stderr or clone.stdout).strip() or "unknown error"
-            raise RuntimeError(f"Failed to clone git repo {url}: {detail}")
-        fetch = _run_git_source_command(
-            ["git", "-C", str(repo_dir), "fetch", "--depth", "1", "origin", ref],
-            cwd=project_root,
-        )
-        if fetch.returncode != 0:
-            detail = (fetch.stderr or fetch.stdout).strip() or "unknown error"
-            raise RuntimeError(f"Failed to fetch git ref {ref}: {detail}")
-        checkout = _run_git_source_command(
-            ["git", "-C", str(repo_dir), "checkout", "--detach", ref],
-            cwd=project_root,
-        )
-        if checkout.returncode != 0:
-            detail = (checkout.stderr or checkout.stdout).strip() or "unknown error"
-            raise RuntimeError(f"Failed to checkout git ref {ref}: {detail}")
-        rev = _run_git_source_command(
-            ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
-            cwd=project_root,
-        )
-        if rev.returncode != 0 or not rev.stdout.strip():
-            detail = (rev.stderr or rev.stdout).strip() or "unknown error"
-            raise RuntimeError(f"Failed to resolve git revision for {ref}: {detail}")
-        resolved_commit = rev.stdout.strip()
-        tree = _run_git_source_command(
-            ["git", "-C", str(repo_dir), "rev-parse", "HEAD^{tree}"],
-            cwd=project_root,
-        )
-        if tree.returncode != 0 or not tree.stdout.strip():
-            detail = (tree.stderr or tree.stdout).strip() or "unknown error"
-            raise RuntimeError(f"Failed to resolve git tree hash: {detail}")
-        tree_hash = tree.stdout.strip()
-        source_dir = repo_dir
-        if subdirectory:
-            source_dir = repo_dir / subdirectory
-            if not source_dir.exists():
-                raise RuntimeError(f"Git subdirectory not found: {subdirectory}")
-        if source_dir.is_dir():
-            _replace_directory_tree_from_source(
-                source_dir,
-                dest,
-                ignore=shutil.ignore_patterns(".git"),
-            )
-        else:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_copy_file(source_dir, dest)
-        return resolved_commit, tree_hash
-
-
-def deps(include_dev: bool, json_output: bool = False, verbose: bool = False) -> int:
-    root = _find_molt_root(Path.cwd())
-    root_error = _require_molt_root(root, json_output, "deps")
-    if root_error is not None:
-        return root_error
-    pyproject = _load_toml(root / "pyproject.toml")
-    lock = _load_toml(root / "uv.lock")
-    deps = _collect_deps(pyproject, include_dev=include_dev)
-    packages = _lock_packages(lock)
-    allow = _dep_allowlists(pyproject)
-
-    rows: list[dict[str, Any]] = []
-    for dep in deps:
-        key = _normalize_name(dep)
-        pkg = packages.get(key)
-        version = pkg.get("version") if pkg else None
-        tier, reason = _classify_tier(dep, pkg, allow)
-        rows.append({"name": dep, "version": version, "tier": tier, "reason": reason})
-
-    if json_output:
-        data: dict[str, Any] = {"dependencies": rows}
-        if verbose:
-            data["summary"] = _summarize_tiers(rows)
-        payload = _json_payload("deps", "ok", data=data)
-        _emit_json(payload, json_output)
-        return 0
-
-    for row in rows:
-        version = row["version"] or "missing"
-        print(f"{row['name']} {version} {row['tier']} {row['reason']}")
-    if verbose:
-        summary = _summarize_tiers(rows)
-        print(
-            "Summary: "
-            + ", ".join(f"{tier}={count}" for tier, count in summary.items())
-        )
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# molt install — UV-based package management
-# ---------------------------------------------------------------------------
-
-
-def _ensure_uv() -> str | None:
-    """Return the path to the ``uv`` binary, or *None* if unavailable."""
-    uv = shutil.which("uv")
-    if uv:
-        return uv
-    return None
-
-
-def _ensure_molt_venv(
-    project_root: Path,
-    *,
-    json_output: bool = False,
-    verbose: bool = False,
-) -> tuple[Path, bool]:
-    """Create ``.molt-venv/`` under *project_root* using ``uv venv`` if absent.
-
-    Returns ``(venv_path, created)`` where *created* is ``True`` when the venv
-    was freshly created.
-    """
-    venv = _molt_venv_path(project_root)
-    if venv.exists():
-        return venv, False
-    uv = _ensure_uv()
-    if uv is None:
-        raise RuntimeError(
-            "uv is not installed. Install it with: curl -LsSf "
-            "https://astral.sh/uv/install.sh | sh"
-        )
-    cmd = [
-        uv,
-        "venv",
-        str(venv),
-        "--python",
-        f"{sys.version_info.major}.{sys.version_info.minor}",
-    ]
-    if verbose:
-        print(f"[molt install] creating venv: {' '.join(cmd)}")
-    result = _run_completed_command(
-        cmd,
-        cwd=project_root,
-        env=None,
-        capture_output=True,
-        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"uv venv creation failed (exit {result.returncode}):\n{result.stderr}"
-        )
-    return venv, True
-
-
-def _read_requirements_txt(path: Path) -> list[str]:
-    """Read non-comment, non-empty lines from a requirements.txt file."""
-    if not path.exists():
-        return []
-    reqs: list[str] = []
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if line and not line.startswith("#") and not line.startswith("-"):
-            reqs.append(line)
-    return reqs
-
-
-def _read_pyproject_deps(project_root: Path) -> list[str]:
-    """Read ``[project.dependencies]`` from pyproject.toml."""
-    pyproject_path = project_root / "pyproject.toml"
-    if not pyproject_path.exists():
-        return []
-    data = _load_toml(pyproject_path)
-    return list(data.get("project", {}).get("dependencies", []))
-
-
-def install(
-    packages: list[str] | None = None,
-    *,
-    requirements: str | None = None,
-    json_output: bool = False,
-    verbose: bool = False,
-    sync: bool = False,
-) -> int:
-    """Install packages into ``.molt-venv/`` using UV.
-
-    If *packages* are given on the CLI they are installed directly.
-    If *requirements* points to a file (``requirements.txt``), its contents are
-    used.  If *sync* is ``True`` (or no explicit packages / requirements file),
-    dependencies are read from ``pyproject.toml`` and ``requirements.txt`` (if
-    present) and the venv is synced to match.
-    """
-    uv = _ensure_uv()
-    if uv is None:
-        return _fail(
-            "uv is not installed. Install it with: "
-            "curl -LsSf https://astral.sh/uv/install.sh | sh",
-            json_output,
-            command="install",
-        )
-
-    project_root = _find_molt_root(Path.cwd())
-
-    # Ensure the venv exists.
-    try:
-        venv, created = _ensure_molt_venv(
-            project_root, json_output=json_output, verbose=verbose
-        )
-    except RuntimeError as exc:
-        return _fail(str(exc), json_output, command="install")
-
-    if created and not json_output:
-        print(f"Created {MOLT_VENV_DIR}/ in {project_root}")
-
-    # Decide what to install.
-    specs: list[str] = []
-    if packages:
-        specs.extend(packages)
-    elif requirements:
-        req_path = Path(requirements).expanduser()
-        if not req_path.exists():
-            return _fail(
-                f"Requirements file not found: {req_path}",
-                json_output,
-                command="install",
-            )
-        specs.extend(_read_requirements_txt(req_path))
-    else:
-        # Gather install specs from the local project when no explicit source is provided.
-        specs.extend(_read_pyproject_deps(project_root))
-        specs.extend(_read_requirements_txt(project_root / "requirements.txt"))
-
-    if not specs:
-        if not json_output:
-            print("Nothing to install (no dependencies found).")
-        if json_output:
-            payload = _json_payload(
-                "install", "ok", data={"installed": [], "venv": str(venv)}
-            )
-            _emit_json(payload, json_output)
-        return 0
-
-    # Run uv pip install into the .molt-venv.
-    cmd = [uv, "pip", "install", "--python", str(venv / "bin" / "python")]
-    cmd.extend(specs)
-
-    if verbose and not json_output:
-        print(f"[molt install] {' '.join(cmd)}")
-
-    result = _run_completed_command(
-        cmd,
-        cwd=project_root,
-        env=None,
-        capture_output=json_output,
-        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-    )
-    if result.returncode != 0:
-        msg = f"uv pip install failed (exit {result.returncode})"
-        if json_output and result.stderr:
-            msg += f":\n{result.stderr}"
-        return _fail(msg, json_output, command="install")
-
-    if json_output:
-        payload = _json_payload(
-            "install",
-            "ok",
-            data={"installed": specs, "venv": str(venv)},
-        )
-        _emit_json(payload, json_output)
-    elif not verbose:
-        print(f"Installed {len(specs)} package(s) into {MOLT_VENV_DIR}/")
-
-    return 0
-
-
-def install_add(
-    packages: list[str],
-    *,
-    json_output: bool = False,
-    verbose: bool = False,
-) -> int:
-    """Add one or more packages: install into .molt-venv and append to
-    ``[project.dependencies]`` in pyproject.toml via ``uv add``."""
-    uv = _ensure_uv()
-    if uv is None:
-        return _fail(
-            "uv is not installed. Install it with: "
-            "curl -LsSf https://astral.sh/uv/install.sh | sh",
-            json_output,
-            command="install",
-        )
-
-    if not packages:
-        return _fail("No packages specified.", json_output, command="install")
-
-    project_root = _find_molt_root(Path.cwd())
-
-    # Ensure venv exists.
-    try:
-        venv, created = _ensure_molt_venv(
-            project_root, json_output=json_output, verbose=verbose
-        )
-    except RuntimeError as exc:
-        return _fail(str(exc), json_output, command="install")
-
-    if created and not json_output:
-        print(f"Created {MOLT_VENV_DIR}/ in {project_root}")
-
-    # Use `uv pip install` into the molt venv.
-    pip_cmd = [
-        uv,
-        "pip",
-        "install",
-        "--python",
-        str(venv / "bin" / "python"),
-        *packages,
-    ]
-    if verbose and not json_output:
-        print(f"[molt install add] {' '.join(pip_cmd)}")
-
-    result = _run_completed_command(
-        pip_cmd,
-        cwd=project_root,
-        env=None,
-        capture_output=json_output,
-        memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-    )
-    if result.returncode != 0:
-        msg = f"uv pip install failed (exit {result.returncode})"
-        if json_output and result.stderr:
-            msg += f":\n{result.stderr}"
-        return _fail(msg, json_output, command="install")
-
-    # Also run `uv add` to persist the dependency in pyproject.toml.
-    pyproject_path = project_root / "pyproject.toml"
-    if pyproject_path.exists():
-        add_cmd = [uv, "add", *packages]
-        if verbose and not json_output:
-            print(f"[molt install add] {' '.join(add_cmd)}")
-        add_result = _run_completed_command(
-            add_cmd,
-            cwd=project_root,
-            env=None,
-            capture_output=json_output,
-            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-        )
-        if add_result.returncode != 0 and verbose and not json_output:
-            print(
-                f"Warning: uv add failed (dependencies installed but not "
-                f"persisted to pyproject.toml): {add_result.stderr}"
-            )
-
-    if json_output:
-        payload = _json_payload(
-            "install",
-            "ok",
-            data={"added": packages, "venv": str(venv)},
-        )
-        _emit_json(payload, json_output)
-    else:
-        print(f"Added {', '.join(packages)} to {MOLT_VENV_DIR}/")
-
-    return 0
-
-
-def vendor(
-    include_dev: bool,
-    json_output: bool = False,
-    verbose: bool = False,
-    output: str | None = None,
-    dry_run: bool = False,
-    allow_non_tier_a: bool = False,
-    extras: list[str] | None = None,
-    deterministic: bool = True,
-    deterministic_warn: bool = False,
-) -> int:
-    root = _find_molt_root(Path.cwd())
-    root_error = _require_molt_root(root, json_output, "vendor")
-    if root_error is not None:
-        return root_error
-    warnings: list[str] = []
-    lock_error = _check_lockfiles(
-        root,
-        json_output,
-        warnings,
-        deterministic,
-        deterministic_warn,
-        "vendor",
-    )
-    if lock_error is not None:
-        return lock_error
-    pyproject = _load_toml(root / "pyproject.toml")
-    lock = _load_toml(root / "uv.lock")
-    extras_set: set[str] = set()
-    for extra in extras or []:
-        for token in re.split(r"[,\s]+", extra):
-            if token:
-                extras_set.add(token)
-    deps, root_extras, skipped_root = _collect_dep_specs(
-        pyproject,
-        include_dev=include_dev,
-        extras=extras_set,
-    )
-    env = _marker_environment()
-    packages, deps_graph, skipped = _lock_package_graph(
-        lock,
-        env=env,
-        selected_extras=root_extras,
-    )
-    allow = _dep_allowlists(pyproject)
-
-    root_names = deps
-    closure, missing = _resolve_dependency_closure(root_names, deps_graph)
-    vendor_list: list[dict[str, Any]] = []
-    blockers: list[dict[str, Any]] = []
-    for name in closure:
-        pkg = packages.get(name)
-        display = pkg.get("name", name) if pkg else name
-        tier, reason = _classify_tier(display, pkg, allow)
-        version = pkg.get("version") if pkg else None
-        entry = {
-            "name": display,
-            "version": version,
-            "tier": tier,
-            "reason": reason,
-        }
-        if tier == "Tier A":
-            vendor_list.append(entry)
-        else:
-            blockers.append(entry)
-
-    if missing:
-        blockers.append(
-            {
-                "name": ",".join(missing),
-                "version": None,
-                "tier": "Unknown",
-                "reason": "missing from uv.lock",
-            }
-        )
-
-    if blockers and not allow_non_tier_a:
-        if json_output:
-            payload = _json_payload(
-                "vendor",
-                "error",
-                data={
-                    "vendor": vendor_list,
-                    "blockers": blockers,
-                    "missing": missing,
-                    "extras": sorted(extras_set),
-                    "skipped": skipped,
-                    "skipped_root": skipped_root,
-                },
-                errors=["vendoring blocked by non-Tier A dependencies"],
-                warnings=warnings,
-            )
-            _emit_json(payload, json_output=True)
-            return 2
-        print("Vendoring blocked by non-Tier A dependencies:")
-        for entry in blockers:
-            version = entry["version"] or "missing"
-            print(f"- {entry['name']} {version} {entry['tier']} {entry['reason']}")
-        return 2
-
-    output_dir = Path(output) if output else Path("vendor")
-    package_dir = output_dir / "packages"
-    local_dir = output_dir / "local"
-    manifest: dict[str, Any] = {
-        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "root": str(root),
-        "include_dev": include_dev,
-        "extras": sorted(extras_set),
-        "packages": [],
-        "blockers": blockers,
-        "missing": missing,
-        "skipped": skipped,
-        "skipped_root": skipped_root,
-    }
-
-    if not dry_run:
-        package_dir.mkdir(parents=True, exist_ok=True)
-        local_dir.mkdir(parents=True, exist_ok=True)
-
-    for entry in vendor_list:
-        pkg = packages.get(_normalize_name(entry["name"]))
-        if not pkg:
-            continue
-        source = pkg.get("source", {})
-        if source.get("path"):
-            src_path = Path(source["path"])
-            if not src_path.is_absolute():
-                src_path = (root / src_path).resolve()
-            dest = local_dir / entry["name"]
-            if not dry_run:
-                if src_path.is_dir():
-                    _replace_directory_tree_from_source(src_path, dest)
-                else:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    _atomic_copy_file(src_path, dest)
-            manifest["packages"].append(
-                {
-                    **entry,
-                    "source": "path",
-                    "path": str(src_path),
-                }
-            )
-            continue
-        if source.get("git"):
-            url = source.get("git")
-            if not isinstance(url, str) or not url.strip():
-                blockers.append(
-                    {**entry, "tier": "Tier A", "reason": "git source missing url"}
-                )
-                continue
-            if shutil.which("git") is None:
-                return _fail(
-                    "git is required to vendor git sources",
-                    json_output,
-                    command="vendor",
-                )
-            ref, ref_kind = _git_ref_from_source(source)
-            if ref is None:
-                blockers.append(
-                    {
-                        **entry,
-                        "tier": "Tier A",
-                        "reason": "git source missing pinned revision",
-                    }
-                )
-                continue
-            resolved_ref = ref
-            resolved_error = None
-            if ref_kind in {"tag", "branch"}:
-                resolved_ref, resolved_error = _resolve_git_ref(
-                    url,
-                    ref,
-                    project_root=root,
-                )
-            if resolved_error:
-                return _fail(
-                    resolved_error,
-                    json_output,
-                    command="vendor",
-                )
-            if resolved_ref is None:
-                return _fail(
-                    "unable to resolve git ref",
-                    json_output,
-                    command="vendor",
-                )
-            subdir = source.get("subdirectory") or source.get("subdir")
-            if subdir is not None and not isinstance(subdir, str):
-                blockers.append(
-                    {
-                        **entry,
-                        "tier": "Tier A",
-                        "reason": "git source subdirectory must be a string",
-                    }
-                )
-                continue
-            dest = local_dir / entry["name"]
-            resolved_commit = resolved_ref
-            tree_hash = None
-            if not dry_run:
-                try:
-                    resolved_commit, tree_hash = _clone_git_source(
-                        url,
-                        resolved_ref,
-                        dest,
-                        project_root=root,
-                        subdirectory=subdir,
-                    )
-                except RuntimeError as exc:
-                    return _fail(
-                        str(exc),
-                        json_output,
-                        command="vendor",
-                    )
-            manifest["packages"].append(
-                {
-                    **entry,
-                    "source": "git",
-                    "git": url,
-                    "ref": ref,
-                    "ref_kind": ref_kind,
-                    "resolved": resolved_commit,
-                    "tree": tree_hash,
-                    "subdirectory": subdir,
-                    "path": str(dest),
-                }
-            )
-            continue
-        picked = _pick_vendor_artifact(pkg)
-        if picked is None:
-            blockers.append(
-                {**entry, "tier": "Tier A", "reason": "no artifact in uv.lock"}
-            )
-            continue
-        kind, artifact = picked
-        url = artifact.get("url", "")
-        hash_value = artifact.get("hash", "")
-        filename = Path(url).name if url else f"{entry['name']}-{entry['version']}"
-        dest = package_dir / filename
-        if not dry_run:
-            try:
-                data = _download_artifact(url, hash_value)
-            except Exception as exc:
-                return _fail(
-                    f"Failed to download {url}: {exc}",
-                    json_output,
-                    command="vendor",
-                )
-            _atomic_write_bytes(dest, data)
-        manifest["packages"].append(
-            {
-                **entry,
-                "source": kind,
-                "url": url,
-                "hash": hash_value,
-                "file": str(dest),
-            }
-        )
-
-    if not dry_run:
-        manifest_path = output_dir / "manifest.json"
-        _atomic_write_json(manifest_path, manifest, indent=2)
-
-    if json_output:
-        data: dict[str, Any] = {
-            "vendor": vendor_list,
-            "blockers": blockers,
-            "missing": missing,
-            "output": str(output_dir),
-            "dry_run": dry_run,
-            "extras": sorted(extras_set),
-            "skipped": skipped,
-            "skipped_root": skipped_root,
-            "deterministic": deterministic,
-        }
-        if verbose:
-            data["count"] = len(vendor_list)
-        payload = _json_payload("vendor", "ok", data=data, warnings=warnings)
-        _emit_json(payload, json_output=True)
-        return 0
-
-    banner = "Vendoring plan (Tier A)" if dry_run else "Vendoring Tier A packages"
-    print(f"{banner}:")
-    for entry in vendor_list:
-        version = entry["version"] or "missing"
-        print(f"- {entry['name']} {version}")
-    if blockers:
-        print("Blockers:")
-        for entry in blockers:
-            version = entry["version"] or "missing"
-            print(f"- {entry['name']} {version} {entry['tier']} {entry['reason']}")
-    if verbose:
-        print(f"Total Tier A packages: {len(vendor_list)}")
-        print(f"Output: {output_dir}")
-    return 0
-
-
-def _load_artifact_cleanup_module(root: Path) -> Any:
-    tool_path = root / "tools" / "artifact_cleanup.py"
-    if not tool_path.is_file():
-        raise FileNotFoundError(f"missing canonical cleanup tool: {tool_path}")
-    spec = importlib.util.spec_from_file_location(
-        "_molt_repo_artifact_cleanup",
-        tool_path,
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f"cannot load canonical cleanup tool: {tool_path}")
-    module = importlib.util.module_from_spec(spec)
-    root_text = str(root)
-    inserted_root = False
-    if root_text not in sys.path:
-        sys.path.insert(0, root_text)
-        inserted_root = True
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        if inserted_root:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(root_text)
-    return module
-
-
-def clean(
-    json_output: bool = False,
-    verbose: bool = False,
-    apply: bool = False,
-    kill_processes: bool = False,
-    extra_paths: Sequence[str] | None = None,
-    list_paths: bool = False,
-) -> int:
-    root = _find_molt_root(Path.cwd())
-    root_error = _require_molt_root(root, json_output, "clean")
-    if root_error is not None:
-        return root_error
-    assert root is not None
-    try:
-        artifact_cleanup = _load_artifact_cleanup_module(root)
-    except Exception as exc:
-        return _fail(str(exc), json_output, command="clean")
-
-    argv = ["--repo-root", str(root)]
-    if apply:
-        argv.append("--apply")
-    if kill_processes:
-        argv.append("--kill-processes")
-    if list_paths:
-        argv.append("--list-paths")
-    if json_output:
-        argv.append("--json")
-    if verbose:
-        argv.append("--verbose")
-    for pathspec in extra_paths or ():
-        argv.extend(["--extra-path", pathspec])
-    return int(artifact_cleanup.main(argv))
-
-
-def show_config(
-    config_root: Path,
-    config: dict[str, Any],
-    json_output: bool = False,
-    verbose: bool = False,
-) -> int:
-    molt_toml = config_root / "molt.toml"
-    pyproject = config_root / "pyproject.toml"
-    build_cfg = _resolve_build_config(config)
-    run_cfg = _resolve_command_config(config, "run")
-    compare_cfg = _resolve_command_config(config, "compare")
-    test_cfg = _resolve_command_config(config, "test")
-    diff_cfg = _resolve_command_config(config, "diff")
-    extension_cfg = _resolve_command_config(config, "extension")
-    publish_cfg = _resolve_command_config(config, "publish")
-    caps_cfg = _resolve_capabilities_config(config)
-    data: dict[str, Any] = {
-        "root": str(config_root),
-        "sources": {
-            "molt_toml": str(molt_toml) if molt_toml.exists() else None,
-            "pyproject": str(pyproject) if pyproject.exists() else None,
-        },
-        "build": build_cfg,
-        "run": run_cfg,
-        "compare": compare_cfg,
-        "test": test_cfg,
-        "diff": diff_cfg,
-        "extension": extension_cfg,
-        "publish": publish_cfg,
-        "capabilities": caps_cfg,
-        "paths": {
-            "molt_home": str(_default_molt_home()),
-            "molt_bin": str(_default_molt_bin()),
-            "molt_cache": str(_default_molt_cache()),
-            "build_root": str(_default_molt_home() / "build"),
-        },
-    }
-    if json_output:
-        data["config"] = config
-        payload = _json_payload("config", "ok", data=data)
-        _emit_json(payload, json_output=True)
-        return 0
-    print(f"Config root: {config_root}")
-    if data["sources"]["molt_toml"] or data["sources"]["pyproject"]:
-        print("Sources:")
-        if data["sources"]["molt_toml"]:
-            print(f"- {data['sources']['molt_toml']}")
-        if data["sources"]["pyproject"]:
-            print(f"- {data['sources']['pyproject']}")
-    print("Paths:")
-    for key, value in data["paths"].items():
-        print(f"- {key}: {value}")
-    if build_cfg:
-        print("Build defaults:")
-        for key in sorted(build_cfg):
-            print(f"- {key}: {build_cfg[key]}")
-    else:
-        print("Build defaults: none")
-    if run_cfg:
-        print("Run defaults:")
-        for key in sorted(run_cfg):
-            print(f"- {key}: {run_cfg[key]}")
-    else:
-        print("Run defaults: none")
-    if compare_cfg:
-        print("Compare defaults:")
-        for key in sorted(compare_cfg):
-            print(f"- {key}: {compare_cfg[key]}")
-    else:
-        print("Compare defaults: none")
-    if test_cfg:
-        print("Test defaults:")
-        for key in sorted(test_cfg):
-            print(f"- {key}: {test_cfg[key]}")
-    else:
-        print("Test defaults: none")
-    if diff_cfg:
-        print("Diff defaults:")
-        for key in sorted(diff_cfg):
-            print(f"- {key}: {diff_cfg[key]}")
-    else:
-        print("Diff defaults: none")
-    if extension_cfg:
-        print("Extension defaults:")
-        for key in sorted(extension_cfg):
-            print(f"- {key}: {extension_cfg[key]}")
-    else:
-        print("Extension defaults: none")
-    if publish_cfg:
-        print("Publish defaults:")
-        for key in sorted(publish_cfg):
-            print(f"- {key}: {publish_cfg[key]}")
-    else:
-        print("Publish defaults: none")
-    if caps_cfg is not None:
-        print(f"Capabilities: {_format_capabilities_input(caps_cfg)}")
-    else:
-        print("Capabilities: none")
-    if verbose:
-        print("Merged config:")
-        print(json.dumps(config, indent=2))
-    return 0
-
-
-def _completion_script(shell: str) -> str:
-    commands = [
-        "build",
-        "extension",
-        "check",
-        "run",
-        "repl",
-        "compare",
-        "parity-run",
-        "test",
-        "diff",
-        "bench",
-        "profile",
-        "lint",
-        "doctor",
-        "package",
-        "publish",
-        "verify",
-        "deps",
-        "vendor",
-        "clean",
-        "config",
-        "completion",
-    ]
-    extension_subcommands = ["build", "audit", "scan"]
-    extension_options = {
-        "build": [
-            "--project",
-            "--out-dir",
-            "--molt-abi",
-            "--target",
-            "--capabilities",
-            "--deterministic",
-            "--no-deterministic",
-            "--json",
-            "--verbose",
-        ],
-        "audit": [
-            "--path",
-            "--require-capabilities",
-            "--require-abi",
-            "--require-checksum",
-            "--json",
-            "--verbose",
-        ],
-    }
-    options = {
-        "build": [
-            "--module",
-            "--target",
-            "--codec",
-            "--type-hints",
-            "--fallback",
-            "--type-facts",
-            "--pgo-profile",
-            "--output",
-            "--out-dir",
-            "--sysroot",
-            "--emit",
-            "--emit-ir",
-            "--profile",
-            "--platform",
-            "--build-profile",
-            "--deterministic",
-            "--no-deterministic",
-            "--deterministic-warn",
-            "--no-deterministic-warn",
-            "--portable",
-            "--trusted",
-            "--no-trusted",
-            "--capabilities",
-            "--capability-manifest",
-            "--cache",
-            "--no-cache",
-            "--cache-dir",
-            "--cache-report",
-            "--rebuild",
-            "--respect-pythonpath",
-            "--no-respect-pythonpath",
-            "--json",
-            "--verbose",
-        ],
-        "check": [
-            "--output",
-            "--strict",
-            "--deterministic",
-            "--no-deterministic",
-            "--deterministic-warn",
-            "--no-deterministic-warn",
-            "--json",
-            "--verbose",
-        ],
-        "run": [
-            "--module",
-            "--build-arg",
-            "--profile",
-            "--build-profile",
-            "--rebuild",
-            "--timing",
-            "--capabilities",
-            "--capability-manifest",
-            "--trusted",
-            "--no-trusted",
-            "--json",
-            "--verbose",
-        ],
-        "repl": [
-            "--capabilities",
-            "--io-mode",
-            "--molt-cmd",
-            "--timeout-sec",
-        ],
-        "compare": [
-            "--python",
-            "--python-version",
-            "--module",
-            "--build-arg",
-            "--profile",
-            "--build-profile",
-            "--rebuild",
-            "--capabilities",
-            "--trusted",
-            "--no-trusted",
-            "--json",
-            "--verbose",
-        ],
-        "parity-run": [
-            "--python",
-            "--python-version",
-            "--module",
-            "--timing",
-            "--json",
-            "--verbose",
-        ],
-        "test": [
-            "--suite",
-            "--python-version",
-            "--profile",
-            "--build-profile",
-            "--trusted",
-            "--no-trusted",
-            "--json",
-            "--verbose",
-        ],
-        "diff": [
-            "--python-version",
-            "--profile",
-            "--build-profile",
-            "--trusted",
-            "--no-trusted",
-            "--json",
-            "--verbose",
-        ],
-        "bench": ["--wasm", "--script", "--json", "--verbose"],
-        "profile": ["--json", "--verbose"],
-        "lint": ["--json", "--verbose"],
-        "doctor": ["--strict", "--json", "--verbose"],
-        "package": [
-            "--output",
-            "--deterministic",
-            "--no-deterministic",
-            "--deterministic-warn",
-            "--no-deterministic-warn",
-            "--capabilities",
-            "--sbom",
-            "--no-sbom",
-            "--sbom-output",
-            "--sbom-format",
-            "--signature",
-            "--signature-output",
-            "--sign",
-            "--no-sign",
-            "--signer",
-            "--signing-key",
-            "--signing-identity",
-            "--json",
-            "--verbose",
-        ],
-        "publish": [
-            "--registry",
-            "--registry-token",
-            "--registry-user",
-            "--registry-password",
-            "--registry-timeout",
-            "--dry-run",
-            "--deterministic",
-            "--no-deterministic",
-            "--deterministic-warn",
-            "--no-deterministic-warn",
-            "--capabilities",
-            "--require-signature",
-            "--no-require-signature",
-            "--verify-signature",
-            "--no-verify-signature",
-            "--trusted-signers",
-            "--signer",
-            "--signing-key",
-            "--json",
-            "--verbose",
-        ],
-        "verify": [
-            "--package",
-            "--manifest",
-            "--artifact",
-            "--require-checksum",
-            "--extension-metadata",
-            "--no-extension-metadata",
-            "--require-extension-capabilities",
-            "--require-extension-abi",
-            "--require-deterministic",
-            "--require-signature",
-            "--no-require-signature",
-            "--verify-signature",
-            "--no-verify-signature",
-            "--trusted-signers",
-            "--signer",
-            "--signing-key",
-            "--capabilities",
-            "--json",
-            "--verbose",
-        ],
-        "deps": ["--include-dev", "--json", "--verbose"],
-        "install": [
-            "-r",
-            "--requirements",
-            "--sync",
-            "--json",
-            "--verbose",
-            "add",
-        ],
-        "vendor": [
-            "--include-dev",
-            "--output",
-            "--dry-run",
-            "--allow-non-tier-a",
-            "--extras",
-            "--deterministic",
-            "--no-deterministic",
-            "--deterministic-warn",
-            "--no-deterministic-warn",
-            "--json",
-            "--verbose",
-        ],
-        "clean": [
-            "--apply",
-            "--kill-processes",
-            "--extra-path",
-            "--list-paths",
-            "--json",
-            "--verbose",
-        ],
-        "config": ["--file", "--json", "--verbose"],
-        "completion": ["--shell", "--json", "--verbose"],
-    }
-    if shell == "bash":
-        lines = [
-            "_molt_complete() {",
-            "  local cur prev",
-            "  COMPREPLY=()",
-            '  cur="${COMP_WORDS[COMP_CWORD]}"',
-            '  prev="${COMP_WORDS[COMP_CWORD-1]}"',
-            "  if [[ ${COMP_CWORD} -eq 1 ]]; then",
-            f'    COMPREPLY=( $(compgen -W "{" ".join(commands)}" -- "$cur") )',
-            "    return 0",
-            "  fi",
-            '  if [[ "${COMP_WORDS[1]}" == "extension" ]]; then',
-            "    if [[ ${COMP_CWORD} -eq 2 ]]; then",
-            '      COMPREPLY=( $(compgen -W "build audit" -- "$cur") )',
-            "      return 0",
-            "    fi",
-            '    case "${COMP_WORDS[2]}" in',
-        ]
-        for sub in extension_subcommands:
-            opts = " ".join(extension_options.get(sub, []))
-            lines.append(f'      {sub}) opts="{opts}" ;;')
-        lines.extend(
-            [
-                '      *) opts="" ;;',
-                "    esac",
-                '    COMPREPLY=( $(compgen -W "$opts" -- "$cur") )',
-                "    return 0",
-                "  fi",
-                '  case "${COMP_WORDS[1]}" in',
-            ]
-        )
-        for cmd in commands:
-            opts = " ".join(options.get(cmd, []))
-            lines.append(f'    {cmd}) opts="{opts}" ;;')
-        lines.extend(
-            [
-                '    *) opts="" ;;',
-                "  esac",
-                '  COMPREPLY=( $(compgen -W "$opts" -- "$cur") )',
-                "}",
-                "complete -F _molt_complete molt",
-            ]
-        )
-        return "\n".join(lines) + "\n"
-    if shell == "zsh":
-        lines = [
-            "#compdef molt",
-            "_molt() {",
-            "  local -a commands",
-            f"  commands=({' '.join(commands)})",
-            "  if (( CURRENT == 2 )); then",
-            "    compadd $commands",
-            "    return",
-            "  fi",
-            "  if [[ $words[2] == extension ]]; then",
-            "    if (( CURRENT == 3 )); then",
-            "      compadd build audit",
-            "      return",
-            "    fi",
-            "    local -a extension_opts",
-            "    case $words[3] in",
-        ]
-        for sub in extension_subcommands:
-            opts = " ".join(extension_options.get(sub, []))
-            lines.append(f"      {sub}) extension_opts=({opts}) ;;")
-        lines.extend(
-            [
-                "      *) extension_opts=() ;;",
-                "    esac",
-                "    compadd $extension_opts",
-                "    return",
-                "  fi",
-                "  local -a opts",
-                "  case $words[2] in",
-            ]
-        )
-        for cmd in commands:
-            opts = " ".join(options.get(cmd, []))
-            lines.append(f"    {cmd}) opts=({opts}) ;;")
-        lines.extend(
-            [
-                "    *) opts=() ;;",
-                "  esac",
-                "  compadd $opts",
-                "}",
-                "compdef _molt molt",
-            ]
-        )
-        return "\n".join(lines) + "\n"
-    if shell == "fish":
-        lines = [
-            f"complete -c molt -f -n '__fish_use_subcommand' -a \"{' '.join(commands)}\"",
-            "complete -c molt -f -n '__fish_seen_subcommand_from extension; and not __fish_seen_subcommand_from build audit' -a \"build audit\"",
-        ]
-        for cmd in commands:
-            for opt in options.get(cmd, []):
-                opt_name = opt.lstrip("-")
-                lines.append(
-                    f"complete -c molt -n '__fish_seen_subcommand_from {cmd}' -l {opt_name}"
-                )
-        for sub in extension_subcommands:
-            for opt in extension_options.get(sub, []):
-                opt_name = opt.lstrip("-")
-                lines.append(
-                    "complete -c molt "
-                    "-n '__fish_seen_subcommand_from extension; and "
-                    f"__fish_seen_subcommand_from {sub}' -l {opt_name}"
-                )
-        return "\n".join(lines) + "\n"
-    raise ValueError(f"Unsupported shell: {shell}")
 
 
 def completion(shell: str, json_output: bool = False, verbose: bool = False) -> int:
@@ -41531,7 +39307,7 @@ def main() -> int:
             args.extension_metadata,
         )
     if args.command == "deps":
-        return deps(args.include_dev, args.json, args.verbose)
+        return deps_command(args.include_dev, args.json, args.verbose)
     if args.command == "install":
         pkgs = args.packages or []
         if pkgs and pkgs[0] == "add":
@@ -41542,12 +39318,12 @@ def main() -> int:
                     args.json,
                     command="install",
                 )
-            return install_add(
+            return install_add_command(
                 add_pkgs,
                 json_output=args.json,
                 verbose=args.verbose,
             )
-        return install(
+        return install_command(
             packages=pkgs or None,
             requirements=args.requirements,
             json_output=args.json,
@@ -41565,7 +39341,7 @@ def main() -> int:
                 or build_cfg.get("deterministic-warn"),
                 False,
             )
-        return vendor(
+        return vendor_command(
             args.include_dev,
             args.json,
             args.verbose,
@@ -41622,418 +39398,6 @@ def main() -> int:
         )
 
     return 2
-
-
-def _load_toml(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    return tomllib.loads(path.read_text())
-
-
-def _normalize_name(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def _marker_environment() -> dict[str, str]:
-    version = sys.version_info
-    return {
-        "python_version": f"{version.major}.{version.minor}",
-        "python_full_version": f"{version.major}.{version.minor}.{version.micro}",
-        "os_name": os.name,
-        "sys_platform": sys.platform,
-        "platform_python_implementation": platform.python_implementation(),
-        "platform_system": platform.system(),
-        "platform_machine": platform.machine(),
-        "platform_release": platform.release(),
-        "platform_version": platform.version(),
-        "implementation_name": sys.implementation.name,
-        "implementation_version": sys.implementation.version.__str__(),
-    }
-
-
-def _parse_requirement(spec: str) -> tuple[str, set[str], str | None]:
-    try:
-        req = Requirement(spec)
-    except InvalidRequirement:
-        return "", set(), None
-    marker = str(req.marker) if req.marker else None
-    return req.name, set(req.extras), marker
-
-
-def _marker_satisfied(
-    marker: str,
-    env: dict[str, str],
-    extras: set[str],
-) -> bool:
-    try:
-        parsed = Marker(marker)
-    except InvalidMarker:
-        return False
-    base_env = dict(env)
-    base_env.setdefault("extra", "")
-    if "extra" in marker:
-        if extras:
-            return any(
-                parsed.evaluate({**base_env, "extra": extra}) for extra in extras
-            )
-        return parsed.evaluate(base_env)
-    return parsed.evaluate(base_env)
-
-
-def _collect_dep_specs(
-    pyproject: dict[str, Any],
-    include_dev: bool,
-    extras: set[str] | None = None,
-) -> tuple[list[str], dict[str, set[str]], list[str]]:
-    deps: list[str] = []
-    root_extras: dict[str, set[str]] = {}
-    skipped: list[str] = []
-    entries: list[str] = []
-    entries.extend(pyproject.get("project", {}).get("dependencies", []))
-    if include_dev:
-        entries.extend(pyproject.get("dependency-groups", {}).get("dev", []))
-    extras = extras or set()
-    optional = pyproject.get("project", {}).get("optional-dependencies", {})
-    for extra in extras:
-        entries.extend(optional.get(extra, []))
-    env = _marker_environment()
-    for entry in entries:
-        name, req_extras, marker = _parse_requirement(entry)
-        if not name:
-            continue
-        if marker and not _marker_satisfied(marker, env, extras):
-            skipped.append(entry)
-            continue
-        norm = _normalize_name(name)
-        deps.append(norm)
-        if req_extras:
-            root_extras.setdefault(norm, set()).update(req_extras)
-    return deps, root_extras, skipped
-
-
-def _collect_deps(pyproject: dict[str, Any], include_dev: bool) -> list[str]:
-    deps: list[str] = []
-    deps.extend(pyproject.get("project", {}).get("dependencies", []))
-    if include_dev:
-        deps.extend(pyproject.get("dependency-groups", {}).get("dev", []))
-    return [re.split(r"[<=>\\[\\s;]", dep, 1)[0] for dep in deps]
-
-
-def _lock_packages(lock: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    packages: dict[str, dict[str, Any]] = {}
-    for pkg in lock.get("package", []):
-        name = _normalize_name(pkg.get("name", ""))
-        if name:
-            packages[name] = pkg
-    return packages
-
-
-def _lock_package_graph(
-    lock: dict[str, Any],
-    env: dict[str, str] | None = None,
-    selected_extras: dict[str, set[str]] | None = None,
-) -> tuple[dict[str, dict[str, Any]], dict[str, list[str]], list[dict[str, Any]]]:
-    packages: dict[str, dict[str, Any]] = {}
-    deps: dict[str, list[str]] = {}
-    skipped: list[dict[str, Any]] = []
-    env = env or _marker_environment()
-    selected_extras = selected_extras or {}
-    for pkg in lock.get("package", []):
-        name = _normalize_name(pkg.get("name", ""))
-        if not name:
-            continue
-        packages[name] = pkg
-        dep_names: list[str] = []
-        raw_extras = selected_extras.get(name, set())
-        extras: set[str] = {
-            item for item in raw_extras if isinstance(item, str) and item
-        }
-        for dep in pkg.get("dependencies", []):
-            dep_name = _normalize_name(dep.get("name", ""))
-            marker = dep.get("marker")
-            extra = dep.get("extra")
-            extra_tokens: list[str] = []
-            if isinstance(extra, str):
-                if extra:
-                    extra_tokens = [extra]
-            elif isinstance(extra, list):
-                extra_tokens = [
-                    item for item in extra if isinstance(item, str) and item
-                ]
-            if extra_tokens and extras.isdisjoint(extra_tokens):
-                skipped.append(
-                    {
-                        "name": dep.get("name"),
-                        "from": pkg.get("name"),
-                        "marker": marker,
-                        "extra": extra,
-                    }
-                )
-                continue
-            if marker and not _marker_satisfied(marker, env, extras):
-                skipped.append(
-                    {
-                        "name": dep.get("name"),
-                        "from": pkg.get("name"),
-                        "marker": marker,
-                        "extra": extra,
-                    }
-                )
-                continue
-            if dep_name:
-                dep_names.append(dep_name)
-        deps[name] = dep_names
-    return packages, deps, skipped
-
-
-def _resolve_dependency_closure(
-    roots: list[str],
-    deps: dict[str, list[str]],
-) -> tuple[list[str], list[str]]:
-    seen: set[str] = set()
-    missing: list[str] = []
-    queue = list(roots)
-    while queue:
-        name = queue.pop(0)
-        if name in seen:
-            continue
-        seen.add(name)
-        if name not in deps:
-            missing.append(name)
-            continue
-        for child in deps.get(name, []):
-            if child not in seen:
-                queue.append(child)
-    return sorted(seen), sorted(set(missing))
-
-
-def _pick_vendor_artifact(pkg: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
-    for wheel in pkg.get("wheels", []):
-        url = wheel.get("url", "")
-        if "py3-none-any" in url:
-            return "wheel", wheel
-    sdist = pkg.get("sdist")
-    if sdist:
-        return "sdist", sdist
-    wheels = pkg.get("wheels", [])
-    if wheels:
-        return "wheel", wheels[0]
-    return None
-
-
-def _vendor_cache_path(url: str, expected_hash: str) -> Path | None:
-    if not expected_hash:
-        return None
-    algo = "sha256"
-    digest = expected_hash
-    if ":" in expected_hash:
-        algo, digest = expected_hash.split(":", 1)
-    if not digest:
-        return None
-    suffixes = Path(urllib.parse.urlparse(url).path).suffixes
-    suffix = "".join(suffixes) if suffixes else ""
-    cache_root = _default_molt_cache() / "vendor"
-    try:
-        cache_root.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return None
-    return cache_root / f"{algo}-{digest}{suffix}"
-
-
-def _read_cached_artifact(cache_path: Path, expected_digest: str) -> bytes | None:
-    try:
-        data = cache_path.read_bytes()
-    except OSError:
-        return None
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != expected_digest:
-        return None
-    return data
-
-
-def _write_cached_artifact(cache_path: Path, data: bytes) -> None:
-    try:
-        _atomic_write_bytes(cache_path, data)
-    except OSError:
-        pass
-
-
-def _is_private_ip(host: str) -> bool:
-    """Check if a hostname or IP is private/link-local/metadata."""
-    # Check hostname-based blocklist first
-    lower = host.lower()
-    if lower in ("metadata.google.internal", "metadata.internal"):
-        return True
-    # Fast path: if host is already a bare IP literal, check directly
-    # without DNS resolution (avoids syscall and resolver-down false positives).
-    try:
-        bare = ipaddress.ip_address(host)
-        if isinstance(bare, ipaddress.IPv6Address) and bare.ipv4_mapped is not None:
-            bare = bare.ipv4_mapped
-        return (
-            bare.is_private
-            or bare.is_loopback
-            or bare.is_link_local
-            or bare.is_reserved
-            or str(bare) == "169.254.169.254"
-        )
-    except ValueError:
-        pass  # not a bare IP — fall through to DNS resolution
-    # Resolve DNS and check all resulting IPs
-    try:
-        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-    except socket.gaierror:
-        return True  # unresolvable hosts are blocked conservatively
-    for _family, _type, _proto, _canonname, sockaddr in infos:
-        ip_str = sockaddr[0]
-        if not isinstance(ip_str, str):
-            return True
-        # Strip IPv6 scope-id suffix (e.g. "fe80::1%eth0") before parsing
-        bare_ip = ip_str.split("%")[0]
-        try:
-            addr = ipaddress.ip_address(bare_ip)
-        except ValueError:
-            return True  # fail-closed: unrecognizable address is blocked
-        # Unwrap IPv4-mapped IPv6 addresses (e.g. ::ffff:169.254.169.254)
-        # so the private/loopback/link-local checks work correctly.
-        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-            addr = addr.ipv4_mapped
-        if (
-            addr.is_private
-            or addr.is_loopback
-            or addr.is_link_local
-            or addr.is_reserved
-            or str(addr) == "169.254.169.254"
-        ):
-            return True
-    return False
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Block all HTTP redirects to prevent SSRF via redirect bypass."""
-
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: Any,
-        code: int,
-        msg: str,
-        headers: Any,
-        newurl: str,
-    ) -> urllib.request.Request | None:
-        parsed = urllib.parse.urlparse(newurl)
-        if parsed.scheme != "https":
-            raise ValueError(f"redirect to non-HTTPS URL blocked: {newurl}")
-        redir_host = parsed.hostname or ""
-        if _is_private_ip(redir_host):
-            raise ValueError(
-                f"redirect to private/metadata address blocked: {redir_host}"
-            )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-def _download_artifact(url: str, expected_hash: str) -> bytes:
-    if not url or not expected_hash:
-        raise ValueError("missing url or hash")
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https":
-        raise ValueError(f"only https URLs are allowed, got {parsed.scheme!r}")
-    host = parsed.hostname or ""
-    if _is_private_ip(host):
-        raise ValueError(f"URL resolves to private/metadata address: {host}")
-    if ":" not in expected_hash:
-        raise ValueError(
-            f"hash must be in 'algorithm:hex' format, got {expected_hash!r}"
-        )
-    algo, expected = expected_hash.split(":", 1)
-    if (
-        algo != "sha256"
-        or len(expected) != 64
-        or not all(c in "0123456789abcdef" for c in expected)
-    ):
-        raise ValueError(f"unsupported or malformed hash: {expected_hash!r}")
-    cache_path = _vendor_cache_path(url, expected_hash)
-    if cache_path is not None:
-        cached = _read_cached_artifact(cache_path, expected)
-        if cached is not None:
-            return cached
-    opener = urllib.request.build_opener(
-        _NoRedirectHandler, urllib.request.HTTPSHandler()
-    )
-    with opener.open(url) as response:
-        data = response.read()
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != expected:
-        raise ValueError("hash mismatch")
-    if cache_path is not None:
-        _write_cached_artifact(cache_path, data)
-    return data
-
-
-def _classify_tier(
-    name: str,
-    pkg: dict[str, Any] | None,
-    allow: dict[str, set[str]],
-) -> tuple[str, str]:
-    norm = _normalize_name(name)
-    if norm in allow["tier_a"]:
-        return "Tier A", _append_feature_notes("allowlisted", pkg)
-    if norm in allow["tier_b"]:
-        return "Tier B", _append_feature_notes("allowlisted", pkg)
-    if norm in allow["tier_c"]:
-        return "Tier C", _append_feature_notes("allowlisted", pkg)
-    if norm in allow["native_wheels"]:
-        return "Tier B", _append_feature_notes("allowlisted native wheels", pkg)
-
-    molt_packages = {"molt_json", "molt_msgpack", "molt_cbor"}
-    if norm in molt_packages:
-        return "Tier B", _append_feature_notes("molt package", pkg)
-    if pkg is None:
-        return "Tier A", _append_feature_notes("unresolved (assumed pure python)", pkg)
-    source = pkg.get("source", {})
-    if source.get("git") or source.get("path"):
-        return "Tier A", _append_feature_notes("local/git source", pkg)
-    wheels = pkg.get("wheels", [])
-    has_universal = any("py3-none-any" in wheel.get("url", "") for wheel in wheels)
-    has_abi3 = any("abi3" in wheel.get("url", "") for wheel in wheels)
-    if wheels and not has_universal and not has_abi3:
-        return "Tier C", _append_feature_notes("platform wheels only", pkg)
-    if has_abi3 and not has_universal:
-        return "Tier B", _append_feature_notes("abi3 wheels", pkg)
-    if wheels:
-        return "Tier A", _append_feature_notes("universal wheels", pkg)
-    if pkg.get("sdist"):
-        return "Tier A", _append_feature_notes("sdist only", pkg)
-    return "Tier A", _append_feature_notes("assumed pure python", pkg)
-
-
-def _dep_allowlists(pyproject: dict[str, Any]) -> dict[str, set[str]]:
-    tool_cfg = pyproject.get("tool", {}).get("molt", {}).get("deps", {})
-    return {
-        "tier_a": {_normalize_name(name) for name in tool_cfg.get("tier_a", [])},
-        "tier_b": {_normalize_name(name) for name in tool_cfg.get("tier_b", [])},
-        "tier_c": {_normalize_name(name) for name in tool_cfg.get("tier_c", [])},
-        "native_wheels": {
-            _normalize_name(name) for name in tool_cfg.get("native_wheels", [])
-        },
-    }
-
-
-def _append_feature_notes(reason: str, pkg: dict[str, Any] | None) -> str:
-    if not pkg:
-        return reason
-    metadata = pkg.get("metadata", {})
-    requires = metadata.get("requires-dist", [])
-    markers = any("marker" in dep for dep in requires)
-    extras = any("extra" in dep for dep in requires)
-    notes: list[str] = []
-    if markers:
-        notes.append("markers")
-    if extras:
-        notes.append("extras")
-    if notes:
-        return f"{reason}; {', '.join(notes)}"
-    return reason
 
 
 def _collect_py_files(target: Path) -> list[Path]:

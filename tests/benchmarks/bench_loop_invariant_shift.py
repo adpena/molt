@@ -20,7 +20,7 @@ def compute(x: int, k: int) -> int:
     MASK = (1 << 40) - 1
     total = 0
     for _ in range(30_000_000):
-        y = x << k          # loop-invariant; k proven in [0, 63] -> hoistable
+        y = x << k  # loop-invariant; k proven in [0, 63] -> hoistable
         total = (total + y) & MASK
     return total
 

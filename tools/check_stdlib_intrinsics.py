@@ -60,6 +60,7 @@ MANIFEST_INTRINSIC_RE = re.compile(r"^def\s+(molt_[a-zA-Z0-9_]+)\(")
 PROBE_INTRINSIC = "molt_stdlib_probe"
 STATUS_INTRINSIC = "intrinsic-backed"
 STATUS_INTRINSIC_PARTIAL = "intrinsic-partial"
+STATUS_POLICY_GATE = "policy-gate"
 STATUS_PROBE_ONLY = "probe-only"
 STATUS_PYTHON_ONLY = "python-only"
 
@@ -177,6 +178,7 @@ STRICT_IMPORT_FALLBACK_EXCEPTIONS = {
 }
 INTRINSIC_RUNTIME_FALLBACK_EXEMPT_PREFIXES = ("test", "test.")
 INTRINSIC_PASS_FALLBACK_STRICT_MODULES: tuple[str, ...] = ("json",)
+ALLOWED_POLICY_GATE_MODULES: frozenset[str] = frozenset({"tinygrad.dflash"})
 
 
 @dataclass(frozen=True)
@@ -363,6 +365,35 @@ def _extract_intrinsic_names(text: str) -> tuple[str, ...]:
             if value.startswith("molt_"):
                 names.add(value)
     return tuple(sorted(names))
+
+
+def _is_fail_closed_import_policy_gate(text: str) -> bool:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    body = list(tree.body)
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    while (
+        body and isinstance(body[0], ast.ImportFrom) and body[0].module == "__future__"
+    ):
+        body = body[1:]
+    if len(body) != 1 or not isinstance(body[0], ast.Raise):
+        return False
+    exc = body[0].exc
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    if isinstance(exc, ast.Name):
+        return exc.id == "ImportError"
+    if isinstance(exc, ast.Attribute):
+        return exc.attr == "ImportError"
+    return False
 
 
 def _exception_type_names(exc: ast.expr | None) -> set[str]:
@@ -819,7 +850,11 @@ def _scan_file(path: Path) -> tuple[list[str], tuple[str, ...], str, bool]:
     if is_registry_file:
         status = STATUS_INTRINSIC
     elif not intrinsic_names:
-        status = STATUS_PYTHON_ONLY
+        status = (
+            STATUS_POLICY_GATE
+            if _is_fail_closed_import_policy_gate(text)
+            else STATUS_PYTHON_ONLY
+        )
     elif set(intrinsic_names) == {PROBE_INTRINSIC}:
         status = STATUS_PROBE_ONLY
     else:
@@ -844,6 +879,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
     intrinsic_partial = sorted(
         a.module for a in audits if a.status == STATUS_INTRINSIC_PARTIAL
     )
+    policy_gate = sorted(a.module for a in audits if a.status == STATUS_POLICY_GATE)
     probe_only = sorted(a.module for a in audits if a.status == STATUS_PROBE_ONLY)
     python_only = sorted(a.module for a in audits if a.status == STATUS_PYTHON_ONLY)
     status_by_module = {audit.module: audit.status for audit in audits}
@@ -864,6 +900,7 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
         f"- Total audited modules: `{total_modules}`",
         f"- `intrinsic-backed`: `{len(intrinsic)}`",
         f"- `intrinsic-partial`: `{len(intrinsic_partial)}`",
+        f"- `policy-gate`: `{len(policy_gate)}`",
         f"- `probe-only`: `{len(probe_only)}`",
         f"- `python-only`: `{len(python_only)}`",
         "",
@@ -888,6 +925,8 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
     lines.extend(f"- `{name}`" for name in intrinsic)
     lines.extend(["", "### Intrinsic-backed modules (partial lowering pending)"])
     lines.extend(f"- `{name}`" for name in intrinsic_partial)
+    lines.extend(["", "### Fail-closed policy-gate modules"])
+    lines.extend(f"- `{name}`" for name in policy_gate)
     lines.extend(["", "### Probe-only modules (thin wrappers + policy gate only)"])
     lines.extend(f"- `{name}`" for name in probe_only)
     lines.extend(["", "### Python-only modules (intrinsic missing)"])
@@ -897,16 +936,16 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
             "",
             "## Core Lane Gate",
             "- Required lane: `tests/differential/basic/CORE_TESTS.txt` (import closure).",
-            "- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`) with zero `probe-only` and zero `python-only` modules.",
+            "- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`) or an explicitly allowlisted fail-closed `policy-gate`, with zero `probe-only` and zero `python-only` modules.",
             "- Enforced by: `python3 tools/check_core_lane_lowering.py`.",
             "",
             "## Bootstrap Gate",
             "- Strict roots: "
             + ", ".join(f"`{name}`" for name in BOOTSTRAP_STRICT_ROOTS),
-            "- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`).",
+            "- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`); fail-closed `policy-gate` modules are not intrinsic implementations.",
             "- Required modules: "
             + ", ".join(f"`{name}`" for name in sorted(BOOTSTRAP_MODULES)),
-            "- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`).",
+            "- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed` or `intrinsic-partial`); fail-closed `policy-gate` modules are not bootstrap support.",
             "",
             "## Critical Strict-Import Gate",
             "- Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.",
@@ -1264,6 +1303,14 @@ def main() -> int:
     probe_only_modules = tuple(
         sorted(audit.module for audit in audits if audit.status == STATUS_PROBE_ONLY)
     )
+    policy_gate_modules = tuple(
+        sorted(audit.module for audit in audits if audit.status == STATUS_POLICY_GATE)
+    )
+    unknown_policy_gate_modules = tuple(
+        module
+        for module in policy_gate_modules
+        if module not in ALLOWED_POLICY_GATE_MODULES
+    )
     intrinsic_partial_modules = tuple(
         sorted(
             audit.module for audit in audits if audit.status == STATUS_INTRINSIC_PARTIAL
@@ -1318,6 +1365,14 @@ def main() -> int:
         print("stdlib intrinsics lint failed: unknown intrinsic names")
         for rel, name in sorted(set(missing_intrinsics)):
             print(f"- {rel}: `{name}` is not present in {_display_path(MANIFEST)}")
+        return 1
+
+    if unknown_policy_gate_modules:
+        print(
+            "stdlib intrinsics lint failed: policy-gate modules require explicit allowlist"
+        )
+        for module in unknown_policy_gate_modules:
+            print(f"- {module}")
         return 1
 
     if unknown_fully_covered_modules:
@@ -1542,6 +1597,7 @@ def main() -> int:
         status_counts = {
             STATUS_INTRINSIC: 0,
             STATUS_INTRINSIC_PARTIAL: 0,
+            STATUS_POLICY_GATE: 0,
             STATUS_PROBE_ONLY: 0,
             STATUS_PYTHON_ONLY: 0,
         }
@@ -1581,6 +1637,8 @@ def main() -> int:
             "intrinsic_pass_fallback_modules": list(
                 INTRINSIC_PASS_FALLBACK_STRICT_MODULES
             ),
+            "allowed_policy_gate_modules": sorted(ALLOWED_POLICY_GATE_MODULES),
+            "unknown_policy_gate_modules": list(unknown_policy_gate_modules),
             "dependency_violations": [
                 {"module": module, "status": status, "imports": list(bad)}
                 for module, status, bad in dependency_violations

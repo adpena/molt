@@ -16,24 +16,25 @@ use crate::libc_compat as libc;
 use crate::{
     FRAME_STACK, HEADER_FLAG_TRACEBACK_SUPPRESSED, MoltHeader, PtrSlot, RuntimeState,
     TRACEBACK_BUILD_COUNT, TRACEBACK_BUILD_FRAMES, TRACEBACK_SUPPRESS_COUNT, TYPE_ID_CODE,
-    TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_STRING,
-    TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj, alloc_dict_with_pairs,
-    alloc_instance_for_class_no_pool, alloc_list, alloc_object, alloc_string, alloc_tuple,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, builtin_classes, builtin_func_bits,
-    bytes_like_slice, call_callable1, call_class_init_with_args, class_break_cycles,
-    class_dict_bits, class_name_bits, class_name_for_error, code_filename_bits, code_firstlineno,
-    code_linetable_bits, code_name_bits, context_stack_unwind, current_task_key, current_task_ptr,
-    current_token_id, dec_ref_bits, dict_find_entry_fast, dict_get_in_place, dict_order,
-    dict_set_in_place, dict_table, format_obj, format_obj_str, header_from_obj_ptr, inc_ref_bits,
-    index_bigint_from_obj, init_atomic_bits, instance_dict_bits, instance_set_dict_bits,
-    int_bits_from_i64, intern_static_name, is_truthy, isinstance_bits, issubclass_bits,
-    maybe_ptr_from_bits, module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index,
-    molt_is_callable, molt_iter_checked, molt_iter_next, molt_repr_from_obj, molt_str_from_obj,
-    obj_from_bits, object_class_bits, object_mark_has_ptrs, object_type_id, profile_enabled,
-    runtime_state, seq_vec, seq_vec_ref, string_bytes, string_len, string_obj_to_owned,
-    task_exception_depths, task_exception_handler_stacks, task_exception_stacks,
-    task_last_exceptions, to_i64, token_is_cancelled, traceback_suppressed, type_name,
-    type_of_bits,
+    TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_MODULE,
+    TYPE_ID_STRING, TYPE_ID_TRACEBACK_PAYLOAD, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
+    alloc_dict_with_pairs, alloc_instance_for_class_no_pool, alloc_list, alloc_object,
+    alloc_string, alloc_tuple, attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes,
+    builtin_classes, builtin_func_bits, bytes_like_slice, call_callable1,
+    call_class_init_with_args, class_break_cycles, class_dict_bits, class_name_bits,
+    class_name_for_error, code_filename_bits, code_firstlineno, code_linetable_bits,
+    code_name_bits, context_stack_unwind, current_task_key, current_task_ptr, current_token_id,
+    dec_ref_bits, dict_find_entry_fast, dict_get_in_place, dict_hashes, dict_order,
+    dict_set_in_place, dict_table, format_obj, format_obj_str, function_globals_bits,
+    function_globals_override_enabled, header_from_obj_ptr, inc_ref_bits, index_bigint_from_obj,
+    init_atomic_bits, instance_dict_bits, instance_set_dict_bits, int_bits_from_i64,
+    intern_static_name, is_truthy, isinstance_bits, issubclass_bits, maybe_ptr_from_bits,
+    module_dict_bits, molt_class_set_base, molt_dec_ref, molt_index, molt_is_callable,
+    molt_iter_checked, molt_iter_next, molt_repr_from_obj, molt_str_from_obj, obj_from_bits,
+    object_class_bits, object_mark_has_ptrs, object_type_id, profile_enabled, runtime_state,
+    seq_vec, seq_vec_ref, string_bytes, string_len, string_obj_to_owned, task_exception_depths,
+    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, to_i64,
+    token_is_cancelled, traceback_suppressed, type_name, type_of_bits,
 };
 use molt_obj_model::MoltObject;
 use num_traits::ToPrimitive;
@@ -1980,8 +1981,9 @@ unsafe fn dict_get_in_place_fast_str(
 ) -> Option<u64> {
     unsafe {
         let order = dict_order(dict_ptr);
+        let hashes = dict_hashes(dict_ptr);
         let table = dict_table(dict_ptr);
-        let found = dict_find_entry_fast(_py, order, table, key_bits);
+        let found = dict_find_entry_fast(_py, order, hashes, table, key_bits);
         found.map(|idx| order[idx * 2 + 1])
     }
 }
@@ -4280,7 +4282,7 @@ fn read_source_line(filename: &str, lineno: i64) -> Option<String> {
 
 // --- Frame stack and traceback helpers ---
 
-fn frame_stack_push_entry(code_bits: u64) {
+fn frame_stack_push_entry(code_bits: u64, globals_bits: u64) {
     let line = if let Some(ptr) = obj_from_bits(code_bits).as_ptr() {
         unsafe {
             if object_type_id(ptr) == TYPE_ID_CODE {
@@ -4299,6 +4301,7 @@ fn frame_stack_push_entry(code_bits: u64) {
             col_offset: -1,
             end_col_offset: -1,
             locals_bits: 0,
+            globals_bits,
         });
     });
 }
@@ -4308,7 +4311,30 @@ pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
     if code_bits != 0 {
         inc_ref_bits(_py, code_bits);
     }
-    frame_stack_push_entry(code_bits);
+    frame_stack_push_entry(code_bits, 0);
+}
+
+pub(crate) fn frame_stack_push_function(_py: &PyToken<'_>, code_bits: u64, func_ptr: *mut u8) {
+    crate::gil_assert();
+    if code_bits != 0 {
+        inc_ref_bits(_py, code_bits);
+    }
+    let globals_bits = unsafe {
+        if !func_ptr.is_null()
+            && object_type_id(func_ptr) == TYPE_ID_FUNCTION
+            && function_globals_override_enabled(func_ptr)
+        {
+            function_globals_bits(func_ptr)
+        } else {
+            0
+        }
+    };
+    if globals_bits != 0 && !obj_from_bits(globals_bits).is_none() {
+        inc_ref_bits(_py, globals_bits);
+        frame_stack_push_entry(code_bits, globals_bits);
+    } else {
+        frame_stack_push_entry(code_bits, 0);
+    }
 }
 
 /// Push a frame entry for a code object reference already owned by the caller.
@@ -4319,7 +4345,17 @@ pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
 /// ownership protocol at every call site.
 pub(crate) fn frame_stack_push_owned(_py: &PyToken<'_>, code_bits: u64) {
     crate::gil_assert();
-    frame_stack_push_entry(code_bits);
+    frame_stack_push_entry(code_bits, 0);
+}
+
+pub(crate) fn frame_stack_active_globals_bits() -> u64 {
+    FRAME_STACK.with(|stack| {
+        stack
+            .borrow()
+            .last()
+            .map(|entry| entry.globals_bits)
+            .unwrap_or(0)
+    })
 }
 
 pub(crate) fn frame_stack_set_line(line: i64) {
@@ -4351,6 +4387,9 @@ pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
         }
         if entry.locals_bits != 0 && !obj_from_bits(entry.locals_bits).is_none() {
             dec_ref_bits(_py, entry.locals_bits);
+        }
+        if entry.globals_bits != 0 && !obj_from_bits(entry.globals_bits).is_none() {
+            dec_ref_bits(_py, entry.globals_bits);
         }
     }
 }
@@ -4462,6 +4501,7 @@ pub extern "C" fn molt_frame_push_info(filename_bits: u64, name_bits: u64, linen
             lineno,
             0, // linetable (None — not needed for traceback)
             0, // varnames (None — not needed for traceback)
+            0, // names (None — not needed for traceback)
             0, // argcount
             0, // posonlyargcount
             0, // kwonlyargcount
@@ -6894,7 +6934,7 @@ mod tests {
         let name_ptr = alloc_string(_py, b"frame_test");
         let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
         let name_bits = MoltObject::from_ptr(name_ptr).bits();
-        let code_ptr = alloc_code_obj(_py, filename_bits, name_bits, 7, 0, 0, 0, 0, 0);
+        let code_ptr = alloc_code_obj(_py, filename_bits, name_bits, 7, 0, 0, 0, 0, 0, 0);
         dec_ref_bits(_py, filename_bits);
         dec_ref_bits(_py, name_bits);
         (code_ptr, MoltObject::from_ptr(code_ptr).bits())

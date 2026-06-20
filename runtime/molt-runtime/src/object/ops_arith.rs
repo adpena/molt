@@ -3010,10 +3010,12 @@ pub(super) unsafe fn set_like_intersection(
     unsafe {
         let l_elems = set_order(lhs_ptr);
         let r_elems = set_order(rhs_ptr);
-        let (probe_elems, probe_table, output) = if l_elems.len() <= r_elems.len() {
-            (r_elems, set_table(rhs_ptr), l_elems)
+        let l_hashes = set_hashes(lhs_ptr);
+        let r_hashes = set_hashes(rhs_ptr);
+        let (probe_elems, probe_hashes, probe_table, output) = if l_elems.len() <= r_elems.len() {
+            (r_elems, r_hashes, set_table(rhs_ptr), l_elems)
         } else {
-            (l_elems, set_table(lhs_ptr), r_elems)
+            (l_elems, l_hashes, set_table(lhs_ptr), r_elems)
         };
         let res_bits = set_like_new_bits(result_type_id, output.len());
         let res_ptr = obj_from_bits(res_bits)
@@ -3023,7 +3025,7 @@ pub(super) unsafe fn set_like_intersection(
             return MoltObject::none().bits();
         }
         for &entry in output.iter() {
-            let found = set_find_entry(_py, probe_elems, probe_table, entry);
+            let found = set_find_entry(_py, probe_elems, probe_hashes, probe_table, entry);
             if exception_pending(_py) {
                 dec_ref_bits(_py, res_bits);
                 return MoltObject::none().bits();
@@ -3049,6 +3051,7 @@ pub(super) unsafe fn set_like_difference(
     unsafe {
         let l_elems = set_order(lhs_ptr);
         let r_elems = set_order(rhs_ptr);
+        let r_hashes = set_hashes(rhs_ptr);
         let r_table = set_table(rhs_ptr);
         let res_bits = set_like_new_bits(result_type_id, l_elems.len());
         let res_ptr = obj_from_bits(res_bits)
@@ -3058,7 +3061,7 @@ pub(super) unsafe fn set_like_difference(
             return MoltObject::none().bits();
         }
         for &entry in l_elems.iter() {
-            let found = set_find_entry(_py, r_elems, r_table, entry);
+            let found = set_find_entry(_py, r_elems, r_hashes, r_table, entry);
             if exception_pending(_py) {
                 dec_ref_bits(_py, res_bits);
                 return MoltObject::none().bits();
@@ -3084,6 +3087,8 @@ pub(super) unsafe fn set_like_symdiff(
     unsafe {
         let l_elems = set_order(lhs_ptr);
         let r_elems = set_order(rhs_ptr);
+        let l_hashes = set_hashes(lhs_ptr);
+        let r_hashes = set_hashes(rhs_ptr);
         let l_table = set_table(lhs_ptr);
         let r_table = set_table(rhs_ptr);
         let res_bits = set_like_new_bits(result_type_id, l_elems.len() + r_elems.len());
@@ -3094,7 +3099,7 @@ pub(super) unsafe fn set_like_symdiff(
             return MoltObject::none().bits();
         }
         for &entry in l_elems.iter() {
-            let found = set_find_entry(_py, r_elems, r_table, entry);
+            let found = set_find_entry(_py, r_elems, r_hashes, r_table, entry);
             if exception_pending(_py) {
                 dec_ref_bits(_py, res_bits);
                 return MoltObject::none().bits();
@@ -3108,7 +3113,7 @@ pub(super) unsafe fn set_like_symdiff(
             }
         }
         for &entry in r_elems.iter() {
-            let found = set_find_entry(_py, l_elems, l_table, entry);
+            let found = set_find_entry(_py, l_elems, l_hashes, l_table, entry);
             if exception_pending(_py) {
                 dec_ref_bits(_py, res_bits);
                 return MoltObject::none().bits();
@@ -3736,6 +3741,19 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
                 return MoltObject::from_int(i).bits();
             }
             return bigint_bits(_py, res);
+        }
+        if let Some(ptr) = maybe_ptr_from_bits(val)
+            && let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__invert__")
+        {
+            unsafe {
+                let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
+                dec_ref_bits(_py, name_bits);
+                if let Some(call_bits) = call_bits {
+                    let res_bits = call_callable0(_py, call_bits);
+                    dec_ref_bits(_py, call_bits);
+                    return res_bits;
+                }
+            }
         }
         let msg = format!("bad operand type for unary ~: '{}'", type_name(_py, obj));
         raise_exception::<_>(_py, "TypeError", &msg)

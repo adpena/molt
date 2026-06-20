@@ -522,7 +522,9 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
                 if gate:
                     lines.append(f'        #[cfg(feature = "{gate}")]\n')
                 lines.append(f'        "{sym}" => {{\n')
-                lines.append("            Some(crate::builtins::functions::runtime_fn_addr(\n")
+                lines.append(
+                    "            Some(crate::builtins::functions::runtime_fn_addr(\n"
+                )
                 lines.append(f'                "crate::{sym}",\n')
                 lines.append(f"                crate::{sym} as *const (),\n")
                 lines.append("            ))\n")

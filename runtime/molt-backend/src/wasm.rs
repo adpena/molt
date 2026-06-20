@@ -75,8 +75,107 @@ const POLL_TABLE_FUNCS: &[&str] = &[
     "contextlib_async_exitstack_enter_context_poll",
 ];
 
+#[derive(Debug, Clone)]
+struct WasmStageAuditShape {
+    functions: usize,
+    simple_ops: usize,
+    tir_blocks: usize,
+    tir_ops: usize,
+    largest_function: String,
+    largest_ops: usize,
+}
+
 fn is_shared_drop_fact_marker(kind: &str) -> bool {
     matches!(kind, "drop_inserted" | "exception_region_drops_inserted")
+}
+
+fn wasm_stage_audit_enabled() -> bool {
+    std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1")
+}
+
+fn simple_ir_stage_shape(functions: &[FunctionIR]) -> WasmStageAuditShape {
+    let mut simple_ops = 0usize;
+    let mut largest_function = "<none>".to_string();
+    let mut largest_ops = 0usize;
+    for func in functions {
+        let ops = func.ops.len();
+        simple_ops = simple_ops.saturating_add(ops);
+        if ops > largest_ops {
+            largest_ops = ops;
+            largest_function = func.name.clone();
+        }
+    }
+    WasmStageAuditShape {
+        functions: functions.len(),
+        simple_ops,
+        tir_blocks: 0,
+        tir_ops: 0,
+        largest_function,
+        largest_ops,
+    }
+}
+
+fn tir_module_stage_shape(module: &crate::tir::function::TirModule) -> WasmStageAuditShape {
+    let mut tir_blocks = 0usize;
+    let mut tir_ops = 0usize;
+    let mut largest_function = "<none>".to_string();
+    let mut largest_ops = 0usize;
+    for func in &module.functions {
+        let blocks = func.blocks.len();
+        let ops = func
+            .blocks
+            .values()
+            .fold(0usize, |total, block| total.saturating_add(block.ops.len()));
+        tir_blocks = tir_blocks.saturating_add(blocks);
+        tir_ops = tir_ops.saturating_add(ops);
+        if ops > largest_ops {
+            largest_ops = ops;
+            largest_function = func.name.clone();
+        }
+    }
+    WasmStageAuditShape {
+        functions: module.functions.len(),
+        simple_ops: 0,
+        tir_blocks,
+        tir_ops,
+        largest_function,
+        largest_ops,
+    }
+}
+
+fn emit_wasm_stage_audit(
+    stage: &str,
+    shape: WasmStageAuditShape,
+    bytes: Option<usize>,
+    unused_imports: Option<usize>,
+    changed_functions: Option<usize>,
+    elapsed_ms: Option<u128>,
+) {
+    if !wasm_stage_audit_enabled() {
+        return;
+    }
+    eprintln!(
+        "[molt-wasm-stage-audit] stage={stage} functions={} simple_ops={} tir_blocks={} tir_ops={} largest_function={} largest_ops={} bytes={} unused_imports={} changed_functions={} elapsed_ms={} peak_rss_mib={}",
+        shape.functions,
+        shape.simple_ops,
+        shape.tir_blocks,
+        shape.tir_ops,
+        shape.largest_function,
+        shape.largest_ops,
+        bytes
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        unused_imports
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        changed_functions
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        elapsed_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        crate::process_diagnostics::process_peak_rss_mib_label(),
+    );
 }
 
 fn gpu_runtime_call_symbol(kind: &str) -> Option<&'static str> {
@@ -2121,6 +2220,14 @@ impl WasmBackend {
             crate::fold_constants(&mut func_ir.ops);
             crate::passes::hoist_loop_invariants(func_ir);
         }
+        emit_wasm_stage_audit(
+            "compile-start",
+            simple_ir_stage_shape(&ir.functions),
+            None,
+            None,
+            None,
+            None,
+        );
         let mut lir_fast_outputs: BTreeMap<String, crate::tir::lower_to_wasm::WasmFunctionOutput> =
             BTreeMap::new();
         // ── TIR optimization pipeline ──
@@ -2197,6 +2304,14 @@ impl WasmBackend {
             }
             // Persist the updated cache index so future runs benefit.
             tir_cache.save_index();
+            emit_wasm_stage_audit(
+                "after-function-pipeline",
+                simple_ir_stage_shape(&ir.functions),
+                None,
+                None,
+                None,
+                None,
+            );
         }
 
         // E1 ACTIVATION (WASM): the TIR function inliner (tir/passes/inliner.rs,
@@ -2212,14 +2327,39 @@ impl WasmBackend {
         // (guard in run_inliner).
         {
             let wasm_tti = crate::tir::target_info::TargetInfo::wasm_release_fast();
+            emit_wasm_stage_audit(
+                "before-module-lower",
+                simple_ir_stage_shape(&ir.functions),
+                None,
+                None,
+                None,
+                None,
+            );
             let (mut tir_module, idx_map) =
                 crate::tir::lower_from_simple::lower_functions_to_tir_module(&ir.functions);
+            emit_wasm_stage_audit(
+                "after-module-lower",
+                tir_module_stage_shape(&tir_module),
+                None,
+                None,
+                None,
+                None,
+            );
             // WASM links the whole program into one module — there is no
             // shared-stdlib external partition, so every body is locally owned
             // and the inliner is unconstrained (empty external-linkage set).
             let non_inlinable = std::collections::HashSet::new();
+            let module_pipeline_start = std::time::Instant::now();
             let module_analysis =
                 crate::tir::run_module_pipeline(&mut tir_module, &wasm_tti, &non_inlinable);
+            emit_wasm_stage_audit(
+                "after-module-pipeline",
+                tir_module_stage_shape(&tir_module),
+                None,
+                None,
+                Some(module_analysis.changed_functions.len()),
+                Some(module_pipeline_start.elapsed().as_millis()),
+            );
             let changed: std::collections::HashSet<&str> = module_analysis
                 .changed_functions
                 .iter()
@@ -2257,6 +2397,14 @@ impl WasmBackend {
                     }
                 }
             }
+            emit_wasm_stage_audit(
+                "after-module-backconvert",
+                simple_ir_stage_shape(&ir.functions),
+                None,
+                None,
+                Some(changed.len()),
+                None,
+            );
         }
 
         // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs_new +
@@ -2599,7 +2747,7 @@ impl WasmBackend {
         // Type 27: (i32, i32) -> i64 (sleep_register)
         self.types
             .function([ValType::I32, ValType::I32], std::iter::once(ValType::I64));
-        // Type 28: (i64, i64, i64, i64, i64, i64, i64, i64) -> i64 (open_builtin, code_new)
+        // Type 28: (i64, i64, i64, i64, i64, i64, i64, i64) -> i64 (open_builtin)
         self.types.function(
             std::iter::repeat_n(ValType::I64, 8),
             std::iter::once(ValType::I64),
@@ -3519,7 +3667,7 @@ impl WasmBackend {
             ("molt_asyncgen_locals", "asyncgen_locals", 1),
             ("molt_gen_locals", "gen_locals", 1),
             ("molt_asyncgen_shutdown", "asyncgen_shutdown", 0),
-            ("molt_code_new", "code_new", 8),
+            ("molt_code_new", "code_new", 9),
             ("molt_compile_builtin", "compile_builtin", 6),
             ("molt_module_new", "module_new", 1),
             ("molt_module_import", "module_import", 1),
@@ -4898,7 +5046,16 @@ impl WasmBackend {
         }
         self.module.section(&self.codes);
         self.module.section(&self.data);
+        let module_finish_start = std::time::Instant::now();
         let mut bytes = self.module.finish();
+        emit_wasm_stage_audit(
+            "after-module-finish",
+            simple_ir_stage_shape(&ir.functions),
+            Some(bytes.len()),
+            None,
+            None,
+            Some(module_finish_start.elapsed().as_millis()),
+        );
 
         // --- Dead import elimination ---
         // After compilation, TrackedImportIds knows exactly which imports were
@@ -4915,7 +5072,24 @@ impl WasmBackend {
             let unused: BTreeSet<String> = self.import_ids.unused_names().into_iter().collect();
             if !unused.is_empty() {
                 let before_len = bytes.len();
+                emit_wasm_stage_audit(
+                    "before-strip-unused-imports",
+                    simple_ir_stage_shape(&ir.functions),
+                    Some(before_len),
+                    Some(unused.len()),
+                    None,
+                    None,
+                );
+                let strip_start = std::time::Instant::now();
                 let stripped = strip_unused_imports(bytes.clone(), &unused);
+                emit_wasm_stage_audit(
+                    "after-strip-unused-imports",
+                    simple_ir_stage_shape(&ir.functions),
+                    Some(stripped.len()),
+                    Some(unused.len()),
+                    None,
+                    Some(strip_start.elapsed().as_millis()),
+                );
                 if validate_wasm_sections(&stripped) {
                     eprintln!(
                         "[molt-wasm-strip] eliminated {} unused imports, \
@@ -12986,14 +13160,16 @@ impl WasmBackend {
                         let firstlineno_bits = locals[&args[2]];
                         let linetable_bits = locals[&args[3]];
                         let varnames_bits = locals[&args[4]];
-                        let argcount_bits = locals[&args[5]];
-                        let posonlyargcount_bits = locals[&args[6]];
-                        let kwonlyargcount_bits = locals[&args[7]];
+                        let names_bits = locals[&args[5]];
+                        let argcount_bits = locals[&args[6]];
+                        let posonlyargcount_bits = locals[&args[7]];
+                        let kwonlyargcount_bits = locals[&args[8]];
                         func.instruction(&Instruction::LocalGet(filename_bits));
                         func.instruction(&Instruction::LocalGet(name_bits));
                         func.instruction(&Instruction::LocalGet(firstlineno_bits));
                         func.instruction(&Instruction::LocalGet(linetable_bits));
                         func.instruction(&Instruction::LocalGet(varnames_bits));
+                        func.instruction(&Instruction::LocalGet(names_bits));
                         func.instruction(&Instruction::LocalGet(argcount_bits));
                         func.instruction(&Instruction::LocalGet(posonlyargcount_bits));
                         func.instruction(&Instruction::LocalGet(kwonlyargcount_bits));

@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -1110,6 +1111,127 @@ def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> N
     assert (
         "next action: inspect child stderr/logs or host signal source" in result.stderr
     )
+
+
+def test_guarded_completed_process_reports_guard_parent_signal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    profile_log = tmp_path / "commands.jsonl"
+
+    def fake_run_guarded(command, **kwargs):
+        del command, kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=143,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.25,
+            guard_signal=signal.SIGTERM,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
+
+    @contextlib.contextmanager
+    def fake_auto_repo_sentinel(**kwargs):
+        yield None
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_auto_repo_sentinel",
+        fake_auto_repo_sentinel,
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "command_profile_log_path", lambda _env: profile_log
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "_utc_timestamp", lambda: "2026-05-21T12:00:00Z"
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST",
+        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log)},
+        limits=limits,
+    )
+
+    assert result.returncode == 143
+    assert result.guard_signal == signal.SIGTERM
+    assert "memory_guard: guard parent received SIGTERM" in result.stderr
+    assert "command exited with SIGTERM status" not in result.stderr
+    event = json.loads(profile_log.read_text(encoding="utf-8"))
+    assert event["status"] == "guard_interrupted"
+    assert event["exit_signal"] is None
+    assert event["guard_signal"]["name"] == "SIGTERM"
+
+
+def test_guarded_completed_process_profiles_secondary_guard_signal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    profile_log = tmp_path / "commands.jsonl"
+    violation = harness_memory_guard.memory_guard.RssViolation(
+        pid=123,
+        rss_kb=4 * 1024 * 1024,
+        command="python hungry.py",
+        scope="process_tree",
+    )
+
+    def fake_run_guarded(command, **kwargs):
+        del command, kwargs
+        return harness_memory_guard.memory_guard.GuardResult(
+            returncode=harness_memory_guard.memory_guard.GUARD_RETURN_CODE,
+            violation=violation,
+            peak=violation,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.25,
+            guard_signal=signal.SIGTERM,
+        )
+
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "run_guarded", fake_run_guarded
+    )
+    monkeypatch.setattr(
+        harness_memory_guard, "command_profile_log_path", lambda _env: profile_log
+    )
+    monkeypatch.setattr(
+        harness_memory_guard.memory_guard, "sample_processes", lambda: {}
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=0.1,
+    )
+
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST",
+        env={"MOLT_GUARD_PROFILE_LOG": str(profile_log)},
+        limits=limits,
+    )
+
+    assert result.guard_signal == signal.SIGTERM
+    assert "primary incident remained rss_limit_exceeded" in result.stderr
+    event = json.loads(profile_log.read_text(encoding="utf-8"))
+    assert event["status"] == "rss_limit_exceeded"
+    assert event["exit_signal"] is None
+    assert event["guard_signal"]["name"] == "SIGTERM"
 
 
 def test_guarded_completed_process_reports_actionable_violation(
@@ -2283,9 +2405,7 @@ def test_auto_repo_sentinel_ignores_reused_host_pgid_without_molt_identity(
 
     assert terminated == []
     assert sentinel_calls
-    assert not (
-        tmp_path / "memory_guard" / "molt_build_stale_preflight.jsonl"
-    ).exists()
+    assert not (tmp_path / "memory_guard" / "molt_build_stale_preflight.jsonl").exists()
 
 
 def test_repo_process_sentinel_remembers_observed_child_groups(

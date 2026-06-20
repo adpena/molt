@@ -17,11 +17,13 @@ top of it.
 
 **Prerequisite (rung 1, design 20):** the `DropInsertion` pass
 (`runtime/molt-backend/src/tir/passes/drop_insertion.rs`, 2715 lines) is landed
-and **active on LLVM/WASM/Luau** (`target_uses_tir_drop_insertion`,
-`pass_manager.rs:67`); native is gated `false` pending the convergence-sweep
-clearance (the per-shape over-drop triage, design 20 §4.1 Finding #4C). Rung 1
-arrived at correctness by accreting **seven distinct hand-maintained
-over-release defenses** (enumerated in §0.2). Rung 2 replaces the *ad-hoc
+and **active on LLVM/WASM/Luau/NativeCranelift**
+(`target_uses_tir_drop_insertion`, `pass_manager.rs:67`). Native activation now
+uses the same shared terminal drop phase; the remaining native work is the
+broader automatic temp-RC/value-tracking deletion proof, not a dormant target
+gate. Rung 1 arrived at correctness by accreting **seven distinct
+hand-maintained over-release defenses** (enumerated in §0.2). Rung 2 replaces
+the *ad-hoc
 collection of seven sets/helpers* with **one ownership-typed dataflow** from
 which every one of those seven facts falls out as a derived consequence — making
 each historical bug class **un-expressible**, not merely avoided.
@@ -57,7 +59,7 @@ there is nothing to remove because nothing was inserted.
 | Rung | Substrate | Status | This doc |
 |---|---|---|---|
 | 0 | Runtime RC primitives (`dec_ref_ptr`, `molt_dec_ref_obj`, immortal/arena flags), DEALLOC counters, `MOLT_ASSERT_NO_LEAK` | landed (design 20 §5) | — |
-| 1 | `DropInsertion` — insert `DecRef` at last use; `refcount_elim` elides redundant pairs | landed; active LLVM/WASM/Luau, native gated | prerequisite |
+| 1 | `DropInsertion` — insert `DecRef` at last use; `refcount_elim` elides redundant pairs | landed; active LLVM/WASM/Luau/Native | prerequisite |
 | **2** | **Perceus borrow inference (Owned/Borrowed lattice) + drop specialization + reuse/FBIP** | **this design** | **here** |
 | 3 (future) | Reference-cycle collection (the one thing Perceus does NOT give us — see §4.6) | deferred (design 20 §10.1) | non-goal |
 
@@ -604,7 +606,7 @@ annotation are computed once; each backend lowers the resulting ops.
 |---|---|---|---|---|
 | `DecRef` | `emit_dec_ref_obj` inline tag-check (`simple_backend.rs:1076`); round-trips via `lower_to_simple.rs:1903` | `llvm_backend/lowering.rs:1275` | wired `tir/lower_to_wasm.rs` (design 20 §4.3) | no-op (GC) |
 | `IncRef` | `emit_inc_ref_obj` | wired | wired | no-op |
-| activation | **gated `false`** (convergence sweep) | **active** | **active** | **active** |
+| activation | **active** (legacy-RC deletion still gated by full ownership-surface proof) | **active** | **active** | **active** |
 
 ### 5.2 What rung 2 adds per backend (the reuse-token lowering)
 
@@ -637,9 +639,10 @@ mirrors both:
 - **Borrow inference (P1)** is a *refactor* of the existing active
   `DropInsertion` — it changes *how* the same ops are derived (from the lattice
   rather than the seven sets), with **byte-identical RC output** as the P1 gate.
-  It therefore inherits rung 1's activation state exactly (active LLVM/WASM/Luau,
-  native gated) and adds no new gate. The native convergence-sweep (design 20
-  Finding #4C) is *more likely to clear* under P1 because the unified lattice
+  It therefore inherits rung 1's activation state exactly (active
+  LLVM/WASM/Luau/Native) and adds no new target gate. The native
+  ownership-surface sweep is *more likely to clear* under P1 because the unified
+  lattice
   removes the cross-set inconsistencies that produced the batch-sensitive
   miscompile.
 - **Reuse lowering (P3)** is gated by a new per-target predicate
@@ -725,15 +728,15 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
   a DecRef (shared object) is an immediate UAF the corpus catches. **Round-8
   lens:** every DecRef→Free promotion must have a lattice proof of `Owned(1)` +
   non-escaping + sole-release; spot-check the promotions against `escape_analysis`.
-- **R-native-1 (the convergence sweep, inherited).** Native is still gated
-  `false` (design 20 Finding #4C: the batch/context-sensitive stdlib module-init
-  miscompile). P1's unification is *expected to help* (removes cross-set
-  inconsistency) but does not *automatically* clear it. *Gate:* the native
-  activation stays behind `target_uses_tir_drop_insertion` until `import typing`/
+- **R-native-1 (the legacy-RC deletion sweep, inherited).** Native is active on
+  the shared terminal drop path, but P1's unification does not automatically
+  prove that every broader automatic temp-RC/value-tracking lane is redundant.
+  *Gate:* do not delete those native legacy lanes until `import typing`/
   `warnings`/`re`/`collections`/`asyncio` are clean wired under
-  `MOLT_ASSERT_NO_LEAK` (native AND LLVM) across the full corpus. **Round-8 lens:**
-  do not flip native in P1; P1's deliverable is the unified inference, not native
-  activation. Native activation is a *consequence* to verify, not a phase scope.
+  `MOLT_ASSERT_NO_LEAK` (native AND LLVM) across the full corpus and no new
+  wired-fail/dormant-pass delta appears. **Round-8 lens:** P1's deliverable is
+  unified inference; native legacy deletion is a consequence to verify, not a
+  phase scope.
 - **R-matches-1 (the design-25 `matches!`-default-false trap, instance #1).**
   Any new op-kind added without a `result_ownership`/`operand_ownership` signature
   defaults silently. *Gate:* P4's table has **no default** — every kind needs an
@@ -804,6 +807,6 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
   child-decref + weakref-clear extension (§4.3/§4.4); a clean phase *after* P3.
 - **Interprocedural borrowed-return signatures** — gated on the inliner's
   `compute_return_alias_summaries` (§2.2, deferred in design 20 §4.1 / S4); P4+.
-- **Native activation** — a *consequence* to verify (R-native-1), gated on the
-  convergence sweep; not a rung-2 phase scope. Do not flip
-  `target_uses_tir_drop_insertion` for native as part of this arc.
+- **Native legacy-RC deletion** — a *consequence* to verify (R-native-1), gated
+  on the convergence sweep; not a rung-2 phase scope. Do not delete the broader
+  native automatic temp-RC/value-tracking lanes as part of this arc.

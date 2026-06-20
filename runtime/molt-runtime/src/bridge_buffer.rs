@@ -36,6 +36,7 @@ pub(crate) fn export_u64_box(
     export_box(values, out_ptr, out_len)
 }
 
+#[cfg(feature = "stdlib_compression")]
 pub(crate) fn export_u8_box_ptr(bytes: Box<[u8]>, out_len: *mut usize) -> *mut u8 {
     if out_len.is_null() {
         return std::ptr::null_mut();

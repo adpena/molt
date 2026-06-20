@@ -121,26 +121,28 @@ use crate::{
     asyncio_wait_task_drop, bound_method_func_bits, bound_method_self_bits,
     builtin_classes_if_initialized, bytearray_data, bytearray_len, bytearray_vec_ptr,
     call_iter_cached_tuple, call_iter_callable_bits, call_iter_sentinel_bits, callargs_dec_ref_all,
-    callargs_ptr, classmethod_func_bits, code_filename_bits, code_linetable_bits, code_name_bits,
-    code_varnames_bits, context_payload_bits,
-    contextlib_async_exitstack_enter_context_poll_fn_addr,
+    callargs_ptr, classmethod_func_bits, code_arg_names_bits, code_filename_bits,
+    code_kwonly_names_bits, code_linetable_bits, code_name_bits, code_names_bits,
+    code_signature_posonly_bits, code_vararg_bits, code_varkw_bits, code_varnames_bits,
+    context_payload_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_enter_context_task_drop,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_async_exitstack_exit_task_drop,
     contextlib_asyncgen_enter_poll_fn_addr, contextlib_asyncgen_enter_task_drop,
-    contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop, dict_order_ptr,
-    dict_table_ptr, dict_view_dict_bits, enumerate_cached_inner, enumerate_cached_outer,
-    enumerate_index_bits, enumerate_target_bits, exception_args_bits, exception_args_payload_bits,
-    exception_cause_bits, exception_class_bits, exception_context_bits, exception_dict_bits,
-    exception_kind_bits, exception_msg_bits, exception_suppress_bits, exception_trace_bits,
-    exception_value_bits, filter_func_bits, filter_iter_bits, function_annotate_bits,
-    function_annotations_bits, function_closure_bits, function_code_bits, function_dict_bits,
-    generator_context_stack_drop, generator_exception_stack_drop, generic_alias_args_bits,
-    generic_alias_origin_bits, io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits,
-    iter_cached_tuple, iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr,
-    module_dict_bits, module_name_bits, process_poll_fn_addr, profile_hit, profile_hit_bytes,
-    property_del_bits, property_get_bits, property_set_bits, range_start_bits, range_step_bits,
-    range_stop_bits, reversed_target_bits, runtime_state, seq_vec_ptr, set_order_ptr,
-    set_table_ptr, slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
+    contextlib_asyncgen_exit_poll_fn_addr, contextlib_asyncgen_exit_task_drop, dict_hashes_ptr,
+    dict_order_ptr, dict_table_ptr, dict_view_dict_bits, enumerate_cached_inner,
+    enumerate_cached_outer, enumerate_index_bits, enumerate_target_bits, exception_args_bits,
+    exception_args_payload_bits, exception_cause_bits, exception_class_bits,
+    exception_context_bits, exception_dict_bits, exception_kind_bits, exception_msg_bits,
+    exception_suppress_bits, exception_trace_bits, exception_value_bits, filter_func_bits,
+    filter_iter_bits, function_annotate_bits, function_annotations_bits, function_closure_bits,
+    function_code_bits, function_dict_bits, generator_context_stack_drop,
+    generator_exception_stack_drop, generic_alias_args_bits, generic_alias_origin_bits,
+    io_wait_poll_fn_addr, io_wait_release_socket, issubclass_bits, iter_cached_tuple,
+    iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr, module_dict_bits,
+    module_name_bits, process_poll_fn_addr, profile_hit, profile_hit_bytes, property_del_bits,
+    property_get_bits, property_set_bits, range_start_bits, range_step_bits, range_stop_bits,
+    reversed_target_bits, runtime_state, seq_vec_ptr, set_hashes_ptr, set_order_ptr, set_table_ptr,
+    slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits,
     task_cancel_message_clear, thread_poll_fn_addr, traceback_payload_code_bits,
     traceback_payload_next_bits, union_type_args_bits, utf8_cache_remove, weakref_clear_for_ptr,
     ws_wait_release, zip_iters_ptr, zip_strict_bits,
@@ -336,6 +338,7 @@ pub(crate) struct DataclassDesc {
     pub(crate) eq: bool,
     pub(crate) repr: bool,
     pub(crate) slots: bool,
+    pub(crate) allows_dict: bool,
     pub(crate) class_bits: u64,
     pub(crate) field_flags: Vec<u8>,
     pub(crate) hash_mode: u8,
@@ -485,6 +488,13 @@ pub(crate) const HEADER_FLAG_ARENA: u32 = 1 << 21;
 /// `TYPE_ID_TYPE` metadata bit: instances of this class are finalizer-sensitive
 /// because the class MRO contains `__del__`.
 pub(crate) const HEADER_FLAG_CLASS_HAS_FINALIZER: u32 = 1 << 22;
+
+/// `TYPE_ID_FUNCTION` metadata bit: raw positional calls must route through the
+/// argument binder before any fixed-arity ABI call. This is set for functions
+/// with keyword-only params/defaults, `*args`, `**kwargs`, or a builtin bind
+/// kind, and lets native inline probes reject complex call shapes with one
+/// header-flag test.
+pub(crate) const HEADER_FLAG_FUNC_REQUIRES_BINDER: u32 = 1 << 23;
 
 // ---------------------------------------------------------------------------
 // Cold header pool — stores rarely-used per-object metadata (poll_fn, state,
@@ -928,7 +938,8 @@ pub(crate) fn object_set_state(data_ptr: *mut u8, state: i64) {
 /// Read the generator/coroutine state for the object at `data_ptr`.
 /// Returns the state value (0 if no cold header exists).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_obj_get_state(data_ptr: *mut u8) -> i64 {
+pub extern "C" fn molt_obj_get_state(data_ptr_bits: u64) -> i64 {
+    let data_ptr = data_ptr_bits as usize as *mut u8;
     let state = object_state(data_ptr);
     if trace_object_state() {
         eprintln!(
@@ -941,7 +952,8 @@ pub extern "C" fn molt_obj_get_state(data_ptr: *mut u8) -> i64 {
 
 /// Write the generator/coroutine state for the object at `data_ptr`.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_obj_set_state(data_ptr: *mut u8, state: i64) {
+pub extern "C" fn molt_obj_set_state(data_ptr_bits: u64, state: i64) {
+    let data_ptr = data_ptr_bits as usize as *mut u8;
     if trace_object_state() {
         eprintln!(
             "molt object_state set ptr=0x{:x} state={}",
@@ -1646,6 +1658,9 @@ pub(crate) unsafe fn dataclass_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bi
     unsafe {
         crate::gil_assert();
         *dataclass_dict_bits_ptr(ptr) = bits;
+        if bits != 0 {
+            object_mark_has_ptrs(_py, ptr);
+        }
     }
 }
 
@@ -2074,6 +2089,7 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let filename_bits = code_filename_bits(ptr);
                     let name_bits = code_name_bits(ptr);
                     let varnames_bits = code_varnames_bits(ptr);
+                    let names_bits = code_names_bits(ptr);
                     let filename = crate::string_obj_to_owned(obj_from_bits(filename_bits))
                         .unwrap_or_else(|| "<non-str>".to_string());
                     let name = crate::string_obj_to_owned(obj_from_bits(name_bits))
@@ -2082,9 +2098,13 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                         .as_ptr()
                         .map(|p| p as usize)
                         .unwrap_or(0);
+                    let names_ptr = obj_from_bits(names_bits)
+                        .as_ptr()
+                        .map(|p| p as usize)
+                        .unwrap_or(0);
                     eprintln!(
-                        "molt dec_ref_zero code name={} file={} varnames=0x{:x}",
-                        name, filename, varnames_ptr
+                        "molt dec_ref_zero code name={} file={} varnames=0x{:x} names=0x{:x}",
+                        name, filename, varnames_ptr, names_ptr
                     );
                 } else if type_id == TYPE_ID_TUPLE {
                     let vec_ptr = seq_vec_ptr(ptr) as usize;
@@ -2234,9 +2254,13 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_DICT => {
                     let order_ptr = dict_order_ptr(ptr);
                     let table_ptr = dict_table_ptr(ptr);
+                    let hashes_ptr = dict_hashes_ptr(ptr);
                     release_dealloc_tracked_bits_vec(py, order_ptr, header_flags);
                     if !table_ptr.is_null() {
                         drop(backing::tracked_vec_box_from_raw(table_ptr));
+                    }
+                    if !hashes_ptr.is_null() {
+                        drop(backing::tracked_vec_box_from_raw(hashes_ptr));
                     }
                 }
                 TYPE_ID_LIST_BUILDER => {
@@ -2260,9 +2284,13 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                 TYPE_ID_SET | TYPE_ID_FROZENSET => {
                     let order_ptr = set_order_ptr(ptr);
                     let table_ptr = set_table_ptr(ptr);
+                    let hashes_ptr = set_hashes_ptr(ptr);
                     release_dealloc_tracked_bits_vec(py, order_ptr, header_flags);
                     if !table_ptr.is_null() {
                         drop(backing::tracked_vec_box_from_raw(table_ptr));
+                    }
+                    if !hashes_ptr.is_null() {
+                        drop(backing::tracked_vec_box_from_raw(hashes_ptr));
                     }
                 }
                 TYPE_ID_SET_BUILDER => {
@@ -2353,6 +2381,12 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     let name_bits = code_name_bits(ptr);
                     let linetable_bits = code_linetable_bits(ptr);
                     let varnames_bits = code_varnames_bits(ptr);
+                    let names_bits = code_names_bits(ptr);
+                    let arg_names_bits = code_arg_names_bits(ptr);
+                    let posonly_bits = code_signature_posonly_bits(ptr);
+                    let kwonly_bits = code_kwonly_names_bits(ptr);
+                    let vararg_bits = code_vararg_bits(ptr);
+                    let varkw_bits = code_varkw_bits(ptr);
                     if filename_bits != 0 && !obj_from_bits(filename_bits).is_none() {
                         dec_ref_bits(py, filename_bits);
                     }
@@ -2364,6 +2398,24 @@ pub(crate) unsafe fn dec_ref_ptr(py: &PyToken<'_>, ptr: *mut u8) {
                     }
                     if varnames_bits != 0 && !obj_from_bits(varnames_bits).is_none() {
                         dec_ref_bits(py, varnames_bits);
+                    }
+                    if names_bits != 0 && !obj_from_bits(names_bits).is_none() {
+                        dec_ref_bits(py, names_bits);
+                    }
+                    if arg_names_bits != 0 && !obj_from_bits(arg_names_bits).is_none() {
+                        dec_ref_bits(py, arg_names_bits);
+                    }
+                    if posonly_bits != 0 && !obj_from_bits(posonly_bits).is_none() {
+                        dec_ref_bits(py, posonly_bits);
+                    }
+                    if kwonly_bits != 0 && !obj_from_bits(kwonly_bits).is_none() {
+                        dec_ref_bits(py, kwonly_bits);
+                    }
+                    if vararg_bits != 0 && !obj_from_bits(vararg_bits).is_none() {
+                        dec_ref_bits(py, vararg_bits);
+                    }
+                    if varkw_bits != 0 && !obj_from_bits(varkw_bits).is_none() {
+                        dec_ref_bits(py, varkw_bits);
                     }
                 }
                 TYPE_ID_FUNCTION => {

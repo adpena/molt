@@ -3988,6 +3988,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_stringprep_map_table_b2",
+        symbol: "molt_stringprep_map_table_b2",
+        arity: 1,
+    },
+    IntrinsicSpec {
         name: "molt_stringprep_map_table_b3",
         symbol: "molt_stringprep_map_table_b3",
         arity: 1,
@@ -5425,7 +5430,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_code_new",
         symbol: "molt_code_new",
-        arity: 8,
+        arity: 9,
     },
     IntrinsicSpec {
         name: "molt_code_slots_init",
@@ -5538,6 +5543,26 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
     },
     IntrinsicSpec {
+        name: "molt_importlib_sourcefileloader_exec_module",
+        symbol: "molt_importlib_sourcefileloader_exec_module",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_zip_source_loader_exec_module",
+        symbol: "molt_importlib_zip_source_loader_exec_module",
+        arity: 5,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_extension_loader_exec_module",
+        symbol: "molt_importlib_extension_loader_exec_module",
+        arity: 4,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_sourceless_loader_exec_module",
+        symbol: "molt_importlib_sourceless_loader_exec_module",
+        arity: 4,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_module_spec_is_package",
         symbol: "molt_importlib_module_spec_is_package",
         arity: 1,
@@ -5633,6 +5658,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
     },
     IntrinsicSpec {
+        name: "molt_importlib_import_module",
+        symbol: "molt_importlib_import_module",
+        arity: 2,
+    },
+    IntrinsicSpec {
         name: "molt_importlib_known_absent_missing_name",
         symbol: "molt_importlib_known_absent_missing_name",
         arity: 1,
@@ -5655,6 +5685,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_importlib_load_module_shim",
         symbol: "molt_importlib_load_module_shim",
+        arity: 3,
+    },
+    IntrinsicSpec {
+        name: "molt_importlib_load_module_from_spec",
+        symbol: "molt_importlib_load_module_from_spec",
         arity: 3,
     },
     IntrinsicSpec {
@@ -6206,6 +6241,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_inspect_getdoc",
         symbol: "molt_inspect_getdoc",
         arity: 1,
+    },
+    IntrinsicSpec {
+        name: "molt_inspect_getmembers",
+        symbol: "molt_inspect_getmembers",
+        arity: 2,
     },
     IntrinsicSpec {
         name: "molt_inspect_isfunction",
@@ -6961,6 +7001,11 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_itertools_repeat",
         symbol: "molt_itertools_repeat",
         arity: 2,
+    },
+    IntrinsicSpec {
+        name: "molt_itertools_repeat_type",
+        symbol: "molt_itertools_repeat_type",
+        arity: 0,
     },
     IntrinsicSpec {
         name: "molt_itertools_count",
@@ -18564,6 +18609,30 @@ fn resolve_importlib_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_exec_sourceless",
             crate::molt_importlib_exec_sourceless as *const (),
         )),
+        "molt_importlib_sourcefileloader_exec_module" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_sourcefileloader_exec_module",
+                crate::molt_importlib_sourcefileloader_exec_module as *const (),
+            ))
+        }
+        "molt_importlib_zip_source_loader_exec_module" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_zip_source_loader_exec_module",
+                crate::molt_importlib_zip_source_loader_exec_module as *const (),
+            ))
+        }
+        "molt_importlib_extension_loader_exec_module" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_extension_loader_exec_module",
+                crate::molt_importlib_extension_loader_exec_module as *const (),
+            ))
+        }
+        "molt_importlib_sourceless_loader_exec_module" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_sourceless_loader_exec_module",
+                crate::molt_importlib_sourceless_loader_exec_module as *const (),
+            ))
+        }
         "molt_importlib_module_spec_is_package" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_module_spec_is_package",
@@ -18608,6 +18677,10 @@ fn resolve_importlib_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_resolve_name",
             crate::molt_importlib_resolve_name as *const (),
         )),
+        "molt_importlib_import_module" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_importlib_import_module",
+            crate::molt_importlib_import_module as *const (),
+        )),
         "molt_importlib_known_absent_missing_name" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_known_absent_missing_name",
@@ -18630,6 +18703,12 @@ fn resolve_importlib_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_load_module_shim",
             crate::molt_importlib_load_module_shim as *const (),
         )),
+        "molt_importlib_load_module_from_spec" => {
+            Some(crate::builtins::functions::runtime_fn_addr(
+                "crate::molt_importlib_load_module_from_spec",
+                crate::molt_importlib_load_module_from_spec as *const (),
+            ))
+        }
         "molt_importlib_frozen_payload" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_frozen_payload",
             crate::molt_importlib_frozen_payload as *const (),
@@ -19043,6 +19122,10 @@ fn resolve_inspect_symbol(symbol: &str) -> Option<u64> {
         "molt_inspect_getdoc" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_inspect_getdoc",
             crate::molt_inspect_getdoc as *const (),
+        )),
+        "molt_inspect_getmembers" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_inspect_getmembers",
+            crate::molt_inspect_getmembers as *const (),
         )),
         "molt_inspect_isfunction" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_inspect_isfunction",
@@ -19506,6 +19589,10 @@ fn resolve_itertools_symbol(symbol: &str) -> Option<u64> {
         "molt_itertools_repeat" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_itertools_repeat",
             crate::molt_itertools_repeat as *const (),
+        )),
+        "molt_itertools_repeat_type" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_itertools_repeat_type",
+            crate::molt_itertools_repeat_type as *const (),
         )),
         "molt_itertools_count" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_itertools_count",
@@ -23076,6 +23163,11 @@ fn resolve_stringprep_symbol(symbol: &str) -> Option<u64> {
         "molt_stringprep_in_table" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_stringprep_in_table",
             crate::molt_stringprep_in_table as *const (),
+        )),
+        #[cfg(feature = "stdlib_stringprep")]
+        "molt_stringprep_map_table_b2" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_stringprep_map_table_b2",
+            crate::molt_stringprep_map_table_b2 as *const (),
         )),
         #[cfg(feature = "stdlib_stringprep")]
         "molt_stringprep_map_table_b3" => Some(crate::builtins::functions::runtime_fn_addr(

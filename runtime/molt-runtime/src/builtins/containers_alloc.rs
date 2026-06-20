@@ -11,7 +11,8 @@ pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>()
             + std::mem::size_of::<*mut Vec<u64>>()
-            + std::mem::size_of::<*mut Vec<usize>>();
+            + std::mem::size_of::<*mut Vec<usize>>()
+            + std::mem::size_of::<*mut Vec<u64>>();
         let ptr = alloc_object(_py, total, TYPE_ID_DICT);
         if ptr.is_null() {
             return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
@@ -40,8 +41,18 @@ pub extern "C" fn molt_dict_new(capacity_bits: u64) -> u64 {
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
             };
+            let Some(hashes_ptr) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
+            else {
+                drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
+                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return raise_exception::<_>(_py, "MemoryError", "dict allocation failed");
+            };
             *(ptr as *mut *mut Vec<u64>) = order_ptr;
             *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
+            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
+                as *mut *mut Vec<u64>) = hashes_ptr;
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -140,7 +151,8 @@ pub extern "C" fn molt_set_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>()
             + std::mem::size_of::<*mut Vec<u64>>()
-            + std::mem::size_of::<*mut Vec<usize>>();
+            + std::mem::size_of::<*mut Vec<usize>>()
+            + std::mem::size_of::<*mut Vec<u64>>();
         let ptr = alloc_object(_py, total, TYPE_ID_SET);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -165,8 +177,18 @@ pub extern "C" fn molt_set_new(capacity_bits: u64) -> u64 {
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return MoltObject::none().bits();
             };
+            let Some(hashes_ptr) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
+            else {
+                drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
+                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            };
             *(ptr as *mut *mut Vec<u64>) = order_ptr;
             *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
+            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
+                as *mut *mut Vec<u64>) = hashes_ptr;
         }
         MoltObject::from_ptr(ptr).bits()
     })
@@ -177,7 +199,8 @@ pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let total = std::mem::size_of::<MoltHeader>()
             + std::mem::size_of::<*mut Vec<u64>>()
-            + std::mem::size_of::<*mut Vec<usize>>();
+            + std::mem::size_of::<*mut Vec<usize>>()
+            + std::mem::size_of::<*mut Vec<u64>>();
         let ptr = alloc_object(_py, total, TYPE_ID_FROZENSET);
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -202,8 +225,18 @@ pub extern "C" fn molt_frozenset_new(capacity_bits: u64) -> u64 {
                 dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
                 return MoltObject::none().bits();
             };
+            let Some(hashes_ptr) =
+                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity_hint)
+            else {
+                drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
+                drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+                return MoltObject::none().bits();
+            };
             *(ptr as *mut *mut Vec<u64>) = order_ptr;
             *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
+            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
+                as *mut *mut Vec<u64>) = hashes_ptr;
         }
         MoltObject::from_ptr(ptr).bits()
     })

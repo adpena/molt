@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import tomllib
 from dataclasses import dataclass, asdict, field
@@ -51,9 +50,9 @@ BASELINE_REL = "tools/call_fact_coverage_baseline.json"
 OP_KINDS_REL = "runtime/molt-backend/src/tir/op_kinds.toml"
 
 # Representation status of a call-site fact, in increasing order of usefulness.
-ATTACHED = "ATTACHED"          # recorded on the call op → measurable + lowerable
+ATTACHED = "ATTACHED"  # recorded on the call op → measurable + lowerable
 OPCODE_STATIC = "OPCODE_STATIC"  # a generated op_kinds.toml fact (per-opcode)
-TRANSIENT = "TRANSIENT"        # computed in a pass, then DISCARDED — the gap
+TRANSIENT = "TRANSIENT"  # computed in a pass, then DISCARDED — the gap
 
 
 @dataclass
@@ -83,9 +82,9 @@ CALL_FACTS: list[CallFact] = [
         evidence_file="runtime/molt-backend/src/tir/call_graph.rs",
         evidence_symbol="StaticDirect",
         how_to_read="Call op carries `s_value` attr = static callee name; "
-                    "CallEdge::StaticDirect in the call graph",
+        "CallEdge::StaticDirect in the call graph",
         missing_primitive="(attached) — but as an attr string, not a typed "
-                          "CallableTarget; #71 makes it a typed variant",
+        "CallableTarget; #71 makes it a typed variant",
     ),
     CallFact(
         key="typed_return",
@@ -94,7 +93,7 @@ CALL_FACTS: list[CallFact] = [
         evidence_file="runtime/molt-backend/src/tir/types.rs",
         evidence_symbol="DynBox",
         how_to_read="result ValueId's TirType in function.value_types; observable "
-                    "in typed_repr_report JSON opcodes.call.result_reprs",
+        "in typed_repr_report JSON opcodes.call.result_reprs",
         missing_primitive="(attached) — measurable via --corpus",
     ),
     CallFact(
@@ -104,9 +103,9 @@ CALL_FACTS: list[CallFact] = [
         evidence_file="runtime/molt-backend/src/tir/call_facts.rs",
         evidence_symbol="no_throw",
         how_to_read="CallFacts.no_throw (Proven iff opcode-static-no-throw ∨ "
-                    "resolved-callee-no-handlers ∨ allowlisted-builtin; else Unknown)",
+        "resolved-callee-no-handlers ∨ allowlisted-builtin; else Unknown)",
         missing_primitive="(attached, CallFacts Phase 1a) — consumer: exception "
-                          "normal-edge fast path (ties doc 45) is the deferred 1b",
+        "normal-edge fast path (ties doc 45) is the deferred 1b",
     ),
     CallFact(
         key="leaf",
@@ -115,9 +114,9 @@ CALL_FACTS: list[CallFact] = [
         evidence_file="runtime/molt-backend/src/tir/call_facts.rs",
         evidence_symbol="leaf",
         how_to_read="CallFacts.leaf (Proven/False from !makes_any_call for a "
-                    "resolved callee; Unknown for opaque) — now on the call site",
+        "resolved callee; Unknown for opaque) — now on the call site",
         missing_primitive="(attached, CallFacts Phase 1a) — consumer: frame-elision "
-                          "/ no-spill leaf-call lowering is a follow-up",
+        "/ no-spill leaf-call lowering is a follow-up",
     ),
     CallFact(
         key="inlinable",
@@ -126,9 +125,9 @@ CALL_FACTS: list[CallFact] = [
         evidence_file="runtime/molt-backend/src/tir/call_facts.rs",
         evidence_symbol="inlinable",
         how_to_read="CallFacts.inlinable (Eligible|WhyNot from classify_inline_"
-                    "eligibility — same gate is_inlineable reduces to; Unknown if opaque)",
+        "eligibility — same gate is_inlineable reduces to; Unknown if opaque)",
         missing_primitive="(attached, CallFacts Phase 1a) — consumer: inliner reading "
-                          "the side-table instead of recomputing is the deferred 1b",
+        "the side-table instead of recomputing is the deferred 1b",
     ),
     CallFact(
         key="noescape_args",
@@ -137,9 +136,9 @@ CALL_FACTS: list[CallFact] = [
         evidence_file="runtime/molt-backend/src/tir/passes/escape_analysis.rs",
         evidence_symbol="EscapeState",
         how_to_read="escape_analysis::analyze() yields per-ValueId EscapeState; "
-                    "the call's arg-escape summary is not attached to the call",
+        "the call's arg-escape summary is not attached to the call",
         missing_primitive="CallFacts.args_noescape mask — enables stack-promotion "
-                          "of arg temporaries + borrow-not-own arg passing",
+        "of arg temporaries + borrow-not-own arg passing",
     ),
     CallFact(
         key="no_alloc",
@@ -148,9 +147,9 @@ CALL_FACTS: list[CallFact] = [
         evidence_file="runtime/molt-backend/src/tir/passes/escape_analysis.rs",
         evidence_symbol="StackAlloc",
         how_to_read="escape pass rewrites NoEscape Alloc→StackAlloc per value; "
-                    "there is no per-call 'callee allocates?' summary on the call",
+        "there is no per-call 'callee allocates?' summary on the call",
         missing_primitive="CallFacts.no_alloc bit (callee alloc-free ∨ all results "
-                          "stack-promotable) — enables alloc-free call fast paths",
+        "stack-promotable) — enables alloc-free call fast paths",
     ),
 ]
 
@@ -161,7 +160,9 @@ def _verify_evidence(root: Path) -> None:
     for fact in CALL_FACTS:
         p = root / fact.evidence_file
         try:
-            fact.evidence_ok = p.is_file() and fact.evidence_symbol in p.read_text(errors="replace")
+            fact.evidence_ok = p.is_file() and fact.evidence_symbol in p.read_text(
+                errors="replace"
+            )
         except OSError:
             fact.evidence_ok = False
 
@@ -179,6 +180,7 @@ def _call_opcode_may_throw(root: Path) -> dict[str, bool]:
 
 
 # --- corpus coverage (typed-return %, from typed_repr_report JSON) ----------
+
 
 def _corpus_typed_return(json_paths: list[Path]) -> dict:
     """Parse typed_repr_report JSON dumps; compute typed-return coverage for the
@@ -248,38 +250,55 @@ def format_human(c: dict, corpus: dict | None) -> str:
     ]
     for f in c["facts"]:
         flag = "" if f["evidence_ok"] else "  ⚠STALE-EVIDENCE"
-        L.append(f"{f['label'][:25]:<26} {f['status']:<13} "
-                 f"{Path(f['evidence_file']).name}:{f['evidence_symbol']}{flag}")
+        L.append(
+            f"{f['label'][:25]:<26} {f['status']:<13} "
+            f"{Path(f['evidence_file']).name}:{f['evidence_symbol']}{flag}"
+        )
         L.append(f"{'':<26} {'':<13} → missing: {f['missing_primitive'][:70]}")
     L.append("")
-    L.append("per-OPCODE may_throw (all call opcodes throw → no-throw MUST be a "
-             "per-call-site fact, not an opcode fact):")
+    L.append(
+        "per-OPCODE may_throw (all call opcodes throw → no-throw MUST be a "
+        "per-call-site fact, not an opcode fact):"
+    )
     for op, mt in c["call_opcode_may_throw"].items():
         L.append(f"  {op:<14} may_throw={mt}")
     if corpus:
         L.append("")
         L.append("CORPUS (typed-return, from typed_repr_report JSON):")
-        L.append(f"  functions={corpus['functions']}  "
-                 f"call result-reprs={corpus['call_result_reprs_total']}  "
-                 f"typed={corpus['call_result_reprs_typed']}  "
-                 f"typed_return={corpus['typed_return_pct']}%  "
-                 f"boxed_results={corpus['boxed_result_values']}")
+        L.append(
+            f"  functions={corpus['functions']}  "
+            f"call result-reprs={corpus['call_result_reprs_total']}  "
+            f"typed={corpus['call_result_reprs_typed']}  "
+            f"typed_return={corpus['typed_return_pct']}%  "
+            f"boxed_results={corpus['boxed_result_values']}"
+        )
     if c["stale_evidence"]:
         L.append("")
-        L.append(f"⚠ STALE EVIDENCE for facts {c['stale_evidence']} — the registry "
-                 "cites a symbol no longer in the tree; update CALL_FACTS.")
+        L.append(
+            f"⚠ STALE EVIDENCE for facts {c['stale_evidence']} — the registry "
+            "cites a symbol no longer in the tree; update CALL_FACTS."
+        )
     return "\n".join(L)
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--root", type=Path, default=ROOT_DEFAULT)
-    ap.add_argument("--corpus", type=Path, nargs="*", default=None,
-                    help="typed_repr_report JSON dump(s) for typed-return coverage")
+    ap.add_argument(
+        "--corpus",
+        type=Path,
+        nargs="*",
+        default=None,
+        help="typed_repr_report JSON dump(s) for typed-return coverage",
+    )
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--check", action="store_true",
-                    help="fail if ATTACHED-fact count regressed or evidence is stale")
+    ap.add_argument(
+        "--check",
+        action="store_true",
+        help="fail if ATTACHED-fact count regressed or evidence is stale",
+    )
     ap.add_argument("--update-baseline", action="store_true")
     args = ap.parse_args(argv)
 
@@ -306,27 +325,43 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         # evidence rot is always a failure (the census is lying about the tree).
         if c["stale_evidence"]:
-            print(f"CALL-FACT EVIDENCE STALE: {c['stale_evidence']} — update "
-                  "CALL_FACTS in tools/call_fact_coverage.py", file=sys.stderr)
+            print(
+                f"CALL-FACT EVIDENCE STALE: {c['stale_evidence']} — update "
+                "CALL_FACTS in tools/call_fact_coverage.py",
+                file=sys.stderr,
+            )
             return 1
         if not baseline_path.is_file():
-            print(f"ERROR: no baseline at {baseline_path}; run --update-baseline",
-                  file=sys.stderr)
+            print(
+                f"ERROR: no baseline at {baseline_path}; run --update-baseline",
+                file=sys.stderr,
+            )
             return 2
         base = json.loads(baseline_path.read_text())
         if c["attached"] < base.get("attached", 0):
-            print(f"CALL-FACT REPRESENTATION REGRESSED: attached "
-                  f"{base['attached']} -> {c['attached']} (a fact un-attached from "
-                  "the call op).", file=sys.stderr)
+            print(
+                f"CALL-FACT REPRESENTATION REGRESSED: attached "
+                f"{base['attached']} -> {c['attached']} (a fact un-attached from "
+                "the call op).",
+                file=sys.stderr,
+            )
             return 1
-        if corpus and "typed_return_pct" in base and corpus["typed_return_pct"] is not None:
+        if (
+            corpus
+            and "typed_return_pct" in base
+            and corpus["typed_return_pct"] is not None
+        ):
             if corpus["typed_return_pct"] + 0.05 < base["typed_return_pct"]:
-                print(f"TYPED-RETURN COVERAGE REGRESSED: "
-                      f"{base['typed_return_pct']}% -> {corpus['typed_return_pct']}%",
-                      file=sys.stderr)
+                print(
+                    f"TYPED-RETURN COVERAGE REGRESSED: "
+                    f"{base['typed_return_pct']}% -> {corpus['typed_return_pct']}%",
+                    file=sys.stderr,
+                )
                 return 1
-        print(f"call-fact coverage OK (attached={c['attached']}/{c['n_facts']}, "
-              f"evidence fresh)")
+        print(
+            f"call-fact coverage OK (attached={c['attached']}/{c['n_facts']}, "
+            f"evidence fresh)"
+        )
         return 0
 
     print(format_human(c, corpus))

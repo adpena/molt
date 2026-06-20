@@ -61,8 +61,13 @@
 classifier_fresh_value = [
     "aiter",
     "ascii_from_obj",
+    "classmethod_new",
+    "code_new",
     "complex_from_obj",
     "contains",
+    "class_def",
+    "dataclass_new",
+    "dataclass_new_values",
     "dict_from_obj",
     "dict_items",
     "dict_keys",
@@ -76,6 +81,8 @@ classifier_fresh_value = [
     "exception_new_from_class",
     "float_from_obj",
     "frozenset_new",
+    "func_new",
+    "func_new_closure",
     # The augassign in-place family. Every molt_inplace_* runtime symbol
     # returns an OWNED +1 reference regardless of object identity (a mutating
     # __iadd__-style fast path inc_refs and returns operand 0; the dunder /
@@ -102,11 +109,13 @@ classifier_fresh_value = [
     "list_new",
     "list_pop",
     "object_new",
+    "property_new",
     "range_new",
     "repr_from_obj",
     "set_new",
     "slice",
     "slice_new",
+    "staticmethod_new",
     "str_from_obj",
     "string_format",
     "string_join",
@@ -176,6 +185,9 @@ kind = "set_new"
 
 [[absorbing_kind]]
 kind = "tuple_new"
+
+[[absorbing_kind]]
+kind = "class_def"
 
 [[absorbing_operand_kind]]
 kind = "list_append"
@@ -1330,7 +1342,7 @@ mapper_opcode = "LoadAttr"
 
 [[kind]]
 canonical = "set_attr"
-aliases = ["store_attr", "set_attr_name", "set_attr_generic_ptr", "set_attr_generic_obj", "guarded_field_set", "guarded_field_set_init", "store", "store_init"]
+aliases = ["store_attr", "set_attr_name", "set_attr_generic_ptr", "set_attr_generic_obj", "guarded_field_set", "guarded_field_init", "store", "store_init"]
 mapper_opcode = "StoreAttr"
 
 [[kind]]
@@ -1776,7 +1788,7 @@ consumed_operand = "last"
 #              for an unclassified terminator silently inheriting a borrow/transfer
 #              assumption, mirroring the [[opcode]] exhaustiveness discipline).
 #   direct / branch_arg : the `OperandOwnership` leaf for that category, OR
-#              "none" (NoOperandOwnership) when the variant has no operand in that
+#              "none" (NoOperand) when the variant has no operand in that
 #              category (e.g. `Branch` has no direct operand; `Return` forwards no
 #              branch arg; `Unreachable` has neither).
 # ===========================================================================
