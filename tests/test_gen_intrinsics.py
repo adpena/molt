@@ -51,6 +51,10 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
         module._feature_gate_for_symbol("molt_unicodedata_category")
         == "stdlib_text"
     )
+    assert (
+        module._feature_gate_for_symbol("molt_zoneinfo_available_timezones")
+        == "stdlib_zoneinfo"
+    )
 
     generated = (
         ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers/ssl_resolver.rs"
@@ -85,8 +89,10 @@ def test_generated_resolvers_are_split_from_manifest_table() -> None:
 
     html_resolver = (resolver_root / "html_resolver.rs").read_text()
     unicodedata_resolver = (resolver_root / "unicodedata_resolver.rs").read_text()
+    zoneinfo_resolver = (resolver_root / "zoneinfo_resolver.rs").read_text()
     assert '#[cfg(feature = "stdlib_text")]' in html_resolver
     assert '#[cfg(feature = "stdlib_text")]' in unicodedata_resolver
+    assert '#[cfg(feature = "stdlib_zoneinfo")]' in zoneinfo_resolver
 
 
 def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:

@@ -7,16 +7,16 @@
 //! algorithms.  Time and hash functions are pure Rust, with
 //! `cfg(target_arch = "wasm32")` stubs for platform-specific syscalls.
 
-// Fallback for WASM where host function is not available
-#[allow(dead_code)]
-unsafe fn molt_time_local_offset_fallback(_secs: i64) -> i64 {
-    0
-}
-
 use std::fmt::Write as _;
 
 use crate::bridge::*;
 use molt_runtime_core::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+unsafe extern "C" {
+    #[link_name = "molt_time_local_offset_host"]
+    fn molt_time_local_offset_host(secs: i64) -> i64;
+}
 
 #[cfg(windows)]
 unsafe extern "C" {
@@ -1759,7 +1759,7 @@ pub extern "C" fn molt_datetime_now_local() -> u64 {
                 .unwrap_or_default();
             let secs = now.as_secs() as i64;
             let us = now.subsec_micros() as i64;
-            let offset_west = unsafe { molt_time_local_offset_fallback(secs) };
+            let offset_west = unsafe { molt_time_local_offset_host(secs) };
             if offset_west == i64::MIN {
                 return raise_exception::<u64>(
                     _py,
@@ -1891,7 +1891,7 @@ pub extern "C" fn molt_datetime_fromtimestamp_local(ts_bits: u64) -> u64 {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let offset_west = unsafe { molt_time_local_offset_fallback(secs) };
+            let offset_west = unsafe { molt_time_local_offset_host(secs) };
             if offset_west == i64::MIN {
                 return raise_exception::<u64>(
                     _py,
@@ -1981,7 +1981,7 @@ pub extern "C" fn molt_datetime_to_timestamp(
             {
                 // Approximate: use host offset for the naive timestamp
                 let approx = day_secs;
-                let offset_west = unsafe { molt_time_local_offset_fallback(approx) };
+                let offset_west = unsafe { molt_time_local_offset_host(approx) };
                 if offset_west == i64::MIN {
                     return raise_exception::<u64>(
                         _py,
@@ -2071,7 +2071,7 @@ pub extern "C" fn molt_datetime_local_utcoffset() -> u64 {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
-            let offset_west = unsafe { molt_time_local_offset_fallback(now) };
+            let offset_west = unsafe { molt_time_local_offset_host(now) };
             if offset_west == i64::MIN {
                 return raise_exception::<u64>(
                     _py,

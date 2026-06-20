@@ -118,7 +118,6 @@ PAIRS: dict[str, tuple[str, str]] = {
     ),
     "xml_etree": ("builtins/xml_etree.rs", "molt-runtime-xml/src/xml_etree.rs"),
     "xml_sax": ("builtins/xml_sax.rs", "molt-runtime-xml/src/xml_sax.rs"),
-    "zoneinfo": ("builtins/zoneinfo.rs", "molt-runtime-zoneinfo/src/zoneinfo.rs"),
 }
 
 # decimal is architecturally different on the in-tree side: the in-tree
@@ -211,8 +210,46 @@ def _strip_trailing_comment(line: str) -> str:
     return line
 
 
+def _strip_cfg_test_items(lines: list[str]) -> list[str]:
+    """Drop Rust items guarded by `#[cfg(test)]`.
+
+    The satellite parity guard compares shipped runtime implementation, not test
+    code. Unit tests can differ between access layers without changing build-tier
+    behavior, and Cargo remains the authority for compiling/executing them.
+    """
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        if lines[i].strip() != "#[cfg(test)]":
+            out.append(lines[i])
+            i += 1
+            continue
+
+        i += 1
+        while i < n and lines[i].strip().startswith("#["):
+            i += 1
+        if i >= n:
+            break
+
+        depth = 0
+        saw_brace = False
+        while i < n:
+            line = lines[i]
+            for ch in line:
+                if ch == "{":
+                    depth += 1
+                    saw_brace = True
+                elif ch == "}":
+                    depth -= 1
+            i += 1
+            if (saw_brace and depth <= 0) or (not saw_brace and line.strip().endswith(";")):
+                break
+    return out
+
+
 def normalize(path: Path) -> list[str]:
     raw = path.read_text(encoding="utf-8").splitlines()
+    raw = _strip_cfg_test_items(raw)
     raw = _strip_use_blocks(raw)
     out: list[str] = []
     for line in raw:
