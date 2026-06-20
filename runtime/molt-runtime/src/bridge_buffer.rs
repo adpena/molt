@@ -28,6 +28,11 @@ pub(crate) fn export_u8_box(bytes: Box<[u8]>, out_ptr: *mut *const u8, out_len: 
     export_box(bytes, out_ptr, out_len)
 }
 
+#[cfg(any(
+    feature = "stdlib_collections",
+    feature = "stdlib_regex",
+    feature = "stdlib_serial",
+))]
 pub(crate) fn export_u64_box(
     values: Box<[u64]>,
     out_ptr: *mut *const u64,

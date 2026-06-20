@@ -43,6 +43,23 @@ pub extern "C" fn molt_isolate_import(_name_bits: u64) -> u64 {
 }
 
 mod async_rt;
+#[cfg(any(
+    feature = "stdlib_collections",
+    feature = "stdlib_compression",
+    feature = "stdlib_crypto",
+    feature = "stdlib_difflib",
+    feature = "stdlib_http",
+    feature = "stdlib_ipaddress",
+    feature = "stdlib_logging_ext",
+    feature = "stdlib_math",
+    feature = "stdlib_path",
+    feature = "stdlib_regex",
+    feature = "stdlib_serial",
+    feature = "stdlib_stringprep",
+    feature = "stdlib_text",
+    feature = "stdlib_xml",
+    feature = "stdlib_zoneinfo",
+))]
 mod bridge_buffer;
 mod builtins;
 mod c_api;
@@ -357,6 +374,7 @@ pub(crate) use crate::async_rt::{
     contextlib_asyncgen_exit_poll_fn_addr, io_wait_poll_fn_addr, molt_block_on,
     poll_future_with_task_stack, process_poll_fn_addr, resolve_task_ptr, thread_poll_fn_addr,
 };
+#[cfg(feature = "stdlib_asyncio")]
 pub(crate) use crate::async_rt::{
     molt_asyncio_task_last_exception_clear, molt_asyncio_task_registry_live,
     molt_asyncio_task_registry_live_set,
@@ -494,8 +512,6 @@ pub use crate::builtins::gzip::*;
 pub use crate::builtins::hashlib::*;
 #[cfg(feature = "stdlib_crypto")]
 pub use crate::builtins::hmac::*;
-#[cfg(not(feature = "stdlib_text"))]
-pub use crate::builtins::html::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
 pub(crate) use crate::builtins::io::{
@@ -569,8 +585,6 @@ pub(crate) use crate::builtins::type_ops::{
     issubclass_runtime, runtime_classinfo_protocol_match, type_of_bits,
 };
 pub use crate::builtins::types::*;
-#[cfg(not(feature = "stdlib_text"))]
-pub use crate::builtins::unicodedata_mod::*;
 pub use crate::builtins::warnings_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::zlib::*;

@@ -77,8 +77,6 @@ pub(crate) mod gzip;
 pub(crate) mod hashlib;
 #[cfg(feature = "stdlib_crypto")]
 pub(crate) mod hmac;
-#[cfg(not(feature = "stdlib_text"))]
-pub(crate) mod html;
 pub(crate) mod inspect;
 pub(crate) mod io;
 pub(crate) mod io_path;
@@ -136,8 +134,6 @@ pub(crate) mod threading_helpers;
 pub(crate) mod tkinter_core;
 pub(crate) mod type_ops;
 pub(crate) mod types;
-#[cfg(not(feature = "stdlib_text"))]
-pub(crate) mod unicodedata_mod;
 pub(crate) mod warnings_ext;
 #[cfg(not(feature = "stdlib_xml"))]
 pub(crate) mod xml_etree;

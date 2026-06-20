@@ -58,10 +58,6 @@
       "count": 0,
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
-    "html": {
-      "count": 0,
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
     "ipaddress": {
       "count": 0,
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -93,10 +89,6 @@
     "structs": {
       "count": 145,
       "sha256": "ab3fd76107f877d4ebc0f934635e5795ae914268a567c264dd52568df9f1dc9f"
-    },
-    "unicodedata_mod": {
-      "count": 0,
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "xml_etree": {
       "count": 0,

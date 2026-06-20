@@ -62,6 +62,10 @@ def test_full_profile_includes_stdlib_stringprep() -> None:
     assert "stdlib_stringprep" in _full_features()
 
 
+def test_full_profile_includes_stdlib_text() -> None:
+    assert "stdlib_text" in _full_features()
+
+
 def test_ast_module_requires_stdlib_ast_gate() -> None:
     gap = cli._profile_feature_gap_for_module(STDLIB_ROOT / "ast.py", _micro_features())
     assert "stdlib_ast" in gap
@@ -110,6 +114,37 @@ def test_stringprep_module_buildable_on_full_profile() -> None:
         STDLIB_ROOT / "stringprep.py", _full_features()
     )
     assert gap == {}
+
+
+def test_html_module_requires_stdlib_text_gate() -> None:
+    gap = cli._profile_feature_gap_for_module(
+        STDLIB_ROOT / "html" / "__init__.py", _micro_features()
+    )
+    assert set(gap) == {"stdlib_text"}
+    assert any(sym.startswith("molt_html_") for sym in gap["stdlib_text"])
+
+
+def test_unicodedata_module_requires_stdlib_text_gate() -> None:
+    gap = cli._profile_feature_gap_for_module(
+        STDLIB_ROOT / "unicodedata.py", _micro_features()
+    )
+    assert set(gap) == {"stdlib_text"}
+    assert any(sym.startswith("molt_unicodedata_") for sym in gap["stdlib_text"])
+
+
+def test_text_modules_buildable_on_full_profile() -> None:
+    assert (
+        cli._profile_feature_gap_for_module(
+            STDLIB_ROOT / "html" / "__init__.py", _full_features()
+        )
+        == {}
+    )
+    assert (
+        cli._profile_feature_gap_for_module(
+            STDLIB_ROOT / "unicodedata.py", _full_features()
+        )
+        == {}
+    )
 
 
 def test_tinygrad_package_requires_gpu_primitives_gate_on_micro_profile() -> None:

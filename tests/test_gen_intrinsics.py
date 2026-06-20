@@ -46,6 +46,11 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
         assert module._feature_gate_for_symbol(symbol) is None
 
     assert module._feature_gate_for_symbol("molt_http_client_execute") == "stdlib_net"
+    assert module._feature_gate_for_symbol("molt_html_escape") == "stdlib_text"
+    assert (
+        module._feature_gate_for_symbol("molt_unicodedata_category")
+        == "stdlib_text"
+    )
 
     generated = (
         ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers/ssl_resolver.rs"
@@ -77,6 +82,11 @@ def test_generated_resolvers_are_split_from_manifest_table() -> None:
     assert "molt_capabilities_trusted" in core_resolver
     assert "molt_ssl_context_new" not in core_resolver
     assert "molt_ssl_context_new" in ssl_resolver
+
+    html_resolver = (resolver_root / "html_resolver.rs").read_text()
+    unicodedata_resolver = (resolver_root / "unicodedata_resolver.rs").read_text()
+    assert '#[cfg(feature = "stdlib_text")]' in html_resolver
+    assert '#[cfg(feature = "stdlib_text")]' in unicodedata_resolver
 
 
 def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:

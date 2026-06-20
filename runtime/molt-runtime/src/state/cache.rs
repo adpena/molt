@@ -752,6 +752,7 @@ pub(crate) fn intern_bridge_protocol_name(_py: &PyToken<'_>, key: &[u8]) -> Opti
     Some(intern_static_name(_py, slot, name))
 }
 
+#[cfg(feature = "stdlib_logging_ext")]
 pub(crate) fn intern_bridge_write_name(_py: &PyToken<'_>, key: &[u8]) -> Option<u64> {
     match key {
         b"write" => Some(intern_static_name(
