@@ -596,6 +596,164 @@ def test_escalation_group_signal_rechecks_protected_group(monkeypatch) -> None:
     assert sent_groups == []
 
 
+def test_sigterm_pid_helper_revalidates_identity_before_signal(monkeypatch) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    original = memory_guard.ProcessSample(
+        101,
+        100,
+        20,
+        "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
+        pgid=101,
+    )
+    reused = memory_guard.ProcessSample(
+        101,
+        1,
+        20,
+        "/Applications/Codex.app/Contents/MacOS/Codex",
+        pgid=101,
+    )
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent_pids.append((pid, sig)),
+    )
+
+    action = memory_guard._terminate_pid_if_identity_action(
+        101,
+        memory_guard.process_identity(original),
+        sampler=lambda: {101: reused},
+        grace=0.001,
+    )
+
+    assert action.result == "skipped_identity_mismatch"
+    assert sent_pids == []
+
+
+def test_terminate_watched_processes_revalidates_escaped_pid_before_sigterm(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    observed = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            20,
+            "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
+            pgid=777,
+        ),
+    }
+    reused = {
+        101: memory_guard.ProcessSample(
+            101,
+            1,
+            20,
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            pgid=777,
+        ),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    )
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent_pids.append((pid, sig)),
+    )
+
+    report = memory_guard.terminate_watched_processes(
+        100,
+        samples=observed,
+        watched={100, 101},
+        sampler=lambda: reused,
+        grace=0.001,
+    )
+
+    assert any(
+        action.target_kind == "process"
+        and action.target_id == 101
+        and action.result == "skipped_identity_mismatch"
+        for action in report.actions
+    )
+    assert sent_groups == []
+    assert sent_pids == []
+
+
+def test_terminate_watched_processes_revalidates_root_group_before_sigterm(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    observed = {
+        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            20,
+            "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
+            pgid=100,
+        ),
+    }
+    protected = {
+        100: memory_guard.ProcessSample(
+            100,
+            1,
+            500_000,
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            pgid=100,
+        ),
+        101: memory_guard.ProcessSample(
+            101,
+            100,
+            250_000,
+            "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
+            pgid=100,
+        ),
+    }
+    sent_groups: list[tuple[int, int]] = []
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    )
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent_pids.append((pid, sig)),
+    )
+
+    report = memory_guard.terminate_watched_processes(
+        100,
+        samples=observed,
+        watched={100, 101},
+        sampler=lambda: protected,
+        grace=0.001,
+    )
+
+    assert any(
+        action.target_kind == "process_group"
+        and action.target_id == 100
+        and action.result == "skipped_protected_group"
+        for action in report.actions
+    )
+    assert sent_groups == []
+    assert sent_pids == []
+
+
 def test_terminate_watched_processes_filters_protected_escaped_pid(
     monkeypatch,
 ) -> None:
@@ -1394,15 +1552,18 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             command=f"{root}/target/dev-fast/molt-backend --protected",
         ),
     }
-    terminated: list[tuple[int, float]] = []
+    terminated: list[tuple[int, int]] = []
 
     monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
-    monkeypatch.setattr(
-        memory_guard,
-        "_terminate_single_pid",
-        lambda pid, *, grace: terminated.append((pid, grace)) or True,
-    )
+
+    def fake_kill(pid: int, sig: int) -> None:
+        if sig == 0 and any(sent_pid == pid for sent_pid, _sig in terminated):
+            raise ProcessLookupError
+        if sig == memory_guard.signal.SIGTERM:
+            terminated.append((pid, sig))
+
+    monkeypatch.setattr(memory_guard.os, "kill", fake_kill)
 
     cleaned = memory_guard.cleanup_repo_scoped_orphans_since_baseline(
         baseline_pgids=frozenset({500}),
@@ -1427,7 +1588,10 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
         for report in cleaned.termination_reports
         for action in report.actions
     )
-    assert terminated == [(200, 0.125), (300, 0.125)]
+    assert terminated == [
+        (200, memory_guard.signal.SIGTERM),
+        (300, memory_guard.signal.SIGTERM),
+    ]
 
 
 def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
