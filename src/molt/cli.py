@@ -5991,122 +5991,121 @@ def _collect_imports(
         spec_override_is_package,
     ) = _infer_module_overrides(tree)
     module_body = list(getattr(tree, "body", []))
-    module_level_import_nodes = {
-        id(stmt) for stmt in module_body if isinstance(stmt, (ast.Import, ast.ImportFrom))
-    }
-    module_level_rebinding_nodes = {
-        id(stmt)
-        for stmt in module_body
-        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign))
-    }
     function_walks: list[
-        tuple[ast.FunctionDef | ast.AsyncFunctionDef, tuple[ast.AST, ...]]
+        tuple[
+            ast.FunctionDef | ast.AsyncFunctionDef,
+            tuple[ast.AST, ...],
+            "_ImportlibStaticBindings",
+        ]
     ] = []
-    importlib_module_aliases: set[str] = {"importlib"}
-    importlib_util_aliases: set[str] = {"importlib.util"}
-    importlib_import_module_aliases: set[str] = set()
-    importlib_module_import_mutations: set[str] = set()
 
-    def _record_importlib_aliases(node: ast.Import | ast.ImportFrom) -> None:
-        if isinstance(node, ast.Import):
+    class _ImportlibStaticBindings:
+        def __init__(self) -> None:
+            self.module_aliases: set[str] = {"importlib"}
+            self.util_aliases: set[str] = set()
+            self.import_module_aliases: set[str] = set()
+            self.module_import_module_mutated = False
+            self.module_util_mutated = False
+
+        def fork(self) -> "_ImportlibStaticBindings":
+            forked = _ImportlibStaticBindings()
+            forked.module_aliases = set(self.module_aliases)
+            forked.util_aliases = set(self.util_aliases)
+            forked.import_module_aliases = set(self.import_module_aliases)
+            forked.module_import_module_mutated = self.module_import_module_mutated
+            forked.module_util_mutated = self.module_util_mutated
+            return forked
+
+        def record_aliases(self, node: ast.Import | ast.ImportFrom) -> None:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "importlib":
+                        self.module_aliases.add(alias.asname or "importlib")
+                    elif alias.name == "importlib.util":
+                        if alias.asname:
+                            if not self.module_util_mutated:
+                                self.util_aliases.add(alias.asname)
+                        else:
+                            self.module_aliases.add("importlib")
+                    elif alias.name.startswith("importlib.") and not alias.asname:
+                        self.module_aliases.add("importlib")
+                return
+            if node.level or node.module != "importlib":
+                return
             for alias in node.names:
-                bind_name = alias.asname or alias.name.split(".")[0]
-                if alias.name == "importlib":
-                    importlib_module_aliases.add(bind_name)
-                elif alias.name == "importlib.util":
-                    importlib_util_aliases.add(alias.asname or alias.name)
-            return
-        if node.level or node.module != "importlib":
-            return
-        for alias in node.names:
-            bind_name = alias.asname or alias.name
-            if alias.name == "import_module":
-                importlib_import_module_aliases.add(bind_name)
-            elif alias.name == "util":
-                importlib_util_aliases.add(bind_name)
+                bind_name = alias.asname or alias.name
+                if alias.name == "import_module":
+                    if not self.module_import_module_mutated:
+                        self.import_module_aliases.add(bind_name)
+                elif alias.name == "util":
+                    if not self.module_util_mutated:
+                        self.util_aliases.add(bind_name)
 
-    def _invalidate_importlib_name(name: str) -> None:
-        importlib_module_aliases.discard(name)
-        importlib_util_aliases.discard(name)
-        importlib_import_module_aliases.discard(name)
-        importlib_module_import_mutations.discard(name)
+        def invalidate_name(self, name: str) -> None:
+            self.module_aliases.discard(name)
+            self.util_aliases.discard(name)
+            self.import_module_aliases.discard(name)
 
-    def _record_importlib_rebinding_target(target: ast.expr) -> None:
-        if isinstance(target, ast.Name):
-            _invalidate_importlib_name(target.id)
-            return
-        if (
-            isinstance(target, ast.Attribute)
-            and target.attr == "import_module"
-            and isinstance(target.value, ast.Name)
-            and target.value.id in importlib_module_aliases
-        ):
-            importlib_module_import_mutations.add(target.value.id)
-
-    def _importlib_target(func: ast.expr) -> str | None:
-        if isinstance(func, ast.Name):
-            if func.id in importlib_import_module_aliases:
-                return "importlib.import_module"
-            return func.id
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == "import_module"
-            and isinstance(func.value, ast.Name)
-            and func.value.id in importlib_module_aliases
-        ):
-            if func.value.id in importlib_module_import_mutations:
-                return None
-            return "importlib.import_module"
-        if isinstance(func, ast.Attribute) and func.attr == "find_spec":
-            if isinstance(func.value, ast.Name) and func.value.id in importlib_util_aliases:
-                return "importlib.util.find_spec"
+        def record_rebinding_target(self, target: ast.expr) -> None:
+            if isinstance(target, ast.Name):
+                self.invalidate_name(target.id)
+                return
             if (
-                isinstance(func.value, ast.Attribute)
-                and func.value.attr == "util"
-                and isinstance(func.value.value, ast.Name)
-                and func.value.value.id in importlib_module_aliases
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id in self.module_aliases
             ):
-                return "importlib.util.find_spec"
-        if isinstance(func, ast.Attribute):
-            parts: list[str] = []
-            current: ast.expr | None = func
-            while isinstance(current, ast.Attribute):
-                parts.append(current.attr)
-                current = current.value
-            if isinstance(current, ast.Name):
-                parts.append(current.id)
-                return ".".join(reversed(parts))
-        return None
+                if target.attr == "import_module":
+                    self.module_import_module_mutated = True
+                elif target.attr == "util":
+                    self.module_util_mutated = True
 
-    def _node_source_key(node: ast.AST) -> tuple[int, int]:
-        return (
-            int(getattr(node, "lineno", 1_000_000_000)),
-            int(getattr(node, "col_offset", 1_000_000_000)),
-        )
+        def target(self, func: ast.expr) -> str | None:
+            if isinstance(func, ast.Name):
+                if func.id in self.import_module_aliases:
+                    return "importlib.import_module"
+                return func.id
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr == "import_module"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in self.module_aliases
+            ):
+                if self.module_import_module_mutated:
+                    return None
+                return "importlib.import_module"
+            if isinstance(func, ast.Attribute) and func.attr == "find_spec":
+                if isinstance(func.value, ast.Name) and func.value.id in self.util_aliases:
+                    return "importlib.util.find_spec"
+                if (
+                    isinstance(func.value, ast.Attribute)
+                    and func.value.attr == "util"
+                    and isinstance(func.value.value, ast.Name)
+                    and func.value.value.id in self.module_aliases
+                ):
+                    if self.module_util_mutated:
+                        return None
+                    return "importlib.util.find_spec"
+            if isinstance(func, ast.Attribute):
+                parts: list[str] = []
+                current: ast.expr | None = func
+                while isinstance(current, ast.Attribute):
+                    parts.append(current.attr)
+                    current = current.value
+                if isinstance(current, ast.Name):
+                    parts.append(current.id)
+                    return ".".join(reversed(parts))
+            return None
 
-    importlib_calls_collected_before_rebind: set[int] = set()
+    helper_importlib_bindings = _ImportlibStaticBindings()
 
-    def _collect_static_importlib_call(node: ast.AST) -> None:
-        if not isinstance(node, ast.Call) or not node.args:
-            return
-        target = _importlib_target(node.func)
-        if target not in {
+    def _is_static_import_target(target: str | None) -> bool:
+        return target in {
             "__import__",
             "builtins.__import__",
             "importlib.import_module",
             "importlib.util.find_spec",
-        }:
-            return
-        importlib_calls_collected_before_rebind.add(id(node))
-        resolved = _resolve_string_constant(node.args[0])
-        if resolved is not None:
-            imports.append(resolved)
-
-    def _collect_importlib_calls_before_rebinding(value: ast.AST | None) -> None:
-        if value is None:
-            return
-        for child in ast.walk(value):
-            _collect_static_importlib_call(child)
+        }
 
     def _resolve_string_sequence(
         node: ast.expr, bindings: dict[str, object], seen: set[str]
@@ -6189,20 +6188,25 @@ def _collect_imports(
     if module_import_helper_scan:
         for stmt in module_body:
             if isinstance(stmt, (ast.Import, ast.ImportFrom)):
-                _record_importlib_aliases(stmt)
+                helper_importlib_bindings.record_aliases(stmt)
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
                 target = stmt.targets[0]
+                for rebind_target in stmt.targets:
+                    helper_importlib_bindings.record_rebinding_target(rebind_target)
                 if isinstance(target, ast.Name):
                     value = _resolve_string_constant(stmt.value)
                     if value is not None:
                         module_string_constants[target.id] = value
             elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                helper_importlib_bindings.record_rebinding_target(stmt.target)
                 value = _resolve_string_constant(stmt.value) if stmt.value else None
                 if value is not None:
                     module_string_constants[stmt.target.id] = value
+            elif isinstance(stmt, ast.AugAssign):
+                helper_importlib_bindings.record_rebinding_target(stmt.target)
             elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 stmt_nodes = tuple(ast.walk(stmt))
-                function_walks.append((stmt, stmt_nodes))
+                function_walks.append((stmt, stmt_nodes, helper_importlib_bindings.fork()))
                 if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Return):
                     continue
                 ret_expr = stmt.body[0].value
@@ -6220,7 +6224,7 @@ def _collect_imports(
                     continue
                 helper_string_functions[stmt.name] = (params, ret_expr)
 
-        for stmt, stmt_nodes in function_walks:
+        for stmt, stmt_nodes, stmt_importlib_bindings in function_walks:
             params = [
                 arg.arg
                 for arg in (
@@ -6240,13 +6244,8 @@ def _collect_imports(
             for node in stmt_nodes:
                 if not isinstance(node, ast.Call) or not node.args:
                     continue
-                target = _importlib_target(node.func)
-                if target not in {
-                    "__import__",
-                    "builtins.__import__",
-                    "importlib.import_module",
-                    "importlib.util.find_spec",
-                }:
+                target = stmt_importlib_bindings.target(node.func)
+                if not _is_static_import_target(target):
                     continue
                 first = node.args[0]
                 helper_entry = helper_import_arg_exprs.get(stmt.name)
@@ -6258,120 +6257,202 @@ def _collect_imports(
                     pos = param_positions[first.id]
                     helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
 
-    if import_scan_mode == "full":
-        scan_nodes = tuple(ast.walk(tree))
-    elif isinstance(tree, ast.Module):
-        scan_nodes = _module_init_scan_nodes(tree)
-    else:
-        scan_nodes = tuple(ast.walk(tree))
-    scan_nodes = tuple(sorted(scan_nodes, key=_node_source_key))
-
-    for node in scan_nodes:
+    def _record_helper_call_imports(node: ast.Call) -> None:
         if module_import_helper_scan:
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                positions = helper_param_import_positions.get(node.func.id)
-                if positions:
-                    for pos in positions:
-                        if pos < len(node.args):
-                            resolved = _resolve_string_constant(node.args[pos])
-                            if resolved is not None:
-                                imports.append(resolved)
-                helper_expr_entry = helper_import_arg_exprs.get(node.func.id)
-                if helper_expr_entry is not None:
-                    params, exprs = helper_expr_entry
-                    if len(node.args) >= len(params):
-                        call_bindings: dict[str, object] = {}
-                        for idx, param in enumerate(params):
-                            arg = node.args[idx]
-                            scalar = _resolve_string_constant(arg)
-                            if scalar is not None:
-                                call_bindings[param] = scalar
-                                continue
-                            seq = _resolve_string_sequence(arg, {}, set())
-                            if seq is not None:
-                                call_bindings[param] = seq
-                        for expr in exprs:
-                            resolved = _resolve_string_constant(
-                                expr, call_bindings, set()
-                            )
-                            if resolved is not None:
-                                imports.append(resolved)
+            if not isinstance(node.func, ast.Name):
+                return
+            positions = helper_param_import_positions.get(node.func.id)
+            if positions:
+                for pos in positions:
+                    if pos < len(node.args):
+                        resolved = _resolve_string_constant(node.args[pos])
+                        if resolved is not None:
+                            imports.append(resolved)
+            helper_expr_entry = helper_import_arg_exprs.get(node.func.id)
+            if helper_expr_entry is not None:
+                params, exprs = helper_expr_entry
+                if len(node.args) >= len(params):
+                    call_bindings: dict[str, object] = {}
+                    for idx, param in enumerate(params):
+                        arg = node.args[idx]
+                        scalar = _resolve_string_constant(arg)
+                        if scalar is not None:
+                            call_bindings[param] = scalar
+                            continue
+                        seq = _resolve_string_sequence(arg, {}, set())
+                        if seq is not None:
+                            call_bindings[param] = seq
+                    for expr in exprs:
+                        resolved = _resolve_string_constant(expr, call_bindings, set())
+                        if resolved is not None:
+                            imports.append(resolved)
+
+    def _record_import_statement(
+        node: ast.Import | ast.ImportFrom, bindings: _ImportlibStaticBindings
+    ) -> None:
+        bindings.record_aliases(node)
         if isinstance(node, ast.Import):
-            if id(node) in module_level_import_nodes:
-                _record_importlib_aliases(node)
             for alias in node.names:
                 imports.append(alias.name)
-            continue
-        if isinstance(node, ast.ImportFrom):
-            if id(node) in module_level_import_nodes:
-                _record_importlib_aliases(node)
-            if node.level:
-                if module_name:
-                    resolved = _resolve_relative_import(
-                        module_name,
-                        is_package=is_package,
-                        level=node.level,
-                        module=node.module,
-                        package_override=package_override,
-                        package_override_set=package_override_set,
-                        spec_override=spec_override,
-                        spec_override_set=spec_override_set,
-                        spec_override_is_package=spec_override_is_package,
-                    )
-                    if resolved:
-                        imports.append(resolved)
-                        for alias in node.names:
-                            if alias.name != "*":
-                                imports.append(f"{resolved}.{alias.name}")
-                continue
-            if node.module:
-                imports.append(node.module)
-                for alias in node.names:
-                    if alias.name != "*":
-                        imports.append(f"{node.module}.{alias.name}")
-            continue
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            if id(node) in module_level_rebinding_nodes:
-                targets: list[ast.expr] = []
-                if isinstance(node, ast.Assign):
-                    _collect_importlib_calls_before_rebinding(node.value)
-                    targets.extend(node.targets)
-                elif isinstance(node, ast.AnnAssign):
-                    _collect_importlib_calls_before_rebinding(node.value)
-                    targets.append(node.target)
-                else:
-                    _collect_importlib_calls_before_rebinding(node.value)
-                    targets.append(node.target)
-                for target in targets:
-                    _record_importlib_rebinding_target(target)
-            continue
+            return
+        if node.level:
+            if module_name:
+                resolved = _resolve_relative_import(
+                    module_name,
+                    is_package=is_package,
+                    level=node.level,
+                    module=node.module,
+                    package_override=package_override,
+                    package_override_set=package_override_set,
+                    spec_override=spec_override,
+                    spec_override_set=spec_override_set,
+                    spec_override_is_package=spec_override_is_package,
+                )
+                if resolved:
+                    imports.append(resolved)
+                    for alias in node.names:
+                        if alias.name != "*":
+                            imports.append(f"{resolved}.{alias.name}")
+            return
+        if node.module:
+            imports.append(node.module)
+            for alias in node.names:
+                if alias.name != "*":
+                    imports.append(f"{node.module}.{alias.name}")
+
+    def _collect_import_call(
+        node: ast.Call, bindings: _ImportlibStaticBindings
+    ) -> None:
+        _record_helper_call_imports(node)
+        if _is_static_import_target(bindings.target(node.func)):
+            resolved = _resolve_string_constant(node.args[0])
+            if resolved is not None:
+                imports.append(resolved)
+
+    def _function_parameter_names(
+        node: ast.Lambda | ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> list[str]:
+        args = node.args
+        names = [arg.arg for arg in args.posonlyargs]
+        names.extend(arg.arg for arg in args.args)
+        names.extend(arg.arg for arg in args.kwonlyargs)
+        if args.vararg is not None:
+            names.append(args.vararg.arg)
+        if args.kwarg is not None:
+            names.append(args.kwarg.arg)
+        return names
+
+    def _visit_many(nodes: Iterable[ast.AST], bindings: _ImportlibStaticBindings) -> None:
+        for child in nodes:
+            _visit(child, bindings)
+
+    def _visit(node: ast.AST, bindings: _ImportlibStaticBindings) -> None:
+        nonlocal needs_string_templatelib, needs_typing
+        if isinstance(node, ast.Module):
+            _visit_many(node.body, bindings)
+            return
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            _record_import_statement(node, bindings)
+            return
+        if isinstance(node, ast.Assign):
+            _visit(node.value, bindings)
+            _visit_many(node.targets, bindings)
+            for target in node.targets:
+                bindings.record_rebinding_target(target)
+            return
+        if isinstance(node, ast.AnnAssign):
+            _visit(node.annotation, bindings)
+            if node.value is not None:
+                _visit(node.value, bindings)
+            _visit(node.target, bindings)
+            bindings.record_rebinding_target(node.target)
+            return
+        if isinstance(node, ast.AugAssign):
+            _visit(node.target, bindings)
+            _visit(node.value, bindings)
+            bindings.record_rebinding_target(node.target)
+            return
+        if isinstance(node, ast.Delete):
+            _visit_many(node.targets, bindings)
+            for target in node.targets:
+                bindings.record_rebinding_target(target)
+            return
+        if isinstance(node, ast.NamedExpr):
+            _visit(node.value, bindings)
+            _visit(node.target, bindings)
+            bindings.record_rebinding_target(node.target)
+            return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if getattr(node, "type_params", None):
                 needs_typing = True
-            continue
+            if isinstance(node, ast.ClassDef):
+                _visit_many(node.decorator_list, bindings)
+                _visit_many(node.bases, bindings)
+                _visit_many(
+                    [keyword.value for keyword in node.keywords if keyword.value],
+                    bindings,
+                )
+                _visit_many(getattr(node, "type_params", ()), bindings)
+                class_bindings = bindings.fork()
+                _visit_many(node.body, class_bindings)
+                bindings.module_import_module_mutated |= (
+                    class_bindings.module_import_module_mutated
+                )
+                bindings.module_util_mutated |= class_bindings.module_util_mutated
+                return
+            _visit_many(node.decorator_list, bindings)
+            _visit_many(list(node.args.defaults), bindings)
+            _visit_many(
+                [default for default in node.args.kw_defaults if default is not None],
+                bindings,
+            )
+            for arg in (
+                list(node.args.posonlyargs)
+                + list(node.args.args)
+                + list(node.args.kwonlyargs)
+            ):
+                if arg.annotation is not None:
+                    _visit(arg.annotation, bindings)
+            if node.args.vararg is not None and node.args.vararg.annotation is not None:
+                _visit(node.args.vararg.annotation, bindings)
+            if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+                _visit(node.args.kwarg.annotation, bindings)
+            if node.returns is not None:
+                _visit(node.returns, bindings)
+            _visit_many(getattr(node, "type_params", ()), bindings)
+            if import_scan_mode == "full":
+                function_bindings = bindings.fork()
+                for name in _function_parameter_names(node):
+                    function_bindings.invalidate_name(name)
+                _visit_many(node.body, function_bindings)
+            return
+        if isinstance(node, ast.Lambda):
+            _visit_many(list(node.args.defaults), bindings)
+            _visit_many(
+                [default for default in node.args.kw_defaults if default is not None],
+                bindings,
+            )
+            if import_scan_mode == "full":
+                lambda_bindings = bindings.fork()
+                for name in _function_parameter_names(node):
+                    lambda_bindings.invalidate_name(name)
+                _visit(node.body, lambda_bindings)
+            return
         if type_alias_cls is not None and isinstance(node, type_alias_cls):
             needs_typing = True
-            continue
+            return
         if template_str_cls is not None and isinstance(node, template_str_cls):
             # PEP 750 t-strings desugar to string.templatelib.{Template,Interpolation}
             # at the molt frontend layer, so the import must be reflected in the
             # module graph closure even though no `import` statement appears.
             needs_string_templatelib = True
-            continue
+            return
         if isinstance(node, ast.Call) and node.args:
-            if id(node) in importlib_calls_collected_before_rebind:
-                continue
-            target = _importlib_target(node.func)
-            if target in {
-                "__import__",
-                "builtins.__import__",
-                "importlib.import_module",
-                "importlib.util.find_spec",
-            }:
-                resolved = _resolve_string_constant(node.args[0])
-                if resolved is not None:
-                    imports.append(resolved)
-            continue
+            _collect_import_call(node, bindings)
+        for child in ast.iter_child_nodes(node):
+            _visit(child, bindings)
+
+    _visit(tree, _ImportlibStaticBindings())
     if needs_typing:
         imports.append("typing")
     if needs_string_templatelib:
@@ -9892,8 +9973,8 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 _MODULE_GRAPH_CACHE_SCHEMA_VERSION = 7
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 6
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 7
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 7
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 8
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
 _MODULE_ANALYSIS_FUNC_KINDS = frozenset({"sync", "async", "gen", "asyncgen"})
 

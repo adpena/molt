@@ -2276,6 +2276,16 @@ def test_collect_imports_resolves_from_import_import_module_alias() -> None:
     assert "pathlib" in imports
 
 
+def test_collect_imports_does_not_resolve_future_importlib_alias() -> None:
+    tree = ast.parse(
+        "TARGET = 'pathlib'\n"
+        "loader.import_module(TARGET)\n"
+        "import importlib as loader\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" not in imports
+
+
 def test_collect_imports_importlib_rebinding_blocks_static_resolution() -> None:
     tree = ast.parse(
         "import importlib\n"
@@ -2320,6 +2330,38 @@ def test_collect_imports_resolves_importlib_rhs_before_alias_rebind() -> None:
     )
     imports = cli._collect_imports(tree)
     assert "pathlib" in imports
+
+
+def test_discover_module_graph_includes_importlib_from_alias_target(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    helper = package / "helper.py"
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    entry = tmp_path / "main.py"
+    entry.write_text(
+        "from importlib import import_module as load_module\n"
+        "mod = load_module('pkg.helper')\n",
+        encoding="utf-8",
+    )
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        [*module_roots, stdlib_root],
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        cli._stdlib_allowlist(),
+        skip_modules=cli.STUB_MODULES,
+        stub_parents=cli.STUB_PARENT_MODULES,
+    )
+
+    assert graph["pkg.helper"] == helper
+    assert "pkg.helper" in explicit_imports
 
 
 def test_cached_json_round_trips_molt_value_and_set() -> None:
