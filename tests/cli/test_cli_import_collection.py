@@ -376,9 +376,10 @@ def test_source_import_syntax_uses_import_transaction_not_module_import() -> Non
 
     assert all(op.get("kind") != "module_import" for op in ops)
     calls = _frontend_import_transaction_calls(ops)
-    assert ("pkg.helper", ("*",), 0, False) not in calls
+    assert ("pkg.helper", (), 0, False) in calls
     assert ("json", (), 0, False) in calls
-    assert "pkg.helper" in _frontend_import_module_calls(ops)
+    assert "pkg.helper" not in _frontend_import_module_calls(ops)
+    assert any(op.get("kind") == "module_import_from" for op in ops)
 
 
 def test_literal_importlib_import_module_uses_public_import_module_intrinsic() -> None:

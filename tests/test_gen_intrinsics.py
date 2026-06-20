@@ -46,12 +46,36 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
 
     assert module._feature_gate_for_symbol("molt_http_client_execute") == "stdlib_net"
 
-    generated = (ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs").read_text()
-    ssl_block = generated.split("fn resolve_ssl_symbol", 1)[1].split(
+    generated = (
+        ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers/ssl_resolver.rs"
+    ).read_text()
+    ssl_block = generated.split("pub(super) fn resolve_symbol", 1)[1].split(
         "        _ => None,",
         1,
     )[0]
     assert '#[cfg(feature = "stdlib_net")]' not in ssl_block
+
+
+def test_generated_resolvers_are_split_from_manifest_table() -> None:
+    """Resolver address-taking is generated into per-module Rust files."""
+    generated_path = ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs"
+    resolver_root = (
+        ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
+    )
+    generated = generated_path.read_text()
+    resolver_mod = (resolver_root / "mod.rs").read_text()
+    core_resolver = (resolver_root / "core_resolver.rs").read_text()
+    ssl_resolver = (resolver_root / "ssl_resolver.rs").read_text()
+
+    assert '#[path = "generated_resolvers/mod.rs"]\nmod generated_resolvers;' in generated
+    assert "pub(crate) use generated_resolvers::resolve_symbol;" in generated
+    assert "IntrinsicSpec {" in generated
+    assert "fn resolve_core_symbol" not in generated
+    assert "mod core_resolver;" in resolver_mod
+    assert "pub(crate) fn resolve_symbol" in resolver_mod
+    assert "molt_capabilities_trusted" in core_resolver
+    assert "molt_ssl_context_new" not in core_resolver
+    assert "molt_ssl_context_new" in ssl_resolver
 
 
 def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:

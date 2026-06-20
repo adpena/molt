@@ -261,7 +261,7 @@ def load_table() -> dict:
     _validate_absorbing_operand_kinds(data)
     _validate_result_finalizer_source_kinds(data)
     _validate_result_validity(data, seen_opcodes)
-    _validate_explicit_release_operands(data, seen_opcodes)
+    _validate_explicit_release_operands(data, {row["name"]: row for row in opcodes})
 
     _validate_terminators(data)
 
@@ -486,7 +486,7 @@ def _validate_result_validity(data: dict, opcodes: set[str]) -> None:
         seen.add(key)
 
 
-def _validate_explicit_release_operands(data: dict, opcodes: set[str]) -> None:
+def _validate_explicit_release_operands(data: dict, opcodes: dict[str, dict]) -> None:
     """Validate opcodes that explicitly release Python-owned operand roots.
 
     These rows encode release boundaries such as `DecRef` (all operands) and
@@ -504,7 +504,8 @@ def _validate_explicit_release_operands(data: dict, opcodes: set[str]) -> None:
             raise OpKindTableError(
                 f"[[explicit_release_operand]] row missing 'opcode': {row}"
             )
-        if opcode not in opcodes:
+        opcode_row = opcodes.get(opcode)
+        if opcode_row is None:
             raise OpKindTableError(
                 f"explicit_release_operand opcode {opcode!r} is not a known OpCode"
             )
@@ -518,6 +519,17 @@ def _validate_explicit_release_operands(data: dict, opcodes: set[str]) -> None:
             raise OpKindTableError(
                 f"explicit_release_operand {opcode}: 'operand' must be \"all\", "
                 f'"last", or a non-negative operand index, got {operand!r}'
+            )
+        ownership = opcode_row.get("operand_ownership")
+        if not isinstance(ownership, list):
+            raise OpKindTableError(
+                f"explicit_release_operand {opcode}: numeric operand {operand} "
+                "requires a fixed per-position operand_ownership list"
+            )
+        if operand >= len(ownership):
+            raise OpKindTableError(
+                f"explicit_release_operand {opcode}: operand index {operand} "
+                f"is out of range for {len(ownership)} declared operands"
             )
 
 

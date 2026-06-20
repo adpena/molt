@@ -49,7 +49,13 @@ roadmap claim drifts.
    `tools/cold_start_decompose.py` now routes safe-run, no-op C compile, dyld
    timing, and Molt-probe build subprocesses through `MOLT_COLD_START`.
    `tools/gen_intrinsics.py` now formats generated Rust through
-   `MOLT_GENERATOR` custody, and `tools/perf_inner_repeat.py` plus its
+   `MOLT_GENERATOR` custody and emits resolver bodies into generated
+   per-category modules under
+   `runtime/molt-runtime/src/intrinsics/generated_resolvers/`, leaving
+   `generated.rs` as the single parser-facing intrinsic manifest table.
+   The next registry throughput step is per-crate intrinsic sub-registries
+   composed by the `molt-runtime` facade as runtime leaf ownership lands.
+   `tools/perf_inner_repeat.py` plus its
    perf-scoreboard proof test now route inner-repeat proof children through
    `MOLT_BENCH` / `MOLT_TEST`. `tools/perf_scoreboard.py` also routes
    `safe_run.py --json` workload timing children and Codon build children

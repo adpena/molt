@@ -29,9 +29,9 @@
 
 **Phase 3 (structural, highest overall impact):** Extract `molt-backend-native` as its own workspace crate. This is the scope documented in the design doc (lines 119-138 of `parallel_build_architecture.md`): `native_backend/*` + `llvm_backend/` become `molt-backend-native`, depending on `molt-backend` (core: tir/passes/ir/representation_plan). Editing Cranelift codegen no longer triggers recompile of TIR passes. Editing TIR passes no longer triggers recompile of Cranelift codegen (in the reverse direction). Both compilations run in parallel.
 
-**Deferred (addressed by the existing decomposition):** `molt-runtime` is already substantially decomposed — the workspace shows 18 extracted leaf crates (`molt-runtime-crypto`, `-net`, `-asyncio`, `-math`, `-path`, `-collections`, `-regex`, `-text`, `-itertools`, `-serial`, `-difflib`, `-logging`, `-http`, `-stringprep`, `-xml`, `-ipaddress`, `-zoneinfo`, `-compression`). The residual `molt-runtime` monolith (still ~344K lines per the design doc) retains the core object model, `builtins/` directory, `object/` directory, and the intrinsic registry. The `intrinsics/generated.rs` (12,725+ lines ending at the `resolve_core_symbol` definition) address-takes every intrinsic via `resolve_core_symbol` — this hub is broken for the native path by the per-app resolver already landed (registry.rs:37-47), but the file itself still compiles in every build. Splitting generated.rs into per-feature-gate sub-files removes one large compilation unit from the monolith's hot path.
+**Deferred (addressed by the existing decomposition):** `molt-runtime` is already substantially decomposed — the workspace shows 18 extracted leaf crates (`molt-runtime-crypto`, `-net`, `-asyncio`, `-math`, `-path`, `-collections`, `-regex`, `-text`, `-itertools`, `-serial`, `-difflib`, `-logging`, `-http`, `-stringprep`, `-xml`, `-ipaddress`, `-zoneinfo`, `-compression`). The residual `molt-runtime` monolith (still ~344K lines per the design doc) retains the core object model, `builtins/` directory, `object/` directory, and the intrinsic registry. The generated intrinsic resolver source split has landed: `intrinsics/generated.rs` retains the parser-facing `INTRINSICS` manifest table and delegates to per-category modules under `intrinsics/generated_resolvers/`. Native still uses the per-app resolver to keep the whole-registry static resolver unreachable in shipped binaries; test/WASM builds retain the composed resolver path.
 
-**The intrinsic registry split:** `generated.rs` has per-module resolver functions (lines 12372-12398 show `resolve_symbol` calling `resolve_core_symbol`, `resolve_archive_symbol`, `resolve_argparse_symbol`, etc.) already gated on `cfg(feature)`. The split moves each `resolve_X_symbol` function + its `IntrinsicSpec` block into `intrinsics/generated_X.rs` and replaces `generated.rs` with a thin routing file. This is already the structural shape the code reaches for; we complete the arc.
+**The intrinsic registry split:** the source-file split is complete for resolver bodies. The remaining structural arc is per-crate sub-registries: as runtime leaves take ownership of their intrinsic implementations, their generated resolver modules should move with the leaf crate and the `molt-runtime` facade should compose them through one thin resolver.
 
 ### Why thin LTO is correct for the daemon
 
@@ -159,17 +159,17 @@ llvm = ["dep:inkwell"]
 
 **Build command changes:** The CLAUDE.md instruction `cargo build --profile release-fast -p molt-backend --features native-backend` becomes `cargo build --profile release-fast -p molt-backend-native --features native-backend`. Add an alias. The backend daemon binary (`main.rs`) lives in `molt-backend-native` as its `[[bin]]`, since it is the entry point that stitches together core + native.
 
-### Phase 4 Components: `intrinsics/generated.rs` split
+### Phase 4 Components: `intrinsics/generated.rs` Split (Landed Source Split)
 
-**Current state:** `runtime/molt-runtime/src/intrinsics/generated.rs` is 12,725+ lines (measured: lines 12372-12725+ containing `resolve_symbol` + `resolve_core_symbol`). The `gen_intrinsics.py` tool generates it from `manifest.pyi` + `categories.toml`.
+**Current state:** `runtime/molt-runtime/src/intrinsics/generated.rs` is the canonical generated `INTRINSICS` manifest table and re-exports the composed resolver. `tools/gen_intrinsics.py` now also generates `runtime/molt-runtime/src/intrinsics/generated_resolvers/`, with one resolver module per category from `manifest.pyi` + `categories.toml`.
 
-**End-state:** `tools/gen_intrinsics.py` generates per-category files: `generated_core.rs`, `generated_collections.rs`, `generated_asyncio.rs`, `generated_crypto.rs`, etc. Each file contains only the `IntrinsicSpec` slice entries and the `resolve_X_symbol` function for that category. `generated.rs` becomes a thin routing file containing only `resolve_symbol` (the composed chain) and the re-export of `INTRINSICS` as a concatenation via `const` slices or a build-time generated array.
+**End-state:** per-category resolver files are the stepping stone. The final crate-composition state moves category resolver ownership into the corresponding runtime leaf crate and leaves `molt-runtime` as a thin facade over leaf-owned sub-registries plus the combined manifest surface required by frontend/WASM tooling.
 
-**Critical constraint:** The `INTRINSICS` constant (line 9 of generated.rs) is a single `&[IntrinsicSpec]` slice. With the split it becomes per-category slices concatenated in `resolve_symbol`'s routing, or a generated combined slice in `generated.rs` that includes them all. The WASM path at registry.rs:9-10 uses `resolve_symbol` (the whole-registry path, used only in test/wasm32 builds) — this stays intact as the routing function.
+**Critical constraint:** The `INTRINSICS` constant stays in `generated.rs` for existing parser-facing tools (`src/molt/frontend/_types.py`, `src/molt/_wasm_runtime_exports.py`) and for registry iteration. Resolver address-taking lives in `generated_resolvers/`, so test/WASM `resolve_symbol` behavior stays intact while resolver implementation edits stop churning the manifest table.
 
-**Tool change:** `tools/gen_intrinsics.py` gets a `--split` flag (or always splits). The output is 15-20 files instead of 1. Each is `#[cfg(feature = "X")]`-gated at the file level via a `cfg_attr` on the module declaration in the thin routing `generated.rs`.
+**Tool change:** `tools/gen_intrinsics.py` always emits the split resolver tree and formats each generated Rust file through `MOLT_GENERATOR` custody.
 
-**Impact:** A new intrinsic in the `crypto` category recompiles only `generated_crypto.rs`, not the 12K-line monolith. This is a per-edit ~2-3 second recompile of a small file versus a full recompile of the intrinsic hub.
+**Impact:** resolver-body edits are localized to the touched category module. New manifest entries still update the canonical `INTRINSICS` table until the per-crate manifest composition step lands, but the address-taking resolver hub is no longer one source file.
 
 ### DX Component: Unified TIR dump ergonomics
 
@@ -220,7 +220,7 @@ Add `MOLT_TIR_DUMP` and `MOLT_VERIFY_ANALYSIS` to `DAEMON_REQUEST_ENV_KEYS` at l
 
 **Phase 3 (crate extraction):** The key soundness property is that `molt-backend-native` depends on `molt-backend` (core), not vice versa. No circular dependency. The `extern "C"` ABI between the runtime and the backend is unchanged — that ABI lives in `molt-runtime-core/src/lib.rs` (the FFI declarations at line 377) and is independent of crate boundaries. The Cranelift types (`cranelift_codegen::ir::Value`, etc.) stay intra-crate in `molt-backend-native`. The cross-crate boundary between core and native is clean: `TirFunction`, `TirModule`, `SimpleIR`, `FunctionIR`, `TargetInfo` (all from core) flow into `SimpleBackend` (native). These types are already the established interface — the crate boundary just makes it explicit.
 
-**Phase 4 (generated.rs split):** The `resolve_symbol` routing chain already follows the per-category function call pattern (lines 12372-12398 show the exact chain). Moving each `resolve_X_symbol` function to its own file changes compilation unit boundaries but not behavior. The `cfg(any(target_arch = "wasm32", test))` guard at registry.rs:9-10 that gates `resolve_symbol` usage stays intact.
+**Phase 4 (generated.rs split):** The landed source split keeps `generated.rs` as the canonical `INTRINSICS` manifest table and re-exports a composed resolver from `generated_resolvers/`. Moving each category resolver to its own generated file changes compilation unit boundaries but not behavior. The registry path that uses `resolve_symbol` stays intact through the composed resolver.
 
 **Conservative-correct first-cut rule:** Phases 1-4 are all refactors. None of them add new optimization passes or new code paths. Any regression is a miscompile introduced by the refactor itself, which is detectable by the differential test suite (molt_diff.py basic/stdlib lanes) with zero behavior tolerance.
 
@@ -230,7 +230,7 @@ Add `MOLT_TIR_DUMP` and `MOLT_VERIFY_ANALYSIS` to `DAEMON_REQUEST_ENV_KEYS` at l
 |--------|-----------|-----------|
 | `function_compiler.rs` as a 38K-line monolith | Phase 2 split | Phase 2 landing: the monolith is replaced by the dispatcher + 8 sub-modules |
 | Fat LTO on developer iteration profile | Phase 1 Cargo.toml change | Immediate on landing |
-| `generated.rs` as a 12K+ line single file | Phase 4 split + gen_intrinsics.py update | Phase 4 landing: tool generates per-category files |
+| `generated.rs` as a 12K+ line manifest+resolver file | Phase 4 split + gen_intrinsics.py update | Phase 4 landing: manifest table remains in `generated.rs`; per-category resolver bodies move to `generated_resolvers/` |
 | Separate `TIR_DUMP` / `MOLT_TIR_DUMP` / `MOLT_DUMP_IR` env-var proliferation | Phase 1 DX unification | Unified under `MOLT_TIR_DUMP` with backward-compat aliases |
 | `native_backend/` living inside `molt-backend` (forces TIR-edit → native recompile and native-edit → TIR recompile of same crate) | Phase 3 crate extraction | Phase 3 landing: editing TIR passes no longer recompiles Cranelift codegen units |
 
@@ -373,7 +373,7 @@ Phase 1 (LTO change) is the only phase with a realistic runtime perf risk — th
 ### Blocked-By
 
 - Phase 3 (crate extraction) is blocked until Phase 2 (function_compiler split) is stable. The split reduces the blast-radius of getting the crate boundary wrong.
-- Phase 4 (generated.rs split) is blocked on: (a) `tools/gen_intrinsics.py` modification (low risk — the generator is pure Python with no runtime coupling), and (b) verifying that the per-feature-gate file structure correctly handles the `INTRINSICS` concatenation for the WASM registry path (registry.rs:9-10 uses the monolithic array).
+- Phase 4 source splitting is no longer blocked. The remaining dependency is per-crate sub-registry ownership as runtime leaf crates take over their intrinsic implementations.
 - Phase 3 is blocked-by Phase E e1 activation (currently HELD per MEMORY.md): the driver wiring of `run_module_pipeline` into production codegen depends on `SimpleBackend`'s call path, which Phase 3 moves to `molt-backend-native`. Land Phase 3 AFTER Phase E e1 is stable, or land Phase 3 first with a careful baton-pass that Phase E e1 needs to update import paths in `main.rs`.
 
 ### Unblocks
@@ -381,7 +381,7 @@ Phase 1 (LTO change) is the only phase with a realistic runtime perf risk — th
 - Phase 1 (LTO change): immediately unblocks faster iteration for every ongoing arc. No ordering dependencies.
 - Phase 2 (fc split): unblocks multiple agents editing different opcode families in parallel without serializing on the same file.
 - Phase 3 (crate extraction): unblocks agents working on TIR passes from serializing against agents working on Cranelift codegen. These two workstreams (optimizer foundation vs native codegen quality) are the two highest-velocity lanes in the 5-year program.
-- Phase 4 (generated.rs split): unblocks adding new intrinsics to a feature domain without triggering a full runtime recompile.
+- Phase 4 (generated.rs split): unblocks resolver-body edits from touching the full manifest table; the per-crate sub-registry step completes the compile-invalidation win for new intrinsic entries.
 
 ### Cross-Cutting Notes
 
@@ -471,16 +471,15 @@ Each phase is a complete structural piece that can land independently and leave 
 - [ ] Run `tools/bench.py` on all benchmarks. No runtime regression vs pre-Phase-3 baseline.
 - [ ] `git add runtime/molt-backend/ runtime/molt-backend-native/ Cargo.toml && git commit -m "build: extract molt-backend-native crate — Cranelift/LLVM isolated from TIR core — Phase 3 DX arc"`.
 
-### Phase 4: `intrinsics/generated.rs` split (2 days)
+### Phase 4: `intrinsics/generated.rs` Split
 
-- [ ] Modify `tools/gen_intrinsics.py` to generate per-category files: `generated_core.rs`, `generated_collections.rs`, `generated_asyncio.rs`, `generated_crypto.rs`, `generated_compression.rs`, `generated_net.rs`, `generated_text.rs`, `generated_serial.rs`, etc. (one per `_SYMBOL_FEATURE_GATES` domain).
-- [ ] Each generated file contains: the `IntrinsicSpec` slice for that domain (as a `const` with a domain-specific name), the `resolve_X_symbol` function, and appropriate `#[cfg(feature = "...")]` gating.
-- [ ] Replace `generated.rs` with a thin routing file containing only `resolve_symbol` (calls all per-domain resolvers in sequence) and `pub(crate) const INTRINSICS: &[IntrinsicSpec]` (a build-time concatenation or a macro-assembled slice referencing the per-domain consts).
-- [ ] Update `runtime/molt-runtime/src/intrinsics/mod.rs` to declare the per-domain modules.
-- [ ] Run `python3 tools/gen_intrinsics.py` and verify the output compiles.
-- [ ] `cargo test -p molt-runtime` must pass.
-- [ ] Verify `resolve_symbol` produces identical results for a fixed symbol set (unit test in `registry.rs`).
-- [ ] `git add tools/gen_intrinsics.py runtime/molt-runtime/src/intrinsics/ && git commit -m "build: split intrinsics/generated.rs into per-category files — Phase 4 DX arc"`.
+- [x] Modify `tools/gen_intrinsics.py` to generate per-category resolver files under `runtime/molt-runtime/src/intrinsics/generated_resolvers/`.
+- [x] Keep `generated.rs` as the canonical `INTRINSICS` manifest table plus thin resolver re-export, preserving existing parser-facing tools.
+- [x] Run `uv run python tools/guarded_exec.py --prefix MOLT_GENERATOR --timeout 300 -- uv run python tools/gen_intrinsics.py`.
+- [x] Run `cargo check --manifest-path runtime/Cargo.toml -p molt-runtime --lib`.
+- [x] Run `cargo check --manifest-path runtime/Cargo.toml -p molt-runtime --lib --no-default-features --features stdlib_micro`.
+- [x] Run `cargo check -p molt-backend --profile dev-fast`.
+- [ ] Continue from source-file split to per-crate sub-registries as runtime leaf extraction lands.
 
 ## Rebuild Dependency Graph (Post-All-Phases)
 

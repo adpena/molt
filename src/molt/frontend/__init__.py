@@ -384,6 +384,8 @@ class SimpleTIRGenerator(
         self.global_imported_attr_names: dict[str, str] = {}
         self.imported_modules: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
+        self.local_imported_names: set[str] = set()
+        self.local_imported_modules: set[str] = set()
         self.imported_module_attr_mutations: set[tuple[str, str]] = set()
         self.global_imported_module_attr_mutations: set[tuple[str, str]] = set()
         self.local_intrinsic_wrappers: set[str] = set()
@@ -895,6 +897,8 @@ class SimpleTIRGenerator(
         self.imported_names = dict(self.global_imported_names)
         self.imported_attr_names = dict(self.global_imported_attr_names)
         self.imported_modules = dict(self.global_imported_modules)
+        self.local_imported_names = set()
+        self.local_imported_modules = set()
         # Clear the per-function module cache so that module references are
         # re-fetched via MODULE_CACHE_GET in each new chunk function.  Without
         # this, a cached MoltValue from a previous chunk's WASM locals would be
@@ -2007,6 +2011,8 @@ class SimpleTIRGenerator(
         self.imported_names = dict(self.global_imported_names)
         self.imported_attr_names = dict(self.global_imported_attr_names)
         self.imported_modules = dict(self.global_imported_modules)
+        self.local_imported_names = set()
+        self.local_imported_modules = set()
         self.imported_module_attr_mutations = set(
             self.global_imported_module_attr_mutations
         )
@@ -2635,6 +2641,8 @@ class SimpleTIRGenerator(
             "imported_names": self.imported_names,
             "imported_attr_names": self.imported_attr_names,
             "imported_modules": self.imported_modules,
+            "local_imported_names": self.local_imported_names,
+            "local_imported_modules": self.local_imported_modules,
             "imported_module_attr_mutations": self.imported_module_attr_mutations,
             "class_definition_pending": self.class_definition_pending,
             "block_terminated": self.block_terminated,
@@ -2695,6 +2703,8 @@ class SimpleTIRGenerator(
         self.imported_names = state["imported_names"]
         self.imported_attr_names = state["imported_attr_names"]
         self.imported_modules = state["imported_modules"]
+        self.local_imported_names = state["local_imported_names"]
+        self.local_imported_modules = state["local_imported_modules"]
         self.imported_module_attr_mutations = state["imported_module_attr_mutations"]
         self.class_definition_pending = state["class_definition_pending"]
         self.block_terminated = state["block_terminated"]
@@ -4987,6 +4997,16 @@ class SimpleTIRGenerator(
             level=level,
             globals_val=self._emit_globals_dict(),
         )
+
+    def _emit_source_import_alias_binding(self, module_name: str) -> MoltValue:
+        bound_val = self._emit_source_import_transaction(
+            module_name,
+            fromlist_names=(),
+            level=0,
+        )
+        for attr_name in module_name.split(".")[1:]:
+            bound_val = self._emit_module_import_from_value(bound_val, attr_name)
+        return bound_val
 
     def _emit_module_load(self, module_name: str) -> MoltValue:
         # NOTE: Earlier versions cached loaded_val in _module_cache_values to
@@ -13709,6 +13729,8 @@ class SimpleTIRGenerator(
             self.imported_names.pop(target.id, None)
             self.imported_attr_names.pop(target.id, None)
             self.imported_modules.pop(target.id, None)
+            self.local_imported_names.discard(target.id)
+            self.local_imported_modules.discard(target.id)
             if self.current_func_name == "molt_main":
                 self.global_imported_names.pop(target.id, None)
                 self.global_imported_attr_names.pop(target.id, None)
@@ -19692,7 +19714,7 @@ class SimpleTIRGenerator(
             bind_name = alias.asname or module_name.split(".")[0]
             if self._source_imports_use_transaction():
                 if alias.asname:
-                    bound_val = self._emit_importlib_import_module_leaf(module_name)
+                    bound_val = self._emit_source_import_alias_binding(module_name)
                 else:
                     bound_val = self._emit_source_import_transaction(
                         module_name,
@@ -19718,6 +19740,8 @@ class SimpleTIRGenerator(
                 self._store_local_value(bind_name, bound_val)
             self._emit_module_attr_set(bind_name, bound_val)
             self.imported_modules[bind_name] = module_name
+            if self.current_func_name != "molt_main":
+                self.local_imported_modules.add(bind_name)
             self.module_intrinsic_globals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.global_imported_modules[bind_name] = module_name
@@ -19766,6 +19790,8 @@ class SimpleTIRGenerator(
                     continue
                 bind_name = alias.asname or alias.name
                 self.imported_names[bind_name] = module_name
+                if self.current_func_name != "molt_main":
+                    self.local_imported_names.add(bind_name)
                 self.imported_attr_names[bind_name] = alias.name
                 if self.current_func_name == "molt_main":
                     self.global_imported_names[bind_name] = module_name
@@ -19869,6 +19895,8 @@ class SimpleTIRGenerator(
                 # resolve to the canonical function name, not the alias.
                 # e.g. `from X import Y as Z` -> imported_attr_names["Z"] = "Y"
                 self.imported_attr_names[bind_name] = attr_name
+                if self.current_func_name != "molt_main":
+                    self.local_imported_names.add(bind_name)
                 if self.current_func_name == "molt_main":
                     self.global_imported_names[bind_name] = module_name
                     self.global_imported_attr_names[bind_name] = attr_name
