@@ -2460,7 +2460,8 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                             stdlib_count,
                             stdlib_path.display()
                         );
-                        let temp_stdlib_path = stdlib_cache_temp_publish_path(stdlib_path, "object");
+                        let temp_stdlib_path =
+                            stdlib_cache_temp_publish_path(stdlib_path, "object");
                         if let Err(err) = compile_stdlib_cache_object(
                             &temp_stdlib_path,
                             std::mem::take(&mut stdlib_funcs),
@@ -5559,10 +5560,9 @@ mod tests {
             read_stdlib_cache_manifest(&stdlib).as_deref(),
             Some("daemon-empty-manifest")
         );
-        let partition_manifest = std::fs::read_to_string(
-            stdlib_cache_partition_manifest_sidecar_path(&stdlib),
-        )
-        .expect("read stdlib partition manifest");
+        let partition_manifest =
+            std::fs::read_to_string(stdlib_cache_partition_manifest_sidecar_path(&stdlib))
+                .expect("read stdlib partition manifest");
         assert!(partition_manifest.contains("\"functions\":[]"));
 
         let _ = std::fs::remove_dir_all(&tmp_dir);

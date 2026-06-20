@@ -381,6 +381,21 @@ def test_source_import_syntax_uses_import_transaction_not_module_import() -> Non
     assert "pkg.helper" in _frontend_import_module_calls(ops)
 
 
+def test_literal_importlib_import_module_uses_public_import_module_intrinsic() -> None:
+    ops = _frontend_main_ops_for_import_source(
+        "import importlib\nvalue = importlib.import_module('json')\n",
+        known_modules={"importlib", "json"},
+        stdlib_allowlist={"importlib", "json"},
+    )
+
+    assert "json" in _frontend_import_module_calls(ops)
+    assert all(
+        name != "json" for name, _fromlist, _level, _globals_none in (
+            _frontend_import_transaction_calls(ops)
+        )
+    )
+
+
 def test_relative_from_import_syntax_leaves_package_context_to_transaction() -> None:
     ops = _frontend_main_ops_for_import_source(
         "from .helper import ping\n",
@@ -8824,7 +8839,6 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
                 "policy_config": {
                     "profile_override": None,
                     "hot_tier_promotion_enabled": True,
-                    "budget_override_ms": None,
                     "work_budget_override": 512.0,
                     "budget_alpha": 0.03,
                     "budget_beta": 0.75,
@@ -8959,7 +8973,6 @@ def test_midend_policy_config_snapshot_honors_env(
     assert cli._midend_policy_config_snapshot() == {
         "profile_override": "release",
         "hot_tier_promotion_enabled": False,
-        "budget_override_ms": 42.0,
         "work_budget_override": 2048.0,
         "budget_alpha": 0.5,
         "budget_beta": 2.0,

@@ -63,13 +63,11 @@ pub struct PassStats {
 
 impl PassStats {
     pub fn total_changes(&self) -> usize {
-        self.values_changed + self.ops_removed + self.ops_added + self.facts_changed
-    }
-}
-
-impl PassStats {
-    pub fn total_changes(&self) -> usize {
-        self.values_changed + self.attrs_changed + self.ops_removed + self.ops_added
+        self.values_changed
+            + self.attrs_changed
+            + self.ops_removed
+            + self.ops_added
+            + self.facts_changed
     }
 }
 

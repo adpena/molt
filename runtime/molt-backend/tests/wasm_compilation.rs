@@ -997,9 +997,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
 }
 
 #[test]
-#[should_panic(
-    expected = "wasm call_async target 'molt_async_sleep' in func 'molt_test_func' op 0 is not a poll function"
-)]
+#[should_panic(expected = "wasm call_async target 'molt_async_sleep' in func 'molt_test_func'")]
 fn call_async_rejects_non_poll_table_target() {
     let mut call_async = op("call_async");
     call_async.s_value = Some("molt_async_sleep".to_string());

@@ -8198,12 +8198,6 @@ def _emit_build_diagnostics(
                     f"{hot_tier_promotion_enabled}",
                     file=sys.stderr,
                 )
-            budget_override_ms = policy_config.get("budget_override_ms")
-            if isinstance(budget_override_ms, (int, float)):
-                print(
-                    f"- midend.policy.budget_override_ms: {budget_override_ms:.4f}",
-                    file=sys.stderr,
-                )
             work_budget_override = policy_config.get("work_budget_override")
             if isinstance(work_budget_override, (int, float)):
                 print(
@@ -8479,13 +8473,6 @@ def _midend_sample_p95(samples: list[float]) -> float:
 
 def _midend_policy_config_snapshot() -> dict[str, Any]:
     profile_override = os.environ.get("MOLT_MIDEND_PROFILE", "").strip().lower()
-    budget_override_raw = os.environ.get("MOLT_MIDEND_BUDGET_MS", "").strip()
-    budget_override_ms: float | None = None
-    if budget_override_raw:
-        try:
-            budget_override_ms = max(0.0, float(budget_override_raw))
-        except ValueError:
-            budget_override_ms = None
     hot_promotion_enabled = os.environ.get(
         "MOLT_MIDEND_HOT_TIER_PROMOTION", "1"
     ).strip().lower() not in {"0", "false", "no", "off"}
@@ -8509,7 +8496,6 @@ def _midend_policy_config_snapshot() -> dict[str, Any]:
     return {
         "profile_override": profile_override or None,
         "hot_tier_promotion_enabled": hot_promotion_enabled,
-        "budget_override_ms": budget_override_ms,
         "work_budget_override": work_budget_override,
         "budget_alpha": _float_env("MOLT_MIDEND_BUDGET_ALPHA", 0.03),
         "budget_beta": _float_env("MOLT_MIDEND_BUDGET_BETA", 0.75),

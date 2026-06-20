@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -47,6 +46,11 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import harness_memory_guard
+
 TABLE = ROOT / "runtime/molt-backend/src/tir/op_kinds.toml"
 OUT_RS = ROOT / "runtime/molt-backend/src/tir/op_kinds_generated.rs"
 OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
@@ -695,37 +699,8 @@ use crate::tir::ops::OpCode;
 """
 
 
-def _rustfmt_text(source: str) -> str:
-    """Return rustfmt-normalized Rust for generated source text.
-
-    The checked-in Rust generated artifact participates in normal Rust tooling,
-    so byte-identity must compare against the same formatting that rustfmt
-    writes. Otherwise a cargo-fmt pass can make the generated file stale even
-    though its semantic table contents are correct.
-    """
-    tmp_root = ROOT / "tmp"
-    tmp_root.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="gen-op-kinds-", dir=tmp_root) as tmp:
-        path = Path(tmp) / "op_kinds_generated.rs"
-        path.write_text(source)
-        result = subprocess.run(
-            ["rustfmt", "--edition", "2024", str(path)],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=60.0,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                "rustfmt failed while formatting generated op-kind Rust:\n"
-                f"stdout:\n{result.stdout}\n"
-                f"stderr:\n{result.stderr}"
-            )
-        return path.read_text()
-
-
 def render_rs(data: dict) -> str:
-    return _rustfmt_text(_render_rs_unformatted(data))
+    return _rustfmt_rust_source(_render_rs_unformatted(data))
 
 
 def _render_rs_unformatted(data: dict) -> str:

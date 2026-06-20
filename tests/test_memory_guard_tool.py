@@ -4,6 +4,7 @@ from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -2664,9 +2665,15 @@ def test_run_guarded_marks_child_environment_as_guarded() -> None:
             sys.executable,
             "-c",
             (
-                "import os; "
+                "import json, os, pathlib; "
+                "marker = pathlib.Path(os.environ['MOLT_MEMORY_GUARD_MARKER']); "
+                "payload = json.loads(marker.read_text()); "
                 "print(os.environ.get('MOLT_MEMORY_GUARD_ACTIVE')); "
-                "print(bool(os.environ.get('MOLT_MEMORY_GUARD_PID')))"
+                "print(bool(os.environ.get('MOLT_MEMORY_GUARD_PID'))); "
+                "print(bool(os.environ.get('MOLT_MEMORY_GUARD_TOKEN'))); "
+                "print(marker.exists()); "
+                "print(payload['pid'] == int(os.environ['MOLT_MEMORY_GUARD_PID'])); "
+                "print(payload['token'] == os.environ['MOLT_MEMORY_GUARD_TOKEN'])"
             ),
         ],
         max_rss_kb=512 * 1024,
@@ -2676,7 +2683,7 @@ def test_run_guarded_marks_child_environment_as_guarded() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.splitlines() == ["1", "True"]
+    assert result.stdout.splitlines() == ["1", "True", "True", "True", "True", "True"]
 
 
 def test_run_guarded_exports_backend_memory_contract() -> None:
@@ -2700,7 +2707,9 @@ def test_run_guarded_exports_backend_memory_contract() -> None:
     assert result.stdout.splitlines() == ["0.500000", "0.500000"]
 
 
-def test_main_reexec_preserves_stream_and_sample_rotation_options(tmp_path) -> None:
+def test_main_reexec_preserves_stream_and_sample_rotation_options(
+    monkeypatch, tmp_path
+) -> None:
     captured: dict[str, object] = {}
     samples_path = tmp_path / "samples.jsonl"
 
