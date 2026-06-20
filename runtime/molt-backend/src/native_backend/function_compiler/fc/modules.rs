@@ -25,8 +25,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
     local_inc_ref_obj: FuncRef,
     hoisted_str_slot: &BTreeMap<String, cranelift_codegen::ir::StackSlot>,
 ) {
@@ -44,9 +42,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        int_primary_vars: &BTreeSet<String>,
-                                       float_primary_vars: &BTreeSet<String>,
-                                       box_int_mask_var: Variable,
-                                       box_int_tag_var: Variable|
+                                       float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -60,8 +56,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
             float_primary_vars,
             bool_primary_vars,
             nbc,
-            box_int_mask_var,
-            box_int_tag_var,
         )
     };
     match op.kind.as_str() {
@@ -77,8 +71,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -107,8 +99,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -137,8 +127,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -171,8 +159,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module name not found");
             let module_bits = var_get_boxed_overflow_safe(
@@ -185,8 +171,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -213,8 +197,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -239,8 +221,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| {
                 panic!(
@@ -276,8 +256,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                     &args[1],
                     int_primary_vars,
                     float_primary_vars,
-                    box_int_mask_var,
-                    box_int_tag_var,
                 )
                 .unwrap_or_else(|| {
                     panic!(
@@ -321,8 +299,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module not found");
             let attr_bits = *var_get_boxed_overflow_safe(
@@ -335,8 +311,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -365,8 +339,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module not found");
             let attr_bits = *var_get_boxed_overflow_safe(
@@ -379,8 +351,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr not found");
             let callee_name = if op.kind == "module_del_global_if_present" {
@@ -416,8 +386,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module not found");
             let attr_bits = *var_get_boxed_overflow_safe(
@@ -430,8 +398,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -460,8 +426,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module not found");
             let attr_bits = if let Some(&slot) = hoisted_str_slot.get(&args[1]) {
@@ -477,8 +441,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                     &args[1],
                     int_primary_vars,
                     float_primary_vars,
-                    box_int_mask_var,
-                    box_int_tag_var,
                 )
                 .expect("Attr not found")
             };
@@ -492,8 +454,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[2],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| {
                 panic!(
@@ -525,8 +485,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module not found");
             let dst_bits = var_get_boxed_overflow_safe(
@@ -539,8 +497,6 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Module not found");
             let callee = SimpleBackend::import_func_id_split(
