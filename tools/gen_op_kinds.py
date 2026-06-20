@@ -261,6 +261,7 @@ def load_table() -> dict:
     _validate_absorbing_operand_kinds(data)
     _validate_result_finalizer_source_kinds(data)
     _validate_result_validity(data, seen_opcodes)
+    _validate_explicit_release_operands(data, seen_opcodes)
 
     _validate_terminators(data)
 
@@ -483,6 +484,41 @@ def _validate_result_validity(data: dict, opcodes: set[str]) -> None:
                 f"duplicate result_validity row for opcode {opcode} result {result}"
             )
         seen.add(key)
+
+
+def _validate_explicit_release_operands(data: dict, opcodes: set[str]) -> None:
+    """Validate opcodes that explicitly release Python-owned operand roots.
+
+    These rows encode release boundaries such as `DecRef` (all operands) and
+    `DeleteVar` (the old slot value at operand 1). The fact is intentionally
+    distinct from operand ownership: it is a Python lifetime boundary consumed by
+    DropInsertion, not an ABI consume/borrow rule.
+    """
+    rows = data.get("explicit_release_operand", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("[[explicit_release_operand]] must be an array of tables")
+    seen: set[str] = set()
+    for row in rows:
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"[[explicit_release_operand]] row missing 'opcode': {row}"
+            )
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"explicit_release_operand opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate explicit_release_operand row: {opcode}")
+        seen.add(opcode)
+        operand = row.get("operand")
+        if operand in {"all", "last"}:
+            continue
+        if isinstance(operand, bool) or not isinstance(operand, int) or operand < 0:
+            raise OpKindTableError(
+                f"explicit_release_operand {opcode}: 'operand' must be \"all\", "
+                f'"last", or a non-negative operand index, got {operand!r}'
+            )
 
 
 def _validate_terminators(data: dict) -> None:
@@ -883,6 +919,12 @@ def _render_rs_unformatted(data: dict) -> str:
     )
     out.append("\n")
     out.append(_render_result_validity(opcodes, data.get("result_validity", [])))
+    out.append("\n")
+    out.append(
+        _render_explicit_release_operands(
+            opcodes, data.get("explicit_release_operand", [])
+        )
+    )
 
     # -- per-terminator operand ownership (the ownership-moves-out / transfer axis) --
     out.append("\n")
@@ -1420,6 +1462,53 @@ def _render_result_validity(opcodes: list[dict], rows: list[dict]) -> str:
         "    )\n"
         "}\n"
     )
+    return "".join(out)
+
+
+def _render_explicit_release_operands(opcodes: list[dict], rows: list[dict]) -> str:
+    """Render Python lifetime release-boundary operand facts."""
+    by_opcode = {row["opcode"]: row["operand"] for row in rows}
+    uses_arity = any(row["operand"] == "last" for row in rows)
+    arity_param = "arity" if uses_arity else "_arity"
+    out: list[str] = []
+    out.append(
+        "/// Python lifetime release-boundary fact: which operand roots an opcode\n"
+        "/// explicitly releases. This is separate from operand ownership: `DecRef`\n"
+        "/// consumes/releases all operands, while `DeleteVar` releases the old slot\n"
+        "/// occupant at operand 1 after storing the missing sentinel. DropInsertion\n"
+        "/// uses this table to avoid a pass-local `DecRef | DeleteVar` hand list.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n"
+        "pub(crate) enum ExplicitReleaseOperands {\n"
+        "    None,\n"
+        "    All,\n"
+        "    One(usize),\n"
+        "}\n\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_explicit_release_operands_table(\n"
+        "    opcode: OpCode,\n"
+        f"    {arity_param}: usize,\n"
+        ") -> ExplicitReleaseOperands {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        operand = by_opcode.get(name)
+        if operand is None:
+            out.append(f"        OpCode::{name} => ExplicitReleaseOperands::None,\n")
+        elif operand == "all":
+            out.append(f"        OpCode::{name} => ExplicitReleaseOperands::All,\n")
+        elif operand == "last":
+            out.append(
+                f"        OpCode::{name} => match arity.checked_sub(1) {{\n"
+                "            Some(idx) => ExplicitReleaseOperands::One(idx),\n"
+                "            None => ExplicitReleaseOperands::None,\n"
+                "        },\n"
+            )
+        else:
+            out.append(
+                f"        OpCode::{name} => ExplicitReleaseOperands::One({int(operand)}),\n"
+            )
+    out.append("    }\n}\n")
     return "".join(out)
 
 
