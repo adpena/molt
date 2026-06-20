@@ -380,21 +380,6 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     };
     let block_label_id =
         |bid: &BlockId| -> i64 { label_id_for_block.get(bid).copied().unwrap_or(bid.0 as i64) };
-    let state_case_labels: HashMap<BlockId, Vec<i64>> = {
-        let mut labels: HashMap<BlockId, Vec<i64>> = HashMap::new();
-        for block in func.blocks.values() {
-            if let Terminator::StateDispatch { cases, .. } = &block.terminator {
-                for (state_id, target, _) in cases {
-                    labels.entry(*target).or_default().push(*state_id);
-                }
-            }
-        }
-        for values in labels.values_mut() {
-            values.sort_unstable();
-            values.dedup();
-        }
-        labels
-    };
     if debug_loop_if_return {
         eprintln!("LOWER_DEBUG_LABEL_MAP: {:?}", label_id_for_block);
     }
@@ -3331,18 +3316,6 @@ fn emit_terminator(
             });
         }
     }
-}
-
-fn block_ends_with_suspend_op(block: &TirBlock) -> bool {
-    block.ops.last().is_some_and(|op| {
-        matches!(
-            op.opcode,
-            OpCode::StateTransition
-                | OpCode::StateYield
-                | OpCode::ChanSendYield
-                | OpCode::ChanRecvYield
-        )
-    })
 }
 
 /// Emit `store_var` ops to pass values to the target block's argument variables.
