@@ -1508,8 +1508,19 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            #[cfg(unix)]
             let result =
                 unsafe { libc::lseek(fd as libc::c_int, pos as libc::off_t, how as libc::c_int) };
+            #[cfg(windows)]
+            let result = unsafe {
+                libc::lseek64(
+                    fd as libc::c_int,
+                    pos as libc::c_longlong,
+                    how as libc::c_int,
+                )
+            };
+            #[cfg(not(any(unix, windows)))]
+            let result = -1;
             if result == -1 {
                 let err = std::io::Error::last_os_error();
                 if let Some(errno) = err.raw_os_error() {
@@ -2021,12 +2032,19 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
             }
             MoltObject::none().bits()
         }
-        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        #[cfg(windows)]
         {
+            use std::os::windows::ffi::OsStrExt;
+
+            let mut wide_path: Vec<u16> = path.as_os_str().encode_wide().collect();
+            if wide_path.iter().any(|unit| *unit == 0) {
+                return raise_exception::<_>(_py, "ValueError", "path contains null byte");
+            }
+            wide_path.push(0);
+
             let atime_obj = obj_from_bits(atime_bits);
-            let (atime, mtime) = if atime_obj.is_none() {
-                let now = filetime::FileTime::from_system_time(std::time::SystemTime::now());
-                (now, now)
+            let result = if atime_obj.is_none() {
+                unsafe { libc::wutime(wide_path.as_ptr(), std::ptr::null_mut()) }
             } else {
                 let atime_f = match to_f64(atime_obj) {
                     Some(v) => v,
@@ -2048,30 +2066,41 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
                         );
                     }
                 };
-                let atime = match filetime_from_seconds(_py, atime_f, "atime") {
-                    Ok(v) => v,
-                    Err(bits) => return bits,
+                let mut times = libc::utimbuf {
+                    actime: match utime_seconds_to_time64(_py, atime_f, "atime") {
+                        Ok(v) => v,
+                        Err(bits) => return bits,
+                    },
+                    modtime: match utime_seconds_to_time64(_py, mtime_f, "mtime") {
+                        Ok(v) => v,
+                        Err(bits) => return bits,
+                    },
                 };
-                let mtime = match filetime_from_seconds(_py, mtime_f, "mtime") {
-                    Ok(v) => v,
-                    Err(bits) => return bits,
-                };
-                (atime, mtime)
+                unsafe { libc::wutime(wide_path.as_ptr(), &mut times) }
             };
-            if let Err(err) = filetime::set_file_times(&path, atime, mtime) {
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "utime");
+                }
                 return raise_os_error::<u64>(_py, err, "utime");
             }
             MoltObject::none().bits()
         }
+        #[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
+        {
+            let _ = (path, atime_bits, mtime_bits);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
+        }
     })
 }
 
-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
-fn filetime_from_seconds(
+#[cfg(windows)]
+fn utime_seconds_to_time64(
     _py: &CoreGilToken,
     seconds: f64,
     label: &str,
-) -> Result<filetime::FileTime, u64> {
+) -> Result<libc::time64_t, u64> {
     if !seconds.is_finite() {
         return Err(raise_exception::<u64>(
             _py,
@@ -2087,21 +2116,7 @@ fn filetime_from_seconds(
             &format!("utime: {label} out of range"),
         ));
     }
-    let mut secs = sec_floor as i64;
-    let mut nanos = ((seconds - sec_floor) * 1_000_000_000.0).round() as i64;
-    if nanos >= 1_000_000_000 {
-        secs = secs.checked_add(1).ok_or_else(|| {
-            raise_exception::<u64>(_py, "OverflowError", &format!("utime: {label} out of range"))
-        })?;
-        nanos -= 1_000_000_000;
-    }
-    if nanos < 0 {
-        secs = secs.checked_sub(1).ok_or_else(|| {
-            raise_exception::<u64>(_py, "OverflowError", &format!("utime: {label} out of range"))
-        })?;
-        nanos += 1_000_000_000;
-    }
-    Ok(filetime::FileTime::from_unix_time(secs, nanos as u32))
+    Ok(sec_floor as libc::time64_t)
 }
 
 // ---------------------------------------------------------------------------

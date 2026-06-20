@@ -62,6 +62,10 @@ the implementation. For forward-looking priorities, use
   `molt_unicodedata_*` resolver arms are gated by the dep-backed `stdlib_text`
   feature, and the runtime profile-availability gate refuses micro-profile
   imports before link rather than relying on fallback symbols.
+- Runtime zoneinfo leaf ownership is now active: the in-facade duplicate module
+  is deleted, `molt_zoneinfo_*` resolver arms are gated by the dep-backed
+  `stdlib_zoneinfo` feature, and the same profile-availability gate now refuses
+  micro-profile `zoneinfo` imports before link.
 - Native networking currently claims the Unix-family native socket ABI and the
   WASM host socket ABI only. Windows native builds route requested `stdlib_net`
   symbols through the explicit no-net intrinsic surface until the WinSock

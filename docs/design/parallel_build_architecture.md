@@ -15,12 +15,12 @@ The live codebase and executable Cargo metadata remain authoritative.
   `-regex`, `-path`, `-itertools`, `-difflib`, `-logging`, `-http`, `-xml`,
   `-ipaddress`, `-zoneinfo`, `-stringprep`, and `-tk`. Guarded
   `cargo metadata --no-deps` reports these as workspace packages.
-- `molt-runtime-stringprep` and the `html` / `unicodedata` portions of
-  `molt-runtime-text` are completed leaf-ownership examples: their in-facade
-  fallback modules are deleted, `molt_stringprep_*`, `molt_html_*`, and
-  `molt_unicodedata_*` resolver arms are link-affecting feature gates, and
-  feature-on/feature-off checks prove the facade no longer carries duplicate
-  authorities for those domains.
+- `molt-runtime-stringprep`, the `html` / `unicodedata` portions of
+  `molt-runtime-text`, and `molt-runtime-zoneinfo` are completed leaf-ownership
+  examples: their in-facade fallback modules are deleted, `molt_stringprep_*`,
+  `molt_html_*`, `molt_unicodedata_*`, and `molt_zoneinfo_*` resolver arms are
+  link-affecting feature gates, and feature-on/feature-off checks prove the
+  facade no longer carries duplicate authorities for those domains.
 - The extraction is not complete. `molt-runtime` is still the facade plus a
   large implementation owner, `runtime/molt-backend/src/native_backend/function_compiler.rs`
   remains a ~28K-line codegen lock, and `src/molt/frontend/__init__.py` remains

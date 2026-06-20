@@ -588,8 +588,6 @@ pub use crate::builtins::types::*;
 pub use crate::builtins::warnings_ext::*;
 #[cfg(feature = "stdlib_compression")]
 pub use crate::builtins::zlib::*;
-#[cfg(not(feature = "stdlib_zoneinfo"))]
-pub use crate::builtins::zoneinfo::*;
 #[allow(unused_imports)]
 pub(crate) use crate::call::bind::molt_callargs_push_kw;
 pub(crate) use crate::call::bind::{

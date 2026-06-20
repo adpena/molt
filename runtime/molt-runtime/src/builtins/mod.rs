@@ -141,5 +141,3 @@ pub(crate) mod xml_etree;
 pub(crate) mod xml_sax;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod zlib;
-#[cfg(not(feature = "stdlib_zoneinfo"))]
-pub(crate) mod zoneinfo;

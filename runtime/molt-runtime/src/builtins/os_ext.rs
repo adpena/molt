@@ -15,6 +15,10 @@
 
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
+#[cfg(not(target_arch = "wasm32"))]
+const EBADF_VALUE: i32 = libc::EBADF;
+#[cfg(target_arch = "wasm32")]
+const EBADF_VALUE: i32 = 9; // EBADF = 9 on WASI
 
 use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::*;
@@ -1559,7 +1563,7 @@ pub extern "C" fn molt_os_dup2(fd_bits: u64, fd2_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "fd2 must be an integer");
         };
         if fd < 0 || fd2 < 0 {
-            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "dup2");
+            return raise_os_error_errno::<u64>(_py, EBADF_VALUE as i64, "dup2");
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -1599,10 +1603,11 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
             return raise_exception::<_>(_py, "TypeError", "how must be an integer");
         };
         if fd < 0 {
-            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "lseek");
+            return raise_os_error_errno::<u64>(_py, EBADF_VALUE as i64, "lseek");
         }
         #[cfg(target_arch = "wasm32")]
         {
+            let _ = (pos, how);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "lseek")
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -1648,7 +1653,7 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "length must be an integer");
         };
         if fd < 0 {
-            return raise_os_error_errno::<u64>(_py, libc::EBADF as i64, "ftruncate");
+            return raise_os_error_errno::<u64>(_py, EBADF_VALUE as i64, "ftruncate");
         }
         if length < 0 {
             return raise_exception::<_>(
@@ -2166,12 +2171,91 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
             }
             MoltObject::none().bits()
         }
-        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+
+            let mut wide_path: Vec<u16> = path.as_os_str().encode_wide().collect();
+            if wide_path.iter().any(|unit| *unit == 0) {
+                return raise_exception::<_>(_py, "ValueError", "path contains null byte");
+            }
+            wide_path.push(0);
+
+            let atime_obj = obj_from_bits(atime_bits);
+            let result = if atime_obj.is_none() {
+                unsafe { libc::wutime(wide_path.as_ptr(), std::ptr::null_mut()) }
+            } else {
+                let atime_f = match to_f64(atime_obj) {
+                    Some(v) => v,
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "utime: atime must be a number",
+                        );
+                    }
+                };
+                let mtime_f = match to_f64(obj_from_bits(mtime_bits)) {
+                    Some(v) => v,
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "utime: mtime must be a number",
+                        );
+                    }
+                };
+                let mut times = libc::utimbuf {
+                    actime: match utime_seconds_to_time64(_py, atime_f, "atime") {
+                        Ok(v) => v,
+                        Err(bits) => return bits,
+                    },
+                    modtime: match utime_seconds_to_time64(_py, mtime_f, "mtime") {
+                        Ok(v) => v,
+                        Err(bits) => return bits,
+                    },
+                };
+                unsafe { libc::wutime(wide_path.as_ptr(), &mut times) }
+            };
+            if result < 0 {
+                let err = std::io::Error::last_os_error();
+                if let Some(errno) = err.raw_os_error() {
+                    return raise_os_error_errno::<u64>(_py, errno as i64, "utime");
+                }
+                return raise_os_error::<u64>(_py, err, "utime");
+            }
+            MoltObject::none().bits()
+        }
+        #[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
         {
             let _ = (path, atime_bits, mtime_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
         }
     })
+}
+
+#[cfg(windows)]
+fn utime_seconds_to_time64(
+    _py: &PyToken<'_>,
+    seconds: f64,
+    label: &str,
+) -> Result<libc::time64_t, u64> {
+    if !seconds.is_finite() {
+        return Err(raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            &format!("utime: {label} out of range"),
+        ));
+    }
+    let sec_floor = seconds.floor();
+    if sec_floor < i64::MIN as f64 || sec_floor > i64::MAX as f64 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            &format!("utime: {label} out of range"),
+        ));
+    }
+    Ok(sec_floor as libc::time64_t)
 }
 
 // ---------------------------------------------------------------------------
