@@ -849,7 +849,7 @@ name = "DeleteVar"
 may_throw = false
 side_effecting = true
 purity = "impure"
-operand_ownership = "all_borrowed"
+operand_ownership = ["borrowed", "borrowed"]
 result_absorbs_operands = false
 
 [[opcode]]

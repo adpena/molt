@@ -1593,12 +1593,13 @@ def test_source_import_statements_use_import_transaction_details() -> None:
 
     details = _import_transaction_details(main_ops)
     assert ("json", (), 0) in details
+    assert ("json.tool", (), 0) in details
     assert ("pkg", ("child",), 0) in details
-    assert ("json.tool", ("*",), 0) not in details
-    assert "json.tool" in _importlib_import_module_targets(main_ops)
+    assert "json.tool" not in _importlib_import_module_targets(main_ops)
     assert "json" not in _module_import_targets(main_ops)
     assert "json.tool" not in _module_import_targets(main_ops)
     assert "pkg" not in _module_import_targets(main_ops)
+    assert any(op.get("kind") == "module_import_from" for op in main_ops)
 
 
 def test_bootstrap_source_imports_keep_internal_module_import_boundary() -> None:
