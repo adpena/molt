@@ -48,9 +48,10 @@ roadmap claim drifts.
    has moved its Cargo timing/version probes to `MOLT_DX_BUILD` custody, and
    `tools/cold_start_decompose.py` now routes safe-run, no-op C compile, dyld
    timing, and Molt-probe build subprocesses through `MOLT_COLD_START`.
-   `tools/gen_intrinsics.py` now formats generated Rust through
-   `MOLT_GENERATOR` custody and emits resolver bodies into generated
-   per-category modules under
+   `tools/gen_intrinsics.py` now emits rustfmt-stable generated Rust, skips
+   exact-content no-op writes before invoking rustfmt, and formats changed
+   generated Rust through `MOLT_GENERATOR` custody. Resolver bodies live in
+   generated per-category modules under
    `runtime/molt-runtime/src/intrinsics/generated_resolvers/`, leaving
    `generated.rs` as the single parser-facing intrinsic manifest table.
    The next registry throughput step is per-crate intrinsic sub-registries
