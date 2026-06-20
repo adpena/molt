@@ -160,6 +160,7 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert "cli-command-json" in names
     assert "subprocess-guard-audit" in names
     assert "memory-guard-wiring-audit" in names
+    assert "custody-proof" in names
     assert "native-parity" in names
     assert "wasm-parity" in names
     assert "luau-support-matrix" in names
@@ -193,6 +194,11 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert memory_guard_audit_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
     assert memory_guard_audit_step["category"] == "command"
     assert "luau" in memory_guard_audit_step["backends"]
+    custody_step = next(entry for entry in steps if entry["name"] == "custody-proof")
+    assert custody_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
+    assert custody_step["category"] == "command"
+    assert "tests/tools/test_process_sentinel.py" in custody_step["cmd"]
+    assert "tests/tools/test_memory_guard_windows_sampling.py" in custody_step["cmd"]
     luau_compile_step = next(
         entry for entry in steps if entry["name"] == "luau-compile-smoke"
     )
@@ -205,7 +211,10 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert luau_compile_step["cmd"][
         luau_compile_step["cmd"].index("--profile") + 1
     ] == ("release")
-    assert "tmp/validate/luau-smoke/hello.luau" in luau_compile_step["cmd"][-1]
+    assert (
+        "tmp/validate/luau-smoke/hello.luau"
+        in luau_compile_step["cmd"][-1].replace("\\", "/")
+    )
     luau_runner_step = next(
         entry for entry in steps if entry["name"] == "luau-runner-available"
     )
@@ -227,6 +236,24 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert "luau_lower::tests::" in luau_lowering_step["cmd"]
 
 
+def test_cli_validate_custody_proof_suite_reports_only_custody_step() -> None:
+    res = _run_cli(["validate", "--check", "--json", "--suite", "custody-proof"])
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    data = payload["data"]
+
+    assert data["suite"] == "custody-proof"
+    assert sorted(data["memory_guard"]) == ["MOLT_TEST_SUITE"]
+    steps = data["steps"]
+    assert [entry["name"] for entry in steps] == ["custody-proof"]
+    custody_step = steps[0]
+    assert custody_step["memory_guard_prefix"] == "MOLT_TEST_SUITE"
+    assert custody_step["category"] == "command"
+    assert "tests/test_memory_guard_wiring.py" in custody_step["cmd"]
+    assert "tests/tools/test_memory_guard_windows_sampling.py" in custody_step["cmd"]
+    assert "tests/tools/test_process_sentinel.py" in custody_step["cmd"]
+
+
 def test_cli_validate_luau_backend_filter_reports_guarded_luau_steps() -> None:
     res = _run_cli(
         ["validate", "--check", "--json", "--suite", "smoke", "--backend", "luau"]
@@ -241,6 +268,7 @@ def test_cli_validate_luau_backend_filter_reports_guarded_luau_steps() -> None:
     assert names == {
         "subprocess-guard-audit",
         "memory-guard-wiring-audit",
+        "custody-proof",
         "luau-support-matrix",
         "luau-compile-smoke",
         "luau-runner-available",
@@ -250,6 +278,20 @@ def test_cli_validate_luau_backend_filter_reports_guarded_luau_steps() -> None:
     }
     assert all(entry["memory_guard_prefix"] == "MOLT_TEST_SUITE" for entry in steps)
     assert all("luau" in entry["backends"] for entry in steps)
+
+
+def test_cli_validate_rejects_proof_bypass_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
+
+    res = _run_cli(["validate", "--check", "--json", "--suite", "smoke"])
+
+    assert res.returncode == 2
+    payload = json.loads(res.stdout)
+    assert payload["command"] == "validate"
+    assert payload["status"] == "error"
+    assert "MOLT_SKIP_RUNTIME_REBUILD=1 disables" in payload["errors"][0]
 
 
 def test_cli_validate_check_json_writes_explicit_summary_out(tmp_path: Path) -> None:

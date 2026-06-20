@@ -32,6 +32,7 @@ molt build app.py --release              # Optimized release build
 molt build app.py --target wasm          # Build for WebAssembly
 molt build app.py --target luau          # Build for Luau/Roblox
 molt build app.py --target mlir          # Emit MLIR text (requires LLVM 22)
+molt build app.py --python-version 3.14  # Compile with explicit target semantics
 molt build --module mypackage            # Build a package by module name
 molt build app.py --output dist/app      # Custom output path
 molt build app.py --profile cloudflare   # Platform-optimized build
@@ -42,6 +43,7 @@ molt build app.py --profile cloudflare   # Platform-optimized build
 | `--target TARGET` | Build target: `native` (default), `wasm`, `luau`, `mlir`, or a target triple (e.g. `aarch64-unknown-linux-gnu`). |
 | `--release` | Optimized release build (alias for `--build-profile release`). |
 | `--module MODULE` | Entry module name. Uses `pkg.__main__` when present. |
+| `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, or `3.14`. Defaults from `[tool.molt.build] python-version`, then `project.requires-python`, then `3.12`. |
 | `--output PATH` | Output path for the artifact. Default final wasm/object outputs land under `dist/` when omitted. |
 | `--out-dir DIR` | Output directory for final artifacts. |
 | `--profile PLATFORM` | Deployment platform profile: `cloudflare`, `browser`, `wasi`, `fastly`. Sets optimization defaults. |
@@ -106,6 +108,7 @@ molt run --module mypackage              # Run a package
 | `--release` | Optimized release build. |
 | `--module MODULE` | Entry module name. |
 | `--profile {dev,release}` | Build profile (default: `dev`). |
+| `--python-version VERSION` | Target Python semantics for the build side. `molt run` forwards it to `molt build` and records it in wrapper cache manifests. |
 | `--rebuild` | Disable build cache. |
 | `--timing` | Emit timing summary (compile + run). |
 | `--capabilities SPEC` | Capability profiles or manifest path. |
@@ -382,6 +385,7 @@ deterministic = true
 [tool.molt.build]
 # Build-specific overrides
 target = "wasm"
+python-version = "3.13"
 release = true
 codec = "msgpack"
 type-hints = "trust"
@@ -417,6 +421,13 @@ native_wheels = ["cbor2", "cryptography", "msgpack"]
 # C extension configuration
 molt_c_api_version = "0.1"
 ```
+
+Target-Python custody has one resolution order: explicit `--python-version`,
+then `[tool.molt.build] python-version`, then the lowest supported Molt target
+admitted by `project.requires-python`, then `3.12`. Backend cache variants,
+frontend cache manifests, wrapper build manifests, runtime `sys.version_info`,
+and translation-validation baselines all consume that resolved target; no path
+falls back to the host process version when a target is selected.
 
 ---
 

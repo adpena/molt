@@ -103,7 +103,10 @@ Modules may be:
   publication, reporting the first function/op coordinates so graph-closure
   drift is reproducible without a slow link or runtime failure. Lazy
   `MODULE_IMPORT` remains a runtime boundary for optional code paths and must
-  raise deterministically when the module is absent.
+  raise deterministically when the module is absent. Split-runtime isolate
+  import dispatch is bounded by the explicit import set, plus required parent
+  packages for those imports; graph-only runtime support modules must not become
+  ambient isolate-loadable roots.
 - Shared stdlib cache identity must use the same stdlib module-init roots as
   backend dead-function elimination. Reuse is valid only when the key, CLI
   manifest, and backend-written partition manifest sidecar match; key+manifest
@@ -112,7 +115,9 @@ Modules may be:
   `MOLT_STDLIB_MODULE_SYMBOLS` is the canonical serialized module-symbol
   authority for that partition; all backend consumers must parse it through one
   strict parser, and malformed values must fail closed rather than reverting to
-  heuristic ownership.
+  heuristic ownership. A reachable-empty stdlib partition still publishes a real
+  parseable object plus count, key, manifest, and partition sidecars; absence of
+  functions is cache content, not permission to skip cache emission.
 - Build-time graph materialization has one immutable `ImportPlan`. Entry
   planning owns runtime-import support closure; materialization owns namespace
   stubs, generated importer modules, known-module sets, allowlist snapshots, and

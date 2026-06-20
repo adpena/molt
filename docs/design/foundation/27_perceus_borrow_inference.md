@@ -74,11 +74,11 @@ equivalent bug in rung 2):
 |---|---|---|---|
 | C1 | alias-set ⊉ no-incref lowerings (per-`Copy` double-drop of one object) | alias-root canonicalization via `build_alias_union_find` (`alias_analysis.rs:226`); drop pass operates in root space (`drop_insertion.rs:560`) | the lattice is **per alias-root**, not per SSA value (§1.3); a borrowed alias is `Borrowed` by construction |
 | C2 | phi mixed-ownership (borrowed value flows into an owned phi → drop releases caller's borrow) | §5 mixed-ownership retain + `before_term_incref`/`EdgeSplit` (`drop_insertion.rs:1005-1260`) | **phi ownership join** in the lattice (§1.4): `Owned ⊔ Borrowed = Owned`, the retain is the materialized `dup` the join demands |
-| C3 | forwarded-arg double-drop (value into phi AND dropped at join) | `incoming_arg_roots` exclusion (`drop_insertion.rs:857`); `terminator_branch_args` (`drop_insertion.rs:200`) | **transfer at branch-arg edges** is a lattice move (Owned consumed), §2.4 |
+| C3 | forwarded-arg double-drop (value into phi AND dropped at join) | `incoming_arg_roots` exclusion (`drop_insertion.rs`); transfer roots sourced by `terminator_branch_args` (`ownership_lattice_min.rs`) | **transfer at branch-arg edges** is a lattice move (Owned consumed), §2.4 |
 | C4 | interior-borrow / raw-handle lifetime (`Counter._handle`) | `BorrowProvenance` keepalive (`alias_analysis.rs:285`, `build_borrow_provenance:334`); consumed by both liveness and drop pass | **borrow-of edges** in the lattice (§1.5): a borrow result's source is held `Owned`-live through the result's last use |
-| C5 | droppable-on-alias-vs-root weave (class-3 unmapped `Copy` is its own root yet not owned) | `non_owning_copy_results` set + `classify_copy_kind` (`drop_insertion.rs:518`, `alias_analysis.rs:515`) | the **borrow signature** of the op-kind (§2): an unmapped/unknown kind defaults to `Borrowed result`, fail-closed |
-| C6 | CallArgs consumed-by-callee (builder freed inside `call_bind`) | `op_consumed_operand_root` (`drop_insertion.rs:1414`) | the **consumed-operand column** of the borrow signature (§2.3): `call_bind`'s builder param is `Owned-in` (consumed) |
-| C7 | use-scan completeness (IterNextUnboxed value-out uninitialized on exhaustion edge; SSA dominance on exception edges) | `iter_cond_value_results` (`drop_insertion.rs:493`); TerminatorOnly dominance guard (`drop_insertion.rs:806`) | **conditional-validity** is a lattice attribute (§1.6): the value is `Owned` only on the not-done edge; `MaybeUninit` elsewhere — never droppable on a die-edge |
+| C5 | droppable-on-alias-vs-root weave (class-3 unmapped `Copy` is its own root yet not owned) | `OwnershipRootFacts::non_owning_copy_result_roots` (`ownership_lattice_min.rs`) sourced from `classify_copy_kind` (`alias_analysis.rs:515`) and consumed by `drop_insertion.rs` | the **borrow signature** of the op-kind (§2): an unmapped/unknown kind defaults to `Borrowed result`, fail-closed |
+| C6 | CallArgs consumed-by-callee (builder freed inside `call_bind`) | generated operand-ownership facts through `op_consumed_operand_root` (`ownership_lattice_min.rs`), consumed by `DropInsertion` | the **consumed-operand column** of the borrow signature (§2.3): `call_bind`'s builder param is `Owned-in` (consumed) |
+| C7 | use-scan completeness (IterNextUnboxed value-out uninitialized on exhaustion edge; SSA dominance on exception edges) | generated `[[result_validity]]` rows materialized by `OwnershipLattice` and consumed by `drop_insertion.rs`; TerminatorOnly dominance guard | **conditional-validity** is a lattice attribute (§1.6): the value is `Owned` only on the not-done edge; `MaybeUninit` elsewhere — never droppable on a die-edge |
 
 The thesis of this document: items C1–C7 are seven *symptoms of one missing
 abstraction* — a per-program-point ownership type. Build the type once; the seven
@@ -172,6 +172,14 @@ The union-find is built by `record_transparent_aliases` (`alias_analysis.rs:381`
 over the `classify_copy_kind` contract (`alias_analysis.rs:515`): `FreshValue`
 results get their own root (a real `+1`); `TransparentAlias` results union into
 operand 0's root; `InertMarker` results carry no heap reference (`Raw`/no-state).
+Current implementation status: conditionally-valid iterator results and
+FinalizerSensitive roots are already materialized inside `OwnershipLattice` in
+alias-root space. DropInsertion consumes those root facts for placement; it no
+longer owns value-space scans or root-folding loops for those two lattice states.
+Statement-boundary releases for finalizer-sensitive storage absorption are also
+composed in root space by `StatementReleasePlan`, which combines
+`OwnershipLattice` boundaries with `PythonLifetimeFacts` and `DropEligibility`;
+DropInsertion only materializes the resulting DecRefs.
 
 ### 1.4 The phi ownership-join (subsumes C2)
 
@@ -230,10 +238,13 @@ on the not-done (body) edge and `MaybeUninit` on the done (exhaustion) edge. The
 lattice rule: **a root that is `MaybeUninit` on any incoming path is never
 edge-droppable at that join**, and is droppable on a body path only by the
 ordinary straight-line last-use rule (which the exhaustion edge cannot reach).
-This is exactly `iter_cond_value_results` (`drop_insertion.rs:493`, the die-edge
-exclusion at `drop_insertion.rs:933`). C7 is un-expressible: a `DecRef` of a
-`MaybeUninit`-on-this-edge value is rejected by the lattice state, not by a
-hand-maintained exclusion set.
+Today this fact is sourced from `[[result_validity]]` in `op_kinds.toml` and
+rendered into `opcode_result_is_conditionally_valid_only_on_edge`;
+`OwnershipLattice` materializes the conditionally-valid alias-root set and
+DropInsertion consumes that root-space lattice fact for placement. DropInsertion
+no longer owns either a duplicate scan, a root-folding loop, or an
+`IterNextUnboxed` hand list. In the full lattice, C7 is un-expressible: a
+`DecRef` of a `MaybeUninit`-on-this-edge value is rejected by the lattice state.
 
 The exception-edge SSA-dominance hazard (the *other* half of C7,
 `drop_insertion.rs:806`) is a **placement** constraint, not a lattice state: a
@@ -264,8 +275,8 @@ Rung 1's ownership facts are scattered across three hand-maintained tables in
 set (`copy_kind_is_inert_marker_table`), and the no-heap-move set
 (`copy_kind_is_explicit_no_heap_move`, `alias_analysis.rs:487`) — plus the
 hardcoded operand-borrow assumption (every op borrows its operands except the
-consumed-operand special case `op_consumed_operand_root`,
-`drop_insertion.rs:1414`). Design 25 (the op-kind registry,
+consumed-operand query sourced through generated operand-ownership facts in
+`ownership_lattice_min.rs`). Design 25 (the op-kind registry,
 `docs/design/foundation/25_op_kind_registry.md`) already tables the *kind
 vocabulary* and is the home for ownership signatures. Rung 2 adds **ownership
 columns** to `op_kinds.toml` so the borrow signature of every op-kind is one
@@ -280,7 +291,7 @@ Rung 2 adds:
 | New column | Domain | Meaning | Replaces (file:line) |
 |---|---|---|---|
 | `result_ownership` | `owned` \| `borrowed` \| `raw` \| `alias_of_operand(i)` \| `cond_owned(edge)` | the lattice state of the op's result at definition | `classify_copy_kind` buckets (`alias_analysis.rs:515`); the `FreshValue`/`TransparentAlias`/`InertMarker` enum |
-| `operand_ownership[]` | per-operand: `borrowed` \| `consumed` | does the op release this operand internally? | the universal "operands borrowed" assumption + `op_consumed_operand_root` (`drop_insertion.rs:1414`) |
+| `operand_ownership[]` | per-operand: `borrowed` \| `consumed` | does the op release this operand internally? | the universal "operands borrowed" assumption + generated `op_consumed_operand_root` (`ownership_lattice_min.rs`) |
 | `borrows_source_operand` | `none` \| `operand(i)` | does the result borrow into operand `i`'s backing store (interior borrow)? | `op_borrow_source` (`alias_analysis.rs:272`) |
 
 `result_ownership = alias_of_operand(0)` is the `TransparentAlias` class (union
@@ -318,14 +329,15 @@ direction — never a UAF). The table documents the gap.
 
 `call_bind` / `call_indirect` free their CallArgs builder internally via
 `PtrDropGuard` (`call/bind.rs`; documented at `drop_insertion.rs:1395-1413`).
-Rung 1 special-cased this in `op_consumed_operand_root`
-(`drop_insertion.rs:1414`), matching `_original_kind ∈ {call_bind, call_indirect}`
-and the last operand. Rung 2 makes it a row:
-`call_bind: operand_ownership = [borrowed, consumed]`. The drop pass reads the
-column; the transfer at a consumed operand is identical to a Return transfer (the
-op takes ownership; no trailing drop). Any *future* consuming op (a streaming
-builder, a move-into-collection intrinsic) gets correct treatment by adding a
-column value — not by editing the drop pass. The sync test
+The old drop-pass special case has been collapsed into
+`op_consumed_operand_root` (`ownership_lattice_min.rs`), which reads generated
+`_original_kind` consume rows and generated first-class opcode operand
+ownership. Rung 2 makes it a row: `call_bind: operand_ownership = [borrowed,
+consumed]`. The drop pass reads the ownership-module query; the transfer at a
+consumed operand is identical to a Return transfer (the op takes ownership; no
+trailing drop). Any *future* consuming op (a streaming builder, a
+move-into-collection intrinsic) gets correct treatment by adding a column value
+— not by editing the drop pass. The sync test
 (`tests/test_gen_op_kinds.py`, design 25 §5) makes a missing/wrong signature a
 build error.
 
@@ -334,11 +346,12 @@ build error.
 A `drop` is *omitted* at an `Owned` root's last use iff that last use is a
 **transfer**. The complete transfer set, each now a signature reading:
 
-- **Return** terminator value (`terminator_uses_root`, `drop_insertion.rs:1436`)
+- **Return** terminator value (`terminator_uses_root`, `ownership_lattice_min.rs`)
   — the return ABI transfers `+1` to the caller.
 - **Branch-arg** into a successor's phi (`terminator_branch_args`,
-  `drop_insertion.rs:200`; the dual exclusion `incoming_arg_roots`,
-  `drop_insertion.rs:857`) — transfers into the block param (C3).
+  `ownership_lattice_min.rs`; the CFG placement exclusion remains
+  `incoming_arg_roots` in `drop_insertion.rs`) — transfers into the block param
+  (C3).
 - **Consumed operand** (`operand_ownership[i] = consumed`, §2.3) — the op frees
   it (C6).
 - **Store into a container/cell** is **NOT** a transfer: `StoreAttr`/`StoreIndex`/
@@ -665,10 +678,16 @@ CPython, NEVER `rtk diff` which lies — design 20 workflow lessons).
 
 | Phase | Scope | Deletes (file:line) | Gate (must all pass) |
 |---|---|---|---|
-| **P1 — Lattice replaces the seven sets** | Introduce `Ownership` lattice + the three edge types (alias-union/phi-join/borrow-of) as the single computation feeding `DropInsertion`. Re-derive every placement (straight-line drop, edge-dying, phi-retain, suspension-IncRef, transfer exclusions) from the lattice. | The *ad-hoc derivations* in `drop_insertion.rs`: `non_owning_copy_results` (:518), the inline `iter_cond_value_results` special-case (folded into `MaybeUninit`, :493→lattice), the scattered `droppable` predicate (:591) becomes `lattice(root) == Owned`. `BorrowProvenance`/`AliasUnionFind`/`op_consumed_operand_root` are **kept** (they are the edge sources) but their *consumers* unify. | **Byte-identical RC output** vs current `DropInsertion` on the full differential corpus (native AND LLVM): `cmp -s` the emitted TIR DecRef/IncRef set per function + binary output. Backend lib tests green. `MOLT_ASSERT_NO_LEAK=1` clean. 0 new warnings (`cargo test`, not just `build`). The seven historical repros (design 20 Findings #1–#4) stay green. |
+| **P1 — Lattice replaces the seven sets** | Introduce `Ownership` lattice + the three edge types (alias-union/phi-join/borrow-of) as the single computation feeding `DropInsertion`. Re-derive every placement (straight-line drop, edge-dying, phi-retain, suspension-IncRef, transfer exclusions) from the lattice. | The *ad-hoc derivations* in `drop_insertion.rs`: remaining placement-local ownership sets become `lattice(root) == Owned` or explicit lattice states. Borrowed parameter roots, stack/no-RC roots, C5 non-owning `Copy` roots, and generated `[[result_validity]]` conditionally-valid result roots are already sourced by `OwnershipRootFacts`; `DropEligibility` now composes those roots with the liveness-owned raw-scalar roots, so DropInsertion no longer owns the scattered `droppable` predicate. Python-bound local, named-slot, local-store, explicit-release root facts, the composed boundary-release root set, statement-release eligibility, and return-boundary deferral classification are sourced by `PythonLifetimeFacts`, with local-store boundary releases routed through `PythonLifetimeFacts::boundary_release_roots`. FinalizerSensitive roots, generated result-absorption ownership, statement-release finalizer boundaries, generated terminator transfer roots, and generated consumed-operand roots are sourced by `OwnershipLattice`/the ownership module. Raw-scalar production still comes from `TirLivenessResult`/the representation lattice until the Raw state is folded deliberately. `BorrowProvenance`/`AliasUnionFind` plus generated terminator/operand transfer queries are **kept** (they are the edge sources) but their *consumers* unify. | **Byte-identical RC output** vs current `DropInsertion` on the full differential corpus (native AND LLVM): `cmp -s` the emitted TIR DecRef/IncRef set per function + binary output. Backend lib tests green. `MOLT_ASSERT_NO_LEAK=1` clean. 0 new warnings (`cargo test`, not just `build`). The seven historical repros (design 20 Findings #1–#4) stay green. |
 | **P2 — Elision-to-zero on non-escaping** | The lattice's escape fact (§3.4) replaces `build_heap_exposed_set`. A `Borrowed` root gets no dup/drop (already true); make `Owned(1)` non-escaping roots whose drop is their sole release elide the `DecRef` entirely where the value is **dead with no observable release semantics** (no `__del__`-bearing type) — and promote the surviving sole-release `DecRef` to `Free` (re-enable Step 6 post-drop, soundly). | `refcount_elim` Step 5's `build_heap_exposed_set` consumer (:601) and the `post_drop` early-return that disables Step 6 (:572) — both replaced by the lattice escape fact. `is_heap_exposing` (:61) retires (folded into signatures). | Per-bench perf table showing the boxed-temp DecRef count drops to zero on non-escaping shapes (`bench_fib` intermediate temps; the design-20 accumulator). `bench_sum` (Raw lane) unchanged (zero ops, the contract). RSS bounded (`MOLT_ASSERT_NO_LEAK=1`). Native AND LLVM byte-identical to CPython. **Performance contract: faster-than-CPython on every bench, every target, every profile** (CLAUDE.md). |
 | **P3 — Reuse/FBIP lowering** | (a) Move `reuse_analysis` to run **after** `drop_insertion`+`refcount_elim_post` (the ordering fix, §3.2). (b) Lower `reuse_token_id`/`reuse_from_token` to `molt_reuse_token`/`molt_reuse_alloc` per backend (§5.2). (c) Restrict reuse to **BigInt/str/bytes** (no-child, non-weakref-able, finalizer-free — §4.7); exclude `UserClass` and containers. | The vestigial early `reuse_analysis` slot (`pass_manager.rs:351`) moves; no deletion, a re-order. | **Alloc-count evidence**: `MOLT_PROFILE=1` alloc_count on the BigInt accumulator drops from O(n) to O(1) (the FBIP win). Same-length string-rebuild malloc churn eliminated. **No reuse fires for `UserClass`/containers** (asserted — the §4 parity gate). `__del__`/weakref differential tests byte-identical. `MOLT_ASSERT_NO_LEAK=1` clean (the §4.3 child-leak gate: BigInt/str/bytes have no children, so zero leak). RSS table per bench. |
-| **P4 — Registry-column migration** | Move the borrow signatures (§2.1: `result_ownership`, `operand_ownership[]`, `borrows_source_operand`) into `op_kinds.toml` (design 25) and generate the classifier. The lattice reads generated columns instead of the three hand-lists. *(Optionally: the inliner-gated borrowed-return signatures, §2.2, if the return-alias summary has landed.)* | The hand-maintained `copy_kind_mints_fresh_owned_ref` table (`alias_analysis.rs:480`), `copy_kind_is_inert_marker_table`, `copy_kind_is_explicit_no_heap_move` (:487) — generated from the table. The `classifier_silent_fallthrough = 196` hazard (design 25 §4.1) is closed: every kind gets an explicit `result_ownership`. | The design-25 sync test (`tests/test_gen_op_kinds.py`) green: drift = build error. **Byte-identical codegen** vs P3 (the columns mirror current reality exactly). `audit_op_kinds.py --check` clean against the baseline. |
+| **P4 — Registry-column migration** | Move the borrow signatures (§2.1: `result_ownership`, `result_validity`, `operand_ownership[]`, `borrows_source_operand`) into `op_kinds.toml` (design 25) and generate the classifier. The lattice reads generated columns instead of hand lists. *(Optionally: the inliner-gated borrowed-return signatures, §2.2, if the return-alias summary has landed.)* | The hand-maintained `copy_kind_mints_fresh_owned_ref` table, `copy_kind_is_inert_marker_table`, `copy_kind_is_explicit_no_heap_move`, and remaining result-ownership lists are generated from the table. The `classifier_silent_fallthrough` hazard is closed: every kind gets an explicit `result_ownership`. The `IterNextUnboxed` value-out validity fact is already generated via `[[result_validity]]`. | The design-25 sync test (`tests/test_gen_op_kinds.py`) green: drift = build error. **Byte-identical codegen** vs P3 (the columns mirror current reality exactly). `audit_op_kinds.py --check` clean against the baseline. |
+
+Current P1 shrinkage: `StatementReleasePlan` now owns the statement-release
+map composition for finalizer-sensitive storage boundaries. `DropInsertion`
+must not rebuild `statement_release_after_op`/`statement_released_roots`; it
+only consumes `StatementReleasePlan::after_op` and
+`StatementReleasePlan::contains_released_root` while inserting the DecRefs.
 
 **Phase independence:** P1 ships the unified inference (byte-identical, the
 correctness floor). P2 ships the perf win (elision-to-zero). P3 ships the FBIP
@@ -785,7 +804,8 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 
 ## 9. Key file anchors (verified against origin/main e83f6b07f, 2026-06-06)
 
-- DropInsertion pass + the seven defenses: `runtime/molt-backend/src/tir/passes/drop_insertion.rs` (run at :403; alias-root canon :560; `non_owning_copy_results` :518; `iter_cond_value_results` :493; `op_consumed_operand_root` :1414; §5 retain :1005; transfer exclusion `incoming_arg_roots` :857; dominance guard :806)
+- DropInsertion pass + the seven defenses: `runtime/molt-backend/src/tir/passes/drop_insertion.rs` (run at :403; alias-root canon :560; borrowed parameter roots, stack/no-RC roots, C5 non-owning `Copy` roots, and generated `[[result_validity]]` conditionally-valid result roots sourced through `OwnershipRootFacts`; composed droppable/root/raw decision sourced through `DropEligibility`; Python local/slot/release roots, boundary-release root composition, statement-release eligibility, and return-boundary deferral classification sourced through `PythonLifetimeFacts`, including `PythonLifetimeFacts::boundary_release_roots`; result-absorption, generated consumed-operand roots, generated terminator transfer roots, and FinalizerSensitive roots sourced through `OwnershipLattice`/the ownership module; raw scalar production still sourced through `TirLivenessResult`; §5 retain :1005; transfer exclusion `incoming_arg_roots` remains CFG placement; dominance guard :806)
+- Statement-release plan authority: `runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs` (`StatementReleasePlan`) composes `OwnershipLattice::statement_release_finalizer_boundaries`, `PythonLifetimeFacts::is_statement_release_boundary_root`, and `DropEligibility`; `runtime/molt-backend/src/tir/passes/drop_insertion.rs` consumes the plan and owns only DecRef materialization.
 - Alias/borrow machinery: `runtime/molt-backend/src/tir/passes/alias_analysis.rs` (`build_alias_union_find` :226; `BorrowProvenance` :285, `build_borrow_provenance` :334; `op_borrow_source` :272; `CopyLowering` :444; `copy_kind_mints_fresh_owned_ref` :480; `classify_copy_kind` :515; `is_rc_barrier` :917, `is_barrier_for` :932)
 - Liveness (repr-filtered, root-space, borrow-keepalive): `runtime/molt-backend/src/tir/passes/liveness.rs` (`raw_i64_safe_values_for` import :47; `live_out_of` :197; `last_use_in_block` :98)
 - refcount_elim (the elision-to-zero machinery): `runtime/molt-backend/src/tir/passes/refcount_elim.rs` (`is_heap_exposing` :61; `build_heap_exposed_set` :89; `run` :130; `run_post_drop` :154; `post_drop` early-return :572; Step 5 :577; Step 6 :628)

@@ -2277,8 +2277,8 @@ impl WasmBackend {
                 if tir_stats {
                     for s in &stats {
                         eprintln!(
-                            "[TIR] {}: {} changed, {} removed, {} added",
-                            s.name, s.values_changed, s.ops_removed, s.ops_added
+                            "[TIR] {}: {} values changed, {} attrs changed, {} removed, {} added",
+                            s.name, s.values_changed, s.attrs_changed, s.ops_removed, s.ops_added
                         );
                     }
                 }
@@ -4644,6 +4644,31 @@ impl WasmBackend {
             let idx = user_trampoline_table_start + i as u32;
             func_to_trampoline_idx.insert(func_ir.name.clone(), idx);
             table_indices.push(user_trampoline_start + i as u32);
+        }
+
+        for func_ir in &ir.functions {
+            for (op_idx, op) in func_ir.ops.iter().enumerate() {
+                if matches!(op.kind.as_str(), "call_async" | "alloc_task") {
+                    let Some(target_name) = op.s_value.as_deref() else {
+                        panic!(
+                            "wasm {} target missing in func '{}' op {}",
+                            op.kind, func_ir.name, op_idx
+                        );
+                    };
+                    if !target_name.ends_with("_poll") {
+                        panic!(
+                            "wasm {} target '{}' in func '{}' op {} is not a poll function; expected *_poll table target",
+                            op.kind, target_name, func_ir.name, op_idx
+                        );
+                    }
+                    if !func_to_table_idx.contains_key(target_name) {
+                        panic!(
+                            "wasm {} target '{}' in func '{}' op {} is not table-addressable; expected poll function/table target",
+                            op.kind, target_name, func_ir.name, op_idx
+                        );
+                    }
+                }
+            }
         }
 
         if let Ok(raw_slot) = std::env::var("MOLT_DEBUG_WASM_TABLE_SLOT")
@@ -12581,7 +12606,10 @@ impl WasmBackend {
                     }
                     "call_async" => {
                         let payload_len = op.args.as_ref().map(|args| args.len()).unwrap_or(0);
-                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
+                        let target_name = op.s_value.as_ref().expect("call_async target missing");
+                        let table_slot = *func_map.get(target_name).unwrap_or_else(|| {
+                            panic!("call_async table target not found: {target_name}")
+                        });
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::I64Const((payload_len * 8) as i64));
@@ -13754,7 +13782,10 @@ impl WasmBackend {
                             "coroutine" => (TASK_KIND_COROUTINE, 0),
                             _ => panic!("unknown task kind: {task_kind}"),
                         };
-                        let table_slot = func_map[op.s_value.as_ref().unwrap()];
+                        let target_name = op.s_value.as_ref().expect("alloc_task target missing");
+                        let table_slot = *func_map.get(target_name).unwrap_or_else(|| {
+                            panic!("alloc_task table target not found: {target_name}")
+                        });
                         let table_idx = table_base + table_slot;
                         emit_table_index_i64(func, reloc_enabled, table_idx);
                         func.instruction(&Instruction::I64Const(total));

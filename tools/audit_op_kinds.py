@@ -12,8 +12,8 @@ copy of the table:
   2. the TIR SSA mapper ``kind_to_opcode`` (string -> ``OpCode``; ``ssa.rs``) —
      any kind it does not recognize is silently lifted to ``OpCode::Copy`` with
      the spelling stashed in ``_original_kind`` (the ``_ => OpCode::Copy`` arm),
-  3. the LLVM ``lower_preserved_simpleir_op`` dedicated arms + its generic
-     ``molt_<kind>`` by-symbol fallback (``llvm_backend/lowering.rs``),
+  3. the LLVM ``lower_preserved_simpleir_op`` dedicated arms + its ABI-exact
+     ``molt_<kind>`` runtime fallback (``llvm_backend/lowering.rs``),
   4. the RC/alias ``CopyLowering`` classifier ``classify_copy_kind`` /
      ``copy_kind_mints_fresh_owned_ref`` / ``copy_kind_is_explicit_no_heap_move``
      (``alias_analysis.rs``) — whose ``_ => TransparentAlias`` default is the
@@ -93,7 +93,7 @@ def _load_op_kinds_toml() -> dict:
         import tomli as tomllib  # type: ignore[no-redef]
     if not OP_KINDS_TOML.exists():
         raise RustMatchParseError(f"op-kind registry missing: {OP_KINDS_TOML}")
-    return tomllib.loads(OP_KINDS_TOML.read_text())
+    return tomllib.loads(OP_KINDS_TOML.read_text(encoding="utf-8"))
 
 
 def mapper_kinds_from_registry(data: dict) -> set[str]:
@@ -151,7 +151,7 @@ def _string_literals(text: str) -> list[str]:
 def extract_match_arms(path: Path, fn: str, match_on: str) -> list[str]:
     """Return, in source order (deduped), the string-literal patterns of every
     top-level arm of the `match_on` match inside function `fn` of `path`."""
-    lines = path.read_text().splitlines(keepends=True)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     fs = _find_fn_start(lines, fn)
     ms = None
     for i in range(fs, len(lines)):
@@ -301,7 +301,7 @@ def extract_match_arms(path: Path, fn: str, match_on: str) -> list[str]:
 
 def extract_matches_macro(path: Path, fn: str) -> list[str]:
     """Return string literals of the first `matches!(...)` in function `fn`."""
-    src = path.read_text()
+    src = path.read_text(encoding="utf-8")
     m = re.search(r"\bfn\s+" + re.escape(fn) + r"\b", src)
     if m is None:
         raise RustMatchParseError(f"fn {fn} not found")
@@ -324,7 +324,7 @@ def extract_matches_macro(path: Path, fn: str) -> list[str]:
 
 def extract_prefix_rules(path: Path, fn: str) -> list[str]:
     """Return `kind.starts_with("PREFIX")` prefixes used in function `fn`."""
-    src = path.read_text()
+    src = path.read_text(encoding="utf-8")
     m = re.search(r"\bfn\s+" + re.escape(fn) + r"\b", src)
     if m is None:
         return []
@@ -463,7 +463,7 @@ def _static_kind_strings(expr: ast.expr) -> set[str] | None:
 
 
 def extract_frontend_kinds() -> FrontendKinds:
-    src = SERIALIZATION_PY.read_text()
+    src = SERIALIZATION_PY.read_text(encoding="utf-8")
     tree = ast.parse(src)
     _attach_parents(tree)
     fk = FrontendKinds()
@@ -494,25 +494,150 @@ def extract_frontend_kinds() -> FrontendKinds:
 
 
 # ---------------------------------------------------------------------------
-# Runtime `molt_<kind>` export surface (the LLVM by-symbol fallback rule)
+# Runtime `molt_<kind>` ABI surface (the LLVM ABI-exact fallback rule)
 # ---------------------------------------------------------------------------
 
 
-def extract_runtime_molt_symbols() -> set[str]:
-    """All `pub extern "C" fn molt_*` exports in molt-runtime. This is the surface
-    the LLVM generic fallback (`try_lower_preserved_runtime_call`) probes: a
-    preserved `Copy{_original_kind=k}` with no dedicated arm is lowered as
-    `molt_<k>(boxed operands...)` iff `molt_<k>` is a linked runtime symbol."""
-    syms: set[str] = set()
-    pat = re.compile(r'pub\s+extern\s+"C"\s+fn\s+(molt_[A-Za-z0-9_]+)')
+@dataclass(frozen=True)
+class RuntimeExtern:
+    symbol: str
+    params: tuple[str, ...]
+    return_ty: str
+    path: Path
+
+
+def extract_runtime_type_aliases() -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    pat = re.compile(r"\btype\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);")
     for p in RUNTIME_SRC.rglob("*.rs"):
         try:
-            text = p.read_text()
+            text = p.read_text(encoding="utf-8")
         except OSError:
             continue
         for m in pat.finditer(text):
-            syms.add(m.group(1))
-    return syms
+            aliases[m.group(1)] = m.group(2).strip()
+    return aliases
+
+
+def _runtime_param_types(args_src: str) -> tuple[str, ...]:
+    params: list[str] = []
+    for raw in args_src.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        if ":" not in raw:
+            return ()
+        params.append(raw.rsplit(":", 1)[1].strip())
+    return tuple(params)
+
+
+def _normalize_runtime_type(ty: str, aliases: dict[str, str]) -> str:
+    ty = re.sub(r"\s+", " ", ty.strip())
+    seen: set[str] = set()
+    while ty in aliases and ty not in seen:
+        seen.add(ty)
+        ty = re.sub(r"\s+", " ", aliases[ty].strip())
+    return ty
+
+
+def extract_runtime_molt_externs() -> dict[str, RuntimeExtern]:
+    """All `pub (unsafe)? extern "C" fn molt_*` exports in molt-runtime with
+    their source-level ABI. The LLVM generic fallback may only claim symbols
+    whose ABI is positional boxed integers; pointer/string/function-pointer ABIs
+    require dedicated lowering arms and must stay red in this audit."""
+    aliases = extract_runtime_type_aliases()
+    out: dict[str, RuntimeExtern] = {}
+    pat = re.compile(
+        r'pub\s+(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
+        r"(molt_[A-Za-z0-9_]+)\s*\((.*?)\)\s*(?:->\s*([^{\n]+))?\s*\{",
+        re.S,
+    )
+    for p in RUNTIME_SRC.rglob("*.rs"):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in pat.finditer(text):
+            symbol = m.group(1)
+            params = tuple(_normalize_runtime_type(t, aliases) for t in _runtime_param_types(m.group(2)))
+            ret = _normalize_runtime_type((m.group(3) or "()").strip(), aliases)
+            out[symbol] = RuntimeExtern(symbol, params, ret, p.relative_to(ROOT))
+    return out
+
+
+def extract_runtime_molt_symbols() -> set[str]:
+    return set(extract_runtime_molt_externs())
+
+
+_BOXED_RUNTIME_TYPES = {"u64", "i64"}
+
+
+def _is_boxed_runtime_type(ty: str) -> bool:
+    return ty in _BOXED_RUNTIME_TYPES
+
+
+def runtime_extern_has_boxed_params(ext: RuntimeExtern, arity: int) -> bool:
+    return len(ext.params) == arity and all(_is_boxed_runtime_type(t) for t in ext.params)
+
+
+def runtime_extern_is_boxed_i64_fallback_eligible(ext: RuntimeExtern) -> bool:
+    return all(_is_boxed_runtime_type(t) for t in ext.params) and _is_boxed_runtime_type(
+        ext.return_ty
+    )
+
+
+def runtime_extern_is_boxed_void_fallback_eligible(ext: RuntimeExtern, arity: int) -> bool:
+    return ext.return_ty == "()" and runtime_extern_has_boxed_params(ext, arity)
+
+
+def llvm_void_runtime_abi_mismatches(
+    void_runtime_ops: dict[str, tuple[str, int]],
+    runtime_externs: dict[str, RuntimeExtern],
+) -> list[str]:
+    out: list[str] = []
+    for kind, (symbol, arity) in sorted(void_runtime_ops.items()):
+        ext = runtime_externs.get(symbol)
+        if ext is None:
+            out.append(f"{kind}:{symbol}:missing-extern")
+            continue
+        if ext.return_ty != "()":
+            out.append(f"{kind}:{symbol}:return={ext.return_ty}")
+            continue
+        if len(ext.params) != arity:
+            out.append(f"{kind}:{symbol}:arity={arity}:extern_params={len(ext.params)}")
+            continue
+        bad_params = [ty for ty in ext.params if not _is_boxed_runtime_type(ty)]
+        if bad_params:
+            out.append(f"{kind}:{symbol}:non-boxed-params={','.join(bad_params)}")
+    return out
+
+
+def extract_llvm_void_runtime_ops() -> dict[str, tuple[str, int]]:
+    src = LLVM_RS.read_text(encoding="utf-8")
+    m = re.search(
+        r"PRESERVED_VOID_RUNTIME_OPS\s*:\s*&\[\(&str,\s*&str,\s*usize\)\]\s*=\s*&\[",
+        src,
+    )
+    if m is None:
+        return {}
+    start = m.end()
+    depth = 1
+    i = start
+    while i < len(src) and depth > 0:
+        c = src[i]
+        if c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+        i += 1
+    block = src[start : i - 1]
+    out: dict[str, tuple[str, int]] = {}
+    for kind, symbol, arity in re.findall(
+        r'\(\s*"([a-z0-9_]+)"\s*,\s*"([A-Za-z0-9_]+)"\s*,\s*(\d+)\s*\)',
+        block,
+    ):
+        out[kind] = (symbol, int(arity))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +665,7 @@ def extract_runtime_molt_symbols() -> set[str]:
 
 
 def extract_simpleir_arm_kinds(path: Path) -> set[str]:
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     out: set[str] = set()
     # Match an arm pattern: one-or-more `"lit"` separated by `|`, then `=>`.
     arm = re.compile(
@@ -556,15 +681,16 @@ def extract_simpleir_arm_kinds(path: Path) -> set[str]:
 # ---------------------------------------------------------------------------
 
 # Kinds that are NOT cross-component op kinds in the `kind_to_opcode` sense — the
-# CFG/SSA layer consumes them STRUCTURALLY (block leaders, terminators, branch
-# conditions) rather than dispatching them through `kind_to_opcode`. They
+# CFG/SSA or pre-SSA lowering layer consumes them STRUCTURALLY rather than
+# dispatching them through `kind_to_opcode`. They
 # legitimately have no mapper arm and are excluded from the "emitted-but-unmapped"
 # danger categories.
 #
 # DERIVED FROM SOURCE (drift-proof): the union of the five authoritative Rust
 # classifiers `is_structural` (tir/mod.rs), `is_terminator`, `is_block_leader`,
-# `is_block_ender`, `is_conditional_branch` (tir/cfg.rs). A new structural kind
-# added to those functions automatically leaves this audit's "unmapped" alarm,
+# `is_block_ender`, `is_conditional_branch` (tir/cfg.rs), plus the
+# `PRE_SSA_REWRITTEN_KINDS` authority in lower_from_simple.rs. A new structural
+# kind added to those authorities automatically leaves this audit's "unmapped" alarm,
 # and a new EMITTED kind that is NOT in those functions and NOT in `kind_to_opcode`
 # is flagged — exactly the drift contract. (`phi` is the SSA block-argument op the
 # converter materializes internally; it is added explicitly because it is
@@ -577,13 +703,35 @@ _STRUCTURAL_CLASSIFIER_FNS = (
     (Path("runtime/molt-backend/src/tir/cfg.rs"), "is_block_ender"),
     (Path("runtime/molt-backend/src/tir/cfg.rs"), "is_conditional_branch"),
 )
+_PRE_SSA_REWRITTEN_KIND_TABLE = (
+    Path("runtime/molt-backend/src/tir/lower_from_simple.rs"),
+    "PRE_SSA_REWRITTEN_KINDS",
+)
 _EXTRA_STRUCTURAL = {"phi"}
+
+
+def extract_rust_str_slice_const(path: Path, const_name: str) -> set[str]:
+    text = path.read_text(encoding="utf-8")
+    m = re.search(
+        rf"{re.escape(const_name)}\s*:\s*&\[\s*&str\s*\]\s*=\s*&\[(.*?)\];",
+        text,
+        re.S,
+    )
+    if m is None:
+        raise RuntimeError(f"{const_name} not found in {path}")
+    return set(re.findall(r'"([a-z][a-z0-9_]*)"', m.group(1)))
+
+
+def derive_pre_ssa_rewritten_kinds() -> set[str]:
+    rel, const_name = _PRE_SSA_REWRITTEN_KIND_TABLE
+    return extract_rust_str_slice_const(ROOT / rel, const_name)
 
 
 def derive_structural_kinds() -> set[str]:
     out: set[str] = set(_EXTRA_STRUCTURAL)
     for rel, fn in _STRUCTURAL_CLASSIFIER_FNS:
         out |= set(extract_matches_macro(ROOT / rel, fn))
+    out |= derive_pre_ssa_rewritten_kinds()
     return out
 
 
@@ -591,7 +739,7 @@ def extract_vec_reduction_ops() -> set[str]:
     """The LLVM `VEC_REDUCTION_OPS` exact table (kind, arity). The vec-* family is
     lowered on LLVM by `vec_reduction_runtime_symbol(kind)` BEFORE the dedicated
     `match`, so membership here is real LLVM coverage the arm-extractor misses."""
-    src = LLVM_RS.read_text()
+    src = LLVM_RS.read_text(encoding="utf-8")
     m = re.search(r"VEC_REDUCTION_OPS\s*:\s*&\[\(&str, usize\)\]\s*=\s*&\[", src)
     if m is None:
         return set()
@@ -616,7 +764,7 @@ class KindRow:
     mapper_maps: bool
     llvm_dedicated_arm: bool
     llvm_vec_table: bool  # in VEC_REDUCTION_OPS (lowered before the match)
-    llvm_symbol_exists: bool  # molt_<kind> is a runtime export (generic fallback)
+    llvm_runtime_fallback_eligible: bool
     classifier_class: str  # FreshValue / TransparentAlias / InertMarker
     native_arm: bool
     wasm_arm: bool
@@ -625,9 +773,13 @@ class KindRow:
     @property
     def llvm_covered(self) -> bool:
         """A `Copy`-carried kind is soundly lowered on the LLVM lane iff it has a
-        dedicated arm, is in the vec table, or `molt_<kind>` exists for the generic
-        by-symbol fallback. Otherwise the LLVM `Copy` arm FAILS LOUD at build."""
-        return self.llvm_dedicated_arm or self.llvm_vec_table or self.llvm_symbol_exists
+        dedicated arm, is in the vec table, or the runtime-call fallback can emit
+        its exact ABI. Otherwise the LLVM `Copy` arm FAILS LOUD at build."""
+        return (
+            self.llvm_dedicated_arm
+            or self.llvm_vec_table
+            or self.llvm_runtime_fallback_eligible
+        )
 
     def as_dict(self) -> dict:
         return {
@@ -636,7 +788,7 @@ class KindRow:
             "mapper_maps": self.mapper_maps,
             "llvm_dedicated_arm": self.llvm_dedicated_arm,
             "llvm_vec_table": self.llvm_vec_table,
-            "llvm_symbol_exists": self.llvm_symbol_exists,
+            "llvm_runtime_fallback_eligible": self.llvm_runtime_fallback_eligible,
             "llvm_covered": self.llvm_covered,
             "classifier_class": self.classifier_class,
             "native_arm": self.native_arm,
@@ -655,9 +807,11 @@ class AuditResult:
     fresh_value: set[str]
     fresh_value_prefixes: list[str]
     inert_marker: set[str]
+    transparent_alias: set[str]
     no_heap_move: set[str]
     runtime_symbols: set[str]
     structural_kinds: set[str]
+    llvm_void_runtime_abi_mismatch: list[str]
 
     def dangerous(self) -> dict[str, list[str]]:
         """Categorize dangerous cells by the PRECISE bug preconditions.
@@ -672,7 +826,7 @@ class AuditResult:
             # D1 — LLVM-coverage gap (the floordiv-class precondition). Emitted,
             # not structural, NOT mapped to a first-class opcode, and NOT covered
             # on the LLVM lane (no dedicated arm, not in the vec table, no
-            # `molt_<kind>` symbol). On LLVM this hits the `Copy` fail-loud guard
+            # ABI-eligible runtime fallback). On LLVM this hits the `Copy` fail-loud guard
             # = a HARD BUILD ERROR for any program that reaches the op. (Loud, not
             # silent — but still a real compile gap for that op on LLVM.)
             "llvm_coverage_gap": [],
@@ -688,15 +842,15 @@ class AuditResult:
             # fallthrough = the UAF-escalation root). Emitted, not structural,
             # unmapped, AND the classifier did NOT place it in an EXPLICIT class
             # (it fell through to the `_ => TransparentAlias` default), yet it is a
-            # value/heap producer (heuristic: a `molt_<kind>` runtime symbol
-            # exists, i.e. it is a real runtime op, not a pure SSA move). Such a
+            # value/heap producer (heuristic: an ABI-eligible `molt_<kind>`
+            # runtime fallback exists, i.e. it is a real boxed runtime op). Such a
             # kind is unioned-by-default into operand 0's alias root; if it ever
             # mints a fresh ref the drop pass leaks it (today) and a future
             # promotion to FreshValue without a backend arm escalates to UAF.
             "classifier_silent_fallthrough": [],
             # D4 — no SimpleIR-lane lowering. Emitted, not structural, unmapped,
-            # AND neither native nor WASM has a dispatch arm AND no `molt_<kind>`
-            # symbol. Nothing can lower it on the native/WASM lanes (subject to
+            # AND neither native nor WASM has a dispatch arm AND no ABI-eligible
+            # runtime fallback. Nothing can lower it on the native/WASM lanes (subject to
             # the arm-detector's over-counting caveat — see extract_simpleir_arm_kinds).
             "simpleir_lane_gap": [],
             # D5 — dead mapper vocabulary. A first-class opcode mapping the
@@ -705,6 +859,11 @@ class AuditResult:
             "mapped_never_emitted": [],
             # D6 — dead FreshValue allow-list entry the frontend never emits.
             "freshvalue_never_emitted": [],
+            # D7 — explicit LLVM void-runtime fallback table drift. These entries
+            # are backend source data, so a missing symbol, wrong return, wrong
+            # arity, or non-boxed parameter must fail the audit before emission
+            # reaches the stale ABI row.
+            "llvm_void_runtime_abi_mismatch": list(self.llvm_void_runtime_abi_mismatch),
         }
         for kind, row in self.rows.items():
             if row.structural:
@@ -716,19 +875,24 @@ class AuditResult:
                 kind in self.fresh_value
                 or any(kind.startswith(p) for p in self.fresh_value_prefixes)
                 or kind in self.inert_marker
+                or kind in self.transparent_alias
                 or kind in self.no_heap_move
             )
             if emitted_unmapped and not row.llvm_covered:
                 cats["llvm_coverage_gap"].append(kind)
             if row.classifier_class == "FreshValue" and not row.llvm_covered:
                 cats["freshvalue_llvm_gap"].append(kind)
-            if emitted_unmapped and not explicit_classified and row.llvm_symbol_exists:
+            if (
+                emitted_unmapped
+                and not explicit_classified
+                and row.llvm_runtime_fallback_eligible
+            ):
                 cats["classifier_silent_fallthrough"].append(kind)
             if (
                 emitted_unmapped
                 and not row.native_arm
                 and not row.wasm_arm
-                and not row.llvm_symbol_exists
+                and not row.llvm_runtime_fallback_eligible
             ):
                 cats["simpleir_lane_gap"].append(kind)
             if row.mapper_maps and not row.frontend_emits:
@@ -743,12 +907,15 @@ def classify(
     fresh_value: set[str],
     fresh_prefixes: list[str],
     inert: set[str],
+    transparent_alias: set[str],
     no_heap_move: set[str],
 ) -> str:
     if kind in fresh_value or any(kind.startswith(p) for p in fresh_prefixes):
         return "FreshValue"
     if kind in inert:
         return "InertMarker"
+    if kind in transparent_alias:
+        return "TransparentAlias"
     if kind in no_heap_move:
         return "TransparentAlias"
     # The classifier's `_ =>` default. Every kind reaching here is treated as a
@@ -766,19 +933,47 @@ def run_audit() -> AuditResult:
     fresh = set(registry.get("classifier_fresh_value", []))
     fresh_prefixes = list(registry.get("classifier_fresh_value_prefixes", []))
     inert = set(registry.get("classifier_inert_marker", []))
+    transparent_alias = set(registry.get("classifier_transparent_alias", []))
     no_heap = set(registry.get("classifier_no_heap_move", []))
-    # LLVM arms, the vec-reduction table, and the runtime symbol surface are NOT
+    # LLVM arms, the vec-reduction table, and runtime extern ABIs are NOT
     # generated — extract them from source as before.
     llvm_arms = set(
         extract_match_arms(LLVM_RS, "lower_preserved_simpleir_op", "match kind {")
     )
     llvm_vec = extract_vec_reduction_ops()
-    runtime_syms = extract_runtime_molt_symbols()
+    runtime_externs = extract_runtime_molt_externs()
+    runtime_syms = set(runtime_externs)
+    boxed_runtime_fallback = {
+        symbol.removeprefix("molt_")
+        for symbol, ext in runtime_externs.items()
+        if symbol.startswith("molt_") and runtime_extern_is_boxed_i64_fallback_eligible(ext)
+    }
+    void_runtime_ops = extract_llvm_void_runtime_ops()
+    void_runtime_mismatches = llvm_void_runtime_abi_mismatches(
+        void_runtime_ops, runtime_externs
+    )
+    llvm_runtime_fallback = {
+        kind
+        for kind, (symbol, arity) in void_runtime_ops.items()
+        if symbol in runtime_externs
+        and runtime_extern_is_boxed_void_fallback_eligible(runtime_externs[symbol], arity)
+    }
+    llvm_runtime_fallback |= boxed_runtime_fallback
     native_arms = extract_simpleir_arm_kinds(NATIVE_RS)
     wasm_arms = extract_simpleir_arm_kinds(WASM_RS)
     structural = derive_structural_kinds()
 
-    universe = fk.all | mapper | llvm_arms | llvm_vec | fresh | inert | no_heap
+    universe = (
+        fk.all
+        | mapper
+        | llvm_arms
+        | llvm_vec
+        | llvm_runtime_fallback
+        | fresh
+        | inert
+        | transparent_alias
+        | no_heap
+    )
 
     rows: dict[str, KindRow] = {}
     for kind in sorted(universe):
@@ -788,8 +983,10 @@ def run_audit() -> AuditResult:
             mapper_maps=kind in mapper,
             llvm_dedicated_arm=kind in llvm_arms,
             llvm_vec_table=kind in llvm_vec,
-            llvm_symbol_exists=f"molt_{kind}" in runtime_syms,
-            classifier_class=classify(kind, fresh, fresh_prefixes, inert, no_heap),
+            llvm_runtime_fallback_eligible=kind in llvm_runtime_fallback,
+            classifier_class=classify(
+                kind, fresh, fresh_prefixes, inert, transparent_alias, no_heap
+            ),
             native_arm=kind in native_arms,
             wasm_arm=kind in wasm_arms,
             structural=kind in structural,
@@ -804,9 +1001,11 @@ def run_audit() -> AuditResult:
         fresh_value=fresh,
         fresh_value_prefixes=fresh_prefixes,
         inert_marker=inert,
+        transparent_alias=transparent_alias,
         no_heap_move=no_heap,
         runtime_symbols=runtime_syms,
         structural_kinds=structural,
+        llvm_void_runtime_abi_mismatch=void_runtime_mismatches,
     )
 
 
@@ -859,6 +1058,11 @@ def self_validate(res: AuditResult) -> list[str]:
     # Anchor a few mapper arms and the structural extraction.
     for k in ("add", "copy", "index", "module_import_from", "get_iter"):
         check(k in res.mapper_kinds, f"mapper must map '{k}'")
+    for k in ("loop_index_start", "loop_index_next"):
+        check(
+            k in res.structural_kinds,
+            f"pre-SSA loop-IV kind '{k}' must be extracted as structural",
+        )
     # Classifier anchors.
     check(
         res.rows["slice"].classifier_class == "FreshValue",
@@ -901,9 +1105,10 @@ def print_report(res: AuditResult) -> None:
     print(f"  classifier FreshValue allow-list         : {len(res.fresh_value)}")
     print(f"    + prefix rules                         : {res.fresh_value_prefixes}")
     print(f"  classifier InertMarker arms              : {len(res.inert_marker)}")
+    print(f"  classifier transparent-alias set         : {len(res.transparent_alias)}")
     print(f"  classifier no-heap-move (alias) set      : {len(res.no_heap_move)}")
-    print(f"  structural (CFG/SSA-consumed) kinds      : {len(res.structural_kinds)}")
-    print(f"  runtime molt_* exports (symbol surface)  : {len(res.runtime_symbols)}")
+    print(f"  structural/pre-SSA consumed kinds        : {len(res.structural_kinds)}")
+    print(f"  runtime molt_* extern exports            : {len(res.runtime_symbols)}")
     print()
 
     dangerous = res.dangerous()
@@ -922,7 +1127,7 @@ def print_report(res: AuditResult) -> None:
                 f"   {k:32s} mapper={_b(row.mapper_maps)} "
                 f"llvm_arm={_b(row.llvm_dedicated_arm)} "
                 f"llvm_vec={_b(row.llvm_vec_table)} "
-                f"llvm_sym={_b(row.llvm_symbol_exists)} "
+                f"llvm_abi={_b(row.llvm_runtime_fallback_eligible)} "
                 f"class={row.classifier_class:16s} "
                 f"native={_b(row.native_arm)} wasm={_b(row.wasm_arm)}"
             )
@@ -930,7 +1135,7 @@ def print_report(res: AuditResult) -> None:
 
     print(
         "FULL DRIFT MATRIX  (fe=frontend-emits map=mapper-arm la=llvm-arm "
-        "lv=llvm-vec ls=llvm-sym st=structural)"
+        "lv=llvm-vec ls=llvm-sym st=structural/pre-SSA)"
     )
     hdr = f"{'kind':34s} fe map  la lv ls {'classifier':16s} nat wasm st"
     print(hdr)
@@ -939,7 +1144,7 @@ def print_report(res: AuditResult) -> None:
         print(
             f"{kind:34s} {_b(row.frontend_emits)}   {_b(row.mapper_maps)}   "
             f"{_b(row.llvm_dedicated_arm)}  {_b(row.llvm_vec_table)}  "
-            f"{_b(row.llvm_symbol_exists)}  "
+            f"{_b(row.llvm_runtime_fallback_eligible)}  "
             f"{row.classifier_class:16s} {_b(row.native_arm)}   {_b(row.wasm_arm)}   "
             f"{_b(row.structural)}"
         )
@@ -962,7 +1167,7 @@ def check_against_baseline(res: AuditResult) -> int:
             file=sys.stderr,
         )
         return 2
-    baseline = json.loads(BASELINE_PATH.read_text())
+    baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
     base = baseline.get("dangerous", {})
     current = res.dangerous()
     rc = 0
@@ -1043,7 +1248,11 @@ def main(argv: list[str]) -> int:
         return 3
 
     if args.write_baseline:
-        BASELINE_PATH.write_text(json.dumps(to_baseline(res), indent=2) + "\n")
+        BASELINE_PATH.write_text(
+            json.dumps(to_baseline(res), indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
         print(f"wrote baseline -> {BASELINE_PATH}")
         return 0
 

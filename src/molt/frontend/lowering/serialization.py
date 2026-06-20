@@ -37,6 +37,15 @@ else:
 
 class SerializationMixin(_MixinBase):
     @staticmethod
+    def _require_async_poll_target(kind: str, target: Any) -> str:
+        if not isinstance(target, str) or not target.endswith("_poll"):
+            raise ValueError(
+                f"{kind} requires a table-addressable poll target ending in _poll; "
+                f"got {target!r}"
+            )
+        return target
+
+    @staticmethod
     def _scalarize_string_split_fields_json(
         json_ops: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -425,13 +434,18 @@ class SerializationMixin(_MixinBase):
         return rewritten_ops
 
     def map_ops_to_json(
-        self, ops: list[MoltOp], *, function_name: str | None = None
+        self,
+        ops: list[MoltOp],
+        *,
+        function_name: str | None = None,
+        run_midend: bool = True,
     ) -> list[dict[str, Any]]:
         if function_name is not None:
             self._active_midend_function_name = function_name
         else:
             self._active_midend_function_name = "<direct>"
-        ops = self._run_ir_midend_passes(ops)
+        if run_midend:
+            ops = self._run_ir_midend_passes(ops)
         ops, fused_dict_guard_prunes = (
             self._eliminate_redundant_fused_dict_increment_guards(ops)
         )
@@ -4015,7 +4029,7 @@ class SerializationMixin(_MixinBase):
                     json_ops.append({"kind": "trace_exit"})
                 json_ops.append({"kind": "ret_void"})
             elif op.kind == "ALLOC_TASK":
-                poll_func = op.args[0]
+                poll_func = self._require_async_poll_target("ALLOC_TASK", op.args[0])
                 size = op.args[1]
                 args = op.args[2:]
                 task_kind = op.metadata.get("task_kind") if op.metadata else None
@@ -4248,7 +4262,7 @@ class SerializationMixin(_MixinBase):
                     }
                 )
             elif op.kind == "CALL_ASYNC":
-                poll_name = op.args[0]
+                poll_name = self._require_async_poll_target("CALL_ASYNC", op.args[0])
                 payload_args = op.args[1:] if len(op.args) > 1 else []
                 json_ops.append(
                     {

@@ -1449,9 +1449,10 @@ unsafe fn call_type_with_builder(
         builder_guard.release();
         let args_ptr = callargs_ptr(builder_ptr);
         if !args_ptr.is_null() {
-            // The CallArgs builder owns the injected slot. Function parameters
-            // are +0 borrowed under the generated ABI; the callee must not be
-            // given a second synthetic owner for `self`.
+            // The CallArgs builder owns the injected slot; every function call
+            // path, compiled or runtime, borrows parameters from that builder.
+            // Builder teardown releases this retain after `__init__`, leaving
+            // the constructor's original owning result as the single live ref.
             inc_ref_bits(_py, inst_bits);
             (*args_ptr).pos.insert(0, inst_bits);
         }
@@ -2851,6 +2852,9 @@ unsafe fn try_call_bind_ic_fast(
                     "maximum recursion depth exceeded",
                 ));
             }
+            // Direct IC calls borrow `self` exactly like the generic function
+            // call path. The freshly allocated instance's original ref remains
+            // the constructor result; no extra callee-owned self lane exists.
             frame_stack_push_function(_py, code_bits, init_ptr);
             let _init_result = if closure_bits != 0 {
                 match args.pos.len() {
@@ -6328,8 +6332,11 @@ mod tests {
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
 
-    extern "C" fn compiled_init_borrows_self_for_type_call_ic(_self_bits: u64) -> i64 {
-        crate::with_gil_entry_nopanic!(_py, { MoltObject::none().bits() }) as i64
+    extern "C" fn compiled_init_borrows_self_for_type_call_ic(self_bits: u64) -> i64 {
+        crate::with_gil_entry_nopanic!(_py, {
+            assert!(!obj_from_bits(self_bits).is_none());
+            MoltObject::none().bits()
+        }) as i64
     }
 
     extern "C" fn compiled_identity_returns_arg(arg_bits: u64) -> i64 {
@@ -6515,7 +6522,7 @@ mod tests {
     }
 
     #[test]
-    fn type_call_ic_passes_borrowed_init_self_without_extra_retain() {
+    fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
         crate::with_gil_entry_nopanic!(_py, {
             clear_call_bind_ic_cache();
             let init_ptr = alloc_function_obj(
@@ -6569,13 +6576,13 @@ mod tests {
             };
             let result_ptr = obj_from_bits(result_bits).as_ptr().expect("live instance");
             assert_eq!(unsafe { object_type_id(result_ptr) }, TYPE_ID_OBJECT);
-            let result_rc = unsafe {
+            let ref_count = unsafe {
                 (*crate::object::header_from_obj_ptr(result_ptr))
                     .ref_count
                     .load(Ordering::Relaxed)
             };
             assert_eq!(
-                result_rc, 1,
+                ref_count, 1,
                 "type-call IC must return exactly the constructor result owner; borrowed __init__ self must not leave a hidden retain"
             );
             dec_ref_bits(_py, result_bits);

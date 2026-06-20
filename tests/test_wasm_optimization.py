@@ -53,7 +53,6 @@ def _build_wasm(src: Path, out_dir: Path) -> Path:
     )
     env["MOLT_WASM_LINKED"] = "0"
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
     result = _run_wasm_test_process(
         _molt_build_cmd()
         + [

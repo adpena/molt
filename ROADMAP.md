@@ -321,7 +321,11 @@ roadmap claim drifts.
   without splitting semantic ownership or moving `len` until its
   representation-plan specialization can move as a complete structural unit.
 - Keep the TIR pipeline unconditional for backend-facing lowering; debugging
-  uses dumps and verifier evidence rather than an environment-variable bypass.
+  uses dumps and verifier evidence rather than an environment-variable bypass,
+  and frontend midend fixed-point/idempotence verification must fail closed
+  instead of accepting non-converged IR under policy knobs. Midend rounds must
+  remain algebraically closed across CSE and DCE: any pure definitions made dead
+  by CSE are verified and eliminated before the fixed-point comparison.
 - Close the highest-value native and WASM parity blockers.
 - Burn down the remaining Molt side of the enabled tinygrad off-the-shelf lane
   (`a83710396c991272241e40da94489747c2393851`): upstream tinygrad and the
@@ -742,6 +746,11 @@ roadmap claim drifts.
 ## Active Blockers
 
 - Incomplete same-contract parity between native and WASM for important surfaces.
+- Windows native `stdlib_net` is target-gated through explicit no-net intrinsics
+  until the WinSock target ABI lands as one coherent implementation: constants,
+  sockaddr storage, resolver calls, socket ownership, SSL handle custody, and
+  async poller readiness must share one authority before the target can claim
+  native socket support.
 - TIR DropInsertion is implemented and active on LLVM/WASM/Luau and native for
   the proven ExceptionRegion slice. The remaining blocker is structural:
   broaden shared drop/codegen facts until stale native value-tracking

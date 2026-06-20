@@ -18,14 +18,23 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::env;
 use std::fs::File;
+#[cfg(unix)]
 use std::io::BufRead;
 use std::io::Write;
 use std::io::{self, Read};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
-use std::path::{Path, PathBuf};
+#[cfg(all(feature = "native-backend", windows))]
+use std::os::windows::io::AsRawHandle;
+use std::path::Path;
+#[cfg(feature = "native-backend")]
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+#[cfg(all(feature = "native-backend", windows))]
+use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileEx, UnlockFileEx};
+#[cfg(all(feature = "native-backend", windows))]
+use windows_sys::Win32::System::IO::OVERLAPPED;
 
 mod json_boundary;
 
@@ -70,7 +79,7 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_DUMP_CLIF_FILE_FILTER",
     "MOLT_DUMP_FINAL_FUNC_IR",
     "MOLT_DUMP_IR",
-    // Optimization-pass instruments + rollback levers. Every optimization
+    // Optimization-pass instruments. Every optimization
     // lands WITH a firing/refusal instrument (the L4/needs_inlining lesson);
     // those instruments are useless if the daemon strips their env keys.
     // Debug-artifact routing: without these the daemon writes artifacts
@@ -79,11 +88,8 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_DEBUG_ARTIFACT_DIR",
     "MOLT_EXT_ROOT",
     "MOLT_OVERFLOW_PEEL_STATS",
-    "MOLT_DISABLE_OVERFLOW_PEEL",
     "MOLT_PROMOTE_DEBUG",
-    "MOLT_DISABLE_MODULE_SLOT_PROMOTION",
     "MOLT_INLINE_STATS",
-    "MOLT_DISABLE_INLINING",
     "MOLT_VERIFY_ANALYSIS",
     "MOLT_DEBUG_BIND",
     "MOLT_BACKEND",
@@ -859,6 +865,17 @@ fn compile_stdlib_cache_object(
 ) -> io::Result<()> {
     let stdlib_count = stdlib_funcs.len();
     if stdlib_count == 0 {
+        eprintln!("{log_prefix}: stdlib cache is empty (0 reachable functions)");
+        let stdlib_ir = SimpleIR {
+            functions: Vec::new(),
+            profile,
+        };
+        let mut stdlib_backend = SimpleBackend::new_with_target(target_triple);
+        stdlib_backend.skip_ir_passes = true;
+        stdlib_backend.skip_shared_stdlib_partition = true;
+        stdlib_backend.emit_app_intrinsic_resolver = false;
+        let stdlib_output = stdlib_backend.compile(stdlib_ir);
+        std::fs::write(stdlib_path, &stdlib_output.bytes)?;
         return Ok(());
     }
 
@@ -1260,14 +1277,28 @@ fn atomic_replace_file(temp_path: &Path, final_path: &Path) -> io::Result<()> {
 }
 
 #[cfg(feature = "native-backend")]
+fn sync_published_file(path: &Path) -> io::Result<()> {
+    File::options()
+        .read(true)
+        .write(true)
+        .open(path)?
+        .sync_all()
+}
+
+#[cfg(feature = "native-backend")]
 fn write_atomic_text_file(path: &Path, contents: &str) -> io::Result<()> {
     ensure_output_parent_dir(path.to_str().unwrap_or_default())?;
     let temp_path = stdlib_cache_temp_publish_path(path, "text");
-    std::fs::write(&temp_path, contents)?;
+    {
+        let mut file = File::create(&temp_path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+    }
     if let Err(err) = atomic_replace_file(&temp_path, path) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(err);
     }
+    sync_published_file(path)?;
     Ok(())
 }
 
@@ -1296,7 +1327,42 @@ fn with_shared_stdlib_cache_publish_lock<T>(
     result
 }
 
-#[cfg(any(not(feature = "native-backend"), not(unix)))]
+#[cfg(all(feature = "native-backend", windows))]
+fn with_shared_stdlib_cache_publish_lock<T>(
+    stdlib_path: &Path,
+    body: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    ensure_output_parent_dir(stdlib_path.to_str().unwrap_or_default())?;
+    let lock_path = stdlib_cache_publish_lock_path(stdlib_path);
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    let mut overlapped = OVERLAPPED::default();
+    let lock_rc = unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    };
+    if lock_rc == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let result = body();
+    let unlock_rc = unsafe { UnlockFileEx(file.as_raw_handle(), 0, 1, 0, &mut overlapped) };
+    if unlock_rc == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    result
+}
+
+#[cfg(all(feature = "native-backend", not(any(unix, windows))))]
 fn with_shared_stdlib_cache_publish_lock<T>(
     _stdlib_path: &Path,
     body: impl FnOnce() -> io::Result<T>,
@@ -1381,11 +1447,11 @@ fn daemon_memory_cache_allowed_for_job(job: &DaemonJobRequest) -> bool {
     if job.is_wasm {
         return true;
     }
-    let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
-        return true;
-    };
     #[cfg(feature = "native-backend")]
     {
+        let Some(stdlib_obj_path) = std::env::var("MOLT_STDLIB_OBJ").ok() else {
+            return true;
+        };
         shared_stdlib_cache_matches(
             Path::new(&stdlib_obj_path),
             std::env::var("MOLT_STDLIB_CACHE_KEY").ok().as_deref(),
@@ -1455,6 +1521,10 @@ fn publish_shared_stdlib_cache_object(
 ) -> io::Result<()> {
     let result = with_shared_stdlib_cache_publish_lock(stdlib_path, || {
         if let Err(err) = atomic_replace_file(temp_object_path, stdlib_path) {
+            remove_shared_stdlib_cache_artifacts(stdlib_path);
+            return Err(err);
+        }
+        if let Err(err) = sync_published_file(stdlib_path) {
             remove_shared_stdlib_cache_artifacts(stdlib_path);
             return Err(err);
         }
@@ -2372,9 +2442,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                         }
                     }
 
-                    if !stdlib_path.exists()
-                        && (!user_remaining.is_empty() || !stdlib_funcs.is_empty())
-                    {
+                    if !stdlib_path.exists() {
                         // First build (or stale cache was just deleted) — compile
                         // stdlib separately and cache it, then keep only user
                         // functions for output.o.
@@ -2387,57 +2455,54 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                             });
 
                         let stdlib_count = stdlib_funcs.len();
-                        if stdlib_count > 0 {
-                            eprintln!(
-                                "MOLT_BACKEND(daemon): first build — caching {} stdlib functions to {}",
-                                stdlib_count,
-                                stdlib_path.display()
-                            );
-                            let temp_stdlib_path =
-                                stdlib_cache_temp_publish_path(stdlib_path, "object");
-                            if let Err(err) = compile_stdlib_cache_object(
-                                &temp_stdlib_path,
-                                std::mem::take(&mut stdlib_funcs),
-                                ir.profile.clone(),
-                                target_triple,
-                                "MOLT_BACKEND(daemon)",
-                            ) {
-                                let _ = std::fs::remove_file(&temp_stdlib_path);
-                                return DaemonJobResponse {
-                                    id: job.id,
-                                    ok: false,
-                                    cached: false,
-                                    cache_tier: None,
-                                    output_written: false,
-                                    needs_ir: false,
-                                    message: Some(format!(
-                                        "failed to materialize shared stdlib cache: {err}"
-                                    )),
-                                    warnings: Vec::new(),
-                                };
-                            }
-                            if let Err(err) = publish_shared_stdlib_cache_object(
-                                stdlib_path,
-                                &temp_stdlib_path,
-                                stdlib_count,
-                                expected_stdlib_cache_key.as_deref(),
-                                expected_stdlib_cache_manifest.as_deref(),
-                                current_partition_manifest.as_str(),
-                            ) {
-                                let _ = std::fs::remove_file(&temp_stdlib_path);
-                                return DaemonJobResponse {
-                                    id: job.id,
-                                    ok: false,
-                                    cached: false,
-                                    cache_tier: None,
-                                    output_written: false,
-                                    needs_ir: false,
-                                    message: Some(format!(
-                                        "failed to publish shared stdlib cache: {err}"
-                                    )),
-                                    warnings: Vec::new(),
-                                };
-                            }
+                        eprintln!(
+                            "MOLT_BACKEND(daemon): first build — caching {} stdlib functions to {}",
+                            stdlib_count,
+                            stdlib_path.display()
+                        );
+                        let temp_stdlib_path = stdlib_cache_temp_publish_path(stdlib_path, "object");
+                        if let Err(err) = compile_stdlib_cache_object(
+                            &temp_stdlib_path,
+                            std::mem::take(&mut stdlib_funcs),
+                            ir.profile.clone(),
+                            target_triple,
+                            "MOLT_BACKEND(daemon)",
+                        ) {
+                            let _ = std::fs::remove_file(&temp_stdlib_path);
+                            return DaemonJobResponse {
+                                id: job.id,
+                                ok: false,
+                                cached: false,
+                                cache_tier: None,
+                                output_written: false,
+                                needs_ir: false,
+                                message: Some(format!(
+                                    "failed to materialize shared stdlib cache: {err}"
+                                )),
+                                warnings: Vec::new(),
+                            };
+                        }
+                        if let Err(err) = publish_shared_stdlib_cache_object(
+                            stdlib_path,
+                            &temp_stdlib_path,
+                            stdlib_count,
+                            expected_stdlib_cache_key.as_deref(),
+                            expected_stdlib_cache_manifest.as_deref(),
+                            current_partition_manifest.as_str(),
+                        ) {
+                            let _ = std::fs::remove_file(&temp_stdlib_path);
+                            return DaemonJobResponse {
+                                id: job.id,
+                                ok: false,
+                                cached: false,
+                                cache_tier: None,
+                                output_written: false,
+                                needs_ir: false,
+                                message: Some(format!(
+                                    "failed to publish shared stdlib cache: {err}"
+                                )),
+                                warnings: Vec::new(),
+                            };
                         }
 
                         ir.functions = std::mem::take(&mut user_remaining);
@@ -2994,7 +3059,7 @@ fn main() -> io::Result<()> {
             use windows_sys::Win32::System::JobObjects::*;
             use windows_sys::Win32::System::Threading::*;
             let job = CreateJobObjectW(core::ptr::null(), core::ptr::null());
-            if job != 0 {
+            if !job.is_null() {
                 let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = core::mem::zeroed();
                 info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
                 info.ProcessMemoryLimit = max_bytes as usize;
@@ -3733,6 +3798,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_daemon_request_bytes_stops_at_protocol_newline() {
         let mut cursor = Cursor::new(b"{\"version\":1}\ntrailing".to_vec());
@@ -3740,6 +3806,7 @@ mod tests {
         assert_eq!(bytes, b"{\"version\":1}\n");
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_daemon_request_bytes_rejects_oversized_request() {
         let mut cursor = Cursor::new(b"{\"version\":1}\n".to_vec());
@@ -3916,6 +3983,7 @@ mod tests {
         assert_eq!(job.wasm_split_runtime_runtime_table_min, Some(8192));
     }
 
+    #[cfg(unix)]
     #[test]
     fn daemon_response_payload_omits_false_optional_fields() {
         let payload = daemon_response_payload(&DaemonResponse {
@@ -4497,6 +4565,73 @@ mod tests {
             Some("{\"cache_key\":\"abc123\"}"),
             Some("partition-a"),
         ));
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn shared_stdlib_publish_lock_serializes_concurrent_threads() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-stdlib-publish-lock-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let stdlib_path = tmp_dir.join("stdlib.o");
+        let first_inside = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let violation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (first_entered_tx, first_entered_rx) = std::sync::mpsc::channel();
+        let (second_entered_tx, second_entered_rx) = std::sync::mpsc::channel();
+
+        let first_path = stdlib_path.clone();
+        let first_inside_for_first = Arc::clone(&first_inside);
+        let first_thread = std::thread::spawn(move || {
+            with_shared_stdlib_cache_publish_lock(&first_path, || {
+                first_inside_for_first.store(true, std::sync::atomic::Ordering::SeqCst);
+                first_entered_tx.send(()).expect("signal first entered");
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                first_inside_for_first.store(false, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .expect("first lock body");
+        });
+
+        first_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("first thread entered lock");
+
+        let second_path = stdlib_path.clone();
+        let first_inside_for_second = Arc::clone(&first_inside);
+        let violation_for_second = Arc::clone(&violation);
+        let second_thread = std::thread::spawn(move || {
+            with_shared_stdlib_cache_publish_lock(&second_path, || {
+                if first_inside_for_second.load(std::sync::atomic::Ordering::SeqCst) {
+                    violation_for_second.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                second_entered_tx.send(()).expect("signal second entered");
+                Ok(())
+            })
+            .expect("second lock body");
+        });
+
+        assert!(
+            second_entered_rx
+                .recv_timeout(std::time::Duration::from_millis(40))
+                .is_err(),
+            "second publisher entered while the first publisher held the lock"
+        );
+        first_thread.join().expect("join first publisher");
+        second_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("second publisher eventually entered");
+        second_thread.join().expect("join second publisher");
+        assert!(
+            !violation.load(std::sync::atomic::Ordering::SeqCst),
+            "shared stdlib publish lock allowed overlapping writers"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -5254,6 +5389,183 @@ mod tests {
             vec!["molt_main", "demo__module", "molt_isolate_import"]
         );
         assert!(stdlib_names.is_empty());
+    }
+
+    #[test]
+    fn compile_stdlib_cache_object_emits_parseable_empty_object() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-empty-stdlib-cache-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let stdlib = tmp_dir.join("empty-stdlib.o");
+
+        compile_stdlib_cache_object(&stdlib, Vec::new(), None, None, "MOLT_BACKEND(test)")
+            .expect("empty stdlib cache must emit an object");
+
+        let bytes = std::fs::read(&stdlib).expect("read emitted empty stdlib object");
+        assert!(
+            !bytes.is_empty(),
+            "empty stdlib cache path must publish a real object file"
+        );
+        cranelift_object::object::File::parse(&*bytes)
+            .expect("empty stdlib cache must be a parseable object");
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "molt-daemon-empty-stdlib-cache-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let output = tmp_dir.join("out.o");
+        let stdlib = tmp_dir.join("stdlib.o");
+        let runtime_symbols = tmp_dir.join("runtime_intrinsic_symbols.txt");
+        std::fs::write(&runtime_symbols, "molt_main\n").expect("write runtime symbols");
+
+        let env_keys = [
+            "MOLT_ENTRY_MODULE",
+            "MOLT_STDLIB_OBJ",
+            "MOLT_STDLIB_CACHE_KEY",
+            "MOLT_STDLIB_CACHE_MANIFEST",
+            "MOLT_STDLIB_MODULE_SYMBOLS",
+            "MOLT_RUNTIME_INTRINSIC_SYMBOLS",
+        ];
+        let prior_env: Vec<(&str, Option<String>)> = env_keys
+            .iter()
+            .copied()
+            .map(|key| (key, std::env::var(key).ok()))
+            .collect();
+        unsafe {
+            std::env::set_var("MOLT_ENTRY_MODULE", "demo");
+            std::env::set_var("MOLT_STDLIB_OBJ", &stdlib);
+            std::env::set_var("MOLT_STDLIB_CACHE_KEY", "daemon-empty-key");
+            std::env::set_var("MOLT_STDLIB_CACHE_MANIFEST", "daemon-empty-manifest");
+            std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]");
+            std::env::set_var("MOLT_RUNTIME_INTRINSIC_SYMBOLS", &runtime_symbols);
+        }
+
+        let job = DaemonJobRequest {
+            id: "job0".to_string(),
+            is_wasm: false,
+            target_triple: None,
+            wasm_link: false,
+            wasm_data_base: None,
+            wasm_table_base: None,
+            wasm_split_runtime_runtime_table_min: None,
+            output: output.to_string_lossy().into_owned(),
+            cache_key: "".to_string(),
+            function_cache_key: None,
+            skip_module_output_if_synced: false,
+            skip_function_output_if_synced: false,
+            probe_cache_only: false,
+            ir: Some(SimpleIR {
+                functions: vec![
+                    FunctionIR {
+                        name: "molt_main".to_string(),
+                        params: vec![],
+                        ops: vec![OpIR {
+                            kind: "call".to_string(),
+                            s_value: Some("demo__module".to_string()),
+                            value: Some(0),
+                            ..OpIR::default()
+                        }],
+                        param_types: None,
+                        source_file: None,
+                        is_extern: false,
+                    },
+                    FunctionIR {
+                        name: "demo__module".to_string(),
+                        params: vec![],
+                        ops: vec![OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        }],
+                        param_types: None,
+                        source_file: None,
+                        is_extern: false,
+                    },
+                    FunctionIR {
+                        name: "molt_isolate_bootstrap".to_string(),
+                        params: vec![],
+                        ops: vec![OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        }],
+                        param_types: None,
+                        source_file: None,
+                        is_extern: false,
+                    },
+                    FunctionIR {
+                        name: "molt_isolate_import".to_string(),
+                        params: vec!["p0".to_string()],
+                        ops: vec![OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        }],
+                        param_types: None,
+                        source_file: None,
+                        is_extern: false,
+                    },
+                ],
+                profile: None,
+            }),
+            ir_path: None,
+        };
+
+        let mut cache = DaemonCache::new(None);
+        let result = compile_single_job(job, &mut cache);
+
+        for (key, value) in prior_env {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+
+        assert!(result.ok, "daemon compile failed: {:?}", result.message);
+        assert!(output.exists(), "application output object missing");
+        let stdlib_bytes = std::fs::read(&stdlib).expect("read daemon empty stdlib object");
+        assert!(
+            !stdlib_bytes.is_empty(),
+            "daemon empty stdlib cache must publish a real object"
+        );
+        cranelift_object::object::File::parse(&*stdlib_bytes)
+            .expect("daemon empty stdlib cache must be a parseable object");
+        assert_eq!(
+            std::fs::read_to_string(stdlib_cache_count_sidecar_path(&stdlib))
+                .expect("read stdlib count sidecar"),
+            "0"
+        );
+        assert_eq!(
+            read_stdlib_cache_key(&stdlib).as_deref(),
+            Some("daemon-empty-key")
+        );
+        assert_eq!(
+            read_stdlib_cache_manifest(&stdlib).as_deref(),
+            Some("daemon-empty-manifest")
+        );
+        let partition_manifest = std::fs::read_to_string(
+            stdlib_cache_partition_manifest_sidecar_path(&stdlib),
+        )
+        .expect("read stdlib partition manifest");
+        assert!(partition_manifest.contains("\"functions\":[]"));
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]

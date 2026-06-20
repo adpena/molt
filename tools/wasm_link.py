@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import warnings
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -161,13 +160,9 @@ def _read_runtime_integrity_sidecar(path: Path) -> str | None:
 def _verify_runtime_integrity(path: Path) -> None:
     """Verify SHA-256 integrity of the runtime binary.
 
-    Raises ``SystemExit`` when a hash mismatch is detected.  The check can be
-    bypassed by setting ``MOLT_SKIP_RUNTIME_VERIFY=1`` in the environment
-    (intended for local development only).
+    Raises ``SystemExit`` when no integrity authority exists or a hash mismatch
+    is detected.
     """
-    if os.environ.get("MOLT_SKIP_RUNTIME_VERIFY") == "1":
-        return
-
     # Reject path-traversal components before reading the file.
     for part in path.parts:
         if part == "..":
@@ -188,20 +183,22 @@ def _verify_runtime_integrity(path: Path) -> None:
         return
 
     if not RUNTIME_EXPECTED_HASHES:
-        warnings.warn(
-            "RUNTIME_EXPECTED_HASHES is empty — runtime integrity is NOT verified. "
-            "Pin hashes before releasing.",
-            stacklevel=2,
+        raise SystemExit(
+            "Runtime integrity check failed for "
+            f"{path}\n  no sidecar was found at "
+            f"{_runtime_integrity_sidecar_path(path)}\n"
+            "  RUNTIME_EXPECTED_HASHES is empty; publish an integrity sidecar "
+            "or pin the runtime SHA-256."
         )
-        return
 
     if filename not in RUNTIME_EXPECTED_HASHES:
-        warnings.warn(
-            f"Runtime file '{filename}' has no pinned SHA-256 hash in "
-            f"RUNTIME_EXPECTED_HASHES — integrity not verified.",
-            stacklevel=2,
+        raise SystemExit(
+            "Runtime integrity check failed for "
+            f"{path}\n  no sidecar was found at "
+            f"{_runtime_integrity_sidecar_path(path)}\n"
+            f"  runtime file {filename!r} has no pinned SHA-256 hash in "
+            "RUNTIME_EXPECTED_HASHES."
         )
-        return
 
     expected = RUNTIME_EXPECTED_HASHES[filename]
     if digest != expected:
@@ -209,7 +206,6 @@ def _verify_runtime_integrity(path: Path) -> None:
             f"Runtime integrity check failed for {path}\n"
             f"  expected SHA-256: {expected}\n"
             f"  actual   SHA-256: {digest}\n"
-            f"Set MOLT_SKIP_RUNTIME_VERIFY=1 to bypass (development only)."
         )
 
 
@@ -3155,26 +3151,48 @@ def _strip_debug_sections(data: bytes) -> bytes | None:
         # Strip name, debug, producers, source-mapping and reloc sections
         if name in (
             "name",
-            ".debug_info",
-            ".debug_line",
-            ".debug_abbrev",
-            ".debug_str",
-            ".debug_ranges",
-            ".debug_loc",
-            ".debug_aranges",
-            ".debug_pubtypes",
-            ".debug_pubnames",
             "producers",
             "sourceMappingURL",
             "linking",
             "dylink.0",
-        ) or name.startswith("reloc."):
+        ) or name.startswith(".debug") or name.startswith("reloc."):
             stripped = True
             continue
         keep.append((section_id, payload))
     if not stripped:
         return None
     return _build_sections(keep)
+
+
+_STANDARD_SECTION_ORDER = {
+    1: 1,  # type
+    2: 2,  # import
+    3: 3,  # function
+    4: 4,  # table
+    5: 5,  # memory
+    6: 6,  # global
+    7: 7,  # export
+    8: 8,  # start
+    9: 9,  # element
+    12: 10,  # data count
+    10: 11,  # code
+    11: 12,  # data
+}
+
+
+def _canonicalize_standard_section_order(data: bytes) -> bytes | None:
+    sections = _parse_sections(data)
+    indexed_sections = list(enumerate(sections))
+    canonical = sorted(
+        indexed_sections,
+        key=lambda item: (
+            _STANDARD_SECTION_ORDER.get(item[1][0], 0 if item[1][0] == 0 else 100),
+            item[0],
+        ),
+    )
+    if [index for index, _section in canonical] == list(range(len(sections))):
+        return None
+    return _build_sections([section for _index, section in canonical])
 
 
 _ESSENTIAL_EXPORTS = frozenset(
@@ -5651,6 +5669,10 @@ def _run_wasm_ld(
         if stripped_debug is not None:
             work_linked.write_bytes(stripped_debug)
             linked_bytes = stripped_debug
+        canonical_sections = _canonicalize_standard_section_order(linked_bytes)
+        if canonical_sections is not None:
+            work_linked.write_bytes(canonical_sections)
+            linked_bytes = canonical_sections
         linked_ok = _validate_linked(work_linked)
         if not linked_ok:
             if split_runtime:

@@ -672,6 +672,137 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
     assert second["hash"] != first["hash"]
 
 
+def test_ensure_runtime_wasm_shared_uses_response_file_for_export_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    runtime_wasm = tmp_path / "wasm" / "molt_runtime.wasm"
+    target_root = tmp_path / "target"
+    export_flags = (
+        " -C link-arg=--export-if-defined=molt_required_export"
+        " -C link-arg=--export-if-defined=molt_other_required_export"
+    )
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(
+        cli,
+        "wasm_runtime_export_link_args",
+        lambda *args, **kwargs: export_flags,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: tmp_path / "fingerprint.json",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli, "_write_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_wasm_missing_exports",
+        lambda path, required: set(),
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_is_valid_shared_runtime_wasm_artifact",
+        lambda path: True,
+        raising=True,
+    )
+    fingerprint_rustflags: list[str] = []
+
+    def fake_runtime_fingerprint(*args, **kwargs):  # type: ignore[no-untyped-def]
+        fingerprint_rustflags.append(kwargs["rustflags"])
+        return None
+
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", fake_runtime_fingerprint, raising=True
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_runtime_wasm_cargo_build(
+        *,
+        cmd: list[str],
+        root: Path,
+        env: dict[str, str],
+        cargo_timeout: float | None,
+        profile_dir: str,
+        target_root_override: Path | None = None,
+        json_output: bool,
+        artifact_kind: str = "cdylib",
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        del cargo_timeout, json_output, artifact_kind
+        captured["cmd"] = list(cmd)
+        captured["root"] = root
+        captured["env"] = dict(env)
+        effective_target_root = target_root_override or cli._cargo_target_root(root)
+        artifact = (
+            effective_target_root / "wasm32-wasip1" / profile_dir / "molt_runtime.wasm"
+        )
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"\x00asm\x01\x00\x00\x00shared")
+        return subprocess.CompletedProcess(cmd, 0, "", ""), artifact
+
+    monkeypatch.setattr(
+        cli,
+        "_run_runtime_wasm_cargo_build",
+        fake_run_runtime_wasm_cargo_build,
+        raising=True,
+    )
+
+    assert cli._ensure_runtime_wasm(
+        runtime_wasm,
+        reloc=False,
+        json_output=True,
+        cargo_profile="dev-fast",
+        cargo_timeout=5.0,
+        project_root=project_root,
+        stdlib_profile="micro",
+        resolved_modules={"__main__", "math", "sys", "builtins"},
+    )
+
+    cargo_rustflags = captured["env"]["RUSTFLAGS"]
+    assert "--export-if-defined=molt_required_export" not in cargo_rustflags
+    assert "-C link-arg=@" in cargo_rustflags
+    response_path = Path(cargo_rustflags.split("-C link-arg=@", 1)[1].split()[0])
+    response_text = response_path.read_text(encoding="utf-8")
+    assert "--import-memory" in response_text
+    assert "--import-table" in response_text
+    assert "--growable-table" in response_text
+    assert "--export-if-defined=molt_required_export" in response_text
+    assert "--export-if-defined=molt_other_required_export" in response_text
+    assert "--export-dynamic" not in response_text
+    assert fingerprint_rustflags
+    assert "--export-if-defined=molt_required_export" in fingerprint_rustflags[-1]
+    assert "--export-dynamic" not in fingerprint_rustflags[-1]
+
+
+def test_wasm_link_args_response_file_path_is_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    response_path = cli._write_wasm_link_args_response_file(
+        Path("relative") / ".molt_link_args",
+        label="molt runtime reloc",
+        link_args=["--export-if-defined=molt_required_export"],
+    )
+
+    assert response_path.is_absolute()
+    assert response_path.read_text(encoding="utf-8") == (
+        "--export-if-defined=molt_required_export\n"
+    )
+
+
 def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -679,7 +810,14 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     project_root.mkdir()
     runtime_wasm = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
     target_root = tmp_path / "target"
+    export_flags = " -C link-arg=--export-if-defined=molt_reloc_required_export"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    monkeypatch.setattr(
+        cli,
+        "wasm_runtime_export_link_args",
+        lambda *args, **kwargs: export_flags,
+        raising=True,
+    )
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: None, raising=True
     )
@@ -738,8 +876,9 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
         link_timeout: float | None,
         export_link_args: str = "",
     ) -> bool:
-        del json_output, link_timeout, export_link_args
+        del json_output, link_timeout
         captured["linked_staticlib_path"] = staticlib_path
+        captured["export_link_args"] = export_link_args
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
         return True
@@ -773,10 +912,73 @@ def test_ensure_runtime_wasm_reloc_requests_staticlib_build(
     assert cmd[:2] == ["cargo", "rustc"]
     assert "--lib" in cmd
     assert "--crate-type=staticlib" in cmd
+    cargo_rustflags = captured["env"].get("RUSTFLAGS", "")
+    assert "--export-if-defined=molt_reloc_required_export" not in cargo_rustflags
+    assert captured["export_link_args"] == export_flags
     assert captured["linked_staticlib_path"] == (
         target_root / "wasm32-wasip1" / "release-fast" / "libmolt_runtime.a"
     )
     assert runtime_wasm.read_bytes() == b"\x00asm\x01\x00\x00\x00reloc"
+
+
+def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    staticlib = Path("target") / "wasm32-wasip1" / "release" / "libmolt_runtime.a"
+    libc = Path("toolchain") / "wasm32-wasip1" / "libc.a"
+    staticlib.parent.mkdir(parents=True)
+    libc.parent.mkdir(parents=True)
+    staticlib.write_bytes(b"archive")
+    libc.write_bytes(b"libc")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "wasm-ld", raising=True)
+    monkeypatch.setattr(
+        cli, "_wasm_wasi_libc_archive", lambda: libc, raising=True
+    )
+    monkeypatch.setattr(
+        cli, "_is_valid_runtime_wasm_artifact", lambda path: True, raising=True
+    )
+
+    def fake_run_completed_command(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str] | None,
+        capture_output: bool,
+        memory_guard_prefix: str | None = None,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del env, capture_output, memory_guard_prefix, timeout
+        captured["cmd"] = list(cmd)
+        captured["cwd"] = cwd
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"\x00asm\x01\x00\x00\x00reloc")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli, "_run_completed_command", fake_run_completed_command, raising=True
+    )
+
+    output = Path("runtime") / "molt_runtime_reloc.wasm"
+    assert cli._link_runtime_staticlib_to_reloc_wasm(
+        staticlib_path=staticlib,
+        output_path=output,
+        json_output=True,
+        link_timeout=5.0,
+        export_link_args="-C link-arg=--export-if-defined=molt_required",
+    )
+
+    cmd = captured["cmd"]
+    response_arg = next(arg for arg in cmd if arg.startswith("@"))
+    assert Path(response_arg[1:]).is_absolute()
+    assert Path(cmd[cmd.index("-o") + 1]).is_absolute()
+    assert Path(cmd[cmd.index("--whole-archive") + 1]).is_absolute()
+    assert Path(cmd[cmd.index("--no-whole-archive") + 1]).is_absolute()
+    assert captured["cwd"] == output.resolve(strict=False).parent
+    assert output.exists()
 
 
 def test_ensure_runtime_wasm_defaults_cargo_incremental_off_and_preserves_explicit(
@@ -878,6 +1080,10 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     runtime_wasm = tmp_path / "molt_runtime_reloc.wasm"
     libc_archive = tmp_path / "libc.a"
     libc_archive.write_bytes(b"libc")
+    export_link_args = (
+        " -C link-arg=--export-if-defined=molt_reloc_required_export"
+        " -C link-arg=--export-if-defined=molt_reloc_other_export"
+    )
     captured: dict[str, object] = {}
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
@@ -901,10 +1107,16 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
         output_path=runtime_wasm,
         json_output=True,
         link_timeout=5.0,
+        export_link_args=export_link_args,
     )
 
     cmd = captured["cmd"]
-    assert cmd[:4] == ["/usr/bin/wasm-ld", "-r", "--whole-archive", str(staticlib)]
+    assert cmd[:2] == ["/usr/bin/wasm-ld", "-r"]
+    assert cmd[2].startswith("@")
+    response_text = Path(cmd[2].removeprefix("@")).read_text(encoding="utf-8")
+    assert "--export-if-defined=molt_reloc_required_export" in response_text
+    assert "--export-if-defined=molt_reloc_other_export" in response_text
+    assert cmd[3:5] == ["--whole-archive", str(staticlib)]
     assert "--no-whole-archive" in cmd
     no_whole_index = cmd.index("--no-whole-archive")
     assert cmd[no_whole_index + 1] == str(libc_archive)

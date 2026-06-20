@@ -61,6 +61,73 @@ def test_build_slot_dir_prefers_ext_root(monkeypatch, tmp_path: Path):
     assert cli._build_slot_dir() == ext_root / "tmp" / "molt-build-slots"
 
 
+def test_build_slot_acquires_cross_platform_lock(monkeypatch, tmp_path: Path):
+    from molt import cli
+
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
+    monkeypatch.setenv("MOLT_MAX_CONCURRENT_BUILDS", "1")
+
+    with cli._build_slot() as slot:
+        assert slot == 0
+        assert (tmp_path / "tmp" / "molt-build-slots" / "slot-0.lock").exists()
+
+
+def test_build_lock_creates_cross_platform_lock_file(monkeypatch, tmp_path: Path):
+    from molt import cli
+
+    state_root = tmp_path / "state"
+    monkeypatch.setattr(cli, "_build_state_root", lambda _project_root: state_root)
+    monkeypatch.delenv("MOLT_BUILD_LOCK_TIMEOUT", raising=False)
+
+    with cli._build_lock(tmp_path, "unit"):
+        assert (state_root / "build_locks" / "unit.lock").exists()
+
+
+def test_shared_locks_create_cross_platform_lock_files(tmp_path: Path):
+    from molt import cli
+
+    cache_root = tmp_path / "cache"
+    stdlib_object = tmp_path / "stdlib.o"
+
+    with cli._shared_cache_lock("unit", cache_root=cache_root):
+        assert (cache_root / "locks" / "unit.lock").exists()
+
+    with cli._shared_stdlib_cache_lock(stdlib_object):
+        assert (tmp_path / "stdlib.o.publish.lock").exists()
+
+
+def test_cargo_build_env_pins_build_python(monkeypatch):
+    from molt import cli
+
+    monkeypatch.delenv("MOLT_BUILD_PYTHON", raising=False)
+    env = cli._cargo_build_env()
+    assert env["MOLT_BUILD_PYTHON"] == sys.executable
+
+    monkeypatch.setenv("MOLT_BUILD_PYTHON", "custom-python")
+    env = cli._cargo_build_env()
+    assert env["MOLT_BUILD_PYTHON"] == "custom-python"
+
+
+def test_runtime_staticlib_names_are_target_platform_specific():
+    from molt import cli
+
+    assert (
+        cli._runtime_lib_archive_name("micro", "x86_64-pc-windows-msvc")
+        == "molt_runtime.stdlib_micro.lib"
+    )
+    assert (
+        cli._runtime_cargo_scratch_lib_name("x86_64-pc-windows-msvc")
+        == "molt_runtime.lib"
+    )
+    assert cli._runtime_lib_archive_name("micro", "x86_64-unknown-linux-gnu") == (
+        "libmolt_runtime.stdlib_micro.a"
+    )
+    assert (
+        cli._runtime_cargo_scratch_lib_name("x86_64-unknown-linux-gnu")
+        == "libmolt_runtime.a"
+    )
+
+
 def test_parse_io_mode_flag_virtual():
     from molt.cli import _parse_io_mode_flag
 

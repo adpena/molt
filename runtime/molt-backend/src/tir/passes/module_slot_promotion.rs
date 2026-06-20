@@ -371,11 +371,6 @@ pub fn run_module_slot_promotion(module: &mut TirModule) -> (PromotionStats, Vec
     let mut changed_names = Vec::new();
     let mut dbg = DebugLog::from_env();
 
-    if std::env::var("MOLT_DISABLE_MODULE_SLOT_PROMOTION").is_ok() {
-        dbg.note("disabled via MOLT_DISABLE_MODULE_SLOT_PROMOTION");
-        dbg.flush(&module.name);
-        return (stats, changed_names);
-    }
     if module_has_concurrency_markers(module) {
         dbg.note("module-wide refusal: concurrency markers (threading/_thread import or molt_thread_* call)");
         dbg.flush(&module.name);

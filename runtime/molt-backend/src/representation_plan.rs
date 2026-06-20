@@ -1948,6 +1948,14 @@ impl ScalarRepresentationPlan {
         true
     }
 
+    fn remove_fact(&mut self, name: &str) -> bool {
+        let removed = self.facts_by_name.remove(name).is_some();
+        if removed {
+            self.weak_fact_names.remove(name);
+        }
+        removed
+    }
+
     fn insert_container_storage_fact(&mut self, name: String, fact: ContainerStorageFact) -> bool {
         if self.container_storage_conflicted_names.contains(&name) {
             return false;
@@ -5169,6 +5177,41 @@ mod tests {
         let (int_like, _, _, _, _) =
             ScalarRepresentationPlan::for_function_ir(&uniform).scalar_name_sets();
         assert!(int_like.contains("slot"));
+    }
+
+    #[test]
+    fn unknown_store_target_blocks_alias_output_reinsertion() {
+        let func = function(
+            "store_alias_output_cycle",
+            &[],
+            None,
+            vec![
+                op("store_var", None, Some("slot"), &["unknown_source"]),
+                op("copy", Some("slot"), None, &["seed"]),
+                op("load_var", Some("loaded"), Some("slot"), &[]),
+            ],
+        );
+        let fact_index = FunctionFactIndex::for_function(&func);
+        let mut plan = ScalarRepresentationPlan::default();
+        let int_fact = ScalarRepresentationFact {
+            ty: TirType::I64,
+            repr: LirRepr::I64,
+        };
+        plan.insert_fact("seed".to_string(), int_fact.clone());
+        plan.insert_fact("slot".to_string(), int_fact);
+
+        plan.propagate_simple_aliases(&fact_index);
+
+        let (int_like, _, _, _, _) = plan.scalar_name_sets();
+        assert!(int_like.contains("seed"));
+        assert!(
+            !int_like.contains("slot"),
+            "unknown store targets must not be reintroduced through alias outputs"
+        );
+        assert!(
+            !int_like.contains("loaded"),
+            "aliases loaded from an unknown store target must remain unproven"
+        );
     }
 
     #[test]

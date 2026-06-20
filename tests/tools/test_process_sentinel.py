@@ -259,6 +259,37 @@ def test_process_groups_match_canonical_artifact_roots() -> None:
     assert [group.pgid for group in groups] == [10, 20, 30]
 
 
+def test_process_groups_match_windows_canonical_artifact_roots() -> None:
+    module = _load_process_sentinel()
+    root = Path("C:/Users/adpen/OneDrive/Documents/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\target\dev-fast\molt-backend.exe --daemon"
+            ),
+        ),
+        20: module.memory_guard.ProcessSample(
+            pid=20,
+            ppid=1,
+            pgid=20,
+            rss_kb=100,
+            command=(
+                r"C:\Users\adpen\OneDrive\Documents\molt"
+                r"\tmp\diff\case_1\main_molt.exe"
+            ),
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert [group.pgid for group in groups] == [10, 20]
+
+
 def test_process_groups_propagate_to_nested_child_sessions() -> None:
     module = _load_process_sentinel()
     root = Path("/repo/molt")
@@ -670,11 +701,18 @@ def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
     sent_groups: list[tuple[int, int]] = []
     monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
     monkeypatch.setattr(module.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(module.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(module, "_safe_getpgrp", lambda: 999)
     monkeypatch.setattr(
         module.os,
         "killpg",
         lambda pgid, sig: sent_groups.append((pgid, sig)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module.os,
+        "kill",
+        lambda pid, sig: sent_groups.append((pid, sig)),
+        raising=False,
     )
 
     module.terminate_group(100, grace=0.001)
@@ -1012,7 +1050,7 @@ def test_main_once_dry_run_reports_without_terminating(monkeypatch, capsys) -> N
     monkeypatch.setattr(
         module,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        lambda pgid, *, grace, **_kwargs: terminated.append(pgid),
     )
 
     rc = module.main(["--once", "--dry-run", "--kill-all"])
@@ -1049,7 +1087,7 @@ def test_main_once_reports_operator_incident_for_terminated_group(
     monkeypatch.setattr(
         module,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append((pgid, grace)),
+        lambda pgid, *, grace, **_kwargs: terminated.append((pgid, grace)),
     )
 
     rc = module.main(["--once", "--kill-all", "--grace-sec", "0.25"])
@@ -1090,7 +1128,11 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
             )
         },
     )
-    monkeypatch.setattr(module, "terminate_group", lambda pgid, *, grace: None)
+    monkeypatch.setattr(
+        module,
+        "terminate_group",
+        lambda pgid, *, grace, **_kwargs: None,
+    )
 
     rc = module.main(["--once", "--dry-run", "--kill-all", "--json"])
 
@@ -1109,7 +1151,9 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
     assert payload["victim_command"].endswith("molt-backend")
     assert payload["owner_match_reason"] == "repo_scope"
     assert payload["termination"]["signal"]["name"] == "SIGTERM"
-    assert payload["termination"]["fallback_signal"]["name"] == "SIGKILL"
+    assert payload["termination"]["fallback_signal"] == (
+        module.memory_guard.fallback_kill_signal_payload()
+    )
     assert payload["termination"]["grace_sec"] == module.DEFAULT_GRACE_SEC
     assert payload["termination"]["rss_triggered"] is False
     assert payload["violation"]["reason"] == "kill_all"
@@ -1169,7 +1213,7 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "terminate_group",
-        lambda pgid, *, grace: terminated.append(pgid),
+        lambda pgid, *, grace, **_kwargs: terminated.append(pgid),
     )
 
     rc = module.main(

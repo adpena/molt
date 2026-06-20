@@ -40,6 +40,18 @@ use crate::{
     runtime_state,
 };
 
+#[cfg(windows)]
+#[inline]
+fn libc_write_count(len: usize) -> libc::c_uint {
+    len.min(u32::MAX as usize) as libc::c_uint
+}
+
+#[cfg(not(windows))]
+#[inline]
+fn libc_write_count(len: usize) -> usize {
+    len
+}
+
 // --- State constants ---
 const STATE_IDLE: u8 = 0;
 const STATE_RUNNING: u8 = 1;
@@ -1155,7 +1167,7 @@ fn close_pipe_transport_state(state: &mut PipeTransportState) {
                     libc::write(
                         fd as libc::c_int,
                         chunk[offset..].as_ptr() as *const libc::c_void,
-                        chunk.len() - offset,
+                        libc_write_count(chunk.len() - offset),
                     )
                 };
                 if rc <= 0 {
@@ -1268,7 +1280,7 @@ pub extern "C" fn molt_pipe_transport_write(handle_bits: u64, data_bits: u64) ->
                     libc::write(
                         fd as libc::c_int,
                         data[offset..].as_ptr() as *const libc::c_void,
-                        data.len() - offset,
+                        libc_write_count(data.len() - offset),
                     )
                 };
                 if rc < 0 {

@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
+import tomllib
+from pathlib import Path, PurePosixPath
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,10 +12,90 @@ COMPAT_START = "<!-- GENERATED:compat-summary:start -->"
 COMPAT_END = "<!-- GENERATED:compat-summary:end -->"
 BENCH_START = "<!-- GENERATED:bench-summary:start -->"
 BENCH_END = "<!-- GENERATED:bench-summary:end -->"
+AUTHORITY_MANIFEST_REL = "docs/design/foundation/authority_manifest.toml"
+AUTHORITY_MANIFEST_DOC_REF = "design/foundation/authority_manifest.toml"
 
 
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _is_safe_repo_rel_path(value: str) -> bool:
+    path = PurePosixPath(value)
+    return (
+        bool(value)
+        and not path.is_absolute()
+        and "\\" not in value
+        and ":" not in value
+        and ".." not in path.parts
+    )
+
+
+def _load_authority_manifest(errors: list[str]) -> list[dict[str, object]]:
+    manifest_path = ROOT / AUTHORITY_MANIFEST_REL
+    if not manifest_path.exists():
+        errors.append(
+            "docs/design/foundation/authority_manifest.toml: missing planning authority manifest"
+        )
+        return []
+    try:
+        data = tomllib.loads(_read_text(manifest_path))
+    except tomllib.TOMLDecodeError as exc:
+        errors.append(
+            "docs/design/foundation/authority_manifest.toml: invalid TOML: "
+            f"{exc}"
+        )
+        return []
+    entries = data.get("authority")
+    if not isinstance(entries, list) or not entries:
+        errors.append(
+            "docs/design/foundation/authority_manifest.toml: missing [[authority]] entries"
+        )
+        return []
+    valid_entries: list[dict[str, object]] = []
+    seen_paths: set[str] = set()
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            errors.append(
+                "docs/design/foundation/authority_manifest.toml: "
+                f"authority entry {index} must be a table"
+            )
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or not _is_safe_repo_rel_path(path):
+            errors.append(
+                "docs/design/foundation/authority_manifest.toml: "
+                f"authority entry {index} has invalid path {path!r}"
+            )
+            continue
+        if path in seen_paths:
+            errors.append(
+                "docs/design/foundation/authority_manifest.toml: "
+                f"duplicate authority path {path}"
+            )
+            continue
+        seen_paths.add(path)
+        markers = entry.get("required_markers")
+        if not isinstance(markers, list) or not markers or not all(
+            isinstance(marker, str) and marker for marker in markers
+        ):
+            errors.append(
+                "docs/design/foundation/authority_manifest.toml: "
+                f"{path} missing non-empty string required_markers"
+            )
+            continue
+        for key in ("index_ref", "canonicals_ref"):
+            ref = entry.get(key)
+            if ref is not None and (
+                not isinstance(ref, str) or not _is_safe_repo_rel_path(ref)
+            ):
+                errors.append(
+                    "docs/design/foundation/authority_manifest.toml: "
+                    f"{path} has invalid {key} {ref!r}"
+                )
+                continue
+        valid_entries.append(entry)
+    return valid_entries
 
 
 def _check_readme(errors: list[str]) -> None:
@@ -116,6 +197,62 @@ def _check_support_story_refs(errors: list[str]) -> None:
         )
 
 
+def _check_long_horizon_routing(errors: list[str]) -> None:
+    manifest = _load_authority_manifest(errors)
+    index_text = _read_text(ROOT / "docs/INDEX.md")
+    if AUTHORITY_MANIFEST_DOC_REF not in index_text:
+        errors.append(
+            f"docs/INDEX.md: missing planning authority manifest ref {AUTHORITY_MANIFEST_DOC_REF}"
+        )
+    seen_index_refs: set[str] = set()
+    for entry in manifest:
+        ref = entry.get("index_ref")
+        if not isinstance(ref, str):
+            continue
+        if ref in seen_index_refs:
+            errors.append(
+                "docs/design/foundation/authority_manifest.toml: "
+                f"duplicate index_ref {ref}"
+            )
+            continue
+        seen_index_refs.add(ref)
+        if ref not in index_text:
+            errors.append(f"docs/INDEX.md: missing long-horizon planning ref {ref}")
+
+    canonicals_text = _read_text(ROOT / "docs/CANONICALS.md")
+    if AUTHORITY_MANIFEST_DOC_REF not in canonicals_text:
+        errors.append(
+            f"docs/CANONICALS.md: missing planning authority manifest ref {AUTHORITY_MANIFEST_DOC_REF}"
+        )
+    seen_canonicals_refs: set[str] = set()
+    for entry in manifest:
+        ref = entry.get("canonicals_ref")
+        if not isinstance(ref, str):
+            continue
+        if ref in seen_canonicals_refs:
+            errors.append(
+                "docs/design/foundation/authority_manifest.toml: "
+                f"duplicate canonicals_ref {ref}"
+            )
+            continue
+        seen_canonicals_refs.add(ref)
+        if ref not in canonicals_text:
+            errors.append(f"docs/CANONICALS.md: missing canonical doctrine ref {ref}")
+
+    for entry in manifest:
+        rel_path = entry.get("path")
+        assert isinstance(rel_path, str)
+        markers = entry.get("required_markers")
+        assert isinstance(markers, list)
+        text = _read_text(ROOT / rel_path)
+        if not text:
+            errors.append(f"{rel_path}: missing authority document")
+            continue
+        for marker in markers:
+            if marker not in text:
+                errors.append(f"{rel_path}: missing authority marker {marker!r}")
+
+
 def check_repo() -> list[str]:
     errors: list[str] = []
     _check_readme(errors)
@@ -124,6 +261,7 @@ def check_repo() -> list[str]:
     _check_supported(errors)
     _check_benchmarking_docs(errors)
     _check_support_story_refs(errors)
+    _check_long_horizon_routing(errors)
     return errors
 
 

@@ -216,6 +216,16 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
     assert ops[-1] == {"kind": "ret", "args": [ops[-2]["out"]]}
 
 
+def test_isolate_import_module_order_is_explicit_import_bounded() -> None:
+    from molt.cli import _isolate_import_module_order
+
+    assert _isolate_import_module_order(
+        ["__main__", "json", "json.decoder", "sys"],
+        {"json.decoder"},
+    ) == ["json", "json.decoder"]
+    assert _isolate_import_module_order(["sys"], set()) == []
+
+
 def _build_split(source_file: Path, output_dir: Path) -> subprocess.CompletedProcess:
     """Run ``molt build --target wasm --split-runtime`` and return the result."""
     env = os.environ.copy()
