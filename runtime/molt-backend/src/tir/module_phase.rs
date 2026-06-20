@@ -65,6 +65,73 @@ use super::call_graph::CallGraph;
 use super::function::TirModule;
 use super::passes::ip_summary::ModuleSummaries;
 use super::target_info::TargetInfo;
+use std::time::Instant;
+
+#[derive(Debug, Clone)]
+struct ModuleStageAuditShape {
+    functions: usize,
+    tir_blocks: usize,
+    tir_ops: usize,
+    largest_function: String,
+    largest_ops: usize,
+}
+
+fn module_stage_audit_enabled() -> bool {
+    std::env::var("MOLT_MODULE_STAGE_AUDIT").as_deref() == Ok("1")
+        || std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1")
+}
+
+fn module_stage_shape(module: &TirModule) -> ModuleStageAuditShape {
+    let mut tir_blocks = 0usize;
+    let mut tir_ops = 0usize;
+    let mut largest_function = "<none>".to_string();
+    let mut largest_ops = 0usize;
+    for func in &module.functions {
+        let blocks = func.blocks.len();
+        let ops = func
+            .blocks
+            .values()
+            .fold(0usize, |total, block| total.saturating_add(block.ops.len()));
+        tir_blocks = tir_blocks.saturating_add(blocks);
+        tir_ops = tir_ops.saturating_add(ops);
+        if ops > largest_ops {
+            largest_ops = ops;
+            largest_function = func.name.clone();
+        }
+    }
+    ModuleStageAuditShape {
+        functions: module.functions.len(),
+        tir_blocks,
+        tir_ops,
+        largest_function,
+        largest_ops,
+    }
+}
+
+fn emit_module_stage_audit(
+    stage: &str,
+    module: &TirModule,
+    changed_functions: Option<usize>,
+    elapsed_ms: u128,
+) {
+    if !module_stage_audit_enabled() {
+        return;
+    }
+    let shape = module_stage_shape(module);
+    eprintln!(
+        "[molt-module-stage-audit] stage={stage} functions={} tir_blocks={} tir_ops={} largest_function={} largest_ops={} changed_functions={} elapsed_ms={} peak_rss_mib={}",
+        shape.functions,
+        shape.tir_blocks,
+        shape.tir_ops,
+        shape.largest_function,
+        shape.largest_ops,
+        changed_functions
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        elapsed_ms,
+        crate::process_diagnostics::process_peak_rss_mib_label(),
+    );
+}
 
 /// The result of the whole-program module phase: the interprocedural analysis
 /// the IPO tier reads. Computed once per module, shared read-only.
@@ -141,8 +208,22 @@ pub fn run_module_pipeline(
     tti: &TargetInfo,
     non_inlinable: &std::collections::HashSet<String>,
 ) -> ModuleAnalysis {
+    let audit_start = Instant::now();
+    emit_module_stage_audit("start", module, None, audit_start.elapsed().as_millis());
     let call_graph = CallGraph::build(module);
+    emit_module_stage_audit(
+        "after-initial-call-graph",
+        module,
+        None,
+        audit_start.elapsed().as_millis(),
+    );
     let summaries = ModuleSummaries::compute(module, &call_graph);
+    emit_module_stage_audit(
+        "after-initial-summaries",
+        module,
+        None,
+        audit_start.elapsed().as_millis(),
+    );
 
     // E1: inline (a module transform — mutates bodies across functions).
     // `non_inlinable` names callees whose canonical definition is linked
@@ -151,6 +232,12 @@ pub fn run_module_pipeline(
     // reference instead of forking a private copy of a body it does not own.
     let inline_stats =
         super::passes::inliner::run_inliner(module, &call_graph, &summaries, tti, non_inlinable);
+    emit_module_stage_audit(
+        "after-inliner",
+        module,
+        Some(inline_stats.changed_functions.len()),
+        audit_start.elapsed().as_millis(),
+    );
     // Observability (mirrors TIR_OPT_STATS): the per-module inliner outcome, so
     // an unexpectedly-inert activation is visible instead of silently zero.
     if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
@@ -173,6 +260,12 @@ pub fn run_module_pipeline(
     // back-conversion + the LLVM/WASM direct lowering.
     let fusion_stats =
         super::passes::generator_fusion::run_generator_fusion(module, &call_graph, tti);
+    emit_module_stage_audit(
+        "after-generator-fusion",
+        module,
+        Some(fusion_stats.changed_functions.len()),
+        audit_start.elapsed().as_millis(),
+    );
     if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
         eprintln!(
             "[Tier-B] module '{}': generator fusion elided {} frame(s), spliced {} yield site(s)",
@@ -187,6 +280,12 @@ pub fn run_module_pipeline(
     // phis and the backends receive fully-refined bodies.
     let (promo_stats, promo_changed) =
         super::passes::module_slot_promotion::run_module_slot_promotion(module);
+    emit_module_stage_audit(
+        "after-module-slot-promotion",
+        module,
+        Some(promo_changed.len()),
+        audit_start.elapsed().as_millis(),
+    );
     if std::env::var("MOLT_INLINE_STATS").as_deref() == Ok("1") {
         eprintln!(
             "[E1] module '{}': slot-promotion {} slots / {} ops eliminated in {} functions {:?}",
@@ -208,6 +307,12 @@ pub fn run_module_pipeline(
             }
         }
     }
+    emit_module_stage_audit(
+        "after-module-slot-promotion-reopt",
+        module,
+        Some(promo_changed.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     let mut changed_functions = inline_stats.changed_functions;
     for name in fusion_stats.changed_functions {
@@ -234,23 +339,61 @@ pub fn run_module_pipeline(
     // no-op, so this finalizer changes nothing there. The phase topology is
     // identical across every backend (the point of round-7).
     //
-    // A function the drop phase changed (drops inserted → `DecRef`/`IncRef` ops +
-    // the `drop_inserted` marker native codegen reads to suppress its competing
-    // automatic temp-RC) is added to `changed_functions` so the native/wasm
-    // drivers back-convert it to SimpleIR; the LLVM lane lowers the whole module
-    // directly and ignores the flag. A function with no droppable temporaries
-    // reports unchanged and is left out — no wasted back-conversion.
-    for name in super::drop_phase::finalize_module_drops(module, tti) {
+    // A function whose drop phase changed either op layout (inserted
+    // `DecRef`/`IncRef`) or marker-only ownership facts (`drop_inserted`, which
+    // native codegen reads to suppress its competing automatic temp-RC) is added
+    // to `changed_functions` so the native/wasm drivers back-convert it to
+    // SimpleIR; the LLVM lane lowers the whole module directly and ignores the
+    // flag. A function with no drop-phase fact or op changes reports unchanged
+    // and is left out — no wasted back-conversion.
+    emit_module_stage_audit(
+        "before-drop-finalize",
+        module,
+        Some(changed_functions.len()),
+        audit_start.elapsed().as_millis(),
+    );
+    let drop_changed = super::drop_phase::finalize_module_drops(module, tti);
+    emit_module_stage_audit(
+        "after-drop-finalize",
+        module,
+        Some(drop_changed.len()),
+        audit_start.elapsed().as_millis(),
+    );
+    for name in drop_changed {
         if !changed_functions.contains(&name) {
             changed_functions.push(name);
         }
     }
+    emit_module_stage_audit(
+        "after-drop-change-merge",
+        module,
+        Some(changed_functions.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // Rebuild over the post-inline module: inlining removed `Call` ops and grew
     // caller bodies, so the leaf set / edges / op counts the returned analysis
     // exposes must reflect the merged program.
+    emit_module_stage_audit(
+        "before-post-call-graph",
+        module,
+        Some(changed_functions.len()),
+        audit_start.elapsed().as_millis(),
+    );
     let call_graph = CallGraph::build(module);
+    emit_module_stage_audit(
+        "after-post-call-graph",
+        module,
+        Some(changed_functions.len()),
+        audit_start.elapsed().as_millis(),
+    );
     let summaries = ModuleSummaries::compute(module, &call_graph);
+    emit_module_stage_audit(
+        "after-post-summaries",
+        module,
+        Some(changed_functions.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // CallFacts (foundation design 47): the per-call-site fact records, built
     // over the SAME post-inline module + call graph + summaries the backends
@@ -260,8 +403,20 @@ pub fn run_module_pipeline(
     // consumes them yet. `is_inlineable`'s own eligibility classifier fills the
     // `inlinable` field, so the recorded facts can never disagree with the
     // inliner (single source of truth, doc 47 §7).
+    emit_module_stage_audit(
+        "before-call-facts",
+        module,
+        Some(changed_functions.len()),
+        audit_start.elapsed().as_millis(),
+    );
     let call_facts =
         super::call_facts::CallFactsTable::build_module(module, &call_graph, &summaries, tti);
+    emit_module_stage_audit(
+        "after-call-facts",
+        module,
+        Some(changed_functions.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // S5-1.5 producer-effect instrument: how many functions now have a
     // MemGVN-forwardable typed-slot load pair (two loads with the same reaching

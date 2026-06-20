@@ -44,6 +44,7 @@ from molt.frontend._types import (
     MoltValue,
     SCCPResult,
     TryScope,
+    _ClassNsScope,
     _TrackedOpsList,
 )
 
@@ -53,10 +54,12 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(Protocol):
+    _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str]
     _STUB_IMPORT_MODULES: frozenset[str]
     _active_classcell_cell: MoltValue | None
     _active_midend_function_name: Any
     _class_body_depth: int
+    _class_ns_stack: list[_ClassNsScope]
     _deferred_runtime_warnings: list[str]
     _emitted_syntax_warnings: set[tuple[str, int, str]]
     _expr_col: tuple[int, int] | None
@@ -68,6 +71,7 @@ class _GeneratorProtocol(Protocol):
     _module_pressure_funcs_map_ref: Any
     _module_pressure_function_count: Any
     _module_pressure_total_ops: Any
+    _op_by_result: dict[str, MoltOp]
     _sema: "SemaResult | None"
     _source_is_stdlib_module: Any
     _typing_import_aliases: set[str]
@@ -843,6 +847,10 @@ class _GeneratorProtocol(Protocol):
 
     def _is_linkable_module_function_symbol(self, module_name: str | None) -> bool: ...
 
+    def _imported_module_binding_target(self, binding_name: str) -> str | None: ...
+
+    def _record_imported_module_attr_mutation(self, target: ast.Attribute) -> None: ...
+
     def _imported_module_attr_is_stable(self, module_name: str, attr: str) -> bool: ...
 
     @staticmethod
@@ -856,13 +864,34 @@ class _GeneratorProtocol(Protocol):
 
     def _should_attempt_runtime_module_import(self, module_name: str) -> bool: ...
 
+    def _emit_import_transaction(
+        self,
+        module_name: str,
+        *,
+        fromlist_names: Sequence[str],
+        level: int = 0,
+        globals_val: MoltValue | None = None,
+    ) -> MoltValue: ...
+
     def _emit_runtime_module_import(self, module_name: str) -> MoltValue: ...
 
-    def _emit_importlib_import_module_transaction(
-        self, module_name: str
+    def _emit_importlib_import_module_leaf(self, module_name: str) -> MoltValue: ...
+
+    def _emit_source_import_transaction(
+        self,
+        module_name: str,
+        *,
+        fromlist_names: Sequence[str],
+        level: int = 0,
     ) -> MoltValue: ...
 
     def _emit_module_load(self, module_name: str) -> MoltValue: ...
+
+    def _emit_module_import_from_value(
+        self, module_val: MoltValue, attr_name: str
+    ) -> MoltValue: ...
+
+    def _source_imports_use_transaction(self) -> bool: ...
 
     def _lookup_func_defaults(
         self, module_name: str | None, func_id: str
@@ -879,6 +908,21 @@ class _GeneratorProtocol(Protocol):
     def _emit_function_kwdefaults_dict(self, func_obj: MoltValue) -> MoltValue: ...
 
     def _emit_bound_method_func(self, method_obj: MoltValue) -> MoltValue: ...
+
+    def _method_func_obj_for_defaults(
+        self, owner_class: str, method_name: str
+    ) -> "MoltValue | None": ...
+
+    def _emit_function_defaults_version(self, func_obj: MoltValue) -> MoltValue: ...
+
+    def _emit_defaults_pristine_guard(self, func_obj: MoltValue) -> MoltValue: ...
+
+    def _emit_guarded_default_value(
+        self,
+        guard: MoltValue,
+        baked_value: object,
+        emit_live: Callable[[], MoltValue],
+    ) -> MoltValue: ...
 
     def _emit_class_method_func(
         self, class_obj: MoltValue, method_name: str
@@ -917,6 +961,13 @@ class _GeneratorProtocol(Protocol):
 
     def _emit_dataclasses_field_call(
         self, module_name: str, node: ast.Call
+    ) -> MoltValue: ...
+
+    def _emit_dataclass_application(
+        self,
+        node: ast.ClassDef,
+        class_info: ClassInfo,
+        class_val: MoltValue,
     ) -> MoltValue: ...
 
     def _emit_module_load_with_parents(self, module_name: str) -> MoltValue: ...
@@ -1055,6 +1106,15 @@ class _GeneratorProtocol(Protocol):
         body: list[ast.stmt],
     ) -> list[str]: ...
 
+    def _collect_code_names_for_body(
+        self,
+        nodes: Sequence[ast.AST],
+        *,
+        varnames: Sequence[str],
+        free_vars: Sequence[str],
+        module_scope: bool = False,
+    ) -> list[str]: ...
+
     @staticmethod
     def _is_type_checking_test(expr: ast.expr) -> bool: ...
 
@@ -1166,6 +1226,48 @@ class _GeneratorProtocol(Protocol):
 
     def _store_comprehension_local_value(self, name: str, value: MoltValue) -> None: ...
 
+    @staticmethod
+    def _is_class_body_managed_name(name: str) -> bool: ...
+
+    def _active_class_ns_scope(self, name: str) -> _ClassNsScope | None: ...
+
+    def _class_ns_store(
+        self, scope: _ClassNsScope, name: str, value: MoltValue
+    ) -> None: ...
+
+    def _class_ns_load(self, scope: _ClassNsScope, name: str) -> MoltValue | None: ...
+
+    def _class_ns_delete(self, scope: _ClassNsScope, name: str) -> None: ...
+
+    def _plain_local_del_boundary_enabled(
+        self, name: str, value: MoltValue | None
+    ) -> bool: ...
+
+    def _emit_plain_local_del_boundary(
+        self, name: str, value: MoltValue | None
+    ) -> None: ...
+
+    def _emit_plain_local_alias_retain(self, name: str, value: MoltValue) -> None: ...
+
+    def _plain_local_scope_exit_bindings(self) -> list[tuple[str, MoltValue]]: ...
+
+    @staticmethod
+    def _plain_local_scope_exit_boundary_exempt(value: MoltValue) -> bool: ...
+
+    def _value_reads_plain_local_binding(
+        self, value: MoltValue, bindings: list[tuple[str, MoltValue]]
+    ) -> bool: ...
+
+    def _emit_plain_local_scope_exit_boundaries(
+        self, preserve: MoltValue | None = None
+    ) -> None: ...
+
+    def _emit_locals_cache_update(self, name: str, value: MoltValue) -> None: ...
+
+    def _emit_delete_local_value(
+        self, name: str, missing: MoltValue, old_value: MoltValue
+    ) -> None: ...
+
     def _iterable_is_indexable(self, iterable: MoltValue | None) -> bool: ...
 
     def _iterable_is_indexable_for_loop(self, iterable: MoltValue | None) -> bool: ...
@@ -1208,6 +1310,25 @@ class _GeneratorProtocol(Protocol):
 
     @staticmethod
     def _call_needs_bind(node: ast.Call) -> bool: ...
+
+    @staticmethod
+    def _known_module_func_kind(info: dict[str, Any] | None) -> str | None: ...
+
+    def _emit_call_bind_for_known_module_func(
+        self,
+        node: ast.Call,
+        *,
+        result_hint: str,
+    ) -> MoltValue: ...
+
+    def _emit_known_module_task_func_call(
+        self,
+        target_module: str,
+        func_id: str,
+        node: ast.Call,
+        *,
+        needs_bind: bool,
+    ) -> MoltValue | None: ...
 
     def _emit_call_args_builder(self, node: ast.Call) -> MoltValue: ...
 
@@ -1372,6 +1493,8 @@ class _GeneratorProtocol(Protocol):
 
     def _emit_dec_ref(self, value: MoltValue) -> MoltValue: ...
 
+    def _emit_drop_owned_value(self, value: MoltValue | None) -> None: ...
+
     def _emit_borrow(self, value: MoltValue) -> MoltValue: ...
 
     def _emit_release(self, value: MoltValue) -> MoltValue: ...
@@ -1444,6 +1567,8 @@ class _GeneratorProtocol(Protocol):
     ) -> None: ...
 
     def _prepare_mutable_control_flow_bindings(self, names: set[str]) -> None: ...
+
+    def _evict_module_control_flow_bindings(self, names: set[str]) -> None: ...
 
     def _emit_loop_orelse(self, break_name: str, orelse: list[ast.stmt]) -> None: ...
 
@@ -1888,9 +2013,13 @@ class _GeneratorProtocol(Protocol):
 
     def _emit_context_unwind_to(self, scope: TryScope, exc_val: MoltValue) -> None: ...
 
-    def _emit_control_flow_scope_unwind(self, scopes: Sequence[TryScope]) -> list[int]: ...
+    def _emit_control_flow_scope_unwind(
+        self, scopes: Sequence[TryScope]
+    ) -> list[int]: ...
 
-    def _restore_control_flow_unwind_labels(self, popped_labels: Sequence[int]) -> None: ...
+    def _restore_control_flow_unwind_labels(
+        self, popped_labels: Sequence[int]
+    ) -> None: ...
 
     def _emit_raise_exit(self) -> None: ...
 
@@ -2042,6 +2171,7 @@ class _GeneratorProtocol(Protocol):
         *,
         policy: MidendFunctionPolicy,
         spent_ms: float,
+        work_units_spent: float,
         degraded: bool,
         degrade_events: list[dict[str, Any]],
         round_snapshots: list[dict[str, Any]] | None = None,

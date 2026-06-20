@@ -10,8 +10,11 @@ Canonical intrinsic-backing status now comes from:
 - gate script: `tools/check_stdlib_intrinsics.py`
 - generated audit: `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
 
-The gate computes `intrinsic-backed`, `intrinsic-partial`, `probe-only`, and
-`python-only` directly from `src/molt/stdlib/**` source and intrinsic usage.
+The gate computes `intrinsic-backed`, `intrinsic-partial`, `policy-gate`,
+`probe-only`, and `python-only` directly from `src/molt/stdlib/**` source and
+intrinsic usage. `policy-gate` is reserved for pure fail-closed namespace
+reservations whose only executable statement is an unconditional
+`ImportError`.
 
 ## Coverage Baseline
 Top-level + submodule name coverage is enforced against the CPython

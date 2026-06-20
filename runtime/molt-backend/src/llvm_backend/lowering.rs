@@ -18,6 +18,11 @@ use inkwell::values::{BasicValueEnum, FunctionValue, PhiValue};
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
 #[cfg(feature = "llvm")]
+use crate::llvm_backend::runtime_imports::{
+    RuntimeReturnAbi, classified_runtime_import_return_abi, declare_conservative_runtime_function,
+    is_classified_runtime_import,
+};
+#[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
 use inkwell::FloatPredicate;
@@ -682,6 +687,26 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
 }
 
 #[cfg(feature = "llvm")]
+fn require_llvm_function_type<'ctx>(
+    symbol: &str,
+    existing: FunctionValue<'ctx>,
+    expected: inkwell::types::FunctionType<'ctx>,
+) -> FunctionValue<'ctx> {
+    let actual = existing.get_type();
+    let same_shape = actual.get_return_type() == expected.get_return_type()
+        && actual.get_param_types() == expected.get_param_types()
+        && actual.is_var_arg() == expected.is_var_arg();
+    if !same_shape {
+        panic!(
+            "LLVM function type mismatch for `{symbol}`: expected {}, actual {}",
+            expected.print_to_string(),
+            actual.print_to_string()
+        );
+    }
+    existing
+}
+
+#[cfg(feature = "llvm")]
 pub fn declare_tir_function<'ctx>(
     func: &TirFunction,
     backend: &LlvmBackend<'ctx>,
@@ -700,12 +725,15 @@ pub fn declare_tir_function<'ctx>(
     // the name when a declaration already exists.
 
     let llvm_fn = if let Some(existing) = backend.module.get_function(&func.name) {
+        let existing = require_llvm_function_type(&func.name, existing, fn_ty);
         // Verify it's just a declaration (no basic blocks yet).
         if existing.count_basic_blocks() == 0 {
             existing
         } else {
-            // Already defined — create with unique name (shouldn't happen).
-            backend.module.add_function(&func.name, fn_ty, None)
+            panic!(
+                "LLVM function `{}` already has a body before TIR definition",
+                func.name
+            );
         }
     } else {
         backend.module.add_function(&func.name, fn_ty, None)
@@ -1148,19 +1176,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 global.set_constant(true);
                 global.set_unnamed_addr(true);
 
+                let ptr_ty = self
+                    .backend
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default());
+                let bigint_from_str_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
                 let bfs_fn =
                     if let Some(f) = self.backend.module.get_function("molt_bigint_from_str") {
-                        f
+                        require_llvm_function_type("molt_bigint_from_str", f, bigint_from_str_ty)
                     } else {
-                        let ptr_ty = self
-                            .backend
-                            .context
-                            .ptr_type(inkwell::AddressSpace::default());
-                        let fn_ty = i64_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false);
-                        self.backend.module.add_function(
+                        declare_conservative_runtime_function(
+                            self.backend.context,
+                            &self.backend.module,
                             "molt_bigint_from_str",
-                            fn_ty,
-                            Some(inkwell::module::Linkage::External),
+                            bigint_from_str_ty,
                         )
                     };
 
@@ -1353,11 +1382,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if crate::tir::op_kinds_generated::opcode_result_mints_owned_selected_operand_table(
                     op.opcode,
                 ) {
-                    let inc_fn = self
-                        .backend
-                        .module
-                        .get_function("molt_inc_ref_obj")
-                        .unwrap();
+                    let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
                     self.backend
                         .builder
                         .build_call(
@@ -1452,11 +1477,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // ── Refcount ──
             OpCode::IncRef => {
                 let val = self.resolve(op.operands[0]);
-                let inc_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_inc_ref_obj")
-                    .unwrap();
+                let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
                 let bits = self.ensure_i64(val);
                 self.backend
                     .builder
@@ -1482,7 +1503,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpCode::DelBoundary => {
                 let val = self.resolve(op.operands[0]);
                 let bits = self.ensure_i64(val);
-                let dec_fn = self.ensure_runtime_i64_fn("molt_dec_ref_obj", 1);
+                let dec_fn = self.ensure_runtime_void_fn("molt_dec_ref_obj", 1);
                 self.backend
                     .builder
                     .build_call(dec_fn, &[bits.into()], "")
@@ -1490,11 +1511,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             OpCode::DecRef => {
                 let val = self.resolve(op.operands[0]);
-                let dec_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_dec_ref_obj")
-                    .unwrap();
+                let dec_fn = self.ensure_runtime_void_fn("molt_dec_ref_obj", 1);
                 let bits = self.ensure_i64(val);
                 self.backend
                     .builder
@@ -1566,11 +1583,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .build_load(i64_ty, field_ptr, "field_val")
                         .unwrap();
                     // inc_ref the loaded value (may be a heap pointer).
-                    let inc_fn = self
-                        .backend
-                        .module
-                        .get_function("molt_inc_ref_obj")
-                        .unwrap();
+                    let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
                     self.backend
                         .builder
                         .build_call(inc_fn, &[val.into()], "field_load_inc_ref")
@@ -1681,7 +1694,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic();
                 if runtime_name == "molt_get_attr_object_ic" {
-                    let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+                    let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
                     let _ = self
                         .backend
                         .builder
@@ -1867,7 +1880,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 if matches!(
                     original_kind,
-                    Some("guarded_field_set") | Some("guarded_field_set_init")
+                    Some("guarded_field_set") | Some("guarded_field_init")
                 ) && op.operands.len() >= 4
                 {
                     let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
@@ -1895,7 +1908,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .unwrap_or(0);
                     let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
                     let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
-                    let rt_name = if matches!(original_kind, Some("guarded_field_set_init")) {
+                    let rt_name = if matches!(original_kind, Some("guarded_field_init")) {
                         "molt_guarded_field_init_ptr"
                     } else {
                         "molt_guarded_field_set_ptr"
@@ -2661,25 +2674,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     // been normalized into a single joined display string plus
                     // explicit newline behavior. Lower it directly to the
                     // runtime print surface just like the native backend.
-                    let print_fn =
-                        if let Some(f) = self.backend.module.get_function("molt_print_obj") {
-                            f
-                        } else {
-                            let void_ty = self.backend.context.void_type();
-                            let fn_ty = void_ty.fn_type(&[i64_ty.into()], false);
-                            let f = self.backend.module.add_function(
-                                "molt_print_obj",
-                                fn_ty,
-                                Some(inkwell::module::Linkage::External),
-                            );
-                            let nounwind_kind =
-                                inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
-                            f.add_attribute(
-                                AttributeLoc::Function,
-                                self.backend.context.create_enum_attribute(nounwind_kind, 0),
-                            );
-                            f
-                        };
+                    let print_fn = self.ensure_runtime_void_fn("molt_print_obj", 1);
                     for &arg_id in op.operands.get(args_start..).unwrap_or(&[]) {
                         let arg_i64 = self.materialize_dynbox_operand(arg_id);
                         self.backend
@@ -3267,7 +3262,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .builder
                         .build_store(field_ptr, arg_bits)
                         .unwrap();
-                    let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+                    let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
                     let _ = self
                         .backend
                         .builder
@@ -3372,7 +3367,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap_or(0);
                 let self_bits = self.generator_self_bits();
                 let pair_bits = self.materialize_dynbox_operand(op.operands[0]);
-                let set_state_fn = self.ensure_runtime_i64_fn("molt_obj_set_state", 2);
+                let set_state_fn = self.ensure_runtime_void_fn("molt_obj_set_state", 2);
                 let _ = self
                     .backend
                     .builder
@@ -3389,7 +3384,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "state_yield_set_state",
                     )
                     .unwrap();
-                let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+                let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
                 let _ = self
                     .backend
                     .builder
@@ -3442,7 +3437,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let self_bits = self.generator_self_bits();
                 let future_bits = self.materialize_dynbox_operand(op.operands[0]);
                 let pending_state_bits = i64_ty.const_int(pending_state_id as u64, true);
-                let set_state_fn = self.ensure_runtime_i64_fn("molt_obj_set_state", 2);
+                let set_state_fn = self.ensure_runtime_void_fn("molt_obj_set_state", 2);
                 let _ = self
                     .backend
                     .builder
@@ -3579,7 +3574,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let chan_bits = self.materialize_dynbox_operand(op.operands[0]);
                 let val_bits = self.materialize_dynbox_operand(op.operands[1]);
                 let pending_state_bits = i64_ty.const_int(pending_state_id as u64, true);
-                let set_state_fn = self.ensure_runtime_i64_fn("molt_obj_set_state", 2);
+                let set_state_fn = self.ensure_runtime_void_fn("molt_obj_set_state", 2);
                 let _ = self
                     .backend
                     .builder
@@ -3688,7 +3683,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 let self_bits = self.generator_self_bits();
                 let chan_bits = self.materialize_dynbox_operand(op.operands[0]);
                 let pending_state_bits = i64_ty.const_int(pending_state_id as u64, true);
-                let set_state_fn = self.ensure_runtime_i64_fn("molt_obj_set_state", 2);
+                let set_state_fn = self.ensure_runtime_void_fn("molt_obj_set_state", 2);
                 let _ = self
                     .backend
                     .builder
@@ -3899,19 +3894,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //    its `== 0` compare (baked literal vs live read).  Non-foldable:
             //    it observes mutable runtime state, so the read always survives.
             OpCode::FunctionDefaultsVersion => {
-                let ver_fn = self
-                    .backend
-                    .module
-                    .get_function("molt_function_defaults_version")
-                    .unwrap_or_else(|| {
-                        let i64_ty = self.backend.context.i64_type();
-                        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
-                        self.backend.module.add_function(
-                            "molt_function_defaults_version",
-                            fn_ty,
-                            Some(inkwell::module::Linkage::External),
-                        )
-                    });
+                let ver_fn = self.ensure_runtime_i64_fn("molt_function_defaults_version", 1);
                 let func_val = op
                     .operands
                     .first()
@@ -6540,35 +6523,52 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
     }
 
-    fn ensure_runtime_i64_fn(&self, name: &str, param_count: usize) -> FunctionValue<'ctx> {
+    fn ensure_runtime_decl(
+        &self,
+        name: &str,
+        fn_ty: inkwell::types::FunctionType<'ctx>,
+        param_count: usize,
+        return_abi: RuntimeReturnAbi,
+    ) -> FunctionValue<'ctx> {
         if let Some(func) = self.backend.module.get_function(name) {
-            return func;
+            return require_llvm_function_type(name, func, fn_ty);
         }
+        if !is_classified_runtime_import(name, param_count, return_abi) {
+            panic!(
+                "LLVM runtime import `{name}` has no ABI classification for conservative declaration"
+            );
+        }
+        let func = declare_conservative_runtime_function(
+            self.backend.context,
+            &self.backend.module,
+            name,
+            fn_ty,
+        );
+        require_llvm_function_type(name, func, fn_ty)
+    }
+
+    fn ensure_runtime_i64_fn(&self, name: &str, param_count: usize) -> FunctionValue<'ctx> {
         let i64_ty = self.backend.context.i64_type();
         let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
             (0..param_count).map(|_| i64_ty.into()).collect();
-        let fn_ty = i64_ty.fn_type(&params, false);
-        let func =
-            self.backend
-                .module
-                .add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
-        // All molt runtime functions use explicit error returns (NaN-boxed
-        // sentinels) and catch_unwind at FFI boundaries — no C++ exceptions
-        // escape.  Adding nounwind + willreturn lets LLVM omit landing pads,
-        // perform aggressive code motion, and inline/CSE through call sites.
-        let nounwind_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
-        func.add_attribute(
-            AttributeLoc::Function,
-            self.backend.context.create_enum_attribute(nounwind_kind, 0),
-        );
-        let willreturn_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn");
-        func.add_attribute(
-            AttributeLoc::Function,
-            self.backend
-                .context
-                .create_enum_attribute(willreturn_kind, 0),
-        );
-        func
+        self.ensure_runtime_decl(
+            name,
+            i64_ty.fn_type(&params, false),
+            param_count,
+            RuntimeReturnAbi::I64,
+        )
+    }
+
+    fn ensure_runtime_void_fn(&self, name: &str, param_count: usize) -> FunctionValue<'ctx> {
+        let i64_ty = self.backend.context.i64_type();
+        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            (0..param_count).map(|_| i64_ty.into()).collect();
+        self.ensure_runtime_decl(
+            name,
+            self.backend.context.void_type().fn_type(&params, false),
+            param_count,
+            RuntimeReturnAbi::Void,
+        )
     }
 
     fn unbox_ptr_bits(
@@ -6637,19 +6637,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         arity: usize,
         has_closure: bool,
     ) -> FunctionValue<'ctx> {
-        let param_count = self
-            .backend
-            .function_param_types
-            .get(name)
-            .map(|tys| tys.len())
-            .unwrap_or(arity + usize::from(has_closure));
-        if let Some(func) = self.backend.module.get_function(name) {
-            return func;
-        }
         let i64_ty = self.backend.context.i64_type();
         let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-            (0..param_count).map(|_| i64_ty.into()).collect();
-        let fn_ty = i64_ty.fn_type(&params, false);
+            if let Some(param_types) = self.backend.function_param_types.get(name) {
+                param_types
+                    .iter()
+                    .map(|ty| lower_type(self.backend.context, ty).into())
+                    .collect()
+            } else {
+                let param_count = arity + usize::from(has_closure);
+                (0..param_count).map(|_| i64_ty.into()).collect()
+            };
+        let return_ty = self
+            .backend
+            .function_return_types
+            .get(name)
+            .map(|ty| lower_type(self.backend.context, ty))
+            .unwrap_or_else(|| i64_ty.into());
+        let fn_ty = return_ty.fn_type(&params, false);
+        if let Some(func) = self.backend.module.get_function(name) {
+            return require_llvm_function_type(name, func, fn_ty);
+        }
         self.backend
             .module
             .add_function(name, fn_ty, Some(inkwell::module::Linkage::External))
@@ -6946,7 +6954,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     1 => "molt_call_method_ic1",
                     2 => "molt_call_method_ic2",
                     3 => "molt_call_method_ic3",
-                    _ => "molt_call_method_ic4",
+                    4 => "molt_call_method_ic4",
+                    n => panic!(
+                        "call_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
+                    ),
                 };
                 let arity = 4 + extra.len();
                 let call_fn = self.ensure_runtime_i64_fn(symbol, arity);
@@ -7002,7 +7013,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     1 => "molt_call_super_method_ic1",
                     2 => "molt_call_super_method_ic2",
                     3 => "molt_call_super_method_ic3",
-                    _ => "molt_call_super_method_ic4",
+                    4 => "molt_call_super_method_ic4",
+                    n => panic!(
+                        "call_super_method_ic supports at most 4 positional args in LLVM lowering; got {n}"
+                    ),
                 };
                 let arity = 5 + extra.len();
                 let call_fn = self.ensure_runtime_i64_fn(symbol, arity);
@@ -7210,7 +7224,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
             "code_new" => {
-                if op.operands.len() != 8 {
+                if op.operands.len() != 9 {
                     return false;
                 }
                 let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
@@ -7218,7 +7232,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .iter()
                     .map(|&id| self.materialize_dynbox_operand(id).into())
                     .collect();
-                let code_new_fn = self.ensure_runtime_i64_fn("molt_code_new", 8);
+                let code_new_fn = self.ensure_runtime_i64_fn("molt_code_new", 9);
                 let result = self
                     .backend
                     .builder
@@ -7640,7 +7654,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let push_fn = self.ensure_runtime_i64_fn("molt_list_builder_append", 2);
+                let push_fn = self.ensure_runtime_void_fn("molt_list_builder_append", 2);
                 for &item_id in &op.operands {
                     let item_bits = self.materialize_dynbox_operand(item_id);
                     self.backend
@@ -7734,7 +7748,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let set_fn = self.ensure_runtime_i64_fn("molt_dict_builder_append", 3);
+                let set_fn = self.ensure_runtime_void_fn("molt_dict_builder_append", 3);
                 let mut idx = 0;
                 while idx + 1 < op.operands.len() {
                     let key_bits = self.materialize_dynbox_operand(op.operands[idx]);
@@ -7776,7 +7790,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let append_fn = self.ensure_runtime_i64_fn("molt_list_builder_append", 2);
+                let append_fn = self.ensure_runtime_void_fn("molt_list_builder_append", 2);
                 for &item_id in &op.operands {
                     let item_bits = self.materialize_dynbox_operand(item_id);
                     self.backend
@@ -7834,7 +7848,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let append_fn = self.ensure_runtime_i64_fn("molt_set_builder_append", 2);
+                let append_fn = self.ensure_runtime_void_fn("molt_set_builder_append", 2);
                 for &item_id in &op.operands {
                     let item_bits = self.materialize_dynbox_operand(item_id);
                     self.backend
@@ -10029,7 +10043,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // Take owned ownership of the borrowed attribute result (mirrors
                 // the native get-attr ref-adjust). `molt_inc_ref_obj` is a no-op
                 // for NaN-boxed immediates, so this is safe for any tag.
-                let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+                let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
                 self.backend
                     .builder
                     .build_call(
@@ -10057,7 +10071,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 };
                 let src_val = self.resolve(src_id);
                 let src_bits = self.ensure_i64(src_val);
-                let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+                let inc_fn = self.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
                 self.backend
                     .builder
                     .build_call(inc_fn, &[src_bits.into()], "")
@@ -10086,7 +10100,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 };
                 let src_val = self.resolve(src_id);
                 let src_bits = self.ensure_i64(src_val);
-                let dec_fn = self.ensure_runtime_i64_fn("molt_dec_ref_obj", 1);
+                let dec_fn = self.ensure_runtime_void_fn("molt_dec_ref_obj", 1);
                 self.backend
                     .builder
                     .build_call(dec_fn, &[src_bits.into()], "")
@@ -10407,24 +10421,49 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         if !self.backend.runtime_intrinsic_symbols.contains(&symbol) {
             return false;
         }
+        let Some(return_abi) = classified_runtime_import_return_abi(&symbol, op.operands.len())
+        else {
+            self.record_fatal(format!(
+                "preserved SimpleIR op `{kind}` maps to runtime symbol `{symbol}`, \
+                 but that symbol has no LLVM ABI classification"
+            ));
+            return true;
+        };
         let arg_bits: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
             .operands
             .iter()
             .map(|&id| self.materialize_dynbox_operand(id).into())
             .collect();
-        let func = self.ensure_runtime_i64_fn(&symbol, op.operands.len());
-        let result = self
-            .backend
-            .builder
-            .build_call(func, &arg_bits, &symbol)
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        // Bind the boxed return only when the op produces a value; a result-less
-        // op was emitted purely for its side effect.
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
+        match return_abi {
+            RuntimeReturnAbi::Void => {
+                if !op.results.is_empty() {
+                    self.record_fatal(format!(
+                        "preserved SimpleIR op `{kind}` maps to void runtime symbol `{symbol}` but has result values"
+                    ));
+                    return true;
+                }
+                let func = self.ensure_runtime_void_fn(&symbol, op.operands.len());
+                self.backend
+                    .builder
+                    .build_call(func, &arg_bits, &symbol)
+                    .unwrap();
+            }
+            RuntimeReturnAbi::I64 => {
+                let func = self.ensure_runtime_i64_fn(&symbol, op.operands.len());
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(func, &arg_bits, &symbol)
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                // Bind the boxed return only when the op produces a value; a result-less
+                // op was emitted purely for its side effect.
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+            }
         }
         true
     }
@@ -10703,14 +10742,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     /// Call a 2-argument runtime function that returns i64.
     ///
-    /// The callee is declared on demand via `ensure_runtime_i64_fn` (get-or-add)
-    /// rather than asserted pre-declared: every `molt_<op>` runtime entry has the
-    /// uniform `(i64, i64) -> i64` ABI, so a missing declaration is always a
-    /// benign add (resolved against the runtime staticlib at link time), never a
-    /// miscompile. This removes a sharp edge where a newly routed runtime symbol
-    /// (e.g. the in-place augmented-assignment entries `molt_inplace_floordiv`,
-    /// `molt_inplace_bit_or`, …) would panic the whole LLVM lowering if it was
-    /// not also added to the static declaration list.
+    /// The callee is declared on demand through the central runtime-import helper
+    /// when it is not already in the fixed table. On-demand declarations carry
+    /// only the globally valid runtime attributes; stronger facts such as
+    /// `willreturn` must be promoted into `runtime_imports.rs`.
     fn call_runtime_2(
         &self,
         name: &str,
@@ -10797,6 +10832,7 @@ mod tests {
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
     use crate::tir::values::{TirValue, ValueId};
+    use inkwell::attributes::Attribute;
     use inkwell::context::Context;
     use inkwell::values::AnyValue;
 
@@ -10804,6 +10840,22 @@ mod tests {
         let backend = LlvmBackend::new(ctx, "test");
         declare_runtime_functions(ctx, &backend.module);
         backend
+    }
+
+    fn has_fn_attr(func: FunctionValue<'_>, attr_name: &str) -> bool {
+        let kind_id = Attribute::get_named_enum_kind_id(attr_name);
+        kind_id == 0
+            || func
+                .get_enum_attribute(AttributeLoc::Function, kind_id)
+                .is_some()
+    }
+
+    fn lacks_fn_attr(func: FunctionValue<'_>, attr_name: &str) -> bool {
+        let kind_id = Attribute::get_named_enum_kind_id(attr_name);
+        kind_id == 0
+            || func
+                .get_enum_attribute(AttributeLoc::Function, kind_id)
+                .is_none()
     }
 
     fn assert_lowering_error_contains(err: &LlvmLoweringError, needle: &str) {
@@ -10897,6 +10949,140 @@ mod tests {
             diagnostics: RefCell::new(Vec::new()),
             repr_facts: crate::representation_plan::LlvmReprFacts::default(),
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "LLVM function type mismatch for `same_name`")]
+    fn llvm_symbol_signature_mismatch_rejects_tir_forward_declaration() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        backend.module.add_function(
+            "same_name",
+            ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        let func = TirFunction::new("same_name".into(), vec![], TirType::I64);
+
+        let _ = declare_tir_function(&func, &backend);
+    }
+
+    #[test]
+    #[should_panic(expected = "LLVM function type mismatch for `molt_trace_exit`")]
+    fn llvm_symbol_signature_mismatch_rejects_runtime_i64_reuse() {
+        let ctx = Context::create();
+        let backend = LlvmBackend::new(&ctx, "test");
+        backend.module.add_function(
+            "molt_trace_exit",
+            ctx.void_type().fn_type(&[], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        let dummy = TirFunction::new("dummy_runtime_symbol".into(), vec![], TirType::DynBox);
+        let dummy_fn = backend.module.add_function(
+            "dummy_runtime_symbol",
+            ctx.i64_type().fn_type(&[], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
+
+        let _ = lowering.ensure_runtime_i64_fn("molt_trace_exit", 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "LLVM function type mismatch for `molt_inc_ref_obj`")]
+    fn llvm_symbol_signature_mismatch_rejects_runtime_void_reuse() {
+        let ctx = Context::create();
+        let backend = LlvmBackend::new(&ctx, "test");
+        backend.module.add_function(
+            "molt_inc_ref_obj",
+            ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        let dummy = TirFunction::new("dummy_runtime_void_symbol".into(), vec![], TirType::DynBox);
+        let dummy_fn = backend.module.add_function(
+            "dummy_runtime_void_symbol",
+            ctx.i64_type().fn_type(&[], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
+
+        let _ = lowering.ensure_runtime_void_fn("molt_inc_ref_obj", 1);
+    }
+
+    #[test]
+    fn on_demand_runtime_declaration_uses_conservative_attributes() {
+        let ctx = Context::create();
+        let backend = LlvmBackend::new(&ctx, "test");
+        let dummy = TirFunction::new("dummy_runtime_attrs".into(), vec![], TirType::DynBox);
+        let dummy_fn = backend.module.add_function(
+            "dummy_runtime_attrs",
+            ctx.i64_type().fn_type(&[], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
+
+        let func = lowering.ensure_runtime_i64_fn("molt_abs_builtin", 1);
+
+        assert!(has_fn_attr(func, "nounwind"));
+        assert!(
+            lacks_fn_attr(func, "willreturn"),
+            "ad-hoc runtime declarations must not claim termination"
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "LLVM runtime import `molt_unclassified_runtime_symbol` has no ABI classification"
+    )]
+    fn unclassified_runtime_declaration_rejects_new_symbol_drift() {
+        let ctx = Context::create();
+        let backend = LlvmBackend::new(&ctx, "test");
+        let dummy = TirFunction::new("dummy_runtime_reject".into(), vec![], TirType::DynBox);
+        let dummy_fn = backend.module.add_function(
+            "dummy_runtime_reject",
+            ctx.i64_type().fn_type(&[], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
+
+        let _ = lowering.ensure_runtime_i64_fn("molt_unclassified_runtime_symbol", 2);
+    }
+
+    #[test]
+    fn preserved_runtime_call_rejects_name_only_symbol_drift() {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend
+            .runtime_intrinsic_symbols
+            .insert("molt_unclassified_runtime_symbol".to_string());
+
+        let err = lower_preserved_kind_ir(&backend, "unclassified_runtime_symbol", 2, true, None)
+            .expect_err("name-only preserved runtime symbols must fail before LLVM declaration");
+        assert_lowering_error_contains(&err, "has no LLVM ABI classification");
+        assert_lowering_error_contains(&err, "molt_unclassified_runtime_symbol");
+    }
+
+    #[test]
+    #[should_panic(expected = "LLVM function type mismatch for `gen_fn`")]
+    fn llvm_symbol_signature_mismatch_rejects_function_symbol_reuse() {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend.module.add_function(
+            "gen_fn",
+            ctx.i64_type().fn_type(&[ctx.i64_type().into()], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        backend
+            .function_param_types
+            .insert("gen_fn".to_string(), vec![TirType::DynBox, TirType::DynBox]);
+        let dummy = TirFunction::new("dummy_function_symbol".into(), vec![], TirType::DynBox);
+        let dummy_fn = backend.module.add_function(
+            "dummy_function_symbol",
+            ctx.i64_type().fn_type(&[], false),
+            Some(inkwell::module::Linkage::External),
+        );
+        let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
+
+        let _ = lowering.ensure_function_symbol("gen_fn", 0, false);
     }
 
     #[test]
@@ -11607,6 +11793,202 @@ mod tests {
     }
 
     #[test]
+    fn lower_preserved_container_builders_use_void_append_abi() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "preserved_container_builder_append_abi".into(),
+            vec![],
+            TirType::DynBox,
+        );
+        let raw = func.fresh_value();
+        let key = func.fresh_value();
+        let list = func.fresh_value();
+        let tuple = func.fresh_value();
+        let set = func.fresh_value();
+        let dict = func.fresh_value();
+        let ret = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(raw, 2));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstStr,
+            operands: vec![],
+            results: vec![key],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert("s_value".into(), AttrValue::Str("k".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        for (kind, operands, result) in [
+            ("list_new", vec![raw], list),
+            ("tuple_new", vec![raw], tuple),
+            ("set_new", vec![raw], set),
+            ("dict_new", vec![key, raw], dict),
+        ] {
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands,
+                results: vec![result],
+                attrs: {
+                    let mut attrs = AttrDict::new();
+                    attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
+                    attrs
+                },
+                source_span: None,
+            });
+        }
+        entry.ops.push(const_none_def(ret));
+        entry.terminator = Terminator::Return { values: vec![ret] };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend.module.verify().expect("module should verify");
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("call void @molt_list_builder_append"), "{ir}");
+        assert!(ir.contains("call void @molt_dict_builder_append"), "{ir}");
+        assert!(ir.contains("call void @molt_set_builder_append"), "{ir}");
+    }
+
+    #[test]
+    #[should_panic(expected = "call_method_ic supports at most 4 positional args")]
+    fn lower_call_method_ic_rejects_over_ic4_arity() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "call_method_ic_too_many_args".into(),
+            vec![],
+            TirType::DynBox,
+        );
+        let mut operands = Vec::new();
+        for _ in 0..6 {
+            let value = func.fresh_value();
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(const_none_def(value));
+            operands.push(value);
+        }
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands,
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("call_method_ic".into()),
+                );
+                attrs.insert("s_value".into(), AttrValue::Str("m".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let _ = lower_tir_to_llvm(&func, &backend);
+    }
+
+    #[test]
+    fn lower_call_method_ic_preserves_central_no_willreturn_declaration() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func =
+            TirFunction::new("call_method_ic_attr_reuse".into(), vec![], TirType::DynBox);
+        let recv = func.fresh_value();
+        let arg = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_none_def(recv));
+        entry.ops.push(const_none_def(arg));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![recv, arg],
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("call_method_ic".into()),
+                );
+                attrs.insert("s_value".into(), AttrValue::Str("m".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        let ir = llvm_fn.print_to_string().to_string();
+        assert!(ir.contains("molt_call_method_ic1"), "{ir}");
+        let runtime_fn = backend
+            .module
+            .get_function("molt_call_method_ic1")
+            .expect("central method IC runtime import should exist");
+        assert!(has_fn_attr(runtime_fn, "nounwind"));
+        assert!(
+            lacks_fn_attr(runtime_fn, "willreturn"),
+            "method IC dispatch executes arbitrary user code"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "call_super_method_ic supports at most 4 positional args")]
+    fn lower_call_super_method_ic_rejects_over_ic4_arity() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            "call_super_method_ic_too_many_args".into(),
+            vec![],
+            TirType::DynBox,
+        );
+        let mut operands = Vec::new();
+        for _ in 0..7 {
+            let value = func.fresh_value();
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .push(const_none_def(value));
+            operands.push(value);
+        }
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands,
+            results: vec![result],
+            attrs: {
+                let mut attrs = AttrDict::new();
+                attrs.insert(
+                    "_original_kind".into(),
+                    AttrValue::Str("call_super_method_ic".into()),
+                );
+                attrs.insert("s_value".into(), AttrValue::Str("m".into()));
+                attrs
+            },
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+
+        let _ = lower_tir_to_llvm(&func, &backend);
+    }
+
+    #[test]
     fn lower_class_def_boxes_raw_i64_attribute_values() {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
@@ -11870,6 +12252,12 @@ mod tests {
                 "result-less preserved `{kind}` must lower to `{sym}` (not a \
                  dropped no-op); IR:\n{ir}"
             );
+            if sym == "molt_print_newline" {
+                assert!(
+                    ir.contains("call void @molt_print_newline()"),
+                    "print_newline must use the runtime's void ABI; IR:\n{ir}"
+                );
+            }
         }
     }
 

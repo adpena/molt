@@ -19,8 +19,8 @@ _SRC_ROOT = REPO_ROOT / "src"
 if _SRC_ROOT.exists() and str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
-import harness_memory_guard
-from molt import backend_daemon_custody as daemon_custody
+import harness_memory_guard  # noqa: E402
+from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 
 
 SUPPORTED_SEMANTIC_MODES = {
@@ -226,6 +226,21 @@ def _external_root() -> Path | None:
 def _default_output_root() -> Path:
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return REPO_ROOT / "bench" / "results" / "friends" / timestamp
+
+
+def _project_python() -> str:
+    suffix = "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    venv = os.environ.get("VIRTUAL_ENV", "").strip()
+    candidates: list[Path] = []
+    if venv:
+        candidates.append(Path(venv) / suffix)
+    candidates.append(REPO_ROOT / ".venv" / suffix)
+    if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
+        candidates.append(Path(sys.prefix) / suffix)
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
 
 
 def _load_manifest(path: Path) -> tuple[dict[str, Any], list[SuiteSpec]]:
@@ -687,7 +702,9 @@ def _verify_git_source_custody(
     )
     if rc != 0 or out.strip() != "true":
         detail = err.strip() or out.strip()
-        raise RuntimeError(f"suite {suite.id}: suite root is not a git checkout: {detail}")
+        raise RuntimeError(
+            f"suite {suite.id}: suite root is not a git checkout: {detail}"
+        )
 
     rc, head_out, err = _run_git(
         ["rev-parse", "HEAD"],
@@ -697,7 +714,9 @@ def _verify_git_source_custody(
         limits=limits,
     )
     if rc != 0:
-        raise RuntimeError(f"suite {suite.id}: git rev-parse HEAD failed: {err.strip()}")
+        raise RuntimeError(
+            f"suite {suite.id}: git rev-parse HEAD failed: {err.strip()}"
+        )
     head_ref = head_out.strip()
 
     rc, expected_out, err = _run_git(
@@ -779,7 +798,9 @@ def _acquire_suite(
     limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> SuiteAcquisition:
     if suite.source == "local":
-        local_path = str(suite_root_override) if suite_root_override else suite.local_path
+        local_path = (
+            str(suite_root_override) if suite_root_override else suite.local_path
+        )
         if not local_path:
             raise ValueError(
                 f"suite {suite.id}: local_path is required for source=local"
@@ -984,16 +1005,17 @@ def _run_runner(
         if runner.json_stdout and not dry_run:
             if phase.stdout_json_error is not None:
                 result.status = "failed"
-                result.reason = f"run {run_idx} JSON parse failed: {phase.stdout_json_error}"
+                result.reason = (
+                    f"run {run_idx} JSON parse failed: {phase.stdout_json_error}"
+                )
                 return result
             if phase.stdout_json is None:
                 result.status = "failed"
                 result.reason = f"run {run_idx} did not emit JSON stdout"
                 return result
-            if (
-                isinstance(phase.stdout_json, dict)
-                and phase.stdout_json.get("status") not in (None, "ok")
-            ):
+            if isinstance(phase.stdout_json, dict) and phase.stdout_json.get(
+                "status"
+            ) not in (None, "ok"):
                 result.status = "failed"
                 result.reason = (
                     f"run {run_idx} emitted non-ok JSON status: "
@@ -1185,7 +1207,7 @@ def _render_summary_markdown(
             f"{_format_optional(m.get('molt_codon_ratio'))} | "
             f"{_format_optional(m.get('molt_nuitka_ratio'))} | "
             f"{_format_optional(m.get('molt_pyodide_ratio'))} | "
-            f"{_format_optional(m.get('molt_vs_friend_speedup'))} |"
+            f"{_format_optional(m.get('molt_vs_friend_speedup'))} | "
             f"{_format_optional(m.get('molt_vs_numpy_speedup'))} |"
         )
 
@@ -1267,6 +1289,31 @@ def _runner_to_dict(result: RunnerResult) -> dict[str, Any]:
     }
 
 
+def _phase_from_dict(payload: dict[str, Any] | None) -> PhaseResult | None:
+    if payload is None:
+        return None
+    return PhaseResult(
+        cmd=list(payload.get("cmd") or []),
+        returncode=int(payload.get("returncode", 0)),
+        elapsed_s=float(payload.get("elapsed_s", 0.0)),
+        timed_out=bool(payload.get("timed_out", False)),
+        stdout_path=str(payload.get("stdout_path", "")),
+        stderr_path=str(payload.get("stderr_path", "")),
+        stdout_json=payload.get("stdout_json"),
+        stdout_json_error=payload.get("stdout_json_error"),
+        guard_status=payload.get("guard_status"),
+        guard_violation=payload.get("guard_violation"),
+        guard_limit_at_violation=payload.get("guard_limit_at_violation"),
+        guard_orphaned_process_groups=list(
+            payload.get("guard_orphaned_process_groups") or []
+        ),
+        guard_exit_signal=payload.get("guard_exit_signal"),
+        guard_cargo_incremental_quarantine=payload.get(
+            "guard_cargo_incremental_quarantine"
+        ),
+    )
+
+
 def _phase_to_dict(phase: PhaseResult) -> dict[str, Any]:
     return {
         "cmd": phase.cmd,
@@ -1286,6 +1333,28 @@ def _phase_to_dict(phase: PhaseResult) -> dict[str, Any]:
     }
 
 
+def _runner_from_dict(payload: dict[str, Any]) -> RunnerResult:
+    return RunnerResult(
+        name=str(payload["name"]),
+        role=str(payload["role"]),
+        status=str(payload["status"]),
+        reason=payload.get("reason"),
+        build=_phase_from_dict(payload.get("build")),
+        runs=[
+            phase
+            for item in payload.get("runs", [])
+            if (phase := _phase_from_dict(item)) is not None
+        ],
+        run_samples_s=[float(value) for value in payload.get("run_samples_s", [])],
+        run_median_s=payload.get("run_median_s"),
+        run_mean_s=payload.get("run_mean_s"),
+        run_stdev_s=payload.get("run_stdev_s"),
+        structured_outputs=list(payload.get("structured_outputs") or []),
+        structured_samples_s=dict(payload.get("structured_samples_s") or {}),
+        structured_median_s=dict(payload.get("structured_median_s") or {}),
+    )
+
+
 def _source_custody_to_dict(custody: SourceCustody) -> dict[str, Any]:
     return {
         "source": custody.source,
@@ -1298,6 +1367,20 @@ def _source_custody_to_dict(custody: SourceCustody) -> dict[str, Any]:
         "suite_root_overridden": custody.suite_root_overridden,
         "verification": custody.verification,
     }
+
+
+def _source_custody_from_dict(payload: dict[str, Any]) -> SourceCustody:
+    return SourceCustody(
+        source=str(payload["source"]),
+        requested_ref=payload.get("requested_ref"),
+        expected_ref=payload.get("expected_ref"),
+        head_ref=payload.get("head_ref"),
+        ref_verified=payload.get("ref_verified"),
+        git_clean=payload.get("git_clean"),
+        git_status_porcelain=payload.get("git_status_porcelain"),
+        suite_root_overridden=bool(payload.get("suite_root_overridden", False)),
+        verification=str(payload["verification"]),
+    )
 
 
 def _suite_to_dict(suite: SuiteResult) -> dict[str, Any]:
@@ -1321,6 +1404,63 @@ def _suite_to_dict(suite: SuiteResult) -> dict[str, Any]:
             name: _runner_to_dict(result) for name, result in suite.runners.items()
         },
     }
+
+
+def _suite_from_dict(payload: dict[str, Any]) -> SuiteResult:
+    return SuiteResult(
+        id=str(payload["id"]),
+        friend=str(payload["friend"]),
+        display_name=str(payload["display_name"]),
+        semantic_mode=str(payload["semantic_mode"]),
+        source=str(payload["source"]),
+        suite_root=str(payload.get("suite_root", "")),
+        suite_workdir=str(payload.get("suite_workdir", "")),
+        resolved_ref=payload.get("resolved_ref"),
+        requested_ref=payload.get("requested_ref"),
+        source_custody=_source_custody_from_dict(payload["source_custody"]),
+        status=str(payload["status"]),
+        reason=payload.get("reason"),
+        adapter_notes=payload.get("adapter_notes"),
+        tags=list(payload.get("tags") or []),
+        runners={
+            str(name): _runner_from_dict(result)
+            for name, result in dict(payload.get("runners") or {}).items()
+        },
+        metrics=dict(payload.get("metrics") or {}),
+    )
+
+
+def _render_existing_results_json(
+    *,
+    results_json: Path,
+    summary_out: Path | None,
+    update_doc: bool,
+) -> tuple[Path, str]:
+    payload = json.loads(results_json.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1:
+        raise ValueError(
+            f"unsupported friend benchmark results schema: {payload.get('schema_version')!r}"
+        )
+    suites = [_suite_from_dict(item) for item in payload.get("suites", [])]
+    generated_at = str(payload["generated_at"])
+    manifest_path = Path(str(payload["manifest_path"]))
+    summary_path = (summary_out or (results_json.parent / "summary.md")).resolve()
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_text = _render_summary_markdown(
+        run_started_at=generated_at,
+        manifest_path=manifest_path,
+        json_rel=str(results_json.resolve()),
+        suites=suites,
+        interrupted=payload.get("interrupted"),
+        backend_daemon_cleanup=list(payload.get("backend_daemon_cleanup") or []),
+        memory_guard_incidents=list(payload.get("memory_guard_incidents") or []),
+    )
+    summary_path.write_text(summary_text, encoding="utf-8")
+    if update_doc:
+        doc_out = Path("docs/benchmarks/friend_summary.md").resolve()
+        doc_out.parent.mkdir(parents=True, exist_ok=True)
+        doc_out.write_text(summary_text, encoding="utf-8")
+    return summary_path, summary_text
 
 
 def _append_event_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -1387,7 +1527,9 @@ def _cleanup_backend_daemons(
                 f"reason={reason} count={len(terminated)} pids={pids}",
                 file=sys.stderr,
             )
-    _append_event_jsonl(output_root / "memory_guard" / "backend_daemon_cleanup.jsonl", event)
+    _append_event_jsonl(
+        output_root / "memory_guard" / "backend_daemon_cleanup.jsonl", event
+    )
     return event
 
 
@@ -1446,7 +1588,8 @@ def _write_run_outputs(
             "timeout_override": args.timeout_sec,
             "runner_filter": sorted(runner_filters),
             "suite_root_overrides": {
-                suite_id: str(path) for suite_id, path in sorted(suite_root_overrides.items())
+                suite_id: str(path)
+                for suite_id, path in sorted(suite_root_overrides.items())
             },
             "repo_ref_overrides": dict(sorted(repo_ref_overrides.items())),
         },
@@ -1485,12 +1628,16 @@ def _parse_keyed_path_overrides(values: list[str], option_name: str) -> dict[str
     overrides: dict[str, Path] = {}
     for raw in values:
         if "=" not in raw:
-            raise ValueError(f"{option_name} entries must be <suite-id>=<path>: {raw!r}")
+            raise ValueError(
+                f"{option_name} entries must be <suite-id>=<path>: {raw!r}"
+            )
         suite_id, value = raw.split("=", 1)
         suite_id = suite_id.strip()
         value = value.strip()
         if not suite_id or not value:
-            raise ValueError(f"{option_name} entries must be <suite-id>=<path>: {raw!r}")
+            raise ValueError(
+                f"{option_name} entries must be <suite-id>=<path>: {raw!r}"
+            )
         if suite_id in overrides:
             raise ValueError(f"{option_name} specified multiple times for {suite_id!r}")
         overrides[suite_id] = Path(value).expanduser()
@@ -1501,12 +1648,16 @@ def _parse_keyed_str_overrides(values: list[str], option_name: str) -> dict[str,
     overrides: dict[str, str] = {}
     for raw in values:
         if "=" not in raw:
-            raise ValueError(f"{option_name} entries must be <suite-id>=<value>: {raw!r}")
+            raise ValueError(
+                f"{option_name} entries must be <suite-id>=<value>: {raw!r}"
+            )
         suite_id, value = raw.split("=", 1)
         suite_id = suite_id.strip()
         value = value.strip()
         if not suite_id or not value:
-            raise ValueError(f"{option_name} entries must be <suite-id>=<value>: {raw!r}")
+            raise ValueError(
+                f"{option_name} entries must be <suite-id>=<value>: {raw!r}"
+            )
         if suite_id in overrides:
             raise ValueError(f"{option_name} specified multiple times for {suite_id!r}")
         overrides[suite_id] = value
@@ -1537,9 +1688,7 @@ def _apply_runner_filter(suite: SuiteSpec, runner_filters: set[str]) -> SuiteSpe
     if not runner_filters:
         return suite
     runners = {
-        name: runner
-        for name, runner in suite.runners.items()
-        if name in runner_filters
+        name: runner for name, runner in suite.runners.items() if name in runner_filters
     }
     if not runners:
         raise ValueError(
@@ -1625,7 +1774,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkout",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=None,
         help="Clone/checkout/fetch git suites as needed.",
     )
     parser.add_argument(
@@ -1656,6 +1805,15 @@ def _parser() -> argparse.ArgumentParser:
         help="Override JSON output path.",
     )
     parser.add_argument(
+        "--render-existing-json",
+        type=Path,
+        default=None,
+        help=(
+            "Render summary markdown from an existing friend results.json without "
+            "running benchmark workloads or rewriting the JSON artifact."
+        ),
+    )
+    parser.add_argument(
         "--update-doc",
         action="store_true",
         help="Also write docs/benchmarks/friend_summary.md from this run.",
@@ -1665,6 +1823,58 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _parser().parse_args()
+    if args.render_existing_json is not None:
+        incompatible: list[str] = []
+        if args.suite:
+            incompatible.append("--suite")
+        if args.include_disabled:
+            incompatible.append("--include-disabled")
+        if args.runner:
+            incompatible.append("--runner")
+        if args.output_root is not None:
+            incompatible.append("--output-root")
+        if args.suite_root:
+            incompatible.append("--suite-root")
+        if args.repo_ref:
+            incompatible.append("--repo-ref")
+        if args.repeat is not None:
+            incompatible.append("--repeat")
+        if args.timeout_sec is not None:
+            incompatible.append("--timeout-sec")
+        if args.checkout is not None:
+            incompatible.append("--checkout/--no-checkout")
+        if args.fetch:
+            incompatible.append("--fetch")
+        if args.dry_run:
+            incompatible.append("--dry-run")
+        if args.fail_fast:
+            incompatible.append("--fail-fast")
+        if args.json_out is not None:
+            incompatible.append("--json-out")
+        if incompatible:
+            joined = ", ".join(sorted(incompatible))
+            print(
+                f"--render-existing-json cannot be combined with workload options: {joined}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            summary_out, _summary_text = _render_existing_results_json(
+                results_json=args.render_existing_json.resolve(),
+                summary_out=args.summary_out,
+                update_doc=args.update_doc,
+            )
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            print(f"failed to render existing friend results: {exc}", file=sys.stderr)
+            return 2
+        print(f"Rendered summary: {summary_out}")
+        if args.update_doc:
+            print("Updated docs/benchmarks/friend_summary.md")
+        return 0
+
+    if args.checkout is None:
+        args.checkout = True
+
     manifest_path = args.manifest.resolve()
     metadata, suites = _load_manifest(manifest_path)
     suites_by_id = {suite.id: suite for suite in suites}
@@ -1797,7 +2007,9 @@ def main() -> int:
                             }
                         )
                         if suite.id in repo_ref_overrides:
-                            suite = replace(suite, repo_ref=repo_ref_overrides[suite.id])
+                            suite = replace(
+                                suite, repo_ref=repo_ref_overrides[suite.id]
+                            )
                         try:
                             acquisition = _acquire_suite(
                                 suite,
@@ -1820,6 +2032,7 @@ def main() -> int:
                                 "suite_workdir": str(suite_workdir.resolve()),
                                 "output_root": str(output_root),
                                 "python": sys.executable,
+                                "project_python": _project_python(),
                             }
                             suite_env = run_env.copy()
                             suite_env.update(_resolve_env(suite.env, tokens))
@@ -1897,10 +2110,13 @@ def main() -> int:
                                     requested_ref=suite.repo_ref,
                                     expected_ref=None,
                                     head_ref=None,
-                                    ref_verified=False if suite.source == "git" else None,
+                                    ref_verified=False
+                                    if suite.source == "git"
+                                    else None,
                                     git_clean=False if suite.source == "git" else None,
                                     git_status_porcelain=None,
-                                    suite_root_overridden=suite.id in suite_root_overrides,
+                                    suite_root_overridden=suite.id
+                                    in suite_root_overrides,
                                     verification="not_acquired",
                                 ),
                                 status="failed",

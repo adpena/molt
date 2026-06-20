@@ -187,6 +187,9 @@ unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
         if issubclass_bits(class_bits, builtins.int) && size < 16 {
             size = 16;
         }
+        if issubclass_bits(class_bits, builtins.float) && size < 16 {
+            size = 16;
+        }
         if issubclass_bits(class_bits, builtins.dict) && size < 16 {
             size = 16;
         }
@@ -353,6 +356,9 @@ pub(crate) unsafe fn call_class_init_with_args(
                 return raise_exception::<_>(_py, "TypeError", "ellipsis takes no arguments");
             }
             return ellipsis_bits(_py);
+        }
+        if class_bits == builtins.function {
+            return crate::builtins::functions::function_type_new_from_args(_py, args);
         }
         let abstract_name_bits = intern_static_name(
             _py,

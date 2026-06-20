@@ -551,9 +551,7 @@ def test_bench_cli_defaults_molt_profile_to_release(
     assert captured["use_molt_build_cache"] is True
 
 
-def test_bench_cli_can_disable_molt_build_cache(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_bench_cli_can_disable_molt_build_cache(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)

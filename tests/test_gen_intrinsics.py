@@ -21,7 +21,9 @@ def _load_gen_intrinsics_module():
 
 
 def test_backend_symbol_overrides_file_is_removed() -> None:
-    assert not (ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs").exists()
+    assert not (
+        ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs"
+    ).exists()
 
 
 def test_async_sleep_intrinsic_symbol_matches_public_name() -> None:

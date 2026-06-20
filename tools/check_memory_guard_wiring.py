@@ -442,9 +442,7 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
     ),
     TokenContract(
         "sitecustomize.py",
-        (
-            "ensure_python_test_memory_guard",
-        ),
+        ("ensure_python_test_memory_guard",),
         "Python startup must enter pytest or direct tests/** script memory "
         "custody before test code can run outside the guard",
     ),
@@ -688,7 +686,9 @@ def _main_guard_line(tree: ast.Module) -> int | None:
     return None
 
 
-def _audit_direct_executable_test_guards(root: Path) -> tuple[MissingDirectTestGuard, ...]:
+def _audit_direct_executable_test_guards(
+    root: Path,
+) -> tuple[MissingDirectTestGuard, ...]:
     tests_root = root / "tests"
     if not tests_root.exists():
         return ()
@@ -822,9 +822,7 @@ def _audit_to_dict(audit: MemoryGuardWiringAudit) -> dict[str, object]:
             ),
             "scanned_files": audit.subprocess_guard_scanned_files,
             "raw_call_count": audit.subprocess_guard_raw_call_count,
-            "unexpected": [
-                asdict(item) for item in audit.subprocess_guard_unexpected
-            ],
+            "unexpected": [asdict(item) for item in audit.subprocess_guard_unexpected],
             "stale_allowlist": [
                 asdict(item) for item in audit.subprocess_guard_stale_allowlist
             ],
@@ -881,8 +879,7 @@ def _format_text(audit: MemoryGuardWiringAudit) -> str:
         lines.append("Stale subprocess guard allowlist entries:")
         for item in audit.subprocess_guard_stale_allowlist:
             lines.append(
-                f"- {item.path} {item.qualname} subprocess.{item.method}: "
-                f"{item.reason}"
+                f"- {item.path} {item.qualname} subprocess.{item.method}: {item.reason}"
             )
     if audit.subprocess_guard_expanded_allowlist:
         lines.append("Expanded subprocess guard allowlist entries:")

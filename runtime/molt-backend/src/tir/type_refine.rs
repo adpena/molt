@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::dominators;
@@ -9,6 +9,86 @@ use super::values::ValueId;
 
 /// Maximum number of fixpoint iterations before conservative fallback.
 const MAX_ROUNDS: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypeFact {
+    Unknown,
+    Known(TirType),
+}
+
+impl TypeFact {
+    fn known(ty: TirType) -> Self {
+        Self::Known(ty)
+    }
+
+    fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+
+    fn as_type_or_dynbox(&self) -> TirType {
+        match self {
+            Self::Unknown => TirType::DynBox,
+            Self::Known(ty) => ty.clone(),
+        }
+    }
+
+    fn join(&self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::Unknown, fact) | (fact, Self::Unknown) => fact.clone(),
+            (Self::Known(left), Self::Known(right)) => Self::Known(left.meet(right)),
+        }
+    }
+}
+
+fn join_assign_type_fact(
+    facts: &mut HashMap<ValueId, TypeFact>,
+    id: ValueId,
+    incoming: TypeFact,
+) -> bool {
+    if matches!(incoming, TypeFact::Unknown) {
+        return false;
+    }
+    let current = facts.get(&id).cloned().unwrap_or(TypeFact::Unknown);
+    let joined = current.join(&incoming);
+    if joined != current {
+        facts.insert(id, joined);
+        true
+    } else {
+        false
+    }
+}
+
+fn infer_result_facts_with_attrs(
+    opcode: OpCode,
+    operand_facts: &[TypeFact],
+    attrs: Option<&super::ops::AttrDict>,
+    result_count: usize,
+) -> Vec<TypeFact> {
+    if result_count == 0 {
+        return vec![];
+    }
+
+    if matches!(opcode, OpCode::TypeGuard)
+        && let Some(attrs) = attrs
+        && let Some(proven_ty) = parse_guard_type(attrs)
+    {
+        return vec![TypeFact::known(proven_ty); result_count];
+    }
+
+    let operands_known = operand_facts.iter().all(TypeFact::is_known);
+    let operand_types: Vec<TirType> = operand_facts
+        .iter()
+        .map(TypeFact::as_type_or_dynbox)
+        .collect();
+    infer_result_types_with_attrs(opcode, &operand_types, attrs, result_count)
+        .into_iter()
+        .map(|inferred| match inferred {
+            Some(ty) => TypeFact::known(ty),
+            None if operands_known => TypeFact::known(TirType::DynBox),
+            None => TypeFact::Unknown,
+        })
+        .collect()
+}
 
 /// Extract a map from every [`ValueId`] to its refined [`TirType`] in a
 /// **post-refinement** TIR function.  Block argument types come from the
@@ -41,13 +121,20 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
             if op.results.is_empty() {
                 continue;
             }
+            if op
+                .results
+                .iter()
+                .all(|result_id| env.contains_key(result_id))
+            {
+                continue;
+            }
 
             // TypeGuard results get the proven type directly.
             if op.opcode == OpCode::TypeGuard
                 && let Some(proven_ty) = parse_guard_type(&op.attrs)
             {
                 for &result_id in &op.results {
-                    env.insert(result_id, proven_ty.clone());
+                    env.entry(result_id).or_insert_with(|| proven_ty.clone());
                 }
                 continue;
             }
@@ -65,7 +152,7 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
             );
             for (&result_id, inferred) in op.results.iter().zip(inferred_types) {
                 if let Some(inferred) = inferred {
-                    env.insert(result_id, inferred);
+                    env.entry(result_id).or_insert(inferred);
                 } else {
                     // No inference possible — preserve any persisted fact first,
                     // otherwise record DynBox so the map is complete.
@@ -82,37 +169,55 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
 /// Iterates to fixpoint (max 20 rounds, conservative fallback on timeout).
 /// Returns the number of values refined from DynBox to concrete types.
 pub fn refine_types(func: &mut TirFunction) -> usize {
-    // Build the type environment from existing value types.
-    let mut env: HashMap<ValueId, TirType> = func.value_types.clone();
+    let mut all_value_ids: HashSet<ValueId> = HashSet::new();
+    let mut defined_values: HashSet<ValueId> = HashSet::new();
 
-    // Collect initial types from block args and op results.
     for block in func.blocks.values() {
         for arg in &block.args {
-            env.insert(arg.id, arg.ty.clone());
+            all_value_ids.insert(arg.id);
+            defined_values.insert(arg.id);
         }
         for op in &block.ops {
-            for &result_id in &op.results {
-                // Preserve any persisted function-owned fact; if none exists,
-                // start conservatively as DynBox.
-                env.entry(result_id).or_insert(TirType::DynBox);
+            for &operand_id in &op.operands {
+                all_value_ids.insert(operand_id);
             }
+            for &result_id in &op.results {
+                all_value_ids.insert(result_id);
+                defined_values.insert(result_id);
+            }
+        }
+    }
+    for &id in func.value_types.keys() {
+        all_value_ids.insert(id);
+    }
+
+    // `Unknown` is bottom: the solver has not yet seen the producer's facts.
+    // `Known(DynBox)` is top: the value is dynamically typed and must never be
+    // narrowed again by a later transfer in this fixpoint.
+    let mut facts: HashMap<ValueId, TypeFact> = HashMap::new();
+    for (&id, ty) in &func.value_types {
+        if !defined_values.contains(&id) || !matches!(ty, TirType::DynBox) {
+            facts.insert(id, TypeFact::known(ty.clone()));
         }
     }
 
     if let Some(entry) = func.blocks.get_mut(&func.entry_block) {
         for (arg, param_ty) in entry.args.iter_mut().zip(func.param_types.iter()) {
-            if *param_ty != TirType::DynBox {
-                arg.ty = param_ty.clone();
-                env.insert(arg.id, param_ty.clone());
-            }
+            arg.ty = param_ty.clone();
+            facts.insert(arg.id, TypeFact::known(param_ty.clone()));
         }
     }
 
     // Track which values started as DynBox so we can count refinements.
-    let initially_dynbox: Vec<ValueId> = env
+    let initially_dynbox: Vec<ValueId> = all_value_ids
         .iter()
-        .filter(|(_, ty)| matches!(ty, TirType::DynBox))
-        .map(|(id, _)| *id)
+        .filter(|id| {
+            !matches!(
+                facts.get(id),
+                Some(TypeFact::Known(ty)) if !matches!(ty, TirType::DynBox)
+            )
+        })
+        .copied()
         .collect();
 
     // Sorted block order for deterministic iteration.
@@ -161,11 +266,16 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         // operand-based inference. Producers (attr-keyed, so
                         // pre-extracted HERE — the fixpoint snapshot drops attrs):
                         //
-                        //  1. Call/CallMethod/CallBuiltin `return_type` — the
+                        //  1. Object allocation `_type_hint` — structural class
+                        //     identity minted by the allocator itself.
+                        //  2. Call/CallMethod/CallBuiltin `return_type` — the
                         //     frontend's structural return type. (Legacy
                         //     `_type_hint` is semantic transport metadata and must
                         //     NOT refine representation, so it is ignored.)
-                        //  2. A `Copy`-spelled fresh value (the SSA converter's
+                        //  3. CallBuiltin `name` for structural builtin return
+                        //     types (`len`, predicates, `ord`, `chr`).
+                        //  4. TypeGuard's proven type.
+                        //  5. A `Copy`-spelled fresh value (the SSA converter's
                         //     fallback for ops without a dedicated OpCode). Two
                         //     classifier-backed cases, in priority order:
                         //     (a) RAW-CARRIER scalar conversions
@@ -183,11 +293,38 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         //     Everything else (transparent aliases) propagates
                         //     operand 0's type.
                         let result_type_override = match op.opcode {
-                            OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin => {
-                                op.attrs.get("return_type").and_then(|v| match v {
-                                    AttrValue::Str(s) => parse_return_type_str(s.as_str()),
+                            OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack => {
+                                match op.attrs.get("_type_hint") {
+                                    Some(AttrValue::Str(name)) => match TirType::from_type_hint(name)
+                                    {
+                                        class_ty @ TirType::UserClass(_) => Some(class_ty),
+                                        _ => None,
+                                    },
                                     _ => None,
-                                })
+                                }
+                            }
+                            OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin => {
+                                op.attrs
+                                    .get("return_type")
+                                    .and_then(|v| match v {
+                                        AttrValue::Str(s) => parse_return_type_str(s.as_str()),
+                                        _ => None,
+                                    })
+                                    .or_else(|| {
+                                        if op.opcode == OpCode::CallBuiltin {
+                                            op.attrs.get("name").and_then(|v| match v {
+                                                AttrValue::Str(s) => {
+                                                    structural_builtin_return_type(s.as_str())
+                                                }
+                                                _ => None,
+                                            })
+                                        } else {
+                                            None
+                                        }
+                                    })
+                            }
+                            OpCode::TypeGuard => {
+                                parse_guard_type(&op.attrs)
                             }
                             OpCode::Copy => {
                                 let original_kind = match op.attrs.get("_original_kind") {
@@ -227,16 +364,23 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     let mut eh_handler_args: std::collections::HashSet<ValueId> = std::collections::HashSet::new();
     if has_eh {
         for block in func.blocks.values() {
+            let is_exception_label_entry = func.label_id_map.contains_key(&block.id.0);
             // A block whose first op is StateBlockStart or CheckException
-            // is an exception handler — its args must stay DynBox.
-            if let Some(first_op) = block.ops.first()
-                && matches!(
+            // is an exception handler. A block named by `label_id_map` is also
+            // an exception-label entry even when it is an empty forwarding
+            // block; implicit exception edges can land there with values from
+            // arbitrary protected contexts. In both cases, args must stay
+            // DynBox and downstream merge args must see that top fact.
+            let starts_with_handler_marker = block.ops.first().is_some_and(|first_op| {
+                matches!(
                     first_op.opcode,
                     OpCode::StateBlockStart | OpCode::CheckException
                 )
-            {
+            });
+            if is_exception_label_entry || starts_with_handler_marker {
                 for arg in &block.args {
                     eh_handler_args.insert(arg.id);
+                    facts.insert(arg.id, TypeFact::known(TirType::DynBox));
                 }
             }
         }
@@ -288,27 +432,31 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 }
                 if has_eh && matches!(opcode, OpCode::CheckException) {
                     for &result_id in results {
-                        env.insert(result_id, TirType::DynBox);
+                        facts.insert(result_id, TypeFact::known(TirType::DynBox));
                     }
                     continue;
                 }
-                let operand_types: Vec<TirType> = operands
+                let operand_facts: Vec<TypeFact> = operands
                     .iter()
-                    .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
+                    .map(|id| facts.get(id).cloned().unwrap_or(TypeFact::Unknown))
                     .collect();
-                let inferred_types = if results.len() == 1 {
+                let inferred_facts = if results.len() == 1 {
                     vec![
                         return_type_hint
                             .clone()
-                            .or_else(|| infer_result_type(*opcode, &operand_types)),
+                            .map(TypeFact::known)
+                            .unwrap_or_else(|| {
+                                infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
+                                    .into_iter()
+                                    .next()
+                                    .unwrap_or(TypeFact::Unknown)
+                            }),
                     ]
                 } else {
-                    infer_result_types_with_attrs(*opcode, &operand_types, None, results.len())
+                    infer_result_facts_with_attrs(*opcode, &operand_facts, None, results.len())
                 };
-                for (&result_id, inferred) in results.iter().zip(inferred_types) {
-                    if let Some(new_ty) = inferred {
-                        env.insert(result_id, new_ty);
-                    }
+                for (&result_id, inferred) in results.iter().zip(inferred_facts) {
+                    join_assign_type_fact(&mut facts, result_id, inferred);
                 }
             }
         }
@@ -336,7 +484,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 if eh_handler_args.contains(&arg_id) {
                     continue;
                 }
-                let mut accumulated = TirType::Never;
+                let mut accumulated = TypeFact::Unknown;
                 let mut saw_non_back_edge = false;
                 for (source_bid, edge_args) in edge_list {
                     if i >= edge_args.len() {
@@ -351,33 +499,28 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     if is_back_edge {
                         continue;
                     }
-                    let incoming_ty = env.get(&edge_args[i]).cloned().unwrap_or(TirType::DynBox);
-                    accumulated = accumulated.meet(&incoming_ty);
+                    let incoming_fact = facts
+                        .get(&edge_args[i])
+                        .cloned()
+                        .unwrap_or(TypeFact::Unknown);
+                    accumulated = accumulated.join(&incoming_fact);
                     saw_non_back_edge = true;
                 }
-                if saw_non_back_edge && !matches!(accumulated, TirType::Never) {
-                    env.insert(arg_id, accumulated);
+                if saw_non_back_edge {
+                    let current = facts.get(&arg_id).cloned().unwrap_or(TypeFact::Unknown);
+                    if matches!(current, TypeFact::Unknown) {
+                        if !matches!(accumulated, TypeFact::Unknown) {
+                            facts.insert(arg_id, accumulated);
+                        }
+                    } else {
+                        join_assign_type_fact(&mut facts, arg_id, accumulated);
+                    }
                 }
             }
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // Oscillation detection (GraalVM deopt cycle detection)
-    // ---------------------------------------------------------------------------
-    //
-    // Track type assignments per ValueId across fixpoint iterations. If a value
-    // oscillates (A -> B -> A), the fixpoint will never converge for that value.
-    // Fix it to DynBox (the most general type) and stop refining it.
-    //
-    // This prevents infinite loops in pathological cases where type inference
-    // bounces between two types due to control-flow joins with conflicting
-    // type information.
-    let mut type_history: HashMap<ValueId, Vec<TirType>> = HashMap::new();
-    // Values that have been frozen to DynBox due to oscillation.
-    let mut frozen: std::collections::HashSet<ValueId> = std::collections::HashSet::new();
-
-    // Fixpoint iteration.
+    // Fixpoint iteration over a finite-height fact lattice.
     //
     // Each round splits into TWO phases:
     //   Phase 1 — propagate op result types from operand types in every
@@ -393,6 +536,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // ensures the body's ops always see the latest header-arg type from
     // the previous round (or the seed in round 0), producing a refined
     // back-edge value that the next round's Phase 2 confirms.
+    let mut converged = false;
     for _round in 0..MAX_ROUNDS {
         let mut changed = false;
 
@@ -409,44 +553,41 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 // coming out of an exception check is dynamically typed.
                 if has_eh && matches!(opcode, OpCode::CheckException) {
                     for &result_id in results {
-                        if !matches!(env.get(&result_id), Some(TirType::DynBox)) {
-                            env.insert(result_id, TirType::DynBox);
-                            changed = true;
-                        }
+                        changed |= join_assign_type_fact(
+                            &mut facts,
+                            result_id,
+                            TypeFact::known(TirType::DynBox),
+                        );
                     }
                     continue;
                 }
 
-                let operand_types: Vec<TirType> = operands
+                let operand_facts: Vec<TypeFact> = operands
                     .iter()
-                    .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
+                    .map(|id| facts.get(id).cloned().unwrap_or(TypeFact::Unknown))
                     .collect();
 
                 // Frontend-provided return-type hint takes precedence for
                 // opaque call-like opcodes; falls back to operand-based
                 // inference for everything else.
-                let inferred_types = if results.len() == 1 {
+                let inferred_facts = if results.len() == 1 {
                     vec![
                         return_type_hint
                             .clone()
-                            .or_else(|| infer_result_type(*opcode, &operand_types)),
+                            .map(TypeFact::known)
+                            .unwrap_or_else(|| {
+                                infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
+                                    .into_iter()
+                                    .next()
+                                    .unwrap_or(TypeFact::Unknown)
+                            }),
                     ]
                 } else {
-                    infer_result_types_with_attrs(*opcode, &operand_types, None, results.len())
+                    infer_result_facts_with_attrs(*opcode, &operand_facts, None, results.len())
                 };
 
-                for (&result_id, inferred) in results.iter().zip(inferred_types) {
-                    // Skip frozen values — they have been fixed to DynBox.
-                    if frozen.contains(&result_id) {
-                        continue;
-                    }
-                    if let Some(new_ty) = inferred {
-                        let current = env.get(&result_id).cloned().unwrap_or(TirType::DynBox);
-                        if new_ty != current {
-                            env.insert(result_id, new_ty);
-                            changed = true;
-                        }
-                    }
+                for (&result_id, inferred) in results.iter().zip(inferred_facts) {
+                    changed |= join_assign_type_fact(&mut facts, result_id, inferred);
                 }
             }
         }
@@ -463,88 +604,63 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 for i in 0..arg_count {
                     let arg_id = func.blocks[&block_id].args[i].id;
 
-                    // Skip frozen values.
-                    if frozen.contains(&arg_id) {
-                        continue;
-                    }
-
                     // Exception handler block args must stay DynBox —
                     // the exception could come from any type context.
                     if eh_handler_args.contains(&arg_id) {
-                        if !matches!(env.get(&arg_id), Some(TirType::DynBox)) {
-                            env.insert(arg_id, TirType::DynBox);
-                            changed = true;
-                        }
+                        changed |= join_assign_type_fact(
+                            &mut facts,
+                            arg_id,
+                            TypeFact::known(TirType::DynBox),
+                        );
                         continue;
                     }
 
-                    let mut accumulated = TirType::Never;
+                    let mut accumulated = TypeFact::Unknown;
                     for (source_bid, edge_args) in edge_list {
                         if !reachable_blocks.contains(source_bid) {
                             continue;
                         }
                         if i < edge_args.len() {
-                            let incoming_ty =
-                                env.get(&edge_args[i]).cloned().unwrap_or(TirType::DynBox);
-                            accumulated = accumulated.meet(&incoming_ty);
+                            let incoming_fact = facts
+                                .get(&edge_args[i])
+                                .cloned()
+                                .unwrap_or(TypeFact::Unknown);
+                            accumulated = accumulated.join(&incoming_fact);
                         }
                     }
-                    // Only update if we actually had incoming edges and computed
-                    // something other than Never.
-                    if !matches!(accumulated, TirType::Never) {
-                        let current = env.get(&arg_id).cloned().unwrap_or(TirType::DynBox);
-                        if accumulated != current {
-                            env.insert(arg_id, accumulated);
-                            changed = true;
-                        }
-                    }
+                    changed |= join_assign_type_fact(&mut facts, arg_id, accumulated);
                 }
             }
         }
 
         if !changed {
+            converged = true;
             break;
         }
+    }
 
-        // --- Oscillation detection at end of each round ---
-        //
-        // After each fixpoint iteration, record the current type for every
-        // value and check for oscillation patterns. An oscillation is
-        // detected when a value's type history has length >= 3 and the
-        // current type equals the type from two iterations ago (A -> B -> A).
-        //
-        // When detected, freeze the value to DynBox — the most general type
-        // — so the fixpoint can converge. This is sound: DynBox is the top
-        // of the type lattice, so all meet operations will produce DynBox
-        // or a subtype.
-        for (&vid, ty) in &env {
-            let history = type_history.entry(vid).or_default();
-            if history.len() >= 2
-                && history[history.len() - 2] == *ty
-                && history[history.len() - 1] != *ty
-            {
-                // Oscillation detected: A -> B -> A.
-                // Fix to DynBox and freeze this value.
-                eprintln!(
-                    "[type_refine] oscillation detected for {:?}: {:?} -> {:?} -> {:?}, fixing to DynBox",
-                    vid,
-                    &history[history.len() - 2],
-                    &history[history.len() - 1],
-                    ty
-                );
-                frozen.insert(vid);
-            }
-            history.push(ty.clone());
+    if !converged {
+        eprintln!(
+            "[type_refine] fixpoint did not converge within {MAX_ROUNDS} rounds in {}; widening unknown facts to DynBox",
+            func.name
+        );
+        for &id in &all_value_ids {
+            facts.entry(id).or_insert(TypeFact::known(TirType::DynBox));
         }
+    }
 
-        // Apply DynBox fixup for all newly frozen values.
-        for &vid in &frozen {
-            if !matches!(env.get(&vid), Some(TirType::DynBox)) {
-                env.insert(vid, TirType::DynBox);
-                // No need to set changed=true here — if we froze values,
-                // the next round will skip them and converge faster.
-            }
-        }
+    let mut env: HashMap<ValueId, TirType> = HashMap::new();
+    for &id in &all_value_ids {
+        env.insert(
+            id,
+            facts
+                .get(&id)
+                .map(TypeFact::as_type_or_dynbox)
+                .unwrap_or(TirType::DynBox),
+        );
+    }
+    for (&id, fact) in &facts {
+        env.entry(id).or_insert_with(|| fact.as_type_or_dynbox());
     }
 
     // --- Guard-to-type-environment propagation ---
@@ -1017,12 +1133,6 @@ fn structural_builtin_return_type(name: &str) -> Option<TirType> {
         "chr" => Some(TirType::Str),
         _ => None,
     }
-}
-
-/// Infer the result type of an operation from its operand types.
-/// Returns `None` if the result type cannot be determined (stays as-is).
-pub(super) fn infer_result_type(opcode: OpCode, operand_types: &[TirType]) -> Option<TirType> {
-    infer_result_type_with_attrs(opcode, operand_types, None)
 }
 
 pub(super) fn infer_scalar_return_result_type(
@@ -1542,6 +1652,97 @@ mod tests {
     }
 
     #[test]
+    fn exception_label_forwarding_args_widen_downstream_merge_args() {
+        let normal_value = ValueId(0);
+        let handler_arg = ValueId(1);
+        let merge_arg = ValueId(2);
+        let entry = BlockId(0);
+        let handler = BlockId(1);
+        let merge = BlockId(2);
+
+        let mut blocks = HashMap::new();
+        blocks.insert(
+            entry,
+            TirBlock {
+                id: entry,
+                args: vec![],
+                ops: vec![
+                    make_op(OpCode::TryStart, vec![], vec![], int_attr(10)),
+                    make_op(OpCode::ConstInt, vec![], vec![normal_value], int_attr(1)),
+                ],
+                terminator: Terminator::Branch {
+                    target: merge,
+                    args: vec![normal_value],
+                },
+            },
+        );
+        blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: merge,
+                    args: vec![handler_arg],
+                },
+            },
+        );
+        blocks.insert(
+            merge,
+            TirBlock {
+                id: merge,
+                args: vec![TirValue {
+                    id: merge_arg,
+                    ty: TirType::I64,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![merge_arg],
+                },
+            },
+        );
+        let mut label_id_map = HashMap::new();
+        label_id_map.insert(handler.0, 10);
+        let mut func = TirFunction {
+            name: "exception_label_forwarding_args_widen_downstream_merge_args".into(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: TirType::DynBox,
+            blocks,
+            entry_block: entry,
+            next_value: 3,
+            next_block: 3,
+            attrs: AttrDict::new(),
+            value_types: HashMap::new(),
+            has_exception_handling: true,
+            label_id_map,
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        };
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+
+        assert_eq!(type_map.get(&handler_arg), Some(&TirType::DynBox));
+        assert_eq!(
+            type_map.get(&merge_arg),
+            Some(&TirType::DynBox),
+            "merge block args must widen when an exception-label forwarding block can feed DynBox"
+        );
+        assert_eq!(
+            func.blocks[&merge].args[0].ty,
+            TirType::DynBox,
+            "refine_types must write the widened merge type back into block args"
+        );
+    }
+
+    #[test]
     fn module_lookup_results_stay_dynbox() {
         for opcode in [
             OpCode::ModuleCacheGet,
@@ -1919,6 +2120,69 @@ mod tests {
         };
         let refined = refine_types(&mut func);
         assert_eq!(refined, 0);
+    }
+
+    #[test]
+    fn dynamic_transfer_widens_stale_precise_result_and_stays_idempotent() {
+        let source = ValueId(0);
+        let result = ValueId(1);
+        let mut attrs = AttrDict::new();
+        attrs.insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+        let mut func = single_block_func(
+            vec![make_op(OpCode::Copy, vec![source], vec![result], attrs)],
+            2,
+        );
+        func.value_types.insert(source, TirType::DynBox);
+        func.value_types.insert(result, TirType::Str);
+
+        refine_types(&mut func);
+        let once = extract_type_map(&func);
+        assert_eq!(
+            once.get(&result),
+            Some(&TirType::DynBox),
+            "a dynamic producer must widen stale precise facts to top"
+        );
+
+        refine_types(&mut func);
+        let twice = extract_type_map(&func);
+        assert_eq!(
+            twice.get(&result),
+            Some(&TirType::DynBox),
+            "post-refinement extraction must not re-narrow widened top facts"
+        );
+    }
+
+    #[test]
+    fn dense_check_exception_results_are_top_and_idempotent() {
+        let ops: Vec<TirOp> = (0..1024)
+            .map(|idx| {
+                make_op(
+                    OpCode::CheckException,
+                    vec![],
+                    vec![ValueId(idx)],
+                    AttrDict::new(),
+                )
+            })
+            .collect();
+        let mut func = single_block_func(ops, 1024);
+        func.name = "dense_exception_poll".into();
+        func.has_exception_handling = true;
+
+        refine_types(&mut func);
+        let value_types_after_first = func.value_types.clone();
+        assert_eq!(value_types_after_first.len(), 1024);
+        assert!(
+            value_types_after_first
+                .values()
+                .all(|ty| matches!(ty, TirType::DynBox)),
+            "check_exception result facts are dynamic top"
+        );
+
+        refine_types(&mut func);
+        assert_eq!(
+            func.value_types, value_types_after_first,
+            "dense exception refinement must be idempotent"
+        );
     }
 
     /// Lock-in for the loop-induction-variable seeding contract.

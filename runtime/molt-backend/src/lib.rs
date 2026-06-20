@@ -35,6 +35,7 @@ mod native_backend_consts;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 use native_backend_consts::*;
 mod passes;
+mod process_diagnostics;
 mod representation_plan;
 mod stdlib_module_symbols;
 /// The representation lattice element (the orthogonal carrier axis to
@@ -231,7 +232,9 @@ pub(crate) fn dump_ir_ops(func_ir: &FunctionIR, mode: &str) {
     }
 }
 
-#[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
+#[derive(
+    Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug, serde::Deserialize, serde::Serialize,
+)]
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
@@ -263,7 +266,9 @@ pub(crate) struct TrampolineSpec {
     pub(crate) target_has_ret: bool,
 }
 
-pub(crate) fn function_requires_value_return(func: &FunctionIR) -> bool {
+const EXTERN_SIGNATURE_RETURN_VALUE: &str = "__molt_extern_signature_return";
+
+fn function_body_requires_value_return(func: &FunctionIR) -> bool {
     func.ops.iter().any(|op| {
         matches!(
             op.kind.as_str(),
@@ -275,6 +280,41 @@ pub(crate) fn function_requires_value_return(func: &FunctionIR) -> bool {
                 | "chan_recv_yield"
         )
     })
+}
+
+pub fn externalize_function_with_signature(func: &mut FunctionIR) {
+    let returns_value = function_body_requires_value_return(func);
+    func.is_extern = true;
+    func.ops = if returns_value {
+        vec![
+            OpIR {
+                kind: "missing".to_string(),
+                out: Some(EXTERN_SIGNATURE_RETURN_VALUE.to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".to_string(),
+                args: Some(vec![EXTERN_SIGNATURE_RETURN_VALUE.to_string()]),
+                ..OpIR::default()
+            },
+        ]
+    } else {
+        vec![OpIR {
+            kind: "ret_void".to_string(),
+            ..OpIR::default()
+        }]
+    };
+}
+
+pub(crate) fn function_requires_value_return(func: &FunctionIR) -> bool {
+    if func.is_extern {
+        assert!(
+            !func.ops.is_empty(),
+            "extern function `{}` is missing return-signature metadata",
+            func.name
+        );
+    }
+    function_body_requires_value_return(func)
 }
 
 pub(crate) fn env_setting(var: &str) -> Option<String> {

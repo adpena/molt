@@ -91,7 +91,7 @@ if False:  # TYPE_CHECKING
     _molt_asyncgen_locals: Callable[[object], object]
     _molt_gen_locals: Callable[[object], object]
     _molt_code_new: Callable[
-        [object, object, object, object, object, object, object, object], object
+        [object, object, object, object, object, object, object, object, object], object
     ]
     molt_compile_builtin: Callable[[object, object, object, int, bool, int], object]
     _molt_module_new: Callable[[object], object]

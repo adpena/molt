@@ -82,9 +82,13 @@ def _resolve_cli_path(raw: str) -> Path:
     return path.resolve()
 
 
-def _pytest_custody_artifact_path(kind: str, suffix: str, *, pid: int | None = None) -> Path:
+def _pytest_custody_artifact_path(
+    kind: str, suffix: str, *, pid: int | None = None
+) -> Path:
     safe_kind = "".join(ch if ch.isalnum() else "-" for ch in kind.lower()).strip("-")
-    safe_suffix = "".join(ch if ch.isalnum() else "-" for ch in suffix.lower()).strip("-")
+    safe_suffix = "".join(ch if ch.isalnum() else "-" for ch in suffix.lower()).strip(
+        "-"
+    )
     return PYTEST_OUTER_GUARD_SUMMARY_DIR / (
         f"{safe_kind or 'pytest'}-{os.getpid() if pid is None else pid}_{safe_suffix}.json"
     )
@@ -589,9 +593,7 @@ def ensure_pytest_memory_guard(
     env = dict(os.environ)
     env[PYTEST_OUTER_GUARD_REEXEC_ENV] = "1"
     env[PYTEST_CURRENT_TEST_FILE_ENV] = str(
-        _canonical_pytest_current_test_file_path(
-            env.get(PYTEST_CURRENT_TEST_FILE_ENV)
-        )
+        _canonical_pytest_current_test_file_path(env.get(PYTEST_CURRENT_TEST_FILE_ENV))
     )
     os.execvpe(argv[0], argv, env)
     raise RuntimeError("failed to re-exec pytest under tools/memory_guard.py")

@@ -3,12 +3,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bridge::{
-    self, ExceptionSentinel, alloc_function, alloc_instance_for_class, alloc_itertools_class,
-    alloc_kwd_mark, alloc_list, alloc_tuple, bridge_call_bind, bridge_callargs_expand_star,
-    bridge_callargs_new, bridge_molt_add, bridge_molt_eq, bridge_molt_iter_next, call_callable1,
-    call_callable2, class_set_iter_next, dec_ref_bits, exception_pending, inc_ref_bits,
-    index_i64_from_obj, is_truthy, missing_bits, molt_iter_bridge as molt_iter, object_class_bits,
-    object_type_id, raise_exception, raise_not_iterable, seq_vec_ref, tuple_from_iter_bits,
+    self, ExceptionSentinel, alloc_function, alloc_function_with_defaults,
+    alloc_instance_for_class, alloc_itertools_class, alloc_kwd_mark, alloc_list, alloc_tuple,
+    bridge_call_bind, bridge_callargs_expand_star, bridge_callargs_new, bridge_molt_add,
+    bridge_molt_eq, bridge_molt_iter_next, call_callable1, call_callable2, class_set_iter_next,
+    class_set_new, dec_ref_bits, exception_pending, inc_ref_bits, index_i64_from_obj, is_truthy,
+    missing_bits, molt_iter_bridge as molt_iter, object_class_bits, object_type_id,
+    raise_exception, raise_not_iterable, seq_vec_ref, tuple_from_iter_bits,
 };
 use molt_runtime_core::prelude::*;
 use molt_runtime_core::type_ids::*;
@@ -75,6 +76,7 @@ define_itertools_runtime_state! {
     takewhile_class,
     tee_iter_class,
     zip_longest_class,
+    repeat_new_fn,
     chain_next_fn,
     islice_next_fn,
     repeat_next_fn,
@@ -164,6 +166,18 @@ fn init_atomic_bits(_py: &PyToken, slot: &AtomicU64, f: impl FnOnce() -> u64) ->
 
 fn builtin_func_bits(_py: &PyToken, slot: &AtomicU64, fn_ptr: u64, arity: u64) -> u64 {
     init_atomic_bits(_py, slot, || alloc_function(_py, fn_ptr, arity))
+}
+
+fn builtin_func_bits_with_defaults(
+    _py: &PyToken,
+    slot: &AtomicU64,
+    fn_ptr: u64,
+    arity: u64,
+    defaults: &[u64],
+) -> u64 {
+    init_atomic_bits(_py, slot, || {
+        alloc_function_with_defaults(_py, fn_ptr, arity, defaults)
+    })
 }
 
 fn kwd_mark_bits(_py: &PyToken) -> u64 {
@@ -838,14 +852,30 @@ fn islice_class(_py: &PyToken) -> u64 {
 
 fn repeat_class(_py: &PyToken) -> u64 {
     let state = itertools_state(_py);
-    itertools_class(
+    let class_bits = itertools_class(
         _py,
         &state.repeat_class,
         "repeat",
         24,
         &state.repeat_next_fn,
         molt_itertools_repeat_next as *const () as usize as u64,
+    );
+    install_repeat_constructor(_py, class_bits);
+    class_bits
+}
+
+fn repeat_new_bits(_py: &PyToken) -> u64 {
+    builtin_func_bits_with_defaults(
+        _py,
+        &itertools_state(_py).repeat_new_fn,
+        molt_itertools_repeat_new as *const () as usize as u64,
+        3,
+        &[MoltObject::none().bits()],
     )
+}
+
+fn install_repeat_constructor(_py: &PyToken, class_bits: u64) {
+    class_set_new(_py, class_bits, repeat_new_bits(_py));
 }
 
 fn count_class(_py: &PyToken) -> u64 {
@@ -1324,32 +1354,44 @@ pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat(obj_bits: u64, times_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let times = if obj_from_bits(times_bits).is_none() {
-            -1
-        } else {
-            let val = index_i64_from_obj(_py, times_bits, "repeat() arg 2 must be int");
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if val < 0 { 0 } else { val }
-        };
-        let class_bits = repeat_class(_py);
-        let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let inst_bits = alloc_instance_for_class(_py, class_bits);
-        if obj_from_bits(inst_bits).is_none() {
+    with_core_gil!(_py, { itertools_repeat_impl(_py, obj_bits, times_bits) })
+}
+
+fn itertools_repeat_impl(_py: &PyToken, obj_bits: u64, times_bits: u64) -> u64 {
+    let times = if obj_from_bits(times_bits).is_none() {
+        -1
+    } else {
+        let val = index_i64_from_obj(_py, times_bits, "repeat() arg 2 must be int");
+        if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
-        unsafe {
-            repeat_set_obj_bits(inst_ptr, obj_bits);
-            repeat_set_times(inst_ptr, times);
-        }
-        inc_ref_bits(_py, obj_bits);
-        inst_bits
-    })
+        if val < 0 { 0 } else { val }
+    };
+    let class_bits = repeat_class(_py);
+    let Some(_class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    let inst_bits = alloc_instance_for_class(_py, class_bits);
+    if obj_from_bits(inst_bits).is_none() {
+        return MoltObject::none().bits();
+    }
+    let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
+    unsafe {
+        repeat_set_obj_bits(inst_ptr, obj_bits);
+        repeat_set_times(inst_ptr, times);
+    }
+    inc_ref_bits(_py, obj_bits);
+    inst_bits
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_repeat_new(_cls_bits: u64, obj_bits: u64, times_bits: u64) -> u64 {
+    with_core_gil!(_py, { itertools_repeat_impl(_py, obj_bits, times_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_repeat_type() -> u64 {
+    with_core_gil!(_py, { repeat_class(_py) })
 }
 
 #[unsafe(no_mangle)]

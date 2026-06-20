@@ -131,7 +131,21 @@ impl OwnershipLattice {
                             .filter(|operand| finalizer_sensitive.contains(operand))
                             .collect();
                         if !absorbed_sensitive.is_empty() {
-                            statement_release_finalizer_values.extend(absorbed_sensitive);
+                            statement_release_finalizer_values
+                                .extend(absorbed_sensitive.iter().copied());
+                            for &absorbed in &absorbed_sensitive {
+                                if statement_release_finalizer_boundary_keys
+                                    .insert((block_id, op_index, absorbed))
+                                {
+                                    statement_release_finalizer_boundaries.push(
+                                        StatementReleaseFinalizerBoundary {
+                                            block: block_id,
+                                            op_index,
+                                            value: absorbed,
+                                        },
+                                    );
+                                }
+                            }
                             for &result in &op.results {
                                 if finalizer_sensitive.insert(result) {
                                     changed = true;
@@ -316,6 +330,45 @@ mod tests {
         assert!(
             lat.statement_release_finalizer_values().contains(&a),
             "Copy-preserved list_new must mark the absorbed producer"
+        );
+    }
+
+    #[test]
+    fn copy_class_def_absorbs_descriptor_into_class_owner() {
+        let mut f = func();
+        let name = f.fresh_value();
+        let descriptor = f.fresh_value();
+        let class_obj = f.fresh_value();
+        let entry_id = f.entry_block;
+        let entry = f.blocks.get_mut(&entry_id).unwrap();
+        entry.ops.push(del_op(descriptor));
+        entry.ops.push(original_kind_copy(
+            "class_def",
+            vec![name, descriptor],
+            vec![class_obj],
+        ));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let lat = OwnershipLattice::compute(&f);
+        assert!(lat.is_finalizer_sensitive(descriptor));
+        assert!(
+            lat.is_finalizer_sensitive(class_obj),
+            "Copy-preserved class_def must keep class-body descriptor lifetime behind the class owner"
+        );
+        assert!(
+            lat.statement_release_finalizer_values()
+                .contains(&descriptor),
+            "Copy-preserved class_def must mark the absorbed descriptor temp"
+        );
+        assert!(
+            lat.statement_release_finalizer_boundaries()
+                .iter()
+                .any(|boundary| {
+                    boundary.block == entry_id
+                        && boundary.op_index == 1
+                        && boundary.value == descriptor
+                }),
+            "class_def must expose the exact class-construction absorption boundary"
         );
     }
 

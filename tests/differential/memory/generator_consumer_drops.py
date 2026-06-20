@@ -2,11 +2,10 @@
 # (adversarial-review P0 #2(b)).
 #
 # The yielded element is the VALUE result of `IterNextUnboxed` (results[0]). The
-# runtime writes that value-out slot ONLY on the not-done branch; on the
-# `done=true` exhaustion path it leaves the slot UNINITIALIZED (stale stack
-# garbage — every runtime `return done_true` skips `*value_out = …`). The drop
-# pass previously placed an edge-dying `DecRef(element)` at the loop-exit
-# successor, decreffing that stale pointer → use-after-free / segfault on
+# runtime now initializes that value-out slot to `None` before advancing and
+# overwrites it ONLY on the not-done branch. The drop pass previously placed an
+# edge-dying `DecRef(element)` at the loop-exit successor, treating the exhausted
+# edge as if it still carried an owned value -> use-after-free / segfault on
 # `list(g())`, `"".join(g())`, and bare `for v in g():`.
 #
 # Fix: the `IterNextUnboxed` value result is now EXCLUDED from edge-dying drops

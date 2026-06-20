@@ -1202,7 +1202,6 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
             let mut total_len = 0usize;
             struct StringPart {
-                bits: u64,
                 data: *const u8,
                 len: usize,
             }
@@ -1247,11 +1246,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                         } else if elem_bits != first_bits {
                             all_same = false;
                         }
-                        parts.push(StringPart {
-                            bits: elem_bits,
-                            data,
-                            len,
-                        });
+                        parts.push(StringPart { data, len });
                     }
                 }
             }
@@ -1332,11 +1327,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                     } else if elem_bits != first_bits {
                         all_same = false;
                     }
-                    parts.push(StringPart {
-                        bits: elem_bits,
-                        data,
-                        len,
-                    });
+                    parts.push(StringPart { data, len });
                     inc_ref_bits(_py, elem_bits);
                     owned_bits.push(elem_bits);
                     idx += 1;
@@ -1347,14 +1338,6 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                     .len()
                     .saturating_mul(parts.len().saturating_sub(1));
                 total_len = total_len.saturating_add(sep_total);
-            }
-            let mut result_bits = None;
-            if parts.len() == 1 && !iter_owned {
-                inc_ref_bits(_py, parts[0].bits);
-                result_bits = Some(parts[0].bits);
-            }
-            if let Some(bits) = result_bits {
-                return bits;
             }
             let out_ptr = alloc_bytes_like_with_len(_py, total_len, TYPE_ID_STRING);
             if out_ptr.is_null() {

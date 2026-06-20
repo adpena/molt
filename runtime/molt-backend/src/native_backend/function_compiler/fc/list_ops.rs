@@ -316,8 +316,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 bool_primary_vars,
                 vars,
                 nbc,
-                box_int_mask_var,
-                box_int_tag_var,
                 int_primary_vars,
                 float_primary_vars,
                 &args[1],

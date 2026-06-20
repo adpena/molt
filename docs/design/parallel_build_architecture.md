@@ -49,9 +49,12 @@ The live codebase and executable Cargo metadata remain authoritative.
    centered on `function_compiler.rs`; frontend F1 split files, but F2 semantic
    authority split is still active work.
 3. **Shared-cache policy is still more important than raw local target size.**
-   Per-worktree `target/` roots isolate agents correctly, but the system still
-   needs more shared, deterministic cache surfaces so the Nth agent does not
-   rebuild what the first agent already proved.
+   The current throughput bootstrap derives one canonical artifact root through
+   `RunContext`/`tools/throughput_env.sh`, prefers a healthy external root when
+   configured, and shares `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
+   `MOLT_CACHE`, and `.sccache` under that root. Isolation comes from
+   `MOLT_SESSION_ID`, daemon/socket identity, and lock custody rather than each
+   agent inventing a private target tree.
 
 ## Prioritized levers (highest leverage first)
 
@@ -112,8 +115,10 @@ should extend the measurement to crate extraction and cache-hit rebuild cases.
 - **`sccache`**: caches compiled rlibs across sessions AND worktrees. The repo
   already has `MOLT_USE_SCCACHE` + `_run_cargo_with_sccache_retry`; make it
   default-on for dev. This is enormous for the **multi-agent worktree model** —
-  today each `.claude/worktrees/agent-*` has its own `target/` and recompiles the
-  whole world; sccache lets the Nth agent reuse the 1st's artifacts.
+  today any agent that misses the canonical throughput env can fall back to a
+  private `target/` and recompile the whole world; `tools/new-agent-task.sh`
+  writes `logs/agents/<task>/env.sh` so each lane can source the same
+  shared-root policy before building.
 - **Fast linker**: `release-fast`/fat-LTO link of a 344K-line crate is link-bound.
   `-C link-arg=-fuse-ld=lld` (mac) / `mold` (Linux). Currently opt-in only in
   `.cargo/config.toml`; flip on for dev profiles (keep the portable baseline for CI).
@@ -130,9 +135,10 @@ prefer additive features resolved once.
 ### 5. Multi-agent worktree throughput
 The heavy worktree-per-agent model (currently many `worktree-agent-*`) maximally
 benefits from #1 (agents editing different leaf crates don't serialize on the
-monolith) + #3 (shared sccache). Consider a shared read-only `CARGO_HOME`/registry
-cache + a shared sccache dir across worktrees (the session-scoped `target/` stays
-per-agent for isolation; the *cache* is shared).
+monolith) + #3 (shared canonical artifact roots and sccache). Keep
+`CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `.sccache`, and
+`tmp/` under the chosen artifact root; keep per-agent separation in
+`MOLT_SESSION_ID`, daemon sockets, logs, and worktree ownership.
 
 ## Sequencing (each step lands green; no half-states)
 1. **Structural runtime composition:** continue turning `molt-runtime` into a

@@ -25,6 +25,15 @@ fn test_hooks_or_stubs_returns_stubs() {
     let bytes_bits = unsafe { (h.alloc_bytes)(b"data".as_ptr(), 4) };
     assert_eq!(bytes_bits, 0);
 
+    let int_bits = unsafe { (h.int_from_i64)(i64::MAX) };
+    assert_eq!(int_bits, 0);
+
+    let uint_bits = unsafe { (h.int_from_u64)(u64::MAX) };
+    assert_eq!(uint_bits, 0);
+
+    let int_value = unsafe { (h.int_as_i64)(0) };
+    assert_eq!(int_value, -1);
+
     let list_bits = unsafe { (h.alloc_list)() };
     assert_eq!(list_bits, 0);
 

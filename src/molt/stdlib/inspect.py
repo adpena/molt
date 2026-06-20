@@ -29,6 +29,7 @@ __all__ = [
     "cleandoc",
     "currentframe",
     "getdoc",
+    "getmembers",
     "getgeneratorlocals",
     "getasyncgenlocals",
     "getasyncgenstate",
@@ -69,6 +70,7 @@ CORO_CLOSED = "CORO_CLOSED"
 _molt_cleandoc = _require_intrinsic("molt_inspect_cleandoc")
 _molt_currentframe = _require_intrinsic("molt_inspect_currentframe")
 _molt_getdoc = _require_intrinsic("molt_inspect_getdoc")
+_molt_getmembers = _require_intrinsic("molt_inspect_getmembers")
 _molt_isfunction = _require_intrinsic("molt_inspect_isfunction")
 _molt_isclass = _require_intrinsic("molt_inspect_isclass")
 _molt_ismodule = _require_intrinsic("molt_inspect_ismodule")
@@ -94,6 +96,10 @@ def currentframe():
 
 def getdoc(obj):
     return _molt_getdoc(obj)
+
+
+def getmembers(obj, predicate=None):
+    return _molt_getmembers(obj, predicate)
 
 
 def isfunction(obj):

@@ -156,6 +156,18 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "marker-scoped compile-child cleanup; backend daemon commands are excluded",
     ),
     AllowedRawSubprocessUse(
+        "tools/gen_op_kinds.py",
+        "_rustfmt_text",
+        "run",
+        "bounded rustfmt child for checked-in generated Rust op-kind tables",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/gen_stringprep_tables.py",
+        "_rustfmt_text",
+        "run",
+        "bounded rustfmt child for checked-in generated Rust stringprep tables",
+    ),
+    AllowedRawSubprocessUse(
         "tools/molt_dev.py",
         "probe_pid",
         "os.kill",
@@ -214,16 +226,15 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
-        "terminate_watched_processes",
+        "_send_pid_signal_action",
         "os.kill",
-        "memory guard watched-root and escaped-PID teardown primitive",
-        expected_count=3,
+        "memory guard watched-root and escaped-PID signal primitive",
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
-        "terminate_watched_processes",
+        "_send_process_group_signal_action",
         "os.killpg",
-        "memory guard watched process-group escalation primitive",
+        "memory guard watched process-group signal primitive",
     ),
     AllowedRawSubprocessUse(
         "tools/profile.py",

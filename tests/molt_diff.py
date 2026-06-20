@@ -187,6 +187,35 @@ def _collect_meta(file_path: str) -> dict[str, list[str]]:
     return meta
 
 
+def _metadata_stdlib_profile(file_path: str) -> tuple[str | None, str | None]:
+    values = _collect_meta(file_path).get("stdlib_profile", [])
+    normalized = {value.strip().lower() for value in values if value.strip()}
+    if not normalized:
+        return None, None
+    if len(normalized) != 1:
+        return None, "MOLT_META stdlib_profile must select exactly one profile"
+    profile = next(iter(normalized))
+    if profile not in {"micro", "full"}:
+        return None, "MOLT_META stdlib_profile must be 'micro' or 'full'"
+    return profile, None
+
+
+def _apply_metadata_env_overrides(file_path: str, env: dict[str, str]) -> str | None:
+    profile, error = _metadata_stdlib_profile(file_path)
+    if error is not None:
+        return error
+    if profile is None:
+        return None
+    explicit = env.get("MOLT_DIFF_STDLIB_PROFILE", "").strip().lower()
+    if explicit and explicit != profile:
+        return (
+            f"{file_path} requires MOLT_DIFF_STDLIB_PROFILE={profile} "
+            f"but selected {explicit}"
+        )
+    env["MOLT_DIFF_STDLIB_PROFILE"] = profile
+    return None
+
+
 def _normalize_repo_relative(path: str | Path) -> str:
     candidate = Path(path)
     if not candidate.is_absolute():
@@ -3074,6 +3103,17 @@ def _run_molt(
     if "MOLT_TRUSTED" not in env and _diff_trusted_default():
         env["MOLT_TRUSTED"] = "1"
     env.update(_collect_env_overrides(file_path))
+    metadata_error = _apply_metadata_env_overrides(file_path, env)
+    if metadata_error is not None:
+        _record_rss_metrics(
+            file_path,
+            build_metrics=None,
+            run_metrics=None,
+            build_rc=2,
+            run_rc=None,
+            status="build_invalid_stdlib_profile",
+        )
+        return None, metadata_error, 2
     if extra_env:
         env.update(extra_env)
     if daemon_enabled is None:

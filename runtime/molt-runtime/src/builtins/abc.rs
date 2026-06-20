@@ -4,10 +4,10 @@ use super::methods::is_not_implemented_bits;
 use crate::{
     TYPE_ID_DICT, TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_dict_with_pairs,
     alloc_function_obj, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    builtin_classes, call_callable0, call_callable1, class_bases_bits, class_bases_vec,
-    class_dict_bits, class_mro_vec, dec_ref_bits, dict_get_in_place, dict_order, exception_pending,
-    inc_ref_bits, int_bits_from_i64, is_truthy, issubclass_bits, maybe_ptr_from_bits, obj_eq,
-    obj_from_bits, object_type_id, raise_exception, runtime_state, type_of_bits,
+    builtin_classes, call_callable1, class_bases_bits, class_bases_vec, class_dict_bits,
+    class_mro_vec, dec_ref_bits, dict_get_in_place, dict_order, exception_pending, inc_ref_bits,
+    int_bits_from_i64, is_truthy, issubclass_bits, maybe_ptr_from_bits, obj_eq, obj_from_bits,
+    object_type_id, raise_exception, runtime_state, type_of_bits,
 };
 
 fn get_attr_default(
@@ -160,7 +160,12 @@ fn for_each_iter_value(
     loop {
         let mut value_bits = 0;
         let done_bits =
-            unsafe { crate::object::ops_iter::molt_iter_next_unboxed(iter_bits, &mut value_bits) };
+            unsafe {
+                crate::object::ops_iter::molt_iter_next_unboxed(
+                    iter_bits,
+                    (&mut value_bits as *mut u64) as u64,
+                )
+            };
         if done_bits == MoltObject::none().bits() || exception_pending(_py) {
             dec_ref_bits(_py, iter_bits);
             return Err(MoltObject::none().bits());
@@ -338,6 +343,42 @@ fn abc_state_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name: &[u8]) -> u64 {
     }
 }
 
+const ABC_DIRECT_SUBCLASSES_ATTR: &[u8] = b"_molt_abc_direct_subclasses";
+
+fn abc_has_state(_py: &crate::PyToken<'_>, cls_bits: u64) -> bool {
+    !obj_from_bits(abc_state_attr(_py, cls_bits, b"_abc_registry")).is_none()
+}
+
+fn abc_direct_subclasses_attr(_py: &crate::PyToken<'_>, cls_bits: u64) -> u64 {
+    abc_state_attr(_py, cls_bits, ABC_DIRECT_SUBCLASSES_ATTR)
+}
+
+fn abc_register_direct_subclass_with_bases(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+) -> Result<(), u64> {
+    let Some(cls_ptr) = maybe_ptr_from_bits(cls_bits) else {
+        return Ok(());
+    };
+    unsafe {
+        if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+            return Ok(());
+        }
+        let bases_bits = class_bases_bits(cls_ptr);
+        for base_bits in class_bases_vec(bases_bits) {
+            if !abc_has_state(_py, base_bits) {
+                continue;
+            }
+            let direct_bits = abc_direct_subclasses_attr(_py, base_bits);
+            if obj_from_bits(direct_bits).is_none() {
+                continue;
+            }
+            set_add(_py, direct_bits, cls_bits)?;
+        }
+    }
+    Ok(())
+}
+
 fn class_lookup_mro_attr(_py: &crate::PyToken<'_>, cls_bits: u64, name_bits: u64) -> u64 {
     let Some(cls_ptr) = maybe_ptr_from_bits(cls_bits) else {
         return MoltObject::none().bits();
@@ -454,9 +495,11 @@ fn abc_init_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
     let registry_bits = crate::molt_set_new(0);
     let cache_bits = crate::molt_set_new(0);
     let neg_cache_bits = crate::molt_set_new(0);
+    let direct_subclasses_bits = crate::molt_set_new(0);
     if obj_from_bits(registry_bits).is_none()
         || obj_from_bits(cache_bits).is_none()
         || obj_from_bits(neg_cache_bits).is_none()
+        || obj_from_bits(direct_subclasses_bits).is_none()
     {
         return Err(MoltObject::none().bits());
     }
@@ -467,6 +510,13 @@ fn abc_init_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
     set_attr_name(_py, cls_bits, b"_abc_cache", cache_bits)?;
     set_attr_name(_py, cls_bits, b"_abc_negative_cache", neg_cache_bits)?;
     set_attr_name(_py, cls_bits, b"_abc_negative_cache_version", version_bits)?;
+    set_attr_name(
+        _py,
+        cls_bits,
+        ABC_DIRECT_SUBCLASSES_ATTR,
+        direct_subclasses_bits,
+    )?;
+    abc_register_direct_subclass_with_bases(_py, cls_bits)?;
 
     if !obj_from_bits(frozen_bits).is_none() {
         dec_ref_bits(_py, frozen_bits);
@@ -474,6 +524,7 @@ fn abc_init_impl(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
     dec_ref_bits(_py, registry_bits);
     dec_ref_bits(_py, cache_bits);
     dec_ref_bits(_py, neg_cache_bits);
+    dec_ref_bits(_py, direct_subclasses_bits);
     Ok(())
 }
 
@@ -519,10 +570,21 @@ fn abc_ensure_init(_py: &crate::PyToken<'_>, cls_bits: u64) -> Result<(), u64> {
     Ok(())
 }
 
+const ABC_SUBCLASSCHECK_RECURSION_LIMIT: usize = 128;
+
 fn abc_subclasscheck_impl(
     _py: &crate::PyToken<'_>,
     cls_bits: u64,
     subclass_bits: u64,
+) -> Result<bool, u64> {
+    abc_subclasscheck_impl_inner(_py, cls_bits, subclass_bits, 0)
+}
+
+fn abc_subclasscheck_impl_inner(
+    _py: &crate::PyToken<'_>,
+    cls_bits: u64,
+    subclass_bits: u64,
+    depth: usize,
 ) -> Result<bool, u64> {
     if !is_type_object(subclass_bits) {
         return Err(raise_exception::<_>(
@@ -530,6 +592,9 @@ fn abc_subclasscheck_impl(
             "TypeError",
             "issubclass() arg 1 must be a class",
         ));
+    }
+    if depth > ABC_SUBCLASSCHECK_RECURSION_LIMIT {
+        return Ok(false);
     }
     abc_ensure_init(_py, cls_bits)?;
 
@@ -617,6 +682,12 @@ fn abc_subclasscheck_impl(
             registry_hit = true;
             return Ok(IterVisit::Break);
         }
+        if abc_has_state(_py, rcls_bits)
+            && abc_subclasscheck_impl_inner(_py, rcls_bits, subclass_bits, depth + 1)?
+        {
+            registry_hit = true;
+            return Ok(IterVisit::Break);
+        }
         Ok(IterVisit::Continue)
     })?;
     if registry_hit {
@@ -624,34 +695,25 @@ fn abc_subclasscheck_impl(
         return Ok(true);
     }
 
-    let subclasses_bits =
-        get_attr_default(_py, cls_bits, b"__subclasses__", MoltObject::none().bits());
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
+    let subclasses_bits = abc_direct_subclasses_attr(_py, cls_bits);
     if !obj_from_bits(subclasses_bits).is_none() {
-        let callable_ok = is_truthy(_py, obj_from_bits(crate::molt_is_callable(subclasses_bits)));
-        if callable_ok {
-            let sub_list = unsafe { call_callable0(_py, subclasses_bits) };
-            if exception_pending(_py) {
-                return Err(MoltObject::none().bits());
+        let mut subclass_hit = false;
+        for_each_iter_value(_py, subclasses_bits, |scls_bits| {
+            if mro_contains(subclass_bits, scls_bits) {
+                subclass_hit = true;
+                return Ok(IterVisit::Break);
             }
-            let mut subclass_hit = false;
-            let iter_result = for_each_iter_value(_py, sub_list, |scls_bits| {
-                if mro_contains(subclass_bits, scls_bits) {
-                    subclass_hit = true;
-                    return Ok(IterVisit::Break);
-                }
-                Ok(IterVisit::Continue)
-            });
-            if !obj_from_bits(sub_list).is_none() {
-                dec_ref_bits(_py, sub_list);
+            if abc_has_state(_py, scls_bits)
+                && abc_subclasscheck_impl_inner(_py, scls_bits, subclass_bits, depth + 1)?
+            {
+                subclass_hit = true;
+                return Ok(IterVisit::Break);
             }
-            iter_result?;
-            if subclass_hit {
-                set_add(_py, cache_bits, subclass_bits)?;
-                return Ok(true);
-            }
+            Ok(IterVisit::Continue)
+        })?;
+        if subclass_hit {
+            set_add(_py, cache_bits, subclass_bits)?;
+            return Ok(true);
         }
     }
 
@@ -1646,6 +1708,38 @@ mod tests {
                 dec_ref_bits(_py, sub_bits);
                 dec_ref_bits(_py, abc_bits);
             }
+        });
+    }
+
+    #[test]
+    fn abc_subclasscheck_walks_abc_direct_subclasses_for_virtual_registry() {
+        init_runtime();
+
+        crate::with_gil_entry_nopanic!(_py, {
+            let root_bits = test_class(_py, b"RootABC", &[]);
+            abc_init_impl(_py, root_bits).expect("root abc init failed");
+            let child_bits = test_class(_py, b"ChildABC", &[root_bits]);
+            abc_init_impl(_py, child_bits).expect("child abc init failed");
+            let concrete_bits = test_class(_py, b"ConcreteVirtual", &[]);
+
+            let returned = molt_abc_register(child_bits, concrete_bits);
+            assert_eq!(returned, concrete_bits);
+            dec_ref_bits(_py, returned);
+
+            assert!(
+                abc_subclasscheck_impl(_py, child_bits, concrete_bits)
+                    .expect("child subclasscheck failed"),
+                "virtual registration on the child ABC should be visible"
+            );
+            assert!(
+                abc_subclasscheck_impl(_py, root_bits, concrete_bits)
+                    .expect("root subclasscheck failed"),
+                "ABC subclass traversal should see virtual registrations on child ABCs"
+            );
+
+            dec_ref_bits(_py, concrete_bits);
+            dec_ref_bits(_py, child_bits);
+            dec_ref_bits(_py, root_bits);
         });
     }
 

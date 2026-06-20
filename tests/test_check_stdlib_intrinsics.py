@@ -311,6 +311,92 @@ def test_zero_non_intrinsic_gate_rejects_probe_only_module(
     assert "probe_mod" in out
 
 
+def test_fail_closed_import_policy_gate_is_allowed(tmp_path: Path, monkeypatch) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    (stdlib_root / "reserved_mod.py").write_text(
+        '"""reserved namespace"""\n'
+        "raise ImportError('reserved; use the explicit adapter')\n",
+        encoding="utf-8",
+    )
+    audit_doc = tmp_path / "audit.md"
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", audit_doc)
+    monkeypatch.setattr(
+        module, "ALLOWED_POLICY_GATE_MODULES", frozenset({"reserved_mod"})
+    )
+    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
+
+    assert module.main() == 0
+    text = audit_doc.read_text(encoding="utf-8")
+    assert "- `policy-gate`: `1`" in text
+    assert "- `reserved_mod`" in text
+
+
+def test_fail_closed_import_policy_gate_requires_explicit_allowlist(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    (stdlib_root / "reserved_mod.py").write_text(
+        '"""reserved namespace"""\n'
+        "raise ImportError('reserved; use the explicit adapter')\n",
+        encoding="utf-8",
+    )
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
+
+    exit_code = module.main()
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "policy-gate modules require explicit allowlist" in out
+    assert "reserved_mod" in out
+
+
+def test_policy_gate_rejects_executable_python_body(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    (stdlib_root / "not_reserved_mod.py").write_text(
+        '"""not a pure gate"""\nVALUE = 1\nraise ImportError(\'reserved\')\n',
+        encoding="utf-8",
+    )
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
+
+    exit_code = module.main()
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "zero non-intrinsic gate violated" in out
+    assert "not_reserved_mod" in out
+
+
+def test_real_stdlib_import_fallback_cleanup_modules_stay_clean() -> None:
+    module = _load_gate_module()
+    offenders = {
+        name: module._scan_strict_module_fallback_patterns(
+            module.STDLIB_ROOT / f"{name}.py"
+        )
+        for name in ("_pyio", "_pylong", "getopt", "site")
+    }
+
+    assert offenders == {"_pyio": [], "_pylong": [], "getopt": [], "site": []}
+
+
 def test_bootstrap_strict_closure_allows_intrinsic_partial_root(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -351,6 +437,40 @@ def test_bootstrap_strict_closure_rejects_transitive_python_only_dependency(
     assert exit_code == 1
     assert "bootstrap strict closure must be intrinsic-implemented" in out
     assert "os: python-only" in out
+
+
+def test_bootstrap_strict_closure_rejects_transitive_policy_gate_dependency(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    module = _load_gate_module()
+    stdlib_root = tmp_path / "stdlib"
+    _seed_bootstrap_strict_modules(stdlib_root)
+    (stdlib_root / "sys.py").write_text(
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        '_require_intrinsic("molt_capabilities_has", globals())\n'
+        "import reserved_mod\n",
+        encoding="utf-8",
+    )
+    (stdlib_root / "reserved_mod.py").write_text(
+        '"""reserved namespace"""\n'
+        "raise ImportError('reserved; use the explicit adapter')\n",
+        encoding="utf-8",
+    )
+
+    _configure_required_top_level(module, monkeypatch, stdlib_root)
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(
+        module, "ALLOWED_POLICY_GATE_MODULES", frozenset({"reserved_mod"})
+    )
+    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
+
+    exit_code = module.main()
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "bootstrap strict closure must be intrinsic-implemented" in out
+    assert "reserved_mod: policy-gate" in out
 
 
 def test_intrinsic_runtime_fallback_gate_rejects_swallowed_errors(

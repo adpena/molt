@@ -3,12 +3,37 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 
 import pytest
 
 import tools.memory_guard as memory_guard
+
+
+def _guard_termination_report(
+    *,
+    reason: str = "test_cleanup",
+    root_pid: int = 100,
+    root_pgid: int | None = 100,
+    actions: tuple[memory_guard.GuardTerminationAction, ...] = (),
+) -> memory_guard.GuardTerminationReport:
+    return memory_guard.GuardTerminationReport(
+        reason=reason,
+        started_at="2026-05-21T12:00:00Z",
+        completed_at="2026-05-21T12:00:01Z",
+        root_pid=root_pid,
+        root_pgid=root_pgid,
+        root_sid=None,
+        grace_sec=0.125,
+        watched_pids=(),
+        protected_pgids=(),
+        escaped_pids=(),
+        remaining_pgids=(),
+        remaining_pids=(),
+        actions=actions,
+    )
 
 
 def test_parse_process_table_keeps_commands_with_spaces() -> None:
@@ -232,7 +257,9 @@ def test_process_tree_tracker_does_not_absorb_root_ambient_process_group() -> No
     assert tracker.known_pgids == {100}
 
 
-def test_process_tree_tracker_does_not_absorb_learned_descendant_process_group_peer() -> None:
+def test_process_tree_tracker_does_not_absorb_learned_descendant_process_group_peer() -> (
+    None
+):
     tracker = memory_guard.ProcessTreeTracker(100)
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
@@ -245,7 +272,9 @@ def test_process_tree_tracker_does_not_absorb_learned_descendant_process_group_p
     assert tracker.known_pgids == {100, 777}
 
 
-def test_find_rss_violation_ignores_unobserved_reparented_process_group_member() -> None:
+def test_find_rss_violation_ignores_unobserved_reparented_process_group_member() -> (
+    None
+):
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
         101: memory_guard.ProcessSample(101, 1, 26_000_000, "reparented", pgid=100),
@@ -271,6 +300,7 @@ def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
@@ -323,6 +353,7 @@ def test_terminate_watched_processes_skips_host_control_plane_root_group(
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
     monkeypatch.setattr(
         memory_guard.os,
         "killpg",
@@ -345,7 +376,9 @@ def test_terminate_watched_processes_skips_host_control_plane_root_group(
     assert sent_pids == []
 
 
-def test_protected_process_groups_include_external_codex_descendant_not_owned_child() -> None:
+def test_protected_process_groups_include_external_codex_descendant_not_owned_child() -> (
+    None
+):
     if memory_guard.os.name != "posix":
         return
     samples = {
@@ -398,7 +431,9 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
     assert 200 not in protected
 
 
-def test_protected_process_groups_include_external_claude_descendant_not_owned_child() -> None:
+def test_protected_process_groups_include_external_claude_descendant_not_owned_child() -> (
+    None
+):
     if memory_guard.os.name != "posix":
         return
     samples = {
@@ -485,6 +520,80 @@ def test_terminate_single_process_group_refuses_protected_group(monkeypatch) -> 
     assert sent_groups == []
 
 
+def test_escalation_pid_signal_revalidates_identity(monkeypatch) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    original = memory_guard.ProcessSample(
+        101,
+        100,
+        20,
+        "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
+        pgid=101,
+    )
+    reused = memory_guard.ProcessSample(
+        101,
+        1,
+        20,
+        "/Applications/Codex.app/Contents/MacOS/Codex",
+        pgid=101,
+    )
+    sent_pids: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "kill",
+        lambda pid, sig: sent_pids.append((pid, sig)),
+    )
+
+    action = memory_guard._send_pid_signal_if_identity_action(
+        101,
+        memory_guard.process_identity(original),
+        memory_guard.signal.SIGKILL,
+        sampler=lambda: {101: reused},
+    )
+
+    assert action.result == "skipped_identity_mismatch"
+    assert sent_pids == []
+
+
+def test_escalation_group_signal_rechecks_protected_group(monkeypatch) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    original = memory_guard.ProcessSample(
+        101,
+        100,
+        20,
+        "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
+        pgid=101,
+    )
+    protected = memory_guard.ProcessSample(
+        101,
+        1,
+        20,
+        "/Applications/Codex.app/Contents/MacOS/Codex",
+        pgid=101,
+    )
+    sent_groups: list[tuple[int, int]] = []
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    )
+
+    action = memory_guard._send_process_group_signal_if_identities_match_action(
+        101,
+        {101: memory_guard.process_identity(original)},
+        memory_guard.signal.SIGKILL,
+        sampler=lambda: {101: protected},
+    )
+
+    assert action.result == "skipped_protected_group"
+    assert sent_groups == []
+
+
 def test_terminate_watched_processes_filters_protected_escaped_pid(
     monkeypatch,
 ) -> None:
@@ -503,6 +612,8 @@ def test_terminate_watched_processes_filters_protected_escaped_pid(
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
@@ -540,6 +651,8 @@ def test_terminate_watched_processes_never_killpgs_shared_child_group(
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
@@ -581,6 +694,7 @@ def test_terminate_watched_processes_never_kills_learned_group_peer(
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
@@ -619,6 +733,7 @@ def test_terminate_watched_processes_never_killpgs_mixed_root_group(
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
 
     def fake_killpg(pgid, sig):
         sent_groups.append((pgid, sig))
@@ -1013,9 +1128,11 @@ def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> 
         ),
     }
     calls: list[dict[str, object]] = []
+    report = _guard_termination_report(reason="tracked_orphan_cleanup")
 
     def fake_terminate(root_pid, **kwargs):
         calls.append({"root_pid": root_pid, **kwargs})
+        return report
 
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", fake_terminate)
 
@@ -1026,18 +1143,224 @@ def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> 
         grace=0.125,
     )
 
-    assert orphaned == (100, 300)
+    assert orphaned.process_groups == (100, 300)
+    assert orphaned.termination_reports == (report,)
     assert calls[0]["root_pid"] == 100
     assert calls[0]["watched"] == {200, 300}
     assert calls[0]["grace"] == 0.125
+    assert calls[0]["reason"] == "tracked_orphan_cleanup"
+
+
+def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    root = memory_guard.ROOT.as_posix()
+    tracker = memory_guard.ProcessTreeTracker(100)
+    tracker.update(
+        {
+            100: memory_guard.ProcessSample(
+                pid=100,
+                ppid=1,
+                pgid=100,
+                rss_kb=64,
+                command=f"{root}/.venv/bin/python3 -m pytest tests/root.py",
+            ),
+            200: memory_guard.ProcessSample(
+                pid=200,
+                ppid=100,
+                pgid=200,
+                rss_kb=64,
+                command=f"{root}/.venv/bin/python3 -m molt.cli build main.py",
+            ),
+            300: memory_guard.ProcessSample(
+                pid=300,
+                ppid=200,
+                pgid=300,
+                rss_kb=64,
+                command=f"{root}/target/dev-fast/molt-backend --ir-file ir.json",
+            ),
+        }
+    )
+    samples = {
+        50: memory_guard.ProcessSample(
+            pid=50,
+            ppid=1,
+            pgid=50,
+            rss_kb=64,
+            command="/bin/zsh -l",
+        ),
+        200: memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=200,
+            rss_kb=64,
+            command=f"{root}/.venv/bin/python3 -m molt.cli build main.py",
+        ),
+        300: memory_guard.ProcessSample(
+            pid=300,
+            ppid=200,
+            pgid=300,
+            rss_kb=64,
+            command=f"{root}/target/dev-fast/molt-backend --ir-file ir.json",
+        ),
+        400: memory_guard.ProcessSample(
+            pid=400,
+            ppid=50,
+            pgid=400,
+            rss_kb=64,
+            command=f"{root}/.venv/bin/python3 -m pytest tests/some_test.py",
+        ),
+        500: memory_guard.ProcessSample(
+            pid=500,
+            ppid=1,
+            pgid=500,
+            rss_kb=64,
+            command=f"{root}/target/dev-fast/molt-backend --old",
+        ),
+        550: memory_guard.ProcessSample(
+            pid=550,
+            ppid=1,
+            pgid=550,
+            rss_kb=64,
+            command=f"{root}/target/dev-fast/molt-backend --untracked",
+        ),
+        600: memory_guard.ProcessSample(
+            pid=600,
+            ppid=1,
+            pgid=600,
+            rss_kb=64,
+            command="/Applications/Claude.app/Contents/MacOS/Claude",
+        ),
+        601: memory_guard.ProcessSample(
+            pid=601,
+            ppid=600,
+            pgid=600,
+            rss_kb=64,
+            command=f"{root}/target/dev-fast/molt-backend --protected",
+        ),
+    }
+    terminated: list[tuple[int, float]] = []
+
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard,
+        "_terminate_single_pid",
+        lambda pid, *, grace: terminated.append((pid, grace)) or True,
+    )
+
+    cleaned = memory_guard.cleanup_repo_scoped_orphans_since_baseline(
+        baseline_pgids=frozenset({500}),
+        tracker=tracker,
+        sampler=lambda: samples,
+        grace=0.125,
+    )
+
+    assert cleaned.process_groups == (200, 300)
+    assert [report.reason for report in cleaned.termination_reports] == [
+        "repo_scoped_orphan_cleanup",
+        "repo_scoped_orphan_cleanup",
+    ]
+    assert [report.root_pgid for report in cleaned.termination_reports] == [200, 300]
+    assert [
+        action.target_id
+        for report in cleaned.termination_reports
+        for action in report.actions
+    ] == [200, 300]
+    assert all(
+        action.result == "completed_or_missing"
+        for report in cleaned.termination_reports
+        for action in report.actions
+    )
+    assert terminated == [(200, 0.125), (300, 0.125)]
+
+
+def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
+    monkeypatch,
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    root = memory_guard.ROOT.as_posix()
+    tracker = memory_guard.ProcessTreeTracker(100)
+    tracker.update(
+        {
+            100: memory_guard.ProcessSample(
+                pid=100,
+                ppid=1,
+                pgid=100,
+                rss_kb=64,
+                command=f"{root}/.venv/bin/python3 -m pytest tests/root.py",
+            ),
+            200: memory_guard.ProcessSample(
+                pid=200,
+                ppid=100,
+                pgid=200,
+                rss_kb=64,
+                command=f"{root}/target/dev-fast/molt-backend --owned",
+            ),
+        }
+    )
+    owned_orphan = {
+        200: memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=200,
+            rss_kb=64,
+            command=f"{root}/target/dev-fast/molt-backend --owned",
+        )
+    }
+    reused_pid = {
+        200: memory_guard.ProcessSample(
+            pid=200,
+            ppid=1,
+            pgid=200,
+            rss_kb=64,
+            command="/Applications/Claude.app/Contents/MacOS/Claude",
+        )
+    }
+    sampler_calls = 0
+
+    def sampler():
+        nonlocal sampler_calls
+        sampler_calls += 1
+        return owned_orphan if sampler_calls <= 2 else reused_pid
+
+    terminated: list[tuple[int, float]] = []
+    monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
+    monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard,
+        "_terminate_single_pid",
+        lambda pid, *, grace: terminated.append((pid, grace)) or True,
+    )
+
+    cleaned = memory_guard.cleanup_repo_scoped_orphans_since_baseline(
+        baseline_pgids=frozenset(),
+        tracker=tracker,
+        sampler=sampler,
+        grace=0.125,
+    )
+
+    assert cleaned.process_groups == ()
+    assert len(cleaned.termination_reports) == 1
+    assert cleaned.termination_reports[0].actions[0].result == (
+        "skipped_identity_mismatch"
+    )
+    assert terminated == []
 
 
 def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
+    report = _guard_termination_report(reason="tracked_orphan_cleanup")
 
     def fake_cleanup(root_pid, **kwargs):
         calls.append({"root_pid": root_pid, **kwargs})
-        return (777,)
+        return memory_guard.GuardOrphanCleanupResult(
+            process_groups=(777,),
+            termination_reports=(report,),
+        )
 
     monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", fake_cleanup)
 
@@ -1050,7 +1373,44 @@ def test_run_command_cleans_tracked_orphans_by_default(monkeypatch) -> None:
     assert result.returncode == 0
     assert result.stdout == "ok\n"
     assert result.orphaned_process_groups == (777,)
+    assert result.termination_reports == (report,)
     assert len(calls) == 1
+
+
+def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
+    monkeypatch,
+) -> None:
+    report = _guard_termination_report(
+        reason="repo_scoped_orphan_cleanup",
+        root_pid=222,
+        root_pgid=222,
+    )
+
+    def fake_cleanup(**kwargs):
+        assert kwargs["baseline_pgids"] == frozenset()
+        return memory_guard.GuardOrphanCleanupResult(
+            process_groups=(222,),
+            termination_reports=(report,),
+        )
+
+    monkeypatch.setattr(
+        memory_guard,
+        "cleanup_repo_scoped_orphans_since_baseline",
+        fake_cleanup,
+    )
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        timeout=0.01,
+        sampler=lambda: {},
+    )
+
+    assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
+    assert result.timed_out is True
+    assert result.orphaned_process_groups == (222,)
+    assert report in result.termination_reports
 
 
 def test_run_command_captures_large_stdout_without_pipe_deadlock() -> None:
@@ -1321,7 +1681,11 @@ def test_run_guarded_signal_exit_quarantines_cargo_incremental(
     live_file.write_text("work", encoding="utf-8")
 
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"],
+        [
+            sys.executable,
+            "-c",
+            "import os, signal; os.kill(os.getpid(), signal.SIGTERM)",
+        ],
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         cwd=tmp_path,
@@ -1393,6 +1757,216 @@ def test_main_enforces_timeout_and_writes_summary(
     assert payload["incident"]["cleanup"] == "terminated tracked process tree"
 
 
+def test_main_writes_summary_when_guard_parent_receives_sigterm(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    if memory_guard.os.name != "posix":
+        return
+    summary_path = tmp_path / "guard-sigterm-summary.json"
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--max-total-rss-gb",
+            "18",
+            "--poll-interval",
+            "0.01",
+            "--child-rlimit-gb",
+            "0",
+            "--timeout",
+            "5",
+            "--summary-json",
+            str(summary_path),
+            "--",
+            sys.executable,
+            "-c",
+            (
+                "import os, signal, time; "
+                "os.kill(os.getppid(), signal.SIGTERM); "
+                "time.sleep(10)"
+            ),
+        ]
+    )
+
+    assert rc == 143
+    assert "guard parent received SIGTERM" in capsys.readouterr().err
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["returncode"] == 143
+    assert payload["timed_out"] is False
+    assert payload["violation"] is None
+    assert payload["exit_signal"] is None
+    assert payload["guard_signal"] == {
+        "signal": 15,
+        "name": "SIGTERM",
+        "conventional_shell_status": True,
+    }
+    assert payload["incident"]["reason"] == "guard_interrupted"
+    assert payload["incident"]["cleanup"] == "terminated tracked process tree"
+    assert payload["incident"]["signal"] == payload["guard_signal"]
+
+
+def test_run_guarded_restores_signal_handlers_after_post_launch_exception() -> None:
+    if memory_guard.os.name != "posix":
+        return
+    watched_signals = [
+        sig
+        for sig in (
+            getattr(signal, "SIGTERM", None),
+            getattr(signal, "SIGINT", None),
+            getattr(signal, "SIGHUP", None),
+        )
+        if sig is not None
+    ]
+    previous_handlers = {sig: signal.getsignal(sig) for sig in watched_signals}
+    sampler_calls = 0
+
+    def failing_sampler():
+        nonlocal sampler_calls
+        sampler_calls += 1
+        if sampler_calls == 1:
+            return {}
+        raise RuntimeError("injected sampler failure")
+
+    with pytest.raises(RuntimeError, match="injected sampler failure"):
+        memory_guard.run_guarded(
+            [sys.executable, "-c", "import time; time.sleep(5)"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            timeout=5,
+            sampler=failing_sampler,
+        )
+
+    assert sampler_calls >= 2
+    assert {sig: signal.getsignal(sig) for sig in watched_signals} == previous_handlers
+
+
+def test_summary_json_keeps_rss_incident_primary_when_guard_signal_is_secondary(
+    tmp_path,
+) -> None:
+    summary_path = tmp_path / "rss-plus-guard-signal.json"
+    violation = memory_guard.RssViolation(
+        pid=123,
+        rss_kb=2_000_000,
+        command="python worker.py",
+        scope="process",
+    )
+
+    memory_guard._write_summary_json(
+        str(summary_path),
+        command=[sys.executable, "-c", "pass"],
+        cwd=None,
+        environ={},
+        max_rss_kb=1_000_000,
+        max_total_rss_kb=None,
+        max_global_rss_kb=None,
+        child_rlimit_kb=None,
+        timeout_s=5,
+        poll_interval_s=0.01,
+        result=memory_guard.GuardResult(
+            returncode=memory_guard.GUARD_RETURN_CODE,
+            violation=violation,
+            peak=violation,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.1,
+            guard_signal=signal.SIGTERM,
+        ),
+    )
+
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["exit_signal"] is None
+    assert payload["guard_signal"] == {
+        "signal": 15,
+        "name": "SIGTERM",
+        "conventional_shell_status": True,
+    }
+    assert payload["incident"]["reason"] == "rss_limit_exceeded"
+    assert payload["incident"]["guard_signal"] == payload["guard_signal"]
+
+
+def test_summary_json_keeps_timeout_primary_when_guard_signal_is_secondary(
+    tmp_path,
+) -> None:
+    summary_path = tmp_path / "timeout-plus-guard-signal.json"
+
+    memory_guard._write_summary_json(
+        str(summary_path),
+        command=[sys.executable, "-c", "pass"],
+        cwd=None,
+        environ={},
+        max_rss_kb=1_000_000,
+        max_total_rss_kb=None,
+        max_global_rss_kb=None,
+        child_rlimit_kb=None,
+        timeout_s=5,
+        poll_interval_s=0.01,
+        result=memory_guard.GuardResult(
+            returncode=memory_guard.TIMEOUT_RETURN_CODE,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            timed_out=True,
+            elapsed_s=5.0,
+            guard_signal=signal.SIGTERM,
+        ),
+    )
+
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["exit_signal"] is None
+    assert payload["incident"]["reason"] == "timeout"
+    assert payload["incident"]["guard_signal"] == payload["guard_signal"]
+
+
+def test_main_writes_running_summary_before_launch_result(
+    tmp_path, monkeypatch
+) -> None:
+    summary_path = tmp_path / "running-summary.json"
+
+    def fake_run_guarded(_command, **_kwargs):
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        assert payload["status"] == "running"
+        assert payload["returncode"] is None
+        assert payload["incident"]["reason"] == "guard_started"
+        assert payload["repro"]["summary_json"] == str(summary_path)
+        return memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.1,
+        )
+
+    monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--max-total-rss-gb",
+            "18",
+            "--poll-interval",
+            "0.01",
+            "--summary-json",
+            str(summary_path),
+            "--",
+            sys.executable,
+            "-c",
+            "print('ok')",
+        ]
+    )
+
+    assert rc == 0
+    final_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert final_payload["returncode"] == 0
+    assert "status" not in final_payload
+
+
 def test_main_reports_signal_status_without_guard_violation(
     tmp_path, capsys: pytest.CaptureFixture[str], monkeypatch
 ) -> None:
@@ -1442,6 +2016,60 @@ def test_main_reports_signal_status_without_guard_violation(
     }
     assert payload["incident"]["reason"] == "signal_exit"
     assert payload["incident"]["elapsed_s"] == pytest.approx(0.3)
+
+
+def test_main_reports_guard_signal_name_from_guard_signal_not_returncode(
+    tmp_path, capsys: pytest.CaptureFixture[str], monkeypatch
+) -> None:
+    summary_path = tmp_path / "rss-plus-guard-signal-summary.json"
+    violation = memory_guard.RssViolation(
+        pid=123,
+        rss_kb=2_000_000,
+        command="python worker.py",
+        scope="process",
+    )
+
+    def fake_run_guarded(_command, **_kwargs):
+        return memory_guard.GuardResult(
+            returncode=137,
+            violation=violation,
+            peak=violation,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            elapsed_s=0.3,
+            guard_signal=signal.SIGTERM,
+        )
+
+    monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
+
+    rc = memory_guard.main(
+        [
+            "--max-rss-gb",
+            "1",
+            "--max-total-rss-gb",
+            "18",
+            "--poll-interval",
+            "0.01",
+            "--summary-json",
+            str(summary_path),
+            "--",
+            sys.executable,
+            "-c",
+            "raise SystemExit(137)",
+        ]
+    )
+
+    assert rc == 137
+    stderr = capsys.readouterr().err
+    assert "guard parent received SIGTERM" in stderr
+    assert "guard parent received SIGKILL" not in stderr
+    assert "not classified as an RSS limit trip" not in stderr
+    assert "RSS limit incident remains the primary classification" in stderr
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["returncode"] == 137
+    assert payload["guard_signal"]["name"] == "SIGTERM"
+    assert payload["incident"]["reason"] == "rss_limit_exceeded"
 
 
 def test_main_reports_cargo_incremental_quarantine_summary(
@@ -1676,7 +2304,9 @@ def test_repro_context_rejects_noncanonical_current_test_file(
     assert current_test["canonical_root"] == str(current_root)
 
 
-def test_repro_context_includes_bounded_host_control_plane(monkeypatch, tmp_path: Path) -> None:
+def test_repro_context_includes_bounded_host_control_plane(
+    monkeypatch, tmp_path: Path
+) -> None:
     long_command = "/Applications/Codex.app/Contents/MacOS/Codex " + ("x" * 800)
     samples = {
         10: memory_guard.ProcessSample(
@@ -1823,6 +2453,27 @@ def test_run_guarded_marks_child_environment_as_guarded() -> None:
 
     assert result.returncode == 0
     assert result.stdout.splitlines() == ["1", "True"]
+
+
+def test_run_guarded_exports_backend_memory_contract() -> None:
+    result = memory_guard.run_guarded(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; "
+                "print(os.environ.get('MOLT_BACKEND_MEMORY_AVAILABLE_GB')); "
+                "print(os.environ.get('MOLT_BACKEND_MAX_RSS_GB'))"
+            ),
+        ],
+        max_rss_kb=512 * 1024,
+        max_total_rss_kb=1024 * 1024,
+        poll_interval=0.01,
+        child_rlimit_kb=768 * 1024,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ["0.500000", "0.500000"]
 
 
 def test_main_reexec_preserves_stream_and_sample_rotation_options(tmp_path) -> None:
@@ -2067,6 +2718,11 @@ def test_main_reports_orphan_cleanup_with_operator_signal(
     monkeypatch,
 ) -> None:
     summary_path = tmp_path / "orphan-summary.json"
+    report = _guard_termination_report(
+        reason="repo_scoped_orphan_cleanup",
+        root_pid=44,
+        root_pgid=44,
+    )
 
     def fake_run_guarded(_command, **_kwargs):
         return memory_guard.GuardResult(
@@ -2078,6 +2734,7 @@ def test_main_reports_orphan_cleanup_with_operator_signal(
             stderr="",
             elapsed_s=0.4,
             orphaned_process_groups=(44,),
+            termination_reports=(report,),
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -2110,6 +2767,8 @@ def test_main_reports_orphan_cleanup_with_operator_signal(
     assert payload["incident"]["reason"] == "orphaned_processes_cleaned"
     assert payload["incident"]["elapsed_s"] == pytest.approx(0.4)
     assert payload["incident"]["process_groups"] == [44]
+    assert payload["termination_reports"][0]["reason"] == "repo_scoped_orphan_cleanup"
+    assert payload["incident"]["termination_reports"][0]["root_pgid"] == 44
 
 
 def test_main_writes_samples_jsonl(tmp_path) -> None:

@@ -406,6 +406,24 @@ def test_diff_stdlib_profile_rejects_invalid_values() -> None:
     assert error == "MOLT_DIFF_STDLIB_PROFILE must be 'micro' or 'full'"
 
 
+def test_metadata_stdlib_profile_is_validated(tmp_path: Path) -> None:
+    module = _load_diff_module()
+    source = tmp_path / "case.py"
+
+    source.write_text("# MOLT_META: stdlib_profile=full\n", encoding="utf-8")
+    assert module._metadata_stdlib_profile(str(source)) == ("full", None)
+
+    source.write_text("# MOLT_META: stdlib_profile=wide\n", encoding="utf-8")
+    profile, error = module._metadata_stdlib_profile(str(source))
+    assert profile is None
+    assert error == "MOLT_META stdlib_profile must be 'micro' or 'full'"
+
+    source.write_text("# MOLT_META: stdlib_profile=full,micro\n", encoding="utf-8")
+    profile, error = module._metadata_stdlib_profile(str(source))
+    assert profile is None
+    assert error == "MOLT_META stdlib_profile must select exactly one profile"
+
+
 def test_diff_rlimit_defaults_to_adaptive_process_budget(monkeypatch) -> None:
     module = _load_diff_module()
     monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")

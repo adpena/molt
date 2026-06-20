@@ -129,12 +129,14 @@ def test_func_kinds_sync_async_gen() -> None:
         "async def a(): pass\n"
         "def g():\n    yield 1\n"
         "def gf():\n    yield from range(3)\n"
+        "async def ag():\n    yield 1\n"
     )
     assert collect_module_func_kinds(ast.parse(src)) == {
         "s": "sync",
         "a": "async",
         "g": "gen",
         "gf": "gen",
+        "ag": "asyncgen",
     }
 
 
@@ -171,18 +173,38 @@ def test_func_defaults_param_and_default_shape() -> None:
         ],
         "posonly": 2,
         "kwonly": 1,
+        "kind": "sync",
+        "has_decorators": False,
     }
 
 
 def test_func_defaults_vararg_marker() -> None:
     src = "def f(*args, **kw): return 1\n"
-    assert collect_module_func_defaults(ast.parse(src)) == {"f": {"has_vararg": True}}
+    assert collect_module_func_defaults(ast.parse(src)) == {
+        "f": {"has_vararg": True, "kind": "sync", "has_decorators": False}
+    }
 
 
 def test_func_defaults_nonconst_default_is_marked() -> None:
     src = "def f(a=[]): return a\n"
     out = collect_module_func_defaults(ast.parse(src))
     assert out["f"]["defaults"] == [{"const": False}]
+
+
+def test_func_defaults_carry_kind_and_decorator_shape() -> None:
+    src = (
+        "import contextlib\n"
+        "@contextlib.contextmanager\n"
+        "def cm(label):\n"
+        "    yield label\n"
+        "async def agen(value):\n"
+        "    yield value\n"
+    )
+    out = collect_module_func_defaults(ast.parse(src))
+    assert out["cm"]["kind"] == "gen"
+    assert out["cm"]["has_decorators"] is True
+    assert out["agen"]["kind"] == "asyncgen"
+    assert out["agen"]["has_decorators"] is False
 
 
 # ---------------------------------------------------------------------------

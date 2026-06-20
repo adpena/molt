@@ -141,6 +141,38 @@ def test_process_groups_does_not_match_repo_root_alone() -> None:
     assert groups == []
 
 
+def test_process_groups_require_repo_context_for_generic_molt_names() -> None:
+    module = _load_process_sentinel()
+    root = Path("/repo/molt")
+    samples = {
+        10: module.memory_guard.ProcessSample(
+            pid=10,
+            ppid=1,
+            pgid=10,
+            rss_kb=100,
+            command="molt-backend --daemon",
+        ),
+        11: module.memory_guard.ProcessSample(
+            pid=11,
+            ppid=1,
+            pgid=11,
+            rss_kb=100,
+            command="/other/checkout/target/dev-fast/molt-backend --daemon",
+        ),
+        12: module.memory_guard.ProcessSample(
+            pid=12,
+            ppid=1,
+            pgid=12,
+            rss_kb=100,
+            command="/bin/zsh -c cd /repo/molt && python -m molt.cli run x.py",
+        ),
+    }
+
+    groups = module.process_groups(samples, root=root, self_pid=9999)
+
+    assert [group.pgid for group in groups] == [12]
+
+
 def test_guarded_entrypoints_are_repo_sentinel_tokens() -> None:
     module = _load_process_sentinel()
 
@@ -374,8 +406,7 @@ def test_process_groups_exclude_codex_group_even_with_repo_child() -> None:
             pgid=300,
             rss_kb=500_000,
             command=(
-                "node /opt/homebrew/lib/node_modules/"
-                "@anthropic-ai/claude-code/cli.js"
+                "node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"
             ),
         ),
         301: module.memory_guard.ProcessSample(
@@ -449,7 +480,9 @@ def test_process_groups_exclude_claude_group_even_with_repo_child() -> None:
     assert skipped[0].pids == [100, 101]
 
 
-def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child() -> None:
+def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child() -> (
+    None
+):
     module = _load_process_sentinel()
     root = Path("/repo/molt")
     samples = {
@@ -509,7 +542,9 @@ def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child()
     assert skipped[0].pids == [777]
 
 
-def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child() -> None:
+def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child() -> (
+    None
+):
     module = _load_process_sentinel()
     root = Path("/repo/molt")
     samples = {
@@ -645,6 +680,48 @@ def test_terminate_group_refuses_protected_codex_group(monkeypatch) -> None:
     module.terminate_group(100, grace=0.001)
 
     assert sent_groups == []
+
+
+def test_terminate_group_rechecks_protection_before_sigkill(monkeypatch) -> None:
+    module = _load_process_sentinel()
+    first = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="/repo/molt/target/release-fast/molt-backend",
+        )
+    }
+    protected = {
+        100: module.memory_guard.ProcessSample(
+            pid=100,
+            ppid=1,
+            pgid=100,
+            rss_kb=500_000,
+            command="/Applications/Codex.app/Contents/MacOS/Codex",
+        )
+    }
+    calls = 0
+
+    def sample_processes():
+        nonlocal calls
+        calls += 1
+        return first if calls == 1 else protected
+
+    sent_groups: list[tuple[int, int]] = []
+    monkeypatch.setattr(module.memory_guard, "sample_processes", sample_processes)
+    monkeypatch.setattr(module.os, "getpid", lambda: 9999)
+    monkeypatch.setattr(module.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(
+        module.os,
+        "killpg",
+        lambda pgid, sig: sent_groups.append((pgid, sig)),
+    )
+
+    module.terminate_group(100, grace=0.0)
+
+    assert sent_groups == [(100, module.signal.SIGTERM)]
 
 
 def test_find_violations_can_kill_all_or_threshold() -> None:
@@ -1065,8 +1142,8 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
     def fake_sample_processes():
         nonlocal calls
         calls += 1
-        pgid_by_call = {1: first_pgid, 3: second_pgid}
-        if calls in {1, 3}:
+        pgid_by_call = {2: first_pgid, 4: second_pgid}
+        if calls in {2, 4}:
             pgid = pgid_by_call[calls]
             return {
                 pgid: module.memory_guard.ProcessSample(

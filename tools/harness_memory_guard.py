@@ -100,6 +100,9 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
         cargo_incremental_quarantine: (
             memory_guard.CargoIncrementalQuarantine | None
         ) = None,
+        child_process: memory_guard.GuardedChildProcess | None = None,
+        termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
+        guard_signal: int | None = None,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -110,6 +113,9 @@ class GuardedCompletedProcess(subprocess.CompletedProcess[object]):
         self.limit_at_violation = limit_at_violation
         self.orphaned_process_groups = tuple(orphaned_process_groups)
         self.cargo_incremental_quarantine = cargo_incremental_quarantine
+        self.child_process = child_process
+        self.termination_reports = tuple(termination_reports)
+        self.guard_signal = guard_signal
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -744,6 +750,38 @@ def _guard_exit_signal_message(
     )
 
 
+def _guard_parent_signal_message(
+    guard_signal: int,
+    *,
+    elapsed_s: float | None,
+    observed_at: str,
+    primary_reason: str | None = None,
+) -> str:
+    payload = memory_guard.exit_signal_payload(128 + guard_signal)
+    signame = (
+        payload["name"]
+        if payload is not None and payload["name"] is not None
+        else f"signal {guard_signal}"
+    )
+    if primary_reason is None:
+        return (
+            "memory_guard: guard parent received "
+            f"{signame}; terminated tracked process tree before exiting: "
+            f"observed_at={observed_at} elapsed={_elapsed_text(elapsed_s)}\n"
+            "memory_guard: next action: inspect the parent host/control-plane "
+            "signal source and child logs; the guard parent received the signal "
+            "and wrote this custody record before exiting.\n"
+        )
+    return (
+        "memory_guard: guard parent also received "
+        f"{signame} while primary incident remained {primary_reason}: "
+        f"observed_at={observed_at} elapsed={_elapsed_text(elapsed_s)}\n"
+        "memory_guard: next action: inspect the parent host/control-plane "
+        "signal source and child logs; preserve the primary incident "
+        "classification when triaging this run.\n"
+    )
+
+
 def _guard_orphan_cleanup_message(
     process_groups: Sequence[int],
     *,
@@ -785,11 +823,14 @@ def _guarded_command_status(
     violation: memory_guard.RssViolation | None,
     timed_out: bool,
     orphaned_process_groups: Sequence[int],
+    guard_signal: int | None = None,
 ) -> str:
     if violation is not None:
         return "rss_limit_exceeded"
     if timed_out:
         return "timeout"
+    if guard_signal is not None:
+        return "guard_interrupted"
     if memory_guard.exit_signal_payload(returncode) is not None:
         return "signal_exit"
     if returncode != 0:
@@ -814,9 +855,10 @@ def _github_context_payload(env: Mapping[str, str]) -> dict[str, str] | None:
 
 def _command_profile_mode(env: Mapping[str, str]) -> str:
     raw = (
-        env.get("MOLT_GUARD_PROFILE", "")
-        or env.get("MOLT_GUARD_PROFILE_MODE", "")
-    ).strip().lower()
+        (env.get("MOLT_GUARD_PROFILE", "") or env.get("MOLT_GUARD_PROFILE_MODE", ""))
+        .strip()
+        .lower()
+    )
     if raw in FALSE_VALUES:
         return "off"
     if env.get("MOLT_GUARD_PROFILE_LOG", "").strip():
@@ -872,6 +914,9 @@ def _append_guarded_command_profile(
     cargo_incremental_quarantine: (
         memory_guard.CargoIncrementalQuarantine | None
     ) = None,
+    child_process: memory_guard.GuardedChildProcess | None = None,
+    termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
+    guard_signal: int | None = None,
 ) -> tuple[Path, str | None]:
     source = _effective_env(env)
     path = command_profile_log_path(source)
@@ -884,14 +929,20 @@ def _append_guarded_command_profile(
     )
     exit_signal = (
         None
-        if violation is not None or timed_out
+        if violation is not None or timed_out or guard_signal is not None
         else memory_guard.exit_signal_payload(returncode)
+    )
+    guard_signal_payload = (
+        None
+        if guard_signal is None
+        else memory_guard.exit_signal_payload(128 + guard_signal)
     )
     status = _guarded_command_status(
         returncode=returncode,
         violation=violation,
         timed_out=timed_out,
         orphaned_process_groups=orphaned_process_groups,
+        guard_signal=guard_signal,
     )
     mode = _command_profile_mode(source)
     if mode == "off" or (mode == "incident" and status == "pass"):
@@ -914,6 +965,10 @@ def _append_guarded_command_profile(
         "peak": _rss_record_payload(peak),
         "peak_total": _rss_record_payload(peak_total),
         "orphaned_process_groups": list(orphaned_process_groups),
+        "child_process": memory_guard.guarded_child_process_payload(child_process),
+        "termination_reports": memory_guard.termination_reports_payload(
+            termination_reports
+        ),
         "cargo_incremental_quarantine": (
             memory_guard._cargo_incremental_quarantine_payload(
                 cargo_incremental_quarantine
@@ -925,6 +980,7 @@ def _append_guarded_command_profile(
             else memory_guard.memory_limits_payload(limit_at_violation)
         ),
         "exit_signal": exit_signal,
+        "guard_signal": guard_signal_payload,
     }
     if status != "pass":
         payload["repro"] = memory_guard.repro_context_payload(
@@ -1257,6 +1313,17 @@ def guarded_completed_process(
             ),
             text=text,
         )
+        if guarded.guard_signal is not None:
+            stderr = memory_guard._append_guard_message(
+                stderr,
+                _guard_parent_signal_message(
+                    guarded.guard_signal,
+                    elapsed_s=guarded.elapsed_s,
+                    observed_at=incident_at,
+                    primary_reason="rss_limit_exceeded",
+                ),
+                text=text,
+            )
     elif guarded.timed_out:
         stderr = memory_guard._append_guard_message(
             stderr,
@@ -1265,6 +1332,27 @@ def guarded_completed_process(
                 timeout=timeout,
                 elapsed_s=guarded.elapsed_s,
                 killed_at=incident_at,
+            ),
+            text=text,
+        )
+        if guarded.guard_signal is not None:
+            stderr = memory_guard._append_guard_message(
+                stderr,
+                _guard_parent_signal_message(
+                    guarded.guard_signal,
+                    elapsed_s=guarded.elapsed_s,
+                    observed_at=incident_at,
+                    primary_reason="timeout",
+                ),
+                text=text,
+            )
+    elif guarded.guard_signal is not None:
+        stderr = memory_guard._append_guard_message(
+            stderr,
+            _guard_parent_signal_message(
+                guarded.guard_signal,
+                elapsed_s=guarded.elapsed_s,
+                observed_at=incident_at,
             ),
             text=text,
         )
@@ -1292,6 +1380,7 @@ def guarded_completed_process(
         guarded.violation is not None
         or guarded.timed_out
         or bool(guarded.orphaned_process_groups)
+        or guarded.guard_signal is not None
         or memory_guard.exit_signal_payload(guarded.returncode) is not None
     ):
         stderr = memory_guard._append_guard_message(
@@ -1322,6 +1411,9 @@ def guarded_completed_process(
         peak=guarded.peak,
         peak_total=guarded.peak_total,
         cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
+        child_process=guarded.child_process,
+        termination_reports=guarded.termination_reports,
+        guard_signal=guarded.guard_signal,
     )
     if profile_error:
         stderr = memory_guard._append_guard_message(stderr, profile_error, text=text)
@@ -1336,6 +1428,9 @@ def guarded_completed_process(
         limit_at_violation=guarded.limit_at_violation,
         orphaned_process_groups=guarded.orphaned_process_groups,
         cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
+        child_process=guarded.child_process,
+        termination_reports=guarded.termination_reports,
+        guard_signal=guarded.guard_signal,
     )
 
 
@@ -1461,6 +1556,16 @@ def guarded_completed_process_to_tempfiles(
                 killed_at=incident_at,
             ),
         )
+        if guarded.guard_signal is not None:
+            stderr = _append_guard_bytes(
+                stderr,
+                _guard_parent_signal_message(
+                    guarded.guard_signal,
+                    elapsed_s=guarded.elapsed_s,
+                    observed_at=incident_at,
+                    primary_reason="rss_limit_exceeded",
+                ),
+            )
     elif guarded.timed_out:
         stderr = _append_guard_bytes(
             stderr,
@@ -1469,6 +1574,25 @@ def guarded_completed_process_to_tempfiles(
                 timeout=timeout,
                 elapsed_s=guarded.elapsed_s,
                 killed_at=incident_at,
+            ),
+        )
+        if guarded.guard_signal is not None:
+            stderr = _append_guard_bytes(
+                stderr,
+                _guard_parent_signal_message(
+                    guarded.guard_signal,
+                    elapsed_s=guarded.elapsed_s,
+                    observed_at=incident_at,
+                    primary_reason="timeout",
+                ),
+            )
+    elif guarded.guard_signal is not None:
+        stderr = _append_guard_bytes(
+            stderr,
+            _guard_parent_signal_message(
+                guarded.guard_signal,
+                elapsed_s=guarded.elapsed_s,
+                observed_at=incident_at,
             ),
         )
     else:
@@ -1493,6 +1617,7 @@ def guarded_completed_process_to_tempfiles(
         guarded.violation is not None
         or guarded.timed_out
         or bool(guarded.orphaned_process_groups)
+        or guarded.guard_signal is not None
         or memory_guard.exit_signal_payload(guarded.returncode) is not None
     ):
         stderr = _append_guard_bytes(
@@ -1522,6 +1647,9 @@ def guarded_completed_process_to_tempfiles(
         peak=guarded.peak,
         peak_total=guarded.peak_total,
         cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
+        child_process=guarded.child_process,
+        termination_reports=guarded.termination_reports,
+        guard_signal=guarded.guard_signal,
     )
     if profile_error:
         stderr = _append_guard_bytes(stderr, profile_error)
@@ -1536,6 +1664,9 @@ def guarded_completed_process_to_tempfiles(
         limit_at_violation=guarded.limit_at_violation,
         orphaned_process_groups=guarded.orphaned_process_groups,
         cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
+        child_process=guarded.child_process,
+        termination_reports=guarded.termination_reports,
+        guard_signal=guarded.guard_signal,
     )
 
 

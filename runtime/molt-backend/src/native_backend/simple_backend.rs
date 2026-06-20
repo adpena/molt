@@ -110,6 +110,14 @@ const TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT: usize = 128;
 #[cfg(feature = "native-backend")]
 const TIR_OPTIMIZATION_BATCH_OP_BUDGET: usize = 8_000;
 #[cfg(feature = "native-backend")]
+const TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES: usize = 4 * 1024 * 1024 * 1024;
+#[cfg(feature = "native-backend")]
+const TIR_OPTIMIZATION_WORKER_MEMORY_BYTES: usize = 8 * 1024 * 1024 * 1024;
+#[cfg(feature = "native-backend")]
+const TIR_OPTIMIZATION_WAVE_FUNCTIONS_PER_THREAD: usize = 1;
+#[cfg(feature = "native-backend")]
+const TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD: usize = 1_000;
+#[cfg(feature = "native-backend")]
 const DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT: usize = 16;
 #[cfg(feature = "native-backend")]
 const DEFERRED_CODEGEN_FLUSH_OP_BUDGET: usize = 4_000;
@@ -133,11 +141,29 @@ struct TirOptimizationInput {
 }
 
 #[cfg(feature = "native-backend")]
-fn partition_tir_optimization_work_items(
+struct TirOptimizationOutput {
+    index: usize,
+    content_hash: String,
+    simple_ops: Vec<OpIR>,
+    tir_func: crate::tir::function::TirFunction,
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct TirOptimizationResourcePlan {
+    threads: usize,
+    wave_function_limit: usize,
+    wave_op_budget: usize,
+}
+
+#[cfg(feature = "native-backend")]
+fn partition_tir_optimization_work_items_with_limits(
     work_items: Vec<TirOptimizationWorkItem>,
+    max_functions_per_batch: usize,
+    max_ops_per_batch: usize,
 ) -> Vec<Vec<TirOptimizationWorkItem>> {
-    let max_functions = TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT.max(1);
-    let max_ops = TIR_OPTIMIZATION_BATCH_OP_BUDGET.max(1);
+    let max_functions = max_functions_per_batch.max(1);
+    let max_ops = max_ops_per_batch.max(1);
     let mut batches: Vec<Vec<TirOptimizationWorkItem>> = Vec::new();
     let mut current: Vec<TirOptimizationWorkItem> = Vec::new();
     let mut current_ops = 0usize;
@@ -161,6 +187,138 @@ fn partition_tir_optimization_work_items(
 }
 
 #[cfg(feature = "native-backend")]
+#[cfg(test)]
+fn partition_tir_optimization_work_items(
+    work_items: Vec<TirOptimizationWorkItem>,
+) -> Vec<Vec<TirOptimizationWorkItem>> {
+    partition_tir_optimization_work_items_with_limits(
+        work_items,
+        TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT,
+        TIR_OPTIMIZATION_BATCH_OP_BUDGET,
+    )
+}
+
+#[cfg(feature = "native-backend")]
+fn parse_positive_usize_env(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+#[cfg(feature = "native-backend")]
+fn parse_nonnegative_gb_env(name: &str) -> Option<usize> {
+    let gb = std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)?;
+    Some((gb * 1024.0 * 1024.0 * 1024.0) as usize)
+}
+
+#[cfg(feature = "native-backend")]
+fn env_memory_limit_bytes() -> Option<usize> {
+    let available = [
+        "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+        "MOLT_CLI_MEMORY_AVAILABLE_GB",
+        "MOLT_CLI_MEM_AVAILABLE_GB",
+        "MOLT_MEMORY_AVAILABLE_GB",
+        "MOLT_MEM_AVAILABLE_GB",
+        "MOLT_BACKEND_MAX_RSS_GB",
+    ]
+    .iter()
+    .find_map(|name| parse_nonnegative_gb_env(name))?;
+    let reserve = [
+        "MOLT_BACKEND_MEMORY_RESERVE_GB",
+        "MOLT_CLI_MEMORY_RESERVE_GB",
+        "MOLT_CLI_MEM_RESERVE_GB",
+        "MOLT_MEMORY_RESERVE_GB",
+        "MOLT_MEM_RESERVE_GB",
+    ]
+    .iter()
+    .find_map(|name| parse_nonnegative_gb_env(name))
+    .unwrap_or(0);
+    Some(available.saturating_sub(reserve))
+}
+
+#[cfg(all(feature = "native-backend", unix))]
+fn rlimit_address_space_bytes() -> Option<usize> {
+    unsafe {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_AS, &mut limit) != 0 {
+            return None;
+        }
+        let raw = limit.rlim_cur;
+        if raw == libc::RLIM_INFINITY || raw == 0 {
+            return None;
+        }
+        Some(raw.min(usize::MAX as libc::rlim_t) as usize)
+    }
+}
+
+#[cfg(all(feature = "native-backend", not(unix)))]
+fn rlimit_address_space_bytes() -> Option<usize> {
+    None
+}
+
+#[cfg(feature = "native-backend")]
+fn backend_memory_limit_bytes() -> Option<usize> {
+    match (env_memory_limit_bytes(), rlimit_address_space_bytes()) {
+        (Some(env_limit), Some(rlimit)) => Some(env_limit.min(rlimit)),
+        (Some(env_limit), None) => Some(env_limit),
+        (None, Some(rlimit)) => Some(rlimit),
+        (None, None) => None,
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn tir_optimization_cpu_thread_limit() -> usize {
+    parse_positive_usize_env("RAYON_NUM_THREADS")
+        .or_else(|| std::thread::available_parallelism().ok().map(usize::from))
+        .unwrap_or(1)
+        .max(1)
+}
+
+#[cfg(feature = "native-backend")]
+fn tir_optimization_resource_plan_from_limits(
+    cpu_threads: usize,
+    memory_limit_bytes: Option<usize>,
+) -> TirOptimizationResourcePlan {
+    let cpu_threads = cpu_threads.max(1);
+    let memory_threads = memory_limit_bytes
+        .map(|limit| {
+            if limit <= TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES {
+                1
+            } else {
+                ((limit - TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES)
+                    / TIR_OPTIMIZATION_WORKER_MEMORY_BYTES)
+                    .max(1)
+            }
+        })
+        .unwrap_or(cpu_threads);
+    let threads = cpu_threads.min(memory_threads).max(1);
+    TirOptimizationResourcePlan {
+        threads,
+        wave_function_limit: TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT
+            .min(threads.saturating_mul(TIR_OPTIMIZATION_WAVE_FUNCTIONS_PER_THREAD))
+            .max(1),
+        wave_op_budget: TIR_OPTIMIZATION_BATCH_OP_BUDGET
+            .min(threads.saturating_mul(TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD))
+            .max(1),
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn tir_optimization_resource_plan() -> TirOptimizationResourcePlan {
+    tir_optimization_resource_plan_from_limits(
+        tir_optimization_cpu_thread_limit(),
+        backend_memory_limit_bytes(),
+    )
+}
+
+#[cfg(feature = "native-backend")]
 fn should_flush_deferred_codegen(deferred_count: usize, deferred_ops: usize) -> bool {
     deferred_count > 0
         && (deferred_count >= DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT
@@ -168,7 +326,28 @@ fn should_flush_deferred_codegen(deferred_count: usize, deferred_ops: usize) -> 
 }
 
 #[cfg(feature = "native-backend")]
-fn optimize_tir_input(input: TirOptimizationInput) -> (usize, String, Vec<OpIR>) {
+fn trace_tir_function_enabled(name: &str) -> bool {
+    std::env::var("MOLT_TIR_TRACE_FUNC")
+        .ok()
+        .is_some_and(|filter| filter == "1" || name.contains(&filter))
+}
+
+#[cfg(feature = "native-backend")]
+fn trace_tir_function_stage(name: &str, stage: &str, simple_ops: usize) {
+    if trace_tir_function_enabled(name) {
+        eprintln!("[TIR-TRACE] {name} {stage}: simple_ops={simple_ops}");
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn native_tir_cache_hash_body(simple_body_bytes: &[u8]) -> Vec<u8> {
+    let mut body = b"native-tir-function-cache-v1\0".to_vec();
+    body.extend_from_slice(simple_body_bytes);
+    body
+}
+
+#[cfg(feature = "native-backend")]
+fn optimize_tir_input(input: TirOptimizationInput) -> TirOptimizationOutput {
     let idx = input.index;
     let content_hash = input.content_hash;
     let mut tmp_func = FunctionIR {
@@ -179,26 +358,81 @@ fn optimize_tir_input(input: TirOptimizationInput) -> (usize, String, Vec<OpIR>)
         source_file: None,
         is_extern: false,
     };
-    if std::env::var("MOLT_TIR_TRACE_FUNC").as_deref() == Ok("1") {
-        eprintln!("[TIR-TRACE] {}", tmp_func.name);
-    }
+    trace_tir_function_stage(&tmp_func.name, "start", tmp_func.ops.len());
     if tmp_func.ops.iter().any(|op| op.kind == "phi") {
         rewrite_phi_to_store_load(&mut tmp_func.ops);
+        trace_tir_function_stage(&tmp_func.name, "after_phi_rewrite", tmp_func.ops.len());
     }
     if tmp_func.ops.iter().any(|op| op.kind == "exception_push") {
         elide_useless_try_blocks_for_function(&mut tmp_func);
+        trace_tir_function_stage(&tmp_func.name, "after_try_elision", tmp_func.ops.len());
     }
     let func_name = tmp_func.name.clone();
     let mut tir_func = crate::tir::lower_from_simple::lower_to_tir(&tmp_func);
+    if trace_tir_function_enabled(&func_name) {
+        eprintln!(
+            "[TIR-TRACE] {func_name} after_lower_to_tir: blocks={} ops={}",
+            tir_func.blocks.len(),
+            tir_func
+                .blocks
+                .values()
+                .map(|block| block.ops.len())
+                .sum::<usize>()
+        );
+    }
     crate::tir::type_refine::refine_types(&mut tir_func);
+    if trace_tir_function_enabled(&func_name) {
+        eprintln!(
+            "[TIR-TRACE] {func_name} after_refine_1: blocks={} ops={}",
+            tir_func.blocks.len(),
+            tir_func
+                .blocks
+                .values()
+                .map(|block| block.ops.len())
+                .sum::<usize>()
+        );
+    }
     let _stats = crate::tir::passes::run_pipeline(
         &mut tir_func,
         &crate::tir::target_info::TargetInfo::native_from_simd_caps(
             crate::tir::target_info::SimdCaps::detect_host(),
         ),
     );
+    if trace_tir_function_enabled(&func_name) {
+        eprintln!(
+            "[TIR-TRACE] {func_name} after_pipeline: blocks={} ops={}",
+            tir_func.blocks.len(),
+            tir_func
+                .blocks
+                .values()
+                .map(|block| block.ops.len())
+                .sum::<usize>()
+        );
+    }
     crate::tir::type_refine::refine_types(&mut tir_func);
+    if trace_tir_function_enabled(&func_name) {
+        eprintln!(
+            "[TIR-TRACE] {func_name} after_refine_2: blocks={} ops={}",
+            tir_func.blocks.len(),
+            tir_func
+                .blocks
+                .values()
+                .map(|block| block.ops.len())
+                .sum::<usize>()
+        );
+    }
     let lir_func = crate::tir::lower_to_lir::lower_function_to_lir(&tir_func, None);
+    if trace_tir_function_enabled(&func_name) {
+        eprintln!(
+            "[TIR-TRACE] {func_name} after_lower_to_lir: blocks={} ops={}",
+            lir_func.blocks.len(),
+            lir_func
+                .blocks
+                .values()
+                .map(|block| block.ops.len())
+                .sum::<usize>()
+        );
+    }
     if let Err(errors) = crate::tir::verify_lir::verify_lir_function(&lir_func) {
         panic!(
             "[LIR] verification failed for '{}': {:?}",
@@ -218,16 +452,22 @@ fn optimize_tir_input(input: TirOptimizationInput) -> (usize, String, Vec<OpIR>)
         }
     }
     let ops = crate::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
+    trace_tir_function_stage(&func_name, "after_lower_to_simple", ops.len());
     assert!(
         crate::tir::lower_to_simple::validate_labels(&ops),
         "TIR roundtrip emitted invalid labels for '{}'",
         func_name
     );
-    (idx, content_hash, ops)
+    TirOptimizationOutput {
+        index: idx,
+        content_hash,
+        simple_ops: ops,
+        tir_func,
+    }
 }
 
 #[cfg(feature = "native-backend")]
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct NativeBackendModuleContext {
     function_arities: BTreeMap<String, usize>,
     function_has_ret: BTreeMap<String, bool>,
@@ -1542,7 +1782,7 @@ pub(crate) fn drain_cleanup_tracked_dedup(
     alias_roots: &BTreeMap<String, String>,
     op_idx: usize,
     skip: Option<&str>,
-    mut already_decrefed: Option<&mut BTreeSet<String>>,
+    already_decrefed: Option<&mut BTreeSet<String>>,
 ) -> Vec<String> {
     drain_cleanup_tracked_dedup_with_budget(
         names,
@@ -1550,9 +1790,26 @@ pub(crate) fn drain_cleanup_tracked_dedup(
         alias_roots,
         op_idx,
         skip,
-        already_decrefed.as_deref_mut(),
+        already_decrefed,
         None,
     )
+}
+
+#[cfg(feature = "native-backend")]
+pub(crate) fn drain_cleanup_tracked_dedup_with_authority(
+    native_rc_tracking_enabled: bool,
+    names: &mut Vec<String>,
+    last_use: &BTreeMap<String, usize>,
+    alias_roots: &BTreeMap<String, String>,
+    op_idx: usize,
+    skip: Option<&str>,
+    already_decrefed: Option<&mut BTreeSet<String>>,
+) -> Vec<String> {
+    if !native_rc_tracking_enabled {
+        names.clear();
+        return Vec::new();
+    }
+    drain_cleanup_tracked_dedup(names, last_use, alias_roots, op_idx, skip, already_decrefed)
 }
 
 #[cfg(feature = "native-backend")]
@@ -1597,10 +1854,10 @@ pub(crate) fn drain_cleanup_tracked_dedup_with_budget(
         }
         let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
-            if let Some(ref mut set) = already_decrefed {
-                if !set.contains(cleanup_key) {
-                    set.insert(cleanup_key.to_string());
-                }
+            if let Some(ref mut set) = already_decrefed
+                && !set.contains(cleanup_key)
+            {
+                set.insert(cleanup_key.to_string());
             }
             cleanup.push(name.clone());
             return false;
@@ -1608,6 +1865,34 @@ pub(crate) fn drain_cleanup_tracked_dedup_with_budget(
         true
     });
     cleanup
+}
+
+#[cfg(feature = "native-backend")]
+pub(crate) fn drain_cleanup_entry_tracked_with_authority(
+    native_rc_tracking_enabled: bool,
+    names: &mut Vec<String>,
+    entry_vars: &mut BTreeMap<String, Value>,
+    last_use: &BTreeMap<String, usize>,
+    alias_roots: &BTreeMap<String, String>,
+    already_decrefed: &mut BTreeSet<String>,
+    op_idx: usize,
+    skip: Option<&str>,
+) -> Vec<Value> {
+    if !native_rc_tracking_enabled {
+        for name in names.drain(..) {
+            entry_vars.remove(&name);
+        }
+        return Vec::new();
+    }
+    drain_cleanup_entry_tracked(
+        names,
+        entry_vars,
+        last_use,
+        alias_roots,
+        already_decrefed,
+        op_idx,
+        skip,
+    )
 }
 
 #[cfg(feature = "native-backend")]
@@ -1829,6 +2114,22 @@ pub(crate) struct DeferredDefine {
 }
 
 #[cfg(feature = "native-backend")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MergeRebindStorageKind {
+    BoxedI64,
+    RawI64,
+    RawBool,
+    RawF64,
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MergeRebindSlot {
+    pub(crate) slot: cranelift_codegen::ir::StackSlot,
+    pub(crate) storage: MergeRebindStorageKind,
+}
+
+#[cfg(feature = "native-backend")]
 pub(crate) struct IfFrame {
     pub(crate) else_block: Option<Block>,
     pub(crate) merge_block: Block,
@@ -1839,7 +2140,7 @@ pub(crate) struct IfFrame {
     pub(crate) phi_params: Vec<Value>,
     pub(crate) merge_rebind_names: Vec<String>,
     pub(crate) merge_rebind_params: Vec<Value>,
-    pub(crate) merge_rebind_slots: Vec<cranelift_codegen::ir::StackSlot>,
+    pub(crate) merge_rebind_slots: Vec<MergeRebindSlot>,
 }
 
 #[cfg(feature = "native-backend")]
@@ -2128,8 +2429,7 @@ fn externalize_shared_stdlib_partition(ir: &mut SimpleIR) {
     );
     let mut retained = std::mem::take(&mut user_remaining);
     for mut func in std::mem::take(&mut stdlib_funcs) {
-        func.is_extern = true;
-        func.ops.clear();
+        crate::externalize_function_with_signature(&mut func);
         retained.push(func);
     }
     ir.functions = retained;
@@ -2575,7 +2875,9 @@ impl SimpleBackend {
         }
         let func_id = module
             .declare_function(name, Linkage::Import, &sig)
-            .unwrap();
+            .unwrap_or_else(|err| {
+                panic!("import declaration mismatch for `{name}`: expected {shape:?}: {err}")
+            });
         import_ids.insert(name, (func_id, shape));
         func_id
     }
@@ -2675,8 +2977,10 @@ impl SimpleBackend {
         // All TIR-lowered control flow uses pure label/jump/br_if patterns
         // (no structured loop_start/loop_end).  The Cranelift function compiler
         // handles back-edges via has_loop_or_backedge detection.
-        let mut tir_optimized_names: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+        let mut optimized_tir_by_name: std::collections::BTreeMap<
+            String,
+            crate::tir::function::TirFunction,
+        > = std::collections::BTreeMap::new();
         {
             use rayon::prelude::*;
 
@@ -2741,19 +3045,27 @@ impl SimpleBackend {
                 // the TIR roundtrip via LoopRole metadata on TirFunction, so
                 // functions with loops benefit from TIR optimization.
                 let body_bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
+                let cache_hash_body = native_tir_cache_hash_body(&body_bytes);
                 let content_hash = crate::tir::cache::CompilationCache::compute_hash_with_signature(
                     &func_ir.name,
                     &func_ir.params,
                     func_ir.param_types.as_deref(),
-                    &body_bytes,
+                    &cache_hash_body,
                 );
                 // Check TIR cache: if we have validated optimized ops from a
                 // previous build with the same content hash, reuse them.
                 if let Some(cached_bytes) = tir_cache.get(&content_hash)
-                    && let Some(cached_ops) = crate::tir::serialize::deserialize_ops(&cached_bytes)
+                    && let Some(cached_tir) =
+                        crate::tir::serialize::deserialize_tir_function(&cached_bytes)
                 {
+                    let cached_ops = crate::tir::lower_to_simple::lower_to_simple_ir(&cached_tir);
+                    debug_assert!(
+                        crate::tir::lower_to_simple::validate_labels(&cached_ops),
+                        "native TIR cache back-conversion emitted invalid labels for '{}'",
+                        cached_tir.name
+                    );
                     func_ir.ops = cached_ops;
-                    tir_optimized_names.insert(func_ir.name.clone());
+                    optimized_tir_by_name.insert(func_ir.name.clone(), cached_tir);
                     continue;
                 }
                 work_items.push(TirOptimizationWorkItem {
@@ -2765,15 +3077,22 @@ impl SimpleBackend {
 
             let uncached_count = work_items.len();
             if uncached_count > 0 {
-                let work_batches = partition_tir_optimization_work_items(work_items);
+                let resource_plan = tir_optimization_resource_plan();
+                let work_batches = partition_tir_optimization_work_items_with_limits(
+                    work_items,
+                    resource_plan.wave_function_limit,
+                    resource_plan.wave_op_budget,
+                );
                 let batch_count = work_batches.len();
                 if batch_count == 1 {
                     eprintln!(
-                        "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in parallel"
+                        "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions with {} worker(s)",
+                        resource_plan.threads
                     );
                 } else {
                     eprintln!(
-                        "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in {batch_count} bounded batches"
+                        "MOLT_BACKEND: TIR optimizing {uncached_count} uncached functions in {batch_count} bounded waves with {} worker(s)",
+                        resource_plan.threads
                     );
                 }
                 let tir_start = std::time::Instant::now();
@@ -2792,6 +3111,7 @@ impl SimpleBackend {
                 // lower_to_simple_ir has deeply nested closures capturing
                 // many HashMaps, which exceeds rayon's default 8MB stacks.
                 let tir_pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(resource_plan.threads)
                     .stack_size(64 * 1024 * 1024)
                     .build()
                     .expect("Failed to build TIR thread pool");
@@ -2804,7 +3124,7 @@ impl SimpleBackend {
                             batch_count,
                             batch_items.len(),
                             batch_ops,
-                            TIR_OPTIMIZATION_BATCH_OP_BUDGET
+                            resource_plan.wave_op_budget
                         );
                     }
                     let inputs: Vec<TirOptimizationInput> = batch_items
@@ -2821,16 +3141,16 @@ impl SimpleBackend {
                             }
                         })
                         .collect();
-                    let results: Vec<(usize, String, Vec<OpIR>)> = tir_pool
+                    let results: Vec<TirOptimizationOutput> = tir_pool
                         .install(|| inputs.into_par_iter().map(optimize_tir_input).collect());
 
                     // Phase 3 (sequential): apply validated TIR ops and cache them.
-                    for (idx, content_hash, ops) in results {
-                        let func_ir = &mut ir.functions[idx];
-                        func_ir.ops = ops;
-                        tir_optimized_names.insert(func_ir.name.clone());
-                        let bytes = crate::tir::serialize::serialize_ops(&func_ir.ops);
-                        tir_cache.put(&content_hash, &bytes, vec![]);
+                    for output in results {
+                        let func_ir = &mut ir.functions[output.index];
+                        func_ir.ops = output.simple_ops;
+                        let bytes = crate::tir::serialize::serialize_tir_function(&output.tir_func);
+                        tir_cache.put(&output.content_hash, &bytes, vec![]);
+                        optimized_tir_by_name.insert(func_ir.name.clone(), output.tir_func);
                     }
                 }
 
@@ -2885,17 +3205,33 @@ impl SimpleBackend {
                 // exception-label-safe, call-graph bottom-up, cost-model-gated, and
                 // it re-optimizes each merged caller through the per-function
                 // pipeline. It replaces the legacy SimpleIR `inline_functions`
-                // (string-rename, no SSA, no cost model — retired in e-4). Lift every
-                // non-extern function's per-function-optimized SimpleIR to TIR, run
-                // the module phase, then back-convert ONLY the inliner-changed
-                // functions; every unchanged function keeps its byte-identical
-                // per-function output (no redundant second TIR roundtrip).
+                // (string-rename, no SSA, no cost model — retired in e-4).
+                // Assemble the module from the optimized TIR custody map (fresh
+                // worker output or native TIR cache hit) so module transforms and
+                // terminal drops do not re-lift the expanded SimpleIR carrier.
+                // Back-convert ONLY functions changed by module/drop phases;
+                // every unchanged function keeps its byte-identical
+                // per-function output.
                 // Rollback: MOLT_DISABLE_INLINING=1 (guard in run_inliner).
                 let native_tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
                     crate::tir::target_info::SimdCaps::detect_host(),
                 );
-                let (mut tir_module, idx_map) =
-                    crate::tir::lower_from_simple::lower_functions_to_tir_module(&ir.functions);
+                let mut tir_functions = Vec::new();
+                let mut idx_map = Vec::new();
+                for (idx, func_ir) in ir.functions.iter().enumerate() {
+                    if func_ir.is_extern {
+                        continue;
+                    }
+                    let tir_func = optimized_tir_by_name
+                        .remove(&func_ir.name)
+                        .unwrap_or_else(|| crate::tir::lower_from_simple::lower_to_tir(func_ir));
+                    tir_functions.push(tir_func);
+                    idx_map.push(idx);
+                }
+                let mut tir_module = crate::tir::function::TirModule {
+                    name: "native_module".to_string(),
+                    functions: tir_functions,
+                };
                 // Functions the shared-stdlib partition will externalize into
                 // `stdlib_shared.o` have external linkage: the inliner must keep
                 // the external reference rather than fork a private copy of a body
@@ -2947,7 +3283,11 @@ impl SimpleBackend {
             let native_tti = crate::tir::target_info::TargetInfo::native_from_simd_caps(
                 crate::tir::target_info::SimdCaps::detect_host(),
             );
-            crate::tir::drop_phase::finalize_simple_ir_drops(&mut ir.functions, &native_tti);
+            crate::tir::drop_phase::finalize_simple_ir_drops_with_tir_custody(
+                &mut ir.functions,
+                &native_tti,
+                &mut optimized_tir_by_name,
+            );
         }
         // Dead function elimination: remove functions that are unreachable from
         // the entry point after inlining.  This reduces code size for both the
@@ -4348,12 +4688,16 @@ impl SimpleBackend {
 mod tests {
     use super::{
         DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
-        NativeBackendModuleContext, SimpleBackend, TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT,
-        TIR_OPTIMIZATION_BATCH_OP_BUDGET, TirOptimizationWorkItem, TrampolineKey,
+        NativeBackendModuleContext, SimpleBackend, TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES,
+        TIR_OPTIMIZATION_BATCH_FUNCTION_LIMIT, TIR_OPTIMIZATION_BATCH_OP_BUDGET,
+        TIR_OPTIMIZATION_WAVE_FUNCTIONS_PER_THREAD, TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD,
+        TIR_OPTIMIZATION_WORKER_MEMORY_BYTES, TirOptimizationWorkItem, TrampolineKey,
         analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_entry_tracked,
+        drain_cleanup_entry_tracked_with_authority, drain_cleanup_tracked_dedup_with_authority,
         merge_closure_functions, merge_function_arities, merge_function_has_ret,
         merge_leaf_functions, merge_task_kinds, partition_tir_optimization_work_items,
-        should_flush_deferred_codegen,
+        partition_tir_optimization_work_items_with_limits, should_flush_deferred_codegen,
+        tir_optimization_resource_plan_from_limits,
     };
     use crate::TrampolineKind;
     use crate::ir::{FunctionIR, OpIR, SimpleIR};
@@ -4362,6 +4706,7 @@ mod tests {
     use crate::rewrite_phi_to_store_load;
     use cranelift_codegen::ir::Value;
     use cranelift_codegen::ir::types;
+    use cranelift_module::Module;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Mutex, OnceLock};
 
@@ -4435,6 +4780,73 @@ mod tests {
             TIR_OPTIMIZATION_BATCH_OP_BUDGET
         );
         assert_eq!(op_batches[1][0].index, 2);
+    }
+
+    #[test]
+    fn tir_optimization_work_partition_accepts_inflight_limits() {
+        let work: Vec<TirOptimizationWorkItem> = (0..5)
+            .map(|index| TirOptimizationWorkItem {
+                index,
+                content_hash: format!("hash-{index}"),
+                op_count: 3,
+            })
+            .collect();
+
+        let waves = partition_tir_optimization_work_items_with_limits(work, 2, 6);
+
+        assert_eq!(waves.len(), 3);
+        assert_eq!(waves[0].len(), 2);
+        assert_eq!(waves[1].len(), 2);
+        assert_eq!(waves[2].len(), 1);
+        assert!(
+            waves
+                .iter()
+                .all(|wave| wave.iter().map(|item| item.op_count).sum::<usize>() <= 6)
+        );
+    }
+
+    #[test]
+    fn tir_optimization_resource_plan_caps_inflight_work_by_memory_limit() {
+        let memory_limit =
+            TIR_OPTIMIZATION_BASELINE_MEMORY_BYTES + (2 * TIR_OPTIMIZATION_WORKER_MEMORY_BYTES);
+
+        let plan = tir_optimization_resource_plan_from_limits(8, Some(memory_limit));
+
+        assert_eq!(plan.threads, 2);
+        assert_eq!(
+            plan.wave_function_limit,
+            2 * TIR_OPTIMIZATION_WAVE_FUNCTIONS_PER_THREAD
+        );
+        assert_eq!(
+            plan.wave_op_budget,
+            2 * TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD
+        );
+    }
+
+    #[test]
+    fn tir_optimization_resource_plan_serializes_under_twelve_gb_guard() {
+        let memory_limit = 12 * 1024 * 1024 * 1024;
+
+        let plan = tir_optimization_resource_plan_from_limits(8, Some(memory_limit));
+
+        assert_eq!(plan.threads, 1);
+        assert_eq!(plan.wave_function_limit, 1);
+        assert_eq!(plan.wave_op_budget, TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD);
+    }
+
+    #[test]
+    fn tir_optimization_resource_plan_keeps_cpu_parallelism_without_memory_limit() {
+        let plan = tir_optimization_resource_plan_from_limits(3, None);
+
+        assert_eq!(plan.threads, 3);
+        assert_eq!(
+            plan.wave_function_limit,
+            3 * TIR_OPTIMIZATION_WAVE_FUNCTIONS_PER_THREAD
+        );
+        assert_eq!(
+            plan.wave_op_budget,
+            3 * TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD
+        );
     }
 
     #[test]
@@ -5379,6 +5791,450 @@ mod tests {
         );
     }
 
+    fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
+        let mut backend = SimpleBackend::new();
+        let mut predeclared_sig = backend.module.make_signature();
+        predeclared_sig
+            .returns
+            .push(cranelift_codegen::ir::AbiParam::new(types::I64));
+        backend
+            .module
+            .declare_function(
+                "helper",
+                cranelift_module::Linkage::Import,
+                &predeclared_sig,
+            )
+            .expect("predeclare helper");
+
+        let defined_functions = BTreeSet::from(["caller".to_string(), "helper".to_string()]);
+        let function_arities = BTreeMap::from([
+            ("caller".to_string(), caller.params.len()),
+            ("helper".to_string(), 1usize),
+        ]);
+        let function_has_ret =
+            BTreeMap::from([("caller".to_string(), true), ("helper".to_string(), true)]);
+        backend.compile_func(
+            caller,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &defined_functions,
+            &defined_functions,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            false,
+            &BTreeSet::new(),
+            &function_arities,
+            &function_has_ret,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "builtin_func declaration mismatch for `helper`")]
+    fn builtin_func_signature_mismatch_fails_closed_at_codegen() {
+        compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "builtin_func".to_string(),
+                    s_value: Some("helper".to_string()),
+                    out: Some("helper_obj".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("helper_obj".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "func_new declaration mismatch for `helper`")]
+    fn func_new_signature_mismatch_fails_closed_at_codegen() {
+        compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "func_new".to_string(),
+                    s_value: Some("helper".to_string()),
+                    out: Some("helper_obj".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("helper_obj".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "fn_ptr_code_set declaration mismatch for `helper`")]
+    fn fn_ptr_code_set_signature_mismatch_fails_closed_at_codegen() {
+        compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("code".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "fn_ptr_code_set".to_string(),
+                    s_value: Some("helper".to_string()),
+                    args: Some(vec!["code".to_string()]),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "asyncgen_locals_register declaration mismatch for `helper`")]
+    fn asyncgen_locals_register_signature_mismatch_fails_closed_at_codegen() {
+        compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("names".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("offsets".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "asyncgen_locals_register".to_string(),
+                    s_value: Some("helper".to_string()),
+                    args: Some(vec!["names".to_string(), "offsets".to_string()]),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "gen_locals_register declaration mismatch for `helper`")]
+    fn gen_locals_register_signature_mismatch_fails_closed_at_codegen() {
+        compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("names".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("offsets".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "gen_locals_register".to_string(),
+                    s_value: Some("helper".to_string()),
+                    args: Some(vec!["names".to_string(), "offsets".to_string()]),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "call declaration mismatch for `helper`")]
+    fn call_signature_mismatch_fails_closed_at_codegen() {
+        compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("arg".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call".to_string(),
+                    s_value: Some("helper".to_string()),
+                    out: Some("result".to_string()),
+                    args: Some(vec!["arg".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+    }
+
+    fn compile_missing_static_target_symbol(kind: &str) {
+        compile_function_to_clif_text(
+            vec![FunctionIR {
+                name: "caller".to_string(),
+                params: Vec::new(),
+                ops: vec![
+                    OpIR {
+                        kind: kind.to_string(),
+                        args: Some(vec!["callee".to_string()]),
+                        out: Some("result".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            "caller",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "call missing static target symbol")]
+    fn call_missing_target_symbol_fails_closed_at_codegen() {
+        compile_missing_static_target_symbol("call");
+    }
+
+    #[test]
+    #[should_panic(expected = "call_internal missing static target symbol")]
+    fn call_internal_missing_target_symbol_fails_closed_at_codegen() {
+        compile_missing_static_target_symbol("call_internal");
+    }
+
+    #[test]
+    #[should_panic(expected = "call_guarded missing static target symbol")]
+    fn call_guarded_missing_target_symbol_fails_closed_at_codegen() {
+        compile_missing_static_target_symbol("call_guarded");
+    }
+
+    #[test]
+    #[should_panic(expected = "const_str missing bytes or string payload for output `missing`")]
+    fn const_str_missing_payload_fails_closed_at_codegen() {
+        compile_function_to_clif_text(
+            vec![FunctionIR {
+                name: "const_str_missing_payload".to_string(),
+                params: Vec::new(),
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("missing".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            "const_str_missing_payload",
+        );
+    }
+
+    #[test]
+    fn const_str_empty_string_payload_still_compiles() {
+        let clif = compile_function_to_clif_text(
+            vec![FunctionIR {
+                name: "const_str_empty_payload".to_string(),
+                params: Vec::new(),
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("empty".to_string()),
+                        s_value: Some(String::new()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("empty".to_string()),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            "const_str_empty_payload",
+        );
+
+        assert!(clif.contains("return"));
+    }
+
+    #[test]
+    #[should_panic(expected = "call_guarded declaration mismatch for `helper`")]
+    fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
+        compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("callee".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("arg".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call_guarded".to_string(),
+                    s_value: Some("helper".to_string()),
+                    out: Some("result".to_string()),
+                    args: Some(vec!["callee".to_string(), "arg".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "call_internal declaration mismatch for `helper`")]
+    fn call_internal_signature_mismatch_fails_closed_at_codegen() {
+        compile_function_to_clif_text(
+            vec![
+                FunctionIR {
+                    name: "helper".to_string(),
+                    params: vec!["value".to_string()],
+                    ops: vec![OpIR {
+                        kind: "ret".to_string(),
+                        var: Some("value".to_string()),
+                        ..OpIR::default()
+                    }],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+                FunctionIR {
+                    name: "caller".to_string(),
+                    params: Vec::new(),
+                    ops: vec![
+                        OpIR {
+                            kind: "const".to_string(),
+                            out: Some("arg".to_string()),
+                            value: Some(1),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            s_value: Some("helper".to_string()),
+                            out: Some("helper_obj".to_string()),
+                            value: Some(0),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "call_internal".to_string(),
+                            s_value: Some("helper".to_string()),
+                            out: Some("result".to_string()),
+                            args: Some(vec!["arg".to_string()]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            var: Some("result".to_string()),
+                            ..OpIR::default()
+                        },
+                    ],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                },
+            ],
+            "caller",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "func_new_closure declaration mismatch for `helper`")]
+    fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
+        compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "const_none".to_string(),
+                    out: Some("closure".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "func_new_closure".to_string(),
+                    s_value: Some("helper".to_string()),
+                    out: Some("helper_obj".to_string()),
+                    args: Some(vec!["closure".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("helper_obj".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        });
+    }
+
     #[test]
     fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
         let result = compute_function_has_ret(&[
@@ -5420,6 +6276,159 @@ mod tests {
 
         assert_eq!(result.get("demo__molt_module_chunk_1"), Some(&false));
         assert_eq!(result.get("demo____molt_globals_builtin__"), Some(&true));
+    }
+
+    #[test]
+    fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
+        let mut func = FunctionIR {
+            name: "importlib__import_module".to_string(),
+            params: vec!["name".to_string(), "package".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "missing".to_string(),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        crate::externalize_function_with_signature(&mut func);
+        let tir = crate::tir::lower_from_simple::lower_to_tir(&func);
+        assert_eq!(
+            tir.return_type,
+            crate::tir::types::TirType::DynBox,
+            "TIR declaration metadata preserves extern value signatures from the signature stub",
+        );
+        let result = compute_function_has_ret(&[func]);
+
+        assert_eq!(
+            result.get("importlib__import_module"),
+            Some(&true),
+            "extern declarations must preserve the source body's value-returning ABI fact",
+        );
+    }
+
+    #[test]
+    fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
+        let mut func = FunctionIR {
+            name: "stdlib_void_helper".to_string(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "ret_void".to_string(),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        crate::externalize_function_with_signature(&mut func);
+        let tir = crate::tir::lower_from_simple::lower_to_tir(&func);
+        assert_eq!(
+            tir.return_type,
+            crate::tir::types::TirType::None,
+            "TIR declaration metadata preserves extern void signatures from the signature stub",
+        );
+        let result = compute_function_has_ret(&[func]);
+
+        assert_eq!(
+            result.get("stdlib_void_helper"),
+            Some(&false),
+            "extern declarations must preserve the source body's void ABI fact",
+        );
+    }
+
+    #[test]
+    fn cranelift_import_declaration_uses_externalized_value_return_signature() {
+        let mut extern_helper = FunctionIR {
+            name: "stdlib_value_helper".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "missing".to_string(),
+                    out: Some("value".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["value".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        crate::externalize_function_with_signature(&mut extern_helper);
+        let caller = FunctionIR {
+            name: "molt_main".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    kind: "call".to_string(),
+                    s_value: Some("stdlib_value_helper".to_string()),
+                    out: Some("result".to_string()),
+                    args: Some(Vec::new()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+        let functions = vec![caller.clone(), extern_helper.clone()];
+        let module_context = SimpleBackend::build_module_context(&functions);
+        assert_eq!(
+            module_context.function_has_ret.get("stdlib_value_helper"),
+            Some(&true),
+            "externalized stdlib helper must keep the value-returning ABI fact in shared module metadata",
+        );
+        let local_function_arities = BTreeMap::from([("molt_main".to_string(), 0usize)]);
+        let effective_function_arities =
+            merge_function_arities(Some(&module_context), local_function_arities);
+        let local_function_has_ret = compute_function_has_ret(std::slice::from_ref(&caller));
+        let effective_function_has_ret =
+            merge_function_has_ret(Some(&module_context), local_function_has_ret);
+        let mut module_known_functions = BTreeSet::from(["molt_main".to_string()]);
+        module_known_functions.insert("stdlib_value_helper".to_string());
+        let mut backend = SimpleBackend::new();
+        backend.compile_func(
+            caller,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeSet::from(["molt_main".to_string()]),
+            &module_known_functions,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            false,
+            &BTreeSet::new(),
+            &effective_function_arities,
+            &effective_function_has_ret,
+        );
+        let declaration = backend
+            .module
+            .declarations()
+            .get_functions()
+            .find_map(|(_, decl)| {
+                (decl.name.as_deref() == Some("stdlib_value_helper")).then_some(decl)
+            })
+            .expect("stdlib_value_helper import declaration");
+
+        assert_eq!(declaration.linkage, cranelift_module::Linkage::Import);
+        assert_eq!(declaration.signature.params.len(), 0);
+        assert_eq!(declaration.signature.returns.len(), 1);
+        assert_eq!(declaration.signature.returns[0].value_type, types::I64);
     }
 
     #[test]
@@ -5617,6 +6626,51 @@ mod tests {
                 .windows(b"molt_profile_enabled".len())
                 .any(|window| window == b"molt_profile_enabled")
         );
+    }
+
+    fn compile_check_exception_target_shape(name: &str, target: Option<i64>) {
+        compile_function_to_clif_text(
+            vec![FunctionIR {
+                name: name.to_string(),
+                params: Vec::new(),
+                ops: vec![
+                    OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("sentinel".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "check_exception".to_string(),
+                        value: target,
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    },
+                ],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+            }],
+            name,
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "check_exception missing target label id in function `native_check_exception_missing_target` op 1"
+    )]
+    fn check_exception_missing_target_fails_closed_at_codegen() {
+        compile_check_exception_target_shape("native_check_exception_missing_target", None);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "check_exception target label 7 is not present in native label map for function `native_check_exception_orphan_target` op 1"
+    )]
+    fn check_exception_orphan_target_fails_closed_at_codegen() {
+        compile_check_exception_target_shape("native_check_exception_orphan_target", Some(7));
     }
 
     #[test]
@@ -6817,5 +7871,52 @@ mod tests {
         assert_eq!(names, vec!["callee".to_string()]);
         assert!(entry_vars.contains_key("callee"));
         assert!(!entry_vars.contains_key("other"));
+    }
+
+    #[test]
+    fn authority_disabled_tracked_drain_clears_without_cleanup() {
+        let mut names = vec!["dead".to_string()];
+        let last_use = BTreeMap::from([("dead".to_string(), 1usize)]);
+        let alias_roots = BTreeMap::new();
+        let mut already_decrefed = BTreeSet::new();
+
+        let cleanup = drain_cleanup_tracked_dedup_with_authority(
+            false,
+            &mut names,
+            &last_use,
+            &alias_roots,
+            1,
+            None,
+            Some(&mut already_decrefed),
+        );
+
+        assert!(cleanup.is_empty());
+        assert!(names.is_empty());
+        assert!(already_decrefed.is_empty());
+    }
+
+    #[test]
+    fn authority_disabled_entry_drain_clears_without_cleanup() {
+        let mut names = vec!["dead".to_string()];
+        let mut entry_vars = BTreeMap::from([("dead".to_string(), Value::from_u32(17))]);
+        let last_use = BTreeMap::from([("dead".to_string(), 1usize)]);
+        let alias_roots = BTreeMap::new();
+        let mut already_decrefed = BTreeSet::new();
+
+        let cleanup = drain_cleanup_entry_tracked_with_authority(
+            false,
+            &mut names,
+            &mut entry_vars,
+            &last_use,
+            &alias_roots,
+            &mut already_decrefed,
+            1,
+            None,
+        );
+
+        assert!(cleanup.is_empty());
+        assert!(names.is_empty());
+        assert!(entry_vars.is_empty());
+        assert!(already_decrefed.is_empty());
     }
 }

@@ -132,8 +132,9 @@ linkable libraries via:
 cargo build -p molt-runtime-core --release
 ```
 
-This `.a` file is cached at `~/.molt/cache/lib/libmolt_core.a` (or equivalent).
-The fingerprint includes: Rust toolchain version, target triple, feature flags.
+This `.a` file is cached under the canonical artifact/cache root
+(`MOLT_CACHE`/`MOLT_EXT_ROOT`, not an ambient home-directory cache). The
+fingerprint includes: Rust toolchain version, target triple, feature flags.
 
 ### 2. Backend Split: User Code Only
 

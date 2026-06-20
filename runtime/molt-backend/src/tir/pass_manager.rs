@@ -7,12 +7,11 @@
 //! [`PassManager`] invalidates every CFG-sensitive analysis so the next pass
 //! recomputes against the new shape.
 //!
-//! The default pipeline ([`build_default_pipeline`]) preserves the EXACT
-//! 30-pass order (28 optimization passes + the trailing two RC drop-insertion
-//! passes, design 20), the snapshot/restore-on-zero-delta behavior, and the
-//! post-pipeline `verify_function` of the legacy `run_pipeline`. `run_pipeline`
-//! is now a thin entry that builds the default pipeline and runs it — the real
-//! API, not a shim.
+//! The default pipeline ([`build_default_pipeline`]) preserves the exact
+//! optimization-pass order, the snapshot/restore-on-zero-delta behavior, and the
+//! post-pipeline `verify_function` of the legacy `run_pipeline`. RC
+//! drop-insertion now runs in a separate terminal phase
+//! ([`build_drop_pipeline`]) after module transforms.
 //!
 //! ## Invalidation soundness (the critical contract)
 //!
@@ -45,6 +44,16 @@ use super::analysis::{
 use super::function::TirFunction;
 use super::passes::{self, PassStats};
 use super::target_info::{TargetInfo, TargetKind};
+
+fn trace_func_enabled(name: &str) -> bool {
+    std::env::var("MOLT_TIR_TRACE_FUNC")
+        .ok()
+        .is_some_and(|filter| filter == "1" || name.contains(&filter))
+}
+
+fn function_op_count(func: &TirFunction) -> usize {
+    func.blocks.values().map(|block| block.ops.len()).sum()
+}
 
 /// Whether the RC drop-insertion pass (design 20) is sound to run for a given
 /// backend. See the activation note in [`build_default_pipeline`] for the full
@@ -205,8 +214,31 @@ impl PassManager {
         let mut am = AnalysisManager::new();
 
         for p in &self.passes {
+            let trace_this = trace_func_enabled(&func.name);
+            if trace_this {
+                eprintln!(
+                    "[TIR-PASS] {} before {}: blocks={} ops={}",
+                    func.name,
+                    p.name(),
+                    func.blocks.len(),
+                    function_op_count(func),
+                );
+            }
             let mut stat = p.run(func, &mut am, &self.target_info);
             stat.name = p.name();
+            if trace_this {
+                eprintln!(
+                    "[TIR-PASS] {} after {}: blocks={} ops={} changed={} removed={} added={} facts={}",
+                    func.name,
+                    p.name(),
+                    func.blocks.len(),
+                    function_op_count(func),
+                    stat.values_changed,
+                    stat.ops_removed,
+                    stat.ops_added,
+                    stat.facts_changed,
+                );
+            }
 
             // Invalidate analyses according to the pass's mutation class.
             // FAIL-CLOSED: `Cfg` drops every CFG- and ops-sensitive analysis;
@@ -230,10 +262,7 @@ impl PassManager {
             stats.push(stat);
         }
 
-        let total_changes: usize = stats
-            .iter()
-            .map(|s| s.values_changed + s.ops_removed + s.ops_added)
-            .sum();
+        let total_changes: usize = stats.iter().map(PassStats::total_changes).sum();
         if total_changes == 0 {
             *func = snapshot.clone();
         }
@@ -242,6 +271,15 @@ impl PassManager {
             dump_tir_artifact(func, "post", &stats);
         }
 
+        let trace_verify = trace_func_enabled(&func.name);
+        if trace_verify {
+            eprintln!(
+                "[TIR-VERIFY] {} before verify_function: blocks={} ops={}",
+                func.name,
+                func.blocks.len(),
+                function_op_count(func),
+            );
+        }
         if let Err(errors) = super::verify::verify_function(func) {
             if dump_tir {
                 dump_tir_artifact(func, "verify_error", &stats);
@@ -250,6 +288,10 @@ impl PassManager {
                 "[TIR] verification failed after optimization of '{}': {:?}",
                 func.name, errors
             );
+        }
+        if trace_verify {
+            eprintln!("[TIR-VERIFY] {} after verify_function", func.name);
+            eprintln!("[TIR-VERIFY] {} before verify_exception_regions", func.name);
         }
         if let Err(diagnostics) = super::exception_regions::verify_exception_regions(func) {
             if dump_tir {
@@ -260,12 +302,15 @@ impl PassManager {
                 func.name, diagnostics
             );
         }
+        if trace_verify {
+            eprintln!("[TIR-VERIFY] {} after verify_exception_regions", func.name);
+        }
 
         if std::env::var("TIR_OPT_STATS").as_deref() == Ok("1") {
             for s in &stats {
                 eprintln!(
-                    "[TIR] {}: {} values changed, {} ops removed, {} ops added",
-                    s.name, s.values_changed, s.ops_removed, s.ops_added
+                    "[TIR] {}: {} values changed, {} ops removed, {} ops added, {} facts changed",
+                    s.name, s.values_changed, s.ops_removed, s.ops_added, s.facts_changed
                 );
             }
         }
@@ -311,7 +356,11 @@ impl PassManager {
 /// * **Redundancy** (GVN, LICM) runs after canonicalization and type settling.
 /// * **Memory** (escape, refcount, reuse, dead-store) runs after redundancy.
 /// * **Value** specialization runs late so it sees the final type lattice.
-/// * **Cleanup** (check-exception elim, copy-prop, DCE) runs last.
+/// * **Cleanup** (check-exception elim, copy-prop, DCE) runs last. Block-arg
+///   pruning deliberately runs only in the terminal drop pipeline, after RC
+///   ownership transfer facts have been settled; pruning phi payloads before
+///   drop insertion would delete ownership-only edge boundaries before the
+///   one phase that can place their release.
 ///
 /// Mutation classes (each verified against the pass body):
 /// * `Cfg` — may add/remove blocks, redirect edges, or rewrite terminators:
@@ -457,6 +506,8 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
 /// * `refcount_elim_post` then elides the balance-preserving subset of the ops it
 ///   placed (the deferred-RC / DecRef→Free steps are skipped post-drop — they
 ///   would delete the lone ownership-release DecRefs that close the leak).
+/// * `block_arg_prune_post_drop` removes dead block-argument lanes and their
+///   incoming edge payloads after drop insertion has settled the final CFG.
 ///
 /// BACKEND-CONDITIONED ACTIVATION. The drop pass is sound only for backends that
 /// consume its `DecRef`/`IncRef` by SSA-value identity and run no competing
@@ -510,6 +561,11 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
                     ..Default::default()
                 }
             }
+        }),
+        pass("block_arg_prune_post_drop", Cfg, |f, _am, _tti| {
+            let mut stats = passes::block_arg_prune::run(f);
+            stats.name = "block_arg_prune_post_drop";
+            stats
         }),
     ];
     PassManager::new(passes, target_info)
@@ -605,7 +661,15 @@ fn dump_tir_artifact(func: &TirFunction, phase: &str, stats: &[PassStats]) {
             "// stats: {:?}\n",
             stats
                 .iter()
-                .map(|s| (s.name, s.values_changed, s.ops_removed, s.ops_added))
+                .map(|s| {
+                    (
+                        s.name,
+                        s.values_changed,
+                        s.ops_removed,
+                        s.ops_added,
+                        s.facts_changed,
+                    )
+                })
                 .collect::<Vec<_>>()
         ));
     }
@@ -630,8 +694,10 @@ mod tests {
     /// The default pipeline must preserve the EXACT canonical pass order (28
     /// `run` invocations — canonicalize runs twice). The RC drop-insertion passes
     /// (design 20) are NOT in this pipeline — they run in the separate terminal
-    /// [`build_drop_pipeline`] (round-7). Any reorder/insert/drop is a behavior
-    /// change and must update this list deliberately.
+    /// [`build_drop_pipeline`] (round-7), and block-argument pruning runs only
+    /// there after ownership transfer facts have been settled. Any
+    /// reorder/insert/drop is a behavior change and must update this list
+    /// deliberately.
     #[test]
     fn default_pipeline_preserves_canonical_pass_order() {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
@@ -670,15 +736,20 @@ mod tests {
         );
     }
 
-    /// The RC drop-insertion pipeline (round-7) is the two design-20 passes, in
+    /// The RC drop-insertion pipeline (round-7) is the two design-20 passes plus
+    /// the post-drop block-argument cleanup, in
     /// order. It is a SEPARATE terminal phase run after the module transforms;
     /// the default pipeline above must NOT contain either pass.
     #[test]
-    fn drop_pipeline_is_the_two_rc_passes() {
+    fn drop_pipeline_is_rc_then_block_arg_cleanup() {
         let pm = build_drop_pipeline(TargetInfo::native_release_fast());
         assert_eq!(
             pm.pass_names(),
-            vec!["drop_insertion", "refcount_elim_post"]
+            vec![
+                "drop_insertion",
+                "refcount_elim_post",
+                "block_arg_prune_post_drop"
+            ]
         );
 
         // And the default optimization pipeline must NOT carry them (the round-7
@@ -725,7 +796,8 @@ mod tests {
 
         // drop_insertion (in the separate drop pipeline) may split a critical
         // edge for the mixed-ownership-phi retain (design 20 §ownership / §5), so
-        // it is declared `Cfg`; refcount_elim_post is `OpsOnly`.
+        // it is declared `Cfg`; block_arg_prune_post_drop rewrites block
+        // signatures and edge payloads, so it is also `Cfg`.
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dp_cfg: Vec<&'static str> = dp
             .passes
@@ -733,7 +805,7 @@ mod tests {
             .filter(|p| p.mutation_class() == Mutates::Cfg)
             .map(|p| p.name())
             .collect();
-        assert_eq!(dp_cfg, vec!["drop_insertion"]);
+        assert_eq!(dp_cfg, vec!["drop_insertion", "block_arg_prune_post_drop"]);
     }
 
     /// End-to-end: a loop-bearing function runs the full pipeline through the
@@ -804,7 +876,8 @@ mod tests {
         let stats = pm.run_inner(&mut func, true);
         // All 28 optimization-pipeline pass invocations ran (canonicalize runs
         // twice). The RC drop-insertion passes are NOT in this pipeline (round-7
-        // moved them to the separate terminal `build_drop_pipeline`).
+        // moved them to the separate terminal `build_drop_pipeline`), and
+        // block-argument pruning waits for that terminal phase.
         assert_eq!(stats.len(), 28);
 
         // The drop pipeline runs its two passes under the same verify guard.
@@ -812,7 +885,7 @@ mod tests {
         // inserts nothing; both passes still RUN and report stats.)
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dstats = dp.run_inner(&mut func, true);
-        assert_eq!(dstats.len(), 2);
+        assert_eq!(dstats.len(), 3);
     }
 
     fn exception_match_ref_without_reachable_pop_function() -> TirFunction {

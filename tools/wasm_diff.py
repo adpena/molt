@@ -171,7 +171,11 @@ def _run_wasm(linked: Path, runtime_wasm: Path | None) -> tuple[str, str, int]:
     except subprocess.TimeoutExpired:
         return "", f"wasm run timeout after {_wasm_run_timeout()}s", 124
     if getattr(proc, "timed_out", False):
-        return "", proc.stderr or f"wasm run timeout after {_wasm_run_timeout()}s", proc.returncode
+        return (
+            "",
+            proc.stderr or f"wasm run timeout after {_wasm_run_timeout()}s",
+            proc.returncode,
+        )
     return proc.stdout, proc.stderr, proc.returncode
 
 

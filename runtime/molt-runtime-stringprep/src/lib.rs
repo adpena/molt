@@ -12,3 +12,4 @@
 pub mod bridge;
 
 pub mod stringprep;
+mod tables;

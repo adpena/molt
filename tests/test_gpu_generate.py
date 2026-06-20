@@ -36,6 +36,7 @@ def _native_molt_env(root: Path) -> dict[str, str]:
     env["MOLT_DIFF_TMPDIR"] = str(root / "tmp")
     env["UV_CACHE_DIR"] = str(root / ".uv-cache")
     env["TMPDIR"] = str(root / "tmp")
+    env["MOLT_STDLIB_PROFILE"] = "full"
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     env["MOLT_BACKEND_DAEMON"] = "0"
     return env
@@ -643,6 +644,190 @@ def test_greedy_decode_uses_registered_dflash_adapter_by_default_on_gpu_backend(
     )
 
     assert out == [0, 1, 2]
+
+
+def test_greedy_decode_dflash_adapter_refreshes_target_conditioning_after_rejection(
+    monkeypatch,
+):
+    from molt.gpu.dflash import (
+        DFlashAdapterSpec,
+        DFlashConditioning,
+        DFlashRuntime,
+        SpeculativeDraftResult,
+        SpeculativeVerifyResult,
+        register_dflash_adapter,
+    )
+    from molt.gpu.generate import greedy_decode
+
+    events = []
+
+    def conditioning_payload(conditioning):
+        return {
+            "target_features": conditioning.target_features,
+            "target_kv": conditioning.target_kv,
+            "position_ids": conditioning.position_ids,
+            "last_verified_token": conditioning.last_verified_token,
+            "tag": conditioning.aux["tag"],
+        }
+
+    def assert_conditioning_payload(conditioning, tag, token):
+        assert isinstance(conditioning, DFlashConditioning)
+        assert conditioning_payload(conditioning) == {
+            "target_features": f"features-{tag}",
+            "target_kv": f"kv-{tag}",
+            "position_ids": [0, 1],
+            "last_verified_token": token,
+            "tag": tag,
+        }
+
+    def supports(context):
+        return (
+            context.backend == "webgpu"
+            and getattr(context.model, "kind", None) == "fake-model"
+        )
+
+    def create_runtime(context):
+        assert context.prompt_tokens == [0]
+        assert context.backend == "webgpu"
+        assert context.block_size == 2
+        assert context.max_new_tokens == 4
+
+        initial_conditioning = _dflash_conditioning("prefill", token=0)
+
+        def draft_step(request):
+            assert not hasattr(request, "draft_tokens")
+            assert hasattr(request, "max_block_size")
+            if request.step_index == 0:
+                assert request.prefix_tokens == [0]
+                assert request.max_block_size == 2
+                assert_conditioning_payload(request.conditioning, "prefill", 0)
+                events.append(
+                    (
+                        "draft",
+                        request.step_index,
+                        list(request.prefix_tokens),
+                        request.max_block_size,
+                        conditioning_payload(request.conditioning),
+                    )
+                )
+                return SpeculativeDraftResult([1, 9])
+            if request.step_index == 1:
+                assert request.prefix_tokens == [0, 1, 2]
+                assert request.max_block_size == 2
+                assert_conditioning_payload(request.conditioning, "refresh", 2)
+                events.append(
+                    (
+                        "draft",
+                        request.step_index,
+                        list(request.prefix_tokens),
+                        request.max_block_size,
+                        conditioning_payload(request.conditioning),
+                    )
+                )
+                return SpeculativeDraftResult([3])
+            raise AssertionError(f"unexpected draft step {request.step_index}")
+
+        def verify_step(request):
+            assert hasattr(request, "draft_tokens")
+            assert not hasattr(request, "max_block_size")
+            if request.step_index == 0:
+                assert request.prefix_tokens == [0]
+                assert request.draft_tokens == [1, 9]
+                assert_conditioning_payload(request.conditioning, "prefill", 0)
+                events.append(
+                    (
+                        "verify",
+                        request.step_index,
+                        list(request.prefix_tokens),
+                        list(request.draft_tokens),
+                        conditioning_payload(request.conditioning),
+                    )
+                )
+                return SpeculativeVerifyResult(
+                    [1, 2, 7],
+                    conditioning=_dflash_conditioning("refresh", token=2),
+                )
+            if request.step_index == 1:
+                assert request.prefix_tokens == [0, 1, 2]
+                assert request.draft_tokens == [3]
+                assert_conditioning_payload(request.conditioning, "refresh", 2)
+                events.append(
+                    (
+                        "verify",
+                        request.step_index,
+                        list(request.prefix_tokens),
+                        list(request.draft_tokens),
+                        conditioning_payload(request.conditioning),
+                    )
+                )
+                return SpeculativeVerifyResult(
+                    [3, 4],
+                    conditioning=_dflash_conditioning("final", token=3),
+                )
+            raise AssertionError(f"unexpected verify step {request.step_index}")
+
+        return DFlashRuntime(
+            draft_step=draft_step,
+            verify_step=verify_step,
+            initial_conditioning=initial_conditioning,
+            block_size=2,
+        )
+
+    class FakeModel:
+        kind = "fake-model"
+
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy model path should not execute")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="fake-refreshing-adapter",
+            supports=supports,
+            create_runtime=create_runtime,
+        )
+    )
+
+    out = greedy_decode(FakeModel(), [0], max_new_tokens=4, block_size=2)
+
+    assert out == [0, 1, 2, 3, 4]
+    assert [(event[0], event[1], event[-1]["tag"]) for event in events] == [
+        ("draft", 0, "prefill"),
+        ("verify", 0, "prefill"),
+        ("draft", 1, "refresh"),
+        ("verify", 1, "refresh"),
+    ]
+
+
+def test_greedy_decode_fails_closed_when_registered_dflash_adapter_has_no_trained_drafter(
+    monkeypatch,
+):
+    from molt.gpu.dflash import DFlashAdapterSpec, register_dflash_adapter
+    from molt.gpu.generate import greedy_decode
+
+    def create_runtime(_context):
+        raise AssertionError("unsupported trained drafter must not be created")
+
+    class FakeModel:
+        dflash_adapter = "trained-drafter-only"
+
+        def __call__(self, _tokens):
+            raise AssertionError("plain greedy model path should not execute")
+
+    monkeypatch.setenv("MOLT_GPU_BACKEND", "webgpu")
+    register_dflash_adapter(
+        DFlashAdapterSpec(
+            name="trained-drafter-only",
+            supports=lambda _context: False,
+            create_runtime=create_runtime,
+        )
+    )
+
+    try:
+        greedy_decode(FakeModel(), [0], max_new_tokens=1)
+        raise AssertionError("expected unavailable trained drafter failure")
+    except LookupError as exc:
+        assert "trained-drafter-only" in str(exc)
 
 
 def test_greedy_decode_chooses_highest_priority_matching_dflash_adapter(monkeypatch):

@@ -430,7 +430,9 @@ def _movement_pair(value, op_name: str) -> tuple[int, int]:
     return left, right
 
 
-def _normalize_movement_pairs(spec, ndim: int, op_name: str) -> tuple[tuple[int, int], ...]:
+def _normalize_movement_pairs(
+    spec, ndim: int, op_name: str
+) -> tuple[tuple[int, int], ...]:
     if ndim == 0:
         if spec in ((), [], None):
             return ()
@@ -471,7 +473,9 @@ def tensor_pad(x: "Tensor", padding, value=0.0) -> "Tensor":
     for before, after in padding:
         if before < 0 or after < 0:
             raise ValueError(f"pad expects non-negative padding, got {padding}")
-    new_shape = tuple(size + before + after for size, (before, after) in zip(x._shape, padding))
+    new_shape = tuple(
+        size + before + after for size, (before, after) in zip(x._shape, padding)
+    )
     out_size = _product(new_shape) if new_shape else 1
     result = [value] * out_size
     if x.size:
@@ -500,7 +504,9 @@ def tensor_shrink(x: "Tensor", bounds) -> "Tensor":
     result = []
     for out_index in range(out_size):
         out_coords = _flat_index_to_coords(out_index, new_shape)
-        src_coords = tuple(coord + start for coord, (start, _end) in zip(out_coords, bounds))
+        src_coords = tuple(
+            coord + start for coord, (start, _end) in zip(out_coords, bounds)
+        )
         result.append(old_data[_coords_to_flat_index(src_coords, old_strides)])
     return _tensor_from_storage_values(x, result, new_shape)
 

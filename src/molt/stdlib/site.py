@@ -81,7 +81,11 @@ import os
 import builtins
 import _sitebuiltins
 import io
+import importlib
+import importlib.util
+import locale
 import stat
+import traceback
 
 # Prefixes for site-packages; add additional prefixes like /usr/local here
 PREFIXES = [sys.prefix, sys.exec_prefix]
@@ -197,10 +201,6 @@ def addpackage(sitedir, name, known_paths):
         # (Windows PowerShell 5.1 makes it hard to emit UTF-8 files without a BOM)
         pth_content = pth_content.decode("utf-8-sig")
     except UnicodeDecodeError:
-        # Fallback to locale encoding for backward compatibility.
-        # We will deprecate this fallback in the future.
-        import locale
-
         pth_content = pth_content.decode(locale.getencoding())
         _trace(
             f"Cannot read {fullname!r} as UTF-8. "
@@ -214,8 +214,10 @@ def addpackage(sitedir, name, known_paths):
             continue
         try:
             if line.startswith(("import ", "import\t")):
-                exec(line)
-                continue
+                raise RuntimeError(
+                    ".pth import lines require dynamic exec, which Molt compiled "
+                    "binaries do not support"
+                )
             line = line.rstrip()
             dir, dircase = makepath(sitedir, line)
             if dircase not in known_paths and os.path.exists(dir):
@@ -223,8 +225,6 @@ def addpackage(sitedir, name, known_paths):
                 known_paths.add(dircase)
         except Exception as exc:
             print(f"Error processing line {n:d} of {fullname}:\n", file=sys.stderr)
-            import traceback
-
             for record in traceback.format_exception(exc):
                 for line in record.splitlines():
                     print("  " + line, file=sys.stderr)
@@ -482,11 +482,12 @@ def enablerlcompleter():
     def register_readline():
         import atexit
 
-        try:
-            import readline
-            import rlcompleter
-        except ImportError:
+        if importlib.util.find_spec("readline") is None:
             return
+        if importlib.util.find_spec("rlcompleter") is None:
+            return
+        readline = importlib.import_module("readline")
+        importlib.import_module("rlcompleter")
 
         # Reading the initialization (config) file may not be enough to set a
         # completion key, so we set one first and then read the file.
@@ -589,13 +590,8 @@ def venv(known_paths):
 def execsitecustomize():
     """Run custom site specific code, if available."""
     try:
-        try:
-            import sitecustomize
-        except ImportError as exc:
-            if exc.name == "sitecustomize":
-                pass
-            else:
-                raise
+        if importlib.util.find_spec("sitecustomize") is not None:
+            importlib.import_module("sitecustomize")
     except Exception as err:
         if sys.flags.verbose:
             sys.excepthook(*sys.exc_info())
@@ -609,13 +605,8 @@ def execsitecustomize():
 def execusercustomize():
     """Run custom user specific code, if available."""
     try:
-        try:
-            import usercustomize
-        except ImportError as exc:
-            if exc.name == "usercustomize":
-                pass
-            else:
-                raise
+        if importlib.util.find_spec("usercustomize") is not None:
+            importlib.import_module("usercustomize")
     except Exception as err:
         if sys.flags.verbose:
             sys.excepthook(*sys.exc_info())
