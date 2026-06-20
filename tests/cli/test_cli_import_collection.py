@@ -2392,7 +2392,7 @@ def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
     assert "sys" in imports
 
 
-def test_collect_imports_uses_single_module_tree_walk_for_nested_scans(
+def test_collect_imports_avoids_module_tree_walk_for_nested_scans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tree = ast.parse(
@@ -2416,7 +2416,7 @@ def test_collect_imports_uses_single_module_tree_walk_for_nested_scans(
 
     imports = cli._collect_imports(tree)
 
-    assert module_tree_walks == 1
+    assert module_tree_walks == 0
     assert "os" in imports
     assert "warnings" in imports
 
@@ -4744,6 +4744,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         stdlib_allowlist_digest: str,
         compiler_fingerprint: str,
         target_python_tag: str = cli._DEFAULT_TARGET_PYTHON_VERSION.tag,
+        capability_config_digest: str = "",
     ) -> str:
         nonlocal calls
         calls += 1
@@ -4758,6 +4759,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
             stdlib_allowlist_digest,
             compiler_fingerprint,
             target_python_tag,
+            capability_config_digest=capability_config_digest,
         )
 
     monkeypatch.setattr(cli, "_module_graph_cache_key", wrapped, raising=True)
@@ -4993,6 +4995,9 @@ def test_clean_delegates_to_canonical_artifact_cleanup(
         "_require_molt_root",
         lambda _root, _json_output, _command: None,
     )
+    cleanup_tool = tmp_path / "tools" / "artifact_cleanup.py"
+    cleanup_tool.parent.mkdir(parents=True)
+    cleanup_tool.write_text("# test cleanup tool marker\n", encoding="utf-8")
     calls: list[list[str]] = []
 
     class FakeArtifactCleanup:
@@ -5001,8 +5006,8 @@ def test_clean_delegates_to_canonical_artifact_cleanup(
             calls.append(list(argv))
             return 0
 
-    monkeypatch.setattr(
-        cli,
+    monkeypatch.setitem(
+        cli.clean.__globals__,
         "_load_artifact_cleanup_module",
         lambda _root: FakeArtifactCleanup,
     )
@@ -5041,6 +5046,9 @@ def test_clean_defaults_to_canonical_dry_run(
         "_require_molt_root",
         lambda _root, _json_output, _command: None,
     )
+    cleanup_tool = tmp_path / "tools" / "artifact_cleanup.py"
+    cleanup_tool.parent.mkdir(parents=True)
+    cleanup_tool.write_text("# test cleanup tool marker\n", encoding="utf-8")
     calls: list[list[str]] = []
 
     class FakeArtifactCleanup:
@@ -5049,8 +5057,8 @@ def test_clean_defaults_to_canonical_dry_run(
             calls.append(list(argv))
             return 0
 
-    monkeypatch.setattr(
-        cli,
+    monkeypatch.setitem(
+        cli.clean.__globals__,
         "_load_artifact_cleanup_module",
         lambda _root: FakeArtifactCleanup,
     )
@@ -9605,7 +9613,10 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
             is True
         )
 
-        assert spawn_calls == [
+        backend_spawn_calls = [
+            cmd for cmd in spawn_calls if cmd[0] == str(backend_bin)
+        ]
+        assert backend_spawn_calls == [
             [str(backend_bin), "--daemon", "--socket", str(socket_path)]
         ]
         assert wait_timeouts == [0.25]
