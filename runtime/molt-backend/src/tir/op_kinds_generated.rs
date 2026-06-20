@@ -174,6 +174,7 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
             | "exception_new_builtin_empty"
             | "exception_new_builtin_one"
             | "exception_new_from_class"
+            | "exception_finally_pending_observer"
             | "float_from_obj"
             | "frozenset_new"
             | "func_new"

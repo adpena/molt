@@ -16634,7 +16634,12 @@ class SimpleTIRGenerator(
             )
         )
         exc_val = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_val))
+        pending_observer_kind = (
+            "EXCEPTION_LAST_PENDING"
+            if node.handlers
+            else "EXCEPTION_FINALLY_PENDING_OBSERVER"
+        )
+        self.emit(MoltOp(kind=pending_observer_kind, args=[], result=exc_val))
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         is_none = MoltValue(self.next_var(), type_hint="bool")
@@ -16706,7 +16711,11 @@ class SimpleTIRGenerator(
             if node.handlers:
                 final_exc = MoltValue(self.next_var(), type_hint="exception")
                 self.emit(
-                    MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=final_exc)
+                    MoltOp(
+                        kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                        args=[],
+                        result=final_exc,
+                    )
                 )
             else:
                 final_exc = exc_val
@@ -16736,7 +16745,13 @@ class SimpleTIRGenerator(
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_after))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=exc_after,
+                )
+            )
             is_none_after = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
                 MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
@@ -16799,7 +16814,11 @@ class SimpleTIRGenerator(
         if node.finalbody:
             else_final_exc = MoltValue(self.next_var(), type_hint="exception")
             self.emit(
-                MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=else_final_exc)
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=else_final_exc,
+                )
             )
             else_final_slot = None
             if self.is_async():
@@ -16829,7 +16848,13 @@ class SimpleTIRGenerator(
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             else_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=else_after))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=else_after,
+                )
+            )
             is_none_after = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
                 MoltOp(kind="IS", args=[else_after, none_after], result=is_none_after)
@@ -16989,7 +17014,12 @@ class SimpleTIRGenerator(
         self.try_handler_scopes.append(scope)
 
         exc_val = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_val))
+        pending_observer_kind = (
+            "EXCEPTION_LAST_PENDING"
+            if node.handlers
+            else "EXCEPTION_FINALLY_PENDING_OBSERVER"
+        )
+        self.emit(MoltOp(kind=pending_observer_kind, args=[], result=exc_val))
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         is_none = MoltValue(self.next_var(), type_hint="bool")
@@ -17262,7 +17292,13 @@ class SimpleTIRGenerator(
 
         if node.finalbody:
             final_exc = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=final_exc))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=final_exc,
+                )
+            )
             final_slot = None
             if self.is_async():
                 final_slot = self._async_local_offset(
@@ -17289,7 +17325,13 @@ class SimpleTIRGenerator(
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_after))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=exc_after,
+                )
+            )
             is_none_after = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
                 MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
@@ -17352,7 +17394,11 @@ class SimpleTIRGenerator(
         if node.finalbody:
             else_final_exc = MoltValue(self.next_var(), type_hint="exception")
             self.emit(
-                MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=else_final_exc)
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=else_final_exc,
+                )
             )
             else_final_slot = None
             if self.is_async():
@@ -17382,7 +17428,13 @@ class SimpleTIRGenerator(
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             else_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=else_after))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=else_after,
+                )
+            )
             is_none_after = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
                 MoltOp(kind="IS", args=[else_after, none_after], result=is_none_after)

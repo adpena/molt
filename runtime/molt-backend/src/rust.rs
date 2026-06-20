@@ -2742,10 +2742,13 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
                     self.emit_line(&format!("molt_code_slot_set({code_id}, &{code});"));
                 }
             }
-            "exception_last" | "exception_last_pending" => {
+            "exception_last" | "exception_last_pending" | "exception_finally_pending_observer" => {
                 let o = out();
                 if o != "_" && o != "none" && !o.is_empty() {
-                    let helper = if op.kind == "exception_last_pending" {
+                    let helper = if matches!(
+                        op.kind.as_str(),
+                        "exception_last_pending" | "exception_finally_pending_observer"
+                    ) {
                         "molt_exception_last_pending()"
                     } else {
                         "molt_exception_last()"

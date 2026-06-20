@@ -2806,6 +2806,7 @@ pub(crate) fn simple_ir_op_is_provably_nonthrowing_with_facts(
             | "exception_clear"
             | "exception_last"
             | "exception_last_pending"
+            | "exception_finally_pending_observer"
             | "exception_stack_enter"
             | "exception_stack_clear"
             | "exception_stack_depth"

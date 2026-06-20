@@ -138,24 +138,6 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                 // ownership handles it.
                 continue;
             }
-            if source_kind == "exception_last_pending"
-                && !mixed_observer_has_reachable_owner_pop(
-                    func,
-                    &label_to_block,
-                    &state_resume_stacks,
-                    producer,
-                    source_kind,
-                    &owning_tokens,
-                    &producer_states,
-                )
-            {
-                // Module/function exception-exit cleanup only needs a
-                // non-consuming pending-state observation before removing
-                // incomplete import-cache entries.  When no owner path reaches
-                // an exception_pop, this value is not a handler MatchRef and
-                // must not be forced into handler-owned release accounting.
-                continue;
-            }
             facts.diagnostics.push(ExceptionRegionDiagnostic {
                 kind: ExceptionRegionDiagnosticKind::AmbiguousProducerDepth,
                 value,
@@ -498,34 +480,6 @@ fn match_ref_release_owner(
     }
     let owner = state.normal_closures.last().copied()?;
     owning_tokens.contains(&owner).then_some(owner)
-}
-
-fn mixed_observer_has_reachable_owner_pop(
-    func: &TirFunction,
-    label_to_block: &BTreeMap<i64, BlockId>,
-    state_resume_stacks: &StateResumeStacks,
-    producer: ExceptionOpPosition,
-    source_kind: &str,
-    owning_tokens: &BTreeSet<ExceptionRegionToken>,
-    producer_states: &[ExceptionPathState],
-) -> bool {
-    for state in producer_states {
-        let Some(owner) = match_ref_release_owner(source_kind, state, owning_tokens) else {
-            continue;
-        };
-        let releases = reachable_region_pops(
-            func,
-            label_to_block,
-            state_resume_stacks,
-            producer,
-            owner,
-            std::slice::from_ref(state),
-        );
-        if !releases.is_empty() {
-            return true;
-        }
-    }
-    false
 }
 
 type StateResumeStacks = BTreeMap<i64, BTreeSet<ExceptionPathState>>;
@@ -1072,12 +1026,11 @@ mod tests {
         (func, exc)
     }
 
-    fn mixed_exception_pending_exit_observer_without_pop_function() -> (TirFunction, ValueId) {
-        let mut func = TirFunction::new(
-            "mixed_exception_pending_exit_observer_without_pop".into(),
-            vec![],
-            TirType::None,
-        );
+    fn mixed_pending_exit_observer_without_pop_function(
+        source_kind: &str,
+        name: &str,
+    ) -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new(name.into(), vec![], TirType::None);
         let before_try = func.fresh_block();
         let exit_cleanup = func.fresh_block();
         func.label_id_map.insert(exit_cleanup.0, 3);
@@ -1105,11 +1058,25 @@ mod tests {
             TirBlock {
                 id: exit_cleanup,
                 args: vec![],
-                ops: vec![original("exception_last_pending", vec![exc])],
+                ops: vec![original(source_kind, vec![exc])],
                 terminator: Terminator::Return { values: vec![] },
             },
         );
         (func, exc)
+    }
+
+    fn mixed_exception_pending_exit_observer_without_pop_function() -> (TirFunction, ValueId) {
+        mixed_pending_exit_observer_without_pop_function(
+            "exception_last_pending",
+            "mixed_exception_pending_exit_observer_without_pop",
+        )
+    }
+
+    fn mixed_finally_pending_exit_observer_without_pop_function() -> (TirFunction, ValueId) {
+        mixed_pending_exit_observer_without_pop_function(
+            "exception_finally_pending_observer",
+            "mixed_finally_pending_exit_observer_without_pop",
+        )
     }
 
     fn same_owner_with_different_outer_prefix_function() -> (TirFunction, ValueId) {
@@ -1428,7 +1395,7 @@ mod tests {
     }
 
     fn finally_cleanup_join_function() -> (TirFunction, ValueId, BlockId) {
-        finally_cleanup_join_function_with_source("exception_last_pending")
+        finally_cleanup_join_function_with_source("exception_finally_pending_observer")
     }
 
     fn finally_cleanup_join_function_with_source(
@@ -1890,8 +1857,27 @@ mod tests {
     }
 
     #[test]
-    fn exception_region_ignores_mixed_pending_exit_observer_without_owner_pop() {
+    fn exception_region_reports_overloaded_pending_observer_without_owner_pop() {
         let (func, exc) = mixed_exception_pending_exit_observer_without_pop_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.match_refs[&exc].releases.is_empty());
+        assert!(facts.release_to_matches.is_empty());
+        assert_eq!(
+            facts
+                .diagnostics
+                .iter()
+                .filter(|diag| diag.kind == ExceptionRegionDiagnosticKind::AmbiguousProducerDepth)
+                .count(),
+            1,
+        );
+        assert!(verify_exception_regions(&func).is_err());
+    }
+
+    #[test]
+    fn exception_region_ignores_mixed_finally_pending_exit_observer_without_owner_pop() {
+        let (func, exc) = mixed_finally_pending_exit_observer_without_pop_function();
 
         let facts = compute_exception_region_facts(&func);
 
@@ -2079,26 +2065,14 @@ mod tests {
     }
 
     #[test]
-    fn exception_region_allows_finally_normal_and_exceptional_cleanup_join() {
-        let (func, exc, pop) = finally_cleanup_join_function();
+    fn exception_region_ignores_finally_pending_observer_cleanup_join() {
+        let (func, exc, _pop) = finally_cleanup_join_function();
 
         let facts = compute_exception_region_facts(&func);
 
         assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
-        assert_eq!(
-            facts.match_refs[&exc].releases,
-            vec![ExceptionOpPosition {
-                block: pop,
-                op_index: 0,
-            }]
-        );
-        assert_eq!(
-            facts.release_to_matches[&ExceptionOpPosition {
-                block: pop,
-                op_index: 0,
-            }],
-            vec![exc],
-        );
+        assert!(!facts.match_refs.contains_key(&exc));
+        assert!(facts.release_to_matches.is_empty());
         assert!(verify_exception_regions(&func).is_ok());
     }
 
