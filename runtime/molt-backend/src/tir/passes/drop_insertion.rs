@@ -168,10 +168,12 @@ use crate::tir::passes::liveness::{TirLiveness, TirLivenessResult};
 use crate::tir::values::{TirValue, ValueId};
 
 use super::PassStats;
+#[cfg(test)]
+use super::ownership_lattice_min::original_kind;
 use super::ownership_lattice_min::{
-    StatementReleasePlan, copy_no_heap_move_alias, exception_creation_ref_values,
-    op_consumed_operand_root, op_result_absorbs_operand_ownership, terminator_branch_args,
-    terminator_uses_root,
+    OwnershipLattice, PythonLifetimeFacts, StatementReleasePlan, copy_transparent_alias,
+    exception_creation_ref_values, op_consumed_operand_root, op_result_absorbs_operand_ownership,
+    terminator_branch_args, terminator_uses_root,
 };
 
 /// The function-level attr the pass sets (round-tripped to the native backend as
@@ -330,14 +332,6 @@ fn value_definitions(func: &TirFunction) -> HashMap<ValueId, ValueDefinition> {
     defs
 }
 
-#[cfg(test)]
-fn original_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
-    }
-}
-
 fn explicit_release_values(op: &TirOp) -> Vec<ValueId> {
     if op.opcode == OpCode::DecRef {
         return op.operands.to_vec();
@@ -346,31 +340,6 @@ fn explicit_release_values(op: &TirOp) -> Vec<ValueId> {
         return op.operands.get(1).copied().into_iter().collect();
     }
     Vec::new()
-}
-
-fn op_result_absorbs_operand_ownership(op: &TirOp) -> bool {
-    opcode_result_absorbs_operand_ownership_table(op.opcode)
-        || (op.opcode == OpCode::Copy
-            && original_kind(op).is_some_and(kind_result_absorbs_operand_ownership_table))
-}
-
-fn exception_creation_ref_values(func: &TirFunction) -> HashSet<ValueId> {
-    value_definitions(func)
-        .into_iter()
-        .filter_map(|(value, def)| {
-            let op_index = def.op_index?;
-            let op = func.blocks.get(&def.block)?.ops.get(op_index)?;
-            if op.opcode != OpCode::Copy {
-                return None;
-            }
-            let kind = original_kind(op)?;
-            if crate::tir::passes::alias_analysis::copy_kind_is_exception_creation_ref(kind) {
-                Some(value)
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 fn insert_exception_creation_drops_at_raise(func: &mut TirFunction) -> usize {
@@ -665,7 +634,7 @@ fn insert_exception_region_match_drops(
             .collect();
         let mut tail_value_remap = tail_arg_remap.clone();
         for op in &prefix_source_ops {
-            if let Some(alias) = copy_no_heap_move_alias(op)
+            if let Some(alias) = copy_transparent_alias(op)
                 && let Some(mapped_operand) = tail_value_remap.get(&alias.source).copied()
             {
                 tail_value_remap.insert(alias.result, mapped_operand);
@@ -776,67 +745,6 @@ fn is_suspension_point(opcode: OpCode) -> bool {
             | OpCode::Yield
             | OpCode::YieldFrom
     )
-}
-
-/// The zero-cost discriminant of `term`, the key for the generated
-/// per-terminator operand-ownership authority (`terminator_operand_ownership_table`
-/// / `terminator_operand_is_transferred`, design 27 §2.4). The ownership FACT is
-/// declarative (op_kinds.toml `[[terminator]]`); only this structural shape map —
-/// which `Terminator` field carries which operand category — stays in the pass.
-fn terminator_kind(term: &Terminator) -> TerminatorKind {
-    match term {
-        Terminator::Branch { .. } => TerminatorKind::Branch,
-        Terminator::CondBranch { .. } => TerminatorKind::CondBranch,
-        Terminator::Switch { .. } => TerminatorKind::Switch,
-        Terminator::StateDispatch { .. } => TerminatorKind::StateDispatch,
-        Terminator::Return { .. } => TerminatorKind::Return,
-        Terminator::Unreachable => TerminatorKind::Unreachable,
-    }
-}
-
-/// The values `term` forwards as block args to a successor's phi, WHEN the
-/// generated authority classifies that terminator's `BranchArg` category as
-/// `Transferred` (design 27 §2.4: ownership moves INTO the block param on the
-/// edge — these are NOT dropped on that edge; the dual exclusion is
-/// `incoming_arg_roots` in §3). The transfer FACT is read from
-/// `terminator_operand_is_transferred` (op_kinds.toml `[[terminator]]`), not
-/// hand-coded here; this function supplies only the structural shape (which
-/// fields hold the forwarded args). Today every branching variant is
-/// `Transferred`, so the set equals the raw forwarded args; a future terminator
-/// that forwarded args WITHOUT transferring would be flipped by the table alone.
-fn terminator_branch_args(term: &Terminator) -> HashSet<ValueId> {
-    let mut out = HashSet::new();
-    if !terminator_operand_is_transferred(terminator_kind(term), OperandCategory::BranchArg) {
-        return out;
-    }
-    match term {
-        Terminator::Branch { args, .. } => out.extend(args.iter().copied()),
-        Terminator::CondBranch {
-            then_args,
-            else_args,
-            ..
-        } => {
-            out.extend(then_args.iter().copied());
-            out.extend(else_args.iter().copied());
-        }
-        Terminator::Switch {
-            cases,
-            default_args,
-            ..
-        }
-        | Terminator::StateDispatch {
-            cases,
-            default_args,
-            ..
-        } => {
-            for (_, _, args) in cases {
-                out.extend(args.iter().copied());
-            }
-            out.extend(default_args.iter().copied());
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => {}
-    }
-    out
 }
 
 /// A stable identifier for ONE outgoing arc of a terminator, so the mixed-
@@ -1361,22 +1269,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     );
     let canon = |v: ValueId| -> ValueId { drop_eligibility.root(v) };
 
-    // Conditionally-valid iterator value roots (design §2.8). The value result
-    // of an `IterNextUnboxed` holds a valid owned reference only on the not-done
-    // branch; the exhaustion edge carries a non-owned sentinel. This set is
-    // sourced from `[[result_validity]]` through OwnershipRootFacts, not from a
-    // DropInsertion-owned opcode hand list.
-    let iter_cond_value_roots = ownership_root_facts.conditionally_valid_result_roots();
     emit_drop_inner_stage_audit(
         func,
         "after-value-classification",
         None,
         None,
-        Some(
-            iter_cond_value_roots
-                .len()
-                .saturating_add(ownership_root_facts.non_owning_copy_result_roots().len()),
-        ),
+        Some(ownership_root_facts.non_owning_copy_result_roots().len()),
         None,
         audit_start.elapsed().as_millis(),
     );
@@ -1410,7 +1308,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         "after-alias-borrow",
         None,
         None,
-        Some(iter_cond_value_roots.len()),
+        None,
         None,
         audit_start.elapsed().as_millis(),
     );
@@ -1422,8 +1320,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // Class-3 (non-owning, unmapped) `Copy` results are their OWN alias root (the
     // union-find declines to fold them), so the `r == v` rail alone would admit
     // them; exclude the lattice-owned non-owning roots explicitly.
-    let droppable = |v: ValueId| -> bool { drop_eligibility.is_droppable(v) };
-
     // ── 0a. `del`-boundary normalization (#58) ────────────────────────────────
     // The frontend carries a function-scope `del x` as `DelBoundary(v)` so the
     // Python lifetime boundary survives optimization (it used to lower to
@@ -1475,22 +1371,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         stats.values_changed += normalized;
     }
 
-    let finalizer_lattice = super::ownership_lattice_min::OwnershipLattice::compute(func);
-    let python_boundary_roots: HashSet<ValueId> = func
-        .blocks
-        .values()
-        .flat_map(|block| block.ops.iter())
-        .filter(|op| op.opcode == OpCode::Copy && matches!(original_kind(op), Some("store_var")))
-        .flat_map(|op| op.operands.iter().chain(op.results.iter()).copied())
-        .map(canon)
-        .collect();
-    let explicit_release_roots: HashSet<ValueId> = func
-        .blocks
-        .values()
-        .flat_map(|block| block.ops.iter())
-        .flat_map(explicit_release_values)
-        .map(canon)
-        .collect();
+    let ownership_lattice =
+        OwnershipLattice::compute_with_root_facts(func, &aliases, ownership_root_facts.clone());
+    let python_lifetime_facts = PythonLifetimeFacts::compute(func, &aliases);
+    let statement_release_plan = StatementReleasePlan::compute(
+        &ownership_lattice,
+        &python_lifetime_facts,
+        &drop_eligibility,
+    );
     let explicit_release_blocks: HashMap<ValueId, HashSet<BlockId>> = func
         .blocks
         .iter()
@@ -1507,46 +1395,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             acc.entry(root).or_default().insert(bid);
             acc
         });
-    let python_lifetime_roots: HashSet<ValueId> = python_boundary_roots
+    let boundary_release_roots = python_lifetime_facts.boundary_release_roots(&drop_eligibility);
+    let python_lifetime_roots: HashSet<ValueId> = boundary_release_roots
         .iter()
-        .copied()
-        .filter(|root| droppable(*root) && !iter_cond_value_roots.contains(root))
-        .collect();
-    let mut statement_release_after_op: HashMap<BlockId, HashMap<usize, Vec<ValueId>>> =
-        HashMap::new();
-    let mut statement_released_roots: HashSet<ValueId> = HashSet::new();
-    for boundary in finalizer_lattice.statement_release_finalizer_boundaries() {
-        let root = canon(boundary.value);
-        if !droppable(root)
-            || iter_cond_value_roots.contains(&root)
-            || python_boundary_roots.contains(&root)
-            || explicit_release_roots.contains(&root)
-        {
-            continue;
-        }
-        statement_release_after_op
-            .entry(boundary.block)
-            .or_default()
-            .entry(boundary.op_index)
-            .or_default()
-            .push(root);
-        statement_released_roots.insert(root);
-    }
-    for by_op in statement_release_after_op.values_mut() {
-        for roots in by_op.values_mut() {
-            roots.sort_unstable_by_key(|v| v.0);
-            roots.dedup();
-        }
-    }
-    let boundary_release_roots: HashSet<ValueId> = python_lifetime_roots
-        .iter()
-        .copied()
-        .filter(|root| !explicit_release_roots.contains(root))
-        .collect();
-    let python_release_authority_roots: HashSet<ValueId> = explicit_release_roots
-        .iter()
-        .chain(statement_released_roots.iter())
-        .chain(boundary_release_roots.iter())
+        .chain(explicit_release_blocks.keys())
         .copied()
         .collect();
     emit_drop_inner_stage_audit(
@@ -1554,7 +1406,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         "after-boundary-root-planning",
         None,
         None,
-        Some(python_release_authority_roots.len()),
+        Some(
+            boundary_release_roots
+                .len()
+                .saturating_add(explicit_release_blocks.len()),
+        ),
         None,
         audit_start.elapsed().as_millis(),
     );
@@ -1630,6 +1486,28 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         before_term_incref: Vec<ValueId>,
     }
     let mut plans: HashMap<BlockId, BlockPlan> = HashMap::new();
+    let planned_insertion_count = |plans: &HashMap<BlockId, BlockPlan>| -> usize {
+        plans
+            .values()
+            .map(|plan| {
+                plan.after_op.values().map(Vec::len).sum::<usize>()
+                    + plan.at_entry.len()
+                    + plan.before_term.len()
+                    + plan.before_op.values().map(Vec::len).sum::<usize>()
+                    + plan
+                        .before_exception_op
+                        .values()
+                        .map(Vec::len)
+                        .sum::<usize>()
+                    + plan
+                        .after_exception_op
+                        .values()
+                        .map(Vec::len)
+                        .sum::<usize>()
+                    + plan.before_term_incref.len()
+            })
+            .sum()
+    };
 
     // Predecessor map (terminator-only edges) for edge-dying placement.
     let pred_map = crate::tir::dominators::build_pred_map_with(
@@ -1737,7 +1615,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     let Some(phi) = target_block.args.get(pos) else {
                         continue;
                     };
-                    if root == phi.id || iter_cond_value_roots.contains(&root) || !droppable(root) {
+                    if root == phi.id
+                        || ownership_lattice.is_conditionally_valid_result_root(root)
+                        || !drop_eligibility.is_droppable(root)
+                    {
                         continue;
                     }
                     by_root.entry(root).or_default().push((phi.id, arc.target));
@@ -1860,7 +1741,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                         let Some(phi) = target_block.args.get(pos) else {
                             continue;
                         };
-                        if !droppable(phi.id) {
+                        if !drop_eligibility.is_droppable(phi.id) {
                             continue;
                         }
                         if edge_body_live_roots
@@ -2006,7 +1887,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     let Some(phi) = target_block.args.get(pos) else {
                         continue;
                     };
-                    if droppable(phi.id) {
+                    if drop_eligibility.is_droppable(phi.id) {
                         transferred_value_roots.entry(phi.id).or_default().extend(
                             source_roots
                                 .iter()
@@ -2019,7 +1900,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     continue;
                 }
                 for &root in &boundary_roots {
-                    if iter_cond_value_roots.contains(&root)
+                    if ownership_lattice.is_conditionally_valid_result_root(root)
                         || terminator_uses_root(&target_block.terminator, root, &canon)
                     {
                         continue;
@@ -2053,7 +1934,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                             target_block
                                 .args
                                 .get(pos)
-                                .is_some_and(|phi| droppable(phi.id))
+                                .is_some_and(|phi| drop_eligibility.is_droppable(phi.id))
                         });
                     incoming.entry((arc.target, root)).or_default().push((
                         pred,
@@ -2091,7 +1972,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         let mut explicit_roots: Vec<ValueId> = python_lifetime_roots
             .iter()
             .copied()
-            .filter(|root| explicit_release_roots.contains(root))
+            .filter(|root| explicit_release_blocks.contains_key(root))
             .collect();
         explicit_roots.sort_unstable_by_key(|root| root.0);
         let mut explicit_released_entry_roots: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
@@ -2168,7 +2049,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                                 && target_block
                                     .args
                                     .get(pos)
-                                    .is_some_and(|phi| droppable(phi.id))
+                                    .is_some_and(|phi| drop_eligibility.is_droppable(phi.id))
                         });
                         if transfers_root {
                             continue;
@@ -2265,7 +2146,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                             && target_block
                                 .args
                                 .get(pos)
-                                .is_some_and(|phi| droppable(phi.id))
+                                .is_some_and(|phi| drop_eligibility.is_droppable(phi.id))
                     });
                     if transfers_root {
                         handled.entry(arc.target).or_default().insert(root);
@@ -2546,7 +2427,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             }
             if let Some(&old_slot_value) = op.operands.get(1) {
                 let root = canon(old_slot_value);
-                if droppable(root) {
+                if drop_eligibility.is_droppable(root) {
                     delete_var_release_after_op
                         .entry(idx)
                         .or_default()
@@ -2675,7 +2556,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 }
                 // Conditionally-valid iterator value result: never drop it (it is
                 // stale garbage on the iterator-exhaustion path).
-                if is_conditionally_valid_result_or_alias(result) {
+                if drop_eligibility.is_conditionally_valid_result_root(result) {
                     continue;
                 }
                 // Transferred via branch arg (root space) → successor owns it.
@@ -2712,7 +2593,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             let mut roots: Vec<ValueId> = boundary_release_roots.iter().copied().collect();
             roots.sort_unstable_by_key(|v| v.0);
             for root in roots {
-                if iter_cond_value_roots.contains(&root) {
+                if ownership_lattice.is_conditionally_valid_result_root(root) {
                     continue;
                 }
                 if terminator_uses_root(&block.terminator, root, &canon) {
@@ -2743,25 +2624,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
         for (idx, roots) in delete_var_release_after_op {
             plan.after_op.entry(idx).or_default().extend(roots);
-        }
-
-        // `DeleteVar` is the Python local-slot deletion boundary. The op stores
-        // the missing sentinel as the slot's new value; the old occupant's
-        // reference must be released immediately after that store, before later
-        // side effects can observe finalizer timing. `PythonLifetimeFacts`
-        // prevents the generic last-use and finalizer deferral paths from placing
-        // a second release.
-        for (idx, op) in block.ops.iter().enumerate() {
-            if op.opcode != OpCode::DeleteVar {
-                continue;
-            }
-            let Some(&old_slot_value) = op.operands.get(1) else {
-                continue;
-            };
-            let root = canon(old_slot_value);
-            if drop_eligibility.is_droppable(root) {
-                plan.after_op.entry(idx).or_default().push(root);
-            }
         }
 
         // ── 2. Suspension-point IncRef ───────────────────────────────────────
@@ -2841,7 +2703,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     continue;
                 }
                 let root = canon(v);
-                if is_conditionally_valid_result_or_alias(v) {
+                if drop_eligibility.is_conditionally_valid_result_root(v) {
                     continue;
                 }
                 if drop_eligibility.is_droppable(root) {
@@ -2869,28 +2731,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         "after-block-plan-build",
         Some(plans.len()),
         Some(edge_splits.len()),
-        Some(
-            plans
-                .values()
-                .map(|plan| {
-                    plan.after_op.values().map(Vec::len).sum::<usize>()
-                        + plan.at_entry.len()
-                        + plan.before_term.len()
-                        + plan.before_op.values().map(Vec::len).sum::<usize>()
-                        + plan
-                            .before_exception_op
-                            .values()
-                            .map(Vec::len)
-                            .sum::<usize>()
-                        + plan
-                            .after_exception_op
-                            .values()
-                            .map(Vec::len)
-                            .sum::<usize>()
-                        + plan.before_term_incref.len()
-                })
-                .sum(),
-        ),
+        Some(planned_insertion_count(&plans)),
         Some(reachable.len()),
         audit_start.elapsed().as_millis(),
     );
@@ -3055,7 +2896,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             // the whole group is conditionally-valid and equally unsafe to
             // edge-drop.)
             if drop_eligibility.is_conditionally_valid_result_root(v)
-                || iter_cond_value_roots.contains(&canon(v))
+                || ownership_lattice.is_conditionally_valid_result_root(canon(v))
             {
                 continue;
             }
@@ -3067,7 +2908,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             // owner twice. Fail closed by leaving such roots to the Python
             // boundary planners rather than synthesizing a join-entry drop from
             // SSA liveness alone.
-            if python_release_authority_roots.contains(&root) {
+            if boundary_release_roots.contains(&root)
+                || explicit_release_blocks.contains_key(&root)
+                || statement_release_plan.contains_released_root(root)
+            {
                 continue;
             }
             if block_args.contains(&v) || block_args.iter().any(|&a| canon(a) == root) {
@@ -3136,28 +2980,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         "after-edge-dying",
         Some(plans.len()),
         Some(edge_splits.len()),
-        Some(
-            plans
-                .values()
-                .map(|plan| {
-                    plan.after_op.values().map(Vec::len).sum::<usize>()
-                        + plan.at_entry.len()
-                        + plan.before_term.len()
-                        + plan.before_op.values().map(Vec::len).sum::<usize>()
-                        + plan
-                            .before_exception_op
-                            .values()
-                            .map(Vec::len)
-                            .sum::<usize>()
-                        + plan
-                            .after_exception_op
-                            .values()
-                            .map(Vec::len)
-                            .sum::<usize>()
-                        + plan.before_term_incref.len()
-                })
-                .sum(),
-        ),
+        Some(planned_insertion_count(&plans)),
         Some(reachable.len()),
         audit_start.elapsed().as_millis(),
     );
@@ -3301,7 +3124,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // uninitialized slot). So SKIP iter-cond values entirely (they are
                 // handled by the body straight-line rule on the valid path).
                 if drop_eligibility.is_conditionally_valid_result_root(v)
-                    || iter_cond_value_roots.contains(&root)
+                    || ownership_lattice.is_conditionally_valid_result_root(root)
                 {
                     continue;
                 }
@@ -3362,28 +3185,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         "after-mixed-phi-retain",
         Some(plans.len()),
         Some(edge_splits.len()),
-        Some(
-            plans
-                .values()
-                .map(|plan| {
-                    plan.after_op.values().map(Vec::len).sum::<usize>()
-                        + plan.at_entry.len()
-                        + plan.before_term.len()
-                        + plan.before_op.values().map(Vec::len).sum::<usize>()
-                        + plan
-                            .before_exception_op
-                            .values()
-                            .map(Vec::len)
-                            .sum::<usize>()
-                        + plan
-                            .after_exception_op
-                            .values()
-                            .map(Vec::len)
-                            .sum::<usize>()
-                        + plan.before_term_incref.len()
-                })
-                .sum(),
-        ),
+        Some(planned_insertion_count(&plans)),
         Some(reachable.len()),
         audit_start.elapsed().as_millis(),
     );
@@ -3413,28 +3215,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         "after-deferred-placement-merge",
         Some(plans.len()),
         Some(edge_splits.len()),
-        Some(
-            plans
-                .values()
-                .map(|plan| {
-                    plan.after_op.values().map(Vec::len).sum::<usize>()
-                        + plan.at_entry.len()
-                        + plan.before_term.len()
-                        + plan.before_op.values().map(Vec::len).sum::<usize>()
-                        + plan
-                            .before_exception_op
-                            .values()
-                            .map(Vec::len)
-                            .sum::<usize>()
-                        + plan
-                            .after_exception_op
-                            .values()
-                            .map(Vec::len)
-                            .sum::<usize>()
-                        + plan.before_term_incref.len()
-                })
-                .sum(),
-        ),
+        Some(planned_insertion_count(&plans)),
         Some(reachable.len()),
         audit_start.elapsed().as_millis(),
     );
@@ -3632,128 +3413,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     }
     stats.ops_added = inserted;
     stats
-}
-
-/// The alias roots of the operands an op TAKES OWNERSHIP OF (consumes), in
-/// alias-root space (design §1.2 "Operands: takes-ownership").
-///
-/// Most molt ops borrow their operands (the callee never decrefs its args), so
-/// the holder drops at last use. A handful of ops are the exception: they
-/// **consume** an operand — the runtime entry frees it internally — so the
-/// holder MUST NOT also drop it (that double-frees). The drop pass treats a
-/// value whose last use is a consumed-operand position exactly like a value
-/// consumed by a `Return` terminator: ownership transfers to the op, no
-/// trailing `DecRef`.
-///
-/// The only such ops in molt's lowering are the two CallArgs-builder dispatch
-/// forms. The un-fused `obj.method(args)` / indirect-call idiom lowers (in
-/// `lower_to_simple`) to:
-///
-/// ```text
-/// b   = callargs_new                         # allocates a CallArgs builder (rc=1)
-/// ... = callargs_push_pos(b, a_i) ...
-/// r   = call_bind(callee, b)    # molt_call_bind_ic FREES b internally (PtrDropGuard)
-/// ```
-///
-/// `molt_call_bind_ic` / `molt_call_indirect_ic` (`call/bind.rs`) wrap the
-/// builder in a `PtrDropGuard`, so the builder is dropped exactly once by the
-/// call regardless of whether the call returns or raises. The TIR drop pass
-/// would otherwise insert `DecRef(b)` after the call (the builder's last use is
-/// the call) → a second free of a `TYPE_ID_CALLARGS` object → `invalid object
-/// header before dec_ref`. The builder is operand index 1 (the LAST operand) of
-/// `call_bind`/`call_indirect`: SimpleIR `call_bind args=[callee, builder]`,
-/// matching the `molt_call_bind_ic(site, callee, builder)` ABI.
-///
-/// NOTE: `call_func`/`call_guarded`/`call`/`call_internal` do NOT take a
-/// pre-built CallArgs operand — they marshal direct positional args and build
-/// (and consume) their own builder internally — so they consume none of their
-/// TIR operands. Only `call_bind`/`call_indirect` carry the builder as an
-/// operand.
-///
-/// REGISTRY-DRIVEN (design 27 §2.3): the consume signature is no longer a
-/// hardcoded `matches!` of the CallArgs-builder spellings here — it is a
-/// `[[consuming_kind]]` row in `op_kinds.toml`, generated into
-/// [`kind_consumed_operand_table`]. The single declarative authority means a
-/// FUTURE consuming op (a streaming builder, a move-into-collection intrinsic)
-/// gets correct drop treatment by adding ONE row, never by editing this pass —
-/// retiring the per-pass operand-consume hand list (the C6 double-free class).
-/// `kind_consumed_operand_table` resolves the `"last"` selector against the op's
-/// operand count, exactly reproducing the prior `op.operands.last()` semantics
-/// (`arity.checked_sub(1)` is `None` for a 0-operand op, matching `.last()`).
-fn op_consumed_operand_root(op: &TirOp, canon: &dyn Fn(ValueId) -> ValueId) -> Option<ValueId> {
-    // The consume fact is the UNION of the two generated authorities (the full
-    // operand-ownership model, design 27 §2.1/§2.3), evaluated per operand
-    // position:
-    //   1. the per-OpCode floor `opcode_operand_ownership_table(opcode, idx)` —
-    //      `Consumed` for an OpCode that consumes by construction (none today;
-    //      `all_borrowed` across the enum — molt's callee-borrows-args ABI), and
-    //   2. the per-SPELLING refinement `kind_consumed_operand_table(kind, arity)`
-    //      keyed on the Copy-lifted `_original_kind` (finer than the OpCode:
-    //      `call_bind`/`call_indirect` and the borrowing `call`/`call_func`/…
-    //      spellings all share OpCode::Call; only the two CallArgs-builder forms
-    //      consume their builder operand).
-    // At most one operand is consumed in molt's lowering today, so the first
-    // consumed position is returned (the CallArgs builder = the last operand).
-    use crate::tir::op_kinds_generated::{
-        OperandOwnership, kind_consumed_operand_table, opcode_operand_ownership_table,
-    };
-    let kind = match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(k)) => Some(k.as_str()),
-        _ => None,
-    };
-    let spelling_consumed = kind.and_then(|k| kind_consumed_operand_table(k, op.operands.len()));
-    for idx in 0..op.operands.len() {
-        let consumed = spelling_consumed == Some(idx)
-            || opcode_operand_ownership_table(op.opcode, idx) == OperandOwnership::Consumed;
-        if consumed {
-            return op.operands.get(idx).copied().map(&canon);
-        }
-    }
-    None
-}
-
-/// True if the alias root `v` is read DIRECTLY by the terminator — i.e. `v` is
-/// still live AT the terminator and so is not dropped at its producing op's
-/// straight-line point. This fuses two distinct facts the §1/§1b drop guards
-/// treat identically as "do not drop here", but which the generated authority
-/// (op_kinds.toml `[[terminator]]`, design 27 §2.4) now classifies on the
-/// `Direct` category:
-///
-///   * `Return` values are `Transferred` (the return ABI moves `+1` to the
-///     caller; dropped NOWHERE in the callee). Read from
-///     `terminator_operand_is_transferred(kind, Direct)` — the migrated transfer
-///     carve-out, no longer a hand-coded `Return` arm.
-///   * `CondBranch`/`Switch` predicates are `Borrowed` (the branch TESTS the
-///     value; ownership does not leave, the drop is merely RELOCATED to the dying
-///     successor edge by §3). In molt's lowering the predicate is always an
-///     unboxed bool/i64 discriminant (a raw scalar — `is_raw_scalar` ⇒ NOT
-///     droppable), so this arm is never reached for a heap value today; it is
-///     retained to preserve the EXACT prior read-but-not-transfer semantics and
-///     stay correct if a future shape made the predicate heap-carrying.
-///
-/// Branch ARGS are handled separately (`terminator_branch_args`): they transfer
-/// ownership to the successor's block arg.
-fn terminator_uses_root(term: &Terminator, v: ValueId, canon: &dyn Fn(ValueId) -> ValueId) -> bool {
-    // Direct-category TRANSFER (the `Return` value), read from the generated
-    // authority rather than matched here.
-    if terminator_operand_is_transferred(terminator_kind(term), OperandCategory::Direct)
-        && let Terminator::Return { values } = term
-        && values.iter().any(|&x| canon(x) == v)
-    {
-        return true;
-    }
-    // Direct-category BORROW (the still-live branch predicate) — not a transfer,
-    // but read by the terminator, so likewise not dropped at the producing op.
-    match term {
-        Terminator::CondBranch { cond, .. } => canon(*cond) == v,
-        Terminator::Switch { value, .. } => canon(*value) == v,
-        // `StateDispatch` reads the saved state from the frame header, not an
-        // SSA value — it consumes no condition root.
-        Terminator::StateDispatch { .. }
-        | Terminator::Branch { .. }
-        | Terminator::Return { .. }
-        | Terminator::Unreachable => false,
-    }
 }
 
 fn terminator_mentions_value(term: &Terminator, value: ValueId) -> bool {

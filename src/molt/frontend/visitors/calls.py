@@ -5640,7 +5640,9 @@ class CallVisitorMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="Future")
                 self.emit(
                     MoltOp(
-                        kind="CALL_ASYNC", args=["molt_async_sleep_poll", *args], result=res
+                        kind="CALL_ASYNC",
+                        args=["molt_async_sleep_poll", *args],
+                        result=res,
                     )
                 )
                 return res

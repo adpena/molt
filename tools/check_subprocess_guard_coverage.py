@@ -156,12 +156,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "marker-scoped compile-child cleanup; backend daemon commands are excluded",
     ),
     AllowedRawSubprocessUse(
-        "tools/gen_op_kinds.py",
-        "_rustfmt_text",
-        "run",
-        "bounded rustfmt child for checked-in generated Rust op-kind tables",
-    ),
-    AllowedRawSubprocessUse(
         "tools/gen_stringprep_tables.py",
         "_rustfmt_text",
         "run",
@@ -429,13 +423,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_run_completed_command",
         "run",
         "CLI subprocess helper's explicit unguarded branch for opt-out call sites",
-    ),
-    AllowedRawSubprocessUse(
-        "src/molt/cli.py",
-        "_reexec_cli_with_hash_seed",
-        "run",
-        "Windows CLI startup restarts once with deterministic PYTHONHASHSEED "
-        "when POSIX exec is unavailable",
     ),
     AllowedRawSubprocessUse(
         "src/molt/backend_daemon_custody.py",

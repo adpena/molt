@@ -15139,7 +15139,8 @@ impl SimpleBackend {
                         .module
                         .declare_function(poll_func_name, Linkage::Import, &poll_sig)
                         .unwrap();
-                    let poll_func_ref = self.module.declare_func_in_func(poll_func_id, builder.func);
+                    let poll_func_ref =
+                        self.module.declare_func_in_func(poll_func_id, builder.func);
                     let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
 
                     let task_callee = Self::import_func_id_split(

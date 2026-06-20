@@ -670,6 +670,14 @@ the implementation. For forward-looking priorities, use
   ordering parity still requires widening this proof across backend/profile
   parity and deleting stale native value-tracking lanes once shared facts cover
   them.
+- Runtime descriptor-cache lookup now returns retained snapshots rather than
+  shallow copied heap bits, and `descriptor_bind` owns the descriptor for the
+  full binding operation. This closes the reentrant descriptor mutation class
+  where cached/property/class-dict descriptors could be deleted or replaced
+  while `__get__`/property code still used borrowed storage. Guarded evidence:
+  `uv run python tools/guarded_exec.py --prefix MOLT_TEST --timeout 600 -- cargo test -p molt-runtime --lib descriptor_bind_retains_descriptor_across_get_mutation -- --nocapture`,
+  `uv run python tools/guarded_exec.py --prefix MOLT_TEST --timeout 240 -- cargo test -p molt-runtime --lib descriptor_cache_store_owns_released_heap_bits -- --nocapture`,
+  and `uv run python tools/guarded_exec.py --prefix MOLT_TEST --timeout 240 -- cargo test -p molt-runtime --lib class_apply_set_name_retains_entries_across_hook_mutation -- --nocapture`.
 - The runpy dynamic-lane expected failures list is currently empty because
   supported lanes moved to intrinsic support; governance for unsupported
   runpy dynamic execution remains documented rather than tracked through an

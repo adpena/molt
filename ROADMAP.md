@@ -218,9 +218,11 @@ roadmap claim drifts.
     proof now builds the full-stdlib adapter and reaches upstream tinygrad
     runtime execution under guard. The importlib bootstrap export, list-clear
     detach, namedtuple return-boundary ownership, defaultdict factory-handle
-    ownership, and deque retained-handle ownership fixes supersede both the
-    older 1.985 GB invalid-header receipt and the fresh `graph_rewrite`
-    invalid-header receipt as current blockers. Fresh 2026-06-20 guarded
+    ownership, deque retained-handle ownership, descriptor-cache retained
+    snapshots, and descriptor-bind reentrant class-dict mutation custody
+    supersede both the older 1.985 GB invalid-header receipt and the fresh
+    `graph_rewrite` invalid-header receipt as current blockers. Fresh
+    2026-06-20 guarded
     evidence builds the full-stdlib adapter, gets past the
     `tinygrad/uop/ops.py:1586` teardown invalid-header abort, fixes the
     post-JSON `argparse.Namespace` return-cleanup double drop, and makes direct

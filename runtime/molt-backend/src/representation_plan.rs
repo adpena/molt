@@ -5200,7 +5200,8 @@ mod tests {
         plan.insert_fact("seed".to_string(), int_fact.clone());
         plan.insert_fact("slot".to_string(), int_fact);
 
-        plan.propagate_simple_aliases(&fact_index);
+        let indexed_fact_index = IndexedFunctionFactIndex::for_function_facts(&fact_index);
+        plan.propagate_simple_aliases(&indexed_fact_index);
 
         let (int_like, _, _, _, _) = plan.scalar_name_sets();
         assert!(int_like.contains("seed"));
