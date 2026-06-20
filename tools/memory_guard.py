@@ -1631,6 +1631,13 @@ def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
 def _terminate_single_pid(pid: int, *, grace: float) -> bool:
     if pid <= 0 or pid == os.getpid():
         return True
+    samples = sample_processes()
+    sample = samples.get(pid)
+    if sample is not None:
+        if is_host_control_plane_process(sample):
+            return True
+        if _sample_pgid(sample) in _current_protected_process_group_ids(samples):
+            return True
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -1641,6 +1648,34 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
     while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _pid_exited_or_unobservable(pid: int, *, grace: float) -> bool:
+    deadline = time.monotonic() + max(0.0, grace)
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:
+    if _is_windows_process_model():
+        return _pid_exited_or_unobservable(pgid, grace=grace)
+    deadline = time.monotonic() + max(0.0, grace)
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
         except ProcessLookupError:
             return True
         except OSError:
@@ -1813,6 +1848,30 @@ def _send_process_group_signal_if_identities_match_action(
     return _send_process_group_signal_action(pgid, signum)
 
 
+def _terminate_process_group_if_identities_match_action(
+    pgid: int,
+    identities: Mapping[int, ProcessIdentity],
+    *,
+    sampler: Callable[[], Mapping[int, ProcessSample]],
+    grace: float,
+) -> GuardTerminationAction:
+    action = _send_process_group_signal_if_identities_match_action(
+        pgid,
+        identities,
+        signal.SIGTERM,
+        sampler=sampler,
+    )
+    if action.result != "sent":
+        return action
+    terminated = _process_group_exited_or_unobservable(pgid, grace=grace)
+    return _termination_action(
+        target_kind="process_group",
+        target_id=pgid,
+        signum=signal.SIGTERM,
+        result="completed_or_missing" if terminated else "still_live",
+    )
+
+
 def _process_group_members(
     samples: Mapping[int, ProcessSample],
     pgid: int,
@@ -1960,16 +2019,25 @@ def terminate_watched_processes(
                     )
                 )
                 continue
-            pid_terminated = _terminate_single_pid(pid, grace=grace)
-            actions.append(
-                _termination_action(
-                    target_kind="process",
-                    target_id=pid,
-                    signum=signal.SIGTERM,
-                    result="completed_or_missing" if pid_terminated else "still_live",
+            identity = observed_identities.get(pid)
+            if identity is None:
+                actions.append(
+                    _termination_action(
+                        target_kind="process",
+                        target_id=pid,
+                        signum=signal.SIGTERM,
+                        result="skipped_missing_identity",
+                    )
                 )
+                continue
+            action = _terminate_pid_if_identity_action(
+                pid,
+                identity,
+                sampler=identity_sampler,
+                grace=grace,
             )
-            if not pid_terminated:
+            actions.append(action)
+            if action.result == "still_live":
                 remaining_pids.add(pid)
         for pid in sorted(remaining_pids, reverse=True):
             identity = observed_identities.get(pid)
@@ -2064,16 +2132,14 @@ def terminate_watched_processes(
         protected_pgids=protected_pgids,
     )
     if root_group_fully_owned:
-        group_terminated = _terminate_single_process_group(root_group_pgid, grace=grace)
-        actions.append(
-            _termination_action(
-                target_kind="process_group",
-                target_id=root_group_pgid,
-                signum=signal.SIGTERM,
-                result="completed_or_missing" if group_terminated else "still_live",
-            )
+        action = _terminate_process_group_if_identities_match_action(
+            root_group_pgid,
+            observed_identities,
+            sampler=sampler,
+            grace=grace,
         )
-        if not group_terminated:
+        actions.append(action)
+        if action.result == "still_live":
             remaining_pgids.add(root_group_pgid)
     elif root_group_pgid not in protected_pgids and root_group_pgid > 0:
         actions.append(
@@ -2086,16 +2152,25 @@ def terminate_watched_processes(
         )
     remaining_pids: set[int] = set()
     for pid in sorted(escaped_pids):
-        pid_terminated = _terminate_single_pid(pid, grace=grace)
-        actions.append(
-            _termination_action(
-                target_kind="process",
-                target_id=pid,
-                signum=signal.SIGTERM,
-                result="completed_or_missing" if pid_terminated else "still_live",
+        identity = observed_identities.get(pid)
+        if identity is None:
+            actions.append(
+                _termination_action(
+                    target_kind="process",
+                    target_id=pid,
+                    signum=signal.SIGTERM,
+                    result="skipped_missing_identity",
+                )
             )
+            continue
+        action = _terminate_pid_if_identity_action(
+            pid,
+            identity,
+            sampler=sampler,
+            grace=grace,
         )
-        if not pid_terminated:
+        actions.append(action)
+        if action.result == "still_live":
             remaining_pids.add(pid)
     for pgid in sorted(remaining_pgids):
         actions.append(
@@ -2277,7 +2352,15 @@ def _terminate_pid_if_identity_action(
             signum=None,
             result="skipped_protected_group_member",
         )
-    terminated = _terminate_single_pid(pid, grace=grace)
+    action = _send_pid_signal_if_identity_action(
+        pid,
+        identity,
+        signal.SIGTERM,
+        sampler=sampler,
+    )
+    if action.result != "sent":
+        return action
+    terminated = _pid_exited_or_unobservable(pid, grace=grace)
     return _termination_action(
         target_kind="process",
         target_id=pid,
@@ -3034,9 +3117,7 @@ def run_guarded(
         child_rlimit_kb=child_rlimit_kb,
     )
     start = time.monotonic()
-    baseline_pgids = (
-        _live_process_group_ids(sampler()) if cleanup_orphans else frozenset()
-    )
+    baseline_pgids: frozenset[int] = frozenset()
     guard_signal: int | None = None
 
     def _handle_guard_signal(signum: int, _frame: object) -> None:
@@ -3070,6 +3151,7 @@ def run_guarded(
     termination_reports: list[GuardTerminationReport] = []
     stdout_capture: Any = None
     stderr_capture: Any = None
+    guard_interrupted = False
     try:
         launch = _guarded_launch(
             command,
@@ -3169,17 +3251,63 @@ def run_guarded(
         last_limits: ResolvedMemoryLimits | None = None
         termination_wait_expired = False
         termination_wait_s = termination_wait_seconds(env)
+        remembered_samples: Mapping[int, ProcessSample] | None = None
+        remembered_watched: set[int] | None = None
         saw_cargo_build_state = _command_invokes_cargo_build_state(command)
         next_keepalive = (
             start + keepalive_interval
             if progress_label is not None and keepalive_interval is not None
             else None
         )
-        while True:
+
+        def terminate_after_sampling_failure(*, reason: str) -> None:
+            if remembered_samples is not None and remembered_watched is not None:
+                terminate_owned_tree(
+                    reason=reason,
+                    samples=remembered_samples,
+                    watched=remembered_watched,
+                    grace=0.0,
+                )
+                return
+            termination_reports.append(
+                terminate_watched_processes(
+                    proc.pid,
+                    grace=0.0,
+                    reason=reason,
+                    sampler=sample_processes,
+                    root_owned=True,
+                )
+            )
+
+        def sample_tracked_tree() -> tuple[Mapping[int, ProcessSample], set[int]]:
+            nonlocal guard_interrupted, remembered_samples, remembered_watched
+            try:
+                samples = sampler()
+            except KeyboardInterrupt:
+                guard_interrupted = True
+                terminate_after_sampling_failure(reason="guard_interrupted")
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=termination_wait_s)
+                return remembered_samples or {}, set(remembered_watched or ())
+            except Exception:
+                terminate_after_sampling_failure(reason="sampler_failure")
+                raise
+            watched = tracker.update(samples)
+            remembered_samples = samples
+            remembered_watched = set(watched)
+            return samples, watched
+
+        if cleanup_orphans:
+            baseline_samples, _baseline_watched = sample_tracked_tree()
+            if not guard_interrupted:
+                baseline_pgids = _live_process_group_ids(baseline_samples)
+
+        while not guard_interrupted:
             now = time.monotonic()
             if guard_signal is not None:
-                samples = sampler()
-                watched = tracker.update(samples)
+                samples, watched = sample_tracked_tree()
+                if guard_interrupted:
+                    break
                 saw_cargo_build_state = (
                     saw_cargo_build_state
                     or _samples_include_cargo_build_state(samples, watched)
@@ -3197,8 +3325,9 @@ def run_guarded(
                 break
             if timeout is not None and now - start >= timeout:
                 timed_out = True
-                samples = sampler()
-                watched = tracker.update(samples)
+                samples, watched = sample_tracked_tree()
+                if guard_interrupted:
+                    break
                 saw_cargo_build_state = (
                     saw_cargo_build_state
                     or _samples_include_cargo_build_state(samples, watched)
@@ -3220,8 +3349,9 @@ def run_guarded(
                 )
                 assert keepalive_interval is not None
                 next_keepalive = now + keepalive_interval
-            samples = sampler()
-            watched = tracker.update(samples)
+            samples, watched = sample_tracked_tree()
+            if guard_interrupted:
+                break
             saw_cargo_build_state = (
                 saw_cargo_build_state
                 or _samples_include_cargo_build_state(samples, watched)
@@ -3345,7 +3475,7 @@ def run_guarded(
         stderr: str | bytes = "" if text else b""
         orphaned_process_groups: tuple[int, ...] = ()
         try:
-            if proc.returncode is None:
+            if proc.returncode is None and not guard_interrupted:
                 try:
                     proc.wait(timeout=max(1.0, poll_interval * 4.0))
                 except subprocess.TimeoutExpired:
@@ -3361,7 +3491,7 @@ def run_guarded(
                         proc.wait(timeout=termination_wait_s)
                     except subprocess.TimeoutExpired:
                         termination_wait_expired = True
-            if cleanup_orphans:
+            if cleanup_orphans and not guard_interrupted:
                 tracked_orphans = cleanup_tracked_orphans(
                     proc.pid,
                     tracker=tracker,
@@ -3419,6 +3549,14 @@ def run_guarded(
                 stderr,
                 "memory_guard: received "
                 f"{signal_label}; terminated tracked process tree before exiting\n",
+                text=text,
+            )
+        if guard_interrupted:
+            returncode = GUARD_RETURN_CODE
+            stderr = _append_guard_message(
+                stderr,
+                "memory_guard: interrupted; terminated tracked process tree "
+                "before exiting\n",
                 text=text,
             )
         if termination_wait_expired:
@@ -3490,7 +3628,7 @@ def run_guarded(
                         proc.pid,
                         grace=0.0,
                         reason="run_guarded_finalizer",
-                        sampler=sampler,
+                        sampler=sample_processes if guard_interrupted else sampler,
                     )
                 )
             with contextlib.suppress(Exception):

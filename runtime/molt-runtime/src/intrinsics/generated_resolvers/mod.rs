@@ -116,9 +116,6 @@ mod xmlrpc_resolver;
 mod zoneinfo_resolver;
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    if let Some(v) = core_resolver::resolve_symbol(symbol) {
-        return Some(v);
-    }
     if let Some(v) = archive_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
@@ -189,6 +186,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         return Some(v);
     }
     if let Some(v) = copyreg_resolver::resolve_symbol(symbol) {
+        return Some(v);
+    }
+    if let Some(v) = core_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = crypto_resolver::resolve_symbol(symbol) {
