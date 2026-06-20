@@ -77,6 +77,8 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     # text: html and unicodedata live in the extracted text leaf crate.
     ("molt_html_", "stdlib_text"),
     ("molt_unicodedata_", "stdlib_text"),
+    # zoneinfo: IANA TZif helpers live in the extracted zoneinfo leaf crate.
+    ("molt_zoneinfo_", "stdlib_zoneinfo"),
     # networking: http, urllib. SSL keeps an always-linkable ABI because
     # asyncio imports ssl eagerly even in micro profiles; runtime operations
     # without net support raise from the Rust intrinsic implementation.
@@ -190,6 +192,7 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_stringprep",
         "stdlib_text",
         "stdlib_tk",
+        "stdlib_zoneinfo",
     }
 )
 

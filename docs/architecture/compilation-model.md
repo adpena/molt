@@ -23,6 +23,10 @@ for the crate-extraction and incremental-build routing plan.
   fallbacks are deleted, `molt_html_*` and `molt_unicodedata_*` resolver arms
   are gated by `stdlib_text`, and feature-on/feature-off runtime checks prove
   the facade no longer carries a duplicate text authority for those modules.
+- `stdlib_zoneinfo` is leaf-owned: the old in-facade `builtins/zoneinfo.rs`
+  fallback is deleted, `molt_zoneinfo_*` resolver arms are gated by
+  `stdlib_zoneinfo`, and feature-on/feature-off runtime checks prove the facade
+  no longer carries a duplicate zoneinfo authority.
 - `molt-runtime` is not yet a pure facade. It still owns substantial runtime
   implementation, so the precompiled-per-import library model below is the
   target architecture rather than a completed current guarantee.

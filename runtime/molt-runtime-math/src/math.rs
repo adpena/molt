@@ -403,7 +403,7 @@ fn log_bigint(value: &BigInt) -> f64 {
 
 fn coerce_real(_py: &PyToken, val_bits: u64) -> Option<RealValue> {
     let obj = obj_from_bits(val_bits);
-    if let Some(f) = obj.as_float() {
+    if let Some(f) = as_float_extended(obj) {
         return Some(RealValue::Float(f));
     }
     if let Some(i) = to_i64(obj) {
@@ -493,7 +493,7 @@ fn coerce_real_named(_py: &PyToken, val_bits: u64, name: &str) -> Option<RealVal
                 return None;
             }
             let res_obj = obj_from_bits(res_bits);
-            if let Some(f) = res_obj.as_float() {
+            if let Some(f) = as_float_extended(res_obj) {
                 return Some(RealValue::Float(f));
             }
             let owner = class_name_for_error(type_of_bits(_py, val_bits));
@@ -1031,37 +1031,37 @@ pub extern "C" fn molt_math_log(val_bits: u64) -> u64 {
         match value {
             RealValue::Float(f) => {
                 if f.is_nan() {
-                    return MoltObject::from_float(f).bits();
+                    return float_result_bits(_py, f);
                 }
                 if f.is_infinite() {
                     if f.is_sign_negative() {
                         return log_domain_error(_py, Some(f));
                     }
-                    return MoltObject::from_float(f).bits();
+                    return float_result_bits(_py, f);
                 }
                 if f <= 0.0 {
                     return log_domain_error(_py, Some(f));
                 }
-                MoltObject::from_float(math_log(f)).bits()
+                float_result_bits(_py, math_log(f))
             }
             RealValue::IntExact(i) => {
                 if i <= 0 {
                     return log_domain_error(_py, None);
                 }
-                MoltObject::from_float(math_log(i as f64)).bits()
+                float_result_bits(_py, math_log(i as f64))
             }
             RealValue::BigIntExact(big) => {
                 if big.is_negative() || big.is_zero() {
                     return log_domain_error(_py, None);
                 }
-                MoltObject::from_float(log_bigint(&big)).bits()
+                float_result_bits(_py, log_bigint(&big))
             }
             RealValue::IntCoerced(i) => {
                 let f = i as f64;
                 if f <= 0.0 {
                     return log_domain_error(_py, Some(f));
                 }
-                MoltObject::from_float(math_log(f)).bits()
+                float_result_bits(_py, math_log(f))
             }
             RealValue::BigIntCoerced(big) => {
                 let Some(f) = big.to_f64() else {
@@ -1074,7 +1074,7 @@ pub extern "C" fn molt_math_log(val_bits: u64) -> u64 {
                 if f <= 0.0 {
                     return log_domain_error(_py, Some(f));
                 }
-                MoltObject::from_float(math_log(f)).bits()
+                float_result_bits(_py, math_log(f))
             }
         }
     })
@@ -1089,37 +1089,37 @@ pub extern "C" fn molt_math_log2(val_bits: u64) -> u64 {
         match value {
             RealValue::Float(f) => {
                 if f.is_nan() {
-                    return MoltObject::from_float(f).bits();
+                    return float_result_bits(_py, f);
                 }
                 if f.is_infinite() {
                     if f.is_sign_negative() {
                         return log_domain_error(_py, Some(f));
                     }
-                    return MoltObject::from_float(f).bits();
+                    return float_result_bits(_py, f);
                 }
                 if f <= 0.0 {
                     return log_domain_error(_py, Some(f));
                 }
-                MoltObject::from_float(math_log2(f)).bits()
+                float_result_bits(_py, math_log2(f))
             }
             RealValue::IntExact(i) => {
                 if i <= 0 {
                     return log_domain_error(_py, None);
                 }
-                MoltObject::from_float(math_log2(i as f64)).bits()
+                float_result_bits(_py, math_log2(i as f64))
             }
             RealValue::BigIntExact(big) => {
                 if big.is_negative() || big.is_zero() {
                     return log_domain_error(_py, None);
                 }
-                MoltObject::from_float(log2_bigint(&big)).bits()
+                float_result_bits(_py, log2_bigint(&big))
             }
             RealValue::IntCoerced(i) => {
                 let f = i as f64;
                 if f <= 0.0 {
                     return log_domain_error(_py, Some(f));
                 }
-                MoltObject::from_float(math_log2(f)).bits()
+                float_result_bits(_py, math_log2(f))
             }
             RealValue::BigIntCoerced(big) => {
                 let Some(f) = big.to_f64() else {
@@ -1132,7 +1132,7 @@ pub extern "C" fn molt_math_log2(val_bits: u64) -> u64 {
                 if f <= 0.0 {
                     return log_domain_error(_py, Some(f));
                 }
-                MoltObject::from_float(math_log2(f)).bits()
+                float_result_bits(_py, math_log2(f))
             }
         }
     })
@@ -1147,43 +1147,43 @@ pub extern "C" fn molt_math_log10(val_bits: u64) -> u64 {
         match value {
             RealValue::Float(f) => {
                 if f.is_nan() {
-                    return MoltObject::from_float(f).bits();
+                    return float_result_bits(_py, f);
                 }
                 if f.is_infinite() {
                     if f.is_sign_negative() {
                         return log_domain_error(_py, Some(f));
                     }
-                    return MoltObject::from_float(f).bits();
+                    return float_result_bits(_py, f);
                 }
                 if f <= 0.0 {
                     return log_domain_error(_py, Some(f));
                 }
-                MoltObject::from_float(math_log10(f)).bits()
+                float_result_bits(_py, math_log10(f))
             }
             RealValue::IntExact(i) => {
                 if i <= 0 {
                     return log_domain_error(_py, None);
                 }
-                MoltObject::from_float(math_log10(i as f64)).bits()
+                float_result_bits(_py, math_log10(i as f64))
             }
             RealValue::BigIntExact(big) => {
                 if big.is_negative() || big.is_zero() {
                     return log_domain_error(_py, None);
                 }
-                MoltObject::from_float(log_bigint(&big) / std::f64::consts::LN_10).bits()
+                float_result_bits(_py, log_bigint(&big) / std::f64::consts::LN_10)
             }
             RealValue::IntCoerced(i) => {
                 let f = i as f64;
                 if f <= 0.0 {
                     return log_domain_error(_py, Some(f));
                 }
-                MoltObject::from_float(math_log10(f)).bits()
+                float_result_bits(_py, math_log10(f))
             }
             RealValue::BigIntCoerced(big) => {
                 if big.is_negative() || big.is_zero() {
                     return log_domain_error(_py, None);
                 }
-                MoltObject::from_float(log_bigint(&big) / std::f64::consts::LN_10).bits()
+                float_result_bits(_py, log_bigint(&big) / std::f64::consts::LN_10)
             }
         }
     })
@@ -1199,18 +1199,18 @@ pub extern "C" fn molt_math_log1p(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
             if f.is_sign_negative() {
                 return log1p_domain_error(_py, f);
             }
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f <= -1.0 {
             return log1p_domain_error(_py, f);
         }
-        MoltObject::from_float(math_log1p(f)).bits()
+        float_result_bits(_py, math_log1p(f))
     })
 }
 
@@ -1224,19 +1224,19 @@ pub extern "C" fn molt_math_exp(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
             if f.is_sign_negative() {
-                return MoltObject::from_float(0.0).bits();
+                return float_result_bits(_py, 0.0);
             }
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         let out = math_exp(f);
         if out.is_infinite() {
             return raise_exception::<_>(_py, "OverflowError", "math range error");
         }
-        MoltObject::from_float(out).bits()
+        float_result_bits(_py, out)
     })
 }
 
@@ -1250,19 +1250,19 @@ pub extern "C" fn molt_math_expm1(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
             if f.is_sign_negative() {
-                return MoltObject::from_float(-1.0).bits();
+                return float_result_bits(_py, -1.0);
             }
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         let out = math_expm1(f);
         if out.is_infinite() {
             return raise_exception::<_>(_py, "OverflowError", "math range error");
         }
-        MoltObject::from_float(out).bits()
+        float_result_bits(_py, out)
     })
 }
 
@@ -1287,7 +1287,7 @@ pub extern "C" fn molt_math_fma(x_bits: u64, y_bits: u64, z_bits: u64) -> u64 {
         let Some(z) = coerce_to_f64(_py, z_val) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(math_fma(x, y, z)).bits()
+        float_result_bits(_py, math_fma(x, y, z))
     })
 }
 
@@ -1301,14 +1301,14 @@ pub extern "C" fn molt_math_sin(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
             let rendered = render_float(_py, f);
             let msg = format!("expected a finite input, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
-        MoltObject::from_float(math_sin(f)).bits()
+        float_result_bits(_py, math_sin(f))
     })
 }
 
@@ -1322,14 +1322,14 @@ pub extern "C" fn molt_math_cos(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
             let rendered = render_float(_py, f);
             let msg = format!("expected a finite input, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
-        MoltObject::from_float(math_cos(f)).bits()
+        float_result_bits(_py, math_cos(f))
     })
 }
 
@@ -1343,14 +1343,14 @@ pub extern "C" fn molt_math_acos(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if !(-1.0..=1.0).contains(&f) {
             let rendered = render_float(_py, f);
             let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
-        MoltObject::from_float(math_acos(f)).bits()
+        float_result_bits(_py, math_acos(f))
     })
 }
 
@@ -1364,14 +1364,14 @@ pub extern "C" fn molt_math_tan(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
             let rendered = render_float(_py, f);
             let msg = format!("expected a finite input, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
-        MoltObject::from_float(math_tan(f)).bits()
+        float_result_bits(_py, math_tan(f))
     })
 }
 
@@ -1385,14 +1385,14 @@ pub extern "C" fn molt_math_asin(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if !(-1.0..=1.0).contains(&f) {
             let rendered = render_float(_py, f);
             let msg = format!("expected a number in range from -1 up to 1, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
-        MoltObject::from_float(math_asin(f)).bits()
+        float_result_bits(_py, math_asin(f))
     })
 }
 
@@ -1405,7 +1405,7 @@ pub extern "C" fn molt_math_atan(val_bits: u64) -> u64 {
         let Some(f) = coerce_to_f64(_py, value) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(math_atan(f)).bits()
+        float_result_bits(_py, math_atan(f))
     })
 }
 
@@ -1424,7 +1424,7 @@ pub extern "C" fn molt_math_atan2(y_bits: u64, x_bits: u64) -> u64 {
         let Some(x) = coerce_to_f64(_py, x_val) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(math_atan2(y, x)).bits()
+        float_result_bits(_py, math_atan2(y, x))
     })
 }
 
@@ -1438,13 +1438,13 @@ pub extern "C" fn molt_math_sinh(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         let out = math_sinh(f);
         if out.is_infinite() && !f.is_infinite() {
             return raise_exception::<_>(_py, "OverflowError", "math range error");
         }
-        MoltObject::from_float(out).bits()
+        float_result_bits(_py, out)
     })
 }
 
@@ -1458,13 +1458,13 @@ pub extern "C" fn molt_math_cosh(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         let out = math_cosh(f);
         if out.is_infinite() && !f.is_infinite() {
             return raise_exception::<_>(_py, "OverflowError", "math range error");
         }
-        MoltObject::from_float(out).bits()
+        float_result_bits(_py, out)
     })
 }
 
@@ -1477,7 +1477,7 @@ pub extern "C" fn molt_math_tanh(val_bits: u64) -> u64 {
         let Some(f) = coerce_to_f64(_py, value) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(math_tanh(f)).bits()
+        float_result_bits(_py, math_tanh(f))
     })
 }
 
@@ -1490,7 +1490,7 @@ pub extern "C" fn molt_math_asinh(val_bits: u64) -> u64 {
         let Some(f) = coerce_to_f64(_py, value) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(math_asinh(f)).bits()
+        float_result_bits(_py, math_asinh(f))
     })
 }
 
@@ -1504,14 +1504,14 @@ pub extern "C" fn molt_math_acosh(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f < 1.0 {
             let rendered = render_float(_py, f);
             let msg = format!("expected a number greater than or equal to 1, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
-        MoltObject::from_float(math_acosh(f)).bits()
+        float_result_bits(_py, math_acosh(f))
     })
 }
 
@@ -1525,12 +1525,12 @@ pub extern "C" fn molt_math_atanh(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f <= -1.0 || f >= 1.0 {
             return math_domain_error(_py);
         }
-        MoltObject::from_float(math_atanh(f)).bits()
+        float_result_bits(_py, math_atanh(f))
     })
 }
 
@@ -1544,7 +1544,7 @@ pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
             if f.is_sign_negative() {
@@ -1552,7 +1552,7 @@ pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
                 let msg = format!("expected a noninteger or positive integer, got {rendered}");
                 return raise_exception::<_>(_py, "ValueError", &msg);
             }
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f <= 0.0 && f.fract() == 0.0 {
             let rendered = render_float(_py, f);
@@ -1563,7 +1563,7 @@ pub extern "C" fn molt_math_gamma(val_bits: u64) -> u64 {
         if out.is_infinite() {
             return raise_exception::<_>(_py, "OverflowError", "math range error");
         }
-        MoltObject::from_float(out).bits()
+        float_result_bits(_py, out)
     })
 }
 
@@ -1576,7 +1576,7 @@ pub extern "C" fn molt_math_erf(val_bits: u64) -> u64 {
         let Some(f) = coerce_to_f64(_py, value) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(math_erf(f)).bits()
+        float_result_bits(_py, math_erf(f))
     })
 }
 
@@ -1589,7 +1589,7 @@ pub extern "C" fn molt_math_erfc(val_bits: u64) -> u64 {
         let Some(f) = coerce_to_f64(_py, value) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(math_erfc(f)).bits()
+        float_result_bits(_py, math_erfc(f))
     })
 }
 
@@ -1603,17 +1603,17 @@ pub extern "C" fn molt_math_lgamma(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
-            return MoltObject::from_float(f.abs()).bits();
+            return float_result_bits(_py, f.abs());
         }
         if f <= 0.0 && f.fract() == 0.0 {
             let rendered = render_float(_py, f);
             let msg = format!("expected a noninteger or positive integer, got {rendered}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
-        MoltObject::from_float(math_lgamma(f)).bits()
+        float_result_bits(_py, math_lgamma(f))
     })
 }
 
@@ -1665,7 +1665,7 @@ pub extern "C" fn molt_math_fabs(val_bits: u64) -> u64 {
         let Some(f) = coerce_to_f64(_py, value) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(f.abs()).bits()
+        float_result_bits(_py, f.abs())
     })
 }
 
@@ -1684,7 +1684,7 @@ pub extern "C" fn molt_math_copysign(x_bits: u64, y_bits: u64) -> u64 {
         let Some(y) = coerce_to_f64(_py, y_val) else {
             return MoltObject::none().bits();
         };
-        MoltObject::from_float(x.copysign(y)).bits()
+        float_result_bits(_py, x.copysign(y))
     })
 }
 
@@ -1698,18 +1698,18 @@ pub extern "C" fn molt_math_sqrt(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
             if f.is_sign_negative() {
                 return raise_exception::<_>(_py, "ValueError", "math domain error");
             }
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f < 0.0 {
             return raise_exception::<_>(_py, "ValueError", "math domain error");
         }
-        MoltObject::from_float(math_sqrt(f)).bits()
+        float_result_bits(_py, math_sqrt(f))
     })
 }
 
@@ -1873,12 +1873,12 @@ pub extern "C" fn molt_math_fmod(x_bits: u64, y_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "ValueError", "math domain error");
         }
         if x.is_nan() || y.is_nan() {
-            return MoltObject::from_float(f64::NAN).bits();
+            return float_result_bits(_py, f64::NAN);
         }
         if y.is_infinite() {
-            return MoltObject::from_float(x).bits();
+            return float_result_bits(_py, x);
         }
-        MoltObject::from_float(math_fmod(x, y)).bits()
+        float_result_bits(_py, math_fmod(x, y))
     })
 }
 
@@ -1892,22 +1892,22 @@ pub extern "C" fn molt_math_modf(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            let bits = MoltObject::from_float(f).bits();
+            let bits = float_result_bits(_py, f);
             return tuple2_bits(_py, bits, bits);
         }
         if f.is_infinite() {
-            let frac = MoltObject::from_float(0.0_f64.copysign(f)).bits();
-            let int = MoltObject::from_float(f).bits();
+            let frac = float_result_bits(_py, 0.0_f64.copysign(f));
+            let int = float_result_bits(_py, f);
             return tuple2_bits(_py, frac, int);
         }
         if f == 0.0 {
-            let bits = MoltObject::from_float(f).bits();
+            let bits = float_result_bits(_py, f);
             return tuple2_bits(_py, bits, bits);
         }
         let int_part = math_trunc(f);
         let frac_part = f - int_part;
-        let frac_bits = MoltObject::from_float(frac_part).bits();
-        let int_bits = MoltObject::from_float(int_part).bits();
+        let frac_bits = float_result_bits(_py, frac_part);
+        let int_bits = float_result_bits(_py, int_part);
         tuple2_bits(_py, frac_bits, int_bits)
     })
 }
@@ -1922,12 +1922,12 @@ pub extern "C" fn molt_math_frexp(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() || f.is_infinite() || f == 0.0 {
-            let frac_bits = MoltObject::from_float(f).bits();
+            let frac_bits = float_result_bits(_py, f);
             let exp_bits = MoltObject::from_int(0).bits();
             return tuple2_bits(_py, frac_bits, exp_bits);
         }
         let (mantissa, exp) = math_frexp(f);
-        let frac_bits = MoltObject::from_float(mantissa).bits();
+        let frac_bits = float_result_bits(_py, mantissa);
         let exp_bits = MoltObject::from_int(exp as i64).bits();
         tuple2_bits(_py, frac_bits, exp_bits)
     })
@@ -1944,25 +1944,25 @@ pub extern "C" fn molt_math_ldexp(val_bits: u64, exp_bits: u64) -> u64 {
         };
         let exp = index_i64_from_obj(_py, exp_bits, "ldexp() second argument must be an integer");
         if f.is_nan() || f.is_infinite() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if exp > i32::MAX as i64 {
             if f == 0.0 {
-                return MoltObject::from_float(f).bits();
+                return float_result_bits(_py, f);
             }
             return raise_exception::<_>(_py, "OverflowError", "math range error");
         }
         if exp < i32::MIN as i64 {
             if f == 0.0 {
-                return MoltObject::from_float(f).bits();
+                return float_result_bits(_py, f);
             }
-            return MoltObject::from_float(0.0_f64.copysign(f)).bits();
+            return float_result_bits(_py, 0.0_f64.copysign(f));
         }
         let out = math_ldexp(f, exp as i32);
         if out.is_infinite() && f != 0.0 {
             return raise_exception::<_>(_py, "OverflowError", "math range error");
         }
-        MoltObject::from_float(out).bits()
+        float_result_bits(_py, out)
     })
 }
 
@@ -2128,7 +2128,7 @@ pub extern "C" fn molt_math_fsum(iter_bits: u64) -> u64 {
         for val in partials.iter().rev() {
             sum += *val;
         }
-        MoltObject::from_float(sum).bits()
+        float_result_bits(_py, sum)
     })
 }
 
@@ -2359,7 +2359,7 @@ pub extern "C" fn molt_math_degrees(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let out = f * (180.0 / std::f64::consts::PI);
-        MoltObject::from_float(out).bits()
+        float_result_bits(_py, out)
     })
 }
 
@@ -2373,7 +2373,7 @@ pub extern "C" fn molt_math_radians(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let out = f * (std::f64::consts::PI / 180.0);
-        MoltObject::from_float(out).bits()
+        float_result_bits(_py, out)
     })
 }
 
@@ -2390,7 +2390,7 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
             }
             let elems = seq_vec_ref(args_ptr);
             if elems.is_empty() {
-                return MoltObject::from_float(0.0).bits();
+                return float_result_bits(_py, 0.0);
             }
             // Pre-extract all f64 values for SIMD processing
             let mut vals: Vec<f64> = Vec::with_capacity(elems.len());
@@ -2470,9 +2470,9 @@ pub extern "C" fn molt_math_hypot(args_bits: u64) -> u64 {
                 for &f in &vals {
                     total = math_hypot(total, f);
                 }
-                return MoltObject::from_float(total).bits();
+                return float_result_bits(_py, total);
             }
-            MoltObject::from_float(sum_sq.sqrt()).bits()
+            float_result_bits(_py, sum_sq.sqrt())
         }
     })
 }
@@ -2584,9 +2584,9 @@ pub extern "C" fn molt_math_dist(p_bits: u64, q_bits: u64) -> u64 {
             for (lhs, rhs) in p_vals.iter().zip(q_vals.iter()) {
                 total = math_hypot(total, lhs - rhs);
             }
-            return MoltObject::from_float(total).bits();
+            return float_result_bits(_py, total);
         }
-        MoltObject::from_float(sum_sq.sqrt()).bits()
+        float_result_bits(_py, sum_sq.sqrt())
     })
 }
 
@@ -2627,12 +2627,12 @@ pub extern "C" fn molt_math_nextafter(x_bits: u64, y_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if x.is_nan() || y.is_nan() {
-            return MoltObject::from_float(f64::NAN).bits();
+            return float_result_bits(_py, f64::NAN);
         }
         if x == y {
-            return MoltObject::from_float(y).bits();
+            return float_result_bits(_py, y);
         }
-        MoltObject::from_float(math_nextafter(x, y)).bits()
+        float_result_bits(_py, math_nextafter(x, y))
     })
 }
 
@@ -2646,13 +2646,13 @@ pub extern "C" fn molt_math_ulp(val_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if f.is_nan() {
-            return MoltObject::from_float(f).bits();
+            return float_result_bits(_py, f);
         }
         if f.is_infinite() {
-            return MoltObject::from_float(f64::INFINITY).bits();
+            return float_result_bits(_py, f64::INFINITY);
         }
         let next = math_nextafter(f, f64::INFINITY);
-        MoltObject::from_float((next - f).abs()).bits()
+        float_result_bits(_py, (next - f).abs())
     })
 }
 
@@ -2672,12 +2672,12 @@ pub extern "C" fn molt_math_remainder(x_bits: u64, y_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         if x.is_nan() || y.is_nan() {
-            return MoltObject::from_float(f64::NAN).bits();
+            return float_result_bits(_py, f64::NAN);
         }
         if y == 0.0 || x.is_infinite() {
             return math_domain_error(_py);
         }
-        MoltObject::from_float(math_remainder(x, y)).bits()
+        float_result_bits(_py, math_remainder(x, y))
     })
 }
 
@@ -2987,7 +2987,7 @@ fn statistics_quantiles_value(
     }
     let out_bits: Vec<u64> = out_floats
         .into_iter()
-        .map(|v| MoltObject::from_float(v).bits())
+        .map(|v| float_result_bits(_py, v))
         .collect();
     let list_ptr = alloc_list(_py, &out_bits);
     if list_ptr.is_null() {

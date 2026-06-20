@@ -10494,6 +10494,7 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "stdlib_signal",
     "stdlib_select",
     "stdlib_text",
+    "stdlib_zoneinfo",
     # Heavy domains excluded from native micro profile; explicit full/server
     # profiles keep them stable without making tiny native builds pay for them.
     "stdlib_crypto",

@@ -122,7 +122,7 @@ fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u6
     })
 }
 
-fn builtin_func_bits_with_defaults_tuple(
+fn builtin_func_bits_with_defaults(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     fn_ptr: u64,
@@ -871,7 +871,7 @@ fn repeat_class(_py: &PyToken<'_>) -> u64 {
 }
 
 fn repeat_new_bits(_py: &PyToken<'_>) -> u64 {
-    builtin_func_bits_with_defaults_tuple(
+    builtin_func_bits_with_defaults(
         _py,
         &itertools_state(_py).repeat_new_fn,
         crate::molt_itertools_repeat_new as *const () as usize as u64,
