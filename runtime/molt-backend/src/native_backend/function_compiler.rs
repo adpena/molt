@@ -720,8 +720,9 @@ fn box_raw_i64_value_overflow_safe(
 ///
 /// Internally dispatches int-primary names to `ensure_boxed_overflow_safe`
 /// (which has a fits-inline fast path + a cold `molt_int_from_i64` BigInt
-/// slow path), float-primary names to a bitcast, and otherwise returns the
-/// already-NaN-boxed main Variable verbatim.
+/// slow path), float-primary names through the backend's NaN-canonicalizing
+/// raw-F64 -> boxed-I64 boundary, and otherwise returns the already-NaN-boxed
+/// main Variable verbatim.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 fn var_get_boxed_overflow_safe_base(
@@ -751,7 +752,8 @@ fn var_get_boxed_overflow_safe_base(
     } else if float_primary_vars.contains(name) {
         let var = *vars.get(name)?;
         let val = builder.use_var(var);
-        let bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
+        let nbc = crate::NanBoxConsts::new(builder);
+        let bits = box_float_value(builder, val, &nbc);
         Some(VarValue(bits))
     } else {
         let var = *vars.get(name)?;
@@ -4738,7 +4740,7 @@ impl SimpleBackend {
                         {
                             result_f
                         } else {
-                            box_float_value_unchecked(&mut builder, result_f)
+                            box_float_value(&mut builder, result_f, &nbc)
                         }
                     } else if op_prefers_int_lane(&op) {
                         // LuaJIT-style unboxed arithmetic chain with overflow guard.
@@ -5188,7 +5190,7 @@ impl SimpleBackend {
                         {
                             result_f
                         } else {
-                            box_float_value_unchecked(&mut builder, result_f)
+                            box_float_value(&mut builder, result_f, &nbc)
                         }
                     } else if op_prefers_int_lane(&op) {
                         // Raw chain: both operands already unboxed + overflow guard.
@@ -5483,7 +5485,7 @@ impl SimpleBackend {
                         {
                             result_f
                         } else {
-                            box_float_value_unchecked(&mut builder, result_f)
+                            box_float_value(&mut builder, result_f, &nbc)
                         }
                     } else if op_prefers_int_lane(&op) {
                         // LuaJIT-style unboxed arithmetic chain with overflow guard.
@@ -5755,7 +5757,7 @@ impl SimpleBackend {
                         {
                             result_f
                         } else {
-                            box_float_value_unchecked(&mut builder, result_f)
+                            box_float_value(&mut builder, result_f, &nbc)
                         }
                     } else if op
                         .out
@@ -6006,7 +6008,7 @@ impl SimpleBackend {
                         {
                             result_f
                         } else {
-                            box_float_value_unchecked(&mut builder, result_f)
+                            box_float_value(&mut builder, result_f, &nbc)
                         }
                     } else if op_prefers_int_lane(&op) {
                         // LuaJIT-style unboxed arithmetic chain with overflow guard.
@@ -6272,7 +6274,7 @@ impl SimpleBackend {
                         {
                             result_f
                         } else {
-                            box_float_value_unchecked(&mut builder, result_f)
+                            box_float_value(&mut builder, result_f, &nbc)
                         }
                     } else if op
                         .out
@@ -7417,7 +7419,7 @@ impl SimpleBackend {
                         if out_is_float_primary {
                             jump_block(&mut builder, merge_block, &[result_f]);
                         } else {
-                            let fast_res = box_float_value_unchecked(&mut builder, result_f);
+                            let fast_res = box_float_value(&mut builder, result_f, &nbc);
                             jump_block(&mut builder, merge_block, &[fast_res]);
                         }
                         switch_to_block_materialized(&mut builder, merge_block);
@@ -12641,7 +12643,7 @@ impl SimpleBackend {
                         {
                             neg_f
                         } else {
-                            box_float_value_unchecked(&mut builder, neg_f)
+                            box_float_value(&mut builder, neg_f, &nbc)
                         }
                     } else if op_prefers_int_lane(&op) {
                         // -x == 0 - x; overflow deferred to boxing escape.
@@ -12772,7 +12774,7 @@ impl SimpleBackend {
                         {
                             src_f
                         } else {
-                            box_float_value_unchecked(&mut builder, src_f)
+                            box_float_value(&mut builder, src_f, &nbc)
                         }
                     } else if op_prefers_int_lane(&op) {
                         let src_name = &args[0];
