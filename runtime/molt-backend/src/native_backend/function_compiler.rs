@@ -17636,6 +17636,7 @@ impl SimpleBackend {
                 "exception_match_builtin"
                 | "exception_last"
                 | "exception_last_pending"
+                | "exception_finally_pending_observer"
                 | "exception_active"
                 | "exception_current"
                 | "exception_new"

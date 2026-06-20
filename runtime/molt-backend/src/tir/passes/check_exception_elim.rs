@@ -66,6 +66,7 @@ fn original_kind_is_provably_nonthrowing(kind: &str) -> bool {
             | "exception_clear"
             | "exception_last"
             | "exception_last_pending"
+            | "exception_finally_pending_observer"
             | "exception_pop"
             | "exception_push"
             | "exception_new_builtin"

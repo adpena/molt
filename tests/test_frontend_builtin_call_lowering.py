@@ -434,6 +434,50 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     assert not any(op.get("kind") == "context_unwind_to" for op in func_ops)
 
 
+def test_try_finally_uses_finally_pending_observer_not_handler_match_ref() -> None:
+    source = (
+        "def f(i):\n"
+        "    try:\n"
+        "        if i:\n"
+        "            raise ValueError(i)\n"
+        "    finally:\n"
+        "        i = i + 1\n"
+        "    return i\n"
+    )
+    ir = compile_to_tir(source)
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+
+    assert any(
+        op.get("kind") == "exception_finally_pending_observer" for op in func_ops
+    )
+    assert not any(op.get("kind") == "exception_last_pending" for op in func_ops)
+
+
+def test_try_except_finally_splits_handler_match_ref_from_finally_observer() -> None:
+    source = (
+        "def f(i):\n"
+        "    try:\n"
+        "        if i:\n"
+        "            raise ValueError(i)\n"
+        "    except ValueError:\n"
+        "        i = 2\n"
+        "    finally:\n"
+        "        i = i + 1\n"
+        "    return i\n"
+    )
+    ir = compile_to_tir(source)
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+    )
+
+    assert any(op.get("kind") == "exception_last_pending" for op in func_ops)
+    assert any(
+        op.get("kind") == "exception_finally_pending_observer" for op in func_ops
+    )
+
+
 def test_module_try_except_assignments_use_module_storage_after_join() -> None:
     source = (
         "try:\n"

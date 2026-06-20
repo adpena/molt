@@ -3708,7 +3708,7 @@ impl LuauBackend {
             "check_exception" => {
                 // Suppress — exception handler jumps are no-ops in Luau.
             }
-            "exception_last" | "exception_last_pending" => {
+            "exception_last" | "exception_last_pending" | "exception_finally_pending_observer" => {
                 let out = self.out_var(op);
                 if let Some(n) = op.value.and_then(|n| u32::try_from(n).ok()) {
                     self.emit_line(&format!("local {out} = __err_{n}"));
@@ -5392,7 +5392,10 @@ fn lower_try_to_pcall(ops: &[OpIR]) -> (Vec<OpIR>, BTreeSet<String>) {
                     });
                 }
             }
-            "exception_last" | "exception_last_pending" | "exception_clear" => {
+            "exception_last"
+            | "exception_last_pending"
+            | "exception_finally_pending_observer"
+            | "exception_clear" => {
                 previous_protected_raise_target = None;
                 let mut rewritten = op.clone();
                 if let Some(n) = active_pcalls.last() {
@@ -5769,6 +5772,7 @@ fn lower_iter_to_for(ops: &[OpIR]) -> Vec<OpIR> {
                                 | "check_exception"
                                 | "exception_last"
                                 | "exception_last_pending"
+                                | "exception_finally_pending_observer"
                                 | "const_none"
                                 | "is"
                                 | "not"
@@ -5911,6 +5915,7 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         | "check_exception"
                         | "exception_last"
                         | "exception_last_pending"
+                        | "exception_finally_pending_observer"
                         | "const_none"
                         | "is"
                         | "not"
@@ -6008,6 +6013,7 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         | "exception_stack_exit"
                         | "exception_last"
                         | "exception_last_pending"
+                        | "exception_finally_pending_observer"
                         | "const_none"
                         | "is"
                         | "not"
@@ -6067,6 +6073,7 @@ fn lower_early_returns(ops: &[OpIR]) -> Vec<OpIR> {
                         | "exception_stack_enter"
                         | "exception_last"
                         | "exception_last_pending"
+                        | "exception_finally_pending_observer"
                         | "const_none"
                         | "is"
                         | "not"

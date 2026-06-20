@@ -13974,7 +13974,7 @@ impl WasmBackend {
                             func.instruction(&Instruction::Drop);
                         }
                     }
-                    "exception_last_pending" => {
+                    "exception_last_pending" | "exception_finally_pending_observer" => {
                         emit_call(func, reloc_enabled, import_ids["exception_last_pending"]);
                         if let Some(out) = op.out.as_ref() {
                             func.instruction(&Instruction::LocalSet(locals[out]));

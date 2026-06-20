@@ -85,6 +85,7 @@ classifier_fresh_value = [
     "exception_new_builtin_empty",
     "exception_new_builtin_one",
     "exception_new_from_class",
+    "exception_finally_pending_observer",
     "float_from_obj",
     "frozenset_new",
     "func_new",
@@ -2572,6 +2573,10 @@ reason = "structural: read the last/current exception"
 [[frontend_check_exception_skip]]
 kind = "EXCEPTION_LAST_PENDING"
 reason = "structural: test for a pending exception"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_FINALLY_PENDING_OBSERVER"
+reason = "structural: observe pending exception for finally save/restore"
 
 [[frontend_check_exception_skip]]
 kind = "EXCEPTION_SET_CAUSE"
