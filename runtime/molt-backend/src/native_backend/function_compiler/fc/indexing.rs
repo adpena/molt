@@ -23,8 +23,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
                                        import_ids: &mut BTreeMap<
@@ -37,9 +35,7 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        int_primary_vars: &BTreeSet<String>,
-                                       float_primary_vars: &BTreeSet<String>,
-                                       box_int_mask_var: Variable,
-                                       box_int_tag_var: Variable|
+                                       float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -53,8 +49,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
             float_primary_vars,
             bool_primary_vars,
             nbc,
-            box_int_mask_var,
-            box_int_tag_var,
         )
     };
     match op.kind.as_str() {
@@ -70,8 +64,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Obj not found in {} op {}", func_name, op_idx));
             let idx = var_get_boxed_overflow_safe(
@@ -84,8 +76,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Index not found in {} op {}", func_name, op_idx));
             let callee = SimpleBackend::import_func_id_split(
@@ -114,8 +104,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Slice target not found");
             let start = var_get_boxed_overflow_safe(
@@ -128,8 +116,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Slice start not found");
             let end = var_get_boxed_overflow_safe(
@@ -142,8 +128,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &args[2],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Slice end not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -172,8 +156,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Slice start not found");
             let stop = var_get_boxed_overflow_safe(
@@ -186,8 +168,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Slice stop not found");
             let step = var_get_boxed_overflow_safe(
@@ -200,8 +180,6 @@ pub(in crate::native_backend::function_compiler) fn handle_indexing_op(
                 &args[2],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Slice step not found");
             let callee = SimpleBackend::import_func_id_split(

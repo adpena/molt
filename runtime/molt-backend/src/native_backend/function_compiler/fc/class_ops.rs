@@ -23,8 +23,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
 ) {
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
@@ -40,9 +38,7 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        int_primary_vars: &BTreeSet<String>,
-                                       float_primary_vars: &BTreeSet<String>,
-                                       box_int_mask_var: Variable,
-                                       box_int_tag_var: Variable|
+                                       float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -56,8 +52,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
             float_primary_vars,
             bool_primary_vars,
             nbc,
-            box_int_mask_var,
-            box_int_tag_var,
         )
     };
     match op.kind.as_str() {
@@ -73,8 +67,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Class name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -110,8 +102,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Class name not found");
             let bases_slot_size = std::cmp::max(nbases, 1) * 8;
@@ -131,8 +121,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                     &args[1 + i],
                     int_primary_vars,
                     float_primary_vars,
-                    box_int_mask_var,
-                    box_int_tag_var,
                 )
                 .expect("Base class not found");
                 builder.ins().stack_store(*base, bases_slot, (i * 8) as i32);
@@ -156,8 +144,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                     &args[attrs_base + i * 2],
                     int_primary_vars,
                     float_primary_vars,
-                    box_int_mask_var,
-                    box_int_tag_var,
                 )
                 .expect("Attr key not found");
                 let val = var_get_boxed_overflow_safe(
@@ -170,8 +156,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                     &args[attrs_base + i * 2 + 1],
                     int_primary_vars,
                     float_primary_vars,
-                    box_int_mask_var,
-                    box_int_tag_var,
                 )
                 .expect("Attr value not found");
                 builder
@@ -234,8 +218,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Class not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -264,8 +246,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Class not found");
             let version_bits = var_get_boxed_overflow_safe(
@@ -278,8 +258,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Version not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -312,8 +290,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Class not found");
             let offsets_bits = var_get_boxed_overflow_safe(
@@ -326,8 +302,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Offsets not found");
             let size_bits = var_get_boxed_overflow_safe(
@@ -340,8 +314,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[2],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Size not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -374,8 +346,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Class not found");
             let base_bits = var_get_boxed_overflow_safe(
@@ -388,8 +358,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Base class not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -418,8 +386,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Class not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -448,8 +414,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Object not found");
             let obj_ptr = unbox_ptr_value(&mut *builder, *obj_bits, nbc);
@@ -463,8 +427,6 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Class not found");
             let callee = SimpleBackend::import_func_id_split(
