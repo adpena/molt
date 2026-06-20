@@ -168,13 +168,13 @@ use crate::tir::passes::liveness::{TirLiveness, TirLivenessResult};
 use crate::tir::values::{TirValue, ValueId};
 
 use super::PassStats;
-#[cfg(test)]
-use super::ownership_lattice_min::original_kind;
 use super::ownership_lattice_min::{
     OwnershipLattice, PythonLifetimeFacts, StatementReleasePlan, copy_transparent_alias,
     exception_creation_ref_values, op_consumed_operand_root, op_result_absorbs_operand_ownership,
     terminator_branch_args, terminator_uses_root,
 };
+#[cfg(test)]
+use super::ownership_lattice_min::original_kind;
 
 /// The function-level attr the pass sets (round-tripped to the native backend as
 /// a marker op) so the SimpleIR `loop_reassign_old_val` ad-hoc dec-ref path is

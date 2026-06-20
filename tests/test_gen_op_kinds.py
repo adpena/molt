@@ -219,6 +219,17 @@ def test_selected_operand_result_contract_covers_python_boolops() -> None:
     }
     assert selected_owner == {"And", "Or"}
 
+
+def test_explicit_release_operand_contract_covers_python_release_ops() -> None:
+    """Python lifetime release boundaries live in the generated op-kind table."""
+    gen = _gen()
+    data = gen.load_table()
+    release_rows = {
+        row["opcode"]: row["operand"]
+        for row in data.get("explicit_release_operand", [])
+    }
+    assert release_rows == {"DecRef": "all", "DeleteVar": 1}
+
     rendered = gen.render_rs(data)
     selected_block = rendered.split(
         "fn opcode_result_mints_owned_selected_operand_table"
@@ -1143,12 +1154,12 @@ def test_drop_insertion_consumes_no_heap_copy_aliases_from_ownership_lattice() -
         ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")
 
-    assert "copy_no_heap_move_alias" in drop_prod
+    assert "copy_transparent_alias" in drop_prod
     assert "copy_kind_is_explicit_no_heap_move" not in drop_prod
     assert "fn original_kind(" not in drop_prod
 
     assert "pub(crate) struct NoHeapCopyAlias" in lattice
-    assert "pub(crate) fn copy_no_heap_move_alias(" in lattice
+    assert "pub(crate) fn copy_transparent_alias(" in lattice
     assert "copy_kind_is_explicit_no_heap_move(original_kind(op))" in lattice
     assert "source: op.operands[0]" in lattice
     assert "result: op.results[0]" in lattice

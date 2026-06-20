@@ -33,9 +33,10 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    OperandCategory, OperandOwnership, TerminatorKind, kind_consumed_operand_table,
-    kind_container_absorbed_operand_table, kind_result_absorbs_operand_ownership_table,
-    kind_result_finalizer_source_operand_table, opcode_container_absorbed_operand,
+    ExplicitReleaseOperands, OperandCategory, OperandOwnership, TerminatorKind,
+    kind_consumed_operand_table, kind_container_absorbed_operand_table,
+    kind_result_absorbs_operand_ownership_table, kind_result_finalizer_source_operand_table,
+    opcode_container_absorbed_operand, opcode_explicit_release_operands_table,
     opcode_operand_ownership_table, opcode_result_absorbs_operand_ownership_table,
     opcode_result_is_conditionally_valid_only_on_edge, terminator_operand_is_transferred,
 };
@@ -460,8 +461,8 @@ impl PythonLifetimeFacts {
                     }
                 }
 
-                match op.opcode {
-                    OpCode::DecRef => {
+                match opcode_explicit_release_operands_table(op.opcode, op.operands.len()) {
+                    ExplicitReleaseOperands::All => {
                         facts.explicit_release_roots.extend(
                             op.operands
                                 .iter()
@@ -469,14 +470,12 @@ impl PythonLifetimeFacts {
                                 .map(|operand| aliases.root(operand)),
                         );
                     }
-                    OpCode::DeleteVar => {
-                        if let Some(&old_slot_value) = op.operands.get(1) {
-                            facts
-                                .explicit_release_roots
-                                .insert(aliases.root(old_slot_value));
+                    ExplicitReleaseOperands::One(idx) => {
+                        if let Some(&released) = op.operands.get(idx) {
+                            facts.explicit_release_roots.insert(aliases.root(released));
                         }
                     }
-                    _ => {}
+                    ExplicitReleaseOperands::None => {}
                 }
             }
         }

@@ -49,6 +49,9 @@
 #   - [[result_validity]] - per-OpCode/per-result validity facts for result slots
 #                  that are not initialized on every outgoing edge
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
+#   - [[explicit_release_operand]] - per-OpCode Python lifetime release facts
+#                  for ops that explicitly release one or all operand roots
+#                  (`DecRef` all operands, `DeleteVar` old slot operand 1).
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -429,6 +432,14 @@ source_operand = 0
 opcode = "IterNextUnboxed"
 result = 0
 validity = "conditional_valid_only_on_edge"
+
+[[explicit_release_operand]]
+opcode = "DecRef"
+operand = "all"
+
+[[explicit_release_operand]]
+opcode = "DeleteVar"
+operand = 1
 
 # ===========================================================================
 # Per-OpCode effect classification (EXHAUSTIVE over the OpCode enum).
