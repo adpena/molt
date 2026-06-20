@@ -1948,14 +1948,6 @@ impl ScalarRepresentationPlan {
         true
     }
 
-    fn remove_fact(&mut self, name: &str) -> bool {
-        let removed = self.facts_by_name.remove(name).is_some();
-        if removed {
-            self.weak_fact_names.remove(name);
-        }
-        removed
-    }
-
     fn insert_container_storage_fact(&mut self, name: String, fact: ContainerStorageFact) -> bool {
         if self.container_storage_conflicted_names.contains(&name) {
             return false;

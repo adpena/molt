@@ -173,6 +173,7 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    cli._rustc_version.cache_clear()
     backend = tmp_path / "molt-backend"
     backend.write_text("backend")
     socket_path = tmp_path / "daemon.sock"
@@ -186,6 +187,16 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     class FakeContext:
         env = {"PATH": "/usr/bin", "MOLT_EXT_ROOT": str(tmp_path)}
 
+        def run(
+            self,
+            command: list[str],
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            captured.setdefault("run_calls", []).append(
+                {"command": command, "kwargs": kwargs}
+            )
+            return subprocess.CompletedProcess(command, 0, "rustc test\n", "")
+
         def process_group_kwargs(self) -> dict[str, object]:
             return {"start_new_session": True, "preexec_fn": lambda: None}
 
@@ -198,11 +209,13 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         class HarnessExecutionContext:
             @classmethod
             def from_env(cls, prefix, env, *, repo_root):  # type: ignore[no-untyped-def]
-                captured["context"] = {
+                context = {
                     "prefix": prefix,
                     "env": env,
                     "repo_root": repo_root,
                 }
+                captured.setdefault("contexts", []).append(context)
+                captured["context"] = context
                 return FakeContext()
 
     class FakeProc:
@@ -244,6 +257,9 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
 
     assert ok is True
     assert captured["context"]["prefix"] == "MOLT_BUILD"
+    assert captured["contexts"][0]["prefix"] == "MOLT_BUILD"
+    assert captured["run_calls"][0]["command"] == ["rustc", "-Vv"]
+    assert captured["run_calls"][0]["kwargs"]["capture_output"] is True
     assert captured["sentinel_kwargs"]["label"] == "backend_daemon_start"
     assert captured["sentinel_kwargs"]["drain_on_exit"] is False
     assert captured["popen_cmd"] == [
@@ -255,6 +271,7 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     assert captured["popen_kwargs"]["start_new_session"] is True
     assert callable(captured["popen_kwargs"]["preexec_fn"])
     assert sentinel_events == ["start", "exit"]
+    cli._rustc_version.cache_clear()
 
 
 def test_backend_daemon_request_uses_request_scoped_sentinel(
