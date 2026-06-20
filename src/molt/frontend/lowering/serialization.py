@@ -1648,6 +1648,13 @@ class SerializationMixin(_MixinBase):
                 json_ops.append(
                     {"kind": "exception_last_pending", "out": op.result.name}
                 )
+            elif op.kind == "EXCEPTION_FINALLY_PENDING_OBSERVER":
+                json_ops.append(
+                    {
+                        "kind": "exception_finally_pending_observer",
+                        "out": op.result.name,
+                    }
+                )
             elif op.kind == "EXCEPTION_NEW":
                 json_ops.append(
                     {

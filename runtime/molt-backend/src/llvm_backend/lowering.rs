@@ -6587,33 +6587,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         )
     }
 
-    fn ensure_runtime_void_fn(&self, name: &str, param_count: usize) -> FunctionValue<'ctx> {
-        if let Some(func) = self.backend.module.get_function(name) {
-            return func;
-        }
-        let i64_ty = self.backend.context.i64_type();
-        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
-            (0..param_count).map(|_| i64_ty.into()).collect();
-        let fn_ty = self.backend.context.void_type().fn_type(&params, false);
-        let func =
-            self.backend
-                .module
-                .add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
-        let nounwind_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
-        func.add_attribute(
-            AttributeLoc::Function,
-            self.backend.context.create_enum_attribute(nounwind_kind, 0),
-        );
-        let willreturn_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn");
-        func.add_attribute(
-            AttributeLoc::Function,
-            self.backend
-                .context
-                .create_enum_attribute(willreturn_kind, 0),
-        );
-        func
-    }
-
     fn unbox_ptr_bits(
         &self,
         bits: inkwell::values::IntValue<'ctx>,
@@ -9097,7 +9070,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
-            "exception_last_pending" => {
+            "exception_last_pending" | "exception_finally_pending_observer" => {
                 let last_fn = self.ensure_runtime_i64_fn("molt_exception_last_pending", 0);
                 let result = self
                     .backend

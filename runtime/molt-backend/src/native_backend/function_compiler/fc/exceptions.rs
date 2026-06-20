@@ -102,7 +102,7 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        "exception_last_pending" => {
+        "exception_last_pending" | "exception_finally_pending_observer" => {
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
                 &mut *import_ids,
