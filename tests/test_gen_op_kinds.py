@@ -54,6 +54,14 @@ def _audit():
     return _load(AUDIT, "molt_test_audit_op_kinds")
 
 
+def _generated_arm_region(rendered: str, marker: str, next_prefix: str) -> str:
+    start = rendered.index(marker)
+    next_start = rendered.find(next_prefix, start + len(marker))
+    if next_start == -1:
+        return rendered[start:]
+    return rendered[start:next_start]
+
+
 # ---------------------------------------------------------------------------
 # 1. Freshness: the checked-in generated files match a fresh render.
 # ---------------------------------------------------------------------------
@@ -1720,6 +1728,9 @@ def test_drop_insertion_delegates_transfer_to_generated_authority() -> None:
     match (which fields carry args — legitimately in the pass) is not mistaken for
     a hand-coded transfer fact."""
     drop = (ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs").read_text()
+    ownership = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
 
     def _fn_body(src: str, marker: str, label: str) -> str:
         assert marker in src, f"{marker} not found in {label}"

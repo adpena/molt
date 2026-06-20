@@ -2656,6 +2656,7 @@ dependencies = [
  "wasm-encoder 0.245.1",
  "wasmparser 0.245.1",
  "wgpu 29.0.1",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2917,6 +2918,7 @@ dependencies = [
 name = "molt-runtime-path"
 version = "0.1.0"
 dependencies = [
+ "filetime",
  "glob",
  "libc",
  "molt-lang-obj-model",

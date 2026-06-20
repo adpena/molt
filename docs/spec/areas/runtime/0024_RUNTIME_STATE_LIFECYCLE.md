@@ -112,6 +112,10 @@ Expose a single global pointer (fast path) to the active RuntimeState:
   Special descriptor cache slots, including function `__code__`/`__globals__`
   descriptors, are cleared through the same lifecycle path as the rest of
   `RuntimeState.special_cache`.
+  Descriptor-cache lookup snapshots now retain exposed heap bits before leaving
+  TLS cache custody, and `descriptor_bind` retains the descriptor across
+  reentrant `__get__`/property execution so class-dict or cache mutation cannot
+  invalidate borrowed descriptor storage mid-bind.
   Resource tracker factories and current-thread tracker state are reset at
   lifecycle shutdown boundaries so memory/time limits cannot leak into the
   next runtime in an embedding process.

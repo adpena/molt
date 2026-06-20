@@ -1584,7 +1584,11 @@ class SimpleTIRGenerator(
             call_args.append(result_val)
         res = MoltValue(self.next_var(), type_hint="Future")
         self.emit(
-            MoltOp(kind="CALL_ASYNC", args=["molt_async_sleep_poll", *call_args], result=res)
+            MoltOp(
+                kind="CALL_ASYNC",
+                args=["molt_async_sleep_poll", *call_args],
+                result=res,
+            )
         )
         return res
 
