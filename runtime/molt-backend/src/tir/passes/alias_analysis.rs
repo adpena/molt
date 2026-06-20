@@ -550,6 +550,13 @@ pub(crate) fn classify_copy_kind(kind: Option<&str>) -> CopyLowering {
     if crate::tir::op_kinds_generated::copy_kind_is_inert_marker_table(k) {
         return CopyLowering::InertMarker;
     }
+    // Known runtime/effect ops that intentionally keep the same fail-closed
+    // droppability as the default transparent-alias bucket, but are table-visible
+    // so future ownership promotions cannot hide in the `_ =>` arm. This is NOT
+    // the no-heap-move/MemGVN alias set.
+    if crate::tir::op_kinds_generated::copy_kind_is_explicit_transparent_alias_table(k) {
+        return CopyLowering::TransparentAlias;
+    }
     // ── Everything else (incl. the explicit pure moves `copy`/`copy_var`/
     //    `store_var`/`load_var`/`identity_alias`, the pass-through guards
     //    `guard_tag`/`guard_type`, AND any UNKNOWN kind) → transparent alias.

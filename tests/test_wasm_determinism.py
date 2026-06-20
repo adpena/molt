@@ -85,9 +85,7 @@ def _build_wasm(src_path: Path, out_dir: Path) -> Path | None:
     """Build a Python file to WASM, returning the .wasm path or None."""
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SRC_DIR)
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
     try:
         result = _run_wasm_test_process(
             [

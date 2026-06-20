@@ -360,9 +360,14 @@ The `prepare_lir_wasm_fast_output(func_ir, &tir_func)` path at `wasm.rs:2149-215
 
 The native path runs `split_megafunctions` after inlining (`simple_backend.rs:2642`). After this arc, inlining can grow caller bodies. A caller that was under the megafunction threshold (4000 ops) before inlining could exceed it afterward. This is handled correctly: `split_megafunctions` runs after the module phase (and after `lower_to_simple_ir` produces the final `OpIR` vecs), so it sees the fully-merged sizes. No ordering change needed.
 
-### 9.6 Rollback
+### 9.6 Refusal And Regression Policy
 
-If the inliner causes a regression, `MOLT_DISABLE_INLINING=1` short-circuits `run_inliner` at `inliner.rs:1058-1064` (the env var check already exists). The module phase still runs (producing the correct leaf set) but inlines nothing. Full rollback is a single env var, not a code change.
+`run_inliner` has no process-global rollback lane. Inlining is controlled by
+the pass legality/profitability predicates and by `non_inlinable` external
+linkage facts from the module pipeline. If a regression appears, fix the
+predicate, representation fact, or backend consumer that made the inline
+unsound, or revert the structural change; do not reintroduce an env-controlled
+no-op path.
 
 ---
 

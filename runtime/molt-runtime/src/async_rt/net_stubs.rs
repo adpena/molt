@@ -1,4 +1,4 @@
-//! Native-no-net stubs for when `stdlib_net` is disabled on native targets.
+//! Native-no-net stubs for native targets without Molt socket ABI support.
 //!
 //! The cfg guard is on the `mod` declaration in `async_rt/mod.rs`.
 
@@ -19,7 +19,7 @@ impl IoPoller {
     ) -> Result<u32, std::io::Error> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "networking not available",
+            net_unavailable_message(),
         ))
     }
     pub(crate) fn cancel_waiter(&self, _slot: *mut u8) {}
@@ -29,14 +29,20 @@ impl IoPoller {
 pub(crate) fn io_wait_release_socket(_py: &PyToken<'_>, _future_ptr: *mut u8) {}
 pub(crate) fn ws_wait_release(_py: &PyToken<'_>, _future_ptr: *mut u8) {}
 
+#[cfg(feature = "stdlib_net")]
+fn net_unavailable_message() -> &'static str {
+    "networking not available for this runtime target"
+}
+
+#[cfg(not(feature = "stdlib_net"))]
+fn net_unavailable_message() -> &'static str {
+    "networking not available (compile with stdlib_net)"
+}
+
 macro_rules! net_error {
     () => {
         crate::with_gil_entry_nopanic!(_py, {
-            crate::raise_exception::<u64>(
-                _py,
-                "OSError",
-                "networking not available (compile with stdlib_net)",
-            )
+            crate::raise_exception::<u64>(_py, "OSError", net_unavailable_message())
         })
     };
 }

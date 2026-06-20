@@ -41,10 +41,19 @@ the implementation. For forward-looking priorities, use
   truthy sentinel. Luau source outputs materialize the same target-version `sys`
   metadata into `molt_module_cache["sys"]`, and dynamic Luau module import now
   fails closed instead of manufacturing empty table fallbacks for unsupported
-  modules. Malformed or non-string target-version config fails closed instead of
-  falling back to another target. The default target remains Python `3.12`.
+  modules. Translation validation uses the same resolver, probes the selected
+  CPython command for an exact minor-version match, and passes
+  `molt build --python-version` through the Molt run, so validation baselines
+  cannot silently inherit `sys.executable`. Malformed or non-string
+  target-version config fails closed instead of falling back to another target.
+  The default target remains Python `3.12`.
 - Rust-first stdlib lowering is the canonical direction, with generated audit
   surfaces under `docs/spec/areas/compat/surfaces/stdlib/`.
+- Native networking currently claims the Unix-family native socket ABI and the
+  WASM host socket ABI only. Windows native builds route requested `stdlib_net`
+  symbols through the explicit no-net intrinsic surface until the WinSock
+  constants, sockaddr storage, resolver, SSL socket ownership, and async poller
+  contracts land together.
 - Build-time import graph discovery now separates external-root resolution from
   external-package admission. `MOLT_MODULE_ROOTS`, `--lib-path`, respected
   `PYTHONPATH`, and auto site-packages can make a package resolvable, but
@@ -194,6 +203,12 @@ the implementation. For forward-looking priorities, use
 - Backend-facing native and WASM lowering always runs through the TIR pipeline;
   the old environment-variable opt-out has been removed so SimpleIR transport
   metadata cannot bypass typed-IR validation.
+- Frontend midend fixed-point verification fails closed: non-convergence and
+  post-convergence idempotence drift record policy diagnostics and raise instead
+  of accepting the last verified round or probe output behind an env-controlled
+  policy switch. Each canonicalization round now closes CSE-created dead pure
+  definitions with verified post-CSE DCE before convergence is measured, so
+  guarded type-fact cleanup cannot leak into a follow-on proof round.
 - WASM `Auto` import retention is split by output form. Non-relocatable Auto
   registers the canonical import registry, records actual import lookups during
   code emission through `TrackedImportIds`, and validates serialized-module
@@ -206,10 +221,12 @@ the implementation. For forward-looking priorities, use
   representation-filtered liveness (`tir/passes/liveness.rs`) and
   `tir/passes/drop_insertion.rs`. It is active for LLVM, WASM, Luau, and native
   Cranelift for the proven shared-drop and ExceptionRegion slices through the
-  shared TIR authority. WASM runtime parity, broader RC/finalizer balance
-  validation, and deletion of any stale native value-tracking assumptions that
-  no longer own release placement remain the convergence work before this can be
-  treated as a global RC ownership claim.
+  shared TIR authority. `PassStats` now records metadata-only authority changes
+  through `attrs_changed`, so zero-physical-drop `drop_inserted` functions are
+  not restored to stale SimpleIR without the marker. WASM runtime parity, broader
+  RC/finalizer balance validation, and deletion of any stale native
+  value-tracking assumptions that no longer own release placement remain the
+  convergence work before this can be treated as a global RC ownership claim.
 - Finalizer dispatch is implemented through the runtime `dec_ref_ptr` /
   `maybe_run_object_finalizer` authority and the committed finalizer matrix.
   Runtime execution records class-MRO finalizer sensitivity on class and

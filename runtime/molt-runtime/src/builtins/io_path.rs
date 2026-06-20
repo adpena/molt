@@ -27,9 +27,16 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 #[cfg(target_arch = "wasm32")]
 use crate::libc_compat as libc;
 use crate::randomness::fill_os_random;
+#[cfg(windows)]
+use crate::windows_abi::{
+    GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation, WSAENOTSOCK, WSAGetLastError,
+    closesocket,
+};
 use crate::*;
 use std::collections::HashMap;
 use std::io::ErrorKind;
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_path_exists(path_bits: u64) -> u64 {
@@ -2463,10 +2470,21 @@ pub extern "C" fn molt_os_open_flags() -> u64 {
             libc::O_CREAT as i64,
             libc::O_TRUNC as i64,
             libc::O_EXCL as i64,
-            libc::O_NONBLOCK as i64,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(any(unix, target_arch = "wasm32"))]
+            {
+                libc::O_NONBLOCK as i64
+            },
+            #[cfg(windows)]
+            {
+                0i64
+            },
+            #[cfg(all(not(windows), not(target_arch = "wasm32")))]
             {
                 libc::O_CLOEXEC as i64
+            },
+            #[cfg(windows)]
+            {
+                libc::O_NOINHERIT as i64
             },
             #[cfg(target_arch = "wasm32")]
             {
@@ -2526,7 +2544,11 @@ pub extern "C" fn molt_os_open(path_bits: u64, flags_bits: u64, mode_bits: u64) 
                     .encode_wide()
                     .chain(std::iter::once(0))
                     .collect();
-                libc::_wopen(wide.as_ptr(), flags as libc::c_int, mode as libc::c_int)
+                libc::wopen(
+                    wide.as_ptr() as *const libc::wchar_t,
+                    flags as libc::c_int,
+                    mode as libc::c_int,
+                )
             };
             #[cfg(not(any(unix, windows)))]
             let rc = -1i32;
@@ -2577,13 +2599,13 @@ pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
             }
             #[cfg(windows)]
             {
-                let sock_rc = unsafe { libc::closesocket(fd as libc::SOCKET) };
+                let sock_rc = unsafe { closesocket(fd as usize) };
                 if sock_rc == 0 {
                     return MoltObject::none().bits();
                 }
-                let sock_err = unsafe { libc::WSAGetLastError() };
-                if sock_err == libc::WSAENOTSOCK {
-                    let rc = unsafe { libc::_close(fd as libc::c_int) };
+                let sock_err = unsafe { WSAGetLastError() };
+                if sock_err == WSAENOTSOCK {
+                    let rc = unsafe { libc::close(fd as libc::c_int) };
                     if rc == 0 {
                         return MoltObject::none().bits();
                     }
@@ -2635,10 +2657,10 @@ pub extern "C" fn molt_os_read(fd_bits: u64, len_bits: u64) -> u64 {
             };
             #[cfg(windows)]
             let rc = unsafe {
-                libc::_read(
+                libc::read(
                     fd as libc::c_int,
                     buf.as_mut_ptr() as *mut libc::c_void,
-                    buf.len().min(i32::MAX as usize) as u32,
+                    buf.len().min(u32::MAX as usize) as libc::c_uint,
                 )
             } as isize;
             #[cfg(not(any(unix, windows)))]
@@ -2691,10 +2713,10 @@ pub extern "C" fn molt_os_write(fd_bits: u64, data_bits: u64) -> u64 {
             };
             #[cfg(windows)]
             let rc = unsafe {
-                libc::_write(
+                libc::write(
                     fd as libc::c_int,
                     bytes.as_ptr() as *const libc::c_void,
-                    bytes.len().min(i32::MAX as usize) as u32,
+                    bytes.len().min(u32::MAX as usize) as libc::c_uint,
                 )
             } as isize;
             #[cfg(not(any(unix, windows)))]
@@ -2832,7 +2854,7 @@ pub extern "C" fn molt_os_get_inheritable(fd_bits: u64) -> u64 {
             }
             #[cfg(windows)]
             {
-                let handle = unsafe { libc::_get_osfhandle(fd as libc::c_int) };
+                let handle = unsafe { libc::get_osfhandle(fd as libc::c_int) };
                 if handle == -1 {
                     let err = std::io::Error::last_os_error();
                     if let Some(errno) = err.raw_os_error() {
@@ -2906,7 +2928,7 @@ pub extern "C" fn molt_os_set_inheritable(fd_bits: u64, inheritable_bits: u64) -
             }
             #[cfg(windows)]
             {
-                let handle = unsafe { libc::_get_osfhandle(fd as libc::c_int) };
+                let handle = unsafe { libc::get_osfhandle(fd as libc::c_int) };
                 if handle == -1 {
                     let err = std::io::Error::last_os_error();
                     if let Some(errno) = err.raw_os_error() {

@@ -120,6 +120,7 @@ pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
     PassStats {
         name: "polyhedral",
         values_changed: annotated,
+        attrs_changed: 0,
         ops_removed: 0,
         ops_added: 0,
         facts_changed: 0,

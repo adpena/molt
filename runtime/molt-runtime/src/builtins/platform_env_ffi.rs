@@ -558,7 +558,50 @@ fn socket_constants() -> Vec<(&'static str, i64)> {
             }
             out
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            vec![
+                // Winsock address families, socket types, option levels, and
+                // getaddrinfo/getnameinfo flags are ABI constants, not CRT
+                // errno values; the Windows libc crate intentionally does not
+                // expose them.
+                ("AF_INET", 2_i64),
+                ("AF_INET6", 23_i64),
+                ("SOCK_STREAM", 1_i64),
+                ("SOCK_DGRAM", 2_i64),
+                ("SOCK_RAW", 3_i64),
+                ("SOL_SOCKET", 0xffff_i64),
+                ("SO_REUSEADDR", 0x0004_i64),
+                ("SO_KEEPALIVE", 0x0008_i64),
+                ("SO_SNDBUF", 0x1001_i64),
+                ("SO_RCVBUF", 0x1002_i64),
+                ("SO_ERROR", 0x1007_i64),
+                ("SO_LINGER", 0x0080_i64),
+                ("SO_BROADCAST", 0x0020_i64),
+                ("IPPROTO_TCP", 6_i64),
+                ("IPPROTO_UDP", 17_i64),
+                ("IPPROTO_IPV6", 41_i64),
+                ("IPV6_V6ONLY", 27_i64),
+                ("TCP_NODELAY", 1_i64),
+                ("SHUT_RD", 0_i64),
+                ("SHUT_WR", 1_i64),
+                ("SHUT_RDWR", 2_i64),
+                ("AI_PASSIVE", 0x0001_i64),
+                ("AI_CANONNAME", 0x0002_i64),
+                ("AI_NUMERICHOST", 0x0004_i64),
+                ("AI_NUMERICSERV", 0x0008_i64),
+                ("NI_NUMERICHOST", 0x0002_i64),
+                ("NI_NUMERICSERV", 0x0008_i64),
+                ("MSG_PEEK", 0x0002_i64),
+                ("EAI_AGAIN", 11002_i64),
+                ("EAI_FAIL", 11003_i64),
+                ("EAI_FAMILY", 10047_i64),
+                ("EAI_NONAME", 11001_i64),
+                ("EAI_SERVICE", 10109_i64),
+                ("EAI_SOCKTYPE", 10044_i64),
+            ]
+        }
+        #[cfg(all(not(target_os = "macos"), not(windows)))]
         {
             let mut out = vec![
                 ("AF_INET", libc::AF_INET as i64),

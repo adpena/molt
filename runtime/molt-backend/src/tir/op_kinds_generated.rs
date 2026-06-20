@@ -195,6 +195,7 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
             | "list_from_range"
             | "list_new"
             | "list_pop"
+            | "matmul"
             | "object_new"
             | "property_new"
             | "range_new"
@@ -253,6 +254,224 @@ pub(crate) fn copy_kind_is_inert_marker_table(kind: &str) -> bool {
             | "nop"
             | "trace_enter_slot"
             | "trace_exit"
+    )
+}
+
+/// EXACT-match arm of `classify_copy_kind`'s explicit transparent-alias
+/// bucket: known Copy-lifted runtime ops that intentionally keep the
+/// drop-insertion fail-closed behavior (not FreshValue, not InertMarker)
+/// while remaining distinct from `copy_kind_is_explicit_no_heap_move`.
+/// Membership here DOES NOT grant MemGVN/SROA no-heap-move privileges.
+#[inline]
+pub(crate) fn copy_kind_is_explicit_transparent_alias_table(kind: &str) -> bool {
+    matches!(
+        kind,
+        "alloc_class"
+            | "alloc_class_static"
+            | "alloc_class_trusted"
+            | "anext"
+            | "asyncgen_locals_register"
+            | "asyncgen_new"
+            | "asyncgen_shutdown"
+            | "bound_method_new"
+            | "block_on"
+            | "bridge_unavailable"
+            | "buffer2d_get"
+            | "buffer2d_matmul"
+            | "buffer2d_new"
+            | "buffer2d_set"
+            | "builtin_type"
+            | "bytearray_count"
+            | "bytearray_count_slice"
+            | "bytearray_endswith"
+            | "bytearray_endswith_slice"
+            | "bytearray_fill_range"
+            | "bytearray_find"
+            | "bytearray_find_slice"
+            | "bytearray_from_obj"
+            | "bytearray_from_str"
+            | "bytearray_replace"
+            | "bytearray_split"
+            | "bytearray_split_max"
+            | "bytearray_startswith"
+            | "bytearray_startswith_slice"
+            | "bytes_count"
+            | "bytes_count_slice"
+            | "bytes_endswith"
+            | "bytes_endswith_slice"
+            | "bytes_find"
+            | "bytes_find_slice"
+            | "bytes_from_obj"
+            | "bytes_from_str"
+            | "bytes_replace"
+            | "bytes_split"
+            | "bytes_split_max"
+            | "bytes_startswith"
+            | "bytes_startswith_slice"
+            | "callargs_expand_kwstar"
+            | "callargs_expand_star"
+            | "callargs_new"
+            | "callargs_push_kw"
+            | "callargs_push_pos"
+            | "cancel_current"
+            | "cancel_token_cancel"
+            | "cancel_token_clone"
+            | "cancel_token_drop"
+            | "cancel_token_get_current"
+            | "cancel_token_is_cancelled"
+            | "cancel_token_new"
+            | "cancel_token_set_current"
+            | "cancelled"
+            | "chan_drop"
+            | "chan_new"
+            | "chr"
+            | "class_apply_set_name"
+            | "class_layout_version"
+            | "class_merge_layout"
+            | "class_new"
+            | "class_set_base"
+            | "class_set_layout_version"
+            | "classmethod_new"
+            | "code_new"
+            | "code_slot_set"
+            | "code_slots_init"
+            | "context_closing"
+            | "context_depth"
+            | "context_enter"
+            | "context_exit"
+            | "context_null"
+            | "context_unwind"
+            | "context_unwind_to"
+            | "dataclass_get"
+            | "dataclass_set"
+            | "dataclass_set_class"
+            | "dict_clear"
+            | "dict_copy"
+            | "dict_get"
+            | "dict_inc"
+            | "dict_pop"
+            | "dict_popitem"
+            | "dict_set"
+            | "dict_setdefault"
+            | "dict_setdefault_empty_list"
+            | "dict_str_int_inc"
+            | "dict_update"
+            | "dict_update_kwstar"
+            | "dict_update_missing"
+            | "env_get"
+            | "exception_class"
+            | "exception_clear"
+            | "exception_context_set"
+            | "exception_kind"
+            | "exception_last"
+            | "exception_last_pending"
+            | "exception_match_builtin"
+            | "exception_message"
+            | "exception_pop"
+            | "exception_push"
+            | "exception_set_cause"
+            | "exception_set_last"
+            | "exception_stack_clear"
+            | "exception_stack_depth"
+            | "exception_stack_enter"
+            | "exception_stack_exit"
+            | "exception_stack_set_depth"
+            | "exceptiongroup_combine"
+            | "exceptiongroup_match"
+            | "file_close"
+            | "file_flush"
+            | "file_open"
+            | "file_read"
+            | "file_write"
+            | "fn_ptr_code_set"
+            | "frame_locals_set"
+            | "frozenset_add"
+            | "func_new"
+            | "func_new_closure"
+            | "function_closure_bits"
+            | "future_cancel"
+            | "future_cancel_clear"
+            | "future_cancel_msg"
+            | "gen_locals_register"
+            | "get_attr_name_default"
+            | "has_attr_name"
+            | "id"
+            | "intarray_from_seq"
+            | "invert"
+            | "is_bound_method"
+            | "is_callable"
+            | "is_generator"
+            | "is_native_awaitable"
+            | "isinstance"
+            | "issubclass"
+            | "len"
+            | "list_append"
+            | "list_clear"
+            | "list_copy"
+            | "list_count"
+            | "list_extend"
+            | "list_index"
+            | "list_index_range"
+            | "list_insert"
+            | "list_int_new"
+            | "list_remove"
+            | "list_reverse"
+            | "memoryview_new"
+            | "memoryview_tobytes"
+            | "module_import_star"
+            | "module_new"
+            | "ord"
+            | "pow_mod"
+            | "print_newline"
+            | "promise_set_exception"
+            | "promise_set_result"
+            | "promise_new"
+            | "property_new"
+            | "round"
+            | "set_add"
+            | "set_add_probe"
+            | "set_difference_update"
+            | "set_discard"
+            | "set_intersection_update"
+            | "set_pop"
+            | "set_remove"
+            | "set_symdiff_update"
+            | "set_update"
+            | "spawn"
+            | "staticmethod_new"
+            | "statistics_mean_slice"
+            | "statistics_stdev_slice"
+            | "string_capitalize"
+            | "string_count"
+            | "string_count_slice"
+            | "string_endswith"
+            | "string_endswith_slice"
+            | "string_find"
+            | "string_find_slice"
+            | "string_lower"
+            | "string_lstrip"
+            | "string_replace"
+            | "string_rstrip"
+            | "string_split"
+            | "string_split_field"
+            | "string_split_field_eq"
+            | "string_split_field_len"
+            | "string_split_max"
+            | "string_split_sep_dict_inc"
+            | "string_split_validate"
+            | "string_split_ws_dict_inc"
+            | "string_startswith"
+            | "string_startswith_slice"
+            | "string_strip"
+            | "string_upper"
+            | "super_new"
+            | "taq_ingest_line"
+            | "task_register_token_owned"
+            | "thread_submit"
+            | "trunc"
+            | "tuple_count"
+            | "tuple_index"
+            | "type_of"
     )
 }
 
@@ -653,8 +872,7 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
 /// `ContainerAbsorb` marks borrowed operands retained by container/storage
 /// mutation; `Transferred`
 /// seeds the per-TERMINATOR table (design 27 §2.4 transfer sites — ladder
-/// #72). One variant still names an EXISTING molt fact whose hand-list
-/// migrates into ownership rows in a follow-up tranche:
+/// #72). Every variant below is constructed by a generated table today:
 ///   * `Transferred` — ownership moves OUT of the function/block: a
 ///     `Return` value or a branch-arg passed into a successor block arg.
 ///     LIVE: constructed by `terminator_operand_ownership_table` and read
@@ -678,11 +896,6 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
 ///   * `NoOperand` — no ref-bearing operand in that category (a
 ///     raw lane; a terminator category absent on a variant — `Branch` has
 ///     no direct operand, `Return` forwards no branch arg).
-// `ConditionalValidOnlyOnEdge` is the only variant still seeded solely by
-// `from_str` (awaiting the iter-cond consumer migration). The schema is
-// kept ALIVE (not ornamental) by `ALL` + `from_str`/`as_str` below: every
-// variant is constructed and round-tripped, so a dropped or renamed
-// variant is a compile/test failure.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OperandOwnership {
     Borrowed,
@@ -1119,6 +1332,146 @@ pub(crate) fn kind_result_finalizer_source_operand_table(
         "list_pop" => Some(0),
         _ => None,
     }
+}
+
+/// Result-validity fact for op results whose bits are not valid on every
+/// outgoing edge. `ConditionalValidOnlyOnEdge` is the §2.8
+/// `IterNextUnboxed` value-out: result 0 is initialized only on the
+/// not-done edge and must never be dropped or retained from the exhaustion
+/// edge. EXHAUSTIVE over OpCode; result indices not listed for an opcode
+/// are unconditionally valid.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ResultValidity {
+    AlwaysValid,
+    ConditionalValidOnlyOnEdge,
+}
+
+#[inline]
+pub(crate) fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> ResultValidity {
+    match opcode {
+        OpCode::Add => ResultValidity::AlwaysValid,
+        OpCode::Sub => ResultValidity::AlwaysValid,
+        OpCode::Mul => ResultValidity::AlwaysValid,
+        OpCode::CheckedAdd => ResultValidity::AlwaysValid,
+        OpCode::InplaceAdd => ResultValidity::AlwaysValid,
+        OpCode::InplaceSub => ResultValidity::AlwaysValid,
+        OpCode::InplaceMul => ResultValidity::AlwaysValid,
+        OpCode::Div => ResultValidity::AlwaysValid,
+        OpCode::FloorDiv => ResultValidity::AlwaysValid,
+        OpCode::Mod => ResultValidity::AlwaysValid,
+        OpCode::Pow => ResultValidity::AlwaysValid,
+        OpCode::Neg => ResultValidity::AlwaysValid,
+        OpCode::Pos => ResultValidity::AlwaysValid,
+        OpCode::Eq => ResultValidity::AlwaysValid,
+        OpCode::Ne => ResultValidity::AlwaysValid,
+        OpCode::Lt => ResultValidity::AlwaysValid,
+        OpCode::Le => ResultValidity::AlwaysValid,
+        OpCode::Gt => ResultValidity::AlwaysValid,
+        OpCode::Ge => ResultValidity::AlwaysValid,
+        OpCode::Is => ResultValidity::AlwaysValid,
+        OpCode::IsNot => ResultValidity::AlwaysValid,
+        OpCode::In => ResultValidity::AlwaysValid,
+        OpCode::NotIn => ResultValidity::AlwaysValid,
+        OpCode::BitAnd => ResultValidity::AlwaysValid,
+        OpCode::BitOr => ResultValidity::AlwaysValid,
+        OpCode::BitXor => ResultValidity::AlwaysValid,
+        OpCode::BitNot => ResultValidity::AlwaysValid,
+        OpCode::Shl => ResultValidity::AlwaysValid,
+        OpCode::Shr => ResultValidity::AlwaysValid,
+        OpCode::And => ResultValidity::AlwaysValid,
+        OpCode::Or => ResultValidity::AlwaysValid,
+        OpCode::Not => ResultValidity::AlwaysValid,
+        OpCode::Bool => ResultValidity::AlwaysValid,
+        OpCode::Alloc => ResultValidity::AlwaysValid,
+        OpCode::StackAlloc => ResultValidity::AlwaysValid,
+        OpCode::ObjectNewBound => ResultValidity::AlwaysValid,
+        OpCode::ObjectNewBoundStack => ResultValidity::AlwaysValid,
+        OpCode::Free => ResultValidity::AlwaysValid,
+        OpCode::LoadAttr => ResultValidity::AlwaysValid,
+        OpCode::StoreAttr => ResultValidity::AlwaysValid,
+        OpCode::DelAttr => ResultValidity::AlwaysValid,
+        OpCode::Index => ResultValidity::AlwaysValid,
+        OpCode::StoreIndex => ResultValidity::AlwaysValid,
+        OpCode::DelIndex => ResultValidity::AlwaysValid,
+        OpCode::DeleteVar => ResultValidity::AlwaysValid,
+        OpCode::Call => ResultValidity::AlwaysValid,
+        OpCode::CallMethod => ResultValidity::AlwaysValid,
+        OpCode::CallBuiltin => ResultValidity::AlwaysValid,
+        OpCode::OrdAt => ResultValidity::AlwaysValid,
+        OpCode::BoxVal => ResultValidity::AlwaysValid,
+        OpCode::UnboxVal => ResultValidity::AlwaysValid,
+        OpCode::TypeGuard => ResultValidity::AlwaysValid,
+        OpCode::IncRef => ResultValidity::AlwaysValid,
+        OpCode::DecRef => ResultValidity::AlwaysValid,
+        OpCode::DelBoundary => ResultValidity::AlwaysValid,
+        OpCode::BuildList => ResultValidity::AlwaysValid,
+        OpCode::BuildDict => ResultValidity::AlwaysValid,
+        OpCode::BuildTuple => ResultValidity::AlwaysValid,
+        OpCode::BuildSet => ResultValidity::AlwaysValid,
+        OpCode::BuildSlice => ResultValidity::AlwaysValid,
+        OpCode::GetIter => ResultValidity::AlwaysValid,
+        OpCode::IterNext => ResultValidity::AlwaysValid,
+        OpCode::IterNextUnboxed => match result_idx {
+            0 => ResultValidity::ConditionalValidOnlyOnEdge,
+            _ => ResultValidity::AlwaysValid,
+        },
+        OpCode::ForIter => ResultValidity::AlwaysValid,
+        OpCode::AllocTask => ResultValidity::AlwaysValid,
+        OpCode::StateSwitch => ResultValidity::AlwaysValid,
+        OpCode::StateTransition => ResultValidity::AlwaysValid,
+        OpCode::StateYield => ResultValidity::AlwaysValid,
+        OpCode::ChanSendYield => ResultValidity::AlwaysValid,
+        OpCode::ChanRecvYield => ResultValidity::AlwaysValid,
+        OpCode::ClosureLoad => ResultValidity::AlwaysValid,
+        OpCode::ClosureStore => ResultValidity::AlwaysValid,
+        OpCode::Yield => ResultValidity::AlwaysValid,
+        OpCode::YieldFrom => ResultValidity::AlwaysValid,
+        OpCode::Raise => ResultValidity::AlwaysValid,
+        OpCode::CheckException => ResultValidity::AlwaysValid,
+        OpCode::ExceptionPending => ResultValidity::AlwaysValid,
+        OpCode::FunctionDefaultsVersion => ResultValidity::AlwaysValid,
+        OpCode::TryStart => ResultValidity::AlwaysValid,
+        OpCode::TryEnd => ResultValidity::AlwaysValid,
+        OpCode::StateBlockStart => ResultValidity::AlwaysValid,
+        OpCode::StateBlockEnd => ResultValidity::AlwaysValid,
+        OpCode::ConstInt => ResultValidity::AlwaysValid,
+        OpCode::ConstBigInt => ResultValidity::AlwaysValid,
+        OpCode::ConstFloat => ResultValidity::AlwaysValid,
+        OpCode::ConstStr => ResultValidity::AlwaysValid,
+        OpCode::ConstBool => ResultValidity::AlwaysValid,
+        OpCode::ConstNone => ResultValidity::AlwaysValid,
+        OpCode::ConstBytes => ResultValidity::AlwaysValid,
+        OpCode::Copy => ResultValidity::AlwaysValid,
+        OpCode::Import => ResultValidity::AlwaysValid,
+        OpCode::ImportFrom => ResultValidity::AlwaysValid,
+        OpCode::ModuleCacheGet => ResultValidity::AlwaysValid,
+        OpCode::ModuleCacheSet => ResultValidity::AlwaysValid,
+        OpCode::ModuleCacheDel => ResultValidity::AlwaysValid,
+        OpCode::ModuleGetAttr => ResultValidity::AlwaysValid,
+        OpCode::ModuleImportFrom => ResultValidity::AlwaysValid,
+        OpCode::ModuleGetGlobal => ResultValidity::AlwaysValid,
+        OpCode::ModuleGetName => ResultValidity::AlwaysValid,
+        OpCode::ModuleSetAttr => ResultValidity::AlwaysValid,
+        OpCode::ModuleDelGlobal => ResultValidity::AlwaysValid,
+        OpCode::ModuleDelGlobalIfPresent => ResultValidity::AlwaysValid,
+        OpCode::WarnStderr => ResultValidity::AlwaysValid,
+        OpCode::ScfIf => ResultValidity::AlwaysValid,
+        OpCode::ScfFor => ResultValidity::AlwaysValid,
+        OpCode::ScfWhile => ResultValidity::AlwaysValid,
+        OpCode::ScfYield => ResultValidity::AlwaysValid,
+        OpCode::Deopt => ResultValidity::AlwaysValid,
+    }
+}
+
+#[inline]
+pub(crate) fn opcode_result_is_conditionally_valid_only_on_edge(
+    opcode: OpCode,
+    result_idx: usize,
+) -> bool {
+    matches!(
+        opcode_result_validity_table(opcode, result_idx),
+        ResultValidity::ConditionalValidOnlyOnEdge
+    )
 }
 
 /// Zero-cost discriminant of the `Terminator` enum (blocks.rs) the

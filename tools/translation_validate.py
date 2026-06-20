@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Translation validation for Molt compiler passes.
 
-Validates that each optimization pass preserves program semantics by:
-1. Compiling and running the program normally (all passes) -> output_full
-2. Compiling and running with midend disabled -> output_no_midend
-3. Running through CPython -> output_cpython (ground truth)
-4. Comparing all three outputs for equivalence
+Validates that the compiled Molt pipeline preserves program semantics by:
+1. Running through CPython -> output_cpython (ground truth)
+2. Compiling and running through Molt -> output_molt
+3. Comparing both outputs for equivalence
 
 This is Tier 1 (concrete) validation -- fast but incomplete.
 Future: Tier 2 (symbolic) and Tier 3 (SMT-based) validation.
@@ -23,15 +22,21 @@ Usage:
     # JSON output for CI integration
     uv run --python 3.12 python3 tools/translation_validate.py --json examples/hello.py
 
-    # Skip CPython ground-truth check (only compare midend-on vs midend-off)
+    # Explicit Python target custody
+    uv run --python 3.14 python3 tools/translation_validate.py --python-version 3.14 examples/hello.py
+
+    # Skip CPython ground-truth check; require Molt build/run success only
     uv run --python 3.12 python3 tools/translation_validate.py --no-cpython examples/hello.py
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -54,9 +59,17 @@ if str(_REPO_ROOT) not in sys.path:
 from tools import harness_memory_guard  # noqa: E402
 
 _SRC_DIR = _REPO_ROOT / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+import molt.cli as molt_cli  # noqa: E402
+
 _DEFAULT_TIMEOUT = int(os.environ.get("MOLT_TV_TIMEOUT", "60"))
 _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
 _DEFAULT_JOBS = int(os.environ.get("MOLT_TV_JOBS", "4"))
+_PYTHON_VERSION_PROBE = (
+    "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}', end='')"
+)
 
 
 def _artifact_root(env: Mapping[str, str] | None = None) -> Path:
@@ -86,9 +99,123 @@ def _cargo_target_root(env: Mapping[str, str] | None = None) -> Path:
     return _artifact_root(env_view) / "target"
 
 
-def _resolve_python() -> str:
-    """Resolve the Python interpreter for CPython baseline runs."""
-    return os.environ.get("MOLT_TV_PYTHON", sys.executable)
+def _resolve_target_python(
+    explicit: str | None,
+    *,
+    project_root: Path = _REPO_ROOT,
+) -> molt_cli.TargetPythonVersion:
+    return molt_cli._resolve_target_python_version(
+        explicit=explicit,
+        build_config=molt_cli._resolve_build_config(
+            molt_cli._load_molt_config(project_root)
+        ),
+        project_root=project_root,
+    )
+
+
+def _target_python_command_candidates(
+    target_python: molt_cli.TargetPythonVersion,
+    *,
+    override: str | None,
+) -> list[list[str]]:
+    """Return explicit candidate commands for a target CPython minor."""
+    if override is not None and override.strip():
+        explicit = override.strip()
+        if Path(explicit).expanduser().exists():
+            return [[explicit]]
+        parsed = shlex.split(explicit, posix=os.name != "nt")
+        return [parsed if parsed else [explicit]]
+    candidates: list[list[str]] = []
+    if os.name == "nt":
+        candidates.append(["py", f"-{target_python.short}"])
+    candidates.append([f"python{target_python.short}"])
+    return candidates
+
+
+def _verify_target_python_command(
+    command: list[str],
+    *,
+    target_python: molt_cli.TargetPythonVersion,
+    env: Mapping[str, str],
+) -> tuple[bool, str]:
+    probe_env = dict(env)
+    probe_env["PYTHONHASHSEED"] = "0"
+    stdout, stderr, rc = _run_subprocess(
+        [*command, "-c", _PYTHON_VERSION_PROBE],
+        timeout=10,
+        env=probe_env,
+        cwd=_REPO_ROOT,
+    )
+    if rc != 0:
+        detail = (stderr or stdout).strip()
+        return False, detail or f"returncode={rc}"
+    actual = stdout.strip()
+    if actual != target_python.short:
+        return False, f"reported Python {actual or '<empty>'}"
+    return True, ""
+
+
+@functools.lru_cache(maxsize=16)
+def _target_python_command_cached(
+    target_python_short: str,
+    override: str,
+) -> tuple[str, ...]:
+    target_python = molt_cli._parse_target_python_version(target_python_short)
+    env = os.environ.copy()
+    failures: list[str] = []
+    if not override:
+        uv = shutil.which("uv")
+        if uv is not None:
+            stdout, stderr, rc = _run_subprocess(
+                [uv, "python", "find", target_python.short],
+                timeout=10,
+                env=env,
+                cwd=_REPO_ROOT,
+            )
+            if rc == 0 and stdout.strip():
+                candidate = [stdout.splitlines()[0].strip()]
+                ok, detail = _verify_target_python_command(
+                    candidate,
+                    target_python=target_python,
+                    env=env,
+                )
+                if ok:
+                    return tuple(candidate)
+                failures.append(f"{' '.join(candidate)}: {detail}")
+            else:
+                detail = (stderr or stdout).strip()
+                failures.append(
+                    f"{uv} python find {target_python.short}: "
+                    f"{detail or f'returncode={rc}'}"
+                )
+    for candidate in _target_python_command_candidates(
+        target_python,
+        override=override or None,
+    ):
+        ok, detail = _verify_target_python_command(
+            candidate,
+            target_python=target_python,
+            env=env,
+        )
+        if ok:
+            return tuple(candidate)
+        failures.append(f"{' '.join(candidate)}: {detail}")
+    attempted = "; ".join(failures) if failures else "no candidates"
+    raise RuntimeError(
+        f"no verified CPython {target_python.short} command available for "
+        f"translation validation ({attempted})"
+    )
+
+
+def _target_python_command(
+    target_python: molt_cli.TargetPythonVersion,
+) -> list[str]:
+    return list(
+        _target_python_command_cached(
+            target_python.short,
+            os.environ.get("MOLT_TV_PYTHON", "").strip(),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +231,7 @@ class RunResult:
     stderr: str
     returncode: int
     elapsed_ms: float
-    mode: str  # "cpython", "molt_full", "molt_no_midend"
+    mode: str  # "cpython", "molt"
 
     @property
     def ok(self) -> bool:
@@ -122,36 +249,23 @@ class ValidationResult:
 
     source_path: str
     cpython: RunResult | None = None
-    molt_full: RunResult | None = None
-    molt_no_midend: RunResult | None = None
-    match_full_vs_cpython: bool | None = None
-    match_no_midend_vs_cpython: bool | None = None
-    match_full_vs_no_midend: bool | None = None
+    molt: RunResult | None = None
+    match_molt_vs_cpython: bool | None = None
     error: str | None = None
     skipped: bool = False
     skip_reason: str | None = None
 
     @property
     def all_match(self) -> bool:
-        checks = [
-            self.match_full_vs_cpython,
-            self.match_no_midend_vs_cpython,
-            self.match_full_vs_no_midend,
-        ]
-        return all(c is True for c in checks if c is not None)
-
-    @property
-    def midend_preserves_semantics(self) -> bool:
-        """True if midend passes did not change observable behavior."""
-        if self.match_full_vs_no_midend is not None:
-            return self.match_full_vs_no_midend
-        # Fallback: both match CPython
-        if (
-            self.match_full_vs_cpython is not None
-            and self.match_no_midend_vs_cpython is not None
-        ):
-            return self.match_full_vs_cpython and self.match_no_midend_vs_cpython
-        return True  # insufficient data, assume ok
+        if self.molt is None or not self.molt.ok:
+            return False
+        if self.cpython is not None and not self.cpython.ok:
+            return False
+        if self.match_molt_vs_cpython is not None:
+            return self.match_molt_vs_cpython
+        if self.cpython is not None:
+            return False
+        return True
 
 
 @dataclass
@@ -185,14 +299,6 @@ class ValidationSummary:
             1 for r in self.results if not r.skipped and not r.error and not r.all_match
         )
 
-    @property
-    def midend_mismatches(self) -> int:
-        return sum(
-            1
-            for r in self.results
-            if not r.skipped and not r.error and not r.midend_preserves_semantics
-        )
-
 
 # ---------------------------------------------------------------------------
 # Execution helpers
@@ -204,6 +310,7 @@ def _run_subprocess(
     *,
     timeout: int,
     env: dict[str, str] | None = None,
+    cwd: Path | str | None = None,
 ) -> tuple[str, str, int]:
     """Run a subprocess safely with timeout. Returns (stdout, stderr, rc)."""
     limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)
@@ -215,6 +322,7 @@ def _run_subprocess(
             text=True,
             timeout=timeout,
             env=env,
+            cwd=cwd,
             limits=limits,
         )
         return proc.stdout, proc.stderr, proc.returncode
@@ -224,15 +332,21 @@ def _run_subprocess(
         return "", str(exc), -1
 
 
-def _run_cpython(source_path: str, *, timeout: int) -> RunResult:
+def _run_cpython(
+    source_path: str,
+    *,
+    timeout: int,
+    target_python: molt_cli.TargetPythonVersion,
+) -> RunResult:
     """Run a Python file through CPython."""
     t0 = time.perf_counter()
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = "0"
     stdout, stderr, rc = _run_subprocess(
-        [_resolve_python(), source_path],
+        [*_target_python_command(target_python), source_path],
         timeout=timeout,
         env=env,
+        cwd=_REPO_ROOT,
     )
     elapsed = (time.perf_counter() - t0) * 1000.0
     return RunResult(
@@ -249,10 +363,10 @@ def _run_molt(
     *,
     timeout: int,
     build_profile: str,
-    disable_midend: bool = False,
+    target_python: molt_cli.TargetPythonVersion,
 ) -> RunResult:
     """Build and run a Python file through Molt."""
-    mode = "molt_no_midend" if disable_midend else "molt_full"
+    mode = "molt"
     t0 = time.perf_counter()
     temp_root = _temp_root()
     temp_root.mkdir(parents=True, exist_ok=True)
@@ -261,10 +375,6 @@ def _run_molt(
         env = os.environ.copy()
         env["PYTHONPATH"] = str(_SRC_DIR)
         env["PYTHONHASHSEED"] = "0"
-        if disable_midend:
-            env["MOLT_MIDEND_DISABLE"] = "1"
-        else:
-            env.pop("MOLT_MIDEND_DISABLE", None)
         # Route build artifacts and per-run temps to the canonical temp root.
         env.setdefault("MOLT_CACHE", os.path.join(tmp_dir, "cache"))
         env.setdefault("TMPDIR", str(tmp_dir))
@@ -275,11 +385,13 @@ def _run_molt(
 
         # Build
         build_cmd = [
-            sys.executable,
+            *_target_python_command(target_python),
             "-m",
             "molt.cli",
             "build",
             source_path,
+            "--python-version",
+            target_python.short,
             "--profile",
             build_profile,
             "--output",
@@ -289,6 +401,7 @@ def _run_molt(
             build_cmd,
             timeout=timeout,
             env=env,
+            cwd=_REPO_ROOT,
         )
         if build_rc != 0:
             elapsed = (time.perf_counter() - t0) * 1000.0
@@ -322,6 +435,7 @@ def _run_molt(
             [str(binary)],
             timeout=timeout,
             env=env,
+            cwd=_REPO_ROOT,
         )
         elapsed = (time.perf_counter() - t0) * 1000.0
         return RunResult(
@@ -355,6 +469,7 @@ def validate_file(
     build_profile: str = _DEFAULT_BUILD_PROFILE,
     include_cpython: bool = True,
     verbose: bool = False,
+    target_python: molt_cli.TargetPythonVersion = molt_cli._DEFAULT_TARGET_PYTHON_VERSION,
 ) -> ValidationResult:
     """Run translation validation on a single source file."""
     result = ValidationResult(source_path=source_path)
@@ -385,41 +500,26 @@ def validate_file(
             return result
 
     try:
-        # Run all three variants
+        # Run the compiled pipeline and optional CPython ground truth.
         if include_cpython:
-            result.cpython = _run_cpython(source_path, timeout=timeout)
+            result.cpython = _run_cpython(
+                source_path,
+                timeout=timeout,
+                target_python=target_python,
+            )
 
-        result.molt_full = _run_molt(
+        result.molt = _run_molt(
             source_path,
             timeout=timeout,
             build_profile=build_profile,
-            disable_midend=False,
-        )
-        result.molt_no_midend = _run_molt(
-            source_path,
-            timeout=timeout,
-            build_profile=build_profile,
-            disable_midend=True,
+            target_python=target_python,
         )
 
         # Compare outputs
-        if result.molt_full and result.molt_no_midend:
-            if result.molt_full.ok and result.molt_no_midend.ok:
-                result.match_full_vs_no_midend = (
-                    result.molt_full.output_key == result.molt_no_midend.output_key
-                )
-            elif result.molt_full.returncode == result.molt_no_midend.returncode:
-                # Both failed the same way
-                result.match_full_vs_no_midend = True
-
         if include_cpython and result.cpython:
-            if result.cpython.ok and result.molt_full and result.molt_full.ok:
-                result.match_full_vs_cpython = (
-                    result.cpython.output_key == result.molt_full.output_key
-                )
-            if result.cpython.ok and result.molt_no_midend and result.molt_no_midend.ok:
-                result.match_no_midend_vs_cpython = (
-                    result.cpython.output_key == result.molt_no_midend.output_key
+            if result.cpython.ok and result.molt and result.molt.ok:
+                result.match_molt_vs_cpython = (
+                    result.cpython.output_key == result.molt.output_key
                 )
 
     except Exception as exc:
@@ -437,6 +537,7 @@ def validate_directory(
     verbose: bool = False,
     jobs: int = _DEFAULT_JOBS,
     glob_pattern: str = "**/*.py",
+    target_python: molt_cli.TargetPythonVersion = molt_cli._DEFAULT_TARGET_PYTHON_VERSION,
 ) -> ValidationSummary:
     """Run translation validation on all .py files under a directory."""
     summary = ValidationSummary()
@@ -456,6 +557,7 @@ def validate_directory(
                 build_profile=build_profile,
                 include_cpython=include_cpython,
                 verbose=verbose,
+                target_python=target_python,
             )
             summary.results.append(result)
             if verbose:
@@ -470,6 +572,7 @@ def validate_directory(
                     build_profile=build_profile,
                     include_cpython=include_cpython,
                     verbose=verbose,
+                    target_python=target_python,
                 ): sf
                 for sf in source_files
             }
@@ -521,12 +624,10 @@ def _print_result_line(r: ValidationResult) -> None:
         print(f"  {char} {rel}  ERROR: {r.error}")
     elif status == "mismatch":
         mismatches: list[str] = []
-        if r.match_full_vs_no_midend is False:
-            mismatches.append("midend-on != midend-off")
-        if r.match_full_vs_cpython is False:
+        if r.molt is not None and not r.molt.ok:
+            mismatches.append("molt failed")
+        if r.match_molt_vs_cpython is False:
             mismatches.append("molt != cpython")
-        if r.match_no_midend_vs_cpython is False:
-            mismatches.append("molt-no-midend != cpython")
         print(f"  {char} {rel}  MISMATCH: {', '.join(mismatches)}")
     else:
         print(f"  {char} {rel}")
@@ -541,7 +642,6 @@ def print_summary(summary: ValidationSummary, *, verbose: bool = False) -> None:
     print(f"  Total files:     {summary.total}")
     print(f"  Passed:          {summary.passed}")
     print(f"  Mismatches:      {summary.mismatches}")
-    print(f"  Midend issues:   {summary.midend_mismatches}")
     print(f"  Errors:          {summary.errors}")
     print(f"  Skipped:         {summary.skipped}")
     print(f"  Elapsed:         {summary.elapsed_ms:.0f} ms")
@@ -555,14 +655,13 @@ def print_summary(summary: ValidationSummary, *, verbose: bool = False) -> None:
         print("MISMATCHES:")
         for r in mismatch_results:
             _print_result_line(r)
-            if verbose and r.molt_full and r.molt_no_midend:
-                if r.match_full_vs_no_midend is False:
-                    print("    --- molt (midend on) ---")
-                    for line in r.molt_full.stdout.splitlines()[:10]:
-                        print(f"    > {line}")
-                    print("    --- molt (midend off) ---")
-                    for line in r.molt_no_midend.stdout.splitlines()[:10]:
-                        print(f"    > {line}")
+            if verbose and r.cpython and r.molt and r.match_molt_vs_cpython is False:
+                print("    --- cpython ---")
+                for line in r.cpython.stdout.splitlines()[:10]:
+                    print(f"    > {line}")
+                print("    --- molt ---")
+                for line in r.molt.stdout.splitlines()[:10]:
+                    print(f"    > {line}")
         print()
 
     # Show errors
@@ -575,11 +674,6 @@ def print_summary(summary: ValidationSummary, *, verbose: bool = False) -> None:
 
     if summary.mismatches == 0 and summary.errors == 0:
         print("All translation validations PASSED.")
-    elif summary.midend_mismatches > 0:
-        print(
-            f"WARNING: {summary.midend_mismatches} file(s) show different "
-            "behavior with midend enabled vs disabled."
-        )
 
 
 def summary_to_json(
@@ -593,19 +687,14 @@ def summary_to_json(
         entry: dict[str, Any] = {
             "source_path": r.source_path,
             "status": _result_status(r),
-            "midend_preserves_semantics": r.midend_preserves_semantics,
         }
         if r.skipped:
             entry["skip_reason"] = r.skip_reason
         if r.error:
             entry["error"] = r.error
-        if r.match_full_vs_no_midend is not None:
-            entry["match_full_vs_no_midend"] = r.match_full_vs_no_midend
-        if r.match_full_vs_cpython is not None:
-            entry["match_full_vs_cpython"] = r.match_full_vs_cpython
-        if r.match_no_midend_vs_cpython is not None:
-            entry["match_no_midend_vs_cpython"] = r.match_no_midend_vs_cpython
-        for attr in ("cpython", "molt_full", "molt_no_midend"):
+        if r.match_molt_vs_cpython is not None:
+            entry["match_molt_vs_cpython"] = r.match_molt_vs_cpython
+        for attr in ("cpython", "molt"):
             run = getattr(r, attr)
             if run is not None:
                 entry[attr] = {
@@ -619,7 +708,6 @@ def summary_to_json(
         "total": summary.total,
         "passed": summary.passed,
         "mismatches": summary.mismatches,
-        "midend_mismatches": summary.midend_mismatches,
         "errors": summary.errors,
         "skipped": summary.skipped,
         "elapsed_ms": summary.elapsed_ms,
@@ -641,20 +729,15 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Validation strategy:
-              For each input program, compile and run three ways:
+              For each input program, compile and run two ways:
               1. CPython (ground truth)
-              2. Molt with all midend passes enabled
-              3. Molt with midend disabled (MOLT_MIDEND_DISABLE=1)
-
-              If (2) and (3) produce the same output, the midend passes
-              collectively preserve semantics. If they differ, a pass may
-              have introduced a miscompilation.
+              2. Molt compiled pipeline
 
             Environment variables:
               MOLT_TV_TIMEOUT        Per-file timeout in seconds (default: 60)
               MOLT_TV_BUILD_PROFILE  Build profile: dev or release (default: dev)
               MOLT_TV_JOBS           Parallel jobs (default: 4)
-              MOLT_TV_PYTHON         CPython executable for baseline
+              MOLT_TV_PYTHON         Explicit target CPython command override
               MOLT_EXT_ROOT          Artifact root for build artifacts/cache/tmp
               MOLT_DIFF_TMPDIR       Temp directory root
         """),
@@ -679,7 +762,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-cpython",
         action="store_true",
-        help="Skip CPython ground-truth comparison (only compare midend on/off)",
+        help="Skip CPython ground-truth comparison; require Molt build/run success.",
     )
     p.add_argument(
         "--timeout",
@@ -692,6 +775,15 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["dev", "release"],
         default=_DEFAULT_BUILD_PROFILE,
         help=f"Molt build profile (default: {_DEFAULT_BUILD_PROFILE})",
+    )
+    p.add_argument(
+        "--python-version",
+        default=None,
+        help=(
+            "Target Python semantics and CPython baseline version "
+            "(3.12, 3.13, or 3.14). Defaults from [tool.molt.build] or "
+            "project.requires-python."
+        ),
     )
     p.add_argument(
         "--jobs",
@@ -711,6 +803,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    try:
+        target_python = _resolve_target_python(args.python_version)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     guard_env = os.environ.copy()
     limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", guard_env)
@@ -734,6 +830,7 @@ def main(argv: list[str] | None = None) -> int:
                     build_profile=args.build_profile,
                     include_cpython=not args.no_cpython,
                     verbose=args.verbose,
+                    target_python=target_python,
                 )
                 all_summary.results.append(result)
                 if args.verbose and not args.json_output:
@@ -747,6 +844,7 @@ def main(argv: list[str] | None = None) -> int:
                     verbose=args.verbose,
                     jobs=args.jobs,
                     glob_pattern=args.glob,
+                    target_python=target_python,
                 )
                 all_summary.results.extend(sub.results)
             else:
@@ -778,8 +876,7 @@ def main(argv: list[str] | None = None) -> int:
         print(memory_guard_status)
         print_summary(all_summary, verbose=args.verbose)
 
-    # Exit code: 0 if no midend mismatches, 1 otherwise
-    return 1 if all_summary.midend_mismatches > 0 else 0
+    return 0 if all_summary.mismatches == 0 and all_summary.errors == 0 else 1
 
 
 if __name__ == "__main__":

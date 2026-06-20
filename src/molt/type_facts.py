@@ -148,12 +148,15 @@ class TypeFacts:
 
 
 def load_type_facts(path: Path) -> TypeFacts:
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     return TypeFacts.from_dict(data)
 
 
 def write_type_facts(path: Path, facts: TypeFacts) -> None:
-    path.write_text(json.dumps(facts.to_dict(), indent=2, sort_keys=True) + "\n")
+    path.write_text(
+        json.dumps(facts.to_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def collect_type_facts_from_paths(
@@ -162,7 +165,7 @@ def collect_type_facts_from_paths(
     facts = TypeFacts(strict=(trust == "trusted"))
     for path in paths:
         module_name = path.stem
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         module = facts.module(module_name)
         _collect_module_facts(module, source, trust, infer=infer)
     return facts

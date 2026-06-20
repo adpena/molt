@@ -2738,12 +2738,24 @@ pub extern "C" fn molt_time_strftime(fmt_bits: u64, time_bits: u64) -> u64 {
             let mut buf = vec![0u8; 128];
             loop {
                 let len = unsafe {
-                    libc::strftime(
-                        buf.as_mut_ptr() as *mut libc::c_char,
-                        buf.len(),
-                        c_fmt.as_ptr(),
-                        &tm as *const libc::tm,
-                    )
+                    #[cfg(windows)]
+                    {
+                        crate::windows_abi::strftime(
+                            buf.as_mut_ptr() as *mut libc::c_char,
+                            buf.len(),
+                            c_fmt.as_ptr(),
+                            &tm as *const libc::tm,
+                        )
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        libc::strftime(
+                            buf.as_mut_ptr() as *mut libc::c_char,
+                            buf.len(),
+                            c_fmt.as_ptr(),
+                            &tm as *const libc::tm,
+                        )
+                    }
                 };
                 if len == 0 {
                     if buf.len() >= 1_048_576 {

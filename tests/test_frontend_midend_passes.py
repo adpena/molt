@@ -4,12 +4,14 @@ import ast
 import os
 import types
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
 import molt.frontend as frontend_module
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend.cfg_analysis import build_cfg
+from molt.type_facts import collect_type_facts_from_paths
 
 
 def _lower_ops(ops: list[MoltOp]) -> list[dict]:
@@ -202,6 +204,33 @@ def _eval_simple_ops(ops: list[MoltOp]) -> int | None:
             return int(ret)
         raise AssertionError(f"unsupported op in simple evaluator: {op.kind}")
     raise AssertionError("simple evaluator reached end without RETURN")
+
+
+def _install_oscillating_cse(gen: SimpleTIRGenerator, *, marker: int) -> None:
+    flip = {"value": False}
+
+    def oscillating_cse(
+        self: SimpleTIRGenerator,
+        round_ops: list[MoltOp],
+        *,
+        allow_cross_block_const_dedupe: bool,
+        max_cse_iterations_override: int | None = None,
+        sccp_iter_cap_override: int | None = None,
+    ) -> tuple[list[MoltOp], int]:
+        del (
+            allow_cross_block_const_dedupe,
+            max_cse_iterations_override,
+            sccp_iter_cap_override,
+        )
+        flip["value"] = not flip["value"]
+        marker_op = MoltOp(kind="LINE", args=[marker], result=MoltValue("none"))
+        if flip["value"]:
+            return ([*round_ops, marker_op], 0)
+        return ([op for op in round_ops if op != marker_op], 0)
+
+    gen._run_cse_canonicalization_round = types.MethodType(  # type: ignore[method-assign]
+        oscillating_cse, gen
+    )
 
 
 def test_trivial_phi_elides_and_rewrites_users() -> None:
@@ -462,6 +491,27 @@ def test_cfg_dead_const_elimination_removes_unused_constants() -> None:
     )
 
     assert all(op.get("value") != 99 for op in lowered if op.get("kind") == "const")
+
+
+def test_dce_eliminates_cross_block_dead_pure_dependency_chain_in_one_pass() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [
+        MoltOp(kind="CONST", args=[7], result=MoltValue("predecessor")),
+        MoltOp(kind="JUMP", args=[1], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=[1], result=MoltValue("none")),
+        MoltOp(kind="CONST", args=[3], result=MoltValue("local")),
+        MoltOp(
+            kind="ADD",
+            args=[MoltValue("predecessor"), MoltValue("local")],
+            result=MoltValue("dead_sum"),
+        ),
+    ]
+
+    rewritten = gen._eliminate_dead_trivial_consts(ops)
+
+    assert [op.kind for op in rewritten] == ["JUMP", "LABEL"]
+    assert gen._eliminate_dead_trivial_consts(rewritten) == rewritten
+    assert gen.midend_stats["dce_removed_total"] == 3
 
 
 def test_cfg_const_dedupe_keeps_check_exception_users_defined() -> None:
@@ -1857,6 +1907,29 @@ def test_midend_pipeline_is_idempotent_on_second_round() -> None:
     assert first == second
 
 
+def test_retired_midend_disable_env_does_not_skip_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_MIDEND_DISABLE", "1")
+    gen = SimpleTIRGenerator()
+    lowered = gen.map_ops_to_json(
+        [
+            MoltOp(kind="CONST_BOOL", args=[True], result=MoltValue("cond")),
+            MoltOp(kind="IF", args=[MoltValue("cond")], result=MoltValue("none")),
+            MoltOp(kind="CONST", args=[1], result=MoltValue("kept")),
+            MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
+            MoltOp(kind="CONST", args=[999], result=MoltValue("dead")),
+            MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
+            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+        ]
+    )
+
+    assert all(op.get("kind") not in {"if", "else", "end_if"} for op in lowered)
+    assert all(op.get("value") != 999 for op in lowered if op.get("kind") == "const")
+    assert gen.midend_stats["midend_module_skips"] == 0
+    assert gen.midend_pass_stats_by_function["<direct>"]["simplify"]["attempted"] >= 1
+
+
 def test_affine_loop_compare_truth_proves_same_iv_offset_compare() -> None:
     gen = SimpleTIRGenerator()
     ops = [
@@ -1991,93 +2064,94 @@ def test_midend_telemetry_counters_account_for_expanded_vs_fallback() -> None:
     assert accepted + fallbacks == attempts
 
 
-def test_midend_fixed_point_round_cap_degrades_without_semantic_failure() -> None:
+def test_midend_fixed_point_non_convergence_fails_closed_by_default() -> None:
     gen = SimpleTIRGenerator()
     ops = [MoltOp(kind="CONST", args=[1], result=MoltValue("x"))]
-    flip = {"value": False}
+    _install_oscillating_cse(gen, marker=777)
 
-    def oscillating_cse(
-        self: SimpleTIRGenerator,
-        round_ops: list[MoltOp],
-        *,
-        allow_cross_block_const_dedupe: bool,
-        max_cse_iterations_override: int | None = None,
-        sccp_iter_cap_override: int | None = None,
-    ) -> tuple[list[MoltOp], int]:
-        del (
-            allow_cross_block_const_dedupe,
-            max_cse_iterations_override,
-            sccp_iter_cap_override,
+    with pytest.raises(RuntimeError, match="failed to converge"):
+        _ = gen._canonicalize_control_aware_ops_impl(
+            ops, allow_cross_block_const_dedupe=True
         )
-        flip["value"] = not flip["value"]
-        if flip["value"]:
-            return (
-                [
-                    *round_ops,
-                    MoltOp(kind="LINE", args=[777], result=MoltValue("none")),
-                ],
-                0,
-            )
-        return (
-            [op for op in round_ops if not (op.kind == "LINE" and op.args == [777])],
-            0,
-        )
-
-    gen._run_cse_canonicalization_round = types.MethodType(  # type: ignore[method-assign]
-        oscillating_cse, gen
-    )
-
-    rewritten = gen._canonicalize_control_aware_ops_impl(
-        ops, allow_cross_block_const_dedupe=True
-    )
-    assert isinstance(rewritten, list)
     assert gen.midend_stats["fixed_point_fail_fast"] >= 1
     outcome = gen.midend_policy_outcomes_by_function["<direct>"]
     assert outcome["degraded"] is True
     actions = [event.get("action") for event in outcome.get("degrade_events", [])]
-    assert "accept_last_verified_round" in actions
+    assert "fail_closed_non_convergence" in actions
+    assert "accept_last_verified_round" not in actions
 
 
-def test_midend_fixed_point_round_cap_hard_fail_opt_in() -> None:
+def test_retired_midend_hard_fail_env_does_not_control_non_convergence() -> None:
     gen = SimpleTIRGenerator()
     ops = [MoltOp(kind="CONST", args=[1], result=MoltValue("x"))]
-    flip = {"value": False}
-
-    def oscillating_cse(
-        self: SimpleTIRGenerator,
-        round_ops: list[MoltOp],
-        *,
-        allow_cross_block_const_dedupe: bool,
-        max_cse_iterations_override: int | None = None,
-        sccp_iter_cap_override: int | None = None,
-    ) -> tuple[list[MoltOp], int]:
-        del (
-            allow_cross_block_const_dedupe,
-            max_cse_iterations_override,
-            sccp_iter_cap_override,
-        )
-        flip["value"] = not flip["value"]
-        if flip["value"]:
-            return (
-                [
-                    *round_ops,
-                    MoltOp(kind="LINE", args=[778], result=MoltValue("none")),
-                ],
-                0,
-            )
-        return (
-            [op for op in round_ops if not (op.kind == "LINE" and op.args == [778])],
-            0,
-        )
-
-    gen._run_cse_canonicalization_round = types.MethodType(  # type: ignore[method-assign]
-        oscillating_cse, gen
-    )
-    with _temp_env("MOLT_MIDEND_HARD_FAIL", "1"):
+    _install_oscillating_cse(gen, marker=778)
+    with _temp_env("MOLT_MIDEND_HARD_FAIL", "0"):
         with pytest.raises(RuntimeError, match="failed to converge"):
             _ = gen._canonicalize_control_aware_ops_impl(
                 ops, allow_cross_block_const_dedupe=True
             )
+
+
+def test_midend_fail_open_env_no_longer_controls_non_convergence() -> None:
+    gen = SimpleTIRGenerator()
+    ops = [MoltOp(kind="CONST", args=[1], result=MoltValue("x"))]
+    _install_oscillating_cse(gen, marker=779)
+
+    with _temp_env("MOLT_MIDEND_FAIL_OPEN", "0"):
+        with pytest.raises(RuntimeError, match="failed to converge"):
+            _ = gen._canonicalize_control_aware_ops_impl(
+                ops, allow_cross_block_const_dedupe=True
+            )
+
+    assert gen.midend_stats["fixed_point_fail_fast"] >= 1
+    outcome = gen.midend_policy_outcomes_by_function["<direct>"]
+    assert outcome["degraded"] is True
+    actions = [event.get("action") for event in outcome.get("degrade_events", [])]
+    assert "fail_closed_non_convergence" in actions
+
+
+def test_midend_idempotence_probe_has_no_env_or_budget_bypass() -> None:
+    gen = SimpleTIRGenerator()
+    original_structural_cfg = gen._ensure_structural_cfg_validity
+
+    def mutate_only_during_idempotence_probe(
+        self: SimpleTIRGenerator,
+        ops: list[MoltOp],
+        *,
+        stage: str,
+    ) -> tuple[list[MoltOp], int]:
+        del self
+        rewritten, rewrites = original_structural_cfg(ops, stage=stage)
+        if stage == "midend_idempotence_probe":
+            marker = MoltOp(kind="LINE", args=[991337], result=MoltValue("none"))
+            return [*rewritten, marker], rewrites + 1
+        return rewritten, rewrites
+
+    gen._ensure_structural_cfg_validity = types.MethodType(  # type: ignore[method-assign]
+        mutate_only_during_idempotence_probe, gen
+    )
+
+    with _temp_env("MOLT_MIDEND_IDEMPOTENCE_CHECK", "0"):
+        with _temp_env("MOLT_MIDEND_WORK_BUDGET", "0"):
+            with pytest.raises(RuntimeError, match="idempotence check failed"):
+                _ = gen._canonicalize_control_aware_ops_impl(
+                    [
+                        MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
+                        MoltOp(
+                            kind="RETURN",
+                            args=[MoltValue("x")],
+                            result=MoltValue("none"),
+                        ),
+                    ],
+                    allow_cross_block_const_dedupe=True,
+                )
+
+    outcome = gen.midend_policy_outcomes_by_function["<direct>"]
+    actions = [event.get("action") for event in outcome.get("degrade_events", [])]
+    assert "disable_idempotence_probe" not in actions
+    assert "accept_probe_ops" not in actions
+    assert "fail_closed_idempotence_probe" in actions
+    assert gen.midend_stats["fixed_point_fail_fast"] >= 1
 
 
 def test_canonicalization_state_signature_reuses_cached_tuple() -> None:
@@ -2274,12 +2348,10 @@ def test_midend_pass_timing_and_policy_outcome_are_recorded() -> None:
     with _temp_env("MOLT_MIDEND_DEV_ENABLE", "1"):
         _ = gen.map_ops_to_json(
             [
-                MoltOp(kind="CONST", args=[1], result=MoltValue("a")),
-                MoltOp(kind="CONST", args=[2], result=MoltValue("b")),
                 MoltOp(
-                    kind="ADD",
-                    args=[MoltValue("a"), MoltValue("b")],
-                    result=MoltValue("s"),
+                    kind="RETURN",
+                    args=[MoltValue("none")],
+                    result=MoltValue("none"),
                 ),
             ]
         )
@@ -2749,8 +2821,7 @@ def test_full_pipeline_rejects_missing_leak_through_phi() -> None:
             result=MoltValue("none"),
         ),
     ]
-    with _temp_env("MOLT_MIDEND_DISABLE", "0"):
-        rewritten = gen._canonicalize_control_aware_ops(ops)
+    rewritten = gen._canonicalize_control_aware_ops(ops)
 
     # Verify: no CALL in the output should have a MISSING-tainted arg that
     # is not a direct MISSING def.  The pipeline may:

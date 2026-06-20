@@ -55,6 +55,11 @@ def _load_numpy_adapter_module():
     return module
 
 
+def _has_env_pair_casefold(env: dict[str, str], name: str, value: str) -> bool:
+    folded = name.upper()
+    return any(key.upper() == folded and candidate == value for key, candidate in env.items())
+
+
 def _run_tool(*args: str) -> subprocess.CompletedProcess[str]:
     return run_native_test_process(
         ["python3", "tools/bench_friends.py", *args],

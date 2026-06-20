@@ -39,26 +39,66 @@ RUNNER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 _PASSTHROUGH_ENV_KEYS = {
     "CC",
+    "COMSPEC",
     "CFLAGS",
     "CXX",
     "CXXFLAGS",
+    "DevEnvDir",
+    "ExtensionSdkDir",
+    "Framework40Version",
+    "FrameworkDir",
+    "FrameworkDir64",
+    "FrameworkVersion",
+    "FrameworkVersion64",
     "HOME",
+    "IFCPATH",
+    "INCLUDE",
     "LANG",
     "LC_ALL",
     "LD_LIBRARY_PATH",
+    "LIB",
     "LIBRARY_PATH",
+    "LIBPATH",
+    "NETFXSDKDir",
     "PATH",
+    "PATHEXT",
+    "Platform",
+    "PROCESSOR_ARCHITECTURE",
     "REQUESTS_CA_BUNDLE",
     "SDKROOT",
     "SHELL",
     "SSL_CERT_FILE",
+    "SystemRoot",
     "TERM",
     "USER",
+    "UCRTVersion",
+    "UniversalCRTSdkDir",
+    "VCIDEInstallDir",
+    "VCINSTALLDIR",
+    "VCToolsInstallDir",
+    "VCToolsRedistDir",
+    "VCToolsVersion",
+    "VisualStudioVersion",
+    "VSINSTALLDIR",
+    "VSCMD_ARG_HOST_ARCH",
+    "VSCMD_ARG_TGT_ARCH",
+    "VSCMD_VER",
+    "windir",
+    "WindowsLibPath",
+    "WindowsSdkBinPath",
+    "WindowsSdkDir",
+    "WindowsSdkVerBinPath",
+    "WindowsSDKLibVersion",
+    "WindowsSDKVersion",
 }
+_PASSTHROUGH_ENV_KEY_NAMES = {key.upper() for key in _PASSTHROUGH_ENV_KEYS}
 
 _PASSTHROUGH_ENV_PREFIXES = (
     "MOLT_BENCH_",
     "MOLT_MEMORY_GUARD_",
+)
+_PASSTHROUGH_ENV_PREFIX_NAMES = tuple(
+    prefix.upper() for prefix in _PASSTHROUGH_ENV_PREFIXES
 )
 
 
@@ -624,12 +664,18 @@ def _run_command(
 
 
 def _base_run_env() -> dict[str, str]:
+    canonical_key_names = {
+        key.upper() for key in harness_memory_guard.CANONICAL_RUN_ENV_KEYS
+    }
     inherited = {
         key: value
         for key, value in os.environ.items()
-        if key in _PASSTHROUGH_ENV_KEYS
-        or key in harness_memory_guard.CANONICAL_RUN_ENV_KEYS
-        or any(key.startswith(prefix) for prefix in _PASSTHROUGH_ENV_PREFIXES)
+        if (normalized_key := key.upper()) in _PASSTHROUGH_ENV_KEY_NAMES
+        or normalized_key in canonical_key_names
+        or any(
+            normalized_key.startswith(prefix)
+            for prefix in _PASSTHROUGH_ENV_PREFIX_NAMES
+        )
     }
     env = harness_memory_guard.canonical_harness_env(
         inherited,
@@ -638,6 +684,9 @@ def _base_run_env() -> dict[str, str]:
     env["PYTHONHASHSEED"] = "0"
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONNOUSERSITE"] = "1"
+    if tmpdir := env.get("TMPDIR"):
+        env["TMP"] = tmpdir
+        env["TEMP"] = tmpdir
     env.pop("PYTHONPATH", None)
     return env
 

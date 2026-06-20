@@ -1622,6 +1622,9 @@ pub(crate) fn mktime_native(parts: TimeParts) -> f64 {
     tm.tm_wday = (parts.wday + 1).rem_euclid(7);
     tm.tm_yday = parts.yday - 1;
     tm.tm_isdst = parts.isdst;
+    #[cfg(windows)]
+    let out = unsafe { crate::windows_abi::mktime64(&mut tm as *mut libc::tm) };
+    #[cfg(not(windows))]
     let out = unsafe { libc::mktime(&mut tm as *mut libc::tm) };
     out as f64
 }

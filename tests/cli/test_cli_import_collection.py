@@ -1149,6 +1149,89 @@ def test_generated_importer_import_plan_includes_runtime_support_modules(
     assert "_KNOWN_MODULES" not in importer_source
 
 
+def test_backend_ir_isolate_import_is_bounded_by_explicit_imports(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "demo.py"
+    gc_path = tmp_path / "gc.py"
+    machinery_path = tmp_path / "machinery.py"
+    entry_path.write_text("import gc\n", encoding="utf-8")
+    gc_path.write_text("", encoding="utf-8")
+    machinery_path.write_text("", encoding="utf-8")
+    module_graph = {
+        "demo": entry_path,
+        "gc": gc_path,
+        "importlib.machinery": machinery_path,
+    }
+    module_order = ["gc", "importlib.machinery", "demo"]
+    integration_state = cli._FrontendIntegrationState(
+        functions=[
+            {
+                "name": cli.SimpleTIRGenerator.module_init_symbol(module_name),
+                "params": [],
+                "ops": [{"kind": "ret_void"}],
+            }
+            for module_name in module_order
+        ],
+        known_classes={},
+    )
+    diagnostics_state = cli._MidendDiagnosticsState(
+        policy_outcomes_by_function={},
+        pass_stats_by_function={},
+    )
+
+    prepared, error = cli._prepare_backend_ir(
+        entry_module="demo",
+        module_graph=module_graph,
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules=set(module_graph),
+        known_classes={},
+        stdlib_allowlist=set(module_graph),
+        known_func_defaults={},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        frontend_phase_timeout=None,
+        integration_state=integration_state,
+        diagnostics_state=diagnostics_state,
+        record_frontend_timing=lambda **_: None,
+        fail=cli._fail,
+        json_output=True,
+        module_order=module_order,
+        explicit_imports={"gc"},
+        generated_module_source_paths={},
+        spawn_enabled=False,
+        pgo_profile_summary=None,
+        runtime_feedback_summary=None,
+        emit_ir_path=None,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert error is None
+    assert prepared is not None
+    import_ops = next(
+        func["ops"]
+        for func in prepared.ir["functions"]
+        if func["name"] == "molt_isolate_import"
+    )
+    const_names = [
+        op.get("s_value") for op in import_ops if op.get("kind") == "const_str"
+    ]
+    call_targets = [op.get("s_value") for op in import_ops if op.get("kind") == "call"]
+    assert "gc" in const_names
+    assert cli.SimpleTIRGenerator.module_init_symbol("gc") in call_targets
+    assert "importlib.machinery" not in const_names
+    assert (
+        cli.SimpleTIRGenerator.module_init_symbol("importlib.machinery")
+        not in call_targets
+    )
+
+
 def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_supported(
     tmp_path: Path,
 ) -> None:
@@ -2955,6 +3038,42 @@ def test_windows_link_omits_icf_for_fn_identity(
 
     assert "-Wl,/OPT:REF" in link_cmd
     assert "-Wl,/OPT:ICF" not in link_cmd
+    assert "-lws2_32" in link_cmd
+    assert "-lntdll" in link_cmd
+    assert "-luserenv" in link_cmd
+
+
+def test_windows_gnu_link_uses_gnu_system_lib_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_obj = tmp_path / "output.obj"
+    stub_path = tmp_path / "main_stub.c"
+    runtime_lib = tmp_path / "molt_runtime.lib"
+    output_binary = tmp_path / "app.exe"
+    output_obj.write_bytes(b"COFFobject")
+    stub_path.write_text("int main(void) { return 0; }\n")
+    runtime_lib.write_bytes(b"archive")
+
+    monkeypatch.setenv("CC", "zig cc")
+    monkeypatch.setattr(
+        cli.shutil, "which", lambda name: "zig" if name == "zig" else None
+    )
+
+    link_cmd, _linker_hint, normalized_target = cli._build_native_link_command(
+        output_obj=output_obj,
+        stub_path=stub_path,
+        runtime_lib=runtime_lib,
+        output_binary=output_binary,
+        target_triple="x86_64-pc-windows-gnu",
+        sysroot_path=None,
+        profile="release",
+        stdlib_obj_path=None,
+    )
+
+    assert normalized_target == "x86_64-windows-gnu"
+    assert "-lws2_32" in link_cmd
+    assert "-lntdll" in link_cmd
+    assert "-luserenv" in link_cmd
 
 
 def _legacy_streamed_cache_digest(

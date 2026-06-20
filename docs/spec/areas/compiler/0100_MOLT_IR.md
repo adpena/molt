@@ -19,6 +19,11 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 - The current `SimpleIR` transport still accepts scalar hint metadata such as
   `fast_int`, `fast_float`, and `type_hint` for legacy consumers. These fields
   are transitional compatibility details, not the long-term semantic contract.
+- SimpleIR local-name identity for `copy_var`/`load_var`/`store_var`/
+  `delete_var` is carried through TIR as `_var` transport metadata when a
+  re-lift must be lossless. SSA operands remain the value authority; `_var`
+  only preserves the original stream-local spelling for re-emission and
+  lifetime-boundary consumers.
 - Backend-specific shadow state or side-channel unboxed tracking is
   implementation debt and must not be treated as a stable interface.
 - Native int, bool, and float lowering have retired their raw scalar shadow
@@ -138,7 +143,12 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
     before CSE rounds, and
     side-effect-aware DCE with strict protection for guard/call/exception/control
     ops. Expanded cross-block value reuse is still guarded by a CFG
-    definite-assignment verifier with automatic safe fallback when proof fails.
+    definite-assignment verifier that rejects unproven reuse candidates instead
+    of trusting them. Fixed-point non-convergence and post-convergence
+    idempotence drift fail closed with diagnostics rather than emitting a
+    last-known-good or probe-rewritten IR variant; fixed-point policies and
+    explicit round overrides keep a two-round proof floor so one successful
+    rewrite is not misclassified as convergence failure.
     Loop analysis tracks `(start, step, bound, compare-op)` tuples for affine
     induction facts and monotonic bound proofs used by SCCP.
     The pass also performs trivial-`Phi` elision, proven no-op `GuardTag`

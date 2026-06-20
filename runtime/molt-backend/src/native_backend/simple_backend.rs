@@ -2914,6 +2914,14 @@ impl SimpleBackend {
         let use_llvm = backend_setting_requests_llvm(backend_setting.as_deref());
         assert_requested_llvm_backend_available(use_llvm);
         apply_profile_order(&mut ir);
+        // Whole-program reachability is the first backend custody boundary for
+        // app objects. The frontend/stdlib transport may carry the full
+        // importable stdlib graph, but TIR optimization and codegen must only
+        // see functions reachable from declared roots. A second DFE after the
+        // module inliner below catches functions made unreachable by inlining.
+        if !self.skip_ir_passes {
+            eliminate_dead_functions(&mut ir);
+        }
         // ── Pre-TIR IR passes (parallel) ────────────────────────
         // Each pass operates on a single FunctionIR with no shared
         // mutable state, so all 8 passes can run in parallel across

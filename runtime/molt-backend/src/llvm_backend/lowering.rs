@@ -479,6 +479,23 @@ static VEC_REDUCTION_RUNTIME_SYMBOLS: std::sync::LazyLock<Vec<(&'static str, &'s
             .collect()
     });
 
+/// Preserved SimpleIR ops lowered by the LLVM generic runtime-call path whose
+/// runtime ABI returns `void` rather than a boxed i64 sentinel. They are still
+/// real side effects and must be claimed before the terminal Copy fail-loud
+/// guard, but declaring them through `ensure_runtime_i64_fn` would give LLVM the
+/// wrong C ABI. Each entry is `(kind, runtime_symbol, boxed_operand_arity)`.
+const PRESERVED_VOID_RUNTIME_OPS: &[(&str, &str, usize)] = &[
+    ("print_newline", "molt_print_newline", 0),
+    ("spawn", "molt_spawn", 1),
+];
+
+fn preserved_void_runtime_call_abi(kind: &str) -> Option<(&'static str, usize)> {
+    PRESERVED_VOID_RUNTIME_OPS
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, symbol, arity)| (*symbol, *arity))
+}
+
 /// Lower a TIR function to LLVM IR.
 ///
 /// Returns the LLVM function value. The function is added to `backend.module`.
@@ -2439,20 +2456,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // `try_lower_preserved_runtime_call` (`molt_<kind>`) fallback
                 // claimed it. EVERY such op is a SimpleIR op the native/WASM/Luau
                 // lanes lower with dedicated semantics (a value-producing runtime
-                // call, an RC adjustment, a type guard, a generator throw, …).
-                // Passing operand 0 through — the historical behavior — silently
-                // miscompiles them: `abs(x)` returned `x`, `...`/`NotImplemented`
-                // became `None`, `raise … from …`'s `__cause__` link, `gen.throw`,
-                // special-attr loads, the `borrow`/`release` refcount ops, the
-                // `guard_tag` type check, and every fresh-value conversion
-                // (`int(x)`, `s[-5:]`, `dict.keys()`, …) were all DROPPED or
-                // returned operand 0. There is NO preserved op whose operand-0
-                // passthrough is provably correct: the pure SSA value copies
-                // (`copy`/`copy_var`/`load_var`/`store_var`) carry
-                // `_original_kind == None` (ssa.rs deliberately omits it) and take
-                // the benign passthrough below; anything WITH an `_original_kind`
-                // has real semantics. So the exhaustive, sound terminal state is:
-                // fail the build loudly here.
+                // call, an RC adjustment, a type guard, a generator throw, or a
+                // registry-owned identity fact). Passing operand 0 through by
+                // default -- the historical behavior -- silently miscompiled
+                // non-identity semantics: `abs(x)` returned `x`,
+                // `...`/`NotImplemented` became `None`, `raise ... from ...`'s
+                // `__cause__` link, `gen.throw`, special-attr loads, the
+                // `borrow`/`release` refcount ops, the `guard_tag` type check, and
+                // every fresh-value conversion (`int(x)`, `s[-5:]`, `dict.keys()`,
+                // ...) were all DROPPED or returned operand 0. The few preserved
+                // repr-identity ops whose operand-0 passthrough is correct are
+                // claimed explicitly in `lower_preserved_simpleir_op`; any
+                // preserved op that reaches this terminal state is therefore not a
+                // sound default passthrough. Fail the build loudly here.
                 //
                 // SINGLE SOURCE OF TRUTH (the drift the `CopyLowering` classifier
                 // forbids). The drop-insertion pass releases exactly the `Copy`s
@@ -6571,6 +6587,33 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         )
     }
 
+    fn ensure_runtime_void_fn(&self, name: &str, param_count: usize) -> FunctionValue<'ctx> {
+        if let Some(func) = self.backend.module.get_function(name) {
+            return func;
+        }
+        let i64_ty = self.backend.context.i64_type();
+        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            (0..param_count).map(|_| i64_ty.into()).collect();
+        let fn_ty = self.backend.context.void_type().fn_type(&params, false);
+        let func =
+            self.backend
+                .module
+                .add_function(name, fn_ty, Some(inkwell::module::Linkage::External));
+        let nounwind_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("nounwind");
+        func.add_attribute(
+            AttributeLoc::Function,
+            self.backend.context.create_enum_attribute(nounwind_kind, 0),
+        );
+        let willreturn_kind = inkwell::attributes::Attribute::get_named_enum_kind_id("willreturn");
+        func.add_attribute(
+            AttributeLoc::Function,
+            self.backend
+                .context
+                .create_enum_attribute(willreturn_kind, 0),
+        );
+        func
+    }
+
     fn unbox_ptr_bits(
         &self,
         bits: inkwell::values::IntValue<'ctx>,
@@ -6629,6 +6672,73 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap();
         let len_bits = i64_ty.const_int(name_bytes.len() as u64, false);
         (ptr_bits, len_bits)
+    }
+
+    fn emit_task_new_with_payload(
+        &mut self,
+        poll_addr: inkwell::values::IntValue<'ctx>,
+        closure_size: i64,
+        kind_bits: i64,
+        payload_base: i32,
+        payload_operands: &[ValueId],
+        call_name: &str,
+    ) -> BasicValueEnum<'ctx> {
+        let i64_ty = self.backend.context.i64_type();
+        let task_new_fn = self.ensure_runtime_i64_fn("molt_task_new", 3);
+        let task_bits = self
+            .backend
+            .builder
+            .build_call(
+                task_new_fn,
+                &[
+                    poll_addr.into(),
+                    i64_ty.const_int(closure_size as u64, true).into(),
+                    i64_ty.const_int(kind_bits as u64, true).into(),
+                ],
+                call_name,
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic();
+        let ptr_ty = self
+            .backend
+            .context
+            .ptr_type(inkwell::AddressSpace::default());
+        // `molt_task_new` returns a NaN-boxed task handle. Frame payload stores
+        // address raw heap memory, so strip the boxing tag before writing slots,
+        // matching native `unbox_ptr_value` and WASM `handle_resolve`.
+        let task_ptr_bits = self.unbox_ptr_bits(self.ensure_i64(task_bits));
+        let task_ptr = self
+            .backend
+            .builder
+            .build_int_to_ptr(task_ptr_bits, ptr_ty, "task_obj_ptr")
+            .unwrap();
+        let payload_base_words = (payload_base / 8) as usize;
+        let inc_fn = self.ensure_runtime_i64_fn("molt_inc_ref_obj", 1);
+        for (idx, &arg_id) in payload_operands.iter().enumerate() {
+            let arg_bits = self.materialize_dynbox_operand(arg_id);
+            let field_ptr = unsafe {
+                self.backend
+                    .builder
+                    .build_gep(
+                        i64_ty,
+                        task_ptr,
+                        &[i64_ty.const_int((payload_base_words + idx) as u64, false)],
+                        &format!("task_payload_ptr_{idx}"),
+                    )
+                    .unwrap()
+            };
+            self.backend
+                .builder
+                .build_store(field_ptr, arg_bits)
+                .unwrap();
+            let _ = self
+                .backend
+                .builder
+                .build_call(inc_fn, &[arg_bits.into()], "task_payload_inc_ref")
+                .unwrap();
+        }
+        task_bits
     }
 
     fn ensure_function_symbol(
@@ -6890,6 +7000,28 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return true;
         }
         match kind {
+            // Repr-identity SimpleIR ops. Native and WASM lower these as
+            // operand-0 passthroughs over the same NaN-boxed value format; LLVM
+            // must claim the exact same identity fact explicitly so the terminal
+            // preserved-op guard remains a true fail-loud backstop rather than a
+            // backend skew. No runtime call, ownership transfer, or new value is
+            // introduced here.
+            "cast" | "widen" | "copy_var" => {
+                let Some(&src_id) = op.operands.first() else {
+                    return false;
+                };
+                let src_val = self.resolve(src_id);
+                let src_ty = self
+                    .value_types
+                    .get(&src_id)
+                    .cloned()
+                    .unwrap_or(TirType::DynBox);
+                for &result_id in &op.results {
+                    self.values.insert(result_id, src_val);
+                    self.value_types.insert(result_id, src_ty.clone());
+                }
+                true
+            }
             "list_from_range" => {
                 // `list(range(start, stop, step))` materialized eagerly by the
                 // frontend (`LIST_FROM_RANGE`). Like `range_new`, it has no
@@ -7221,6 +7353,75 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.values.insert(result_id, result);
                     self.value_types.insert(result_id, TirType::DynBox);
                 }
+                true
+            }
+            "call_async" => {
+                let Some(poll_func_name) = op.attrs.get("s_value").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.as_str()),
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                let Some(&result_id) = op.results.first() else {
+                    return false;
+                };
+                if poll_func_name == "molt_async_sleep" {
+                    if op.operands.len() > 2 {
+                        return false;
+                    }
+                    let delay_bits = op
+                        .operands
+                        .first()
+                        .map(|&id| self.materialize_dynbox_operand(id))
+                        .unwrap_or_else(|| {
+                            let zero: BasicValueEnum<'ctx> =
+                                self.backend.context.f64_type().const_float(0.0).into();
+                            self.materialize_dynbox_bits(zero, &TirType::F64)
+                        });
+                    let result_bits = op
+                        .operands
+                        .get(1)
+                        .map(|&id| self.materialize_dynbox_operand(id))
+                        .unwrap_or_else(|| {
+                            i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
+                        });
+                    let sleep_fn = self.ensure_runtime_i64_fn("molt_async_sleep", 2);
+                    let result = self
+                        .backend
+                        .builder
+                        .build_call(
+                            sleep_fn,
+                            &[delay_bits.into(), result_bits.into()],
+                            "call_async_sleep",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic();
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                    return true;
+                }
+
+                let poll_fn = self.ensure_function_symbol(poll_func_name, 1, false);
+                let poll_addr = self
+                    .backend
+                    .builder
+                    .build_ptr_to_int(
+                        poll_fn.as_global_value().as_pointer_value(),
+                        i64_ty,
+                        "call_async_poll_ptr",
+                    )
+                    .unwrap();
+                let task_bits = self.emit_task_new_with_payload(
+                    poll_addr,
+                    (op.operands.len() * 8) as i64,
+                    crate::TASK_KIND_FUTURE,
+                    0,
+                    &op.operands,
+                    "call_async_task_new",
+                );
+                self.values.insert(result_id, task_bits);
+                self.value_types.insert(result_id, TirType::DynBox);
                 true
             }
             "code_new" => {
@@ -9123,6 +9324,31 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "object_set_class" => {
+                if op.operands.len() != 2 {
+                    return false;
+                }
+                let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
+                let class_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let set_fn = self.ensure_runtime_i64_fn("molt_object_set_class", 2);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        set_fn,
+                        &[obj_ptr_bits.into(), class_bits.into()],
+                        "object_set_class",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
             "class_merge_layout" => {
                 if op.operands.len() != 3 {
                     return false;
@@ -10253,6 +10479,56 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 true
             }
+            "guarded_field_init" => {
+                if op.operands.len() != 4 {
+                    return false;
+                }
+                let Some(attr_name) = op.attrs.get("s_value").and_then(|v| match v {
+                    AttrValue::Str(s) => Some(s.clone()),
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                let offset = op
+                    .attrs
+                    .get("value")
+                    .and_then(|v| match v {
+                        AttrValue::Int(v) => Some(*v),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+                let obj_ptr_bits = self.unbox_ptr_bits(obj_bits);
+                let class_bits = self.materialize_dynbox_operand(op.operands[1]);
+                let expected_version = self.materialize_dynbox_operand(op.operands[2]);
+                let val_bits = self.materialize_dynbox_operand(op.operands[3]);
+                let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(&attr_name);
+                let init_fn = self.ensure_runtime_i64_fn("molt_guarded_field_init_ptr", 7);
+                let result = self
+                    .backend
+                    .builder
+                    .build_call(
+                        init_fn,
+                        &[
+                            obj_ptr_bits.into(),
+                            class_bits.into(),
+                            expected_version.into(),
+                            i64_ty.const_int(offset as u64, true).into(),
+                            val_bits.into(),
+                            attr_ptr_bits.into(),
+                            attr_len_bits.into(),
+                        ],
+                        "guarded_field_init",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic();
+                if let Some(&result_id) = op.results.first() {
+                    self.values.insert(result_id, result);
+                    self.value_types.insert(result_id, TirType::DynBox);
+                }
+                true
+            }
 
             // Structured-data scalar parse (`json.loads`/`msgpack`/`cbor` on a
             // single scalar): `molt_<fmt>_parse_scalar_obj(value)`. The native
@@ -10416,7 +10692,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// convention (unboxed pointer, compile-time string, function address) are
     /// claimed by their dedicated `match` arms BEFORE this generic fallback, so
     /// only the positional-boxed kinds reach here.
+    /// `PRESERVED_VOID_RUNTIME_OPS` is checked before the default `molt_<kind>`
+    /// i64-return ABI so result-less void calls are declared with the real C ABI.
     fn try_lower_preserved_runtime_call(&mut self, op: &TirOp, kind: &str) -> bool {
+        if let Some((symbol, arity)) = preserved_void_runtime_call_abi(kind) {
+            if op.operands.len() != arity || !op.results.is_empty() {
+                return false;
+            }
+            if !self.backend.runtime_intrinsic_symbols.contains(symbol) {
+                return false;
+            }
+            let arg_bits: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = op
+                .operands
+                .iter()
+                .map(|&id| self.materialize_dynbox_operand(id).into())
+                .collect();
+            let func = self.ensure_runtime_void_fn(symbol, arity);
+            self.backend
+                .builder
+                .build_call(func, &arg_bits, symbol)
+                .unwrap();
+            return true;
+        }
+
         let symbol = format!("molt_{kind}");
         if !self.backend.runtime_intrinsic_symbols.contains(&symbol) {
             return false;
@@ -12200,6 +12498,62 @@ mod tests {
         }
     }
 
+    /// Repr-identity preserved ops (`cast`, `widen`, `copy_var`) are the
+    /// explicit exception to the terminal preserved-op fail-loud rule: they
+    /// carry no runtime semantics and must alias operand 0 exactly, matching
+    /// native/WASM identity lowering over the NaN-boxed value format.
+    #[test]
+    fn lower_preserved_repr_identity_ops_pass_operand_through() {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        for kind in ["cast", "widen", "copy_var"] {
+            let mut func = TirFunction::new(
+                format!("preserved_{kind}_identity"),
+                vec![TirType::DynBox],
+                TirType::DynBox,
+            );
+            let src = func
+                .blocks
+                .get(&func.entry_block)
+                .and_then(|block| block.args.first())
+                .map(|arg| arg.id)
+                .expect("identity test function must have one entry argument");
+            let result = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            let mut attrs = AttrDict::new();
+            attrs.insert("_original_kind".into(), AttrValue::Str(kind.to_string()));
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![src],
+                results: vec![result],
+                attrs,
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return {
+                values: vec![result],
+            };
+
+            let ir = try_lower_tir_to_llvm(&func, &backend)
+                .map(|f| f.print_to_string().to_string())
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "repr-identity preserved `{kind}` must lower as operand-0 \
+                         passthrough, got error: {:?}",
+                        e.diagnostics()
+                    )
+                });
+            assert!(
+                !ir.contains("call "),
+                "repr-identity preserved `{kind}` must not lower through a runtime call:\n{ir}"
+            );
+            assert!(
+                ir.contains("ret i64 %0"),
+                "repr-identity preserved `{kind}` must return operand 0 exactly:\n{ir}"
+            );
+        }
+    }
+
     /// Terminal fail-loud state: a preserved `Copy` carrying an `_original_kind`
     /// that NO arm and NO `molt_<kind>` runtime intrinsic claims must be a hard
     /// `record_fatal` lowering error — never a silent operand-0 passthrough.
@@ -12235,6 +12589,7 @@ mod tests {
             ("print_newline", 0, "molt_print_newline"),
             ("set_update", 2, "molt_set_update"),
             ("dict_str_int_inc", 3, "molt_dict_str_int_inc"),
+            ("spawn", 1, "molt_spawn"),
         ];
         for &(_, _, sym) in cases {
             backend.runtime_intrinsic_symbols.insert(sym.to_string());
@@ -12259,6 +12614,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn lower_preserved_void_runtime_result_shape_fails_loud() {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend
+            .runtime_intrinsic_symbols
+            .insert("molt_spawn".to_string());
+        let err = lower_preserved_kind_ir(&backend, "spawn", 1, true, None)
+            .expect_err("void preserved runtime ops must not bind a boxed result");
+        assert_lowering_error_contains(&err, "unhandled preserved SimpleIR op");
+        assert_lowering_error_contains(&err, "spawn");
     }
 
     /// The dual safety check: a result-less preserved op whose `molt_<kind>`
