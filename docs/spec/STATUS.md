@@ -330,8 +330,10 @@ the implementation. For forward-looking priorities, use
   migrated to the shared `MOLT_DX_BUILD` guard for Cargo build timing and
   version probes. `tools/cold_start_decompose.py` routes safe-run, no-op C
   compile, dyld timing, and Molt-probe build subprocesses through one
-  `MOLT_COLD_START` guard family. `tools/gen_intrinsics.py` routes `rustfmt`
-  through `MOLT_GENERATOR` custody. `tools/perf_inner_repeat.py` self-tests and
+  `MOLT_COLD_START` guard family. `tools/gen_intrinsics.py` emits
+  rustfmt-stable generated Rust, skips exact-content no-op writes before
+  invoking rustfmt, and routes changed-file formatting through
+  `MOLT_GENERATOR` custody. `tools/perf_inner_repeat.py` self-tests and
   perf-scoreboard inner-repeat proof children now run through `MOLT_BENCH` /
   `MOLT_TEST` custody instead of local raw `subprocess.run` launchers.
   `tools/perf_scoreboard.py` now routes `safe_run.py --json` workload timing

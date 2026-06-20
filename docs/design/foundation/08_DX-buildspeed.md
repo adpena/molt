@@ -167,7 +167,7 @@ llvm = ["dep:inkwell"]
 
 **Critical constraint:** The `INTRINSICS` constant stays in `generated.rs` for existing parser-facing tools (`src/molt/frontend/_types.py`, `src/molt/_wasm_runtime_exports.py`) and for registry iteration. Resolver address-taking lives in `generated_resolvers/`, so test/WASM `resolve_symbol` behavior stays intact while resolver implementation edits stop churning the manifest table.
 
-**Tool change:** `tools/gen_intrinsics.py` always emits the split resolver tree and formats each generated Rust file through `MOLT_GENERATOR` custody.
+**Tool change:** `tools/gen_intrinsics.py` always emits the split resolver tree, emits resolver arms in rustfmt-stable form, skips exact-content no-op writes before invoking rustfmt, and formats changed generated Rust files through `MOLT_GENERATOR` custody. The no-op generator path now avoids resolver-file mtime churn and avoids per-file rustfmt subprocesses.
 
 **Impact:** resolver-body edits are localized to the touched category module. New manifest entries still update the canonical `INTRINSICS` table until the per-crate manifest composition step lands, but the address-taking resolver hub is no longer one source file.
 

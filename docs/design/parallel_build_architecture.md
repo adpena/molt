@@ -97,8 +97,11 @@ Hard constraints / watch-items:
   exceptions/iter ← facade).
 - The generated resolver hub is split at source-file granularity:
   `generated.rs` remains the manifest table, and generated per-category resolver
-  modules own the address-taking match arms. The remaining structural target is
-  moving those category resolvers into **per-crate intrinsic sub-registries**
+  modules own the address-taking match arms. The generator emits rustfmt-stable
+  resolver files and skips exact-content no-op writes before invoking rustfmt,
+  preventing repeated generation from dirtying mtimes and triggering needless
+  Cargo rebuilds. The remaining structural target is moving those category
+  resolvers into **per-crate intrinsic sub-registries**
   composed by a thin facade resolver. This simultaneously: (i) finishes breaking
   the build hub, (ii) advances the per-app intrinsic tree-shaking / <2MB
   binary-size goal. Two top priorities solved by one refactor.
