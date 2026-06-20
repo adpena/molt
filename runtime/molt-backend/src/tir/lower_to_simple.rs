@@ -1788,12 +1788,13 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::StoreAttr => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "set_attr".to_string());
+            let out = result_or_stream_out(op, out_var);
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
                 value: attr_int(&op.attrs, "value"),
-                out: out_var,
+                out,
                 class_name: attr_str(&op.attrs, "_class"),
                 ..OpIR::default()
             })
@@ -1811,10 +1812,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::StoreIndex => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "store_index".to_string());
+            let out = result_or_stream_out(op, out_var);
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
-                out: out_var,
+                out,
                 container_type: attr_str(&op.attrs, "container_type"),
                 // Propagate BCE proof so codegen can skip bounds checks.
                 bce_safe: attr_bool(&op.attrs, "bce_safe"),
@@ -2321,19 +2323,23 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::DelAttr => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "del_attr".to_string());
+            let out = result_or_stream_out(op, out_var);
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
+                out,
                 ..OpIR::default()
             })
         }
         OpCode::DelIndex => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "del_index".to_string());
+            let out = result_or_stream_out(op, out_var);
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
+                out,
                 ..OpIR::default()
             })
         }
@@ -3576,6 +3582,12 @@ fn attr_str(attrs: &super::ops::AttrDict, key: &str) -> Option<String> {
         Some(AttrValue::Str(s)) => Some(s.clone()),
         _ => None,
     }
+}
+
+/// TIR results and SimpleIR stream outputs are separate: zero-result
+/// side-effect ops may still carry `_simple_out` for round-trip fidelity.
+fn result_or_stream_out(op: &TirOp, result_out: Option<String>) -> Option<String> {
+    result_out.or_else(|| attr_str(&op.attrs, "_simple_out"))
 }
 
 fn attr_bool(attrs: &super::ops::AttrDict, key: &str) -> Option<bool> {
@@ -5913,10 +5925,7 @@ mod tests {
 
         assert_eq!(init_op.s_value.as_deref(), Some("x"));
         assert_eq!(init_op.value, Some(24));
-        assert!(
-            init_op.out.is_some(),
-            "guarded_field_init must preserve an output"
-        );
+        assert_eq!(init_op.out.as_deref(), Some("init_result"));
     }
 
     #[test]
