@@ -95,9 +95,9 @@ def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
         )
 
     monkeypatch.setattr(
-        module.harness_memory_guard,
-        "guarded_completed_process",
-        fake_guarded_completed_process,
+        module,
+        "_HARNESS_MEMORY_GUARD",
+        SimpleNamespace(guarded_completed_process=fake_guarded_completed_process),
     )
 
     module._rustfmt(target)
@@ -127,9 +127,9 @@ def test_rustfmt_failure_reports_guarded_output(monkeypatch, tmp_path: Path) -> 
         )
 
     monkeypatch.setattr(
-        module.harness_memory_guard,
-        "guarded_completed_process",
-        fake_guarded_completed_process,
+        module,
+        "_HARNESS_MEMORY_GUARD",
+        SimpleNamespace(guarded_completed_process=fake_guarded_completed_process),
     )
 
     try:

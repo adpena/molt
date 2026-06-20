@@ -332,7 +332,8 @@ the implementation. For forward-looking priorities, use
   compile, dyld timing, and Molt-probe build subprocesses through one
   `MOLT_COLD_START` guard family. `tools/gen_intrinsics.py` emits
   rustfmt-stable generated Rust, skips exact-content no-op writes before
-  invoking rustfmt, and routes changed-file formatting through
+  invoking rustfmt, lazy-loads memory-guard formatting custody only when a
+  changed Rust file needs formatting, and routes changed-file formatting through
   `MOLT_GENERATOR` custody. `tools/perf_inner_repeat.py` self-tests and
   perf-scoreboard inner-repeat proof children now run through `MOLT_BENCH` /
   `MOLT_TEST` custody instead of local raw `subprocess.run` launchers.
@@ -500,7 +501,10 @@ the implementation. For forward-looking priorities, use
   observable in compiled native code because the frontend records module-attribute
   mutation through `importlib` or any alias and disables both the transaction
   fold and cross-module static direct-call lowering when that attribute is not
-  stable.
+  stable. Build-time module graph discovery uses the same callable-identity
+  model for `importlib`, `importlib as alias`, and
+  `from importlib import import_module as alias`, and refuses static target
+  collection after `import_module` rebinding.
 - Ordinary source-language imports now carry explicit
   `name`/`fromlist`/`level` payloads into the same Rust transaction for the
   focused active paths. Graph-proven `fromlist` child auto-import/binding is

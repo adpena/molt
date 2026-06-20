@@ -19,11 +19,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-try:
-    from tools import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    import harness_memory_guard  # type: ignore
-
 MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 CATEGORIES_TOML = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
 OUT_PYI = ROOT / "src/molt/_intrinsics.pyi"
@@ -32,6 +27,18 @@ OUT_RS_RESOLVERS_DIR = ROOT / "runtime/molt-runtime/src/intrinsics/generated_res
 OUT_BACKEND_OVERRIDES_RS = (
     ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs"
 )
+_HARNESS_MEMORY_GUARD = None
+
+
+def _load_harness_memory_guard():
+    global _HARNESS_MEMORY_GUARD
+    if _HARNESS_MEMORY_GUARD is None:
+        try:
+            from tools import harness_memory_guard
+        except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+            import harness_memory_guard  # type: ignore
+        _HARNESS_MEMORY_GUARD = harness_memory_guard
+    return _HARNESS_MEMORY_GUARD
 
 
 # The symbol-prefix -> Cargo-feature gate mapping is the single source of truth
@@ -439,7 +446,7 @@ def _classify_symbol(
 
 
 def _rustfmt(path: Path) -> None:
-    result = harness_memory_guard.guarded_completed_process(
+    result = _load_harness_memory_guard().guarded_completed_process(
         ["rustfmt", str(path)],
         prefix="MOLT_GENERATOR",
         cwd=ROOT,

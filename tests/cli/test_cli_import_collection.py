@@ -2258,6 +2258,70 @@ def test_collect_imports_resolves_name_argument_for_import_module() -> None:
     assert "pathlib" in imports
 
 
+def test_collect_imports_resolves_aliased_importlib_import_module() -> None:
+    tree = ast.parse(
+        "import importlib as loader\nTARGET = 'pathlib'\nloader.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" in imports
+
+
+def test_collect_imports_resolves_from_import_import_module_alias() -> None:
+    tree = ast.parse(
+        "from importlib import import_module as load_module\n"
+        "TARGET = 'pathlib'\n"
+        "load_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" in imports
+
+
+def test_collect_imports_importlib_rebinding_blocks_static_resolution() -> None:
+    tree = ast.parse(
+        "import importlib\n"
+        "TARGET = 'pathlib'\n"
+        "def fake(name):\n"
+        "    return None\n"
+        "importlib.import_module = fake\n"
+        "importlib.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" not in imports
+
+
+def test_collect_imports_function_local_importlib_alias_does_not_leak() -> None:
+    tree = ast.parse(
+        "def configure():\n"
+        "    import importlib as loader\n"
+        "TARGET = 'pathlib'\n"
+        "loader.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" not in imports
+
+
+def test_collect_imports_function_local_rebinding_does_not_poison_module_alias() -> None:
+    tree = ast.parse(
+        "import importlib\n"
+        "TARGET = 'pathlib'\n"
+        "def configure():\n"
+        "    importlib.import_module = lambda name: None\n"
+        "importlib.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" in imports
+
+
+def test_collect_imports_resolves_importlib_rhs_before_alias_rebind() -> None:
+    tree = ast.parse(
+        "import importlib\n"
+        "TARGET = 'pathlib'\n"
+        "importlib = importlib.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" in imports
+
+
 def test_cached_json_round_trips_molt_value_and_set() -> None:
     payload = {
         "value": MoltValue(name="v1", type_hint="int"),
