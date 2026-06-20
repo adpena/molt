@@ -2726,6 +2726,11 @@ class CallVisitorMixin(_MixinBase):
     def _local_name_shadows_import_binding(self, name: str) -> bool:
         if self.current_func_name == "molt_main":
             return False
+        if (
+            name in getattr(self, "local_imported_names", set())
+            or name in getattr(self, "local_imported_modules", set())
+        ):
+            return False
         if name in self.global_decls:
             return False
         return name in self.locals or name in self.boxed_locals
@@ -2748,7 +2753,7 @@ class CallVisitorMixin(_MixinBase):
             binding_name = node.func.value.id
             if self._local_name_shadows_import_binding(binding_name):
                 return None
-            if self.imported_modules.get(binding_name) != "importlib":
+            if self._imported_module_binding_target(binding_name) != "importlib":
                 return None
             if not self._imported_module_attr_is_stable("importlib", "import_module"):
                 return None
@@ -2773,11 +2778,7 @@ class CallVisitorMixin(_MixinBase):
         else:
             return None
 
-        if module_name in self.known_modules:
-            return module_name
-        if self._should_attempt_runtime_module_import(module_name):
-            return module_name
-        return None
+        return module_name
 
     def _try_emit_importlib_import_module_literal_call(
         self, node: ast.Call
@@ -2785,7 +2786,24 @@ class CallVisitorMixin(_MixinBase):
         module_name = self._literal_importlib_import_module_target(node)
         if module_name is None:
             return None
-        return self._emit_importlib_import_module_leaf(module_name)
+        if (
+            module_name in self.known_modules
+            or self._should_attempt_runtime_module_import(module_name)
+        ):
+            return self._emit_importlib_import_module_leaf(module_name)
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
+        package_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=package_val))
+        res = MoltValue(self.next_var(), type_hint="module")
+        self.emit(
+            MoltOp(
+                kind="CALL",
+                args=["importlib__import_module", name_val, package_val],
+                result=res,
+            )
+        )
+        return res
 
     def visit_Call(self, node: ast.Call) -> Any:
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
@@ -4560,7 +4578,9 @@ class CallVisitorMixin(_MixinBase):
                         )
                     )
                     return res
-            module_name = self.imported_modules.get(obj_name) if obj_name else None
+            module_name = (
+                self._imported_module_binding_target(obj_name) if obj_name else None
+            )
             if module_name is None:
                 callee = load_attr_callee()
                 # Dynamic attribute calls must use binder semantics so bound methods
@@ -4570,7 +4590,9 @@ class CallVisitorMixin(_MixinBase):
         if isinstance(node.func, ast.Attribute):
             module_name = None
             if isinstance(node.func.value, ast.Name):
-                module_name = self.imported_modules.get(node.func.value.id)
+                module_name = self._imported_module_binding_target(
+                    node.func.value.id
+                )
             if module_name:
                 func_id = node.func.attr
                 normalized = self._normalize_allowlist_module(module_name)
@@ -8439,13 +8461,45 @@ class CallVisitorMixin(_MixinBase):
                         and func_id in MOLT_DIRECT_CALLS[imported_from]
                     ):
                         target_module = imported_from
-                if (
+                original_attr = self.imported_attr_names.get(func_id, func_id)
+                force_bind = original_attr[
+                    :1
+                ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
+                    target_module or "", set()
+                )
+                known_direct_target = (
+                    self._lookup_func_defaults(target_module, original_attr)
+                    if target_module is not None
+                    else None
+                )
+                has_known_direct_target = known_direct_target is not None
+                direct_target_is_linkable = (
                     target_module is not None
                     and self._is_linkable_module_function_symbol(target_module)
-                    and self._imported_module_attr_is_stable(target_module, func_id)
+                )
+                allow_speculative_internal_direct = (
+                    target_module is not None
+                    and not has_known_direct_target
+                    and imported_from not in self.stdlib_allowlist
+                    and (normalized is None or normalized not in self.stdlib_allowlist)
+                    and (
+                        self._is_internal_module(imported_from)
+                        or self._is_known_project_module(imported_from)
+                    )
+                    and not force_bind
+                )
+                if (
+                    target_module is not None
+                    and direct_target_is_linkable
+                    and self._imported_module_attr_is_stable(
+                        target_module, original_attr
+                    )
+                    and (
+                        target_module in MOLT_DIRECT_CALLS
+                        or has_known_direct_target
+                        or allow_speculative_internal_direct
+                    )
                 ):
-                    # Resolve alias -> original attr name for cross-module calls
-                    original_attr = self.imported_attr_names.get(func_id, func_id)
                     lowered_task_func = self._emit_known_module_task_func_call(
                         target_module,
                         original_attr,
@@ -8468,9 +8522,17 @@ class CallVisitorMixin(_MixinBase):
                             )
                         )
                         return res
-                    args = self._emit_direct_call_args(
-                        target_module, original_attr, node
-                    )
+                    if (
+                        allow_speculative_internal_direct
+                        and not has_known_direct_target
+                    ):
+                        args = (
+                            None if node.keywords else self._emit_call_args(node.args)
+                        )
+                    else:
+                        args = self._emit_direct_call_args(
+                            target_module, original_attr, node
+                        )
                     if args is None:
                         callee = self.visit(node.func)
                         if callee is None:
@@ -8571,9 +8633,17 @@ class CallVisitorMixin(_MixinBase):
                     )
                     if lowered_task_func is not None:
                         return lowered_task_func
-                    args = self._emit_direct_call_args(
-                        target_module, original_attr, node
-                    )
+                    if (
+                        allow_speculative_internal_direct
+                        and not has_known_direct_target
+                    ):
+                        args = (
+                            None if node.keywords else self._emit_call_args(node.args)
+                        )
+                    else:
+                        args = self._emit_direct_call_args(
+                            target_module, original_attr, node
+                        )
                     if args is not None:
                         res = MoltValue(self.next_var(), type_hint="Any")
                         target_name = f"{self._sanitize_module_name(target_module)}__{original_attr}"

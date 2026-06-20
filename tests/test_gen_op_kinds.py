@@ -239,6 +239,43 @@ def test_explicit_release_operand_contract_covers_python_release_ops() -> None:
     assert "kind_to_opcode_table(kind)" in rendered
 
 
+def test_explicit_release_operand_rejects_out_of_range_numeric_operand() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcode_rows = {row["name"]: row for row in data["opcode"]}
+
+    mutated = json.loads(json.dumps(data))
+    for row in mutated["explicit_release_operand"]:
+        if row["opcode"] == "DeleteVar":
+            row["operand"] = 2
+            break
+
+    try:
+        gen._validate_explicit_release_operands(mutated, opcode_rows)
+    except gen.OpKindTableError as exc:
+        assert "out of range" in str(exc)
+    else:  # pragma: no cover - explicit fail branch for pytest output clarity
+        raise AssertionError("out-of-range explicit_release_operand row was accepted")
+
+
+def test_explicit_release_operand_numeric_requires_fixed_opcode_arity() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    mutated = json.loads(json.dumps(data))
+    for row in mutated["opcode"]:
+        if row["name"] == "DeleteVar":
+            row["operand_ownership"] = "all_borrowed"
+            break
+
+    opcode_rows = {row["name"]: row for row in mutated["opcode"]}
+    try:
+        gen._validate_explicit_release_operands(mutated, opcode_rows)
+    except gen.OpKindTableError as exc:
+        assert "fixed per-position operand_ownership list" in str(exc)
+    else:  # pragma: no cover - explicit fail branch for pytest output clarity
+        raise AssertionError("numeric explicit_release_operand without fixed arity was accepted")
+
+
 def test_audit_sources_backend_vocab_from_registry() -> None:
     """The audit tool must source the backend mapper + classifier vocabularies
     from the registry (post phase-2), so its drift matrix compares the FRONTEND
@@ -672,6 +709,9 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
             "1 => OperandOwnership::Borrowed, "
             "_ => OperandOwnership::ContainerAbsorb, },"
         ),
+        "DeleteVar": (
+            "OpCode::DeleteVar => OperandOwnership::Borrowed,"
+        ),
     }
     for row in data["opcode"]:
         name = row["name"]
@@ -696,6 +736,11 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
             assert row["operand_ownership"] == "all_consumed"
             assert f"OpCode::{name} => OperandOwnership::Consumed," in region, (
                 f"opcode_operand_ownership_table missing/incorrect consume arm for {name}"
+            )
+        elif name == "DeleteVar":
+            assert row["operand_ownership"] == ["borrowed", "borrowed"]
+            assert _rust_tokens(expected_arm[name]) in region_tokens, (
+                f"opcode_operand_ownership_table missing/incorrect {name} arm"
             )
         else:
             assert row["operand_ownership"] == "all_borrowed", (

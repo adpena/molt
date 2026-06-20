@@ -1,9 +1,9 @@
 # Parallel-Build Architecture: maximizing dev velocity + incremental throughput
 
-Status: live routing doc / partially landed (refreshed 2026-06-12).
+Status: live routing doc / partially landed (refreshed 2026-06-20).
 The live codebase and executable Cargo metadata remain authoritative.
 
-## Live State Snapshot (2026-06-12)
+## Live State Snapshot (2026-06-20)
 
 - The build-iteration profile fix from this document has already landed in the
   root `Cargo.toml`: `release-fast` uses thin LTO with high codegen-unit
@@ -33,6 +33,13 @@ The live codebase and executable Cargo metadata remain authoritative.
   parallel batch at a time, then applied and cache-written before the next batch
   is materialized. This is the current backend compile-memory response for the
   enabled off-the-shelf tinygrad runner.
+- The generated runtime intrinsic resolver is no longer one monolithic Rust
+  source file. `runtime/molt-runtime/src/intrinsics/generated.rs` keeps the
+  parser-facing `INTRINSICS` manifest table and re-exports a thin resolver, while
+  `runtime/molt-runtime/src/intrinsics/generated_resolvers/` owns one generated
+  resolver module per intrinsic category. This reduces resolver edit
+  invalidation and makes the future per-leaf-crate registry cut mechanical
+  instead of duplicating resolver authority.
 - The next throughput work is therefore extraction/composition, not another
   profile-only LTO fix.
 
@@ -88,12 +95,13 @@ Hard constraints / watch-items:
   duplicate authority is part of the extraction work. Cyclic deps are illegal in
   cargo — design the layering as a DAG (core ← text/num/collections ←
   exceptions/iter ← facade).
-- **`intrinsics/generated.rs` (24K lines) is a hub**: `resolve_core_symbol`
-  address-takes every intrinsic, creating an artificial all-to-one dependency that
-  also defeats `-dead_strip` (see the binary-size baton). Generate **per-crate
-  intrinsic sub-registries** composed by a thin top-level resolver. This
-  simultaneously: (i) breaks the build hub, (ii) advances the per-app intrinsic
-  tree-shaking / <2MB binary-size goal. Two top priorities solved by one refactor.
+- The generated resolver hub is split at source-file granularity:
+  `generated.rs` remains the manifest table, and generated per-category resolver
+  modules own the address-taking match arms. The remaining structural target is
+  moving those category resolvers into **per-crate intrinsic sub-registries**
+  composed by a thin facade resolver. This simultaneously: (i) finishes breaking
+  the build hub, (ii) advances the per-app intrinsic tree-shaking / <2MB
+  binary-size goal. Two top priorities solved by one refactor.
 - Do it as a real structural arc (one cohesive crate at a time, each landing
   green), not a half-split that leaves two sources of truth.
 
@@ -148,14 +156,15 @@ monolith) + #3 (shared canonical artifact roots and sccache). Keep
 2. **Backend-native extraction:** create the `molt-backend-native` crate only
    when `native_backend/*` plus `llvm_backend/*` can move as one authority over
    native lowering. Keep TIR/passes/representation facts in backend core.
-3. **Intrinsic registry:** per-crate intrinsic sub-registries + thin composing
-   resolver (co-designed with the binary-size per-app resolver work).
+3. **Intrinsic registry:** the generated resolver source split has landed;
+   continue to per-crate intrinsic sub-registries + thin composing facade
+   resolver, co-designed with the binary-size per-app resolver work.
 4. **Frontend F2:** replace the F1 move-only mixin split with semantic authority
    surfaces so frontend changes stop serializing through one shared class/state
    owner.
 
 ## Cross-cutting wins
-- Decomposition (#1) + per-crate intrinsic registries (#3-structural) ALSO advance
+- Decomposition (#1) + split/per-crate intrinsic registries (#3-structural) ALSO advance
   the **<2MB binary-size** goal (precise per-app dead-strip) and the **typed-IR /
   backend-coherence** work (clearer crate contracts). One structural arc, three
   roadmap goals.

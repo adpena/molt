@@ -1,6 +1,6 @@
 # Molt Compilation Model — Production Architecture
 
-Status: target architecture / partially landed (refreshed 2026-06-12).
+Status: target architecture / partially landed (refreshed 2026-06-20).
 The live codebase, `Cargo.toml`, and guarded `cargo metadata` are authoritative;
 this document describes the production direction and calls out the current gaps.
 See [parallel_build_architecture.md](../design/parallel_build_architecture.md)
@@ -24,7 +24,14 @@ for the crate-extraction and incremental-build routing plan.
 - `release-fast` already uses thin LTO/high codegen-unit parallelism for
   compiler iteration; shipped output profiles retain whole-program optimization
   where runtime performance and size require it.
-- Remaining structural work: finish runtime facade composition, split per-crate
+- The runtime intrinsic resolver source is split by generated category:
+  `runtime/molt-runtime/src/intrinsics/generated.rs` remains the canonical
+  `INTRINSICS` manifest table, and
+  `runtime/molt-runtime/src/intrinsics/generated_resolvers/` owns category
+  resolver modules. The remaining registry work is to lift those generated
+  categories into per-leaf-crate sub-registries as runtime facade extraction
+  proceeds.
+- Remaining structural work: finish runtime facade composition, finish per-crate
   intrinsic registries, isolate native backend codegen into its own crate, and
   preserve deterministic cache/build-state custody across concurrent agents.
 
