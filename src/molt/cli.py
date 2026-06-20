@@ -5991,13 +5991,82 @@ def _collect_imports(
         spec_override_is_package,
     ) = _infer_module_overrides(tree)
     module_body = list(getattr(tree, "body", []))
+    module_level_import_nodes = {
+        id(stmt) for stmt in module_body if isinstance(stmt, (ast.Import, ast.ImportFrom))
+    }
+    module_level_rebinding_nodes = {
+        id(stmt)
+        for stmt in module_body
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+    }
     function_walks: list[
         tuple[ast.FunctionDef | ast.AsyncFunctionDef, tuple[ast.AST, ...]]
     ] = []
+    importlib_module_aliases: set[str] = {"importlib"}
+    importlib_util_aliases: set[str] = {"importlib.util"}
+    importlib_import_module_aliases: set[str] = set()
+    importlib_module_import_mutations: set[str] = set()
+
+    def _record_importlib_aliases(node: ast.Import | ast.ImportFrom) -> None:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bind_name = alias.asname or alias.name.split(".")[0]
+                if alias.name == "importlib":
+                    importlib_module_aliases.add(bind_name)
+                elif alias.name == "importlib.util":
+                    importlib_util_aliases.add(alias.asname or alias.name)
+            return
+        if node.level or node.module != "importlib":
+            return
+        for alias in node.names:
+            bind_name = alias.asname or alias.name
+            if alias.name == "import_module":
+                importlib_import_module_aliases.add(bind_name)
+            elif alias.name == "util":
+                importlib_util_aliases.add(bind_name)
+
+    def _invalidate_importlib_name(name: str) -> None:
+        importlib_module_aliases.discard(name)
+        importlib_util_aliases.discard(name)
+        importlib_import_module_aliases.discard(name)
+        importlib_module_import_mutations.discard(name)
+
+    def _record_importlib_rebinding_target(target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            _invalidate_importlib_name(target.id)
+            return
+        if (
+            isinstance(target, ast.Attribute)
+            and target.attr == "import_module"
+            and isinstance(target.value, ast.Name)
+            and target.value.id in importlib_module_aliases
+        ):
+            importlib_module_import_mutations.add(target.value.id)
 
     def _importlib_target(func: ast.expr) -> str | None:
         if isinstance(func, ast.Name):
+            if func.id in importlib_import_module_aliases:
+                return "importlib.import_module"
             return func.id
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "import_module"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in importlib_module_aliases
+        ):
+            if func.value.id in importlib_module_import_mutations:
+                return None
+            return "importlib.import_module"
+        if isinstance(func, ast.Attribute) and func.attr == "find_spec":
+            if isinstance(func.value, ast.Name) and func.value.id in importlib_util_aliases:
+                return "importlib.util.find_spec"
+            if (
+                isinstance(func.value, ast.Attribute)
+                and func.value.attr == "util"
+                and isinstance(func.value.value, ast.Name)
+                and func.value.value.id in importlib_module_aliases
+            ):
+                return "importlib.util.find_spec"
         if isinstance(func, ast.Attribute):
             parts: list[str] = []
             current: ast.expr | None = func
@@ -6008,6 +6077,36 @@ def _collect_imports(
                 parts.append(current.id)
                 return ".".join(reversed(parts))
         return None
+
+    def _node_source_key(node: ast.AST) -> tuple[int, int]:
+        return (
+            int(getattr(node, "lineno", 1_000_000_000)),
+            int(getattr(node, "col_offset", 1_000_000_000)),
+        )
+
+    importlib_calls_collected_before_rebind: set[int] = set()
+
+    def _collect_static_importlib_call(node: ast.AST) -> None:
+        if not isinstance(node, ast.Call) or not node.args:
+            return
+        target = _importlib_target(node.func)
+        if target not in {
+            "__import__",
+            "builtins.__import__",
+            "importlib.import_module",
+            "importlib.util.find_spec",
+        }:
+            return
+        importlib_calls_collected_before_rebind.add(id(node))
+        resolved = _resolve_string_constant(node.args[0])
+        if resolved is not None:
+            imports.append(resolved)
+
+    def _collect_importlib_calls_before_rebinding(value: ast.AST | None) -> None:
+        if value is None:
+            return
+        for child in ast.walk(value):
+            _collect_static_importlib_call(child)
 
     def _resolve_string_sequence(
         node: ast.expr, bindings: dict[str, object], seen: set[str]
@@ -6089,6 +6188,8 @@ def _collect_imports(
 
     if module_import_helper_scan:
         for stmt in module_body:
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                _record_importlib_aliases(stmt)
             if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
                 target = stmt.targets[0]
                 if isinstance(target, ast.Name):
@@ -6163,6 +6264,7 @@ def _collect_imports(
         scan_nodes = _module_init_scan_nodes(tree)
     else:
         scan_nodes = tuple(ast.walk(tree))
+    scan_nodes = tuple(sorted(scan_nodes, key=_node_source_key))
 
     for node in scan_nodes:
         if module_import_helper_scan:
@@ -6195,10 +6297,14 @@ def _collect_imports(
                             if resolved is not None:
                                 imports.append(resolved)
         if isinstance(node, ast.Import):
+            if id(node) in module_level_import_nodes:
+                _record_importlib_aliases(node)
             for alias in node.names:
                 imports.append(alias.name)
             continue
         if isinstance(node, ast.ImportFrom):
+            if id(node) in module_level_import_nodes:
+                _record_importlib_aliases(node)
             if node.level:
                 if module_name:
                     resolved = _resolve_relative_import(
@@ -6224,6 +6330,21 @@ def _collect_imports(
                     if alias.name != "*":
                         imports.append(f"{node.module}.{alias.name}")
             continue
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            if id(node) in module_level_rebinding_nodes:
+                targets: list[ast.expr] = []
+                if isinstance(node, ast.Assign):
+                    _collect_importlib_calls_before_rebinding(node.value)
+                    targets.extend(node.targets)
+                elif isinstance(node, ast.AnnAssign):
+                    _collect_importlib_calls_before_rebinding(node.value)
+                    targets.append(node.target)
+                else:
+                    _collect_importlib_calls_before_rebinding(node.value)
+                    targets.append(node.target)
+                for target in targets:
+                    _record_importlib_rebinding_target(target)
+            continue
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if getattr(node, "type_params", None):
                 needs_typing = True
@@ -6238,6 +6359,8 @@ def _collect_imports(
             needs_string_templatelib = True
             continue
         if isinstance(node, ast.Call) and node.args:
+            if id(node) in importlib_calls_collected_before_rebind:
+                continue
             target = _importlib_target(node.func)
             if target in {
                 "__import__",
