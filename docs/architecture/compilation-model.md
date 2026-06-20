@@ -6,7 +6,7 @@ this document describes the production direction and calls out the current gaps.
 See [parallel_build_architecture.md](../design/parallel_build_architecture.md)
 for the crate-extraction and incremental-build routing plan.
 
-## Live State Snapshot (2026-06-12)
+## Live State Snapshot (2026-06-20)
 
 - Runtime leaf crates already exist and are wired from
   `runtime/molt-runtime/Cargo.toml`, including core, collections, math, text,
@@ -18,6 +18,11 @@ for the crate-extraction and incremental-build routing plan.
   fallback is deleted, `molt_stringprep_*` resolver arms are gated by
   `stdlib_stringprep`, and feature-on/feature-off `molt-runtime` checks prove
   the facade no longer carries a duplicate stringprep authority.
+- `stdlib_text` now owns the extracted `html` and `unicodedata` implementation:
+  the old in-facade `builtins/html.rs` and `builtins/unicodedata_mod.rs`
+  fallbacks are deleted, `molt_html_*` and `molt_unicodedata_*` resolver arms
+  are gated by `stdlib_text`, and feature-on/feature-off runtime checks prove
+  the facade no longer carries a duplicate text authority for those modules.
 - `molt-runtime` is not yet a pure facade. It still owns substantial runtime
   implementation, so the precompiled-per-import library model below is the
   target architecture rather than a completed current guarantee.

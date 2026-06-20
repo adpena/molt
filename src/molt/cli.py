@@ -10493,6 +10493,7 @@ _ALL_DOMAIN_FEATURES: tuple[str, ...] = (
     "stdlib_csv",
     "stdlib_signal",
     "stdlib_select",
+    "stdlib_text",
     # Heavy domains excluded from native micro profile; explicit full/server
     # profiles keep them stable without making tiny native builds pay for them.
     "stdlib_crypto",
