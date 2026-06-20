@@ -184,7 +184,6 @@ _MIDEND_ENV_KEYS = (
     "MOLT_MIDEND_MONOLITH_FUNCTION_THRESHOLD",
     "MOLT_MIDEND_MONOLITH_TOTAL_OPS_THRESHOLD",
     "MOLT_MIDEND_HOT_TIER_PROMOTION",
-    "MOLT_MIDEND_BUDGET_MS",
     "MOLT_MIDEND_WORK_BUDGET",
     "MOLT_MIDEND_BUDGET_ALPHA",
     "MOLT_MIDEND_BUDGET_BETA",
@@ -267,12 +266,9 @@ class MidendEnvConfig:
     monolith_function_threshold: int
     monolith_total_ops_threshold: int
     hot_tier_promotion_enabled: bool
-    budget_override_ms: float | None
     # Deterministic work-unit budget override (env: MOLT_MIDEND_WORK_BUDGET).
     # When set, replaces the computed per-function work budget the degrade
-    # ladder gates on.  This is the deterministic successor to the old
-    # `budget_override_ms` time escape-hatch; `budget_override_ms` now only
-    # affects the telemetry `budget_ms`, never pass selection.
+    # ladder gates on.  This is the only supported mid-end budget override.
     work_budget_override: float | None
     budget_alpha: float
     budget_beta: float
@@ -1258,6 +1254,7 @@ class TryScope:
     done_label: int | None = None
     handler_label: int | None = None
     needs_context_unwind: bool = True
+    try_start_has_handler_value: bool = True
 
 
 class MethodInfo(TypedDict):

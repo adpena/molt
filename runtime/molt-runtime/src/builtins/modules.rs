@@ -314,9 +314,10 @@ pub(crate) fn modules_clear_runtime_state(_py: &PyToken<'_>, state: &crate::stat
 }
 
 static TRACE_LAST_OP: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
 static TRACE_SIGTRAP_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 unsafe extern "C" fn trace_sigtrap_handler(sig: i32) {
     unsafe {
         let op = TRACE_LAST_OP.load(Ordering::Relaxed);
@@ -349,7 +350,7 @@ unsafe extern "C" fn trace_sigtrap_handler(sig: i32) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 fn ensure_sigtrap_handler() {
     if trace_op_sigtrap_enabled() && !TRACE_SIGTRAP_INSTALLED.swap(true, Ordering::Relaxed) {
         unsafe {
@@ -358,7 +359,7 @@ fn ensure_sigtrap_handler() {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(unix))]
 fn ensure_sigtrap_handler() {}
 
 unsafe fn sys_populate_argv_executable(_py: &PyToken<'_>, sys_ptr: *mut u8) -> Result<(), ()> {

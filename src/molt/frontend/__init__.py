@@ -1584,7 +1584,7 @@ class SimpleTIRGenerator(
             call_args.append(result_val)
         res = MoltValue(self.next_var(), type_hint="Future")
         self.emit(
-            MoltOp(kind="CALL_ASYNC", args=["molt_async_sleep", *call_args], result=res)
+            MoltOp(kind="CALL_ASYNC", args=["molt_async_sleep_poll", *call_args], result=res)
         )
         return res
 
@@ -7752,10 +7752,23 @@ class SimpleTIRGenerator(
     ) -> None:
         if not self._plain_local_del_boundary_enabled(name, value):
             return
+        # `self.locals[name]` is the syntactic cached producer. Across loop
+        # phis the current frame slot may be a block argument, so make the
+        # boundary read the slot at the release point instead of retaining a
+        # stale pre-loop SSA value.
+        boundary_value = MoltValue(self.next_var(), type_hint=value.type_hint)
+        self.emit(
+            MoltOp(
+                kind="LOAD_VAR",
+                args=[],
+                result=boundary_value,
+                metadata={"var": name},
+            )
+        )
         self.emit(
             MoltOp(
                 kind="DEL_BOUNDARY",
-                args=[value],
+                args=[boundary_value],
                 result=MoltValue("none"),
                 metadata={"var": name},
             )
@@ -7829,13 +7842,7 @@ class SimpleTIRGenerator(
     @staticmethod
     def _plain_local_scope_exit_boundary_exempt(value: MoltValue) -> bool:
         hint = value.type_hint or ""
-        return (
-            hint == "code"
-            or hint.startswith("Func:")
-            or hint.startswith("ClosureFunc:")
-            or hint.startswith("AsyncFunc:")
-            or hint.startswith("AsyncGenFunc:")
-        )
+        return hint == "code"
 
     def _value_reads_plain_local_binding(
         self, value: MoltValue, bindings: list[tuple[str, MoltValue]]
@@ -8310,6 +8317,28 @@ class SimpleTIRGenerator(
                     )
                 )
 
+        def _emit_loads_for_label(label_idx: int) -> None:
+            for name in sorted(label_spills.get(label_idx, set())):
+                if name not in self.async_locals:
+                    self._async_local_offset(name)
+                offset = self.async_locals[name]
+                hint = type_hints.get(name, "Unknown")
+                new_ops.append(
+                    MoltOp(
+                        kind="LOAD_CLOSURE",
+                        args=["self", offset],
+                        result=MoltValue(name, type_hint=hint),
+                    )
+                )
+
+        def _state_label_before_try_start_run(end_idx: int) -> int | None:
+            cursor = end_idx
+            while cursor >= 0 and self.current_ops[cursor].kind == "TRY_START":
+                cursor -= 1
+            if cursor >= 0 and self.current_ops[cursor].kind == "STATE_LABEL":
+                return cursor
+            return None
+
         for idx, op in enumerate(self.current_ops):
             if op.kind in {"STATE_TRANSITION", "STATE_YIELD"}:
                 label_idx = None
@@ -8330,19 +8359,24 @@ class SimpleTIRGenerator(
                     _emit_store_for_label(label_idx)
             new_ops.append(op)
             if op.kind == "STATE_LABEL":
-                for name in sorted(label_spills.get(idx, set())):
-                    if name not in self.async_locals:
-                        self._async_local_offset(name)
-                    offset = self.async_locals[name]
-                    hint = type_hints.get(name, "Unknown")
-                    new_ops.append(
-                        MoltOp(
-                            kind="LOAD_CLOSURE",
-                            args=["self", offset],
-                            result=MoltValue(name, type_hint=hint),
-                        )
-                    )
+                next_op = (
+                    self.current_ops[idx + 1]
+                    if idx + 1 < len(self.current_ops)
+                    else None
+                )
+                if next_op is None or next_op.kind != "TRY_START":
+                    _emit_loads_for_label(idx)
                 continue
+            if op.kind == "TRY_START":
+                next_op = (
+                    self.current_ops[idx + 1]
+                    if idx + 1 < len(self.current_ops)
+                    else None
+                )
+                if next_op is None or next_op.kind != "TRY_START":
+                    label_idx = _state_label_before_try_start_run(idx)
+                    if label_idx is not None:
+                        _emit_loads_for_label(label_idx)
         self.current_ops[:] = new_ops
 
     def _active_exception_value(self, exc: ActiveException) -> MoltValue:
@@ -15025,6 +15059,7 @@ class SimpleTIRGenerator(
             ctx_mark=ctx_mark,
             finalbody=None,
             ctx_mark_offset=ctx_mark_offset,
+            try_start_has_handler_value=False,
         )
         self.try_scopes.append(scope)
         ctx_ref = self._load_local_value(ctx_name) or ctx_val
@@ -20330,6 +20365,32 @@ class SimpleTIRGenerator(
                 self._emit_raise_if_pending()
         return res
 
+    def _emit_state_yield_resume_try_starts(self) -> None:
+        if not self.in_generator:
+            return
+        for scope in self.try_scopes:
+            handler_label = scope.handler_label
+            if handler_label is None:
+                continue
+            args = [handler_label] if scope.try_start_has_handler_value else []
+            metadata = (
+                None
+                if scope.try_start_has_handler_value
+                else {"try_region_id": handler_label}
+            )
+            self.emit(
+                MoltOp(
+                    kind="TRY_START",
+                    args=args,
+                    result=MoltValue("none"),
+                    metadata=metadata,
+                )
+            )
+
+    def _emit_state_yield_resume_entry(self, state_id: int) -> None:
+        self.emit(MoltOp(kind="STATE_LABEL", args=[state_id], result=MoltValue("none")))
+        self._emit_state_yield_resume_try_starts()
+
     def visit_Yield(self, node: ast.Yield) -> Any:
         if not self.in_generator:
             raise NotImplementedError("yield outside of generator")
@@ -20343,13 +20404,15 @@ class SimpleTIRGenerator(
         pair = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=[value, done], result=pair))
         self.state_count += 1
+        resume_state = self.state_count
         self.emit(
             MoltOp(
                 kind="STATE_YIELD",
-                args=[pair, self.state_count],
+                args=[pair, resume_state],
                 result=MoltValue("none"),
             )
         )
+        self._emit_state_yield_resume_entry(resume_state)
         throw_val = MoltValue(self.next_var(), type_hint="exception")
         self.emit(
             MoltOp(
@@ -20482,13 +20545,15 @@ class SimpleTIRGenerator(
         self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=done_false))
         self.emit(MoltOp(kind="TUPLE_NEW", args=[value, done_false], result=yielded))
         self.state_count += 1
+        resume_state = self.state_count
         self.emit(
             MoltOp(
                 kind="STATE_YIELD",
-                args=[yielded, self.state_count],
+                args=[yielded, resume_state],
                 result=MoltValue("none"),
             )
         )
+        self._emit_state_yield_resume_entry(resume_state)
         if iter_slot is not None:
             iter_obj = MoltValue(self.next_var(), type_hint="iter")
             self.emit(
@@ -20632,14 +20697,6 @@ class SimpleTIRGenerator(
 
     def _run_ir_midend_passes(self, ops: list[MoltOp]) -> list[MoltOp]:
         self._refresh_midend_env_config_if_needed()
-        if os.getenv("MOLT_MIDEND_DISABLE", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            self.midend_stats["midend_module_skips"] += 1
-            return ops
         # Dev-profile mid-end gate removed: MISSING-value miscompile fixes
         # (SCCP non-propagation, DCE protection, definite-assignment hardening)
         # are now in place (ROADMAP TL2).  MOLT_MIDEND_DEV_ENABLE is no longer
@@ -20651,14 +20708,9 @@ class SimpleTIRGenerator(
             return ops
         module_name = self.module_name or ""
         ops = self._coalesce_check_exception_ops(ops)
-        try:
-            ops, structural_rewrites = self._ensure_structural_cfg_validity(
-                ops, stage="midend_entry"
-            )
-        except RuntimeError:
-            if os.getenv("MOLT_MIDEND_FAIL_OPEN") == "1":
-                return ops
-            raise
+        ops, structural_rewrites = self._ensure_structural_cfg_validity(
+            ops, stage="midend_entry"
+        )
         self.midend_stats["cfg_structural_canonicalizations"] += structural_rewrites
         oversized_skip_threshold = self.midend_env.skip_op_threshold
         _module_function_count, _module_total_ops, monolith_pressure_level = (
@@ -20700,15 +20752,6 @@ class SimpleTIRGenerator(
                     round_snapshots=[],
                 )
                 return ops
-        skip_prefixes_raw = os.getenv("MOLT_MIDEND_SKIP_MODULE_PREFIXES", "").strip()
-        if skip_prefixes_raw:
-            skip_prefixes = [
-                token.strip() for token in skip_prefixes_raw.split(",") if token.strip()
-            ]
-            for prefix in skip_prefixes:
-                if module_name == prefix or module_name.startswith(f"{prefix}."):
-                    self.midend_stats["midend_module_skips"] += 1
-                    return ops
         return self._canonicalize_control_aware_ops(ops)
 
     def _midend_function_stats(self) -> dict[str, int]:
@@ -20795,13 +20838,6 @@ class SimpleTIRGenerator(
         return parsed
 
     def _resolve_midend_env_config(self) -> MidendEnvConfig:
-        budget_override_raw = os.getenv("MOLT_MIDEND_BUDGET_MS", "").strip()
-        budget_override_ms: float | None = None
-        if budget_override_raw:
-            try:
-                budget_override_ms = max(0.0, float(budget_override_raw))
-            except ValueError:
-                budget_override_ms = None
         work_budget_override_raw = os.getenv("MOLT_MIDEND_WORK_BUDGET", "").strip()
         work_budget_override: float | None = None
         if work_budget_override_raw:
@@ -20832,7 +20868,6 @@ class SimpleTIRGenerator(
             .strip()
             .lower()
             not in {"0", "false", "no", "off"},
-            budget_override_ms=budget_override_ms,
             work_budget_override=work_budget_override,
             budget_alpha=self._midend_float_env("MOLT_MIDEND_BUDGET_ALPHA", 0.03),
             budget_beta=self._midend_float_env("MOLT_MIDEND_BUDGET_BETA", 0.75),
@@ -20840,7 +20875,7 @@ class SimpleTIRGenerator(
                 0.0, self._midend_float_env("MOLT_MIDEND_BUDGET_SCALE", 1.0)
             ),
             max_rounds_override=(
-                self._midend_positive_int_env("MOLT_MIDEND_MAX_ROUNDS", 1, minimum=1)
+                self._midend_positive_int_env("MOLT_MIDEND_MAX_ROUNDS", 2, minimum=2)
                 if max_rounds_override
                 else None
             ),
@@ -21176,15 +21211,11 @@ class SimpleTIRGenerator(
         alpha = self.midend_env.budget_alpha
         beta = self.midend_env.budget_beta
         scale = max(0.0, self.midend_env.budget_scale)
-        budget_override_ms = self.midend_env.budget_override_ms
-        if budget_override_ms is not None:
-            budget_ms = budget_override_ms
-        else:
-            budget_ms = (
-                selected["budget_base_ms"]
-                + alpha * max(1, len(ops))
-                + beta * max(1, block_count)
-            ) * scale
+        budget_ms = (
+            selected["budget_base_ms"]
+            + alpha * max(1, len(ops))
+            + beta * max(1, block_count)
+        ) * scale
         # Deterministic work-unit budget for the degrade ladder (#73).  The
         # ladder accumulates a deterministic cost — the op count processed —
         # at each inter-pass checkpoint, and degrades when the running total
@@ -21221,7 +21252,7 @@ class SimpleTIRGenerator(
             promoted=promoted,
             promotion_source=promotion_source,
             promotion_signal=promotion_signal,
-            max_rounds=int(selected["max_rounds"]),
+            max_rounds=max(2, int(selected["max_rounds"])),
             sccp_iter_cap=int(selected["sccp_iter_cap"]),
             cse_iter_cap=int(selected["cse_iter_cap"]),
             enable_deep_edge_thread=bool(selected["enable_deep_edge_thread"]),
@@ -23312,10 +23343,6 @@ class SimpleTIRGenerator(
         if not cfg.blocks:
             return []
 
-        block_ops: dict[int, list[MoltOp]] = {
-            block.id: ops[block.start : block.end] for block in cfg.blocks
-        }
-
         def normalize_anchor_arg(value: Any) -> Any:
             if isinstance(value, MoltValue):
                 return ("v", value.name)
@@ -23364,73 +23391,59 @@ class SimpleTIRGenerator(
             if count > 1 and key in anchor_first_result
         }
 
-        block_use: dict[int, set[str]] = {}
-        block_def: dict[int, set[str]] = {}
-        for block_id, current_ops in block_ops.items():
-            use, defs = self._compute_block_use_def(current_ops)
-            block_use[block_id] = use
-            block_def[block_id] = defs
-
-        in_live: dict[int, set[str]] = {block_id: set() for block_id in block_ops}
-        out_live: dict[int, set[str]] = {block_id: set() for block_id in block_ops}
-        changed = True
-        while changed:
-            changed = False
-            for block_id in reversed(range(len(cfg.blocks))):
-                if block_id not in cfg.reachable:
-                    continue
-                new_out: set[str] = set()
-                for succ in cfg.successors.get(block_id, []):
-                    new_out.update(in_live.get(succ, set()))
-                new_in = block_use[block_id].union(new_out - block_def[block_id])
-                if new_out != out_live[block_id] or new_in != in_live[block_id]:
-                    out_live[block_id] = new_out
-                    in_live[block_id] = new_in
-                    changed = True
-
-        removed_count = 0
         pure_attempted = 0
-        pure_removed = 0
-        new_block_ops: dict[int, list[MoltOp]] = {}
-        for block_id, current_ops in block_ops.items():
-            live = set(out_live.get(block_id, set()))
-            kept_reversed: list[MoltOp] = []
-            for op in reversed(current_ops):
-                out_name = op.result.name
-                uses: set[str] = set()
-                for arg in op.args:
-                    self._collect_arg_value_names(arg, uses)
+        uses_by_index: dict[int, set[str]] = {}
+        defs_by_name: dict[str, list[int]] = {}
+        removable_indices: set[int] = set()
+        required_values: set[str] = set()
+        worklist: list[str] = []
 
-                lattice_class = self._dead_op_lattice_class(op.kind)
-                if out_name != "none" and lattice_class == "pure":
+        def require_value(name: str) -> None:
+            if name == "none" or name in required_values:
+                return
+            required_values.add(name)
+            worklist.append(name)
+
+        for idx, op in enumerate(ops):
+            out_name = op.result.name
+            uses: set[str] = set()
+            for arg in op.args:
+                self._collect_arg_value_names(arg, uses)
+            uses_by_index[idx] = uses
+
+            lattice_class = self._dead_op_lattice_class(op.kind)
+            if out_name != "none":
+                defs_by_name.setdefault(out_name, []).append(idx)
+                if lattice_class == "pure":
                     pure_attempted += 1
-                is_dead_const = (
-                    out_name != "none"
-                    and out_name not in live
-                    and lattice_class == "pure"
-                )
-                if is_dead_const and out_name in preserve_anchor_results:
-                    is_dead_const = False
-                # MISSING ops are runtime sentinels (uninitialized locals,
-                # optional defaults) that downstream GETATTR/CALL sites
-                # depend on — never eliminate them.
-                if is_dead_const and op.kind == "MISSING":
-                    is_dead_const = False
-                if is_dead_const:
-                    removed_count += 1
-                    pure_removed += 1
+                    # MISSING ops are runtime sentinels (uninitialized locals,
+                    # optional defaults) that downstream GETATTR/CALL sites
+                    # depend on — never eliminate them.
+                    if out_name not in preserve_anchor_results and op.kind != "MISSING":
+                        removable_indices.add(idx)
+
+        for idx, op in enumerate(ops):
+            if idx in removable_indices:
+                continue
+            for name in uses_by_index[idx]:
+                require_value(name)
+
+        required_removable_indices: set[int] = set()
+        while worklist:
+            value_name = worklist.pop()
+            for producer_idx in defs_by_name.get(value_name, []):
+                if producer_idx not in removable_indices:
                     continue
+                if producer_idx in required_removable_indices:
+                    continue
+                required_removable_indices.add(producer_idx)
+                for dependency_name in uses_by_index[producer_idx]:
+                    require_value(dependency_name)
 
-                if out_name != "none":
-                    live.discard(out_name)
-                live.update(uses)
-                kept_reversed.append(op)
-            kept_reversed.reverse()
-            new_block_ops[block_id] = kept_reversed
-
-        out: list[MoltOp] = []
-        for block_id in range(len(cfg.blocks)):
-            out.extend(new_block_ops[block_id])
+        remove_indices = removable_indices - required_removable_indices
+        pure_removed = len(remove_indices)
+        removed_count = pure_removed
+        out = [op for idx, op in enumerate(ops) if idx not in remove_indices]
         self.midend_stats["dce_removed_total"] += removed_count
         func_stats["dce_pure_op_attempted"] += pure_attempted
         func_stats["dce_pure_op_accepted"] += pure_removed
@@ -26326,9 +26339,10 @@ class SimpleTIRGenerator(
         enable_cse = policy.enable_cse
         enable_licm = policy.enable_licm
         enable_guard_hoist = policy.enable_guard_hoist
-        max_rounds = max(1, policy.max_rounds)
+        max_rounds = max(2, policy.max_rounds)
         sccp_iter_cap = max(1, policy.sccp_iter_cap)
         cse_iter_cap = max(1, policy.cse_iter_cap)
+        hard_fail_on_non_convergence = policy.tier == "A"
 
         # --- Per-function DETERMINISTIC work budget, 3-level degrade ladder ---
         # (formerly a wall-time budget, MOL-27; made deterministic for #73).
@@ -26337,21 +26351,11 @@ class SimpleTIRGenerator(
         degrade_level_reasons: list[str] = []
 
         if self.midend_env.max_rounds_override is not None:
-            max_rounds = self.midend_env.max_rounds_override
+            max_rounds = max(2, self.midend_env.max_rounds_override)
         if self.midend_env.sccp_iter_cap_override is not None:
             sccp_iter_cap = self.midend_env.sccp_iter_cap_override
         if self.midend_env.cse_iter_cap_override is not None:
             cse_iter_cap = self.midend_env.cse_iter_cap_override
-        enable_idempotence_probe = (
-            os.getenv("MOLT_MIDEND_IDEMPOTENCE_CHECK", "1") != "0"
-        )
-        hard_fail_on_non_convergence = (
-            os.getenv("MOLT_MIDEND_HARD_FAIL", "").strip() == "1"
-        )
-        # Legacy opt-in fail-open flag remains accepted for compatibility.
-        legacy_fail_open = os.getenv("MOLT_MIDEND_FAIL_OPEN")
-        if legacy_fail_open == "0":
-            hard_fail_on_non_convergence = True
 
         def spent_midend_ms() -> float:
             # Telemetry only — never feeds a pass-selection decision (#73).
@@ -26432,14 +26436,14 @@ class SimpleTIRGenerator(
             nonlocal max_rounds
             nonlocal sccp_iter_cap
             nonlocal cse_iter_cap
-            nonlocal enable_idempotence_probe
             if per_func_work_budget < 0:
                 return
             charge_work(max(1, ops_now))
             while work_units_spent > per_func_work_budget:
                 action: str | None = None
-                if max_rounds > (round_index + 1):
-                    max_rounds = round_index + 1
+                proof_floor = round_index + 2
+                if max_rounds > proof_floor:
+                    max_rounds = proof_floor
                     action = f"cap_rounds_to_{max_rounds}"
                 elif sccp_iter_cap > 8:
                     sccp_iter_cap = max(8, sccp_iter_cap // 2)
@@ -26447,9 +26451,6 @@ class SimpleTIRGenerator(
                 elif cse_iter_cap > 4:
                     cse_iter_cap = max(4, cse_iter_cap // 2)
                     action = f"shrink_cse_iter_cap_to_{cse_iter_cap}"
-                elif enable_idempotence_probe:
-                    enable_idempotence_probe = False
-                    action = "disable_idempotence_probe"
                 elif enable_cse:
                     enable_cse = False
                     action = "disable_cse"
@@ -26514,6 +26515,7 @@ class SimpleTIRGenerator(
             )
             step_before = rewritten_ops
             step_ops = rewritten_ops
+            post_cse_dce_ran = False
 
             # 1) simplify
             pass_start = time.perf_counter()
@@ -26827,6 +26829,28 @@ class SimpleTIRGenerator(
                 accepted=not round_failures,
                 degraded=degraded,
             )
+
+            def run_verified_dce(
+                dce_input: list[MoltOp],
+                *,
+                pass_name: str,
+            ) -> tuple[list[MoltOp], bool]:
+                pass_start = time.perf_counter()
+                dce_candidate = self._eliminate_dead_trivial_consts(dce_input)
+                dce_failures = self._verify_definite_assignment_in_ops(
+                    dce_candidate, predefined_value_names=round_predefined
+                )
+                accepted = (not dce_failures) and dce_candidate != dce_input
+                self._record_midend_pass_sample(
+                    pass_name,
+                    elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                    accepted=accepted,
+                    degraded=degraded,
+                )
+                if dce_failures:
+                    return dce_input, False
+                return dce_candidate, accepted
+
             if round_failures:
                 step_ops = step_before
                 self._record_midend_pass_sample(
@@ -26843,20 +26867,7 @@ class SimpleTIRGenerator(
                 )
             else:
                 # 6) DCE
-                pass_start = time.perf_counter()
-                dce_input = step_ops
-                dce_candidate = self._eliminate_dead_trivial_consts(step_ops)
-                dce_failures = self._verify_definite_assignment_in_ops(
-                    dce_candidate, predefined_value_names=round_predefined
-                )
-                if not dce_failures:
-                    step_ops = dce_candidate
-                self._record_midend_pass_sample(
-                    "dce",
-                    elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
-                    accepted=(not dce_failures) and step_ops != dce_input,
-                    degraded=degraded,
-                )
+                step_ops, _dce_accepted = run_verified_dce(step_ops, pass_name="dce")
                 maybe_apply_budget_degrade(
                     f"round_{round_index}_post_dce",
                     round_index - 1,
@@ -26888,6 +26899,11 @@ class SimpleTIRGenerator(
                         and (step_ops != cse_input or cse_phi_trims > 0),
                         degraded=degraded,
                     )
+                    if not cse_failures:
+                        step_ops, _post_cse_dce_accepted = run_verified_dce(
+                            step_ops, pass_name="post_cse_dce"
+                        )
+                        post_cse_dce_ran = True
                 else:
                     self._record_midend_pass_sample(
                         "cse",
@@ -26917,6 +26933,8 @@ class SimpleTIRGenerator(
                 round_passes_run.append("dce")
                 if enable_cse:
                     round_passes_run.append("cse")
+                if post_cse_dce_ran:
+                    round_passes_run.append("post_cse_dce")
             round_changed = rewritten_ops != step_before
             round_snapshots.append(
                 {
@@ -26935,7 +26953,7 @@ class SimpleTIRGenerator(
             add_degrade_event(
                 "fixed_point_round_cap",
                 "fixed_point_exit",
-                "accept_last_verified_round",
+                "fail_closed_non_convergence",
                 value=max_rounds,
             )
             degraded = True
@@ -26954,7 +26972,7 @@ class SimpleTIRGenerator(
                     f"{max_rounds} rounds for {self._active_midend_function_name}"
                 )
 
-        if enable_idempotence_probe:
+        if converged:
             probe_ops = rewritten_ops
             probe_ops, _probe_cfg_rewrites = self._canonicalize_cfg_before_optimization(
                 probe_ops
@@ -27626,13 +27644,21 @@ class SimpleTIRGenerator(
                 borrowed_indices.append(i)
         return borrowed_indices
 
-    def to_json(self) -> dict[str, Any]:
+    def to_json(
+        self, *, midend_stage: Literal["pre-midend", "post-midend"] = "post-midend"
+    ) -> dict[str, Any]:
+        if midend_stage not in {"pre-midend", "post-midend"}:
+            raise ValueError(f"unsupported IR serialization stage: {midend_stage}")
         self._finalize_code_ids()
         self._ensure_code_slots_init()
         funcs_json: list[dict[str, Any]] = []
         # DETERMINISM: sort to ensure stable output regardless of dict insertion order
         for name, data in sorted(self.funcs_map.items()):
-            json_ops = self.map_ops_to_json(data["ops"], function_name=name)
+            json_ops = self.map_ops_to_json(
+                data["ops"],
+                function_name=name,
+                run_midend=midend_stage == "post-midend",
+            )
             func_entry: dict[str, Any] = {
                 "name": name,
                 "params": data["params"],

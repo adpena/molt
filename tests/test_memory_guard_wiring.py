@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 from pathlib import Path
 import sys
@@ -94,6 +95,9 @@ def test_wiring_audit_locks_down_pytest_and_ci_gate_custody() -> None:
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
         "pyproject.toml",
         "sample_processes",
+        "handoff_to_outer_guard",
+        "subprocess.run",
+        "os._exit",
         "os.execvpe",
     )
     assert contracts["tests/conftest.py"] == (
@@ -145,6 +149,9 @@ def test_pytest_startup_reexecs_direct_pytest_under_memory_guard(monkeypatch) ->
         captured["env"] = dict(env)
         raise SystemExit(72)
 
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
+    )
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
@@ -181,6 +188,59 @@ def test_pytest_startup_reexecs_direct_pytest_under_memory_guard(monkeypatch) ->
     assert current_test_file.name.endswith("_current-test.json")
 
 
+def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Completed:
+        returncode = 77
+
+    def fake_run(argv, *, env, check):
+        captured["argv"] = list(argv)
+        captured["env"] = dict(env)
+        captured["check"] = check
+        return Completed()
+
+    def fake_execvpe(*_args):
+        raise AssertionError("Windows pytest custody must not use os.execvpe")
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    )
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.subprocess, "run", fake_run)
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "_exit", fake_exit)
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap,
+        "outer_memory_guard_active",
+        lambda _environ=None: False,
+    )
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.sys, "executable", sys.executable)
+    monkeypatch.delenv("MOLT_MEMORY_GUARD_ACTIVE", raising=False)
+    monkeypatch.delenv("MOLT_PYTEST_OUTER_GUARD_REEXEC", raising=False)
+
+    try:
+        pytest_memory_guard_bootstrap.ensure_pytest_memory_guard(
+            orig_argv=[sys.executable, "-m", "pytest", "tests/test_one.py", "-q"],
+            runtime_argv=["-m", "tests/test_one.py", "-q"],
+        )
+    except SystemExit as exc:
+        assert exc.code == 77
+    else:  # pragma: no cover
+        raise AssertionError("expected Windows pytest guard handoff")
+
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert argv[:2] == [sys.executable, str(REPO_ROOT / "tools" / "memory_guard.py")]
+    assert argv[-5:] == [sys.executable, "-m", "pytest", "tests/test_one.py", "-q"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["MOLT_PYTEST_OUTER_GUARD_REEXEC"] == "1"
+    assert captured["check"] is False
+
+
 def test_repo_test_script_startup_reexecs_under_memory_guard(monkeypatch) -> None:
     captured: dict[str, object] = {}
     script = REPO_ROOT / "tests" / "e2e" / "test_performance_guard.py"
@@ -191,6 +251,9 @@ def test_repo_test_script_startup_reexecs_under_memory_guard(monkeypatch) -> Non
         captured["env"] = dict(env)
         raise SystemExit(74)
 
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
+    )
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
@@ -228,6 +291,9 @@ def test_repo_test_module_startup_reexecs_under_memory_guard(monkeypatch) -> Non
         captured["env"] = dict(env)
         raise SystemExit(76)
 
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
+    )
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
@@ -277,6 +343,9 @@ def test_current_file_test_script_startup_uses_resolved_file(monkeypatch) -> Non
         captured["env"] = dict(env)
         raise SystemExit(75)
 
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
+    )
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
@@ -418,6 +487,9 @@ def test_pytest_initial_conftest_hook_reexecs_from_pytest_args(monkeypatch) -> N
         captured["env"] = dict(env)
         raise SystemExit(73)
 
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
+    )
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
@@ -676,6 +748,50 @@ def test_pytest_current_test_writer_ignores_test_monkeypatched_os_replace(
 
     pytest_memory_guard_bootstrap.pytest_runtest_call(Item())
 
+    payload = json.loads(current_test_path.read_text(encoding="utf-8"))
+    assert payload["phase"] == "call"
+    assert payload["nodeid"] == "tests/test_memory_guard_wiring.py::test_unit"
+
+
+def test_pytest_current_test_writer_retries_windows_atomic_replace(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    current_test_path = tmp_path / "current-test.json"
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap,
+        "PYTEST_OUTER_GUARD_SUMMARY_DIR",
+        tmp_path,
+    )
+    monkeypatch.setenv(
+        pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
+        str(current_test_path),
+    )
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap,
+        "_is_windows_process_model",
+        lambda: True,
+    )
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.time, "sleep", lambda _s: None)
+
+    calls = 0
+    original_replace = pytest_memory_guard_bootstrap._ATOMIC_REPLACE
+
+    def flaky_replace(src: Path, dst: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError(errno.EACCES, "Access is denied")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(pytest_memory_guard_bootstrap, "_ATOMIC_REPLACE", flaky_replace)
+
+    class Item:
+        nodeid = "tests/test_memory_guard_wiring.py::test_unit"
+
+    pytest_memory_guard_bootstrap.pytest_runtest_call(Item())
+
+    assert calls == 2
     payload = json.loads(current_test_path.read_text(encoding="utf-8"))
     assert payload["phase"] == "call"
     assert payload["nodeid"] == "tests/test_memory_guard_wiring.py::test_unit"

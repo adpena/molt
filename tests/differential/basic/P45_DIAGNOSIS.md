@@ -91,7 +91,7 @@ Frontend `emit` produces the CORRECT op order (verified by tracing
 `SimpleTIRGenerator.emit`):
 `LOOP_INDEX_NEXT → LOOP_CONTINUE → LOOP_END` (emit_range_loop_body, init.py:8590-8598).
 
-With `MOLT_MIDEND_DISABLE=1` the `to_json()` ops are correct:
+In the retired pre-midend snapshot mode, the `to_json()` ops were correct:
 `… loop_index_next, loop_continue, loop_end`.
 With the midend ENABLED they are corrupted:
 `… loop_end, loop_index_next` — `loop_continue` DELETED, `loop_end` hoisted

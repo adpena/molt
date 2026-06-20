@@ -18,6 +18,12 @@ use std::fmt::Write as _;
 use crate::bridge::*;
 use molt_runtime_core::prelude::*;
 
+#[cfg(windows)]
+unsafe extern "C" {
+    #[link_name = "_mktime64"]
+    fn windows_mktime64(tm: *mut libc::tm) -> libc::time_t;
+}
+
 // ---------------------------------------------------------------------------
 // Calendar helper types
 // ---------------------------------------------------------------------------
@@ -1811,8 +1817,12 @@ fn localtime_to_parts(secs: libc::time_t) -> Result<LocalTimeParts, String> {
         let h = tm.tm_hour;
         let mi = tm.tm_min;
         let sec = tm.tm_sec;
-        // Windows libc::tm doesn't have tm_gmtoff; compute from timezone global
-        let utcoff = -(unsafe { libc::timezone } as i64);
+        libc::tzset();
+        let mut offset_west: libc::c_long = 0;
+        if libc::get_timezone(&mut offset_west as *mut libc::c_long) != 0 {
+            return Err("_get_timezone failed".to_string());
+        }
+        let utcoff = -(offset_west as i64);
         Ok((y, m, d, h, mi, sec, utcoff))
     }
     #[cfg(not(any(unix, windows)))]
@@ -2028,7 +2038,7 @@ fn localtime_to_epoch_from_local(
         tm.tm_min = mi;
         tm.tm_sec = sec;
         tm.tm_isdst = -1;
-        let t = libc::mktime(&mut tm);
+        let t = windows_mktime64(&mut tm);
         if t == -1 {
             return Err("mktime failed: date out of range".to_string());
         }

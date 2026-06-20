@@ -1549,7 +1549,7 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "ftruncate")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let result = unsafe { libc::ftruncate(fd as libc::c_int, length as libc::off_t) };
             if result < 0 {
@@ -1560,6 +1560,11 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
                 return raise_os_error::<u64>(_py, err, "ftruncate");
             }
             MoltObject::none().bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let _ = (fd, length);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "ftruncate")
         }
     })
 }
@@ -1620,7 +1625,7 @@ pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
             let _ = (pid, sig);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "kill")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let result = unsafe { libc::kill(pid as libc::pid_t, sig as libc::c_int) };
             if result < 0 {
@@ -1631,6 +1636,11 @@ pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
                 return raise_os_error::<u64>(_py, err, "kill");
             }
             MoltObject::none().bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let _ = (pid, sig);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "kill")
         }
     })
 }
@@ -1653,7 +1663,7 @@ pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
             let _ = (pid, options);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "waitpid")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let mut status: libc::c_int = 0;
             let result =
@@ -1675,6 +1685,11 @@ pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
             }
             MoltObject::from_ptr(tup_ptr).bits()
         }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let _ = (pid, options);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "waitpid")
+        }
     })
 }
 
@@ -1686,10 +1701,14 @@ pub extern "C" fn molt_os_getpgrp() -> u64 {
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getpgrp")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let pgrp = unsafe { libc::getpgrp() };
             MoltObject::from_int(pgrp as i64).bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getpgrp")
         }
     })
 }
@@ -1705,7 +1724,7 @@ pub extern "C" fn molt_os_setpgrp() -> u64 {
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setpgrp")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             // macOS does not have setpgrp(); use setpgid(0, 0) which is equivalent
             let result = unsafe { libc::setpgid(0, 0) };
@@ -1717,6 +1736,10 @@ pub extern "C" fn molt_os_setpgrp() -> u64 {
                 return raise_os_error::<u64>(_py, err, "setpgrp");
             }
             MoltObject::none().bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setpgrp")
         }
     })
 }
@@ -1732,7 +1755,7 @@ pub extern "C" fn molt_os_setsid() -> u64 {
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setsid")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let result = unsafe { libc::setsid() };
             if result < 0 {
@@ -1744,12 +1767,35 @@ pub extern "C" fn molt_os_setsid() -> u64 {
             }
             MoltObject::from_int(result as i64).bits()
         }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setsid")
+        }
     })
 }
 
 // ---------------------------------------------------------------------------
 // System configuration (Phase 2)
 // ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_IOV_MAX: i64 = 1;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_PAGE_SIZE: i64 = 2;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_PAGESIZE: i64 = 3;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_NPROCESSORS_CONF: i64 = 4;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_SC_NPROCESSORS_ONLN: i64 = 5;
+#[cfg(target_arch = "wasm32")]
+const WASM_SYSCONF_ENTRIES: &[(&str, i64, i64)] = &[
+    ("SC_IOV_MAX", WASM_SYSCONF_SC_IOV_MAX, 1024),
+    ("SC_PAGE_SIZE", WASM_SYSCONF_SC_PAGE_SIZE, 65536),
+    ("SC_PAGESIZE", WASM_SYSCONF_SC_PAGESIZE, 65536),
+    ("SC_NPROCESSORS_CONF", WASM_SYSCONF_SC_NPROCESSORS_CONF, 1),
+    ("SC_NPROCESSORS_ONLN", WASM_SYSCONF_SC_NPROCESSORS_ONLN, 1),
+];
 
 /// `os.sysconf(name)` → int — get system configuration value
 #[unsafe(no_mangle)]
@@ -1760,10 +1806,14 @@ pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
         };
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = name;
+            if let Some((_, _, value)) =
+                WASM_SYSCONF_ENTRIES.iter().find(|(_, key, _)| *key == name)
+            {
+                return MoltObject::from_int(*value).bits();
+            }
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "sysconf")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let result = unsafe { libc::sysconf(name as libc::c_int) };
             if result == -1 {
@@ -1778,6 +1828,11 @@ pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
                 // errno == 0 means "no limit" / indeterminate — return -1
             }
             MoltObject::from_int(result as i64).bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let _ = name;
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "sysconf")
         }
     })
 }
@@ -1795,7 +1850,7 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
             }
             MoltObject::from_ptr(list_ptr).bits()
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let names: &[(&str, libc::c_int)] = &[
                 ("SC_PAGE_SIZE", libc::_SC_PAGE_SIZE),
@@ -1850,6 +1905,14 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
             }
             MoltObject::from_ptr(list_ptr).bits()
         }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let list_ptr = alloc_list(_py, &[]);
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            MoltObject::from_ptr(list_ptr).bits()
+        }
     })
 }
 
@@ -1894,7 +1957,7 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
             let _ = (path, atime_bits, mtime_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             use std::ffi::CString;
 
@@ -1958,7 +2021,87 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
             }
             MoltObject::none().bits()
         }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let atime_obj = obj_from_bits(atime_bits);
+            let (atime, mtime) = if atime_obj.is_none() {
+                let now = filetime::FileTime::from_system_time(std::time::SystemTime::now());
+                (now, now)
+            } else {
+                let atime_f = match to_f64(atime_obj) {
+                    Some(v) => v,
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "utime: atime must be a number",
+                        );
+                    }
+                };
+                let mtime_f = match to_f64(obj_from_bits(mtime_bits)) {
+                    Some(v) => v,
+                    None => {
+                        return raise_exception::<_>(
+                            _py,
+                            "TypeError",
+                            "utime: mtime must be a number",
+                        );
+                    }
+                };
+                let atime = match filetime_from_seconds(_py, atime_f, "atime") {
+                    Ok(v) => v,
+                    Err(bits) => return bits,
+                };
+                let mtime = match filetime_from_seconds(_py, mtime_f, "mtime") {
+                    Ok(v) => v,
+                    Err(bits) => return bits,
+                };
+                (atime, mtime)
+            };
+            if let Err(err) = filetime::set_file_times(&path, atime, mtime) {
+                return raise_os_error::<u64>(_py, err, "utime");
+            }
+            MoltObject::none().bits()
+        }
     })
+}
+
+#[cfg(all(not(unix), not(target_arch = "wasm32")))]
+fn filetime_from_seconds(
+    _py: &CoreGilToken,
+    seconds: f64,
+    label: &str,
+) -> Result<filetime::FileTime, u64> {
+    if !seconds.is_finite() {
+        return Err(raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            &format!("utime: {label} out of range"),
+        ));
+    }
+    let sec_floor = seconds.floor();
+    if sec_floor < i64::MIN as f64 || sec_floor > i64::MAX as f64 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            &format!("utime: {label} out of range"),
+        ));
+    }
+    let mut secs = sec_floor as i64;
+    let mut nanos = ((seconds - sec_floor) * 1_000_000_000.0).round() as i64;
+    if nanos >= 1_000_000_000 {
+        secs = secs.checked_add(1).ok_or_else(|| {
+            raise_exception::<u64>(_py, "OverflowError", &format!("utime: {label} out of range"))
+        })?;
+        nanos -= 1_000_000_000;
+    }
+    if nanos < 0 {
+        secs = secs.checked_sub(1).ok_or_else(|| {
+            raise_exception::<u64>(_py, "OverflowError", &format!("utime: {label} out of range"))
+        })?;
+        nanos += 1_000_000_000;
+    }
+    Ok(filetime::FileTime::from_unix_time(secs, nanos as u32))
 }
 
 // ---------------------------------------------------------------------------
@@ -1976,16 +2119,13 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
 
 /// Convert a path to a NUL-terminated `CString` for the `*at` syscall family,
 /// raising `ValueError` (CPython parity) on an interior NUL.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), unix))]
 #[inline]
 fn at_path_to_cstring(_py: &CoreGilToken, path: &Path) -> Result<std::ffi::CString, u64> {
-    #[cfg(unix)]
     let bytes: Vec<u8> = {
         use std::os::unix::ffi::OsStrExt;
         path.as_os_str().as_bytes().to_vec()
     };
-    #[cfg(not(unix))]
-    let bytes: Vec<u8> = path.to_string_lossy().as_bytes().to_vec();
     match std::ffi::CString::new(bytes) {
         Ok(c) => Ok(c),
         Err(_) => Err(raise_exception::<u64>(
@@ -2062,7 +2202,7 @@ pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
         }
         #[cfg(not(unix))]
         {
-            let _ = dir_fd_bits;
+            let _ = (path, dir_fd_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "readlink")
         }
     })
@@ -2118,7 +2258,7 @@ pub extern "C" fn molt_os_symlink_at(src_bits: u64, dst_bits: u64, dir_fd_bits: 
         }
         #[cfg(not(unix))]
         {
-            let _ = dir_fd_bits;
+            let _ = (src, dst, dir_fd_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "symlink")
         }
     })
@@ -2190,6 +2330,7 @@ pub extern "C" fn molt_os_utime_at(
         #[cfg(not(unix))]
         {
             let _ = (
+                path,
                 dir_fd_bits,
                 atime_sec_bits,
                 atime_nsec_bits,

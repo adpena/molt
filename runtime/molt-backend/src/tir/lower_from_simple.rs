@@ -164,11 +164,19 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
 /// ```
 ///
 /// Returns an empty Vec if no rewrites were needed (caller uses original ops).
+pub(crate) const PRE_SSA_REWRITTEN_KINDS: &[&str] = &["loop_index_start", "loop_index_next"];
+
+fn is_pre_ssa_rewritten_kind(kind: &str) -> bool {
+    PRE_SSA_REWRITTEN_KINDS.contains(&kind)
+}
+
 fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::OpIR> {
     use crate::ir::OpIR;
 
-    // Quick scan: any loop_index_start ops?
-    let has_loop_index = ops.iter().any(|op| op.kind == "loop_index_start");
+    // Quick scan: any loop-index op consumed by this pre-SSA rewrite?
+    let has_loop_index = ops
+        .iter()
+        .any(|op| is_pre_ssa_rewritten_kind(op.kind.as_str()));
     if !has_loop_index {
         return Vec::new();
     }

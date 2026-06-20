@@ -251,21 +251,14 @@ fn terminator_references(term: &Terminator, root: ValueId, alias: &AliasAnalysis
 }
 
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
-    // Canonical rollback lever (mirrors MOLT_DISABLE_MEM_GVN). Read once, thread
-    // the decision into `run_with` so the disable path is exercised in tests
-    // without a process-global env var racing parallel cargo tests.
-    let disabled = std::env::var("MOLT_DISABLE_SROA").as_deref() == Ok("1");
-    run_with(func, am, disabled)
+    run_with(func, am)
 }
 
-fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, disabled: bool) -> PassStats {
+fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stats = PassStats {
         name: "sroa",
         ..Default::default()
     };
-    if disabled {
-        return stats;
-    }
     // Trivial functions hold no aggregates to scalarize.
     if func.blocks.values().all(|b| b.ops.is_empty()) {
         return stats;

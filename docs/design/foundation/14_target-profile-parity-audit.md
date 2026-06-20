@@ -171,8 +171,8 @@ cargo build --profile dev-fast -p molt-backend --features native-backend
 # Native (confirm module phase ran, count inlined sites)
 MOLT_INLINE_STATS=1 python3 -m molt build --target native --output /tmp/bench_sum_out tests/benchmarks/bench_sum.py --rebuild 2>&1 | grep '\[E1\]'
 
-# Baseline — disable inliner, compare output binary size / timing
-MOLT_DISABLE_INLINING=1 python3 -m molt build --target native --output /tmp/bench_sum_noinline tests/benchmarks/bench_sum.py --rebuild
+# Baseline — compare against the recorded pre-activation artifact or scoreboard
+# manifest; the production inliner has no ambient disable switch.
 
 # WASM
 MOLT_INLINE_STATS=1 python3 -m molt build --target wasm --output /tmp/bench_sum_wasm.wasm tests/benchmarks/bench_sum.py --rebuild 2>&1 | grep '\[E1\]'
@@ -194,9 +194,8 @@ python3 tools/safe_run.py --rss-mb 512 --timeout 30 -- /tmp/bench_sum_native_df
 # CPython baseline
 python3 tests/benchmarks/bench_sum.py
 
-# Inliner disabled on native (regression check — should be slower or equal)
-MOLT_DISABLE_INLINING=1 python3 -m molt build --target native --output /tmp/bench_sum_noinl tests/benchmarks/bench_sum.py --rebuild
-python3 tools/safe_run.py --rss-mb 512 --timeout 30 -- /tmp/bench_sum_noinl
+# Regression check: use the scoreboard baseline artifact/provenance instead of
+# disabling the production inliner with an environment variable.
 ```
 
 **Confirm WASM module-phase fires and is not double-run:**

@@ -51,9 +51,7 @@ def _build_luau(src_path: Path, out_dir: Path) -> str | None:
     """Build a Python file to Luau, returning the Luau source or None."""
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SRC_DIR)
-    env.setdefault("MOLT_MIDEND_DISABLE", "1")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
-    env.setdefault("MOLT_MIDEND_FAIL_OPEN", "1")
     try:
         result = run_native_test_process(
             [
@@ -105,33 +103,33 @@ class TestLuauArithmeticPatterns:
         [
             (
                 "add",
-                "x = 1 + 2\n",
-                r"\b1\s*\+\s*2\b",
+                "def f(a, b):\n    return a + b\nprint(f(1, 2))\n",
+                r"\b_v\d+\s*\+\s*_v\d+\b",
             ),
             (
                 "sub",
-                "x = 10 - 3\n",
-                r"\b10\s*-\s*3\b",
+                "def f(a, b):\n    return a - b\nprint(f(10, 3))\n",
+                r"\b_v\d+\s*-\s*_v\d+\b",
             ),
             (
                 "mul",
-                "x = 4 * 5\n",
-                r"\b4\s*\*\s*5\b",
+                "def f(a, b):\n    return a * b\nprint(f(4, 5))\n",
+                r"\b_v\d+\s*\*\s*_v\d+\b",
             ),
             (
                 "neg",
-                "x = -7\n",
-                r"-\s*7",
+                "def f(a):\n    return -a\nprint(f(7))\n",
+                r"-\s*_v\d+\b",
             ),
             (
                 "comparison_lt",
-                "x = 1 < 2\n",
-                r"\b1\s*<\s*2\b",
+                "def f(a, b):\n    return a < b\nprint(f(1, 2))\n",
+                r"\b_v\d+\s*<\s*_v\d+\b",
             ),
             (
                 "comparison_eq",
-                "x = 1 == 1\n",
-                r"\b1\s*==\s*1\b",
+                "def f(a, b):\n    return a == b\nprint(f(1, 1))\n",
+                r"\b_v\d+\s*==\s*_v\d+\b",
             ),
         ],
     )

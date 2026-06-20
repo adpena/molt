@@ -5,13 +5,33 @@ use std::process::Command;
 
 use cc::Build;
 
+fn resolve_build_python() -> String {
+    println!("cargo:rerun-if-env-changed=MOLT_BUILD_PYTHON");
+    println!("cargo:rerun-if-env-changed=PYTHON");
+    for key in ["MOLT_BUILD_PYTHON", "PYTHON"] {
+        if let Ok(value) = env::var(key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    if cfg!(windows) {
+        "python".to_string()
+    } else {
+        "python3".to_string()
+    }
+}
+
 fn main() {
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let target_family = env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
     let target_ptr_width = env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_default();
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let build_python = resolve_build_python();
 
     // Keep cdylib in the crate types so plain `cargo build -p molt-runtime`
     // still emits a stable `molt_runtime.wasm` artifact for wasm lanes that
@@ -19,12 +39,16 @@ fn main() {
     let _ = &target_os;
     println!("cargo:rustc-check-cfg=cfg(molt_has_mpdec)");
 
-    // Emit `molt_has_net_io` when both non-WASM *and* stdlib_net feature are
-    // active.  This replaces hundreds of bare `cfg(not(target_arch = "wasm32"))`
-    // guards in the async-rt networking code so that omitting stdlib_net on
-    // native targets lets the linker drop mio/rustls/tungstenite/socket2.
+    // Emit `molt_has_net_io` only when the target has Molt's native socket ABI
+    // implementation, not merely because the stdlib_net Cargo feature was
+    // requested. WASM uses the host-call socket ABI under target_arch = "wasm32";
+    // Windows stays on the explicit no-net intrinsic surface until the WinSock
+    // constants, sockaddr storage, resolver, SSL fd ownership, and poller
+    // contracts land as one coherent target implementation.
     println!("cargo:rustc-check-cfg=cfg(molt_has_net_io)");
-    if target_arch != "wasm32" {
+    let native_net_target_supported = target_arch != "wasm32"
+        && target_family.split(',').any(|family| family == "unix");
+    if native_net_target_supported {
         // CARGO_FEATURE_<NAME> is set for every enabled Cargo feature.
         if env::var("CARGO_FEATURE_STDLIB_NET").is_ok() {
             println!("cargo:rustc-cfg=molt_has_net_io");
@@ -44,7 +68,7 @@ fn main() {
     emit_native_cdylib_isolate_stubs(&out_dir, &target_arch, &target_env);
 
     if target_arch != "wasm32" {
-        let output = Command::new("python3")
+        let output = Command::new(&build_python)
             .arg("-")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -74,12 +98,14 @@ for name, val in sorted(set(names)):
         let output = match output {
             Ok(out) => out,
             Err(err) => {
-                panic!("failed to run python3 to generate errno constants: {err}");
+                panic!(
+                    "failed to run build Python `{build_python}` to generate errno constants: {err}"
+                );
             }
         };
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            panic!("python3 errno generation failed: {stderr}");
+            panic!("build Python `{build_python}` errno generation failed: {stderr}");
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut entries: Vec<(String, i64)> = Vec::new();
@@ -98,7 +124,7 @@ for name, val in sorted(set(names)):
             entries.push((name.to_string(), value));
         }
         if entries.is_empty() {
-            panic!("python3 errno generation returned no entries");
+            panic!("build Python `{build_python}` errno generation returned no entries");
         }
         let mut out = String::new();
         out.push_str("pub(crate) fn collect_errno_constants() -> Vec<(&'static str, i64)> {\n");
@@ -112,7 +138,7 @@ for name, val in sorted(set(names)):
             .expect("failed to write errno_constants.rs");
     }
 
-    let output = Command::new("python3")
+    let output = Command::new(&build_python)
         .arg("-")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -197,18 +223,20 @@ for code, cps in titlecase_map:
     let output = match output {
         Ok(out) => out,
         Err(err) => {
-            panic!("failed to run python3 to generate unicode digit ranges: {err}");
+            panic!(
+                "failed to run build Python `{build_python}` to generate unicode digit ranges: {err}"
+            );
         }
     };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("python3 unicode digit generation failed: {stderr}");
+        panic!("build Python `{build_python}` unicode digit generation failed: {stderr}");
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut lines = stdout.lines();
     let version = lines.next().unwrap_or_default().trim().to_string();
     if version.is_empty() {
-        panic!("python3 unicode category generation returned no version");
+        panic!("build Python `{build_python}` unicode category generation returned no version");
     }
 
     let mut digit_ranges = Vec::new();
@@ -274,7 +302,9 @@ for code, cps in titlecase_map:
         || printable_ranges.is_empty()
         || titlecase_entries.is_empty()
     {
-        panic!("python3 unicode category generation returned incomplete tables");
+        panic!(
+            "build Python `{build_python}` unicode category generation returned incomplete tables"
+        );
     }
 
     write_unicode_range_module(
@@ -337,25 +367,29 @@ fn emit_native_cdylib_isolate_stubs(out_dir: &Path, target_arch: &str, target_en
     }
 
     let source = out_dir.join("molt_cdylib_isolate_stubs.c");
-    // Mark the stubs as weak so they yield to strong definitions provided by
-    // any downstream crate that links molt-runtime (e.g. molt-ffi's own
-    // `runtime_linked` stubs, or a real isolate implementation in production
-    // app code). Without weak linkage, building any cdylib that depends on
-    // both molt-runtime and another crate that defines these symbols fails
-    // with "duplicate symbol" at link time. `__attribute__((weak))` is
-    // honored by clang on macOS, Linux/glibc/musl, and Windows MSVC; on
-    // platforms where the compiler doesn't recognize it, the macro expands
-    // to nothing and the stubs become regular strong symbols (matching the
-    // pre-existing behavior).
+    // Provide unresolved-symbol fallbacks that yield to strong definitions from
+    // downstream crates, integration tests, or production app code. GNU/Clang
+    // targets can use weak definitions directly. MSVC needs `/alternatename`
+    // aliases so linking the fallback object into every test binary does not
+    // collide with tests that provide their own isolate symbols.
     fs::write(
         &source,
         r#"#include <stdint.h>
 
-#if defined(__GNUC__) || defined(__clang__)
+#if defined(_MSC_VER)
+uint64_t molt_isolate_bootstrap_stub(void) {
+    return 0;
+}
+
+uint64_t molt_isolate_import_stub(uint64_t name_bits) {
+    (void)name_bits;
+    return 0;
+}
+
+#pragma comment(linker, "/alternatename:molt_isolate_bootstrap=molt_isolate_bootstrap_stub")
+#pragma comment(linker, "/alternatename:molt_isolate_import=molt_isolate_import_stub")
+#elif defined(__GNUC__) || defined(__clang__)
 #define MOLT_WEAK __attribute__((weak))
-#else
-#define MOLT_WEAK
-#endif
 
 MOLT_WEAK uint64_t molt_isolate_bootstrap(void) {
     return 0;
@@ -365,6 +399,16 @@ MOLT_WEAK uint64_t molt_isolate_import(uint64_t name_bits) {
     (void)name_bits;
     return 0;
 }
+#else
+uint64_t molt_isolate_bootstrap(void) {
+    return 0;
+}
+
+uint64_t molt_isolate_import(uint64_t name_bits) {
+    (void)name_bits;
+    return 0;
+}
+#endif
 "#,
     )
     .expect("failed to write native cdylib isolate stubs");
@@ -388,6 +432,7 @@ MOLT_WEAK uint64_t molt_isolate_import(uint64_t name_bits) {
         panic!("compiling native cdylib isolate stubs failed: {status}");
     }
     println!("cargo:rustc-cdylib-link-arg={}", object.display());
+    println!("cargo:rustc-link-arg-tests={}", object.display());
 }
 
 fn write_unicode_range_module(

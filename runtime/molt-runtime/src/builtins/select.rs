@@ -416,7 +416,7 @@ fn add_watchers(
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(windows), not(target_arch = "wasm32")))]
 fn poll_interest_from_events(events: u32) -> libc::c_short {
     let mut interest: libc::c_short = 0;
     if (events & IO_EVENT_READ) != 0 {
@@ -428,7 +428,7 @@ fn poll_interest_from_events(events: u32) -> libc::c_short {
     interest
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(windows), not(target_arch = "wasm32")))]
 fn poll_mask_from_revents(revents: libc::c_short) -> u32 {
     let mut mask = 0u32;
     if (revents & (libc::POLLIN | libc::POLLPRI | libc::POLLHUP) as libc::c_short) != 0 {
@@ -466,7 +466,7 @@ fn poll_timeout_ms(_py: &crate::PyToken<'_>, timeout: Option<f64>, deadline: Opt
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(windows), not(target_arch = "wasm32")))]
 fn poll_masks_batch(
     _py: &crate::PyToken<'_>,
     watches: &[SelectWatch],
@@ -578,6 +578,20 @@ fn poll_masks_batch(
         }
     }
     Ok(masks)
+}
+
+#[cfg(windows)]
+fn poll_masks_batch(
+    _py: &crate::PyToken<'_>,
+    watches: &[SelectWatch],
+    timeout_ms: i32,
+) -> Result<Vec<u32>, u64> {
+    let _ = (watches, timeout_ms);
+    Err(raise_exception::<u64>(
+        _py,
+        "RuntimeError",
+        "select/poll is unavailable on Windows in this runtime",
+    ))
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -502,7 +502,7 @@ def main() -> None:
         for python in TEST_PYTHONS:
             _log(f"tests start (python {python})")
             start = time.monotonic()
-            batch_cmd = ["python3", "tools/dev_test_runner.py"]
+            batch_cmd = ["python", "tools/dev_test_runner.py"]
             if python == TEST_PYTHONS[0]:
                 batch_cmd.append("--verified-subset")
             if random_order:
@@ -513,25 +513,25 @@ def main() -> None:
             _log(f"tests done (python {python}) in {time.monotonic() - start:.2f}s")
     elif cmd[0] == "doctor":
         run_uv(
-            ["python3", "-m", "molt.cli", "doctor", *cmd[1:]],
+            ["python", "-m", "molt.cli", "doctor", *cmd[1:]],
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )
     elif cmd[0] == "setup":
         run_uv(
-            ["python3", "-m", "molt.cli", "setup", *cmd[1:]],
+            ["python", "-m", "molt.cli", "setup", *cmd[1:]],
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )
     elif cmd[0] == "update":
         run_uv(
-            ["python3", "-m", "molt.cli", "update", *cmd[1:]],
+            ["python", "-m", "molt.cli", "update", *cmd[1:]],
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )
     elif cmd[0] == "validate":
         run_uv(
-            ["python3", "-m", "molt.cli", "validate", *cmd[1:]],
+            ["python", "-m", "molt.cli", "validate", *cmd[1:]],
             python=TEST_PYTHONS[0],
             tty=use_tty,
         )

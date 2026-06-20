@@ -1268,15 +1268,6 @@ pub fn run_inliner(
     tti: &TargetInfo,
     non_inlinable: &HashSet<String>,
 ) -> InlinerStats {
-    // Rollback lever (production codegen): `MOLT_DISABLE_INLINING=1` makes the
-    // inliner a no-op, so a regression can be bisected/disabled with a single env
-    // var (no rebuild). The module pipeline still runs (producing a correct leaf
-    // set); it just inlines nothing. The legacy SimpleIR inliner's identical guard
-    // (passes.rs) is retired with it, so this is the canonical lever.
-    if std::env::var("MOLT_DISABLE_INLINING").is_ok() {
-        return InlinerStats::default();
-    }
-
     let mut stats = InlinerStats::default();
 
     // The set of callee names that are inlinable (computed once from the

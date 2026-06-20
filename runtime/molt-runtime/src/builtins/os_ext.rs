@@ -1607,8 +1607,19 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            #[cfg(unix)]
             let result =
                 unsafe { libc::lseek(fd as libc::c_int, pos as libc::off_t, how as libc::c_int) };
+            #[cfg(windows)]
+            let result = unsafe {
+                libc::lseek64(
+                    fd as libc::c_int,
+                    pos as libc::c_longlong,
+                    how as libc::c_int,
+                )
+            };
+            #[cfg(not(any(unix, windows)))]
+            let result = -1;
             if result == -1 {
                 let err = std::io::Error::last_os_error();
                 if let Some(errno) = err.raw_os_error() {
@@ -1650,7 +1661,7 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "ftruncate")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let result = unsafe { libc::ftruncate(fd as libc::c_int, length as libc::off_t) };
             if result < 0 {
@@ -1661,6 +1672,11 @@ pub extern "C" fn molt_os_ftruncate(fd_bits: u64, length_bits: u64) -> u64 {
                 return raise_os_error::<u64>(_py, err, "ftruncate");
             }
             MoltObject::none().bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let _ = (fd, length);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "ftruncate")
         }
     })
 }
@@ -1723,7 +1739,7 @@ pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
             let _ = (pid, sig);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "kill")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let result = unsafe { libc::kill(pid as libc::pid_t, sig as libc::c_int) };
             if result < 0 {
@@ -1734,6 +1750,11 @@ pub extern "C" fn molt_os_kill(pid_bits: u64, sig_bits: u64) -> u64 {
                 return raise_os_error::<u64>(_py, err, "kill");
             }
             MoltObject::none().bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let _ = (pid, sig);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "kill")
         }
     })
 }
@@ -1758,7 +1779,7 @@ pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
             let _ = (pid, options);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "waitpid")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let mut status: libc::c_int = 0;
             let result =
@@ -1780,6 +1801,11 @@ pub extern "C" fn molt_os_waitpid(pid_bits: u64, options_bits: u64) -> u64 {
             }
             MoltObject::from_ptr(tup_ptr).bits()
         }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let _ = (pid, options);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "waitpid")
+        }
     })
 }
 
@@ -1796,10 +1822,14 @@ pub extern "C" fn molt_os_getpgrp() -> u64 {
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getpgrp")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let pgrp = unsafe { libc::getpgrp() };
             MoltObject::from_int(pgrp as i64).bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "getpgrp")
         }
     })
 }
@@ -1817,7 +1847,7 @@ pub extern "C" fn molt_os_setpgrp() -> u64 {
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setpgrp")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             // macOS does not have setpgrp(); use setpgid(0, 0) which is equivalent
             let result = unsafe { libc::setpgid(0, 0) };
@@ -1829,6 +1859,10 @@ pub extern "C" fn molt_os_setpgrp() -> u64 {
                 return raise_os_error::<u64>(_py, err, "setpgrp");
             }
             MoltObject::none().bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setpgrp")
         }
     })
 }
@@ -1846,7 +1880,7 @@ pub extern "C" fn molt_os_setsid() -> u64 {
         {
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setsid")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let result = unsafe { libc::setsid() };
             if result < 0 {
@@ -1857,6 +1891,10 @@ pub extern "C" fn molt_os_setsid() -> u64 {
                 return raise_os_error::<u64>(_py, err, "setsid");
             }
             MoltObject::from_int(result as i64).bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "setsid")
         }
     })
 }
@@ -1902,7 +1940,7 @@ pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
             }
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "sysconf")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let result = unsafe { libc::sysconf(name as libc::c_int) };
             if result == -1 {
@@ -1917,6 +1955,11 @@ pub extern "C" fn molt_os_sysconf(name_bits: u64) -> u64 {
                 // errno == 0 means "no limit" / indeterminate — return -1
             }
             MoltObject::from_int(result as i64).bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let _ = name;
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "sysconf")
         }
     })
 }
@@ -1948,7 +1991,7 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
             }
             MoltObject::from_ptr(list_ptr).bits()
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             let names: &[(&str, libc::c_int)] = &[
                 ("SC_PAGE_SIZE", libc::_SC_PAGE_SIZE),
@@ -2003,6 +2046,14 @@ pub extern "C" fn molt_os_sysconf_names() -> u64 {
             }
             MoltObject::from_ptr(list_ptr).bits()
         }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let list_ptr = alloc_list(_py, &[]);
+            if list_ptr.is_null() {
+                return raise_exception::<_>(_py, "MemoryError", "out of memory");
+            }
+            MoltObject::from_ptr(list_ptr).bits()
+        }
     })
 }
 
@@ -2051,7 +2102,7 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
             let _ = (path, atime_bits, mtime_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(unix)]
         {
             use std::ffi::CString;
 
@@ -2114,6 +2165,11 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
                 }
             }
             MoltObject::none().bits()
+        }
+        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        {
+            let _ = (path, atime_bits, mtime_bits);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
         }
     })
 }

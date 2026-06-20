@@ -1869,23 +1869,23 @@ fn preanalyze_alias_source<'a>(
     return_alias_summaries: &BTreeMap<String, crate::passes::ReturnAliasSummary>,
 ) -> Option<&'a str> {
     match op.kind.as_str() {
-        "copy" | "copy_var" => op.var.as_deref().or_else(|| {
+        "copy" => op.var.as_deref().or_else(|| {
             op.args
                 .as_ref()
                 .and_then(|args| args.first())
                 .map(String::as_str)
         }),
+        "copy_var" | "load_var" => op
+            .args
+            .as_ref()
+            .and_then(|args| args.first())
+            .map(String::as_str)
+            .or(op.var.as_deref()),
         "box" | "unbox" | "cast" | "widen" | "identity_alias" | "store_var" => op
             .args
             .as_ref()
             .and_then(|args| args.first())
             .map(String::as_str),
-        "load_var" => op.var.as_deref().or_else(|| {
-            op.args
-                .as_ref()
-                .and_then(|args| args.first())
-                .map(String::as_str)
-        }),
         "call" => {
             let callee = op.s_value.as_ref()?;
             let crate::passes::ReturnAliasSummary::Param(param_idx) =
@@ -15124,121 +15124,68 @@ impl SimpleBackend {
                     let Some(poll_func_name) = op.s_value.as_ref() else {
                         continue;
                     };
-                    if poll_func_name == "molt_async_sleep" {
-                        let arg_names = op.args.as_deref().unwrap_or(&[]);
-                        let delay_val = arg_names
-                            .first()
-                            .map(|name| {
-                                *var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    name,
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .expect("Arg not found")
-                            })
-                            .unwrap_or_else(|| builder.ins().iconst(types::I64, box_float(0.0)));
-                        let result_val = arg_names
-                            .get(1)
-                            .map(|name| {
-                                *var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    name,
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .expect("Arg not found")
-                            })
-                            .unwrap_or_else(|| builder.ins().iconst(types::I64, box_none()));
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_async_sleep",
-                            &[types::I64, types::I64],
-                            &[types::I64],
+                    if !poll_func_name.ends_with("_poll") {
+                        panic!(
+                            "call_async target '{poll_func_name}' is not a poll function; expected *_poll"
                         );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder.ins().call(local_callee, &[delay_val, result_val]);
-                        let res = builder.inst_results(call)[0];
-                        let Some(out_name) = op.out else {
-                            continue;
-                        };
-                        def_var_named(&mut builder, &vars, out_name, res);
-                    } else {
-                        let args = op.args.as_deref();
-                        let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
-                        let size = builder.ins().iconst(types::I64, (payload_len * 8) as i64);
-                        let mut poll_sig = self.module.make_signature();
-                        poll_sig.params.push(AbiParam::new(types::I64));
-                        poll_sig.returns.push(AbiParam::new(types::I64));
-                        let poll_func_id = self
-                            .module
-                            .declare_function(poll_func_name, Linkage::Import, &poll_sig)
-                            .unwrap();
-                        let poll_func_ref =
-                            self.module.declare_func_in_func(poll_func_id, builder.func);
-                        let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
-
-                        let task_callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            "molt_task_new",
-                            &[types::I64, types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let task_local =
-                            self.module.declare_func_in_func(task_callee, builder.func);
-                        let kind_val = builder.ins().iconst(types::I64, TASK_KIND_FUTURE);
-                        let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
-                        let obj = builder.inst_results(call)[0];
-                        let obj_ptr = unbox_ptr_value(&mut builder, obj, &nbc);
-
-                        if let Some(arg_names) = args
-                            && !arg_names.is_empty()
-                        {
-                            for (idx, arg_name) in arg_names.iter().enumerate() {
-                                let val = var_get_boxed_overflow_safe(
-                                    &mut self.module,
-                                    &mut self.import_ids,
-                                    &mut builder,
-                                    &mut import_refs,
-                                    &mut sealed_blocks,
-                                    &vars,
-                                    arg_name,
-                                    &int_primary_vars,
-                                    &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                )
-                                .expect("Arg not found");
-                                builder.ins().store(
-                                    MemFlags::trusted(),
-                                    *val,
-                                    obj_ptr,
-                                    (idx * 8) as i32,
-                                );
-                                emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
-                            }
-                        }
-                        let Some(out_name) = op.out else {
-                            continue;
-                        };
-                        def_var_named(&mut builder, &vars, out_name, obj);
                     }
+                    let args = op.args.as_deref();
+                    let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
+                    let size = builder.ins().iconst(types::I64, (payload_len * 8) as i64);
+                    let mut poll_sig = self.module.make_signature();
+                    poll_sig.params.push(AbiParam::new(types::I64));
+                    poll_sig.returns.push(AbiParam::new(types::I64));
+                    let poll_func_id = self
+                        .module
+                        .declare_function(poll_func_name, Linkage::Import, &poll_sig)
+                        .unwrap();
+                    let poll_func_ref = self.module.declare_func_in_func(poll_func_id, builder.func);
+                    let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
+
+                    let task_callee = Self::import_func_id_split(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        "molt_task_new",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let task_local = self.module.declare_func_in_func(task_callee, builder.func);
+                    let kind_val = builder.ins().iconst(types::I64, TASK_KIND_FUTURE);
+                    let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
+                    let obj = builder.inst_results(call)[0];
+                    let obj_ptr = unbox_ptr_value(&mut builder, obj, &nbc);
+
+                    if let Some(arg_names) = args
+                        && !arg_names.is_empty()
+                    {
+                        for (idx, arg_name) in arg_names.iter().enumerate() {
+                            let val = var_get_boxed_overflow_safe(
+                                &mut self.module,
+                                &mut self.import_ids,
+                                &mut builder,
+                                &mut import_refs,
+                                &mut sealed_blocks,
+                                &vars,
+                                arg_name,
+                                &int_primary_vars,
+                                &float_primary_vars,
+                                box_int_mask_var,
+                                box_int_tag_var,
+                            )
+                            .expect("Arg not found");
+                            builder.ins().store(
+                                MemFlags::trusted(),
+                                *val,
+                                obj_ptr,
+                                (idx * 8) as i32,
+                            );
+                            emit_inc_ref_obj(&mut builder, *val, local_inc_ref_obj, &nbc);
+                        }
+                    }
+                    let Some(out_name) = op.out else {
+                        continue;
+                    };
+                    def_var_named(&mut builder, &vars, out_name, obj);
                 }
                 "builtin_func" => {
                     let Some(func_name) = op.s_value.as_ref() else {
@@ -25154,7 +25101,9 @@ impl SimpleBackend {
                     // Load a named variable into an output (block arg receiving / copy).
                     // Use Variable-backed shadow (phi-resolved across loop iterations)
                     // when available, falling back to Value-based shadow.
-                    if let Some(ref var_name) = op.var {
+                    if let Some(ref var_name) = op.var
+                        && !op.args.as_ref().is_some_and(|args| !args.is_empty())
+                    {
                         if let Some(&slot) = slot_backed_join_slots.get(var_name) {
                             // Raw-backed slot: the slot holds RAW i64 (or a
                             // raw 0/1 bool) — no unbox, no refcount. A
@@ -27388,6 +27337,42 @@ mod tests {
         );
         assert_eq!(analysis.last_use.get("src"), Some(&3));
         assert_eq!(analysis.last_use.get("_bb4_arg0"), Some(&3));
+    }
+
+    #[test]
+    fn preanalysis_uses_args_based_copy_var_value_source() {
+        let func = FunctionIR {
+            name: "args_copy_alias".to_string(),
+            params: vec!["value".to_string(), "metadata_slot".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "copy_var".to_string(),
+                    var: Some("metadata_slot".to_string()),
+                    args: Some(vec!["value".to_string()]),
+                    out: Some("alias".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("alias".to_string()),
+                    args: Some(vec!["alias".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+
+        assert_eq!(
+            analysis.alias_roots.get("alias").map(String::as_str),
+            Some("value"),
+            "args[0] is the copied value authority; var is local-name metadata"
+        );
+        assert_eq!(analysis.last_use.get("value"), Some(&1));
+        assert_eq!(analysis.last_use.get("metadata_slot"), Some(&0));
     }
 
     #[test]

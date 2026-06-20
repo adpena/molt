@@ -16,4 +16,5 @@ molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 libc = "0.2"
 num_cpus = "1.17"
+filetime = "0.2"
 glob = { version = "0.3", optional = true }

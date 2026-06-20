@@ -37,6 +37,10 @@ def _ops_by_func_suffix(ir: dict, suffix: str) -> list[dict]:
     raise AssertionError(f"Missing function with suffix {suffix}")
 
 
+def _all_ops(ir: dict) -> list[dict]:
+    return [op for func in ir["functions"] for op in func["ops"]]
+
+
 def _assert_control_values_are_ints(ir: dict) -> None:
     control_kinds = {"label", "state_label", "jump", "check_exception"}
     for func in ir["functions"]:
@@ -264,6 +268,20 @@ async def work():
 """
     ir = compile_to_tir(src)
     _assert_control_values_are_ints(ir)
+
+
+def test_async_sleep_call_async_uses_poll_table_target():
+    src = """
+from molt.concurrency import molt_async_sleep
+
+async def main():
+    await molt_async_sleep(0, None)
+"""
+    ir = compile_to_tir(src)
+    call_async_ops = [op for op in _all_ops(ir) if op["kind"] == "call_async"]
+
+    assert call_async_ops
+    assert {op["s_value"] for op in call_async_ops} == {"molt_async_sleep_poll"}
 
 
 def test_for_file_text_loop_item_hint_enables_string_split():

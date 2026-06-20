@@ -1128,7 +1128,7 @@ def _prune_stale_repo_processes(
         samples,
         root=_REPO_ROOT,
         self_pid=os.getpid(),
-        self_pgid=os.getpgrp() if os.name == "posix" else None,
+        self_pgid=memory_guard._safe_getpgrp(),
     )
     accounted_rss_kb = sum(group.total_rss_kb for group in groups)
     current_limits = limits.current_memory_limits(
@@ -1179,8 +1179,8 @@ def _prune_stale_repo_processes(
                 "claim_status": "claimed",
                 "termination": {
                     "attempted": True,
-                    "signal": {"signal": signal.SIGTERM, "name": "SIGTERM"},
-                    "fallback_signal": {"signal": signal.SIGKILL, "name": "SIGKILL"},
+                    "signal": memory_guard.term_signal_payload(),
+                    "fallback_signal": memory_guard.fallback_kill_signal_payload(),
                     "grace_sec": 0.25,
                     "rss_triggered": False,
                 },
@@ -1707,6 +1707,7 @@ def force_close_process_group(proc: subprocess.Popen[str]) -> None:
             samples=samples,
             watched=watched,
             grace=0.25,
+            root_owned=True,
         )
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline:
@@ -1720,6 +1721,7 @@ def force_close_process_group(proc: subprocess.Popen[str]) -> None:
             samples=samples,
             watched=watched,
             grace=0.0,
+            root_owned=True,
         )
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=0.5)
@@ -1860,8 +1862,8 @@ class RepoProcessMemorySentinel:
             "claim_status": claim_status,
             "termination": {
                 "attempted": attempted,
-                "signal": {"signal": signal.SIGTERM, "name": "SIGTERM"},
-                "fallback_signal": {"signal": signal.SIGKILL, "name": "SIGKILL"},
+                "signal": memory_guard.term_signal_payload(),
+                "fallback_signal": memory_guard.fallback_kill_signal_payload(),
                 "grace_sec": grace_sec,
                 "rss_triggered": rss_triggered,
             },
@@ -1946,7 +1948,7 @@ class RepoProcessMemorySentinel:
             samples,
             root=self._repo_root,
             self_pid=os.getpid(),
-            self_pgid=os.getpgrp(),
+            self_pgid=memory_guard._safe_getpgrp(),
             known_process_identities=known_process_identities,
             owned_pids=owned_pids if self._scope_to_current_tree else None,
         )
@@ -1966,7 +1968,7 @@ class RepoProcessMemorySentinel:
             samples,
             root=self._repo_root,
             self_pid=os.getpid(),
-            self_pgid=os.getpgrp(),
+            self_pgid=memory_guard._safe_getpgrp(),
             known_process_identities=self._observed_process_identities,
         )
         for group in protected:

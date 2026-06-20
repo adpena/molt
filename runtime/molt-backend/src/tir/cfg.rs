@@ -887,16 +887,21 @@ fn compute_state_resume_edges(ops: &[OpIR], blocks: &[BasicBlock]) -> Vec<(usize
     for (idx, op) in ops.iter().enumerate() {
         let kind = op.kind.as_str();
         match kind {
-            // (1) pure `state_yield`: dispatch lands on the op AFTER it (the
-            // post-yield throw-check / send-value continuation).  Saved state =
-            // op.value.
+            // (1) pure `state_yield`: dispatch lands on an explicit
+            // `state_label <saved-state>` when the stream carries one. TIR
+            // roundtrips are free to linearize blocks in RPO, so physical
+            // adjacency is only a source-stream fallback.
             "state_yield" => {
                 if let Some(state_id) = op.value {
-                    let cont_idx = idx + 1;
-                    if cont_idx < ops.len()
-                        && let Some(resume_bid) = block_containing(blocks, cont_idx)
-                    {
+                    if let Some(&resume_bid) = state_label_block.get(&state_id) {
                         push_edge(resume_bid, state_id);
+                    } else {
+                        let cont_idx = idx + 1;
+                        if cont_idx < ops.len()
+                            && let Some(resume_bid) = block_containing(blocks, cont_idx)
+                        {
+                            push_edge(resume_bid, state_id);
+                        }
                     }
                 }
             }

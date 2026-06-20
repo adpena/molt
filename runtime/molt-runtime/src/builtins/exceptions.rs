@@ -3290,6 +3290,22 @@ fn oserror_root_name(name: &str) -> bool {
     matches!(name, "OSError" | "EnvironmentError" | "IOError")
 }
 
+fn errno_is_shutdown(errno: i64) -> bool {
+    #[cfg(any(unix, target_arch = "wasm32"))]
+    {
+        errno == libc::ESHUTDOWN as i64
+    }
+    #[cfg(windows)]
+    {
+        errno == crate::windows_abi::WSAESHUTDOWN as i64
+    }
+    #[cfg(not(any(unix, windows, target_arch = "wasm32")))]
+    {
+        let _ = errno;
+        false
+    }
+}
+
 fn oserror_subclass_for_errno(errno: i64) -> Option<&'static str> {
     if errno == libc::EAGAIN as i64
         || errno == libc::EALREADY as i64
@@ -3304,8 +3320,7 @@ fn oserror_subclass_for_errno(errno: i64) -> Option<&'static str> {
     if errno == libc::EPIPE as i64 {
         return Some("BrokenPipeError");
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    if errno == libc::ESHUTDOWN as i64 {
+    if errno_is_shutdown(errno) {
         return Some("BrokenPipeError");
     }
     if errno == libc::ECONNABORTED as i64 {

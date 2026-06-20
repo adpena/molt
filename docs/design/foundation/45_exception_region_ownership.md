@@ -138,9 +138,10 @@ consumption paths:
   `exception_current`, and `exceptiongroup_*` are selected by TIR
   `ExceptionRegions` path-depth facts and bound to the reachable
   handler-region `exception_pop`.
-- Shared TIR drop insertion consumes CreationRefs at the `raise` boundary and
-  MatchRefs immediately after the owning `exception_pop`, before the
-  conservative handler-CFG drop-pass bail, by materializing ordinary TIR
+- Shared TIR drop insertion consumes CreationRefs selected by
+  `ownership_lattice_min::exception_creation_ref_values` at the `raise`
+  boundary and MatchRefs immediately after the owning `exception_pop`, before
+  the conservative handler-CFG drop-pass bail, by materializing ordinary TIR
   `DecRef` ops.
 - Native Cranelift is now activated on the same TIR DropInsertion path, and the
   old native-only CreationRef lifetime carve-out plus `exception_pop`
