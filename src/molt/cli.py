@@ -11202,11 +11202,7 @@ def _normalize_native_symbol_name(name: str) -> str:
 
 
 def _native_nm_command(nm_bin: str, path: Path) -> list[str]:
-    return (
-        [nm_bin, "-gU", str(path)]
-        if sys.platform == "darwin"
-        else [nm_bin, "-g", str(path)]
-    )
+    return [nm_bin, "-g", str(path)]
 
 
 def _native_object_global_symbols_result(
@@ -14865,6 +14861,9 @@ def _start_backend_daemon(
         else:
             print(message, file=sys.stderr)
 
+    if _unix_socket_path_exceeds_limit(socket_path):
+        _report_daemon_issue(_backend_daemon_socket_path_error(socket_path))
+        return False
     startup_wait = startup_timeout if startup_timeout is not None else None
     identity_path = _backend_daemon_identity_path(
         project_root,
@@ -14876,9 +14875,6 @@ def _start_backend_daemon(
         cargo_profile,
         config_digest=config_digest,
     )
-    if _unix_socket_path_exceeds_limit(socket_path):
-        _report_daemon_issue(_backend_daemon_socket_path_error(socket_path))
-        return False
     # Cheap, idempotent cross-session orphan sweep. Verified live daemons are
     # never disturbed. Suppress for the common case where the current identity
     # is already alive — that path will short-circuit below.
@@ -28223,10 +28219,17 @@ def _ensure_runtime_wasm(
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
     env = _cargo_build_env()
-    runtime_exports = wasm_runtime_export_link_args()
+    runtime_exports = (
+        wasm_runtime_export_link_args(
+            required_exports,
+            resolved_modules=resolved_modules,
+        )
+        if reloc
+        else wasm_runtime_export_link_args()
+    )
     if reloc:
         link_flags = runtime_exports
-        cargo_link_flags = ""
+        cargo_link_flags = runtime_exports
     else:
         # Shared-runtime ABI: import the host-provided memory and table, and
         # allow the table to grow for app-specific call_indirect slots.
