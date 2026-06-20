@@ -624,7 +624,7 @@ fn bool_raw_value(
 /// Deferred overflow guard emitted at boxing escape points (return, call
 /// args, heap stores) to compensate for the branchless iadd optimisation
 /// that skips per-op overflow checks. On the fast path (fits inline) emits
-/// a compare + branch into `box_int_value_hoisted`; on the cold path calls
+/// a compare + branch into local-constant `box_int_value`; on the cold path calls
 /// `molt_int_from_i64` to allocate a BigInt.
 ///
 /// Falls back to `var_get` (the normal boxed path) when the variable is
@@ -1085,12 +1085,9 @@ fn merge_rebind_value_for_storage(
     bool_primary_vars: &BTreeSet<String>,
     float_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
     name: &str,
     storage: MergeRebindStorageKind,
 ) -> Value {
-    let _ = (box_int_mask_var, box_int_tag_var);
     match storage {
         MergeRebindStorageKind::RawF64 => float_value_for(builder, vars, float_primary_vars, name)
             .unwrap_or_else(|| {
@@ -1308,8 +1305,6 @@ fn emit_guarded_boxed_bitwise(
     runtime_name: &'static str,
     op: BoxedBitwiseOp,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
 ) -> Value {
     let callee = import_func_ref(
         module,
@@ -1339,7 +1334,7 @@ fn emit_guarded_boxed_bitwise(
         BoxedBitwiseOp::Or => builder.ins().bor(lhs_val, rhs_val),
         BoxedBitwiseOp::Xor => builder.ins().bxor(lhs_val, rhs_val),
     };
-    let fast_res = box_int_value_hoisted(builder, raw, box_int_mask_var, box_int_tag_var);
+    let fast_res = box_int_value(builder, raw, nbc);
     let fits_inline = int_value_fits_inline(builder, raw);
     brif_block(
         builder,
@@ -1440,12 +1435,8 @@ fn float_value_for_mixed(
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
     name: &str,
 ) -> Value {
-    let _ = (box_int_mask_var, box_int_tag_var);
-
     // 1. Try float-primary path first.
     if let Some(f_val) = float_value_for(builder, vars, float_primary_vars, name) {
         return f_val;
@@ -1510,8 +1501,6 @@ fn emit_float_numeric_compare(
     bool_like_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
     out_name: Option<&String>,
     lhs_name: &str,
     rhs_name: &str,
@@ -1529,8 +1518,6 @@ fn emit_float_numeric_compare(
         int_like_vars,
         bool_like_vars,
         nbc,
-        box_int_mask_var,
-        box_int_tag_var,
         lhs_name,
     );
     let rhs_f = float_value_for_mixed(
@@ -1545,8 +1532,6 @@ fn emit_float_numeric_compare(
         int_like_vars,
         bool_like_vars,
         nbc,
-        box_int_mask_var,
-        box_int_tag_var,
         rhs_name,
     );
     let cmp = builder.ins().fcmp(cc, lhs_f, rhs_f);
@@ -3686,19 +3671,6 @@ impl SimpleBackend {
 
         let nbc = NanBoxConsts::new(&mut builder);
 
-        // Pre-hoisted boxing constants: these Cranelift Variables hold the
-        // INT_MASK and QNAN|TAG_INT constants used by box_int_value_hoisted.
-        // Declared once at function entry, they persist across loop iterations
-        // as register-allocated values, eliminating redundant iconst
-        // instructions from the both-shadow arithmetic fast paths (saving
-        // 2 instructions per proven-int arithmetic op in tight loops).
-        let box_int_mask_var = builder.declare_var(types::I64);
-        let box_int_tag_var = builder.declare_var(types::I64);
-        let mask_init = builder.ins().iconst(types::I64, nbc.int_mask);
-        let tag_init = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
-        builder.def_var(box_int_mask_var, mask_init);
-        builder.def_var(box_int_tag_var, tag_init);
-
         let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
                                            import_ids: &mut BTreeMap<
             &'static str,
@@ -3710,11 +3682,8 @@ impl SimpleBackend {
                                            vars: &BTreeMap<String, Variable>,
                                            name: &str,
                                            int_primary_vars: &BTreeSet<String>,
-                                           float_primary_vars: &BTreeSet<String>,
-                                           box_int_mask_var: Variable,
-                                           box_int_tag_var: Variable|
+                                           float_primary_vars: &BTreeSet<String>|
          -> Option<crate::VarValue> {
-            let _ = (box_int_mask_var, box_int_tag_var);
             if bool_primary_vars.contains(name) {
                 let raw = vars.get(name).map(|&var| builder.use_var(var))?;
                 return Some(crate::VarValue(box_raw_bool_value(builder, raw, &nbc)));
@@ -3757,8 +3726,6 @@ impl SimpleBackend {
                 "self",
                 &int_primary_vars,
                 &float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Self not found");
             let self_bits = box_ptr_value(&mut builder, *self_ptr, &nbc);
@@ -4704,8 +4671,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -4718,8 +4683,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -4751,8 +4714,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
@@ -4767,8 +4728,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             rhs_name,
                         );
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
@@ -4846,8 +4805,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs = var_get_boxed_overflow_safe(
@@ -4860,8 +4817,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             let fast_block = builder.create_block();
@@ -4877,12 +4832,7 @@ impl SimpleBackend {
                             let both_int =
                                 fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let sum = builder.ins().iadd(lhs_val, rhs_val);
-                            let fast_res = box_int_value_hoisted(
-                                &mut builder,
-                                sum,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            );
+                            let fast_res = box_int_value(&mut builder, sum, &nbc);
                             let fits_inline = int_value_fits_inline(&mut builder, sum);
                             let take_fast = builder.ins().band(both_int, fits_inline);
                             builder
@@ -4916,8 +4866,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -4930,8 +4878,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -4955,8 +4901,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -4969,8 +4913,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -4999,12 +4941,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            sum,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, sum, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
                         brif_block(
                             &mut builder,
@@ -5132,8 +5069,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("checked_add: LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -5146,8 +5081,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("checked_add: RHS not found");
                         let callee = Self::import_func_id_split(
@@ -5191,8 +5124,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -5205,8 +5136,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -5235,8 +5164,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
@@ -5251,8 +5178,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             rhs_name,
                         );
                         let result_f = builder.ins().fadd(lhs_f, rhs_f);
@@ -5306,8 +5231,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -5320,8 +5243,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -5345,12 +5266,7 @@ impl SimpleBackend {
                         let both_int =
                             fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            sum,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, sum, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
                         let take_fast = builder.ins().band(both_int, fits_inline);
                         builder
@@ -5383,8 +5299,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -5397,8 +5311,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -5427,12 +5339,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let sum = builder.ins().iadd(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            sum,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, sum, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, sum);
                         brif_block(
                             &mut builder,
@@ -5531,8 +5438,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 "sub" => {
@@ -5554,8 +5459,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
@@ -5570,8 +5473,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             rhs_name,
                         );
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
@@ -5646,8 +5547,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .unwrap_or_else(|| {
                                 panic!("LHS not found in {} op {}", func_ir.name, op_idx)
@@ -5662,8 +5561,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .unwrap_or_else(|| {
                                 panic!("RHS not found in {} op {}", func_ir.name, op_idx)
@@ -5681,12 +5578,7 @@ impl SimpleBackend {
                             let both_int =
                                 fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let diff = builder.ins().isub(lhs_val, rhs_val);
-                            let fast_res = box_int_value_hoisted(
-                                &mut builder,
-                                diff,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            );
+                            let fast_res = box_int_value(&mut builder, diff, &nbc);
                             let fits_inline = int_value_fits_inline(&mut builder, diff);
                             let take_fast = builder.ins().band(both_int, fits_inline);
                             builder
@@ -5720,8 +5612,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -5734,8 +5624,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let (lhs_xored, lhs_val) =
@@ -5756,12 +5644,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            diff,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, diff, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, diff);
                         brif_block(
                             &mut builder,
@@ -5848,8 +5731,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
@@ -5864,8 +5745,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             rhs_name,
                         );
                         let result_f = builder.ins().fsub(lhs_f, rhs_f);
@@ -5914,8 +5793,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .unwrap_or_else(|| {
                             panic!("LHS not found in {} op {}", func_ir.name, op_idx)
@@ -5930,8 +5807,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .unwrap_or_else(|| {
                             panic!("RHS not found in {} op {}", func_ir.name, op_idx)
@@ -5957,12 +5832,7 @@ impl SimpleBackend {
                         let both_int =
                             fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            diff,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, diff, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, diff);
                         let take_fast = builder.ins().band(both_int, fits_inline);
                         builder
@@ -5995,8 +5865,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -6009,8 +5877,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let (lhs_xored, lhs_val) =
@@ -6031,12 +5897,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let diff = builder.ins().isub(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            diff,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, diff, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, diff);
                         brif_block(
                             &mut builder,
@@ -6121,8 +5982,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
@@ -6137,8 +5996,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             rhs_name,
                         );
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
@@ -6213,8 +6070,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs = var_get_boxed_overflow_safe(
@@ -6227,8 +6082,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             let fast_block = builder.create_block();
@@ -6244,12 +6097,7 @@ impl SimpleBackend {
                             let both_int =
                                 fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                             let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                            let fast_res = box_int_value_hoisted(
-                                &mut builder,
-                                prod,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            );
+                            let fast_res = box_int_value(&mut builder, prod, &nbc);
                             let take_fast = builder.ins().band(both_int, fits);
                             builder
                                 .ins()
@@ -6282,8 +6130,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -6296,8 +6142,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -6326,12 +6170,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            prod,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, prod, &nbc);
                         brif_block(
                             &mut builder,
                             fits,
@@ -6409,8 +6248,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
@@ -6425,8 +6262,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             rhs_name,
                         );
                         let result_f = builder.ins().fmul(lhs_f, rhs_f);
@@ -6474,8 +6309,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -6488,8 +6321,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -6513,12 +6344,7 @@ impl SimpleBackend {
                         let both_int =
                             fused_both_int_check(&mut builder, lhs_xored, rhs_xored, &nbc);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            prod,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, prod, &nbc);
                         let take_fast = builder.ins().band(both_int, fits);
                         builder
                             .ins()
@@ -6550,8 +6376,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -6564,8 +6388,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -6594,12 +6416,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let (prod, fits) = imul_checked_inline(&mut builder, lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            prod,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, prod, &nbc);
                         brif_block(
                             &mut builder,
                             fits,
@@ -6691,8 +6508,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs = var_get_boxed_overflow_safe(
@@ -6705,8 +6520,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             emit_guarded_boxed_bitwise(
@@ -6720,8 +6533,6 @@ impl SimpleBackend {
                                 "molt_bit_or",
                                 BoxedBitwiseOp::Or,
                                 &nbc,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                         }
                     } else {
@@ -6735,8 +6546,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -6749,8 +6558,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -6779,12 +6586,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bor(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            raw,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, raw, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -6821,8 +6623,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -6835,8 +6635,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
@@ -6851,8 +6649,6 @@ impl SimpleBackend {
                             "molt_inplace_bit_or",
                             BoxedBitwiseOp::Or,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                     } else {
                         let callee = Self::import_func_id_split(
@@ -6881,12 +6677,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bor(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            raw,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, raw, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -6945,8 +6736,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs = var_get_boxed_overflow_safe(
@@ -6959,8 +6748,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             emit_guarded_boxed_bitwise(
@@ -6974,8 +6761,6 @@ impl SimpleBackend {
                                 "molt_bit_and",
                                 BoxedBitwiseOp::And,
                                 &nbc,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                         }
                     } else {
@@ -6989,8 +6774,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -7003,8 +6786,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -7033,12 +6814,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().band(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            raw,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, raw, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -7075,8 +6851,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -7089,8 +6863,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
@@ -7105,8 +6877,6 @@ impl SimpleBackend {
                             "molt_inplace_bit_and",
                             BoxedBitwiseOp::And,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                     } else {
                         let callee = Self::import_func_id_split(
@@ -7135,12 +6905,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().band(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            raw,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, raw, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -7199,8 +6964,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs = var_get_boxed_overflow_safe(
@@ -7213,8 +6976,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             emit_guarded_boxed_bitwise(
@@ -7228,8 +6989,6 @@ impl SimpleBackend {
                                 "molt_bit_xor",
                                 BoxedBitwiseOp::Xor,
                                 &nbc,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                         }
                     } else {
@@ -7243,8 +7002,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -7257,8 +7014,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -7287,12 +7042,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bxor(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            raw,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, raw, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -7329,8 +7079,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -7343,8 +7091,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
@@ -7359,8 +7105,6 @@ impl SimpleBackend {
                             "molt_inplace_bit_xor",
                             BoxedBitwiseOp::Xor,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                     } else {
                         let callee = Self::import_func_id_split(
@@ -7389,12 +7133,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                         let raw = builder.ins().bxor(lhs_val, rhs_val);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            raw,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, raw, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, raw);
                         brif_block(
                             &mut builder,
@@ -7440,8 +7179,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -7454,8 +7191,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let callee = Self::import_func_id_split(
@@ -7491,8 +7226,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -7505,8 +7238,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let callee = Self::import_func_id_split(
@@ -7542,8 +7273,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -7556,8 +7285,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let callee = Self::import_func_id_split(
@@ -7611,8 +7338,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             lhs_name,
                         );
                         let rhs_f = float_value_for_mixed(
@@ -7627,8 +7352,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             rhs_name,
                         );
                         let zero_f = builder.ins().f64const(0.0);
@@ -7657,8 +7380,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs_boxed = var_get_boxed_overflow_safe(
@@ -7671,8 +7392,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -7721,8 +7440,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -7735,8 +7452,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -7814,8 +7529,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -7828,8 +7541,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -8000,8 +7711,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs_boxed = var_get_boxed_overflow_safe(
@@ -8014,8 +7723,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
@@ -8042,8 +7749,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs = var_get_boxed_overflow_safe(
@@ -8056,8 +7761,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             let fast_block = builder.create_block();
@@ -8091,12 +7794,7 @@ impl SimpleBackend {
                             let adjust = builder.ins().band(rem_nonzero, sign_diff);
                             let quot_minus_one = builder.ins().isub(quot, one);
                             let floor_quot = builder.ins().select(adjust, quot_minus_one, quot);
-                            let fast_res = box_int_value_hoisted(
-                                &mut builder,
-                                floor_quot,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            );
+                            let fast_res = box_int_value(&mut builder, floor_quot, &nbc);
                             let fits_inline = int_value_fits_inline(&mut builder, floor_quot);
                             brif_block(
                                 &mut builder,
@@ -8128,8 +7826,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -8142,8 +7838,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -8194,12 +7888,7 @@ impl SimpleBackend {
                         let adjust = builder.ins().band(rem_nonzero, sign_diff);
                         let quot_minus_one = builder.ins().isub(quot, one);
                         let floor_quot = builder.ins().select(adjust, quot_minus_one, quot);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            floor_quot,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, floor_quot, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, floor_quot);
                         brif_block(
                             &mut builder,
@@ -8296,8 +7985,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs_boxed = var_get_boxed_overflow_safe(
@@ -8310,8 +7997,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
@@ -8337,8 +8022,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs = var_get_boxed_overflow_safe(
@@ -8351,8 +8034,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             let fast_block = builder.create_block();
@@ -8384,12 +8065,7 @@ impl SimpleBackend {
                             let adjust = builder.ins().band(rem_nonzero, sign_diff);
                             let rem_adjusted = builder.ins().iadd(rem, rhs_val);
                             let mod_val = builder.ins().select(adjust, rem_adjusted, rem);
-                            let fast_res = box_int_value_hoisted(
-                                &mut builder,
-                                mod_val,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            );
+                            let fast_res = box_int_value(&mut builder, mod_val, &nbc);
                             let fits_inline = int_value_fits_inline(&mut builder, mod_val);
                             brif_block(
                                 &mut builder,
@@ -8421,8 +8097,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -8435,8 +8109,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -8481,12 +8153,7 @@ impl SimpleBackend {
                         let adjust = builder.ins().band(rem_nonzero, sign_diff);
                         let rem_adjusted = builder.ins().iadd(rem, rhs_val);
                         let mod_val = builder.ins().select(adjust, rem_adjusted, rem);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            mod_val,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, mod_val, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, mod_val);
                         brif_block(
                             &mut builder,
@@ -8523,8 +8190,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -8537,8 +8202,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let res = if op_prefers_int_lane(&op) {
@@ -8585,12 +8248,7 @@ impl SimpleBackend {
                         let one = builder.ins().iconst(types::I64, 1);
                         let quot_adjusted = builder.ins().isub(quot, one);
                         let floor_val = builder.ins().select(adjust, quot_adjusted, quot);
-                        let fast_res = box_int_value_hoisted(
-                            &mut builder,
-                            floor_val,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let fast_res = box_int_value(&mut builder, floor_val, &nbc);
                         let fits_inline = int_value_fits_inline(&mut builder, floor_val);
                         brif_block(
                             &mut builder,
@@ -8711,8 +8369,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("LHS not found");
                             let rhs_boxed = var_get_boxed_overflow_safe(
@@ -8725,8 +8381,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("RHS not found");
                             let call = builder.ins().call(local_callee, &[*lhs_boxed, *rhs_boxed]);
@@ -8753,8 +8407,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -8767,8 +8419,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         // Inline pow for small non-negative exponents (0, 1, 2).
@@ -8821,12 +8471,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, exp0_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exp0_block);
                         let one = builder.ins().iconst(types::I64, 1);
-                        let res_one = box_int_value_hoisted(
-                            &mut builder,
-                            one,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let res_one = box_int_value(&mut builder, one, &nbc);
                         jump_block(&mut builder, merge_block, &[res_one]);
 
                         // Check exp == 1 → result is base (return lhs as-is)
@@ -8854,12 +8499,7 @@ impl SimpleBackend {
                         switch_to_block_materialized(&mut builder, exp2_fast_block);
                         seal_block_once(&mut builder, &mut sealed_blocks, exp2_fast_block);
                         let (sq, fits) = imul_checked_inline(&mut builder, base_val, base_val);
-                        let sq_res = box_int_value_hoisted(
-                            &mut builder,
-                            sq,
-                            box_int_mask_var,
-                            box_int_tag_var,
-                        );
+                        let sq_res = box_int_value(&mut builder, sq, &nbc);
                         brif_block(&mut builder, fits, merge_block, &[sq_res], slow_block, &[]);
 
                         switch_to_block_materialized(&mut builder, slow_block);
@@ -8882,8 +8522,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -8896,8 +8534,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let callee = Self::import_func_id_split(
@@ -8927,8 +8563,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -8941,8 +8575,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let modulus = var_get_boxed_overflow_safe(
@@ -8955,8 +8587,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Mod not found");
                     let callee = Self::import_func_id_split(
@@ -8985,8 +8615,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Round arg not found");
                     let ndigits = var_get_boxed_overflow_safe(
@@ -8999,8 +8627,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Round ndigits not found");
                     let has_ndigits = var_get_boxed_overflow_safe(
@@ -9013,8 +8639,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Round ndigits flag not found");
                     let callee = Self::import_func_id_split(
@@ -9045,8 +8669,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Trunc arg not found");
                     let callee = Self::import_func_id_split(
@@ -9090,8 +8712,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Len arg not found");
                         // Dispatch to specialized fast-path len when container
@@ -9137,8 +8757,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // handle_callargs_op family — extracted to fc::callargs (M1)
@@ -9159,8 +8777,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -9186,8 +8802,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                         &bool_like_vars,
                         local_inc_ref_obj,
                         &mut list_int_data_cache,
@@ -9213,8 +8827,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Range start not found");
                     let stop = var_get_boxed_overflow_safe(
@@ -9227,8 +8839,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Range stop not found");
                     let step = var_get_boxed_overflow_safe(
@@ -9241,8 +8851,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Range step not found");
                     let callee = Self::import_func_id_split(
@@ -9279,8 +8887,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Tuple elem not found");
                             elems.push(*val);
@@ -9307,8 +8913,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Tuple elem not found");
                             builder
@@ -9349,8 +8953,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Unpack sequence source not found");
                     let expected_count = op.value.unwrap_or(0) as usize;
@@ -9420,8 +9022,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -9455,8 +9055,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                     match __flow {
                         fc::OpFlow::Continue => continue,
@@ -9475,8 +9073,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Tuple not found");
                     let val = var_get_boxed_overflow_safe(
@@ -9489,8 +9085,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Tuple count value not found");
                     let callee = Self::import_func_id_split(
@@ -9519,8 +9113,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Tuple not found");
                     let val = var_get_boxed_overflow_safe(
@@ -9533,8 +9125,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Tuple index value not found");
                     let callee = Self::import_func_id_split(
@@ -9563,8 +9153,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Iter source not found");
                     let callee = Self::import_func_id_split(
@@ -9593,8 +9181,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Enumerate iterable not found");
                     let start = var_get_boxed_overflow_safe(
@@ -9607,8 +9193,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Enumerate start not found");
                     let has_start = var_get_boxed_overflow_safe(
@@ -9621,8 +9205,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Enumerate has_start not found");
                     let callee = Self::import_func_id_split(
@@ -9657,8 +9239,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 "iter_next_unboxed" => {
@@ -9676,8 +9256,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Iter not found");
                     let val_name = op.var.clone().unwrap_or_default();
@@ -9875,8 +9453,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Iter not found");
                     let pair_name = op.out.clone().unwrap();
@@ -10080,8 +9656,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Obj not found");
                         let idx = var_get_boxed_overflow_safe(
@@ -10094,8 +9668,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Index not found");
                         let mut sig = self.module.make_signature();
@@ -10191,12 +9763,7 @@ impl SimpleBackend {
                                         elem_addr,
                                         0,
                                     );
-                                    let boxed_res = box_int_value_hoisted(
-                                        &mut builder,
-                                        raw_result,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
-                                    );
+                                    let boxed_res = box_int_value(&mut builder, raw_result, &nbc);
                                     if let Some(ref out__) = op.out {
                                         def_var_named(&mut builder, &vars, out__, boxed_res);
                                     }
@@ -10229,12 +9796,7 @@ impl SimpleBackend {
                                         elem_addr,
                                         0,
                                     );
-                                    let boxed_res = box_int_value_hoisted(
-                                        &mut builder,
-                                        raw_result,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
-                                    );
+                                    let boxed_res = box_int_value(&mut builder, raw_result, &nbc);
                                     jump_block(&mut builder, merge_block, &[boxed_res, raw_result]);
 
                                     // Slow path: safe runtime call (handles negative index, IndexError)
@@ -10860,8 +10422,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Obj not found in {} op {}", func_ir.name, op_idx));
                     let idx = var_get_boxed_overflow_safe(
@@ -10874,8 +10434,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Index not found in {} op {}", func_ir.name, op_idx));
                     let val = var_get_boxed_overflow_safe(
@@ -10888,8 +10446,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Value not found in {} op {}", func_ir.name, op_idx));
                     if representation_plan.op_has_container_storage(
@@ -11435,8 +10991,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_ir.name, op_idx));
                     let key_bits = var_get_boxed_overflow_safe(
@@ -11449,8 +11003,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Key not found in {} op {}", func_ir.name, op_idx));
                     let val_bits = var_get_boxed_overflow_safe(
@@ -11463,8 +11015,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Value not found in {} op {}", func_ir.name, op_idx));
                     // Dispatch based on container specialization:
@@ -11552,8 +11102,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_ir.name, op_idx));
                     let key_bits = var_get_boxed_overflow_safe(
@@ -11566,8 +11114,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Key not found in {} op {}", func_ir.name, op_idx));
                     let val_bits = var_get_boxed_overflow_safe(
@@ -11580,8 +11126,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .unwrap_or_else(|| panic!("Value not found in {} op {}", func_ir.name, op_idx));
                     let callee = Self::import_func_id_split(
@@ -11616,8 +11160,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // handle_text_predicate family — extracted to fc::text_predicates (M1)
@@ -11657,8 +11199,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // handle_text_transform family — extracted to fc::text_transform (M1)
@@ -11702,8 +11242,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 "env_get" => {
@@ -11718,8 +11256,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Env key not found");
                     let default = var_get_boxed_overflow_safe(
@@ -11732,8 +11268,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Env default not found");
                     let callee = Self::import_func_id_split(
@@ -11764,8 +11298,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // handle_type_conversion family — extracted to fc::type_conversions (M1)
@@ -11793,8 +11325,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // handle_memoryview_buffer_op family — extracted to fc::memoryview_buffer (M1)
@@ -11812,8 +11342,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // handle_dataclass_op family — extracted to fc::dataclass (M1)
@@ -11834,8 +11362,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 "lt" => {
@@ -11868,8 +11394,6 @@ impl SimpleBackend {
                             &bool_like_vars,
                             &bool_primary_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             op.out.as_ref(),
                             &args[0],
                             &args[1],
@@ -11905,8 +11429,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
@@ -11921,8 +11443,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::LessThan, lf, rf);
@@ -11946,8 +11466,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -11960,8 +11478,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let (lhs_xored, lhs_val) =
@@ -12051,8 +11567,6 @@ impl SimpleBackend {
                             &bool_like_vars,
                             &bool_primary_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             op.out.as_ref(),
                             &args[0],
                             &args[1],
@@ -12088,8 +11602,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
@@ -12104,8 +11616,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::LessThanOrEqual, lf, rf);
@@ -12129,8 +11639,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -12143,8 +11651,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let (lhs_xored, lhs_val) =
@@ -12239,8 +11745,6 @@ impl SimpleBackend {
                             &bool_like_vars,
                             &bool_primary_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             op.out.as_ref(),
                             &args[0],
                             &args[1],
@@ -12276,8 +11780,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
@@ -12292,8 +11794,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThan, lf, rf);
@@ -12317,8 +11817,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -12331,8 +11829,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let (lhs_xored, lhs_val) =
@@ -12426,8 +11922,6 @@ impl SimpleBackend {
                             &bool_like_vars,
                             &bool_primary_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             op.out.as_ref(),
                             &args[0],
                             &args[1],
@@ -12463,8 +11957,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
@@ -12479,8 +11971,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lf, rf);
@@ -12504,8 +11994,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -12518,8 +12006,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let (lhs_xored, lhs_val) =
@@ -12614,8 +12100,6 @@ impl SimpleBackend {
                             &bool_like_vars,
                             &bool_primary_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             op.out.as_ref(),
                             &args[0],
                             &args[1],
@@ -12653,8 +12137,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
@@ -12669,8 +12151,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::Equal, lf, rf);
@@ -12694,8 +12174,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -12708,8 +12186,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let (lhs_xored, lhs_val) =
@@ -12781,8 +12257,6 @@ impl SimpleBackend {
                             &bool_like_vars,
                             &bool_primary_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             op.out.as_ref(),
                             &args[0],
                             &args[1],
@@ -12819,8 +12293,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[0],
                         );
                         let rf = float_value_for_mixed(
@@ -12835,8 +12307,6 @@ impl SimpleBackend {
                             &int_like_vars,
                             &bool_like_vars,
                             &nbc,
-                            box_int_mask_var,
-                            box_int_tag_var,
                             &args[1],
                         );
                         let cmp = builder.ins().fcmp(FloatCC::NotEqual, lf, rf);
@@ -12860,8 +12330,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("LHS not found");
                         let rhs = var_get_boxed_overflow_safe(
@@ -12874,8 +12342,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("RHS not found");
                         let (lhs_xored, lhs_val) =
@@ -12940,8 +12406,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -12954,8 +12418,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     // Use the fast path: pointer-identity check before byte scan.
@@ -13021,8 +12483,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("FunctionDefaultsVersion arg not found");
                     let callee = Self::import_func_id_split(
@@ -13056,8 +12516,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -13070,8 +12528,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let callee = Self::import_func_id_split(
@@ -13114,8 +12570,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let one = builder.ins().iconst(types::I64, 1);
@@ -13142,8 +12596,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let call = builder.ins().call(local_callee, &[*val]);
@@ -13177,8 +12629,6 @@ impl SimpleBackend {
                                         &args[0],
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .expect("Value not found");
                                     builder.ins().bitcast(types::F64, MemFlags::new(), *val)
@@ -13218,8 +12668,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Value not found");
                             let callee = Self::import_func_id_split(
@@ -13256,12 +12704,7 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            let fast_res = box_int_value_hoisted(
-                                &mut builder,
-                                negated,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            );
+                            let fast_res = box_int_value(&mut builder, negated, &nbc);
                             jump_block(&mut builder, merge_block, &[fast_res]);
 
                             switch_to_block_materialized(&mut builder, slow_block);
@@ -13285,8 +12728,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let callee = Self::import_func_id_split(
@@ -13320,8 +12761,6 @@ impl SimpleBackend {
                                         &args[0],
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .expect("Value not found");
                                     builder.ins().bitcast(types::F64, MemFlags::new(), *val)
@@ -13355,8 +12794,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let callee = Self::import_func_id_split(
@@ -13380,8 +12817,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let callee = Self::import_func_id_split(
@@ -13428,8 +12863,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Value not found");
                             let callee = Self::import_func_id_split(
@@ -13468,12 +12901,7 @@ impl SimpleBackend {
 
                             switch_to_block_materialized(&mut builder, fast_block);
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
-                            let fast_res = box_int_value_hoisted(
-                                &mut builder,
-                                abs_val,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            );
+                            let fast_res = box_int_value(&mut builder, abs_val, &nbc);
                             jump_block(&mut builder, merge_block, &[fast_res]);
 
                             switch_to_block_materialized(&mut builder, slow_block);
@@ -13497,8 +12925,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let callee = Self::import_func_id_split(
@@ -13543,8 +12969,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Value not found");
                             // op_prefers_int_lane only proves Python-`int` type,
@@ -13579,12 +13003,7 @@ impl SimpleBackend {
                             seal_block_once(&mut builder, &mut sealed_blocks, fast_block);
                             let minus_one = builder.ins().iconst(types::I64, -1i64);
                             let inverted = builder.ins().bxor(int_val, minus_one);
-                            let fast_res = box_int_value_hoisted(
-                                &mut builder,
-                                inverted,
-                                box_int_mask_var,
-                                box_int_tag_var,
-                            );
+                            let fast_res = box_int_value(&mut builder, inverted, &nbc);
                             jump_block(&mut builder, merge_block, &[fast_res]);
 
                             switch_to_block_materialized(&mut builder, slow_block);
@@ -13608,8 +13027,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let callee = Self::import_func_id_split(
@@ -13669,8 +13086,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let int_val = unbox_int_or_bool(&mut builder, *val, &nbc);
@@ -13699,8 +13114,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let one = builder.ins().iconst(types::I64, 1);
@@ -13726,8 +13139,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Value not found");
                         let call = builder.ins().call(local_callee, &[*val]);
@@ -13779,8 +13190,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -13793,8 +13202,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let cond = if let Some(raw_val) =
@@ -13872,8 +13279,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("LHS not found");
                     let rhs = var_get_boxed_overflow_safe(
@@ -13886,8 +13291,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("RHS not found");
                     let cond = if let Some(raw_val) =
@@ -13942,8 +13345,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Container not found");
                     let item = var_get_boxed_overflow_safe(
@@ -13956,8 +13357,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Item not found");
                     let func_name = match representation_plan.name_container_kind(&args[0]) {
@@ -13994,8 +13393,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     ) {
                         *val
                     } else {
@@ -14030,8 +13427,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("warn_stderr arg");
                     let callee = Self::import_func_id_split(
@@ -14069,8 +13464,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 "block_on" => {
@@ -14085,8 +13478,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Task not found");
                     let callee = Self::import_func_id_split(
@@ -14154,8 +13545,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Future not found");
                     let future_ptr = unbox_ptr_value(&mut builder, *future, &nbc);
@@ -14172,8 +13561,6 @@ impl SimpleBackend {
                                 &args[1],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Pending state not found"),
                         )
@@ -14190,8 +13577,6 @@ impl SimpleBackend {
                                     &args[1],
                                     &int_primary_vars,
                                     &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                 )
                                 .expect("Await slot not found"),
                             ),
@@ -14205,8 +13590,6 @@ impl SimpleBackend {
                                 &args[2],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Pending state not found"),
                         )
@@ -14397,8 +13780,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Yield pair not found");
                     let next_state_id = op.value.unwrap_or(0);
@@ -14481,8 +13862,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Chan not found");
                     let val = var_get_boxed_overflow_safe(
@@ -14495,8 +13874,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Val not found");
                     let pending_state_bits = *var_get_boxed_overflow_safe(
@@ -14509,8 +13886,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Pending state not found");
                     let next_state_id = op.value.unwrap_or(0);
@@ -14655,8 +14030,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Chan not found");
                     let pending_state_bits = *var_get_boxed_overflow_safe(
@@ -14669,8 +14042,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Pending state not found");
                     let next_state_id = op.value.unwrap_or(0);
@@ -14815,8 +14186,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Capacity not found");
                     let callee = Self::import_func_id_split(
@@ -14845,8 +14214,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Chan not found");
                     let callee = Self::import_func_id_split(
@@ -14872,8 +14239,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Task not found");
                     let callee = Self::import_func_id_split(
@@ -14898,8 +14263,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Parent token not found");
                     let callee = Self::import_func_id_split(
@@ -14928,8 +14291,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Token not found");
                     let callee = Self::import_func_id_split(
@@ -14954,8 +14315,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Token not found");
                     let callee = Self::import_func_id_split(
@@ -14980,8 +14339,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Token not found");
                     let callee = Self::import_func_id_split(
@@ -15015,8 +14372,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 "cancel_token_is_cancelled" => {
@@ -15031,8 +14386,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Token not found");
                     let callee = Self::import_func_id_split(
@@ -15061,8 +14414,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Token not found");
                     let callee = Self::import_func_id_split(
@@ -15170,8 +14521,6 @@ impl SimpleBackend {
                                 arg_name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Arg not found");
                             builder.ins().store(
@@ -15356,8 +14705,6 @@ impl SimpleBackend {
                         closure_name,
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("closure arg not found");
                     let target_ret = function_has_ret
@@ -15449,8 +14796,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("filename not found");
                     let name_bits = var_get_boxed_overflow_safe(
@@ -15463,8 +14808,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("name not found");
                     let firstlineno_bits = var_get_boxed_overflow_safe(
@@ -15477,8 +14820,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("firstlineno not found");
                     let linetable_bits = var_get_boxed_overflow_safe(
@@ -15491,8 +14832,6 @@ impl SimpleBackend {
                         &args[3],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("linetable not found");
                     let varnames_bits = var_get_boxed_overflow_safe(
@@ -15505,8 +14844,6 @@ impl SimpleBackend {
                         &args[4],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("varnames not found");
                     let names_bits = var_get_boxed_overflow_safe(
@@ -15519,8 +14856,6 @@ impl SimpleBackend {
                         &args[5],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("names not found");
                     let argcount_bits = var_get_boxed_overflow_safe(
@@ -15533,8 +14868,6 @@ impl SimpleBackend {
                         &args[6],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("argcount not found");
                     let posonlyargcount_bits = var_get_boxed_overflow_safe(
@@ -15547,8 +14880,6 @@ impl SimpleBackend {
                         &args[7],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("posonly not found");
                     let kwonlyargcount_bits = var_get_boxed_overflow_safe(
@@ -15561,8 +14892,6 @@ impl SimpleBackend {
                         &args[8],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("kwonly not found");
                     let callee = Self::import_func_id_split(
@@ -15614,8 +14943,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("code bits not found");
                     let code_id = op.value.unwrap_or(0);
@@ -15642,8 +14969,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("code bits not found");
                     let func_name = op.s_value.as_ref().expect("fn_ptr_code_set expects symbol");
@@ -15698,8 +15023,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("names tuple not found");
                     let offsets_bits = var_get_boxed_overflow_safe(
@@ -15712,8 +15035,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("offsets tuple not found");
                     let func_name = op
@@ -15768,8 +15089,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("names tuple not found");
                     let offsets_bits = var_get_boxed_overflow_safe(
@@ -15782,8 +15101,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("offsets tuple not found");
                     let func_name = op
@@ -15870,8 +15187,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Arg not found")
                         })
@@ -15964,8 +15279,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 });
@@ -16001,8 +15314,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 });
@@ -16042,8 +15353,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Func not found");
                     let callee = Self::import_func_id_split(
@@ -16082,8 +15391,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim"
@@ -16222,8 +15529,6 @@ impl SimpleBackend {
                             func_obj_var,
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Closure func obj not found for direct call");
                         let extract_local = import_func_ref(
@@ -16508,8 +15813,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .map(|v| *v)
                         });
@@ -16533,8 +15836,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .map(|v| *v)
                         });
@@ -16631,8 +15932,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Arg not found"),
                         );
@@ -16652,8 +15951,6 @@ impl SimpleBackend {
                             func_obj_var,
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Closure func obj not found for direct call");
                         let extract_local = import_func_ref(
@@ -16735,8 +16032,6 @@ impl SimpleBackend {
                             src_name,
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("inc_ref/borrow source not found");
                         emit_inc_ref_obj(&mut builder, src, local_inc_ref_obj, &nbc);
@@ -16762,8 +16057,6 @@ impl SimpleBackend {
                             src_name,
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("inc_ref/borrow source not found (coalesced)");
                         def_var_named(&mut builder, &vars, out_name.clone(), src);
@@ -16794,8 +16087,6 @@ impl SimpleBackend {
                             src_name,
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("dec_ref/release source not found");
                         builder.ins().call(local_dec_ref_obj, &[src]);
@@ -16835,8 +16126,6 @@ impl SimpleBackend {
                         src_name,
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("conversion source not found");
                     if let Some(out_name) = op.out.as_ref()
@@ -16872,8 +16161,6 @@ impl SimpleBackend {
                                             src_name,
                                             &int_primary_vars,
                                             &float_primary_vars,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                         )
                                         .expect("identity_alias source not found");
                                         builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
@@ -16890,8 +16177,6 @@ impl SimpleBackend {
                                 src_name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("identity_alias source not found");
                             // Same aliasing hazard as box/unbox/cast/widen above.
@@ -16913,8 +16198,6 @@ impl SimpleBackend {
                         &args_names[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Callee not found");
                     let mut args = Vec::new();
@@ -16930,8 +16213,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Arg not found"),
                         );
@@ -16951,8 +16232,6 @@ impl SimpleBackend {
                             func_obj_var,
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Closure func obj not found for direct call");
                         let extract_fn = Self::import_func_id_split(
@@ -17304,8 +16583,6 @@ impl SimpleBackend {
                         &args_names[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Func not found");
                     let mut args = Vec::new();
@@ -17321,8 +16598,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Arg not found"),
                         );
@@ -17649,8 +16924,6 @@ impl SimpleBackend {
                         &args_names[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Func not found");
                     let mut args = Vec::new();
@@ -17666,8 +16939,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Arg not found"),
                         );
@@ -17762,8 +17033,6 @@ impl SimpleBackend {
                         &args_names[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Func not found");
                     let builder_ptr = var_get_boxed_overflow_safe(
@@ -17776,8 +17045,6 @@ impl SimpleBackend {
                         &args_names[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Callargs not found");
                     let callargs_name = &args_names[1];
@@ -17880,8 +17147,6 @@ impl SimpleBackend {
                         &args_names[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("call_method_ic receiver not found");
                     let mut extra_args = Vec::new();
@@ -17897,8 +17162,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("call_method_ic arg not found"),
                         );
@@ -17986,8 +17249,6 @@ impl SimpleBackend {
                         &args_names[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("call_super_method_ic class not found");
                     let self_bits = *var_get_boxed_overflow_safe(
@@ -18000,8 +17261,6 @@ impl SimpleBackend {
                         &args_names[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("call_super_method_ic self not found");
                     let mut extra_args = Vec::new();
@@ -18017,8 +17276,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("call_super_method_ic arg not found"),
                         );
@@ -18099,8 +17356,6 @@ impl SimpleBackend {
                         &args_names[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Method not found");
                     let mut extra_args = Vec::new();
@@ -18116,8 +17371,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Arg not found"),
                         );
@@ -18329,8 +17582,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                         local_inc_ref_obj,
                         &hoisted_str_slot,
                     );
@@ -18356,8 +17607,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // Outlined class definition via molt_guarded_class_def
@@ -18379,8 +17628,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // handle_exception_op family — extracted to fc::exceptions (M1)
@@ -18416,8 +17663,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // handle_context_op family — extracted to fc::context_mgmt (M1)
@@ -18435,8 +17680,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 // handle_exception_stack_op family — extracted to fc::exception_stack (M1)
@@ -18461,8 +17704,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 "getargv" => {
@@ -18492,8 +17733,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("depth not found");
                     let callee = Self::import_func_id_split(
@@ -18537,8 +17776,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Exception not found");
                     let callee = Self::import_func_id_split(
@@ -18650,8 +17887,6 @@ impl SimpleBackend {
                                     &name,
                                     &int_primary_vars,
                                     &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                 )
                                 .map(|v| *v)
                             });
@@ -18710,8 +17945,6 @@ impl SimpleBackend {
                                     &name,
                                     &int_primary_vars,
                                     &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                 )
                                 .map(|v| *v)
                             });
@@ -18806,8 +18039,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     );
                 }
                 "bridge_unavailable" => {
@@ -18822,8 +18053,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Message not found");
                     let callee = Self::import_func_id_split(
@@ -18876,8 +18105,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Cond not found");
                         let one = builder.ins().iconst(types::I64, 1);
@@ -18906,8 +18133,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Cond not found");
                         let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
@@ -18926,8 +18151,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Cond not found");
                         // Speculative inline truthiness: check NaN-box tag
@@ -19295,8 +18518,6 @@ impl SimpleBackend {
                                     &bool_primary_vars,
                                     &float_primary_vars,
                                     &nbc,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                     name,
                                     storage,
                                 )
@@ -19413,8 +18634,6 @@ impl SimpleBackend {
                                         &bool_primary_vars,
                                         &float_primary_vars,
                                         &nbc,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                         then_name,
                                         storage,
                                     );
@@ -19443,8 +18662,6 @@ impl SimpleBackend {
                                         &bool_primary_vars,
                                         &float_primary_vars,
                                         &nbc,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                         then_name,
                                         storage,
                                     );
@@ -19467,8 +18684,6 @@ impl SimpleBackend {
                                     &bool_primary_vars,
                                     &float_primary_vars,
                                     &nbc,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                     name,
                                     rebind_slot.storage,
                                 );
@@ -19649,8 +18864,6 @@ impl SimpleBackend {
                                             &bool_primary_vars,
                                             &float_primary_vars,
                                             &nbc,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                             else_name,
                                             storage,
                                         );
@@ -19680,8 +18893,6 @@ impl SimpleBackend {
                                             &bool_primary_vars,
                                             &float_primary_vars,
                                             &nbc,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                             else_name,
                                             storage,
                                         );
@@ -19704,8 +18915,6 @@ impl SimpleBackend {
                                         &bool_primary_vars,
                                         &float_primary_vars,
                                         &nbc,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                         name,
                                         rebind_slot.storage,
                                     );
@@ -19847,8 +19056,6 @@ impl SimpleBackend {
                                             &bool_primary_vars,
                                             &float_primary_vars,
                                             &nbc,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                             then_name,
                                             storage,
                                         );
@@ -19878,8 +19085,6 @@ impl SimpleBackend {
                                             &bool_primary_vars,
                                             &float_primary_vars,
                                             &nbc,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                             then_name,
                                             storage,
                                         );
@@ -19902,8 +19107,6 @@ impl SimpleBackend {
                                         &bool_primary_vars,
                                         &float_primary_vars,
                                         &nbc,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                         name,
                                         rebind_slot.storage,
                                     );
@@ -20053,8 +19256,6 @@ impl SimpleBackend {
                                             &bool_primary_vars,
                                             &float_primary_vars,
                                             &nbc,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                             else_name,
                                             storage,
                                         );
@@ -20084,8 +19285,6 @@ impl SimpleBackend {
                                             &bool_primary_vars,
                                             &float_primary_vars,
                                             &nbc,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                             else_name,
                                             storage,
                                         );
@@ -20108,8 +19307,6 @@ impl SimpleBackend {
                                         &bool_primary_vars,
                                         &float_primary_vars,
                                         &nbc,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                         name,
                                         rebind_slot.storage,
                                     );
@@ -20380,8 +19577,6 @@ impl SimpleBackend {
                                             &bool_primary_vars,
                                             &float_primary_vars,
                                             &nbc,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                             out,
                                             join_storage,
                                         )
@@ -20474,12 +19669,7 @@ impl SimpleBackend {
                         for name in &demote_int {
                             if let Some(&var) = vars.get(name) {
                                 let raw_val = builder.use_var(var);
-                                let boxed = box_int_value_hoisted(
-                                    &mut builder,
-                                    raw_val,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                );
+                                let boxed = box_int_value(&mut builder, raw_val, &nbc);
                                 builder.def_var(var, boxed);
                             }
                         }
@@ -20553,8 +19743,6 @@ impl SimpleBackend {
                                     list_name,
                                     &int_primary_vars,
                                     &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                 ) else {
                                     continue;
                                 };
@@ -20598,8 +19786,6 @@ impl SimpleBackend {
                                     list_name,
                                     &int_primary_vars,
                                     &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                 ) else {
                                     continue;
                                 };
@@ -20776,8 +19962,6 @@ impl SimpleBackend {
                                             out,
                                             &int_primary_vars,
                                             &float_primary_vars,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                         )
                                     {
                                         break 'find_phi Some(*v);
@@ -20872,8 +20056,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Loop index start not found")
                         });
@@ -20935,8 +20117,6 @@ impl SimpleBackend {
                                     list_name,
                                     &int_primary_vars,
                                     &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                 ) else {
                                     continue;
                                 };
@@ -20980,8 +20160,6 @@ impl SimpleBackend {
                                     list_name,
                                     &int_primary_vars,
                                     &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                 ) else {
                                     continue;
                                 };
@@ -21081,8 +20259,6 @@ impl SimpleBackend {
                                             &reduction.acc_operand_name,
                                             &int_primary_vars,
                                             &float_primary_vars,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                         )
                                         .expect("Sum reduction accumulator not found");
                                         unbox_int(&mut builder, *boxed, &nbc)
@@ -21514,8 +20690,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Loop break cond not found");
                             let one = builder.ins().iconst(types::I64, 1);
@@ -21544,8 +20718,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Loop break cond not found");
                             let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
@@ -21565,8 +20737,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Loop break cond not found");
                             let callee = Self::import_func_id_split(
@@ -21729,8 +20899,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Loop break cond not found");
                             let one = builder.ins().iconst(types::I64, 1);
@@ -21759,8 +20927,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Loop break cond not found");
                             let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
@@ -21780,8 +20946,6 @@ impl SimpleBackend {
                                 &args[0],
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Loop break cond not found");
                             let callee = Self::import_func_id_split(
@@ -21912,8 +21076,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 });
@@ -21945,8 +21107,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 });
@@ -21974,8 +21134,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Loop index next not found");
                     if loop_stack.is_empty() {
@@ -22050,8 +21208,6 @@ impl SimpleBackend {
                                                 src_name,
                                                 &int_primary_vars,
                                                 &float_primary_vars,
-                                                box_int_mask_var,
-                                                box_int_tag_var,
                                             )
                                         {
                                             frame.next_index = Some(*next_idx);
@@ -22090,8 +21246,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 });
@@ -22123,8 +21277,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 });
@@ -22152,8 +21304,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                         {
                             let current = if int_primary_vars.contains(name.as_str()) {
@@ -22289,8 +21439,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
@@ -22323,8 +21471,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
@@ -22357,8 +21503,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Class not found");
                     let iconst = builder.ins().iconst(types::I64, size);
@@ -22433,8 +21577,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .expect("Arg not found for alloc_task");
                             let offset = payload_base + (i * 8) as i32;
@@ -22515,8 +21657,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Object not found");
                     let val = var_get_boxed_overflow_safe(
@@ -22529,8 +21669,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Value not found");
                     let offset = op.value.unwrap_or(0) as i32;
@@ -22591,8 +21729,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 })
@@ -22622,8 +21758,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 })
@@ -22854,8 +21988,6 @@ impl SimpleBackend {
                                 &name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .map(|v| *v)
                         }) {
@@ -22883,8 +22015,6 @@ impl SimpleBackend {
                                 &name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .map(|v| *v)
                         }) {
@@ -22935,8 +22065,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Object not found");
                     let val = var_get_boxed_overflow_safe(
@@ -22949,8 +22077,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Value not found");
                     let offset = op.value.unwrap_or(0) as i32;
@@ -23011,8 +22137,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 })
@@ -23042,8 +22166,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 })
@@ -23175,8 +22297,6 @@ impl SimpleBackend {
                                 &name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .map(|v| *v)
                         }) {
@@ -23204,8 +22324,6 @@ impl SimpleBackend {
                                 &name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .map(|v| *v)
                         }) {
@@ -23231,8 +22349,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Object not found");
                     let offset_val = op.value.unwrap_or(0);
@@ -23269,8 +22385,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Object not found");
                         unbox_ptr_value(&mut builder, *obj, &nbc)
@@ -23302,8 +22416,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Value not found");
                     let offset = builder.ins().iconst(types::I64, op.value.unwrap_or(0));
@@ -23320,8 +22432,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Object not found");
                         unbox_ptr_value(&mut builder, *obj, &nbc)
@@ -23352,8 +22462,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Object not found");
                     let offset = op.value.unwrap_or(0) as i32;
@@ -23381,8 +22489,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
@@ -23396,8 +22502,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Class not found");
                     let expected_version = var_get_boxed_overflow_safe(
@@ -23410,8 +22514,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Expected version not found");
                     let Some(attr_name) = op.s_value.as_ref() else {
@@ -23478,8 +22580,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
@@ -23493,8 +22593,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Class not found");
                     let expected_version = var_get_boxed_overflow_safe(
@@ -23507,8 +22605,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Expected version not found");
                     let val = var_get_boxed_overflow_safe(
@@ -23521,8 +22617,6 @@ impl SimpleBackend {
                         &args[3],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Value not found");
                     let Some(attr_name) = op.s_value.as_ref() else {
@@ -23592,8 +22686,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
@@ -23607,8 +22699,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Class not found");
                     let expected_version = var_get_boxed_overflow_safe(
@@ -23621,8 +22711,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Expected version not found");
                     let val = var_get_boxed_overflow_safe(
@@ -23635,8 +22723,6 @@ impl SimpleBackend {
                         &args[3],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Value not found");
                     let Some(attr_name) = op.s_value.as_ref() else {
@@ -23733,8 +22819,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Guard value not found");
                         let expected = var_get_boxed_overflow_safe(
@@ -23747,8 +22831,6 @@ impl SimpleBackend {
                             &args[1],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Guard expected tag not found");
                         let callee = Self::import_func_id_split(
@@ -23774,8 +22856,6 @@ impl SimpleBackend {
                         &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Guard object not found");
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
@@ -23789,8 +22869,6 @@ impl SimpleBackend {
                         &args[1],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Guard class not found");
                     let expected_version = var_get_boxed_overflow_safe(
@@ -23803,8 +22881,6 @@ impl SimpleBackend {
                         &args[2],
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("Guard version not found");
                     let callee = Self::import_func_id_split(
@@ -23850,8 +22926,6 @@ impl SimpleBackend {
                         &float_primary_vars,
                         &bool_primary_vars,
                         &nbc,
-                        box_int_mask_var,
-                        box_int_tag_var,
                         local_inc_ref_obj,
                     );
                     match __flow {
@@ -23973,8 +23047,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             ) && mark_cleanup_root_once(
                                 &alias_roots,
                                 &mut already_decrefed,
@@ -24003,8 +23075,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             ) && mark_cleanup_root_once(
                                 &alias_roots,
                                 &mut already_decrefed,
@@ -24077,8 +23147,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 });
@@ -24114,8 +23182,6 @@ impl SimpleBackend {
                                         &name,
                                         &int_primary_vars,
                                         &float_primary_vars,
-                                        box_int_mask_var,
-                                        box_int_tag_var,
                                     )
                                     .map(|v| *v)
                                 });
@@ -24153,8 +23219,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .map(|v| *v)
                         });
@@ -24185,8 +23249,6 @@ impl SimpleBackend {
                                 name,
                                 &int_primary_vars,
                                 &float_primary_vars,
-                                box_int_mask_var,
-                                box_int_tag_var,
                             )
                             .map(|v| *v)
                         });
@@ -24339,8 +23401,6 @@ impl SimpleBackend {
                                     &name,
                                     &int_primary_vars,
                                     &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                 )
                                 .map(|v| *v)
                             });
@@ -24378,8 +23438,6 @@ impl SimpleBackend {
                                     &name,
                                     &int_primary_vars,
                                     &float_primary_vars,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
                                 )
                                 .map(|v| *v)
                             });
@@ -24436,8 +23494,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Cond not found");
                         let one = builder.ins().iconst(types::I64, 1);
@@ -24465,8 +23521,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Cond not found");
                         let cond_val = unbox_int_or_bool(&mut builder, *cond, &nbc);
@@ -24485,8 +23539,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("Cond not found");
                         // Speculative inline truthiness: check NaN-box tag
@@ -24781,12 +23833,7 @@ impl SimpleBackend {
                             // (mixed-type stores, generic-runtime calls
                             // that return NaN-boxed results).
                             if is_join_slot_name(name) && !int_primary_vars.contains(name) {
-                                let boxed = box_int_value_hoisted(
-                                    &mut builder,
-                                    raw_val,
-                                    box_int_mask_var,
-                                    box_int_tag_var,
-                                );
+                                let boxed = box_int_value(&mut builder, raw_val, &nbc);
                                 def_var_named(&mut builder, &vars, name, boxed);
                             } else {
                                 def_var_named(&mut builder, &vars, name, raw_val);
@@ -24817,8 +23864,6 @@ impl SimpleBackend {
                                             &args[0],
                                             &int_primary_vars,
                                             &float_primary_vars,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                         )
                                         .expect("store_var: float src not found");
                                         builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
@@ -24891,8 +23936,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("store_var: src not found");
                         if let Some(&slot) = slot_backed_join_slots.get(name) {
@@ -25014,8 +24057,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         );
                     }
                 }
@@ -25045,8 +24086,6 @@ impl SimpleBackend {
                         missing_name,
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("delete_var: missing sentinel not found");
                     let old_val = *var_get_boxed_overflow_safe(
@@ -25059,8 +24098,6 @@ impl SimpleBackend {
                         old_name,
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     )
                     .expect("delete_var: old local operand not found");
                     if let Some(&slot) = slot_backed_join_slots.get(name) {
@@ -25231,8 +24268,6 @@ impl SimpleBackend {
                                             var_name,
                                             &int_primary_vars,
                                             &float_primary_vars,
-                                            box_int_mask_var,
-                                            box_int_tag_var,
                                         )
                                         .expect("load_var: float src not found");
                                         builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
@@ -25276,8 +24311,6 @@ impl SimpleBackend {
                             var_name,
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("load_var: var not found");
                         if let Some(ref out_name) = op.out {
@@ -25430,8 +24463,6 @@ impl SimpleBackend {
                             &args[0],
                             &int_primary_vars,
                             &float_primary_vars,
-                            box_int_mask_var,
-                            box_int_tag_var,
                         )
                         .expect("copy_var: src not found");
                         if let Some(ref out_name) = op.out {
@@ -25664,8 +24695,6 @@ impl SimpleBackend {
                         name,
                         &int_primary_vars,
                         &float_primary_vars,
-                        box_int_mask_var,
-                        box_int_tag_var,
                     ) {
                         entry_vars.insert(name.clone(), *val);
                     }
@@ -26119,9 +25148,9 @@ fn drain_dead_block_temps_for_suspend(
 mod tests {
     use super::{
         FunctionPreanalysis, ScalarRepresentationPlan, alias_root_name, box_raw_bool_value,
-        cleanup_roots_for_names, collect_slot_backed_join_names, def_var_from_boxed_transport,
-        def_var_from_numeric_result, generic_list_int_lane_eligible, import_func_ref,
-        index_fallback_import_name, is_cold_module_chunk_function, jump_block,
+        box_raw_i64_value_overflow_safe, cleanup_roots_for_names, collect_slot_backed_join_names,
+        def_var_from_boxed_transport, def_var_from_numeric_result, generic_list_int_lane_eligible,
+        import_func_ref, index_fallback_import_name, is_cold_module_chunk_function, jump_block,
         live_exception_rebind_vars_for_op, mark_cleanup_root_once, materialize_label_block,
         metadata_only_structured_loop_ops, preanalyze_function_ir, protect_cleanup_names,
         scan_loop_int_sum_reduction, store_index_fallback_import_name,
@@ -26404,6 +25433,54 @@ mod tests {
 
         let flags = settings::Flags::new(settings::builder());
         verify_function(&func, &flags).expect("raw bool boxing must verify with an i64 carrier");
+    }
+
+    #[test]
+    fn native_int_boxing_constants_materialized_at_site() {
+        let mut backend = SimpleBackend::new();
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 1), sig);
+        let mut context = FunctionBuilderContext::new();
+        let int_mask_needle;
+        let int_tag_needle;
+        {
+            let mut builder = FunctionBuilder::new(&mut func, &mut context);
+            let entry = builder.create_block();
+            builder.switch_to_block(entry);
+            builder.seal_block(entry);
+
+            let nbc = crate::NanBoxConsts::new(&mut builder);
+            int_mask_needle = format!("iconst.i64 {:#x}", nbc.int_mask);
+            int_tag_needle = format!("iconst.i64 {:#x}", nbc.qnan_tag_int);
+
+            let raw_zero = builder.ins().iconst(types::I64, 0);
+            let mut import_refs = BTreeMap::new();
+            let mut sealed_blocks = BTreeSet::from([entry]);
+            let boxed = box_raw_i64_value_overflow_safe(
+                &mut backend.module,
+                &mut backend.import_ids,
+                &mut builder,
+                &mut import_refs,
+                &mut sealed_blocks,
+                raw_zero,
+            );
+            builder.ins().return_(&[boxed]);
+            builder.finalize();
+        }
+
+        let flags = settings::Flags::new(settings::builder());
+        verify_function(&func, &flags).expect("split raw-i64 escape boxing CFG must verify");
+        let clif = func.display().to_string();
+        let normalized_clif = clif.replace('_', "");
+        assert!(
+            normalized_clif.contains(&int_mask_needle),
+            "raw-i64 escape boxing must materialize INT_MASK at the boxing site:\n{clif}"
+        );
+        assert!(
+            normalized_clif.contains(&int_tag_needle),
+            "raw-i64 escape boxing must materialize QNAN|TAG_INT at the boxing site:\n{clif}"
+        );
     }
 
     #[test]

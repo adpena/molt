@@ -27,8 +27,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
     bool_like_vars: &BTreeSet<String>,
     local_inc_ref_obj: FuncRef,
     list_int_data_cache: &mut BTreeMap<String, Variable>,
@@ -51,9 +49,7 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        int_primary_vars: &BTreeSet<String>,
-                                       float_primary_vars: &BTreeSet<String>,
-                                       box_int_mask_var: Variable,
-                                       box_int_tag_var: Variable|
+                                       float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -67,8 +63,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
             float_primary_vars,
             bool_primary_vars,
             nbc,
-            box_int_mask_var,
-            box_int_tag_var,
         )
     };
     match op.kind.as_str() {
@@ -110,8 +104,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                     name,
                     int_primary_vars,
                     float_primary_vars,
-                    box_int_mask_var,
-                    box_int_tag_var,
                 )
                 .unwrap_or_else(|| panic!("List elem not found in {} op {}", func_name, op_idx));
                 // Inc-ref each element so the builder owns its own
@@ -149,8 +141,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("list_int_new: count not found");
             let fill = var_get_boxed_overflow_safe(
@@ -163,8 +153,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("list_int_new: fill_value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -193,8 +181,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("list_fill_new: count not found");
             let fill = var_get_boxed_overflow_safe(
@@ -207,8 +193,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("list_fill_new: fill_value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -237,8 +221,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List-from-range start not found");
             let stop = var_get_boxed_overflow_safe(
@@ -251,8 +233,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List-from-range stop not found");
             let step = var_get_boxed_overflow_safe(
@@ -265,8 +245,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[2],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List-from-range step not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -301,8 +279,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             // Deferred overflow re-boxing at heap store (list_append).
@@ -351,8 +327,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let idx = var_get_boxed_overflow_safe(
@@ -365,8 +339,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List pop index not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -400,8 +372,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let other = var_get_boxed_overflow_safe(
@@ -414,8 +384,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List extend iterable not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -449,8 +417,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let idx = var_get_boxed_overflow_safe(
@@ -463,8 +429,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List insert index not found");
             let val = var_get_boxed_overflow_safe(
@@ -477,8 +441,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[2],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List insert value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -513,8 +475,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let val = var_get_boxed_overflow_safe(
@@ -527,8 +487,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List remove value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -563,8 +521,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -593,8 +549,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -623,8 +577,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -653,8 +605,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let val = var_get_boxed_overflow_safe(
@@ -667,8 +617,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List count value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -697,8 +645,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let val = var_get_boxed_overflow_safe(
@@ -711,8 +657,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List index value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -741,8 +685,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List not found");
             let val = var_get_boxed_overflow_safe(
@@ -755,8 +697,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List index value not found");
             let start = var_get_boxed_overflow_safe(
@@ -769,8 +709,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[2],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List index start not found");
             let stop = var_get_boxed_overflow_safe(
@@ -783,8 +721,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[3],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("List index stop not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -815,8 +751,6 @@ pub(in crate::native_backend::function_compiler) fn handle_list_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Tuple source not found");
             let callee = SimpleBackend::import_func_id_split(

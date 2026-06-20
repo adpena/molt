@@ -86,10 +86,7 @@ pub(in crate::native_backend::function_compiler) fn var_get_boxed_overflow_safe_
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
 ) -> Option<crate::VarValue> {
-    let _ = (box_int_mask_var, box_int_tag_var);
     if bool_primary_vars.contains(name) {
         let raw = vars.get(name).map(|&var| builder.use_var(var))?;
         return Some(crate::VarValue(box_raw_bool_value(builder, raw, nbc)));

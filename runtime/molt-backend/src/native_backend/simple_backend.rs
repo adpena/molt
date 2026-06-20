@@ -13,14 +13,11 @@ use super::*;
 // unqualified via `use super::*`, matching how they reached this code when it
 // lived at the crate root in `lib.rs`.
 
-/// Pre-computed NaN-box tag mask constants hoisted to the function entry block.
+/// Pre-computed NaN-box tag mask constants materialized at each helper site.
 ///
-/// Cranelift can only CSE `iconst` within a single basic block.  By emitting
-/// the five most-repeated tag-mask constants once in the entry block and
-/// storing them in Cranelift `Variable`s, every subsequent helper call
-/// (`is_int_tag`, `unbox_int`, `box_int_value`, `emit_inline_inc_ref_obj`, etc.)
-/// materialises nanbox helper constants directly instead of threading them
-/// through Cranelift SSA variables.
+/// These values are plain immediates, not Cranelift `Variable`s. Keeping
+/// representation constants out of SSA repair prevents label/exception CFG
+/// stitching from turning immutable tag facts into block parameters.
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Copy)]
 pub(crate) struct NanBoxConsts {
@@ -1100,29 +1097,15 @@ pub(crate) fn emit_mixed_int_float_op(
 }
 
 #[cfg(feature = "native-backend")]
-fn box_int_value(builder: &mut FunctionBuilder, val: Value, nbc: &NanBoxConsts) -> Value {
+pub(crate) fn box_int_value(
+    builder: &mut FunctionBuilder,
+    val: Value,
+    nbc: &NanBoxConsts,
+) -> Value {
     let mask = builder.ins().iconst(types::I64, nbc.int_mask);
     let masked = builder.ins().band(val, mask);
     let tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
     builder.ins().bor(tag, masked)
-}
-
-/// Like `box_int_value` but reads pre-hoisted constant Variables for the
-/// mask and tag.  Emits only 2 instructions (band + bor) instead of 4,
-/// because the iconst values are read from Variables that persist across
-/// loop iterations (Cranelift keeps them in registers).
-#[cfg(feature = "native-backend")]
-#[inline]
-pub(crate) fn box_int_value_hoisted(
-    builder: &mut FunctionBuilder,
-    val: Value,
-    mask_var: Variable,
-    tag_var: Variable,
-) -> Value {
-    let int_mask_val = builder.use_var(mask_var);
-    let qnan_tag_int_val = builder.use_var(tag_var);
-    let masked = builder.ins().band(val, int_mask_val);
-    builder.ins().bor(qnan_tag_int_val, masked)
 }
 
 #[cfg(feature = "native-backend")]
@@ -1512,49 +1495,6 @@ pub(crate) fn var_get(
     name: &str,
 ) -> Option<VarValue> {
     vars.get(name).map(|var| VarValue(builder.use_var(*var)))
-}
-
-/// Get a variable's NaN-boxed value, boxing a raw-primary value on demand.
-///
-/// When a variable is in `int_primary_vars`, its Cranelift Variable holds a raw
-/// i64 value (not NaN-boxed). This function boxes it lazily using the hoisted
-/// boxing constants, ensuring all 620+ runtime-call sites get a properly
-/// NaN-boxed value without any code changes at the call site.
-///
-/// This is the core of the typed IR redesign: proven-type variables store raw
-/// values as their primary representation. Boxing happens only when a generic
-/// consumer (runtime FFI call) needs the NaN-boxed form.
-/// Phase 1d Step 0.6 NOTE: zero callers after the float_value_for_mixed
-/// migration. Retained as a template for the Phase 2 bool-lane mirror's
-/// inline-only fast-box equivalent. Will be deleted by Phase 1d Step 1
-/// (`int_primary_vars` becomes the static `int_primary_vars` and
-/// `box_int_value_hoisted` is no longer safe at any escape).
-#[cfg(feature = "native-backend")]
-#[allow(dead_code)]
-pub(crate) fn var_get_boxed(
-    builder: &mut FunctionBuilder,
-    vars: &BTreeMap<String, Variable>,
-    name: &str,
-    int_primary_vars: &std::collections::BTreeSet<String>,
-    raw_primary_float: &std::collections::BTreeSet<String>,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
-) -> Option<VarValue> {
-    let var = *vars.get(name)?;
-    let val = builder.use_var(var);
-
-    if int_primary_vars.contains(name) {
-        // Variable holds raw i64 — box it for the runtime call
-        let boxed = box_int_value_hoisted(builder, val, box_int_mask_var, box_int_tag_var);
-        Some(VarValue(boxed))
-    } else if raw_primary_float.contains(name) {
-        // Variable holds raw f64 — box it for the runtime call
-        let bits = builder.ins().bitcast(types::I64, MemFlags::new(), val);
-        Some(VarValue(bits))
-    } else {
-        // Variable already holds NaN-boxed value
-        Some(VarValue(val))
-    }
 }
 
 /// Get raw value directly (for proven-type consumers that don't need NaN-box).
