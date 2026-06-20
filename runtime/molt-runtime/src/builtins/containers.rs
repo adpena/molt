@@ -5,9 +5,10 @@ macro_rules! fn_addr {
 }
 
 use crate::{
-    HashContext, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW,
-    TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, TYPE_ID_SET,
-    alloc_tuple, builtin_func_bits, builtin_func_bits_with_defaults_tuple, dec_ref_bits,
+    BIND_KIND_PACKED_BUILTIN, HashContext, MoltObject, PyToken, TYPE_ID_DICT,
+    TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_LIST_BOOL,
+    TYPE_ID_LIST_INT, TYPE_ID_SET, alloc_tuple, builtin_func_bits,
+    builtin_func_bits_with_bind_kind, builtin_func_bits_with_defaults_tuple, dec_ref_bits,
     dict_clear_method, dict_copy_method, dict_fromkeys_method, dict_get_method, dict_items_method,
     dict_keys_method, dict_popitem_method, dict_setdefault_method, dict_update_method,
     dict_values_method, exception_pending, molt_contains, molt_delitem_method,
@@ -233,29 +234,33 @@ pub(crate) fn set_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_set_clear),
             1,
         )),
-        "update" => Some(builtin_func_bits(
+        "update" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.set_update,
             fn_addr!(molt_set_update_multi),
             2,
+            BIND_KIND_PACKED_BUILTIN,
         )),
-        "union" => Some(builtin_func_bits(
+        "union" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.set_union,
             fn_addr!(molt_set_union_multi),
             2,
+            BIND_KIND_PACKED_BUILTIN,
         )),
-        "intersection" => Some(builtin_func_bits(
+        "intersection" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.set_intersection,
             fn_addr!(molt_set_intersection_multi),
             2,
+            BIND_KIND_PACKED_BUILTIN,
         )),
-        "difference" => Some(builtin_func_bits(
+        "difference" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.set_difference,
             fn_addr!(molt_set_difference_multi),
             2,
+            BIND_KIND_PACKED_BUILTIN,
         )),
         "symmetric_difference" => Some(builtin_func_bits(
             _py,
@@ -263,17 +268,19 @@ pub(crate) fn set_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_set_symmetric_difference),
             2,
         )),
-        "intersection_update" => Some(builtin_func_bits(
+        "intersection_update" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.set_intersection_update,
             fn_addr!(molt_set_intersection_update_multi),
             2,
+            BIND_KIND_PACKED_BUILTIN,
         )),
-        "difference_update" => Some(builtin_func_bits(
+        "difference_update" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.set_difference_update,
             fn_addr!(molt_set_difference_update_multi),
             2,
+            BIND_KIND_PACKED_BUILTIN,
         )),
         "symmetric_difference_update" => Some(builtin_func_bits(
             _py,
@@ -329,23 +336,26 @@ pub(crate) fn set_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
 
 pub(crate) fn frozenset_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
-        "union" => Some(builtin_func_bits(
+        "union" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.frozenset_union,
             fn_addr!(molt_frozenset_union_multi),
             2,
+            BIND_KIND_PACKED_BUILTIN,
         )),
-        "intersection" => Some(builtin_func_bits(
+        "intersection" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.frozenset_intersection,
             fn_addr!(molt_frozenset_intersection_multi),
             2,
+            BIND_KIND_PACKED_BUILTIN,
         )),
-        "difference" => Some(builtin_func_bits(
+        "difference" => Some(builtin_func_bits_with_bind_kind(
             _py,
             &runtime_state(_py).method_cache.frozenset_difference,
             fn_addr!(molt_frozenset_difference_multi),
             2,
+            BIND_KIND_PACKED_BUILTIN,
         )),
         "symmetric_difference" => Some(builtin_func_bits(
             _py,
@@ -616,6 +626,13 @@ pub(crate) unsafe fn dict_table_ptr(ptr: *mut u8) -> *mut Vec<usize> {
     unsafe { *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) }
 }
 
+pub(crate) unsafe fn dict_hashes_ptr(ptr: *mut u8) -> *mut Vec<u64> {
+    unsafe {
+        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
+            as *mut *mut Vec<u64>)
+    }
+}
+
 pub(crate) unsafe fn dict_order(ptr: *mut u8) -> &'static mut Vec<u64> {
     unsafe {
         let vec_ptr = dict_order_ptr(ptr);
@@ -626,6 +643,13 @@ pub(crate) unsafe fn dict_order(ptr: *mut u8) -> &'static mut Vec<u64> {
 pub(crate) unsafe fn dict_table(ptr: *mut u8) -> &'static mut Vec<usize> {
     unsafe {
         let vec_ptr = dict_table_ptr(ptr);
+        &mut *vec_ptr
+    }
+}
+
+pub(crate) unsafe fn dict_hashes(ptr: *mut u8) -> &'static mut Vec<u64> {
+    unsafe {
+        let vec_ptr = dict_hashes_ptr(ptr);
         &mut *vec_ptr
     }
 }
@@ -642,6 +666,13 @@ pub(crate) unsafe fn set_table_ptr(ptr: *mut u8) -> *mut Vec<usize> {
     unsafe { *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) }
 }
 
+pub(crate) unsafe fn set_hashes_ptr(ptr: *mut u8) -> *mut Vec<u64> {
+    unsafe {
+        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
+            as *mut *mut Vec<u64>)
+    }
+}
+
 pub(crate) unsafe fn set_order(ptr: *mut u8) -> &'static mut Vec<u64> {
     unsafe {
         let vec_ptr = set_order_ptr(ptr);
@@ -652,6 +683,13 @@ pub(crate) unsafe fn set_order(ptr: *mut u8) -> &'static mut Vec<u64> {
 pub(crate) unsafe fn set_table(ptr: *mut u8) -> &'static mut Vec<usize> {
     unsafe {
         let vec_ptr = set_table_ptr(ptr);
+        &mut *vec_ptr
+    }
+}
+
+pub(crate) unsafe fn set_hashes(ptr: *mut u8) -> &'static mut Vec<u64> {
+    unsafe {
+        let vec_ptr = set_hashes_ptr(ptr);
         &mut *vec_ptr
     }
 }

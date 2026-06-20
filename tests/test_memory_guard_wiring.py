@@ -22,7 +22,9 @@ def _clean_subprocess_audit() -> check_subprocess_guard_coverage.SubprocessGuard
     )
 
 
-def test_memory_guard_wiring_for_harness_entrypoints_with_clean_subprocess_audit() -> None:
+def test_memory_guard_wiring_for_harness_entrypoints_with_clean_subprocess_audit() -> (
+    None
+):
     audit = check_memory_guard_wiring.audit_repo(
         subprocess_guard_audit=_clean_subprocess_audit(),
     )
@@ -325,12 +327,9 @@ def test_memory_guard_allocates_test_custody_env(
     )
     assert script_env["MOLT_PYTEST_CURRENT_TEST_FILE"].startswith(str(tmp_path))
 
-    assert (
-        "MOLT_PYTEST_CURRENT_TEST_FILE"
-        not in memory_guard.test_custody_launch_env(
-            [sys.executable, "-c", "print('not a test')"],
-            environ={},
-        )
+    assert "MOLT_PYTEST_CURRENT_TEST_FILE" not in memory_guard.test_custody_launch_env(
+        [sys.executable, "-c", "print('not a test')"],
+        environ={},
     )
 
 
@@ -368,7 +367,9 @@ def test_direct_executable_test_audit_requires_path_local_sitecustomize(
         encoding="utf-8",
     )
 
-    assert check_memory_guard_wiring._audit_direct_executable_test_guards(tmp_path) == ()
+    assert (
+        check_memory_guard_wiring._audit_direct_executable_test_guards(tmp_path) == ()
+    )
 
 
 def test_pytest_startup_detects_console_script_and_module_invocations() -> None:
@@ -614,12 +615,9 @@ def test_pytest_current_test_env_is_forced_to_canonical_root(
     installed = pytest_memory_guard_bootstrap.install_pytest_current_test_file_env()
 
     assert installed.parent == canonical_root
-    assert (
-        pytest_memory_guard_bootstrap.os.environ[
-            pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV
-        ]
-        == str(installed)
-    )
+    assert pytest_memory_guard_bootstrap.os.environ[
+        pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV
+    ] == str(installed)
 
 
 def test_pytest_current_test_xdist_writes_per_worker_sidecar(

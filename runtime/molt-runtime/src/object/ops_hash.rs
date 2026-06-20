@@ -1155,6 +1155,78 @@ pub(crate) fn hash_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
     hash_bits_signed(_py, bits) as u64
 }
 
+fn hash_descriptor_type_error(_py: &PyToken<'_>, self_bits: u64, expected: &str) -> u64 {
+    let type_label = class_name_for_error(type_of_bits(_py, self_bits));
+    let msg = format!(
+        "descriptor '__hash__' requires a '{}' object but received '{}'",
+        expected, type_label
+    );
+    raise_exception::<_>(_py, "TypeError", &msg)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_int_hash_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let obj = obj_from_bits(self_bits);
+        let value_bits =
+            if obj.is_int() || obj.is_bool() || bigint_ptr_from_bits(self_bits).is_some() {
+                self_bits
+            } else if let Some(bits) = int_subclass_value_bits_raw(self_bits) {
+                bits
+            } else {
+                return hash_descriptor_type_error(_py, self_bits, "int");
+            };
+        let hash = hash_bits_signed(_py, value_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        int_bits_from_i64(_py, hash)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_float_hash_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let obj = obj_from_bits(self_bits);
+        let value_bits = if obj.as_float().is_some()
+            || obj
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_FLOAT })
+        {
+            self_bits
+        } else if let Some(bits) = float_subclass_value_bits_raw(self_bits) {
+            bits
+        } else {
+            return hash_descriptor_type_error(_py, self_bits, "float");
+        };
+        let hash = hash_bits_signed(_py, value_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        int_bits_from_i64(_py, hash)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_str_hash_method(self_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let obj = obj_from_bits(self_bits);
+        let Some(ptr) = obj.as_ptr() else {
+            return hash_descriptor_type_error(_py, self_bits, "str");
+        };
+        unsafe {
+            if object_type_id(ptr) != TYPE_ID_STRING {
+                return hash_descriptor_type_error(_py, self_bits, "str");
+            }
+        }
+        let hash = hash_bits_signed(_py, self_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        int_bits_from_i64(_py, hash)
+    })
+}
+
 /// Operation context for an unhashable-key `TypeError`.
 ///
 /// CPython 3.14 added an operation-specific prefix to the `unhashable type`

@@ -56,6 +56,7 @@ authoritative when a design claim drifts.
 - Integrated foundation program: [docs/design/foundation/00_integrated_parallel_program.md](../design/foundation/00_integrated_parallel_program.md)
 - RC ownership and drop insertion: [docs/design/foundation/20_rc-ownership-drop-insertion.md](../design/foundation/20_rc-ownership-drop-insertion.md)
 - Codebase decomposition program: [docs/design/foundation/21_decomposition_program.md](../design/foundation/21_decomposition_program.md)
+- Parallel build, crate extraction, incremental cache, and compiler-throughput architecture: [docs/design/parallel_build_architecture.md](../design/parallel_build_architecture.md), [docs/architecture/compilation-model.md](../architecture/compilation-model.md)
 - Op-kind registry: [docs/design/foundation/25_op_kind_registry.md](../design/foundation/25_op_kind_registry.md)
 - Perceus-style borrow inference: [docs/design/foundation/27_perceus_borrow_inference.md](../design/foundation/27_perceus_borrow_inference.md)
 - ExceptionRegion ownership, shared TIR facts, shared drop artifacts, backend parity evidence, and HandlerState frontier: [docs/design/foundation/45_exception_region_ownership.md](../design/foundation/45_exception_region_ownership.md)

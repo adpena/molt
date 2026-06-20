@@ -268,6 +268,7 @@ pub fn annotate(func: &mut TirFunction, candidates: &[ReuseCandidate]) -> PassSt
         values_changed: 0,
         ops_removed: 0,
         ops_added: 0,
+        facts_changed: 0,
     };
 
     for (token_id, candidate) in candidates.iter().enumerate() {

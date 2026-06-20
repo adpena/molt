@@ -703,6 +703,7 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
             "firstlineno",
             "linetable",
             "varnames",
+            "names",
             "argcount",
             "posonlyargcount",
             "kwonlyargcount",

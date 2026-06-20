@@ -1,8 +1,12 @@
 # Friend Benchmarks
 
-Last updated: 2026-06-12
+Last updated: 2026-06-20
 
 Friend-owned suites are configured by `bench/friends/manifest.toml` and executed with `tools/bench_friends.py`.
+Manifest commands use `{python}` for the harness/base interpreter, especially
+inside isolated friend commands such as `uv run --python {python}`. Molt CLI
+runners use `{project_python}` so the repo virtualenv dependencies remain
+available under the harness `PYTHONNOUSERSITE=1` environment.
 
 ## Run
 
@@ -14,7 +18,7 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
 
 ## Current State
 
-- The published friend summary at `docs/benchmarks/friend_summary.md` was generated on 2026-02-12.
+- The published friend summary at `docs/benchmarks/friend_summary.md` was generated on 2026-06-16.
 - All suites present in that February snapshot were skipped due to unavailable runnable lanes or adapter requirements.
 - Treat that published summary as stale until a fresh run updates `docs/benchmarks/friend_summary.md`; later local runs, including enabled `tinygrad_off_the_shelf` evidence, remain local-only until regenerated with `tools/bench_friends.py --update-doc`.
 - `tinygrad_off_the_shelf` is the canonical upstream tinygrad compatibility/perf
@@ -27,7 +31,7 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   and bytecode-write ban while staying on
   `tools/tinygrad_off_shelf_adapter.py`, which is only a public-API workload
   driver. The Molt runner is executable by default with the full-stdlib
-  static-package command. Current local evidence reaches the backend daemon and
+  static-package command. Earlier local evidence reached the backend daemon and
   then trips the process RSS guard (`molt-backend --daemon` at 12.005 GB after
   435.5s; summary `tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`),
   proving the blocker is backend compile memory rather than manifest skip or
@@ -53,13 +57,30 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   Molt-owned `molt-backend --daemon` process group when that process reached the
   12 GB RSS cap. Native application-object batching now consumes the same
   `MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching. Daemon-off proof
-  now builds the full-stdlib adapter and reaches runtime execution under guard;
-  after the importlib bootstrap export fix and list-clear detach proof, the
-  current Molt runtime blocker remains `molt fatal: invalid object header before
-  dec_ref` at 1.985 GB peak RSS
-  (`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
-  Daemon-enabled runs still need daemon outcome/log custody after the compile
-  memory split.
+  now builds the full-stdlib adapter and reaches upstream tinygrad runtime
+  execution under guard. The older 1.985 GB invalid-header receipt is
+  historical after the importlib bootstrap export, list-clear detach,
+  namedtuple return-boundary ownership, defaultdict factory-handle ownership,
+  and deque retained-handle ownership fixes. Fresh 2026-06-20 guarded evidence
+  now also fixes the post-JSON `argparse.Namespace` return-cleanup double drop:
+  direct rebuilt-adapter evidence covered the then-four default public-API
+  workloads. The current CPython adapter source now enumerates five default
+  public-API workloads, including `attention_core`, and the pinned upstream
+  CPython probe exits cleanly for all five. The official
+  `tinygrad_off_the_shelf` Molt friend runner with clean pinned source custody
+  now builds the full-stdlib adapter and fails
+  closed inside upstream tinygrad's lazy pattern compiler at
+  `tinygrad/uop/upat.py:167`, where `upat_compile` calls
+  `exec(code_str, globs, namespace)`. This is the current blocker because
+  unrestricted `exec()` is outside Molt's verified AOT subset; artifact:
+  `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`. A pinned
+  source-custody CPython probe of `attention_core` with `UPAT_COMPILE=0`
+  returned 1 before Molt was involved: upstream tinygrad's interpreted matcher
+  raised `NameError: name 'do_substitute' is not defined` from
+  `tinygrad/codegen/simplify.py:57` via `tinygrad/uop/ops.py:1346`
+  `universal_match`. `UPAT_COMPILE=0` is therefore not a usable Molt diagnostic
+  lane for this pinned attention workload and must not be used as completion
+  evidence.
 - Fresh runs write ignored local artifacts under `bench/results/friends/`.
   Git checkout caches live under `bench/friends/repos/`; both roots are owned by
   the canonical cleanup allowlist.

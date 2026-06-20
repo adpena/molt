@@ -33,6 +33,16 @@ fn builtin_int_bits_for_gil() -> Option<u64> {
     }
 }
 
+fn builtin_float_bits_for_gil() -> Option<u64> {
+    let state = runtime_state_for_gil()?;
+    let ptr = state.builtin_classes.load(AtomicOrdering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { (*ptr).float })
+    }
+}
+
 fn is_int_subclass_bits(class_bits: u64) -> bool {
     let Some(int_bits) = builtin_int_bits_for_gil() else {
         return false;
@@ -41,6 +51,16 @@ fn is_int_subclass_bits(class_bits: u64) -> bool {
         return true;
     }
     class_mro_vec(class_bits).contains(&int_bits)
+}
+
+fn is_float_subclass_bits(class_bits: u64) -> bool {
+    let Some(float_bits) = builtin_float_bits_for_gil() else {
+        return false;
+    };
+    if class_bits == float_bits {
+        return true;
+    }
+    class_mro_vec(class_bits).contains(&float_bits)
 }
 
 pub(crate) fn int_subclass_value_bits_raw(obj_bits: u64) -> Option<u64> {
@@ -52,6 +72,21 @@ pub(crate) fn int_subclass_value_bits_raw(obj_bits: u64) -> Option<u64> {
         }
         let class_bits = object_class_bits(ptr);
         if class_bits == 0 || !is_int_subclass_bits(class_bits) {
+            return None;
+        }
+        Some(*(ptr as *const u64))
+    }
+}
+
+pub(crate) fn float_subclass_value_bits_raw(obj_bits: u64) -> Option<u64> {
+    let obj = obj_from_bits(obj_bits);
+    let ptr = obj.as_ptr()?;
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_OBJECT {
+            return None;
+        }
+        let class_bits = object_class_bits(ptr);
+        if class_bits == 0 || !is_float_subclass_bits(class_bits) {
             return None;
         }
         Some(*(ptr as *const u64))
@@ -583,6 +618,9 @@ pub(crate) fn to_f64(obj: MoltObject) -> Option<f64> {
     }
     if let Some(ptr) = bigint_ptr_from_bits(obj.bits()) {
         return unsafe { bigint_ref(ptr) }.to_f64();
+    }
+    if let Some(bits) = float_subclass_value_bits_raw(obj.bits()) {
+        return as_float_extended(obj_from_bits(bits));
     }
     None
 }

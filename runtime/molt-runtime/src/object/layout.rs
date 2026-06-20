@@ -1,7 +1,8 @@
 use crate::{
-    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_STRING, alloc_code_obj, alloc_string, alloc_tuple,
-    dec_ref_bits, dict_get_in_place, fn_ptr_code_set, inc_ref_bits, intern_static_name,
-    obj_from_bits, object_type_id, runtime_state,
+    MoltObject, PyToken, TYPE_ID_CODE, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_code_obj,
+    alloc_string, alloc_tuple, builtin_classes_if_initialized, dec_ref_bits, dict_get_in_place,
+    fn_ptr_code_set, inc_ref_bits, intern_static_name, obj_from_bits, object_class_bits,
+    object_type_id, runtime_state,
 };
 
 pub(crate) unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
@@ -912,6 +913,17 @@ pub(crate) unsafe fn function_set_code_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
             *slot = bits;
         }
         let fn_ptr = function_fn_ptr(ptr);
+        if let Some(code_ptr) = obj_from_bits(bits).as_ptr()
+            && object_type_id(code_ptr) == TYPE_ID_CODE
+        {
+            code_set_callable_identity_if_empty(
+                code_ptr,
+                fn_ptr,
+                function_trampoline_ptr(ptr),
+                function_arity(ptr),
+            );
+            code_set_signature_bits_from_function_attrs(_py, code_ptr, ptr);
+        }
         fn_ptr_code_set(_py, fn_ptr, bits);
         if old_bits != bits && old_bits != 0 {
             dec_ref_bits(_py, old_bits);
@@ -972,6 +984,16 @@ pub(crate) unsafe fn function_bump_defaults_version(ptr: *mut u8) {
     }
 }
 
+pub(crate) unsafe fn function_globals_override_enabled(ptr: *mut u8) -> bool {
+    unsafe { *(ptr.add(11 * std::mem::size_of::<u64>()) as *const u64) != 0 }
+}
+
+pub(crate) unsafe fn function_set_globals_override_enabled(ptr: *mut u8, enabled: bool) {
+    unsafe {
+        *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = u64::from(enabled);
+    }
+}
+
 pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut u8) -> u64 {
     unsafe {
         let existing = function_code_bits(func_ptr);
@@ -1010,6 +1032,16 @@ pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut
             return MoltObject::none().bits();
         }
         let varnames_bits = MoltObject::from_ptr(varnames_ptr).bits();
+        let names_ptr = alloc_tuple(_py, &[]);
+        if names_ptr.is_null() {
+            dec_ref_bits(_py, varnames_bits);
+            dec_ref_bits(_py, filename_bits);
+            if owned_name {
+                dec_ref_bits(_py, name_bits);
+            }
+            return MoltObject::none().bits();
+        }
+        let names_bits = MoltObject::from_ptr(names_ptr).bits();
         let code_ptr = alloc_code_obj(
             _py,
             filename_bits,
@@ -1017,10 +1049,12 @@ pub(crate) unsafe fn ensure_function_code_bits(_py: &PyToken<'_>, func_ptr: *mut
             0,
             MoltObject::none().bits(),
             varnames_bits,
+            names_bits,
             0,
             0,
             0,
         );
+        dec_ref_bits(_py, names_bits);
         dec_ref_bits(_py, varnames_bits);
         dec_ref_bits(_py, filename_bits);
         if owned_name {
@@ -1056,16 +1090,169 @@ pub(crate) unsafe fn code_varnames_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(4 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
-pub(crate) unsafe fn code_argcount(ptr: *mut u8) -> u64 {
+pub(crate) unsafe fn code_names_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(5 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
-pub(crate) unsafe fn code_posonlyargcount(ptr: *mut u8) -> u64 {
+pub(crate) unsafe fn code_argcount(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(6 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
-pub(crate) unsafe fn code_kwonlyargcount(ptr: *mut u8) -> u64 {
+pub(crate) unsafe fn code_posonlyargcount(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_kwonlyargcount(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(8 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_callable_fn_ptr(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(9 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_callable_trampoline_ptr(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(10 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_callable_arity(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(11 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_arg_names_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(12 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_signature_posonly_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(13 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_kwonly_names_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(14 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_vararg_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(15 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_varkw_bits(ptr: *mut u8) -> u64 {
+    unsafe { *(ptr.add(16 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+pub(crate) unsafe fn code_set_signature_bits(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+    arg_names_bits: u64,
+    posonly_bits: u64,
+    kwonly_bits: u64,
+    vararg_bits: u64,
+    varkw_bits: u64,
+) {
+    unsafe {
+        crate::gil_assert();
+        for (idx, bits) in [
+            (12usize, arg_names_bits),
+            (13usize, posonly_bits),
+            (14usize, kwonly_bits),
+            (15usize, vararg_bits),
+            (16usize, varkw_bits),
+        ] {
+            let slot = ptr.add(idx * std::mem::size_of::<u64>()) as *mut u64;
+            let old_bits = *slot;
+            if old_bits == bits {
+                continue;
+            }
+            if bits != 0 {
+                inc_ref_bits(_py, bits);
+            }
+            *slot = bits;
+            if old_bits != 0 {
+                dec_ref_bits(_py, old_bits);
+            }
+        }
+    }
+}
+
+unsafe fn code_set_signature_bits_from_function_attrs(
+    _py: &PyToken<'_>,
+    code_ptr: *mut u8,
+    func_ptr: *mut u8,
+) {
+    unsafe {
+        if let Some(classes) = builtin_classes_if_initialized(_py)
+            && object_class_bits(func_ptr) == classes.builtin_function_or_method
+        {
+            return;
+        }
+
+        let dict_bits = function_dict_bits(func_ptr);
+        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+            return;
+        };
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return;
+        }
+
+        let interned = &runtime_state(_py).interned;
+        let arg_names_attr =
+            intern_static_name(_py, &interned.molt_arg_names, b"__molt_arg_names__");
+        let Some(arg_names_bits) = dict_get_in_place(_py, dict_ptr, arg_names_attr) else {
+            return;
+        };
+        let Some(arg_names_ptr) = obj_from_bits(arg_names_bits).as_ptr() else {
+            return;
+        };
+        if object_type_id(arg_names_ptr) != TYPE_ID_TUPLE {
+            return;
+        }
+
+        let kwonly_attr =
+            intern_static_name(_py, &interned.molt_kwonly_names, b"__molt_kwonly_names__");
+        let Some(kwonly_bits) = dict_get_in_place(_py, dict_ptr, kwonly_attr) else {
+            return;
+        };
+        let Some(kwonly_ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
+            return;
+        };
+        if object_type_id(kwonly_ptr) != TYPE_ID_TUPLE {
+            return;
+        }
+
+        let posonly_attr = intern_static_name(_py, &interned.molt_posonly, b"__molt_posonly__");
+        let posonly_bits = dict_get_in_place(_py, dict_ptr, posonly_attr)
+            .unwrap_or_else(|| MoltObject::from_int(0).bits());
+        let vararg_attr = intern_static_name(_py, &interned.molt_vararg, b"__molt_vararg__");
+        let vararg_bits = dict_get_in_place(_py, dict_ptr, vararg_attr)
+            .unwrap_or_else(|| MoltObject::none().bits());
+        let varkw_attr = intern_static_name(_py, &interned.molt_varkw, b"__molt_varkw__");
+        let varkw_bits = dict_get_in_place(_py, dict_ptr, varkw_attr)
+            .unwrap_or_else(|| MoltObject::none().bits());
+
+        code_set_signature_bits(
+            _py,
+            code_ptr,
+            arg_names_bits,
+            posonly_bits,
+            kwonly_bits,
+            vararg_bits,
+            varkw_bits,
+        );
+    }
+}
+
+unsafe fn code_set_callable_identity_if_empty(
+    ptr: *mut u8,
+    fn_ptr: u64,
+    trampoline_ptr: u64,
+    arity: u64,
+) {
+    unsafe {
+        if code_callable_fn_ptr(ptr) != 0 || fn_ptr == 0 {
+            return;
+        }
+        *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = fn_ptr;
+        *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = trampoline_ptr;
+        *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = arity;
+    }
 }
 
 pub(crate) unsafe fn bound_method_func_bits(ptr: *mut u8) -> u64 {
@@ -1343,6 +1530,7 @@ mod tests {
                 0,
                 0,
                 0,
+                0,
             );
             dec_ref_bits(_py, filename_bits);
             dec_ref_bits(_py, name_bits);
@@ -1386,6 +1574,7 @@ mod tests {
                 0,
                 0,
                 0,
+                0,
             );
             dec_ref_bits(_py, filename_a_bits);
             dec_ref_bits(_py, name_a_bits);
@@ -1402,6 +1591,7 @@ mod tests {
                 name_b_bits,
                 9,
                 MoltObject::none().bits(),
+                0,
                 0,
                 0,
                 0,

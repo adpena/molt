@@ -66,6 +66,7 @@ define_itertools_runtime_state! {
     takewhile_class,
     tee_iter_class,
     zip_longest_class,
+    repeat_new_fn,
     chain_next_fn,
     islice_next_fn,
     repeat_next_fn,
@@ -119,6 +120,18 @@ fn builtin_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64, arity: u6
             MoltObject::from_ptr(ptr).bits()
         }
     })
+}
+
+fn builtin_func_bits_with_defaults_tuple(
+    _py: &PyToken<'_>,
+    slot: &AtomicU64,
+    fn_ptr: u64,
+    arity: u64,
+    defaults: &[u64],
+) -> u64 {
+    crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
+        _py, slot, fn_ptr, arity, defaults,
+    )
 }
 
 fn kwd_mark_bits(_py: &PyToken<'_>) -> u64 {
@@ -845,14 +858,47 @@ fn islice_class(_py: &PyToken<'_>) -> u64 {
 
 fn repeat_class(_py: &PyToken<'_>) -> u64 {
     let state = itertools_state(_py);
-    itertools_class(
+    let class_bits = itertools_class(
         _py,
         &state.repeat_class,
         "repeat",
         24,
         &state.repeat_next_fn,
         crate::molt_itertools_repeat_next as *const () as usize as u64,
+    );
+    install_repeat_constructor(_py, class_bits);
+    class_bits
+}
+
+fn repeat_new_bits(_py: &PyToken<'_>) -> u64 {
+    builtin_func_bits_with_defaults_tuple(
+        _py,
+        &itertools_state(_py).repeat_new_fn,
+        crate::molt_itertools_repeat_new as *const () as usize as u64,
+        3,
+        &[MoltObject::none().bits()],
     )
+}
+
+fn install_repeat_constructor(_py: &PyToken<'_>, class_bits: u64) {
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return;
+    };
+    let dict_bits = unsafe { class_dict_bits(class_ptr) };
+    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        return;
+    };
+    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
+        return;
+    }
+    let new_name = intern_static_name(
+        _py,
+        &crate::runtime_state(_py).interned.new_name,
+        b"__new__",
+    );
+    unsafe {
+        dict_set_in_place(_py, dict_ptr, new_name, repeat_new_bits(_py));
+    }
 }
 
 fn count_class(_py: &PyToken<'_>) -> u64 {
@@ -1331,32 +1377,44 @@ pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_repeat(obj_bits: u64, times_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let times = if obj_from_bits(times_bits).is_none() {
-            -1
-        } else {
-            let val = index_i64_from_obj(_py, times_bits, "repeat() arg 2 must be int");
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if val < 0 { 0 } else { val }
-        };
-        let class_bits = repeat_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        if obj_from_bits(inst_bits).is_none() {
+    crate::with_gil_entry_nopanic!(_py, { itertools_repeat_impl(_py, obj_bits, times_bits) })
+}
+
+fn itertools_repeat_impl(_py: &PyToken<'_>, obj_bits: u64, times_bits: u64) -> u64 {
+    let times = if obj_from_bits(times_bits).is_none() {
+        -1
+    } else {
+        let val = index_i64_from_obj(_py, times_bits, "repeat() arg 2 must be int");
+        if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
-        unsafe {
-            repeat_set_obj_bits(inst_ptr, obj_bits);
-            repeat_set_times(inst_ptr, times);
-        }
-        inc_ref_bits(_py, obj_bits);
-        inst_bits
-    })
+        if val < 0 { 0 } else { val }
+    };
+    let class_bits = repeat_class(_py);
+    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
+    if obj_from_bits(inst_bits).is_none() {
+        return MoltObject::none().bits();
+    }
+    let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
+    unsafe {
+        repeat_set_obj_bits(inst_ptr, obj_bits);
+        repeat_set_times(inst_ptr, times);
+    }
+    inc_ref_bits(_py, obj_bits);
+    inst_bits
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_repeat_new(_cls_bits: u64, obj_bits: u64, times_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { itertools_repeat_impl(_py, obj_bits, times_bits) })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_itertools_repeat_type() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { repeat_class(_py) })
 }
 
 #[unsafe(no_mangle)]
@@ -3223,7 +3281,7 @@ pub(crate) fn itertools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
 mod tests {
     use super::{
         ITERTOOLS_RUNTIME_SLOT_COUNT, islice_advance_idx, islice_advance_next_idx,
-        itertools_clear_state,
+        itertools_clear_state, molt_itertools_repeat_type,
     };
     use crate::{MoltObject, alloc_string, runtime_state};
     use std::collections::HashSet;
@@ -3308,6 +3366,25 @@ mod tests {
             assert_eq!(state.itertools.chain_next_fn.load(Ordering::Acquire), 0);
             assert_eq!(state.itertools.iter_self_fn.load(Ordering::Acquire), 0);
             assert_eq!(state.itertools.kwd_mark_bits.load(Ordering::Acquire), 0);
+        });
+    }
+
+    #[test]
+    fn repeat_type_installs_constructor_in_runtime_state() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            itertools_clear_state(_py, state);
+
+            let class_bits = molt_itertools_repeat_type();
+
+            assert!(!crate::obj_from_bits(class_bits).is_none());
+            assert_eq!(
+                state.itertools.repeat_class.load(Ordering::Acquire),
+                class_bits
+            );
+            assert_ne!(state.itertools.repeat_new_fn.load(Ordering::Acquire), 0);
+            assert_ne!(state.itertools.repeat_next_fn.load(Ordering::Acquire), 0);
         });
     }
 

@@ -471,6 +471,11 @@ class SerializationMixin(_MixinBase):
                 f"Control-flow op {op.kind} requires int label, got {raw!r} ({type(raw).__name__})"
             )
 
+        def carry_bound_local(op: MoltOp, entry: dict[str, Any]) -> dict[str, Any]:
+            if (op.metadata or {}).get("bound_local"):
+                entry["bound_local"] = True
+            return entry
+
         # The midend LICM pass hoists CONST_NONE ops out of loops, and the
         # CSE then merges them with earlier CONST_NONE ops in the pre-loop
         # block.  This creates an alias (e.g. v187 -> v182) but the alias
@@ -1080,7 +1085,7 @@ class SerializationMixin(_MixinBase):
                     invoke_op["s_value"] = lane
                 json_ops.append(invoke_op)
             elif op.kind == "CALL_BIND":
-                entry = {
+                entry: dict[str, Any] = {
                     "kind": "call_bind",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,
@@ -2576,9 +2581,7 @@ class SerializationMixin(_MixinBase):
                 # Named-local fact (#58): a container literal bound to a local
                 # carries the Python scope boundary for any finalizer-bearing
                 # element it absorbs.
-                if (op.metadata or {}).get("bound_local"):
-                    _list_op["bound_local"] = True
-                json_ops.append(_list_op)
+                json_ops.append(carry_bound_local(op, _list_op))
             elif op.kind == "LIST_INT_NEW":
                 # Specialized flat i64 list: args are [count, fill_value]
                 json_ops.append(
@@ -2620,9 +2623,7 @@ class SerializationMixin(_MixinBase):
                     "out": op.result.name,
                     "type_hint": "tuple",
                 }
-                if (op.metadata or {}).get("bound_local"):
-                    _tuple_op["bound_local"] = True
-                json_ops.append(_tuple_op)
+                json_ops.append(carry_bound_local(op, _tuple_op))
             elif op.kind == "LIST_APPEND":
                 json_ops.append(
                     {
@@ -2824,12 +2825,15 @@ class SerializationMixin(_MixinBase):
                 )
             elif op.kind == "DICT_NEW":
                 json_ops.append(
-                    {
-                        "kind": "dict_new",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                        "type_hint": "dict",
-                    }
+                    carry_bound_local(
+                        op,
+                        {
+                            "kind": "dict_new",
+                            "args": [arg.name for arg in op.args],
+                            "out": op.result.name,
+                            "type_hint": "dict",
+                        },
+                    )
                 )
             elif op.kind == "DICT_FROM_OBJ":
                 json_ops.append(
@@ -2841,21 +2845,27 @@ class SerializationMixin(_MixinBase):
                 )
             elif op.kind == "SET_NEW":
                 json_ops.append(
-                    {
-                        "kind": "set_new",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                        "type_hint": "set",
-                    }
+                    carry_bound_local(
+                        op,
+                        {
+                            "kind": "set_new",
+                            "args": [arg.name for arg in op.args],
+                            "out": op.result.name,
+                            "type_hint": "set",
+                        },
+                    )
                 )
             elif op.kind == "FROZENSET_NEW":
                 json_ops.append(
-                    {
-                        "kind": "frozenset_new",
-                        "args": [arg.name for arg in op.args],
-                        "out": op.result.name,
-                        "type_hint": "frozenset",
-                    }
+                    carry_bound_local(
+                        op,
+                        {
+                            "kind": "frozenset_new",
+                            "args": [arg.name for arg in op.args],
+                            "out": op.result.name,
+                            "type_hint": "frozenset",
+                        },
+                    )
                 )
             elif op.kind == "DICT_GET":
                 json_ops.append(
@@ -4000,6 +4010,10 @@ class SerializationMixin(_MixinBase):
                 if emit_function_frame:
                     json_ops.append({"kind": "trace_exit"})
                 json_ops.append({"kind": "ret", "var": op.args[0].name})
+            elif op.kind == "ret_void":
+                if emit_function_frame:
+                    json_ops.append({"kind": "trace_exit"})
+                json_ops.append({"kind": "ret_void"})
             elif op.kind == "ALLOC_TASK":
                 poll_func = op.args[0]
                 size = op.args[1]
@@ -4323,7 +4337,7 @@ class SerializationMixin(_MixinBase):
             ):
                 json_ops.append({"kind": op.kind, "out": op.result.name})
 
-        if ops and ops[-1].kind != "ret":
+        if ops and ops[-1].kind not in {"ret", "ret_void"}:
             if emit_function_frame:
                 json_ops.append({"kind": "trace_exit"})
             json_ops.append({"kind": "ret_void"})

@@ -1199,7 +1199,9 @@ def test_difftest_toolchain_env_roots_frontend_and_backend_together(drv, tmp_pat
     assert env["MOLT_SESSION_ID"] == "sess-x"
 
 
-def test_difftest_toolchain_env_preserves_existing_pythonpath(drv, tmp_path, monkeypatch):
+def test_difftest_toolchain_env_preserves_existing_pythonpath(
+    drv, tmp_path, monkeypatch
+):
     monkeypatch.setenv("PYTHONPATH", "/pre/existing")
     env = drv._difftest_toolchain_env(tmp_path, "s", None)
     parts = env["PYTHONPATH"].split(os.pathsep)
@@ -1238,8 +1240,6 @@ def test_difftest_refuses_missing_program(drv):
     """A missing program file refuses before any build (root is the real repo
     so the root check passes and the program check fires)."""
     with pytest.raises(drv.DriverError) as exc:
-        drv.cmd_difftest(
-            _difftest_ns(drv, REPO_ROOT / "does-not-exist.py", REPO_ROOT)
-        )
+        drv.cmd_difftest(_difftest_ns(drv, REPO_ROOT / "does-not-exist.py", REPO_ROOT))
     assert exc.value.code == drv.EXIT_USAGE
     assert "not found" in str(exc.value)

@@ -21,6 +21,7 @@ fn email_quopri_alloc_str(_py: &crate::PyToken<'_>, value: &str) -> u64 {
     }
 }
 use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::builtins::callable::is_callable_impl;
 use crate::builtins::exceptions::{
     molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
 };
@@ -34,7 +35,10 @@ use crate::builtins::types::{
     molt_types_resolve_bases, molt_types_simplenamespace_init,
 };
 use crate::object::layout::{
-    function_defaults_version, function_set_call_target_ptr, function_set_code_bits,
+    code_arg_names_bits, code_callable_arity, code_callable_fn_ptr, code_callable_trampoline_ptr,
+    code_kwonly_names_bits, code_name_bits, code_set_signature_bits, code_signature_posonly_bits,
+    code_vararg_bits, code_varkw_bits, function_defaults_version, function_set_call_target_ptr,
+    function_set_code_bits,
 };
 use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
 use molt_obj_model::MoltObject;
@@ -53,16 +57,16 @@ use super::types::cell_class;
 use crate::builtins::numbers::index_i64_with_overflow;
 use crate::builtins::platform::env_state_get;
 use crate::{
-    TYPE_ID_BOUND_METHOD, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST, TYPE_ID_MODULE,
-    TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_bytes, alloc_code_obj,
-    alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity, alloc_string, alloc_tuple,
-    attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes, call_callable1,
-    call_callable2, dec_ref_bits, dict_get_in_place, ensure_function_code_bits, exception_pending,
-    function_dict_bits, function_set_closure_bits, function_set_trampoline_ptr, inc_ref_bits,
-    is_truthy, missing_bits, module_dict_bits, molt_getattr_builtin, molt_getitem_method,
-    molt_iter, molt_iter_next, molt_trace_enter_slot, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned,
-    to_i64, type_name,
+    PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_CODE, TYPE_ID_DICT, TYPE_ID_FUNCTION, TYPE_ID_LIST,
+    TYPE_ID_MODULE, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bound_method_obj, alloc_bytes,
+    alloc_code_obj, alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity,
+    alloc_string, alloc_tuple, attr_name_bits_from_bytes, bound_method_func_bits, builtin_classes,
+    call_callable1, call_callable2, dec_ref_bits, dict_get_in_place, ensure_function_code_bits,
+    exception_pending, function_globals_bits, function_set_closure_bits, function_set_globals_bits,
+    function_set_globals_override_enabled, function_set_trampoline_ptr, inc_ref_bits, is_truthy,
+    missing_bits, module_dict_bits, molt_getattr_builtin, molt_getitem_method, molt_iter,
+    molt_iter_next, molt_trace_enter_slot, obj_from_bits, object_class_bits, object_set_class_bits,
+    object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_i64, type_name,
 };
 use memchr::{memchr, memmem};
 
@@ -3768,6 +3772,13 @@ fn codeobj_from_filename_bits(_py: &crate::PyToken<'_>, filename_bits: u64) -> u
         return MoltObject::none().bits();
     }
     let varnames_bits = MoltObject::from_ptr(varnames_ptr).bits();
+    let names_ptr = alloc_tuple(_py, &[]);
+    if names_ptr.is_null() {
+        dec_ref_bits(_py, varnames_bits);
+        dec_ref_bits(_py, name_bits);
+        return MoltObject::none().bits();
+    }
+    let names_bits = MoltObject::from_ptr(names_ptr).bits();
     let code_ptr = alloc_code_obj(
         _py,
         filename_bits,
@@ -3775,10 +3786,12 @@ fn codeobj_from_filename_bits(_py: &crate::PyToken<'_>, filename_bits: u64) -> u
         1,
         MoltObject::none().bits(),
         varnames_bits,
+        names_bits,
         0,
         0,
         0,
     );
+    dec_ref_bits(_py, names_bits);
     dec_ref_bits(_py, varnames_bits);
     dec_ref_bits(_py, name_bits);
     if code_ptr.is_null() {
@@ -4784,6 +4797,162 @@ pub extern "C" fn molt_func_new_closure(
     })
 }
 
+pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]) -> u64 {
+    unsafe {
+        if args.len() < 2 || args.len() > 5 {
+            let msg = format!("function expected 2 to 5 arguments, got {}", args.len());
+            return raise_exception::<_>(_py, "TypeError", &msg);
+        }
+        let Some(code_ptr) = obj_from_bits(args[0]).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "arg 1 (code) must be code");
+        };
+        if object_type_id(code_ptr) != TYPE_ID_CODE {
+            return raise_exception::<_>(_py, "TypeError", "arg 1 (code) must be code");
+        }
+        let Some(globals_ptr) = obj_from_bits(args[1]).as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "arg 2 (globals) must be dict");
+        };
+        if object_type_id(globals_ptr) != TYPE_ID_DICT {
+            return raise_exception::<_>(_py, "TypeError", "arg 2 (globals) must be dict");
+        }
+
+        let none_bits = MoltObject::none().bits();
+        let name_bits = match args.get(2).copied() {
+            Some(bits) if !obj_from_bits(bits).is_none() => {
+                let Some(name_ptr) = obj_from_bits(bits).as_ptr() else {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "arg 3 (name) must be None or string",
+                    );
+                };
+                if object_type_id(name_ptr) != TYPE_ID_STRING {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "arg 3 (name) must be None or string",
+                    );
+                }
+                bits
+            }
+            _ => code_name_bits(code_ptr),
+        };
+
+        let defaults_bits = args.get(3).copied().unwrap_or(none_bits);
+        if !obj_from_bits(defaults_bits).is_none() {
+            let Some(defaults_ptr) = obj_from_bits(defaults_bits).as_ptr() else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "arg 4 (defaults) must be None or tuple",
+                );
+            };
+            if object_type_id(defaults_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "arg 4 (defaults) must be None or tuple",
+                );
+            }
+        }
+
+        if let Some(closure_bits) = args.get(4).copied()
+            && !obj_from_bits(closure_bits).is_none()
+        {
+            let Some(closure_ptr) = obj_from_bits(closure_bits).as_ptr() else {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "arg 5 (closure) must be None or tuple",
+                );
+            };
+            if object_type_id(closure_ptr) != TYPE_ID_TUPLE {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "arg 5 (closure) must be None or tuple",
+                );
+            }
+            if !seq_vec_ref(closure_ptr).is_empty() {
+                return raise_exception::<_>(
+                    _py,
+                    "NotImplementedError",
+                    "FunctionType closure cells require compiled freevar lowering",
+                );
+            }
+        }
+
+        let fn_ptr = code_callable_fn_ptr(code_ptr);
+        if fn_ptr == 0 {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "code object has no Molt callable target",
+            );
+        }
+        let arity = code_callable_arity(code_ptr);
+        let func_ptr = alloc_function_obj(_py, fn_ptr, arity);
+        if func_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        init_runtime_callable_function_obj(
+            func_ptr,
+            fn_ptr,
+            fn_ptr,
+            code_callable_trampoline_ptr(code_ptr),
+        );
+        function_set_globals_bits(_py, func_ptr, args[1]);
+        function_set_globals_override_enabled(func_ptr, true);
+        function_set_code_bits(_py, func_ptr, args[0]);
+
+        let set_attr = |name: &'static [u8], value_bits: u64| -> Result<(), u64> {
+            let Some(attr_bits) = attr_name_bits_from_bytes(_py, name) else {
+                return Err(MoltObject::none().bits());
+            };
+            crate::call::class_init::function_set_attr_bits(_py, func_ptr, attr_bits, value_bits);
+            dec_ref_bits(_py, attr_bits);
+            if exception_pending(_py) {
+                return Err(MoltObject::none().bits());
+            }
+            Ok(())
+        };
+
+        let module_bits = {
+            let Some(module_name_bits) = attr_name_bits_from_bytes(_py, b"__name__") else {
+                return MoltObject::none().bits();
+            };
+            let bits = dict_get_in_place(_py, globals_ptr, module_name_bits).unwrap_or(none_bits);
+            dec_ref_bits(_py, module_name_bits);
+            bits
+        };
+
+        let arg_names_bits = code_arg_names_bits(code_ptr);
+        let posonly_bits = code_signature_posonly_bits(code_ptr);
+        let kwonly_bits = code_kwonly_names_bits(code_ptr);
+        let vararg_bits = code_vararg_bits(code_ptr);
+        let varkw_bits = code_varkw_bits(code_ptr);
+
+        if set_attr(b"__name__", name_bits).is_err()
+            || set_attr(b"__qualname__", name_bits).is_err()
+            || set_attr(b"__module__", module_bits).is_err()
+            || set_attr(b"__molt_arg_names__", arg_names_bits).is_err()
+            || set_attr(b"__molt_posonly__", posonly_bits).is_err()
+            || set_attr(b"__molt_kwonly_names__", kwonly_bits).is_err()
+            || set_attr(b"__molt_vararg__", vararg_bits).is_err()
+            || set_attr(b"__molt_varkw__", varkw_bits).is_err()
+            || set_attr(b"__defaults__", defaults_bits).is_err()
+            || set_attr(b"__kwdefaults__", none_bits).is_err()
+            || set_attr(b"__doc__", none_bits).is_err()
+        {
+            return MoltObject::none().bits();
+        }
+
+        crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
+
+        MoltObject::from_ptr(func_ptr).bits()
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_function_set_builtin(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -4866,6 +5035,10 @@ pub extern "C" fn molt_function_init_metadata(
             return MoltObject::none().bits();
         }
 
+        unsafe {
+            function_set_globals_from_module_name(_py, func_ptr, module_bits);
+        }
+
         if !obj_from_bits(code_bits).is_none() {
             unsafe {
                 function_set_code_bits(_py, func_ptr, code_bits);
@@ -4873,12 +5046,31 @@ pub extern "C" fn molt_function_init_metadata(
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
+            if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
+                unsafe {
+                    if object_type_id(code_ptr) == TYPE_ID_CODE {
+                        code_set_signature_bits(
+                            _py,
+                            code_ptr,
+                            arg_names_bits,
+                            posonly_bits,
+                            kwonly_bits,
+                            vararg_bits,
+                            varkw_bits,
+                        );
+                    }
+                }
+            }
         }
 
         if !obj_from_bits(bind_kind_bits).is_none()
             && set_attr(b"__molt_bind_kind__", bind_kind_bits).is_err()
         {
             return MoltObject::none().bits();
+        }
+
+        unsafe {
+            crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
         }
 
         MoltObject::none().bits()
@@ -4958,6 +5150,10 @@ pub extern "C" fn molt_function_init_metadata_packed(
             return MoltObject::none().bits();
         }
 
+        unsafe {
+            function_set_globals_from_module_name(_py, func_ptr, module_bits);
+        }
+
         if !obj_from_bits(code_bits).is_none() {
             unsafe {
                 function_set_code_bits(_py, func_ptr, code_bits);
@@ -4973,8 +5169,39 @@ pub extern "C" fn molt_function_init_metadata_packed(
             return MoltObject::none().bits();
         }
 
+        unsafe {
+            crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
+        }
+
         MoltObject::none().bits()
     })
+}
+
+unsafe fn function_set_globals_from_module_name(
+    _py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    module_bits: u64,
+) {
+    unsafe {
+        let Some(module_name) = string_obj_to_owned(obj_from_bits(module_bits)) else {
+            return;
+        };
+        let module_bits = {
+            let cache = crate::builtins::exceptions::internals::module_cache(_py);
+            let guard = cache.lock().unwrap();
+            guard.get(&module_name).copied().unwrap_or(0)
+        };
+        let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
+            return;
+        };
+        if object_type_id(module_ptr) != TYPE_ID_MODULE {
+            return;
+        }
+        let globals_bits = module_dict_bits(module_ptr);
+        if globals_bits != 0 && !obj_from_bits(globals_bits).is_none() {
+            function_set_globals_bits(_py, func_ptr, globals_bits);
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -5013,6 +5240,10 @@ pub extern "C" fn molt_function_set_defaults(
             || set_attr(b"__kwdefaults__", kwdefaults_bits).is_err()
         {
             return MoltObject::none().bits();
+        }
+
+        unsafe {
+            crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
         }
 
         MoltObject::none().bits()
@@ -5075,49 +5306,11 @@ pub extern "C" fn molt_function_get_globals(func_bits: u64) -> u64 {
             if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
                 return raise_exception::<_>(_py, "TypeError", "expected function");
             }
-            let dict_bits = function_dict_bits(func_ptr);
-            if dict_bits == 0 {
-                return MoltObject::none().bits();
-            }
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return MoltObject::none().bits();
-            }
-            let Some(module_name_bits) = attr_name_bits_from_bytes(_py, b"__module__") else {
-                return MoltObject::none().bits();
-            };
-            let Some(name_bits) = dict_get_in_place(_py, dict_ptr, module_name_bits) else {
-                return MoltObject::none().bits();
-            };
-            let name = match string_obj_to_owned(obj_from_bits(name_bits)) {
-                Some(val) => val,
-                None => return MoltObject::none().bits(),
-            };
-            let cache = crate::builtins::exceptions::internals::module_cache(_py);
-            let guard = cache.lock().unwrap();
-            let Some(module_bits) = guard.get(&name) else {
-                return MoltObject::none().bits();
-            };
-            let module_bits = *module_bits;
-            inc_ref_bits(_py, module_bits);
-            drop(guard);
-            let Some(module_ptr) = obj_from_bits(module_bits).as_ptr() else {
-                dec_ref_bits(_py, module_bits);
-                return MoltObject::none().bits();
-            };
-            if object_type_id(module_ptr) != TYPE_ID_MODULE {
-                dec_ref_bits(_py, module_bits);
-                return MoltObject::none().bits();
-            }
-            let globals_bits = module_dict_bits(module_ptr);
-            if obj_from_bits(globals_bits).is_none() {
-                dec_ref_bits(_py, module_bits);
+            let globals_bits = function_globals_bits(func_ptr);
+            if globals_bits == 0 || obj_from_bits(globals_bits).is_none() {
                 return MoltObject::none().bits();
             }
             inc_ref_bits(_py, globals_bits);
-            dec_ref_bits(_py, module_bits);
             globals_bits
         }
     })
@@ -5130,6 +5323,7 @@ pub extern "C" fn molt_code_new(
     firstlineno_bits: u64,
     linetable_bits: u64,
     varnames_bits: u64,
+    names_bits: u64,
     argcount_bits: u64,
     posonlyargcount_bits: u64,
     kwonlyargcount_bits: u64,
@@ -5210,6 +5404,38 @@ pub extern "C" fn molt_code_new(
                 }
             }
         }
+        let mut names_bits = names_bits;
+        let mut names_owned = false;
+        if obj_from_bits(names_bits).is_none() {
+            let tuple_ptr = alloc_tuple(_py, &[]);
+            if tuple_ptr.is_null() {
+                if varnames_owned {
+                    dec_ref_bits(_py, varnames_bits);
+                }
+                return MoltObject::none().bits();
+            }
+            names_bits = MoltObject::from_ptr(tuple_ptr).bits();
+            names_owned = true;
+        } else {
+            let Some(names_ptr) = obj_from_bits(names_bits).as_ptr() else {
+                if varnames_owned {
+                    dec_ref_bits(_py, varnames_bits);
+                }
+                return raise_exception::<_>(_py, "TypeError", "code names must be tuple or None");
+            };
+            unsafe {
+                if object_type_id(names_ptr) != TYPE_ID_TUPLE {
+                    if varnames_owned {
+                        dec_ref_bits(_py, varnames_bits);
+                    }
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "code names must be tuple or None",
+                    );
+                }
+            }
+        }
         let firstlineno = to_i64(obj_from_bits(firstlineno_bits)).unwrap_or(0);
         let ptr = alloc_code_obj(
             _py,
@@ -5218,10 +5444,14 @@ pub extern "C" fn molt_code_new(
             firstlineno,
             linetable_bits,
             varnames_bits,
+            names_bits,
             argcount as u64,
             posonlyargcount as u64,
             kwonlyargcount as u64,
         );
+        if names_owned {
+            dec_ref_bits(_py, names_bits);
+        }
         if varnames_owned {
             dec_ref_bits(_py, varnames_bits);
         }
@@ -5268,7 +5498,7 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
                 let inner_func_bits = bound_method_func_bits(func_ptr);
                 return molt_bound_method_new(inner_func_bits, self_bits);
             }
-            if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
+            if !is_callable_impl(_py, func_bits) {
                 if debug_bound {
                     let type_label = type_name(_py, func_obj).into_owned();
                     let self_label = obj_from_bits(self_bits)
@@ -5276,7 +5506,7 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
                         .map(|_| type_name(_py, obj_from_bits(self_bits)).into_owned())
                         .unwrap_or_else(|| format!("immediate:{:#x}", self_bits));
                     eprintln!(
-                        "molt_bound_method_new: expected function got type_id={} type={} self={}",
+                        "molt_bound_method_new: expected callable got type_id={} type={} self={}",
                         object_type_id(func_ptr),
                         type_label,
                         self_label
@@ -5285,7 +5515,7 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
-                    "bound method expects function object",
+                    "bound method expects callable object",
                 );
             }
         }
@@ -5319,12 +5549,13 @@ pub extern "C" fn molt_bound_method_new(func_bits: u64, self_bits: u64) -> u64 {
 }
 
 /// # Safety
-/// `self_ptr` must point to a valid closure storage region and `offset` must be
-/// within the allocated payload.
+/// `self_ptr_bits` must encode a valid closure storage pointer and `offset`
+/// must be within the allocated payload.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_closure_load(self_ptr: *mut u8, offset: u64) -> u64 {
+pub unsafe extern "C" fn molt_closure_load(self_ptr_bits: u64, offset: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let self_ptr = self_ptr_bits as usize as *mut u8;
             if self_ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -5337,12 +5568,17 @@ pub unsafe extern "C" fn molt_closure_load(self_ptr: *mut u8, offset: u64) -> u6
 }
 
 /// # Safety
-/// `self_ptr` must point to a valid closure storage region and `offset` must be
-/// within the allocated payload.
+/// `self_ptr_bits` must encode a valid closure storage pointer and `offset`
+/// must be within the allocated payload.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_closure_store(self_ptr: *mut u8, offset: u64, bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_closure_store(
+    self_ptr_bits: u64,
+    offset: u64,
+    bits: u64,
+) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let self_ptr = self_ptr_bits as usize as *mut u8;
             if self_ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -5856,9 +6092,10 @@ mod tokenize_encoding_tests {
 mod code_object_ownership_tests {
     use super::codeobj_from_filename_bits;
     use crate::object::header_from_obj_ptr;
+    use crate::object::layout::code_set_signature_bits;
     use crate::{
-        alloc_function_obj, alloc_string, dec_ref_bits, function_set_code_bits, inc_ref_bits,
-        obj_from_bits,
+        alloc_function_obj, alloc_string, alloc_tuple, dec_ref_bits, function_set_code_bits,
+        inc_ref_bits, obj_from_bits,
     };
     use molt_obj_model::MoltObject;
     use std::sync::atomic::Ordering;
@@ -5901,12 +6138,20 @@ mod code_object_ownership_tests {
             let name_ptr = alloc_string(_py, b"<constructor-test-name>");
             let linetable_ptr = alloc_string(_py, b"<constructor-test-linetable>");
             let varnames_ptr = alloc_string(_py, b"<constructor-test-varnames>");
+            let names_ptr = alloc_string(_py, b"<constructor-test-names>");
             let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let linetable_bits = MoltObject::from_ptr(linetable_ptr).bits();
             let varnames_bits = MoltObject::from_ptr(varnames_ptr).bits();
+            let names_bits = MoltObject::from_ptr(names_ptr).bits();
 
-            for bits in [filename_bits, name_bits, linetable_bits, varnames_bits] {
+            for bits in [
+                filename_bits,
+                name_bits,
+                linetable_bits,
+                varnames_bits,
+                names_bits,
+            ] {
                 inc_ref_bits(_py, bits);
             }
 
@@ -5917,12 +6162,19 @@ mod code_object_ownership_tests {
                 17,
                 linetable_bits,
                 varnames_bits,
+                names_bits,
                 0,
                 0,
                 0,
             );
             let code_bits = MoltObject::from_ptr(code_ptr).bits();
-            for bits in [filename_bits, name_bits, linetable_bits, varnames_bits] {
+            for bits in [
+                filename_bits,
+                name_bits,
+                linetable_bits,
+                varnames_bits,
+                names_bits,
+            ] {
                 dec_ref_bits(_py, bits);
             }
 
@@ -5930,6 +6182,7 @@ mod code_object_ownership_tests {
             assert_eq!(unsafe { ref_count(name_ptr) }, 2);
             assert_eq!(unsafe { ref_count(linetable_ptr) }, 2);
             assert_eq!(unsafe { ref_count(varnames_ptr) }, 2);
+            assert_eq!(unsafe { ref_count(names_ptr) }, 2);
 
             dec_ref_bits(_py, code_bits);
 
@@ -5937,10 +6190,93 @@ mod code_object_ownership_tests {
             assert_eq!(unsafe { ref_count(name_ptr) }, 1);
             assert_eq!(unsafe { ref_count(linetable_ptr) }, 1);
             assert_eq!(unsafe { ref_count(varnames_ptr) }, 1);
+            assert_eq!(unsafe { ref_count(names_ptr) }, 1);
 
-            for bits in [filename_bits, name_bits, linetable_bits, varnames_bits] {
+            for bits in [
+                filename_bits,
+                name_bits,
+                linetable_bits,
+                varnames_bits,
+                names_bits,
+            ] {
                 dec_ref_bits(_py, bits);
             }
+        })
+    }
+
+    #[test]
+    fn code_signature_metadata_is_owned_by_code_object() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap();
+        crate::with_gil_entry_nopanic!(_py, {
+            let filename_ptr = alloc_string(_py, b"<signature-code-test>");
+            let name_ptr = alloc_string(_py, b"<signature-code-test-name>");
+            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
+            let name_bits = MoltObject::from_ptr(name_ptr).bits();
+            let empty_varnames_ptr = alloc_tuple(_py, &[]);
+            let empty_names_ptr = alloc_tuple(_py, &[]);
+            let empty_varnames_bits = MoltObject::from_ptr(empty_varnames_ptr).bits();
+            let empty_names_bits = MoltObject::from_ptr(empty_names_ptr).bits();
+            let code_ptr = crate::alloc_code_obj(
+                _py,
+                filename_bits,
+                name_bits,
+                31,
+                MoltObject::none().bits(),
+                empty_varnames_bits,
+                empty_names_bits,
+                0,
+                0,
+                0,
+            );
+            dec_ref_bits(_py, empty_names_bits);
+            dec_ref_bits(_py, empty_varnames_bits);
+            dec_ref_bits(_py, name_bits);
+            dec_ref_bits(_py, filename_bits);
+
+            let arg_name_ptr = alloc_string(_py, b"value");
+            let kwonly_name_ptr = alloc_string(_py, b"limit");
+            let arg_name_bits = MoltObject::from_ptr(arg_name_ptr).bits();
+            let kwonly_name_bits = MoltObject::from_ptr(kwonly_name_ptr).bits();
+            let arg_names_ptr = alloc_tuple(_py, &[arg_name_bits]);
+            let kwonly_names_ptr = alloc_tuple(_py, &[kwonly_name_bits]);
+            let vararg_marker_ptr = alloc_tuple(_py, &[MoltObject::from_int(41).bits()]);
+            let varkw_marker_ptr = alloc_tuple(_py, &[MoltObject::from_int(43).bits()]);
+            let arg_names_bits = MoltObject::from_ptr(arg_names_ptr).bits();
+            let kwonly_names_bits = MoltObject::from_ptr(kwonly_names_ptr).bits();
+            let vararg_marker_bits = MoltObject::from_ptr(vararg_marker_ptr).bits();
+            let varkw_marker_bits = MoltObject::from_ptr(varkw_marker_ptr).bits();
+
+            unsafe {
+                code_set_signature_bits(
+                    _py,
+                    code_ptr,
+                    arg_names_bits,
+                    MoltObject::from_int(1).bits(),
+                    kwonly_names_bits,
+                    vararg_marker_bits,
+                    varkw_marker_bits,
+                );
+            }
+
+            assert_eq!(unsafe { ref_count(arg_names_ptr) }, 2);
+            assert_eq!(unsafe { ref_count(kwonly_names_ptr) }, 2);
+            assert_eq!(unsafe { ref_count(vararg_marker_ptr) }, 2);
+            assert_eq!(unsafe { ref_count(varkw_marker_ptr) }, 2);
+
+            let code_bits = MoltObject::from_ptr(code_ptr).bits();
+            dec_ref_bits(_py, code_bits);
+
+            assert_eq!(unsafe { ref_count(arg_names_ptr) }, 1);
+            assert_eq!(unsafe { ref_count(kwonly_names_ptr) }, 1);
+            assert_eq!(unsafe { ref_count(vararg_marker_ptr) }, 1);
+            assert_eq!(unsafe { ref_count(varkw_marker_ptr) }, 1);
+
+            dec_ref_bits(_py, arg_names_bits);
+            dec_ref_bits(_py, kwonly_names_bits);
+            dec_ref_bits(_py, vararg_marker_bits);
+            dec_ref_bits(_py, varkw_marker_bits);
+            dec_ref_bits(_py, arg_name_bits);
+            dec_ref_bits(_py, kwonly_name_bits);
         })
     }
 
@@ -5960,6 +6296,7 @@ mod code_object_ownership_tests {
                 name_bits,
                 23,
                 MoltObject::none().bits(),
+                0,
                 0,
                 0,
                 0,

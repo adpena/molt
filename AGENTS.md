@@ -39,6 +39,11 @@ touching code, docs, tests, benchmarks, or roadmap state.
   CPython regrtest lanes, native/WASM/LLVM/Luau target parity, memory custody,
   sanitizer/runtime checks, and benchmarks must all become mandatory evidence
   for claimed support. Do not claim completion until the relevant gates pass.
+- Verification must stay high-signal. Use focused tests, repro shards,
+  differential checks, conformance lanes, and benchmarks when they prove a
+  changed contract, retire a concrete risk, or support a compatibility/perf
+  claim. Do not churn broad repetitive suites as progress theater; once the
+  relevant invariant is proven, move back to structural code or docs.
 - Performance is part of correctness. Molt must be faster than CPython on every
   claimed benchmark and trend toward or beyond PyPy and Codon where comparable.
   If a feature is correct but structurally slow, the task is not complete.
@@ -158,6 +163,12 @@ Read these first instead of rediscovering project structure:
     parsing, command verification, health-probe verification, legacy `.pid`
     cleanup, and the only authorized daemon signal/escalation primitive used by
     CLI and benchmark cleanup paths.
+  - `tools/memory_guard.py`, `tools/harness_memory_guard.py`,
+    `tools/process_sentinel.py`, and `tools/guarded_exec.py` for memory/RSS
+    custody, protected host/control-plane process-group filtering, guarded
+    subprocess execution, repo sentinels, repro diagnostics, and Molt-owned
+    termination scope. `tests/conftest.py`, `src/sitecustomize.py`, and
+    `tests/*/sitecustomize.py` route pytest/direct-test guard startup.
   - `runtime/molt-gpu/src/` for tinygrad-conformant GPU primitives,
     ShapeTracker, scheduling/fusion, CPU/Metal/WebGPU execution, MLIR/MIL/text
     renderers, and materialization/view-lowering contracts.

@@ -55,7 +55,7 @@ globs = [
   "runtime/molt-backend/src/**/llvm*.rs",
 ]
 gates = [
-  "cargo test --profile release-fast -p molt-backend --features native-backend,llvm-backend --lib",
+  "cargo test --profile release-fast -p molt-backend --features \"native-backend llvm\" --lib",
 ]
 
 # --- Runtime crate Rust (object model / runtime library) -----------------
@@ -124,6 +124,38 @@ globs = [
 gates = [
   "python3 tools/gen_op_kinds.py --check",
   "python3 tools/audit_op_kinds.py --check",
+]
+
+# --- StringPrep generated tables -----------------------------------------
+[[rule]]
+name = "stringprep-tables"
+description = "StringPrep generated Rust tables: generated-file sync."
+globs = [
+  "tools/gen_stringprep_tables.py",
+  "runtime/molt-runtime-stringprep/**/*.rs",
+  "tests/test_gen_stringprep_tables.py",
+]
+gates = [
+  "python3 tools/gen_stringprep_tables.py --check",
+  "python3 -m pytest -q tests/test_gen_stringprep_tables.py",
+]
+
+# --- LLVM runtime ABI authority ------------------------------------------
+[[rule]]
+name = "llvm-runtime-abi"
+description = "LLVM preserved runtime calls: availability is not ABI authority."
+globs = [
+  "tools/llvm_runtime_abi_audit.py",
+  "tests/test_llvm_runtime_abi_audit.py",
+  "src/molt/frontend/lowering/serialization.py",
+  "runtime/molt-backend/src/tir/op_kinds_generated.rs",
+  "runtime/molt-backend/src/llvm_backend/lowering.rs",
+  "runtime/molt-backend/src/llvm_backend/runtime_imports.rs",
+  "runtime/molt-runtime/src/**/*.rs",
+]
+gates = [
+  "python3 tools/llvm_runtime_abi_audit.py --check",
+  "python3 -m pytest -q tests/test_llvm_runtime_abi_audit.py",
 ]
 
 # --- Differential / suite-honesty surface --------------------------------

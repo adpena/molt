@@ -36,7 +36,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -45,7 +47,6 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parents[1]
-
 TABLE = ROOT / "runtime/molt-backend/src/tir/op_kinds.toml"
 OUT_RS = ROOT / "runtime/molt-backend/src/tir/op_kinds_generated.rs"
 OUT_PY = ROOT / "src/molt/frontend/lowering/op_kinds_generated.py"
@@ -102,15 +103,13 @@ _TERMINATOR_VARIANTS = (
 )
 
 # The flat classifier sets (mirroring the flat `matches!` arms in
-# alias_analysis.rs and ownership_lattice_min.rs). Kept distinct from the
-# mapper's alias grouping because the classifier groups per-individual-kind,
-# not per-OpCode-equivalence.
+# alias_analysis.rs). Kept distinct from the mapper's alias grouping because
+# the classifier groups per-individual-kind, not per-OpCode-equivalence.
 _CLASSIFIER_SETS = (
     "classifier_fresh_value",
     "classifier_exception_creation_ref",
     "classifier_inert_marker",
     "classifier_no_heap_move",
-    "classifier_absorbing_constructor",
 )
 
 
@@ -278,7 +277,7 @@ def _validate_operand_ownership(name: str, value: object) -> None:
     if value is None:
         raise OpKindTableError(
             f"opcode {name}: 'operand_ownership' is mandatory — classify every "
-            "operand as borrowed|consumed (use \"all_borrowed\" for the common "
+            'operand as borrowed|consumed (use "all_borrowed" for the common '
             "callee-borrows-args case; design 20 §1.2 / design 27 §2.1)"
         )
     if isinstance(value, str):
@@ -388,7 +387,9 @@ def _validate_absorbing_operand_kinds(data: dict) -> None:
     for row in rows:
         kind = row.get("kind")
         if not isinstance(kind, str) or not kind:
-            raise OpKindTableError(f"[[absorbing_operand_kind]] row missing 'kind': {row}")
+            raise OpKindTableError(
+                f"[[absorbing_operand_kind]] row missing 'kind': {row}"
+            )
         if kind in seen:
             raise OpKindTableError(f"duplicate absorbing_operand_kind: {kind}")
         seen.add(kind)
@@ -398,7 +399,7 @@ def _validate_absorbing_operand_kinds(data: dict) -> None:
         if isinstance(sel, bool) or not isinstance(sel, int) or sel < 0:
             raise OpKindTableError(
                 f"absorbing_operand_kind {kind}: 'absorbed_operand' must be "
-                f"\"last\" or a non-negative operand index, got {sel!r}"
+                f'"last" or a non-negative operand index, got {sel!r}'
             )
 
 
@@ -432,7 +433,7 @@ def _validate_result_finalizer_source_kinds(data: dict) -> None:
         if isinstance(sel, bool) or not isinstance(sel, int) or sel < 0:
             raise OpKindTableError(
                 f"result_finalizer_source_kind {kind}: 'source_operand' must be "
-                f"\"last\" or a non-negative operand index, got {sel!r}"
+                f'"last" or a non-negative operand index, got {sel!r}'
             )
 
 
@@ -650,7 +651,40 @@ use crate::tir::ops::OpCode;
 """
 
 
+def _rustfmt_text(source: str) -> str:
+    """Return rustfmt-normalized Rust for generated source text.
+
+    The checked-in Rust generated artifact participates in normal Rust tooling,
+    so byte-identity must compare against the same formatting that rustfmt
+    writes. Otherwise a cargo-fmt pass can make the generated file stale even
+    though its semantic table contents are correct.
+    """
+    tmp_root = ROOT / "tmp"
+    tmp_root.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="gen-op-kinds-", dir=tmp_root) as tmp:
+        path = Path(tmp) / "op_kinds_generated.rs"
+        path.write_text(source)
+        result = subprocess.run(
+            ["rustfmt", "--edition", "2024", str(path)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60.0,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "rustfmt failed while formatting generated op-kind Rust:\n"
+                f"stdout:\n{result.stdout}\n"
+                f"stderr:\n{result.stderr}"
+            )
+        return path.read_text()
+
+
 def render_rs(data: dict) -> str:
+    return _rustfmt_text(_render_rs_unformatted(data))
+
+
+def _render_rs_unformatted(data: dict) -> str:
     opcodes = data["opcode"]
     kinds = data.get("kind", [])
     prefixes = data.get("classifier_fresh_value_prefixes", [])
@@ -748,25 +782,6 @@ def render_rs(data: dict) -> str:
         "        kind,\n"
     )
     out.append(_render_matches_arm(no_heap))
-    out.append("    )\n}\n\n")
-
-    # -- absorbing-constructor classifier exact set ---------------------------
-    absorbing = list(data.get("classifier_absorbing_constructor", []))
-    out.append(
-        "/// EXACT-match arm of the ownership-lattice absorbing-constructor rule\n"
-        "/// (`ownership_lattice_min.rs`): Copy-lifted constructor kinds whose RESULT\n"
-        "/// takes (co-)ownership of its element operands — releasing the result\n"
-        "/// releases the elements, so a finalizer-sensitive element makes the result\n"
-        "/// finalizer-sensitive. Over-approximation is the SAFE direction here (a\n"
-        "/// non-finalizer value marked sensitive merely has its release deferred to\n"
-        "/// the Python lifetime boundary — unobservable); a missing member keeps the\n"
-        "/// pre-#58 SSA-last-use release for that shape.\n"
-        "#[inline]\n"
-        "pub(crate) fn copy_kind_absorbs_elements_table(kind: &str) -> bool {\n"
-        "    matches!(\n"
-        "        kind,\n"
-    )
-    out.append(_render_matches_arm(absorbing))
     out.append("    )\n}\n\n")
 
     # -- effect oracle: exhaustive over OpCode -------------------------------
@@ -898,7 +913,7 @@ _OPERAND_OWNERSHIP_VARIANT = {
     # borrowed|consumed|interior_borrow_keepalive|container_absorb; these are reachable only via
     # the terminator categories.
     "transferred": "OperandOwnership::Transferred",
-    "none": "OperandOwnership::NoOperandOwnership",
+    "none": "OperandOwnership::NoOperand",
 }
 
 
@@ -909,16 +924,16 @@ def _render_operand_ownership(
 ) -> str:
     """Render the operand-ownership tables (design 27 §2.1/§2.3):
 
-      * ``OperandOwnership`` — the per-operand borrowed|consumed leaf.
-      * ``opcode_operand_ownership_table(opcode, operand_idx)`` — the per-OpCode
-        DEFAULT, EXHAUSTIVE over the enum (a new variant fails to compile until
-        classified). Honors the per-position list form (a list opcode dispatches
-        on ``operand_idx``); a uniform opcode ignores the index.
-      * ``kind_consumed_operand_table(kind, arity)`` — the per-SPELLING consume
-        override keyed on the ``_original_kind`` attr. Returns the 0-based index
-        of the consumed operand, resolving ``"last"`` against the op's ``arity``.
-        This is the table ``op_consumed_operand_root`` reads (replacing the
-        hand-coded ``matches!(_original_kind, "call_bind" | "call_indirect")``).
+    * ``OperandOwnership`` — the per-operand borrowed|consumed leaf.
+    * ``opcode_operand_ownership_table(opcode, operand_idx)`` — the per-OpCode
+      DEFAULT, EXHAUSTIVE over the enum (a new variant fails to compile until
+      classified). Honors the per-position list form (a list opcode dispatches
+      on ``operand_idx``); a uniform opcode ignores the index.
+    * ``kind_consumed_operand_table(kind, arity)`` — the per-SPELLING consume
+      override keyed on the ``_original_kind`` attr. Returns the 0-based index
+      of the consumed operand, resolving ``"last"`` against the op's ``arity``.
+      This is the table ``op_consumed_operand_root`` reads (replacing the
+      hand-coded ``matches!(_original_kind, "call_bind" | "call_indirect")``).
     """
     out: list[str] = []
     # `operand_idx` is referenced by the match body ONLY when some opcode carries
@@ -971,10 +986,10 @@ def _render_operand_ownership(
         "///     without making the mutator consume the operand.\n"
         "///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:\n"
         "///     valid only on the not-exhausted edge, NEVER unconditionally\n"
-        "///     droppable (stale stack garbage on the exhaustion edge). The LONE\n"
+        "///     droppable (non-owned `None` sentinel on the exhaustion edge). The LONE\n"
         "///     remaining `from_str`-only variant (its consumer hand-list —\n"
         "///     `iter_cond_value_results` — migrates in the iter-cond tranche, #74).\n"
-        "///   * `NoOperandOwnership` — no ref-bearing operand in that category (a\n"
+        "///   * `NoOperand` — no ref-bearing operand in that category (a\n"
         "///     raw lane; a terminator category absent on a variant — `Branch` has\n"
         "///     no direct operand, `Return` forwards no branch arg).\n"
         "// `ConditionalValidOnlyOnEdge` is the only variant still seeded solely by\n"
@@ -990,7 +1005,7 @@ def _render_operand_ownership(
         "    InteriorBorrowKeepAlive,\n"
         "    ContainerAbsorb,\n"
         "    ConditionalValidOnlyOnEdge,\n"
-        "    NoOperandOwnership,\n"
+        "    NoOperand,\n"
         "}\n\n"
         "// Parse/render path for the operand-ownership vocabulary. `Transferred`\n"
         "// is LIVE through `terminator_operand_ownership_table` (ladder #72) and\n"
@@ -1011,28 +1026,28 @@ def _render_operand_ownership(
         "        OperandOwnership::InteriorBorrowKeepAlive,\n"
         "        OperandOwnership::ContainerAbsorb,\n"
         "        OperandOwnership::ConditionalValidOnlyOnEdge,\n"
-        "        OperandOwnership::NoOperandOwnership,\n"
+        "        OperandOwnership::NoOperand,\n"
         "    ];\n"
         "    pub(crate) fn as_str(self) -> &'static str {\n"
         "        match self {\n"
-        "            OperandOwnership::Borrowed => \"borrowed\",\n"
-        "            OperandOwnership::Consumed => \"consumed\",\n"
-        "            OperandOwnership::Transferred => \"transferred\",\n"
-        "            OperandOwnership::InteriorBorrowKeepAlive => \"interior_borrow_keepalive\",\n"
-        "            OperandOwnership::ContainerAbsorb => \"container_absorb\",\n"
-        "            OperandOwnership::ConditionalValidOnlyOnEdge => \"conditional_valid_only_on_edge\",\n"
-        "            OperandOwnership::NoOperandOwnership => \"no_operand_ownership\",\n"
+        '            OperandOwnership::Borrowed => "borrowed",\n'
+        '            OperandOwnership::Consumed => "consumed",\n'
+        '            OperandOwnership::Transferred => "transferred",\n'
+        '            OperandOwnership::InteriorBorrowKeepAlive => "interior_borrow_keepalive",\n'
+        '            OperandOwnership::ContainerAbsorb => "container_absorb",\n'
+        '            OperandOwnership::ConditionalValidOnlyOnEdge => "conditional_valid_only_on_edge",\n'
+        '            OperandOwnership::NoOperand => "no_operand_ownership",\n'
         "        }\n"
         "    }\n"
         "    pub(crate) fn from_str(s: &str) -> Option<OperandOwnership> {\n"
         "        match s {\n"
-        "            \"borrowed\" => Some(OperandOwnership::Borrowed),\n"
-        "            \"consumed\" => Some(OperandOwnership::Consumed),\n"
-        "            \"transferred\" => Some(OperandOwnership::Transferred),\n"
-        "            \"interior_borrow_keepalive\" => Some(OperandOwnership::InteriorBorrowKeepAlive),\n"
-        "            \"container_absorb\" => Some(OperandOwnership::ContainerAbsorb),\n"
-        "            \"conditional_valid_only_on_edge\" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),\n"
-        "            \"no_operand_ownership\" => Some(OperandOwnership::NoOperandOwnership),\n"
+        '            "borrowed" => Some(OperandOwnership::Borrowed),\n'
+        '            "consumed" => Some(OperandOwnership::Consumed),\n'
+        '            "transferred" => Some(OperandOwnership::Transferred),\n'
+        '            "interior_borrow_keepalive" => Some(OperandOwnership::InteriorBorrowKeepAlive),\n'
+        '            "container_absorb" => Some(OperandOwnership::ContainerAbsorb),\n'
+        '            "conditional_valid_only_on_edge" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),\n'
+        '            "no_operand_ownership" => Some(OperandOwnership::NoOperand),\n'
         "            _ => None,\n"
         "        }\n"
         "    }\n"
@@ -1047,7 +1062,7 @@ def _render_operand_ownership(
         "        for v in OperandOwnership::ALL {\n"
         "            assert_eq!(OperandOwnership::from_str(v.as_str()), Some(v));\n"
         "        }\n"
-        "        assert_eq!(OperandOwnership::from_str(\"bogus\"), None);\n"
+        '        assert_eq!(OperandOwnership::from_str("bogus"), None);\n'
         "    }\n"
         "}\n\n"
     )
@@ -1132,7 +1147,7 @@ def _render_operand_ownership(
         "/// Per-SPELLING consume override (design 27 §2.3): for a `Copy`-lifted op\n"
         "/// carrying `_original_kind = kind`, the 0-based index of the operand the\n"
         "/// op CONSUMES (frees internally), or `None` if it consumes none. `arity`\n"
-        "/// is the op's operand count, used to resolve a `\"last\"` selector. The\n"
+        '/// is the op\'s operand count, used to resolve a `"last"` selector. The\n'
         "/// drop pass treats a value whose last use is the consumed-operand\n"
         "/// position exactly like a `Return` transfer — no trailing `DecRef`.\n"
         "/// Replaces the hand-coded `op_consumed_operand_root` match.\n"
@@ -1145,14 +1160,14 @@ def _render_operand_ownership(
             kind = row["kind"]
             sel = row["consumed_operand"]
             if sel == "last":
-                out.append(
-                    f'        "{kind}" => arity.checked_sub(1),\n'
-                )
+                out.append(f'        "{kind}" => arity.checked_sub(1),\n')
             else:
                 out.append(f'        "{kind}" => Some({int(sel)}),\n')
     out.append("        _ => None,\n")
     out.append("    }\n}\n")
-    absorbed_uses_arity = any(row["absorbed_operand"] == "last" for row in absorbing_operands)
+    absorbed_uses_arity = any(
+        row["absorbed_operand"] == "last" for row in absorbing_operands
+    )
     absorbed_arity_param = "arity" if absorbed_uses_arity else "_arity"
     out.append(
         "\n/// Per-SPELLING existing-container absorption override. These preserved\n"
@@ -1253,7 +1268,9 @@ def _render_result_absorption(
     out.append(_render_matches_arm(absorbing_kinds))
     out.append("    )\n}\n\n")
 
-    result_source_uses_arity = any(row["source_operand"] == "last" for row in result_sources)
+    result_source_uses_arity = any(
+        row["source_operand"] == "last" for row in result_sources
+    )
     result_source_arity_param = "arity" if result_source_uses_arity else "_arity"
     out.append(
         "/// Per-SPELLING result finalizer-source facts. These Copy-lifted\n"
@@ -1280,20 +1297,20 @@ def _render_result_absorption(
 def _render_terminator_ownership(terminators: list[dict]) -> str:
     """Render the per-TERMINATOR operand-ownership authority (design 27 §2.4):
 
-      * ``TerminatorKind`` — a zero-cost discriminant of the ``Terminator`` enum
-        (blocks.rs) the table is keyed on (the drop pass maps ``&Terminator`` ->
-        ``TerminatorKind`` with one structural match). EXHAUSTIVE over the enum.
-      * ``OperandCategory`` — ``Direct`` (the terminator's own operands: a
-        ``Return`` value, a ``CondBranch``/``Switch`` predicate) vs ``BranchArg``
-        (a value forwarded into a successor's phi). The two categories have
-        different ownership, so they are classified independently.
-      * ``terminator_operand_ownership_table(kind, category)`` — the per-(variant,
-        category) ``OperandOwnership`` leaf, EXHAUSTIVE over both axes.
-      * ``terminator_operand_is_transferred(kind, category)`` — the derived
-        predicate drop_insertion reads: ``true`` iff the leaf is ``Transferred``
-        (ownership moves OUT — no trailing ``DecRef`` at the transfer point). This
-        is the generated authority that REPLACES the hand-coded transfer carve-out
-        in ``terminator_branch_args`` + the ``Return`` arm of ``terminator_uses_root``.
+    * ``TerminatorKind`` — a zero-cost discriminant of the ``Terminator`` enum
+      (blocks.rs) the table is keyed on (the drop pass maps ``&Terminator`` ->
+      ``TerminatorKind`` with one structural match). EXHAUSTIVE over the enum.
+    * ``OperandCategory`` — ``Direct`` (the terminator's own operands: a
+      ``Return`` value, a ``CondBranch``/``Switch`` predicate) vs ``BranchArg``
+      (a value forwarded into a successor's phi). The two categories have
+      different ownership, so they are classified independently.
+    * ``terminator_operand_ownership_table(kind, category)`` — the per-(variant,
+      category) ``OperandOwnership`` leaf, EXHAUSTIVE over both axes.
+    * ``terminator_operand_is_transferred(kind, category)`` — the derived
+      predicate drop_insertion reads: ``true`` iff the leaf is ``Transferred``
+      (ownership moves OUT — no trailing ``DecRef`` at the transfer point). This
+      is the generated authority that REPLACES the hand-coded transfer carve-out
+      in ``terminator_branch_args`` + the ``Return`` arm of ``terminator_uses_root``.
     """
     out: list[str] = []
     out.append(
@@ -1332,7 +1349,7 @@ def _render_terminator_ownership(terminators: list[dict]) -> str:
         "/// compile until classified. `Transferred` = ownership moves OUT (a\n"
         "/// `Return` value to the caller; a branch-arg into a successor phi);\n"
         "/// `Borrowed` = the predicate is read but not moved (drop relocated to the\n"
-        "/// dying edge); `NoOperandOwnership` = the variant has no operand in that\n"
+        "/// dying edge); `NoOperand` = the variant has no operand in that\n"
         "/// category. The consume axis is N/A for a terminator (nothing frees a\n"
         "/// terminator operand internally), so `Consumed` never appears here.\n"
         "#[inline]\n"

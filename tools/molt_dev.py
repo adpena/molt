@@ -2053,7 +2053,9 @@ def cmd_difftest(args: argparse.Namespace) -> int:
         cwd=root,
         timeout=args.timeout,
     )
-    _ok(f"CPython {args.python_version} oracle: exit={cpy_rc} ({len(cpy_out)} bytes stdout)")
+    _ok(
+        f"CPython {args.python_version} oracle: exit={cpy_rc} ({len(cpy_out)} bytes stdout)"
+    )
 
     failures: list[str] = []
     for target in args.target:

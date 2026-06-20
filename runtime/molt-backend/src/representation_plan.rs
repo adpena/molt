@@ -95,6 +95,113 @@ fn plan_hash_set<T>(capacity: usize) -> PlanHashSet<T> {
     HashSet::with_capacity_and_hasher(capacity, PlanBuildHasher::default())
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct NameId(usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ScalarFactId(usize);
+
+#[derive(Default)]
+struct FunctionNameIndex<'a> {
+    ids_by_name: PlanHashMap<&'a str, NameId>,
+    names: Vec<&'a str>,
+}
+
+impl<'a> FunctionNameIndex<'a> {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            ids_by_name: plan_hash_map(capacity),
+            names: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn intern(&mut self, name: &'a str) -> NameId {
+        if let Some(&id) = self.ids_by_name.get(name) {
+            return id;
+        }
+        let id = NameId(self.names.len());
+        self.names.push(name);
+        self.ids_by_name.insert(name, id);
+        id
+    }
+
+    fn get(&self, name: &str) -> Option<NameId> {
+        self.ids_by_name.get(name).copied()
+    }
+
+    fn len(&self) -> usize {
+        self.names.len()
+    }
+}
+
+struct NameMarkSet {
+    marks: Vec<u32>,
+    epoch: u32,
+}
+
+impl NameMarkSet {
+    fn new(name_count: usize) -> Self {
+        Self {
+            marks: vec![0; name_count],
+            epoch: 1,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            self.marks.fill(0);
+            self.epoch = 1;
+        }
+    }
+
+    #[inline]
+    fn insert(&mut self, id: NameId) {
+        self.marks[id.0] = self.epoch;
+    }
+
+    #[inline]
+    fn contains(&self, id: NameId) -> bool {
+        self.marks[id.0] == self.epoch
+    }
+}
+
+struct NameWorkSet {
+    marks: NameMarkSet,
+    ids: Vec<NameId>,
+}
+
+impl NameWorkSet {
+    fn new(name_count: usize) -> Self {
+        Self {
+            marks: NameMarkSet::new(name_count),
+            ids: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.marks.clear();
+        self.ids.clear();
+    }
+
+    fn insert(&mut self, id: NameId) -> bool {
+        if self.marks.contains(id) {
+            return false;
+        }
+        self.marks.insert(id);
+        self.ids.push(id);
+        true
+    }
+
+    fn contains(&self, id: NameId) -> bool {
+        self.marks.contains(id)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = NameId> + '_ {
+        self.ids.iter().copied()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct StoreVarEdge<'a> {
     target: &'a str,
@@ -110,10 +217,10 @@ struct AliasEdge<'a> {
 struct FunctionFactIndex<'a> {
     stores: Vec<StoreVarEdge<'a>>,
     aliases: Vec<AliasEdge<'a>>,
-    alias_sources: PlanHashSet<&'a str>,
     output_ops: Vec<&'a OpIR>,
     data_ops: Vec<&'a OpIR>,
     store_index_ops: Vec<&'a OpIR>,
+    sentinel_outputs: PlanHashSet<String>,
     delete_targets: PlanHashSet<String>,
 }
 
@@ -121,10 +228,10 @@ impl<'a> FunctionFactIndex<'a> {
     fn for_function(func_ir: &'a FunctionIR) -> Self {
         let mut stores = Vec::with_capacity(func_ir.ops.len() / 4 + 1);
         let mut aliases = Vec::with_capacity(func_ir.ops.len() / 4 + 1);
-        let mut alias_sources = plan_hash_set(func_ir.ops.len() / 4 + 1);
         let mut output_ops = Vec::with_capacity(func_ir.ops.len());
         let mut data_ops = Vec::with_capacity(func_ir.ops.len());
         let mut store_index_ops = Vec::with_capacity(func_ir.ops.len() / 8 + 1);
+        let mut sentinel_outputs = plan_hash_set(func_ir.ops.len() / 16 + 1);
         let mut delete_targets = plan_hash_set(func_ir.ops.len() / 8 + 1);
 
         for op in &func_ir.ops {
@@ -141,12 +248,14 @@ impl<'a> FunctionFactIndex<'a> {
             }
             if let Some(out) = op.out.as_deref() {
                 output_ops.push(op);
+                if op.kind == "missing" {
+                    sentinel_outputs.insert(out.to_string());
+                }
                 if !matches!(op.kind.as_str(), "store_var" | "delete_var") {
                     data_ops.push(op);
                 }
                 if let Some(source) = alias_source_name(op) {
                     aliases.push(AliasEdge { out, source });
-                    alias_sources.insert(source);
                 }
             }
             if op.kind == "store_index" {
@@ -157,22 +266,146 @@ impl<'a> FunctionFactIndex<'a> {
         Self {
             stores,
             aliases,
-            alias_sources,
             output_ops,
             data_ops,
             store_index_ops,
+            sentinel_outputs,
             delete_targets,
+        }
+    }
+
+    fn has_scalar_alias_or_store_edges(&self) -> bool {
+        !self.stores.is_empty() || !self.aliases.is_empty()
+    }
+
+    fn has_container_storage_edges(&self) -> bool {
+        !self.stores.is_empty() || !self.aliases.is_empty() || !self.store_index_ops.is_empty()
+    }
+
+    fn needs_indexed_name_graph(&self) -> bool {
+        self.has_scalar_alias_or_store_edges() || self.has_container_storage_edges()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct IndexedStoreVarEdge {
+    target: NameId,
+    source: Option<NameId>,
+}
+
+#[derive(Clone, Copy)]
+struct IndexedAliasEdge {
+    out: NameId,
+    source: NameId,
+}
+
+struct IndexedAliasGroup {
+    out: NameId,
+    sources: Vec<NameId>,
+}
+
+struct IndexedFunctionFactIndex<'a> {
+    names: FunctionNameIndex<'a>,
+    stores: Vec<IndexedStoreVarEdge>,
+    alias_groups: Vec<IndexedAliasGroup>,
+    alias_sources: Vec<bool>,
+    alias_outputs: Vec<bool>,
+}
+
+impl<'a> IndexedFunctionFactIndex<'a> {
+    fn for_function_facts(fact_index: &FunctionFactIndex<'a>) -> Self {
+        let mut names = FunctionNameIndex::with_capacity(
+            fact_index
+                .stores
+                .len()
+                .saturating_mul(2)
+                .saturating_add(fact_index.aliases.len().saturating_mul(2))
+                .saturating_add(fact_index.data_ops.len().saturating_mul(3))
+                .saturating_add(16),
+        );
+        let mut stores = Vec::with_capacity(fact_index.stores.len());
+        for edge in &fact_index.stores {
+            let target = names.intern(edge.target);
+            let source = edge.source.map(|source| names.intern(source));
+            stores.push(IndexedStoreVarEdge { target, source });
+        }
+        let mut aliases = Vec::with_capacity(fact_index.aliases.len());
+        for edge in &fact_index.aliases {
+            let out = names.intern(edge.out);
+            let source = names.intern(edge.source);
+            aliases.push(IndexedAliasEdge { out, source });
+        }
+        for op in &fact_index.data_ops {
+            if let Some(out) = op.out.as_deref() {
+                names.intern(out);
+            }
+            if let Some(var) = op.var.as_deref() {
+                names.intern(var);
+            }
+            if let Some(args) = &op.args {
+                for arg in args {
+                    names.intern(arg);
+                }
+            }
+        }
+        for op in &fact_index.store_index_ops {
+            if let Some(out) = op.out.as_deref() {
+                names.intern(out);
+            }
+            if let Some(args) = &op.args {
+                for arg in args {
+                    names.intern(arg);
+                }
+            }
+        }
+
+        let mut alias_slots_by_out: Vec<Option<usize>> = vec![None; names.len()];
+        let mut alias_groups: Vec<IndexedAliasGroup> = Vec::with_capacity(aliases.len());
+        for edge in aliases {
+            if let Some(slot) = alias_slots_by_out[edge.out.0] {
+                alias_groups[slot].sources.push(edge.source);
+            } else {
+                let slot = alias_groups.len();
+                alias_slots_by_out[edge.out.0] = Some(slot);
+                alias_groups.push(IndexedAliasGroup {
+                    out: edge.out,
+                    sources: vec![edge.source],
+                });
+            }
+        }
+        let mut alias_sources = vec![false; names.len()];
+        let mut alias_outputs = vec![false; names.len()];
+        for group in &alias_groups {
+            alias_outputs[group.out.0] = true;
+            for source in &group.sources {
+                alias_sources[source.0] = true;
+            }
+        }
+        Self {
+            names,
+            stores,
+            alias_groups,
+            alias_sources,
+            alias_outputs,
         }
     }
 }
 
-enum StoreTargetState<T> {
-    Proven(T),
+#[derive(Clone, Copy)]
+enum StoreTargetMergeSource {
+    Missing,
+    Pending,
+    Proven(NameId),
+}
+
+enum StoreTargetState {
+    Proven(NameId),
+    Pending(Option<NameId>),
     UnknownRelevant,
     UnknownIrrelevant,
 }
 
-fn unknown_store_target_state<T>(relevant: impl FnOnce() -> bool) -> StoreTargetState<T> {
+fn unknown_store_target_state(relevant: impl FnOnce() -> bool) -> StoreTargetState {
     if relevant() {
         StoreTargetState::UnknownRelevant
     } else {
@@ -180,61 +413,365 @@ fn unknown_store_target_state<T>(relevant: impl FnOnce() -> bool) -> StoreTarget
     }
 }
 
-fn merge_store_target_state<T: Eq>(
-    state: &mut StoreTargetState<T>,
-    source_fact: Option<T>,
-    relevant: impl FnOnce() -> bool,
+fn merge_store_target_state(
+    state: &mut StoreTargetState,
+    source: StoreTargetMergeSource,
+    relevant: impl Fn() -> bool,
+    sources_match: impl Fn(NameId, NameId) -> bool,
 ) {
-    match source_fact {
-        Some(fact) => {
-            if let StoreTargetState::Proven(existing) = state
-                && existing != &fact
-            {
-                *state = unknown_store_target_state(relevant);
-            }
-        }
-        None => {
+    match source {
+        StoreTargetMergeSource::Missing => {
             *state = unknown_store_target_state(relevant);
         }
+        StoreTargetMergeSource::Pending => match state {
+            StoreTargetState::Proven(existing) => {
+                *state = StoreTargetState::Pending(Some(*existing));
+            }
+            StoreTargetState::Pending(_) => {}
+            StoreTargetState::UnknownRelevant | StoreTargetState::UnknownIrrelevant => {}
+        },
+        StoreTargetMergeSource::Proven(source) => match state {
+            StoreTargetState::Proven(existing) => {
+                if !sources_match(*existing, source) {
+                    *state = unknown_store_target_state(relevant);
+                }
+            }
+            StoreTargetState::Pending(known_source) => {
+                if let Some(existing) = *known_source
+                    && !sources_match(existing, source)
+                {
+                    *state = unknown_store_target_state(relevant);
+                    return;
+                }
+                *known_source = Some(source);
+            }
+            StoreTargetState::UnknownRelevant | StoreTargetState::UnknownIrrelevant => {}
+        },
     }
 }
 
-fn initial_store_target_state<T>(
-    source_fact: Option<T>,
+fn initial_store_target_state(
+    source: StoreTargetMergeSource,
     relevant: impl FnOnce() -> bool,
-) -> StoreTargetState<T> {
-    source_fact
-        .map(StoreTargetState::Proven)
-        .unwrap_or_else(|| unknown_store_target_state(relevant))
+) -> StoreTargetState {
+    match source {
+        StoreTargetMergeSource::Missing => unknown_store_target_state(relevant),
+        StoreTargetMergeSource::Pending => {
+            if relevant() {
+                StoreTargetState::Pending(None)
+            } else {
+                StoreTargetState::UnknownIrrelevant
+            }
+        }
+        StoreTargetMergeSource::Proven(source) => StoreTargetState::Proven(source),
+    }
 }
 
-struct StoreTargetFacts<'a, T> {
-    entries: Vec<(&'a str, Option<T>)>,
-    none_targets: PlanHashSet<&'a str>,
+struct IndexedStoreTargetFacts {
+    entries: Vec<(NameId, Option<NameId>)>,
+    pending_entries: Vec<NameId>,
+    none_targets: NameMarkSet,
+    pending_targets: NameMarkSet,
 }
 
-impl<'a, T> StoreTargetFacts<'a, T> {
-    fn from_states(states: PlanHashMap<&'a str, StoreTargetState<T>>) -> Self {
-        let mut entries = Vec::with_capacity(states.len());
-        let mut none_targets = plan_hash_set(states.len() / 4 + 1);
-        for (target, state) in states {
+impl IndexedStoreTargetFacts {
+    fn new(name_count: usize, entry_capacity: usize) -> Self {
+        Self {
+            entries: Vec::with_capacity(entry_capacity),
+            pending_entries: Vec::with_capacity(entry_capacity),
+            none_targets: NameMarkSet::new(name_count),
+            pending_targets: NameMarkSet::new(name_count),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.pending_entries.clear();
+        self.none_targets.clear();
+        self.pending_targets.clear();
+    }
+
+    fn target_is_none(&self, target: NameId) -> bool {
+        self.none_targets.contains(target)
+    }
+
+    fn target_is_pending(&self, target: NameId) -> bool {
+        self.pending_targets.contains(target)
+    }
+}
+
+struct IndexedStoreTargetScratch {
+    slots_by_name: Vec<Option<usize>>,
+    states: Vec<(NameId, StoreTargetState)>,
+}
+
+impl IndexedStoreTargetScratch {
+    fn new(name_count: usize, state_capacity: usize) -> Self {
+        Self {
+            slots_by_name: vec![None; name_count],
+            states: Vec::with_capacity(state_capacity),
+        }
+    }
+
+    fn merge(
+        &mut self,
+        target: NameId,
+        source: StoreTargetMergeSource,
+        relevant: impl Fn() -> bool,
+        sources_match: impl Fn(NameId, NameId) -> bool,
+    ) {
+        if let Some(slot) = self.slots_by_name[target.0] {
+            merge_store_target_state(&mut self.states[slot].1, source, relevant, sources_match);
+            return;
+        }
+        let slot = self.states.len();
+        self.slots_by_name[target.0] = Some(slot);
+        self.states
+            .push((target, initial_store_target_state(source, relevant)));
+    }
+
+    fn finish_into(&mut self, facts: &mut IndexedStoreTargetFacts) {
+        facts.clear();
+        for (target, state) in self.states.drain(..) {
+            self.slots_by_name[target.0] = None;
             match state {
-                StoreTargetState::Proven(fact) => entries.push((target, Some(fact))),
+                StoreTargetState::Proven(fact) => facts.entries.push((target, Some(fact))),
+                StoreTargetState::Pending(_) => {
+                    facts.pending_targets.insert(target);
+                    facts.pending_entries.push(target);
+                }
                 StoreTargetState::UnknownRelevant => {
-                    none_targets.insert(target);
-                    entries.push((target, None));
+                    facts.none_targets.insert(target);
+                    facts.entries.push((target, None));
                 }
                 StoreTargetState::UnknownIrrelevant => {}
             }
         }
-        Self {
-            entries,
-            none_targets,
+    }
+}
+
+struct IndexedScalarFacts {
+    fact_ids_by_name: Vec<Option<ScalarFactId>>,
+    facts: Vec<ScalarRepresentationFact>,
+    ids_by_fact: PlanHashMap<ScalarRepresentationFact, ScalarFactId>,
+    conflicted: Vec<bool>,
+    weak: Vec<bool>,
+}
+
+impl IndexedScalarFacts {
+    fn from_plan(plan: &ScalarRepresentationPlan, index: &IndexedFunctionFactIndex<'_>) -> Self {
+        let mut indexed = Self {
+            fact_ids_by_name: Vec::with_capacity(index.names.len()),
+            facts: Vec::new(),
+            ids_by_fact: plan_hash_map(plan.facts_by_name.len().saturating_add(1)),
+            conflicted: Vec::with_capacity(index.names.len()),
+            weak: Vec::with_capacity(index.names.len()),
+        };
+        for name in &index.names.names {
+            let fact_id = plan
+                .facts_by_name
+                .get(*name)
+                .cloned()
+                .map(|fact| indexed.intern_fact(fact));
+            indexed
+                .conflicted
+                .push(plan.conflicted_names.contains(*name));
+            indexed
+                .weak
+                .push(fact_id.is_some() && plan.weak_fact_names.contains(*name));
+            indexed.fact_ids_by_name.push(fact_id);
         }
+        indexed
     }
 
-    fn target_is_none(&self, target: &str) -> bool {
-        self.none_targets.contains(target)
+    fn intern_fact(&mut self, fact: ScalarRepresentationFact) -> ScalarFactId {
+        if let Some(&id) = self.ids_by_fact.get(&fact) {
+            return id;
+        }
+        let id = ScalarFactId(self.facts.len());
+        self.facts.push(fact.clone());
+        self.ids_by_fact.insert(fact, id);
+        id
+    }
+
+    fn fact_id(&self, id: NameId) -> Option<ScalarFactId> {
+        self.fact_ids_by_name.get(id.0).and_then(|fact| *fact)
+    }
+
+    fn fact(&self, id: ScalarFactId) -> &ScalarRepresentationFact {
+        &self.facts[id.0]
+    }
+
+    fn contains(&self, id: NameId) -> bool {
+        self.fact_id(id).is_some()
+    }
+
+    fn conflict(&mut self, id: NameId) -> bool {
+        if self.conflicted[id.0] {
+            return false;
+        }
+        self.weak[id.0] = false;
+        self.fact_ids_by_name[id.0] = None;
+        self.conflicted[id.0] = true;
+        true
+    }
+
+    fn clear_fact(&mut self, id: NameId) -> bool {
+        if self.conflicted[id.0] {
+            return false;
+        }
+        self.weak[id.0] = false;
+        self.fact_ids_by_name[id.0].take().is_some()
+    }
+
+    fn insert_graph_fact_id(&mut self, id: NameId, fact_id: ScalarFactId) -> bool {
+        if self.conflicted[id.0] {
+            return false;
+        }
+        if let Some(existing) = self.fact_ids_by_name[id.0] {
+            if existing == fact_id {
+                let was_weak = self.weak[id.0];
+                self.weak[id.0] = false;
+                return was_weak;
+            }
+            if self.weak[id.0] {
+                self.fact_ids_by_name[id.0] = Some(fact_id);
+                self.weak[id.0] = false;
+                return true;
+            }
+            let existing_is_top = self.fact(existing).is_dynbox_top();
+            let incoming_is_top = self.fact(fact_id).is_dynbox_top();
+            if existing_is_top {
+                return false;
+            }
+            if incoming_is_top {
+                self.fact_ids_by_name[id.0] = Some(fact_id);
+                self.weak[id.0] = false;
+                return true;
+            }
+            self.fact_ids_by_name[id.0] = None;
+            self.weak[id.0] = false;
+            self.conflicted[id.0] = true;
+            return true;
+        }
+        self.fact_ids_by_name[id.0] = Some(fact_id);
+        self.weak[id.0] = false;
+        true
+    }
+
+    fn sync_to_plan(
+        self,
+        plan: &mut ScalarRepresentationPlan,
+        index: &IndexedFunctionFactIndex<'_>,
+    ) {
+        for (slot, name) in index.names.names.iter().enumerate() {
+            if self.conflicted[slot] {
+                plan.facts_by_name.remove(*name);
+                plan.weak_fact_names.remove(*name);
+                plan.conflicted_names.insert((*name).to_string());
+                continue;
+            }
+            match self.fact_ids_by_name[slot] {
+                Some(fact_id) => {
+                    plan.facts_by_name
+                        .insert((*name).to_string(), self.fact(fact_id).clone());
+                    if self.weak[slot] {
+                        plan.weak_fact_names.insert((*name).to_string());
+                    } else {
+                        plan.weak_fact_names.remove(*name);
+                    }
+                }
+                None => {
+                    plan.facts_by_name.remove(*name);
+                    plan.weak_fact_names.remove(*name);
+                }
+            }
+        }
+    }
+}
+
+struct IndexedContainerFacts {
+    facts: Vec<Option<ContainerStorageFact>>,
+    conflicted: Vec<bool>,
+}
+
+impl IndexedContainerFacts {
+    fn from_plan(plan: &ScalarRepresentationPlan, index: &IndexedFunctionFactIndex<'_>) -> Self {
+        let mut facts = Vec::with_capacity(index.names.len());
+        let mut conflicted = Vec::with_capacity(index.names.len());
+        for name in &index.names.names {
+            facts.push(plan.container_storage_by_name.get(*name).cloned());
+            conflicted.push(plan.container_storage_conflicted_names.contains(*name));
+        }
+        Self { facts, conflicted }
+    }
+
+    fn get(&self, id: NameId) -> Option<&ContainerStorageFact> {
+        self.facts.get(id.0).and_then(Option::as_ref)
+    }
+
+    fn contains(&self, id: NameId) -> bool {
+        self.get(id).is_some()
+    }
+
+    fn kind(&self, id: NameId) -> Option<ContainerStorageKind> {
+        self.get(id).map(|fact| fact.kind)
+    }
+
+    fn conflict(&mut self, id: NameId) -> bool {
+        if self.conflicted[id.0] {
+            return false;
+        }
+        self.facts[id.0] = None;
+        self.conflicted[id.0] = true;
+        true
+    }
+
+    fn clear_fact(&mut self, id: NameId) -> bool {
+        if self.conflicted[id.0] {
+            return false;
+        }
+        self.facts[id.0].take().is_some()
+    }
+
+    fn insert(&mut self, id: NameId, fact: ContainerStorageFact) -> bool {
+        if self.conflicted[id.0] {
+            return false;
+        }
+        if let Some(existing) = self.facts[id.0].as_ref() {
+            if existing != &fact {
+                self.facts[id.0] = None;
+                self.conflicted[id.0] = true;
+                return true;
+            }
+            return false;
+        }
+        self.facts[id.0] = Some(fact);
+        true
+    }
+
+    fn sync_to_plan(
+        self,
+        plan: &mut ScalarRepresentationPlan,
+        index: &IndexedFunctionFactIndex<'_>,
+    ) {
+        for (slot, name) in index.names.names.iter().enumerate() {
+            if self.conflicted[slot] {
+                plan.container_storage_by_name.remove(*name);
+                plan.container_storage_conflicted_names
+                    .insert((*name).to_string());
+                continue;
+            }
+            match self.facts[slot].clone() {
+                Some(fact) => {
+                    plan.container_storage_by_name
+                        .insert((*name).to_string(), fact);
+                }
+                None => {
+                    plan.container_storage_by_name.remove(*name);
+                }
+            }
+        }
     }
 }
 
@@ -437,13 +974,17 @@ impl I64Interval {
 }
 
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct ScalarRepresentationFact {
     pub(crate) ty: TirType,
     pub(crate) repr: LirRepr,
 }
 
 impl ScalarRepresentationFact {
+    fn is_dynbox_top(&self) -> bool {
+        matches!(self.ty, TirType::DynBox) && self.repr == LirRepr::DynBox
+    }
+
     fn scalar_kind(&self) -> Option<ScalarKind> {
         match (&self.ty, self.repr) {
             (TirType::I64, LirRepr::I64) => Some(ScalarKind::Int),
@@ -1062,7 +1603,14 @@ impl ScalarRepresentationPlan {
     }
 
     pub(crate) fn for_function_ir(func_ir: &FunctionIR) -> Self {
+        if is_cold_module_chunk_function(&func_ir.name) {
+            return Self::with_capacity(func_ir.ops.len());
+        }
+
         let fact_index = FunctionFactIndex::for_function(func_ir);
+        let indexed_fact_index = fact_index
+            .needs_indexed_name_graph()
+            .then(|| IndexedFunctionFactIndex::for_function_facts(&fact_index));
         let mut tir_func = lower_to_tir(func_ir);
         refine_types(&mut tir_func);
         let names = SimpleValueNames::for_function(&tir_func);
@@ -1127,9 +1675,17 @@ impl ScalarRepresentationPlan {
         // (lifted to a type-aliasing `OpCode::Copy` passthrough) is not mistyped
         // as its first element — the root of the membership-dispatch miscompile.
         plan.seed_container_constructor_facts(func_ir);
-        plan.propagate_simple_aliases(&fact_index);
+        if fact_index.has_scalar_alias_or_store_edges()
+            && let Some(indexed_fact_index) = indexed_fact_index.as_ref()
+        {
+            plan.propagate_simple_aliases(indexed_fact_index);
+        }
         plan.propagate_integer_family(func_ir, &fact_index);
-        plan.propagate_container_storage(&fact_index);
+        if fact_index.has_container_storage_edges()
+            && let Some(indexed_fact_index) = indexed_fact_index.as_ref()
+        {
+            plan.propagate_container_storage(&fact_index, indexed_fact_index);
+        }
         plan.mark_container_storage_ops(func_ir);
         plan.scalar_slot_exclusion_unsafe = plan.compute_scalar_slot_exclusion_unsafe(func_ir);
         plan.scalar_store_targets_by_kind = plan.compute_scalar_store_targets(&fact_index);
@@ -1320,13 +1876,15 @@ impl ScalarRepresentationPlan {
     }
 
     fn insert_lir_value(&mut self, name: String, value: &LirValue) {
-        self.insert_fact(
-            name,
-            ScalarRepresentationFact {
-                ty: value.ty.clone(),
-                repr: value.repr,
-            },
-        );
+        let fact = ScalarRepresentationFact {
+            ty: value.ty.clone(),
+            repr: value.repr,
+        };
+        if fact.is_dynbox_top() {
+            self.insert_weak_fact(name, fact);
+        } else {
+            self.insert_fact(name, fact);
+        }
     }
 
     /// Insert a fact under a SYNTHETIC (canonical fallback) name — `_v{N}` /
@@ -1342,6 +1900,10 @@ impl ScalarRepresentationPlan {
             ty: value.ty.clone(),
             repr: value.repr,
         };
+        self.insert_weak_fact(name, fact);
+    }
+
+    fn insert_weak_fact(&mut self, name: String, fact: ScalarRepresentationFact) {
         if self.conflicted_names.contains(&name) {
             return;
         }
@@ -1400,10 +1962,6 @@ impl ScalarRepresentationPlan {
         }
         self.container_storage_by_name.insert(name, fact);
         true
-    }
-
-    fn remove_container_storage_fact(&mut self, name: &str) -> bool {
-        self.container_storage_by_name.remove(name).is_some()
     }
 
     fn seed_container_storage_from_tir(
@@ -1488,100 +2046,251 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    fn propagate_simple_aliases(&mut self, fact_index: &FunctionFactIndex<'_>) {
+    fn propagate_simple_aliases(&mut self, index: &IndexedFunctionFactIndex<'_>) {
+        let mut facts = IndexedScalarFacts::from_plan(self, index);
+        let mut store_target_scratch =
+            IndexedStoreTargetScratch::new(index.names.len(), index.stores.len());
+        let mut store_target_facts =
+            IndexedStoreTargetFacts::new(index.names.len(), index.stores.len());
+        let mut blocked = NameWorkSet::new(index.names.len());
         let mut changed = true;
         while changed {
             changed = false;
-            let store_target_facts = self.store_target_facts(fact_index);
+            blocked.clear();
+            Self::indexed_store_target_facts(
+                index,
+                &facts,
+                &mut store_target_scratch,
+                &mut store_target_facts,
+            );
             for (target, fact) in &store_target_facts.entries {
-                if fact.is_none() && self.facts_by_name.remove(*target).is_some() {
-                    changed = true;
+                if fact.is_none() {
+                    changed |= facts.conflict(*target);
                 }
             }
-            changed |= self.propagate_store_targets(&store_target_facts);
-            for edge in &fact_index.aliases {
-                if store_target_facts.target_is_none(edge.source) {
-                    if self.facts_by_name.remove(edge.out).is_some() {
-                        changed = true;
+            for target in &store_target_facts.pending_entries {
+                blocked.insert(*target);
+            }
+            Self::collect_pending_scalar_alias_outputs(&store_target_facts, index, &mut blocked);
+            for target in blocked.iter() {
+                changed |= facts.clear_fact(target);
+            }
+            let store_changed =
+                Self::propagate_indexed_store_targets(&mut facts, &store_target_facts, &blocked);
+            changed |= store_changed;
+            changed |= Self::propagate_indexed_alias_groups(
+                &mut facts,
+                &store_target_facts,
+                index,
+                &blocked,
+            );
+        }
+        facts.sync_to_plan(self, index);
+    }
+
+    fn collect_pending_scalar_alias_outputs(
+        store_target_facts: &IndexedStoreTargetFacts,
+        index: &IndexedFunctionFactIndex<'_>,
+        blocked: &mut NameWorkSet,
+    ) {
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for group in &index.alias_groups {
+                if store_target_facts.target_is_pending(group.out) {
+                    changed |= blocked.insert(group.out);
+                    continue;
+                }
+                for source in &group.sources {
+                    if store_target_facts.target_is_pending(*source) || blocked.contains(*source) {
+                        changed |= blocked.insert(group.out);
+                        break;
                     }
-                    continue;
                 }
-                if self.facts_by_name.contains_key(edge.out) {
-                    continue;
-                }
-                let Some(fact) = self.facts_by_name.get(edge.source).cloned() else {
-                    continue;
-                };
-                changed |= self.insert_fact(edge.out.to_string(), fact);
             }
         }
     }
 
-    fn store_target_facts<'a>(
-        &self,
-        fact_index: &FunctionFactIndex<'a>,
-    ) -> StoreTargetFacts<'a, ScalarRepresentationFact> {
-        let mut states: PlanHashMap<&str, StoreTargetState<ScalarRepresentationFact>> =
-            plan_hash_map(fact_index.stores.len().saturating_add(1));
-        for edge in &fact_index.stores {
-            let source_fact = edge
-                .source
-                .and_then(|source| self.facts_by_name.get(source))
-                .cloned();
-            let relevant = || {
-                self.facts_by_name.contains_key(edge.target)
-                    || fact_index.alias_sources.contains(edge.target)
-            };
-            match states.entry(edge.target) {
-                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    merge_store_target_state(entry.get_mut(), source_fact, relevant);
+    fn collect_pending_container_storage_alias_outputs(
+        store_target_facts: &IndexedStoreTargetFacts,
+        index: &IndexedFunctionFactIndex<'_>,
+        blocked: &mut NameWorkSet,
+    ) {
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for group in &index.alias_groups {
+                if store_target_facts.target_is_pending(group.out) {
+                    changed |= blocked.insert(group.out);
+                    continue;
                 }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(initial_store_target_state(source_fact, relevant));
+                for source in &group.sources {
+                    if store_target_facts.target_is_pending(*source) || blocked.contains(*source) {
+                        changed |= blocked.insert(group.out);
+                        break;
+                    }
                 }
             }
         }
-        StoreTargetFacts::from_states(states)
     }
 
-    fn propagate_store_targets(
-        &mut self,
-        facts_by_target: &StoreTargetFacts<'_, ScalarRepresentationFact>,
+    fn propagate_indexed_alias_groups(
+        facts: &mut IndexedScalarFacts,
+        store_target_facts: &IndexedStoreTargetFacts,
+        index: &IndexedFunctionFactIndex<'_>,
+        blocked: &NameWorkSet,
     ) -> bool {
         let mut changed = false;
-        for (target, fact) in &facts_by_target.entries {
-            let Some(fact) = fact.as_ref() else {
+        for group in &index.alias_groups {
+            if blocked.contains(group.out) {
                 continue;
-            };
-            if self.facts_by_name.get(*target) != Some(fact) {
-                changed |= self.insert_fact((*target).to_string(), fact.clone());
+            }
+            if store_target_facts.target_is_none(group.out) {
+                changed |= facts.conflict(group.out);
+                continue;
+            }
+            if store_target_facts.target_is_pending(group.out) {
+                changed |= facts.clear_fact(group.out);
+                continue;
+            }
+            let mut joined: Option<ScalarFactId> = None;
+            let mut unknown_or_conflict = false;
+            let mut pending = false;
+            for source in &group.sources {
+                if store_target_facts.target_is_none(*source) || facts.conflicted[source.0] {
+                    unknown_or_conflict = true;
+                    break;
+                }
+                if store_target_facts.target_is_pending(*source) {
+                    pending = true;
+                    break;
+                }
+                let Some(fact_id) = facts.fact_id(*source) else {
+                    continue;
+                };
+                match joined {
+                    Some(existing) if existing != fact_id => {
+                        unknown_or_conflict = true;
+                        break;
+                    }
+                    Some(_) => {}
+                    None => joined = Some(fact_id),
+                }
+            }
+            if unknown_or_conflict {
+                changed |= facts.conflict(group.out);
+                continue;
+            }
+            if pending {
+                changed |= facts.clear_fact(group.out);
+                continue;
+            }
+            if let Some(fact_id) = joined {
+                changed |= facts.insert_graph_fact_id(group.out, fact_id);
             }
         }
         changed
     }
 
-    fn propagate_container_storage(&mut self, fact_index: &FunctionFactIndex<'_>) {
+    fn indexed_store_target_facts(
+        index: &IndexedFunctionFactIndex<'_>,
+        facts: &IndexedScalarFacts,
+        scratch: &mut IndexedStoreTargetScratch,
+        out: &mut IndexedStoreTargetFacts,
+    ) {
+        for edge in &index.stores {
+            let source = match edge.source {
+                Some(source) if facts.fact_id(source).is_some() => {
+                    StoreTargetMergeSource::Proven(source)
+                }
+                Some(_) => StoreTargetMergeSource::Pending,
+                None => StoreTargetMergeSource::Missing,
+            };
+            let relevant = || {
+                facts.contains(edge.target)
+                    || index.alias_sources[edge.target.0]
+                    || index.alias_outputs[edge.target.0]
+            };
+            scratch.merge(edge.target, source, relevant, |lhs, rhs| {
+                facts.fact_id(lhs) == facts.fact_id(rhs)
+            });
+        }
+        scratch.finish_into(out);
+    }
+
+    fn propagate_indexed_store_targets(
+        facts: &mut IndexedScalarFacts,
+        facts_by_target: &IndexedStoreTargetFacts,
+        blocked: &NameWorkSet,
+    ) -> bool {
+        let mut changed = false;
+        for (target, source) in &facts_by_target.entries {
+            if blocked.contains(*target) {
+                continue;
+            }
+            let Some(source) = *source else {
+                continue;
+            };
+            let Some(fact_id) = facts.fact_id(source) else {
+                continue;
+            };
+            if facts.fact_id(*target) != Some(fact_id) {
+                changed |= facts.insert_graph_fact_id(*target, fact_id);
+            }
+        }
+        changed
+    }
+
+    fn propagate_container_storage(
+        &mut self,
+        fact_index: &FunctionFactIndex<'_>,
+        index: &IndexedFunctionFactIndex<'_>,
+    ) {
+        let mut facts = IndexedContainerFacts::from_plan(self, index);
+        let mut store_target_scratch =
+            IndexedStoreTargetScratch::new(index.names.len(), index.stores.len());
+        let mut store_target_facts =
+            IndexedStoreTargetFacts::new(index.names.len(), index.stores.len());
+        let mut blocked = NameWorkSet::new(index.names.len());
         let mut changed = true;
         while changed {
             changed = false;
-            let store_target_facts = self.container_storage_store_target_facts(fact_index);
+            blocked.clear();
+            Self::indexed_container_storage_store_target_facts(
+                index,
+                &facts,
+                &mut store_target_scratch,
+                &mut store_target_facts,
+            );
             for (target, fact) in &store_target_facts.entries {
                 if fact.is_none() {
-                    changed |= self.remove_container_storage_fact(*target);
+                    changed |= facts.conflict(*target);
                 }
             }
-            changed |= self.propagate_container_storage_store_targets(&store_target_facts);
-            for edge in &fact_index.aliases {
-                if store_target_facts.target_is_none(edge.source) {
-                    changed |= self.remove_container_storage_fact(edge.out);
-                    continue;
-                }
-                if !self.container_storage_by_name.contains_key(edge.out)
-                    && let Some(fact) = self.container_storage_by_name.get(edge.source).cloned()
-                {
-                    changed |= self.insert_container_storage_fact(edge.out.to_string(), fact);
-                }
+            for target in &store_target_facts.pending_entries {
+                blocked.insert(*target);
             }
+            Self::collect_pending_container_storage_alias_outputs(
+                &store_target_facts,
+                index,
+                &mut blocked,
+            );
+            for target in blocked.iter() {
+                changed |= facts.clear_fact(target);
+            }
+            let store_changed = Self::propagate_indexed_container_storage_store_targets(
+                &mut facts,
+                &store_target_facts,
+                &blocked,
+            );
+            changed |= store_changed;
+            let alias_changed = Self::propagate_indexed_container_storage_alias_groups(
+                &mut facts,
+                &store_target_facts,
+                index,
+                &blocked,
+            );
+            changed |= alias_changed;
             for op in &fact_index.store_index_ops {
                 let Some(args) = op.args.as_ref() else {
                     continue;
@@ -1589,9 +2298,10 @@ impl ScalarRepresentationPlan {
                 let Some(container) = args.first() else {
                     continue;
                 };
-                if self.name_container_storage_kind(container)
-                    != Some(ContainerStorageKind::FlatListInt)
-                {
+                let Some(container_id) = index.names.get(container) else {
+                    continue;
+                };
+                if facts.kind(container_id) != Some(ContainerStorageKind::FlatListInt) {
                     continue;
                 }
                 let value_preserves_flat_int = args.get(2).is_some_and(|value| {
@@ -1600,58 +2310,125 @@ impl ScalarRepresentationPlan {
                 });
                 if value_preserves_flat_int {
                     if let Some(out) = op.out.as_ref()
-                        && let Some(fact) = self.container_storage_by_name.get(container).cloned()
+                        && let Some(out_id) = index.names.get(out)
+                        && let Some(fact) = facts.get(container_id).cloned()
+                        && facts.insert(out_id, fact)
                     {
-                        changed |= self.insert_container_storage_fact(out.clone(), fact);
+                        changed = true;
                     }
                 } else {
-                    changed |= self.remove_container_storage_fact(container);
-                    if let Some(out) = op.out.as_ref() {
-                        changed |= self.remove_container_storage_fact(out);
+                    changed |= facts.conflict(container_id);
+                    if let Some(out) = op.out.as_ref()
+                        && let Some(out_id) = index.names.get(out)
+                    {
+                        changed |= facts.conflict(out_id);
                     }
                 }
             }
         }
+        facts.sync_to_plan(self, index);
     }
 
-    fn container_storage_store_target_facts<'a>(
-        &self,
-        fact_index: &FunctionFactIndex<'a>,
-    ) -> StoreTargetFacts<'a, ContainerStorageFact> {
-        let mut states: PlanHashMap<&str, StoreTargetState<ContainerStorageFact>> =
-            plan_hash_map(fact_index.stores.len() / 2 + 1);
-        for edge in &fact_index.stores {
-            let source_fact = edge
-                .source
-                .and_then(|source| self.container_storage_by_name.get(source))
-                .cloned();
-            let relevant = || {
-                self.container_storage_by_name.contains_key(edge.target)
-                    || fact_index.alias_sources.contains(edge.target)
-            };
-            match states.entry(edge.target) {
-                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    merge_store_target_state(entry.get_mut(), source_fact, relevant);
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(initial_store_target_state(source_fact, relevant));
-                }
-            }
-        }
-        StoreTargetFacts::from_states(states)
-    }
-
-    fn propagate_container_storage_store_targets(
-        &mut self,
-        facts_by_target: &StoreTargetFacts<'_, ContainerStorageFact>,
+    fn propagate_indexed_container_storage_alias_groups(
+        facts: &mut IndexedContainerFacts,
+        store_target_facts: &IndexedStoreTargetFacts,
+        index: &IndexedFunctionFactIndex<'_>,
+        blocked: &NameWorkSet,
     ) -> bool {
         let mut changed = false;
-        for (target, fact) in &facts_by_target.entries {
-            let Some(fact) = fact.as_ref() else {
+        for group in &index.alias_groups {
+            if blocked.contains(group.out) {
+                continue;
+            }
+            if store_target_facts.target_is_none(group.out) {
+                changed |= facts.conflict(group.out);
+                continue;
+            }
+            if store_target_facts.target_is_pending(group.out) {
+                changed |= facts.clear_fact(group.out);
+                continue;
+            }
+            let mut joined: Option<ContainerStorageFact> = None;
+            let mut unknown_or_conflict = false;
+            let mut pending = false;
+            for source in &group.sources {
+                if store_target_facts.target_is_none(*source) || facts.conflicted[source.0] {
+                    unknown_or_conflict = true;
+                    break;
+                }
+                if store_target_facts.target_is_pending(*source) {
+                    pending = true;
+                    break;
+                }
+                let Some(fact) = facts.get(*source).cloned() else {
+                    continue;
+                };
+                match joined.as_ref() {
+                    Some(existing) if existing != &fact => {
+                        unknown_or_conflict = true;
+                        break;
+                    }
+                    Some(_) => {}
+                    None => joined = Some(fact),
+                }
+            }
+            if unknown_or_conflict {
+                changed |= facts.conflict(group.out);
+                continue;
+            }
+            if pending {
+                changed |= facts.clear_fact(group.out);
+                continue;
+            }
+            if let Some(fact) = joined {
+                changed |= facts.insert(group.out, fact);
+            }
+        }
+        changed
+    }
+
+    fn indexed_container_storage_store_target_facts(
+        index: &IndexedFunctionFactIndex<'_>,
+        facts: &IndexedContainerFacts,
+        scratch: &mut IndexedStoreTargetScratch,
+        out: &mut IndexedStoreTargetFacts,
+    ) {
+        for edge in &index.stores {
+            let source = match edge.source {
+                Some(source) if facts.contains(source) => StoreTargetMergeSource::Proven(source),
+                Some(_) => StoreTargetMergeSource::Pending,
+                None => StoreTargetMergeSource::Missing,
+            };
+            let relevant = || {
+                facts.contains(edge.target)
+                    || index.alias_sources[edge.target.0]
+                    || index.alias_outputs[edge.target.0]
+            };
+            scratch.merge(edge.target, source, relevant, |lhs, rhs| {
+                facts.get(lhs) == facts.get(rhs)
+            });
+        }
+        scratch.finish_into(out);
+    }
+
+    fn propagate_indexed_container_storage_store_targets(
+        facts: &mut IndexedContainerFacts,
+        facts_by_target: &IndexedStoreTargetFacts,
+        blocked: &NameWorkSet,
+    ) -> bool {
+        let mut changed = false;
+        for (target, source) in &facts_by_target.entries {
+            if blocked.contains(*target) {
+                continue;
+            }
+            let Some(source) = *source else {
                 continue;
             };
-            if self.container_storage_by_name.get(*target) != Some(fact) {
-                changed |= self.insert_container_storage_fact((*target).to_string(), fact.clone());
+            let Some(fact) = facts.get(source).cloned() else {
+                continue;
+            };
+            if facts.get(*target) != Some(&fact) {
+                changed |= facts.insert(*target, fact);
             }
         }
         changed
@@ -1948,6 +2725,7 @@ impl ScalarRepresentationPlan {
                 && !param_name_set.contains(name)
                 && !int_unsafe_outputs.contains(name)
                 && !vars_with_non_int_defs.contains(name)
+                && !fact_index.sentinel_outputs.contains(name)
                 && !fact_index.delete_targets.contains(name)
                 && !float_like.contains(name)
         };
@@ -2007,7 +2785,8 @@ impl ScalarRepresentationPlan {
         let mut non_int = BTreeSet::new();
         for edge in &fact_index.stores {
             let source_is_int = edge.source.is_some_and(|s| {
-                int_like.contains(s) || bool_like.contains(s) || extra_int_like.contains(s)
+                !fact_index.sentinel_outputs.contains(s)
+                    && (int_like.contains(s) || bool_like.contains(s) || extra_int_like.contains(s))
             });
             if !source_is_int {
                 non_int.insert(edge.target.to_string());
@@ -2053,6 +2832,7 @@ impl ScalarRepresentationPlan {
                 && !param_name_set.contains(name)
                 && !bool_unsafe_outputs.contains(name)
                 && !vars_with_non_bool_defs.contains(name)
+                && !fact_index.sentinel_outputs.contains(name)
                 && !fact_index.delete_targets.contains(name)
                 && !int_like.contains(name)
                 && !float_like.contains(name)
@@ -2093,7 +2873,9 @@ impl ScalarRepresentationPlan {
     ) -> BTreeSet<String> {
         let mut non_bool = BTreeSet::new();
         for edge in &fact_index.stores {
-            let source_is_bool = edge.source.is_some_and(|s| bool_like.contains(s));
+            let source_is_bool = edge
+                .source
+                .is_some_and(|s| bool_like.contains(s) && !fact_index.sentinel_outputs.contains(s));
             if !source_is_bool {
                 non_bool.insert(edge.target.to_string());
             }
@@ -2196,6 +2978,7 @@ impl ScalarRepresentationPlan {
                     && !float_unsafe_outputs.contains(*name)
                     && !int_like.contains(*name)
                     && !vars_with_non_float_defs.contains(*name)
+                    && !fact_index.sentinel_outputs.contains(name.as_str())
                     && !fact_index.delete_targets.contains(name.as_str())
             })
             .cloned()
@@ -2209,7 +2992,9 @@ impl ScalarRepresentationPlan {
     ) -> BTreeSet<String> {
         let mut non_float = BTreeSet::new();
         for edge in &fact_index.stores {
-            let source_is_float = edge.source.is_some_and(|s| float_like.contains(s));
+            let source_is_float = edge.source.is_some_and(|s| {
+                float_like.contains(s) && !fact_index.sentinel_outputs.contains(s)
+            });
             if !source_is_float {
                 non_float.insert(edge.target.to_string());
             }
@@ -2476,7 +3261,7 @@ fn store_var_targets_all_sources_where(
     let mut targets: PlanHashMap<&str, bool> =
         plan_hash_map(fact_index.stores.len().saturating_add(1));
     for edge in &fact_index.stores {
-        let source_proven = edge.source.is_some_and(|src| source_proven(src));
+        let source_proven = edge.source.is_some_and(&mut source_proven);
         targets
             .entry(edge.target)
             .and_modify(|all_sources_proven| *all_sources_proven &= source_proven)
@@ -2484,7 +3269,8 @@ fn store_var_targets_all_sources_where(
     }
     targets
         .into_iter()
-        .filter_map(|(target, all_sources_proven)| all_sources_proven.then(|| target.to_string()))
+        .filter(|&(_, all_sources_proven)| all_sources_proven)
+        .map(|(target, _)| target.to_string())
         .collect()
 }
 
@@ -2969,11 +3755,47 @@ fn store_load_loop_update(
             continue;
         }
         let next_name = store_var_source_name(op)?.to_string();
-        let update_idx = (start + 1..idx)
-            .rev()
-            .find(|candidate| ops[*candidate].out.as_deref() == Some(next_name.as_str()))?;
-        let step = induction_update_step(func_ir, update_idx, iv_name, intervals)?;
-        return Some((idx, next_name, step));
+        let (_update_idx, update_name, step) = induction_update_for_name_before(
+            func_ir, start, idx, &next_name, iv_name, intervals, 0,
+        )?;
+        return Some((idx, update_name, step));
+    }
+    None
+}
+
+fn induction_update_for_name_before(
+    func_ir: &FunctionIR,
+    start: usize,
+    before_idx: usize,
+    name: &str,
+    iv_name: &str,
+    intervals: &PlanHashMap<String, I64Interval>,
+    depth: usize,
+) -> Option<(usize, String, i64)> {
+    if depth > 8 {
+        return None;
+    }
+    let ops = &func_ir.ops;
+    for update_idx in (start + 1..before_idx).rev() {
+        let op = &ops[update_idx];
+        if op.out.as_deref() != Some(name) {
+            continue;
+        }
+        if let Some(step) = induction_update_step(func_ir, update_idx, iv_name, intervals) {
+            return Some((update_idx, name.to_string(), step));
+        }
+        if let Some(source) = alias_source_name(op) {
+            return induction_update_for_name_before(
+                func_ir,
+                start,
+                update_idx,
+                source,
+                iv_name,
+                intervals,
+                depth + 1,
+            );
+        }
+        return None;
     }
     None
 }
@@ -3118,9 +3940,8 @@ fn loop_backedge_update_names(func_ir: &FunctionIR) -> PlanHashSet<String> {
             let Some(source) = store_var_source_name(op) else {
                 continue;
             };
-            let Some(update_idx) = (start + 1..idx)
-                .rev()
-                .find(|candidate| ops[*candidate].out.as_deref() == Some(source))
+            let Some((update_idx, update_name)) =
+                alias_resolved_output_before(func_ir, start, idx, source, 0)
             else {
                 continue;
             };
@@ -3141,11 +3962,35 @@ fn loop_backedge_update_names(func_ir: &FunctionIR) -> PlanHashSet<String> {
                 })
             });
             if updates_slot_load {
-                names.insert(source.to_string());
+                names.insert(update_name);
             }
         }
     }
     names
+}
+
+fn alias_resolved_output_before(
+    func_ir: &FunctionIR,
+    start: usize,
+    before_idx: usize,
+    name: &str,
+    depth: usize,
+) -> Option<(usize, String)> {
+    if depth > 8 {
+        return None;
+    }
+    let ops = &func_ir.ops;
+    for idx in (start + 1..before_idx).rev() {
+        let op = &ops[idx];
+        if op.out.as_deref() != Some(name) {
+            continue;
+        }
+        if let Some(source) = alias_source_name(op) {
+            return alias_resolved_output_before(func_ir, start, idx, source, depth + 1);
+        }
+        return Some((idx, name.to_string()));
+    }
+    None
 }
 
 /// OSC admission for `overflow_peel`'d loops (the name-keyed native chain).
@@ -3852,6 +4697,27 @@ mod tests {
     }
 
     #[test]
+    fn non_int_store_index_conflicts_flat_list_storage() {
+        let list_new = op("list_int_new", Some("xs"), None, &[]);
+        let idx = const_int("i", 0);
+        let value = const_float("f", 1.25);
+        let store = op("store_index", Some("ys"), None, &["xs", "i", "f"]);
+        let index = op("index", Some("item"), None, &["ys", "i"]);
+        let func = function(
+            "flat_storage_non_int_write",
+            &[],
+            None,
+            vec![list_new, idx, value, store.clone(), index.clone()],
+        );
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+
+        assert_eq!(plan.name_container_storage_kind("xs"), None);
+        assert_eq!(plan.name_container_storage_kind("ys"), None);
+        assert!(!plan.op_has_container_storage(3, &store, ContainerStorageKind::FlatListInt));
+        assert!(!plan.op_has_container_storage(4, &index, ContainerStorageKind::FlatListInt));
+    }
+
+    #[test]
     fn semantic_list_bool_index_does_not_authorize_raw_bool_primary() {
         let index = op("index", Some("item"), None, &["items", "idx"]);
         let func = function(
@@ -3974,6 +4840,115 @@ mod tests {
     }
 
     #[test]
+    fn alias_group_unknown_loop_header_source_terminates_without_promotion() {
+        let func = function(
+            "alias_group_unknown_loop_header_source",
+            &[],
+            None,
+            vec![
+                const_int("zero", 0),
+                op("const_none", Some("none"), None, &[]),
+                const_int("one", 1),
+                op("store_var", None, Some("_bb2_arg0"), &["zero"]),
+                op("store_var", None, Some("_bb2_arg0"), &["none"]),
+                op("load_var", Some("_v19"), Some("_bb2_arg0"), &[]),
+                op("add", Some("next"), None, &["one", "one"]),
+                op("store_var", None, Some("_v19"), &["next"]),
+                op("copy_var", Some("after"), None, &["_v19"]),
+            ],
+        );
+
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let (int_like, _, _, _, _) = plan.scalar_name_sets();
+
+        assert!(
+            !int_like.contains("_v19"),
+            "ambiguous loop-header alias/store join must not re-promote _v19"
+        );
+        assert!(
+            !int_like.contains("after"),
+            "aliases fed by an ambiguous loop-header source must stay unpromoted"
+        );
+    }
+
+    #[test]
+    fn pending_store_target_dominates_same_name_alias_output() {
+        let func = function(
+            "pending_store_target_dominates_same_name_alias_output",
+            &[],
+            None,
+            vec![
+                const_int("one", 1),
+                op("copy_var", Some("slot"), None, &["one"]),
+                op("store_var", None, Some("slot"), &["unproven_source"]),
+                op("copy_var", Some("after"), None, &["slot"]),
+            ],
+        );
+
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let (int_like, _, _, _, _) = plan.scalar_name_sets();
+
+        assert!(
+            !int_like.contains("slot"),
+            "pending store target must prevent same-name alias output reinsertion"
+        );
+        assert!(
+            !int_like.contains("after"),
+            "aliases from a pending store target must not inherit stale facts"
+        );
+    }
+
+    #[test]
+    fn pending_store_target_remains_relevant_for_same_name_alias_output() {
+        let func = function(
+            "pending_store_target_remains_relevant_for_same_name_alias_output",
+            &[],
+            None,
+            vec![
+                const_int("one", 1),
+                op("copy_var", Some("slot"), None, &["one"]),
+                op("store_var", None, Some("slot"), &["unproven_source"]),
+            ],
+        );
+
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let (int_like, _, _, _, _) = plan.scalar_name_sets();
+
+        assert!(
+            !int_like.contains("slot"),
+            "same-name alias output must keep a pending store target relevant"
+        );
+    }
+
+    #[test]
+    fn pending_alias_source_blocks_store_target_reinsert_loop() {
+        let func = function(
+            "pending_alias_source_blocks_store_target_reinsert_loop",
+            &[],
+            None,
+            vec![
+                const_int("one", 1),
+                op("store_var", None, Some("loop_slot"), &["unproven_source"]),
+                op("load_var", Some("iv"), Some("loop_slot"), &[]),
+                op("store_var", None, Some("iv"), &["one"]),
+                op("copy_var", Some("after"), None, &["iv"]),
+            ],
+        );
+
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let (int_like, _, _, _, _) = plan.scalar_name_sets();
+
+        assert!(
+            !int_like.contains("iv"),
+            "a name defined by both a pending load alias and a store target must not oscillate back to int"
+        );
+        assert!(
+            !int_like.contains("after"),
+            "aliases fed by the blocked name must not inherit a stale fact"
+        );
+    }
+
+    #[test]
     fn iter_next_done_flag_uses_fused_bool_fact_not_index_fast_int_hint() {
         let mut done_index = const_int("done_index", 1);
         done_index.fast_int = Some(true);
@@ -4058,6 +5033,108 @@ mod tests {
 
         assert!(int_like.contains("x"));
         assert!(bool_like.contains("flag"));
+    }
+
+    fn graph_fact_test_index() -> (IndexedFunctionFactIndex<'static>, NameId) {
+        let mut names = FunctionNameIndex::with_capacity(1);
+        let target = names.intern("target");
+        let len = names.len();
+        (
+            IndexedFunctionFactIndex {
+                names,
+                stores: Vec::new(),
+                alias_groups: Vec::new(),
+                alias_sources: vec![false; len],
+                alias_outputs: vec![false; len],
+            },
+            target,
+        )
+    }
+
+    fn int_fact() -> ScalarRepresentationFact {
+        ScalarRepresentationFact {
+            ty: TirType::I64,
+            repr: LirRepr::I64,
+        }
+    }
+
+    fn bool_fact() -> ScalarRepresentationFact {
+        ScalarRepresentationFact {
+            ty: TirType::Bool,
+            repr: LirRepr::Bool1,
+        }
+    }
+
+    fn dynbox_top_fact() -> ScalarRepresentationFact {
+        ScalarRepresentationFact {
+            ty: TirType::DynBox,
+            repr: LirRepr::DynBox,
+        }
+    }
+
+    #[test]
+    fn graph_join_does_not_narrow_strong_dynbox_top() {
+        let (index, target) = graph_fact_test_index();
+        let mut plan = ScalarRepresentationPlan::with_capacity(1);
+        plan.insert_fact("target".to_string(), dynbox_top_fact());
+        let mut facts = IndexedScalarFacts::from_plan(&plan, &index);
+        let int_id = facts.intern_fact(int_fact());
+
+        assert!(!facts.insert_graph_fact_id(target, int_id));
+        facts.sync_to_plan(&mut plan, &index);
+
+        assert_eq!(plan.facts_by_name.get("target"), Some(&dynbox_top_fact()));
+        assert!(!plan.scalar_name_sets().0.contains("target"));
+    }
+
+    #[test]
+    fn graph_join_replaces_weak_dynbox_fallback_with_proven_source() {
+        let (index, target) = graph_fact_test_index();
+        let mut plan = ScalarRepresentationPlan::with_capacity(1);
+        plan.insert_fact("target".to_string(), dynbox_top_fact());
+        plan.weak_fact_names.insert("target".to_string());
+        let mut facts = IndexedScalarFacts::from_plan(&plan, &index);
+        let int_id = facts.intern_fact(int_fact());
+
+        assert!(facts.insert_graph_fact_id(target, int_id));
+        facts.sync_to_plan(&mut plan, &index);
+
+        assert_eq!(plan.facts_by_name.get("target"), Some(&int_fact()));
+        assert!(!plan.weak_fact_names.contains("target"));
+        assert!(plan.scalar_name_sets().0.contains("target"));
+    }
+
+    #[test]
+    fn graph_join_incoming_dynbox_widens_specific_fact() {
+        let (index, target) = graph_fact_test_index();
+        let mut plan = ScalarRepresentationPlan::with_capacity(1);
+        plan.insert_fact("target".to_string(), int_fact());
+        let mut facts = IndexedScalarFacts::from_plan(&plan, &index);
+        let top_id = facts.intern_fact(dynbox_top_fact());
+
+        assert!(facts.insert_graph_fact_id(target, top_id));
+        facts.sync_to_plan(&mut plan, &index);
+
+        assert_eq!(plan.facts_by_name.get("target"), Some(&dynbox_top_fact()));
+        assert!(!plan.scalar_name_sets().0.contains("target"));
+    }
+
+    #[test]
+    fn graph_join_conflicts_different_strong_non_top_facts() {
+        let (index, target) = graph_fact_test_index();
+        let mut plan = ScalarRepresentationPlan::with_capacity(1);
+        plan.insert_fact("target".to_string(), int_fact());
+        let mut facts = IndexedScalarFacts::from_plan(&plan, &index);
+        let bool_id = facts.intern_fact(bool_fact());
+
+        assert!(facts.insert_graph_fact_id(target, bool_id));
+        facts.sync_to_plan(&mut plan, &index);
+
+        assert!(!plan.facts_by_name.contains_key("target"));
+        assert!(plan.conflicted_names.contains("target"));
+        let (int_like, bool_like, _, _, _) = plan.scalar_name_sets();
+        assert!(!int_like.contains("target"));
+        assert!(!bool_like.contains("target"));
     }
 
     #[test]
@@ -4462,6 +5539,60 @@ mod tests {
     }
 
     #[test]
+    fn raw_loop_iv_copy_used_by_object_ops_stays_primary_until_escape() {
+        let func = function(
+            "raw_loop_iv_copy_used_by_object_ops",
+            &[],
+            None,
+            vec![
+                op("missing", Some("missing_i"), None, &[]),
+                op("store_var", None, Some("i"), &["missing_i"]),
+                op("copy_var", Some("missing_copy"), None, &["missing_i"]),
+                const_int("stop", 3),
+                const_int("zero", 0),
+                const_int("one", 1),
+                op("copy_var", Some("zero_copy"), None, &["zero"]),
+                op("store_var", None, Some("_bb1_arg0"), &["zero_copy"]),
+                op("store_var", None, Some("_bb1_arg1"), &["missing_copy"]),
+                op("loop_start", None, None, &[]),
+                op("load_var", Some("iv"), Some("_bb1_arg0"), &[]),
+                op("load_var", Some("carried_obj"), Some("_bb1_arg1"), &[]),
+                op("lt", Some("cond"), None, &["iv", "stop"]),
+                op("loop_break_if_false", None, None, &["cond"]),
+                op("store_var", None, Some("i"), &["iv"]),
+                op("copy_var", Some("escaped_iv"), None, &["iv"]),
+                op("check_exception", None, None, &[]),
+                op("type_of", Some("ty"), None, &["escaped_iv"]),
+                op("check_exception", None, None, &[]),
+                op("str_from_obj", Some("text"), None, &["escaped_iv"]),
+                op(
+                    "exception_new_builtin_one",
+                    Some("exc"),
+                    None,
+                    &["escaped_iv"],
+                ),
+                op("add", Some("next"), None, &["iv", "one"]),
+                op("store_var", None, Some("iv"), &["next"]),
+                op("copy_var", Some("next_copy"), None, &["next"]),
+                op("store_var", None, Some("_bb1_arg0"), &["next_copy"]),
+                op("store_var", None, Some("_bb1_arg1"), &["escaped_iv"]),
+                op("loop_continue", None, None, &[]),
+                op("loop_end", None, None, &[]),
+            ],
+        );
+
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let int_primary = plan.primary_name_sets().int;
+
+        for name in ["_bb1_arg0", "iv", "escaped_iv", "next", "next_copy"] {
+            assert!(
+                int_primary.contains(name),
+                "{name} must stay int-primary until boxed escape; got {int_primary:?}"
+            );
+        }
+    }
+
+    #[test]
     fn float_primary_scope_excludes_pow_without_disabling_unrelated_float_defs() {
         let func = function(
             "float_primary_pow_scope",
@@ -4511,19 +5642,78 @@ mod tests {
     }
 
     #[test]
+    fn scalar_primary_excludes_missing_sentinel_store_sources() {
+        let func = function(
+            "scalar_primary_missing_sentinel_sources",
+            &[],
+            None,
+            vec![
+                const_int("i_seed", 7),
+                op("store_var", None, Some("int_slot"), &["i_seed"]),
+                op("store_var", None, Some("maybe_int_slot"), &["i_seed"]),
+                const_bool("b_seed", true),
+                op("store_var", None, Some("bool_slot"), &["b_seed"]),
+                op("store_var", None, Some("maybe_bool_slot"), &["b_seed"]),
+                const_float("f_seed", 1.5),
+                op("store_var", None, Some("float_slot"), &["f_seed"]),
+                op("store_var", None, Some("maybe_float_slot"), &["f_seed"]),
+                op("missing", Some("missing_value"), None, &[]),
+                op(
+                    "store_var",
+                    None,
+                    Some("maybe_int_slot"),
+                    &["missing_value"],
+                ),
+                op(
+                    "store_var",
+                    None,
+                    Some("maybe_bool_slot"),
+                    &["missing_value"],
+                ),
+                op(
+                    "store_var",
+                    None,
+                    Some("maybe_float_slot"),
+                    &["missing_value"],
+                ),
+            ],
+        );
+
+        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+
+        assert!(primary.int.contains("int_slot"));
+        assert!(primary.bool_.contains("bool_slot"));
+        assert!(primary.float.contains("float_slot"));
+        assert!(!primary.int.contains("missing_value"));
+        assert!(!primary.bool_.contains("missing_value"));
+        assert!(!primary.float.contains("missing_value"));
+        assert!(!primary.int.contains("maybe_int_slot"));
+        assert!(!primary.bool_.contains("maybe_bool_slot"));
+        assert!(!primary.float.contains("maybe_float_slot"));
+    }
+
+    #[test]
     fn cold_module_chunk_functions_have_empty_primary_sets() {
         let func = function(
             "__molt_module_chunk_0",
             &[],
             None,
-            vec![const_int("value", 1), const_bool("flag", true)],
+            vec![
+                const_int("value", 1),
+                const_bool("flag", true),
+                op("list_new", Some("items"), None, &["value"]),
+            ],
         );
 
-        let primary = ScalarRepresentationPlan::for_function_ir(&func).primary_name_sets();
+        let plan = ScalarRepresentationPlan::for_function_ir(&func);
+        let primary = plan.primary_name_sets();
 
         assert!(primary.int.is_empty());
         assert!(primary.bool_.is_empty());
         assert!(primary.float.is_empty());
+        assert_eq!(plan.name_scalar_kind("value"), None);
+        assert_eq!(plan.name_scalar_kind("flag"), None);
+        assert_eq!(plan.name_container_kind("items"), None);
     }
 
     // ======================================================================

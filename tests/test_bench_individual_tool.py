@@ -219,9 +219,7 @@ def test_bench_individual_isolate_daemon_requires_identity_not_socket_env(
     def fake_ps(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         assert cmd == ["ps", "-axo", "pid=,etimes=,command="]
-        stdout = (
-            f" 404 120 /repo/target/molt-backend --daemon --socket {socket_path}\n"
-        )
+        stdout = f" 404 120 /repo/target/molt-backend --daemon --socket {socket_path}\n"
         return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
     def fake_terminate(identity, *, grace: float = 0.75, health_probe=None) -> bool:

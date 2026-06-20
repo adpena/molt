@@ -327,7 +327,7 @@ Comparisons accept optional `fast_int` / `fast_float`.
 | `has_attr_name`          | `args`, `out`                                  | hasattr() by runtime name          |
 | `guarded_field_get`      | `args` [obj, cls, ver], `s_value`, `value` (offset), `out` | Guarded field load  |
 | `guarded_field_set`      | `args` [obj, cls, ver, val], `s_value`, `value` (offset), `out` | Guarded field store |
-| `guarded_field_set_init` | `args` [obj, cls, ver, val], `s_value`, `value` (offset), `out` | Guarded field init store |
+| `guarded_field_init`     | `args` [obj, cls, ver, val], `s_value`, `value` (offset), `out` | Guarded field init store |
 
 ### Indexing
 
@@ -603,7 +603,7 @@ same internal opcode. These aliases are accepted in the JSON:
 | `call`, `call_func`, `call_internal`, `call_indirect`, `call_bind`, `call_function`, `call_guarded`, `invoke_ffi` | Call |
 | `call_builtin`, `builtin_print`, `print`                                | CallBuiltin          |
 | `get_attr`, `get_attr_generic_ptr`, `get_attr_generic_obj`, `get_attr_name`, `guarded_field_get`, `load`, `load_attr` | LoadAttr |
-| `set_attr`, `store_attr`, `set_attr_name`, `set_attr_generic_ptr`, `set_attr_generic_obj`, `guarded_field_set`, `guarded_field_set_init`, `store`, `store_init` | StoreAttr |
+| `set_attr`, `store_attr`, `set_attr_name`, `set_attr_generic_ptr`, `set_attr_generic_obj`, `guarded_field_set`, `guarded_field_init`, `store`, `store_init` | StoreAttr |
 | `del_attr`, `del_attr_generic_ptr`, `del_attr_generic_obj`              | DelAttr              |
 | `store_index`, `index_set`                                              | StoreIndex           |
 | `box`, `box_from_raw_int`                                               | BoxVal               |

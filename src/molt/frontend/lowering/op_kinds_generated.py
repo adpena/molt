@@ -80,7 +80,7 @@ CANONICAL_KIND: dict[str, str] = {
     "set_attr_generic_ptr": "set_attr",
     "set_attr_generic_obj": "set_attr",
     "guarded_field_set": "set_attr",
-    "guarded_field_set_init": "set_attr",
+    "guarded_field_init": "set_attr",
     "store": "set_attr",
     "store_init": "set_attr",
     "del_attr": "del_attr",

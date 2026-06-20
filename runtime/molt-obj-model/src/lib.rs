@@ -22,6 +22,8 @@ const INT_SIGN_BIT: u64 = 1 << 46;
 const INT_WIDTH: u64 = 47;
 const INT_MASK: u64 = (1u64 << INT_WIDTH) - 1;
 const CANONICAL_NAN_BITS: u64 = 0x7ff0_0000_0000_0001;
+pub const INLINE_INT_MIN: i64 = -(1i64 << (INT_WIDTH - 1));
+pub const INLINE_INT_MAX: i64 = (1i64 << (INT_WIDTH - 1)) - 1;
 
 const PTR_REGISTRY_SHARDS: usize = 64;
 
@@ -178,12 +180,24 @@ impl MoltObject {
     #[inline(always)]
     pub fn from_int(i: i64) -> Self {
         debug_assert!(
-            (-(1i64 << (INT_WIDTH - 1))..(1i64 << (INT_WIDTH - 1))).contains(&i),
+            (INLINE_INT_MIN..=INLINE_INT_MAX).contains(&i),
             "MoltObject::from_int: {i} is outside the 47-bit inline window; \
              callers must route non-inline values through int_bits_from_i128"
         );
         let val = (i as u64) & INT_MASK;
         Self(QNAN | TAG_INT | val)
+    }
+
+    #[inline(always)]
+    pub fn try_from_int(i: i64) -> Option<Self> {
+        (INLINE_INT_MIN..=INLINE_INT_MAX)
+            .contains(&i)
+            .then(|| Self::from_int(i))
+    }
+
+    #[inline(always)]
+    pub fn try_from_uint(i: u64) -> Option<Self> {
+        (i <= INLINE_INT_MAX as u64).then(|| Self::from_int(i as i64))
     }
 
     #[inline(always)]
@@ -431,9 +445,10 @@ mod bit_layout_contract {
     //!   sign extension via `canonical_addr_from_masked()` handles canonical
     //!   addressing on x86-64, where the upper 16 bits must match bit 47.
     //! - **Integer range** is bounded by the 47-bit inline representation width.
-    //!   Values outside `[-(2^46), 2^46 - 1]` are silently truncated by `from_int`.
-    //!   The sign extension logic in `as_int()` recovers the original value for any
-    //!   input within the valid range.
+    //!   Values outside `[-(2^46), 2^46 - 1]` must be routed through heap BigInt
+    //!   constructors instead of `from_int`.
+    //!   The sign extension logic in `as_int()` recovers the original value for
+    //!   any input within the valid range.
 }
 
 #[cfg(test)]
@@ -451,6 +466,33 @@ mod tests {
         let obj = MoltObject::from_int(42);
         assert!(obj.is_int());
         assert_eq!(obj.as_int(), Some(42));
+    }
+
+    #[test]
+    fn test_try_from_int_rejects_non_inline_values() {
+        assert_eq!(
+            MoltObject::try_from_int(INLINE_INT_MIN).and_then(|obj| obj.as_int()),
+            Some(INLINE_INT_MIN)
+        );
+        assert_eq!(
+            MoltObject::try_from_int(INLINE_INT_MAX).and_then(|obj| obj.as_int()),
+            Some(INLINE_INT_MAX)
+        );
+        assert!(MoltObject::try_from_int(INLINE_INT_MIN - 1).is_none());
+        assert!(MoltObject::try_from_int(INLINE_INT_MAX + 1).is_none());
+    }
+
+    #[test]
+    fn test_try_from_uint_rejects_non_inline_values() {
+        assert_eq!(
+            MoltObject::try_from_uint(0).and_then(|obj| obj.as_int()),
+            Some(0)
+        );
+        assert_eq!(
+            MoltObject::try_from_uint(INLINE_INT_MAX as u64).and_then(|obj| obj.as_int()),
+            Some(INLINE_INT_MAX)
+        );
+        assert!(MoltObject::try_from_uint(INLINE_INT_MAX as u64 + 1).is_none());
     }
 
     #[test]

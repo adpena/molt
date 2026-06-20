@@ -786,6 +786,98 @@ def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
     assert cmd[cmd.index("--stdlib-profile") + 1] == "full"
 
 
+def test_run_molt_build_only_uses_metadata_stdlib_profile_flag(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    seen_cmds: list[list[str]] = []
+    diff_root = tmp_path / "diff-root"
+    target_root = tmp_path / "target-root"
+
+    def fake_run_with_optional_time(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen_cmds.append(list(cmd))
+        output_path = Path(cmd[cmd.index("--output") + 1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.delenv("MOLT_DIFF_STDLIB_PROFILE", raising=False)
+    monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
+    monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
+    monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
+    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
+    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
+    monkeypatch.setattr(
+        module, "_collect_meta", lambda file_path: {"stdlib_profile": ["full"]}
+    )
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+
+    stdout, stderr, rc = module.run_molt_build_only(
+        "tests/differential/stdlib/stringprep_semantics.py",
+        "dev",
+    )
+
+    assert (stdout, stderr, rc) == ("", "", 0)
+    cmd = seen_cmds[0]
+    assert cmd[cmd.index("--stdlib-profile") + 1] == "full"
+
+
+def test_run_molt_build_only_rejects_conflicting_metadata_stdlib_profile(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    seen_cmds: list[list[str]] = []
+    metric_statuses: list[str] = []
+    diff_root = tmp_path / "diff-root"
+    target_root = tmp_path / "target-root"
+
+    monkeypatch.setenv("MOLT_DIFF_STDLIB_PROFILE", "micro")
+    monkeypatch.setattr(
+        module,
+        "_run_with_optional_time",
+        lambda cmd, **kwargs: seen_cmds.append(list(cmd)),
+    )
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_root", lambda: diff_root)
+    monkeypatch.setattr(module, "_diff_cargo_target_root", lambda: target_root)
+    monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
+    monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
+    monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
+    monkeypatch.setattr(
+        module, "_collect_meta", lambda file_path: {"stdlib_profile": ["full"]}
+    )
+    monkeypatch.setattr(
+        module,
+        "_record_rss_metrics",
+        lambda *args, **kwargs: metric_statuses.append(kwargs["status"]),
+    )
+
+    stdout, stderr, rc = module.run_molt_build_only(
+        "tests/differential/stdlib/stringprep_semantics.py",
+        "dev",
+    )
+
+    assert stdout is None
+    assert rc == 2
+    assert "requires MOLT_DIFF_STDLIB_PROFILE=full but selected micro" in stderr
+    assert seen_cmds == []
+    assert metric_statuses == ["build_invalid_stdlib_profile"]
+
+
 def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
     monkeypatch, tmp_path: Path
 ) -> None:

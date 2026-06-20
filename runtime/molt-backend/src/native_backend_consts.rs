@@ -48,5 +48,6 @@ pub(super) const HEADER_TYPE_ID_OFFSET: i32 = -HEADER_SIZE_BYTES; // type_id @ h
 pub(super) const HEADER_REFCOUNT_OFFSET: i32 = -(HEADER_SIZE_BYTES - 4);
 pub(super) const HEADER_FLAGS_OFFSET: i32 = -(HEADER_SIZE_BYTES - 8);
 pub(super) const HEADER_FLAG_IMMORTAL: u64 = 1 << 15;
+pub(super) const HEADER_FLAG_CONTAINS_REFS: u32 = 1 << 19;
 /// TYPE_ID_LIST_BOOL (250) — used by the JIT to inline list_bool access.
 pub(super) const JIT_TYPE_ID_LIST_BOOL: i64 = 250;

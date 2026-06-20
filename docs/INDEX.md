@@ -50,6 +50,7 @@ the source of truth.
 - ExceptionRegion ownership, shared TIR facts, shared drop artifacts, backend parity evidence, and HandlerState frontier: [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
 - Current module-scope control-flow binding status: [spec/STATUS.md](spec/STATUS.md)
 - Codebase decomposition program: [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md)
+- Parallel build, crate extraction, incremental cache, and compiler-throughput architecture: [design/parallel_build_architecture.md](design/parallel_build_architecture.md), [architecture/compilation-model.md](architecture/compilation-model.md)
 - Op-kind registry and generated dispatch direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
 
 ## Workspace Guides

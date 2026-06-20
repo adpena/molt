@@ -26,6 +26,18 @@ fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+fn assert_f32_close(label: &str, actual: f32, expected: f64, tol: f64) {
+    let diff = (actual as f64 - expected).abs();
+    assert!(
+        diff <= tol,
+        "{}: got {} expected {} (diff={})",
+        label,
+        actual,
+        expected,
+        diff
+    );
+}
+
 fn u16_to_bytes(vals: &[u16]) -> Vec<u8> {
     vals.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
@@ -891,6 +903,415 @@ fn test_composition_softmax() {
             diff
         );
     }
+}
+
+#[test]
+fn test_attention_core_masked_sdpa_row_executes_with_value_projection() {
+    let query = [1.0f32, 2.0];
+    let keys = [1.0f32, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0];
+    let mask = [1.0f32, 1.0, 0.0, 0.0];
+    let values = [10.0f32, 20.0, 30.0, 40.0];
+    let n_keys = values.len();
+    let head_dim = query.len();
+    let scale = 1.0 / (head_dim as f64).sqrt();
+    let masked_sentinel = -1.0e9f64;
+    let mut tiled_query = Vec::with_capacity(n_keys * head_dim);
+    for _ in 0..n_keys {
+        tiled_query.extend_from_slice(&query);
+    }
+
+    let qk_kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(0)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n_keys, head_dim], 1),
+            ),
+        ],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n_keys, head_dim]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n_keys, head_dim]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n_keys as u32, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut qk_bufs = vec![
+        vec![0u8; n_keys * 4],
+        f32_to_bytes(&tiled_query),
+        f32_to_bytes(&keys),
+    ];
+    interpret::execute_kernel(&qk_kernel, &mut qk_bufs);
+    let qk_scores = bytes_to_f32(&qk_bufs[0]);
+    assert_eq!(qk_scores, vec![1.0, 2.0, 3.0, 4.0]);
+
+    let scale_kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Mul,
+            vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Const {
+                    val: scale,
+                    dtype: DType::Float32,
+                },
+            ],
+            DType::Float32,
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n_keys as u32, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut scale_bufs = vec![vec![0u8; n_keys * 4], f32_to_bytes(&qk_scores)];
+    interpret::execute_kernel(&scale_kernel, &mut scale_bufs);
+    let scaled_scores = bytes_to_f32(&scale_bufs[0]);
+    for (i, (&actual, &score)) in scaled_scores.iter().zip(qk_scores.iter()).enumerate() {
+        assert_f32_close(
+            &format!("scaled qk score[{}]", i),
+            actual,
+            score as f64 * scale,
+            1e-6,
+        );
+    }
+
+    let masked_kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Where,
+            vec![
+                FusedSrc::Buf(1),
+                FusedSrc::Buf(2),
+                FusedSrc::Const {
+                    val: masked_sentinel,
+                    dtype: DType::Float32,
+                },
+            ],
+            DType::Float32,
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n_keys as u32, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut masked_bufs = vec![
+        vec![0u8; n_keys * 4],
+        f32_to_bytes(&mask),
+        f32_to_bytes(&scaled_scores),
+    ];
+    interpret::execute_kernel(&masked_kernel, &mut masked_bufs);
+    let masked_scores = bytes_to_f32(&masked_bufs[0]);
+    assert_f32_close("masked scaled qk score[0]", masked_scores[0], scale, 1e-6);
+    assert_f32_close(
+        "masked scaled qk score[1]",
+        masked_scores[1],
+        2.0 * scale,
+        1e-6,
+    );
+    assert!(masked_scores[2] < -1.0e8);
+    assert!(masked_scores[3] < -1.0e8);
+
+    let max_kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceMax,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n_keys], 0),
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [1, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut max_bufs = vec![vec![0u8; 4], f32_to_bytes(&masked_scores)];
+    interpret::execute_kernel(&max_kernel, &mut max_bufs);
+    let max_val = bytes_to_f32(&max_bufs[0])[0];
+    assert_f32_close("masked scaled qk max", max_val, 2.0 * scale, 1e-6);
+
+    let exp_kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Sub,
+                vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: max_val as f64,
+                        dtype: DType::Float32,
+                    },
+                ],
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![
+                    FusedSrc::Op(0),
+                    FusedSrc::Const {
+                        val: std::f64::consts::LOG2_E,
+                        dtype: DType::Float32,
+                    },
+                ],
+                DType::Float32,
+            ),
+            FusedOp::elementwise(PrimitiveOp::Exp2, vec![FusedSrc::Op(1)], DType::Float32),
+        ],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n_keys as u32, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut exp_bufs = vec![vec![0u8; n_keys * 4], f32_to_bytes(&masked_scores)];
+    interpret::execute_kernel(&exp_kernel, &mut exp_bufs);
+    let exp_vals = bytes_to_f32(&exp_bufs[0]);
+
+    let sum_kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![FusedOp::reduction(
+            PrimitiveOp::ReduceSum,
+            vec![FusedSrc::Buf(1)],
+            DType::Float32,
+            ReductionDomain::from_axis(&[n_keys], 0),
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [1, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut sum_bufs = vec![vec![0u8; 4], f32_to_bytes(&exp_vals)];
+    interpret::execute_kernel(&sum_kernel, &mut sum_bufs);
+    let sum_val = bytes_to_f32(&sum_bufs[0])[0];
+
+    let prob_kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Reciprocal,
+                vec![FusedSrc::Const {
+                    val: sum_val as f64,
+                    dtype: DType::Float32,
+                }],
+                DType::Float32,
+            ),
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Op(0)],
+                DType::Float32,
+            ),
+        ],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [n_keys as u32, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut prob_bufs = vec![vec![0u8; n_keys * 4], f32_to_bytes(&exp_vals)];
+    interpret::execute_kernel(&prob_kernel, &mut prob_bufs);
+    let probs = bytes_to_f32(&prob_bufs[0]);
+
+    let value_kernel = FusedKernel {
+        body: Default::default(),
+        ops: vec![
+            FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                DType::Float32,
+            ),
+            FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Op(0)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n_keys], 0),
+            ),
+        ],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[1]),
+                dtype: DType::Float32,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[n_keys]),
+                dtype: DType::Float32,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [1, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut value_bufs = vec![vec![0u8; 4], f32_to_bytes(&probs), f32_to_bytes(&values)];
+    interpret::execute_kernel(&value_kernel, &mut value_bufs);
+    let attended_value = bytes_to_f32(&value_bufs[0])[0];
+
+    let ref_scores: Vec<f64> = keys
+        .chunks_exact(head_dim)
+        .map(|key| {
+            query
+                .iter()
+                .zip(key.iter())
+                .map(|(&q, &k)| q as f64 * k as f64)
+                .sum::<f64>()
+                * scale
+        })
+        .collect();
+    let ref_max = ref_scores
+        .iter()
+        .zip(mask.iter())
+        .filter_map(|(&score, &keep)| (keep != 0.0).then_some(score))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let ref_exps: Vec<f64> = ref_scores
+        .iter()
+        .zip(mask.iter())
+        .map(|(&score, &keep)| {
+            if keep != 0.0 {
+                (score - ref_max).exp()
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let ref_sum: f64 = ref_exps.iter().sum();
+    let ref_probs: Vec<f64> = ref_exps.iter().map(|exp| exp / ref_sum).collect();
+    let ref_attended: f64 = ref_probs
+        .iter()
+        .zip(values.iter())
+        .map(|(&prob, &value)| prob * value as f64)
+        .sum();
+
+    for (i, (&actual, &expected)) in probs.iter().zip(ref_probs.iter()).enumerate() {
+        assert_f32_close(
+            &format!("masked attention prob[{}]", i),
+            actual,
+            expected,
+            1e-5,
+        );
+    }
+    let prob_total: f32 = probs.iter().sum();
+    assert_f32_close("masked attention prob sum", prob_total, 1.0, 1e-5);
+    assert_f32_close("masked attention value", attended_value, ref_attended, 1e-4);
 }
 
 // --- relu(x) = max(x, 0) ---

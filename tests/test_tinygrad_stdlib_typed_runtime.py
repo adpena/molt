@@ -112,7 +112,9 @@ def test_int32_binary_add_carries_runtime_handle_to_raw_readback() -> None:
     def create_raw(data, data_len, dtype_code, shape):
         handle = next_handle["value"]
         next_handle["value"] += 1
-        calls.append(("create_raw", bytes(data), data_len, dtype_code, tuple(shape), handle))
+        calls.append(
+            ("create_raw", bytes(data), data_len, dtype_code, tuple(shape), handle)
+        )
         return handle
 
     def binary(op_code, lhs_handle, rhs_handle):
@@ -237,7 +239,9 @@ def test_runtime_unary_and_explicit_axis_reduce_use_primitive_handles() -> None:
         assert ("reduce", 24, 401, 0) in calls
 
 
-def test_runtime_movement_views_use_primitive_handles_without_materializing_source() -> None:
+def test_runtime_movement_views_use_primitive_handles_without_materializing_source() -> (
+    None
+):
     calls: list[tuple] = []
 
     def create_raw(_data, _data_len, dtype_code, shape):
@@ -306,7 +310,9 @@ def test_runtime_movement_views_use_primitive_handles_without_materializing_sour
         assert result.tolist() == [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]]
 
 
-def test_runtime_pad_shrink_flip_use_primitive_handles_without_materializing_source() -> None:
+def test_runtime_pad_shrink_flip_use_primitive_handles_without_materializing_source() -> (
+    None
+):
     calls: list[tuple] = []
 
     def create_raw(_data, _data_len, dtype_code, shape):
@@ -325,7 +331,9 @@ def test_runtime_pad_shrink_flip_use_primitive_handles_without_materializing_sou
         calls.append(("flip", handle, axis))
         return 903
 
-    payload = b"".join(value.to_bytes(4, "little", signed=True) for value in (4, 3, 2, 1))
+    payload = b"".join(
+        value.to_bytes(4, "little", signed=True) for value in (4, 3, 2, 1)
+    )
 
     def read_raw(handle, dtype_code, out, out_len):
         assert handle == 903
@@ -412,7 +420,9 @@ def test_runtime_matmul_composes_movement_binary_reduce_handles() -> None:
         calls.append(("reduce", op_code, src_handle, axis))
         return 807
 
-    payload = b"".join(value.to_bytes(4, "little", signed=True) for value in (19, 22, 43, 50))
+    payload = b"".join(
+        value.to_bytes(4, "little", signed=True) for value in (19, 22, 43, 50)
+    )
 
     def read_raw(handle, dtype_code, out, out_len):
         assert handle == 808
@@ -517,7 +527,9 @@ def test_runtime_explicit_axis_reduce_keeps_broadcastable_runtime_shape() -> Non
         calls.append(("expand", handle, tuple(shape)))
         return 932
 
-    payload = b"".join(value.to_bytes(4, "little", signed=True) for value in (3, 3, 7, 7))
+    payload = b"".join(
+        value.to_bytes(4, "little", signed=True) for value in (3, 3, 7, 7)
+    )
 
     def read_raw(handle, dtype_code, out, out_len):
         assert handle == 932
@@ -540,7 +552,11 @@ def test_runtime_explicit_axis_reduce_keeps_broadcastable_runtime_shape() -> Non
         Tensor = modules["tensor"].Tensor
         dtypes = modules["dtypes"].dtypes
 
-        result = Tensor([[1, 2], [3, 4]], dtype=dtypes.int32).sum(axis=1)._broadcast_to((2, 2))
+        result = (
+            Tensor([[1, 2], [3, 4]], dtype=dtypes.int32)
+            .sum(axis=1)
+            ._broadcast_to((2, 2))
+        )
 
         assert result.shape == (2, 2)
         assert result.lazydata.handle == 932
@@ -553,9 +569,13 @@ def test_runtime_explicit_axis_reduce_keeps_broadcastable_runtime_shape() -> Non
         assert result.tolist() == [[3, 3], [7, 7]]
 
 
-def test_runtime_binary_stays_reference_when_lhs_shape_would_misstate_broadcast() -> None:
+def test_runtime_binary_stays_reference_when_lhs_shape_would_misstate_broadcast() -> (
+    None
+):
     def binary(*_args):
-        raise AssertionError("runtime binary must not own lhs-shape-mismatched broadcast")
+        raise AssertionError(
+            "runtime binary must not own lhs-shape-mismatched broadcast"
+        )
 
     with tinygrad_stdlib_context(
         intrinsics={"molt_gpu_prim_binary": binary}
@@ -610,7 +630,9 @@ def test_runtime_where_uses_ternary_handle_without_materializing_sources() -> No
         calls.append(("ternary", op_code, cond_handle, true_handle, false_handle))
         return 944
 
-    payload = b"".join(value.to_bytes(4, "little", signed=True) for value in (10, 2, 30))
+    payload = b"".join(
+        value.to_bytes(4, "little", signed=True) for value in (10, 2, 30)
+    )
 
     def read_raw(handle, dtype_code, out, out_len):
         assert handle == 944
@@ -652,7 +674,9 @@ def test_runtime_where_uses_ternary_handle_without_materializing_sources() -> No
         assert result.tolist() == [10, 2, 30]
 
 
-def test_runtime_where_fails_closed_when_ternary_intrinsic_rejects_handle_graph() -> None:
+def test_runtime_where_fails_closed_when_ternary_intrinsic_rejects_handle_graph() -> (
+    None
+):
     next_handle = {"value": 950}
 
     def create_raw(_data, _data_len, _dtype_code, _shape):

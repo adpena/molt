@@ -171,6 +171,7 @@ class _FileLoader:
         ``exec_module``.  Restores the previous ``sys.modules`` entry on
         failure so partially initialised modules are not left visible.
         """
+        _ensure_intrinsics()
         if fullname is None:
             fullname = self.name
         else:
@@ -184,32 +185,7 @@ class _FileLoader:
             raise ImportError(
                 f"could not build spec for {fullname!r} from {self.path!r}"
             )
-        module = _util.module_from_spec(spec)
-        if module is None:
-            raise ImportError(
-                f"could not create module {fullname!r} from {self.path!r}"
-            )
-        modules = getattr(_sys, "modules", None)
-        previous = None
-        had_previous = False
-        if isinstance(modules, dict):
-            had_previous = fullname in modules
-            previous = modules.get(fullname)
-            modules[fullname] = module
-        try:
-            self.exec_module(module)
-        except BaseException:
-            if isinstance(modules, dict):
-                if had_previous:
-                    modules[fullname] = previous
-                else:
-                    modules.pop(fullname, None)
-            raise
-        # exec_module is allowed to substitute the canonical module object via
-        # ``sys.modules``; honour CPython's ``_load_module_shim`` semantics.
-        if isinstance(modules, dict) and fullname in modules:
-            return modules[fullname]
-        return module
+        return _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC(self, fullname, spec)
 
 
 class _SourceLoader(_FileLoader):
@@ -252,39 +228,10 @@ class SourceFileLoader(_SourceLoader):
 
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
-        path = self.path
-        module_name = _coerce_module_name(module, self)
-        spec_has_locations = _module_spec_is_package(module)
-        payload = _source_exec_payload(module_name, path, bool(spec_has_locations))
-        source = payload["source"]
-        is_package = payload["is_package"]
-        module_package = payload["module_package"]
-        package_root = payload["package_root"]
-        if not isinstance(source, str):
-            raise RuntimeError("invalid importlib source exec payload: source")
-        if not isinstance(is_package, bool):
-            raise RuntimeError("invalid importlib source exec payload: is_package")
-        if not isinstance(module_package, str):
-            raise RuntimeError("invalid importlib source exec payload: module_package")
-        if package_root is not None and not isinstance(package_root, str):
-            raise RuntimeError("invalid importlib source exec payload: package_root")
-        _set_module_state(
-            module,
-            module_name=module_name,
-            loader=self,
-            origin=path,
-            is_package=is_package,
-            module_package=module_package,
-            package_root=package_root,
-        )
-        _exec_restricted(module, source, path)
-        _stabilize_module_state_after_exec(
-            module,
-            loader=self,
-            origin=path,
-            is_package=is_package,
-            module_package=module_package,
-            package_root=package_root,
+        _check_loader_exec_result(
+            _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE(
+                self, module, self.path, ModuleSpec
+            )
         )
 
 
@@ -318,50 +265,10 @@ class _ZipSourceLoader:
 
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
-        module_name = _coerce_module_name(module, self)
-        spec_has_locations = _module_spec_is_package(module)
-        payload = _zip_source_exec_payload(
-            module_name,
-            self.archive_path,
-            self.inner_path,
-            bool(spec_has_locations),
-        )
-        source = payload["source"]
-        origin = payload["origin"]
-        is_package = payload["is_package"]
-        module_package = payload["module_package"]
-        package_root = payload["package_root"]
-        if not isinstance(source, str):
-            raise RuntimeError("invalid importlib zip source exec payload: source")
-        if not isinstance(origin, str):
-            raise RuntimeError("invalid importlib zip source exec payload: origin")
-        if not isinstance(is_package, bool):
-            raise RuntimeError("invalid importlib zip source exec payload: is_package")
-        if not isinstance(module_package, str):
-            raise RuntimeError(
-                "invalid importlib zip source exec payload: module_package"
+        _check_loader_exec_result(
+            _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE(
+                self, module, self.archive_path, self.inner_path, ModuleSpec
             )
-        if package_root is not None and not isinstance(package_root, str):
-            raise RuntimeError(
-                "invalid importlib zip source exec payload: package_root"
-            )
-        _set_module_state(
-            module,
-            module_name=module_name,
-            loader=self,
-            origin=origin,
-            is_package=is_package,
-            module_package=module_package,
-            package_root=package_root,
-        )
-        _exec_restricted(module, source, origin)
-        _stabilize_module_state_after_exec(
-            module,
-            loader=self,
-            origin=origin,
-            is_package=is_package,
-            module_package=module_package,
-            package_root=package_root,
         )
 
 
@@ -381,47 +288,10 @@ class ExtensionFileLoader(_FileLoader):
 
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
-        module_name = _coerce_module_name(module, self)
-        spec_has_locations = _module_spec_is_package(module)
-        payload = _extension_loader_payload(
-            module_name,
-            self.path,
-            bool(spec_has_locations),
-        )
-        is_package = payload["is_package"]
-        module_package = payload["module_package"]
-        package_root = payload["package_root"]
-        if not isinstance(is_package, bool):
-            raise RuntimeError("invalid importlib extension loader payload: is_package")
-        if not isinstance(module_package, str):
-            raise RuntimeError(
-                "invalid importlib extension loader payload: module_package"
+        _check_loader_exec_result(
+            _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE(
+                self, module, self.path, ModuleSpec
             )
-        if package_root is not None and not isinstance(package_root, str):
-            raise RuntimeError(
-                "invalid importlib extension loader payload: package_root"
-            )
-        _set_module_state(
-            module,
-            module_name=module_name,
-            loader=self,
-            origin=self.path,
-            is_package=bool(is_package),
-            module_package=module_package,
-            package_root=package_root,
-        )
-        result = _MOLT_IMPORTLIB_EXEC_EXTENSION(module.__dict__, module_name, self.path)
-        if result is not None:
-            raise RuntimeError(
-                "invalid importlib extension execution intrinsic result: expected None"
-            )
-        _stabilize_module_state_after_exec(
-            module,
-            loader=self,
-            origin=self.path,
-            is_package=bool(is_package),
-            module_package=module_package,
-            package_root=package_root,
         )
 
 
@@ -450,53 +320,10 @@ class SourcelessFileLoader(_FileLoader):
 
     def exec_module(self, module) -> None:
         _ensure_intrinsics()
-        if _is_archive_member_path(self.path):
-            raise NotADirectoryError(self.path)
-        module_name = _coerce_module_name(module, self)
-        spec_has_locations = _module_spec_is_package(module)
-        payload = _sourceless_loader_payload(
-            module_name,
-            self.path,
-            bool(spec_has_locations),
-        )
-        is_package = payload["is_package"]
-        module_package = payload["module_package"]
-        package_root = payload["package_root"]
-        if not isinstance(is_package, bool):
-            raise RuntimeError(
-                "invalid importlib sourceless loader payload: is_package"
+        _check_loader_exec_result(
+            _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE(
+                self, module, self.path, ModuleSpec
             )
-        if not isinstance(module_package, str):
-            raise RuntimeError(
-                "invalid importlib sourceless loader payload: module_package"
-            )
-        if package_root is not None and not isinstance(package_root, str):
-            raise RuntimeError(
-                "invalid importlib sourceless loader payload: package_root"
-            )
-        _set_module_state(
-            module,
-            module_name=module_name,
-            loader=self,
-            origin=self.path,
-            is_package=bool(is_package),
-            module_package=module_package,
-            package_root=package_root,
-        )
-        result = _MOLT_IMPORTLIB_EXEC_SOURCELESS(
-            module.__dict__, module_name, self.path
-        )
-        if result is not None:
-            raise RuntimeError(
-                "invalid importlib sourceless execution intrinsic result: expected None"
-            )
-        _stabilize_module_state_after_exec(
-            module,
-            loader=self,
-            origin=self.path,
-            is_package=bool(is_package),
-            module_package=module_package,
-            package_root=package_root,
         )
 
 
@@ -558,64 +385,20 @@ class _MoltResourceReader:
         return values
 
 
-def _set_module_state(
-    module,
-    *,
-    module_name: str,
-    loader: object,
-    origin: str,
-    is_package: bool,
-    module_package: str,
-    package_root: str | None,
-) -> None:
-    _ensure_intrinsics()
-    result = _MOLT_IMPORTLIB_SET_MODULE_STATE(
-        module,
-        module_name,
-        loader,
-        origin,
-        is_package,
-        module_package,
-        package_root,
-        ModuleSpec,
-    )
+def _check_loader_exec_result(result) -> None:
+    if _MOLT_EXCEPTION_PENDING():
+        exc = _MOLT_EXCEPTION_LAST()
+        cleared = _MOLT_EXCEPTION_CLEAR()
+        if cleared is not None:
+            raise RuntimeError(
+                "invalid exception clear intrinsic result: expected None"
+            )
+        if isinstance(exc, BaseException):
+            raise exc
+        raise RuntimeError("importlib loader execution failed")
     if result is not None:
         raise RuntimeError(
-            "invalid importlib set module state intrinsic result: expected None"
-        )
-
-
-def _is_archive_member_path(path: str) -> bool:
-    _ensure_intrinsics()
-    value = _MOLT_IMPORTLIB_PATH_IS_ARCHIVE_MEMBER(path)
-    if not isinstance(value, bool):
-        raise RuntimeError(
-            "invalid importlib archive member path payload: bool expected"
-        )
-    return value
-
-
-def _stabilize_module_state_after_exec(
-    module,
-    *,
-    loader: object,
-    origin: str,
-    is_package: bool,
-    module_package: str,
-    package_root: str | None,
-) -> None:
-    _ensure_intrinsics()
-    result = _MOLT_IMPORTLIB_STABILIZE_MODULE_STATE(
-        module,
-        loader,
-        origin,
-        is_package,
-        module_package,
-        package_root,
-    )
-    if result is not None:
-        raise RuntimeError(
-            "invalid importlib stabilize module state intrinsic result: expected None"
+            "invalid importlib loader execution intrinsic result: expected None"
         )
 
 
@@ -719,74 +502,6 @@ class WindowsRegistryFinder:
         return None
 
 
-def _exec_restricted(module, source: str, filename: str) -> None:
-    _ensure_intrinsics()
-    result = _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE(module.__dict__, source, filename)
-    if result is not None:
-        raise RuntimeError(
-            "invalid importlib source execution intrinsic result: expected None"
-        )
-    cleared = _MOLT_EXCEPTION_CLEAR()
-    if cleared is not None:
-        raise RuntimeError("invalid exception clear intrinsic result: expected None")
-
-
-def _module_spec_is_package(module: object) -> bool:
-    _ensure_intrinsics()
-    value = _MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE(module)
-    if not isinstance(value, bool):
-        raise RuntimeError(
-            "invalid importlib module spec package payload: bool expected"
-        )
-    return value
-
-
-def _source_exec_payload(
-    module_name: str, path: str, spec_is_package: bool
-) -> dict[str, object]:
-    _ensure_intrinsics()
-    payload = _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD(module_name, path, spec_is_package)
-    if not isinstance(payload, dict):
-        raise RuntimeError("invalid importlib source exec payload: dict expected")
-    return payload
-
-
-def _zip_source_exec_payload(
-    module_name: str, archive_path: str, inner_path: str, spec_is_package: bool
-) -> dict[str, object]:
-    _ensure_intrinsics()
-    payload = _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD(
-        module_name, archive_path, inner_path, spec_is_package
-    )
-    if not isinstance(payload, dict):
-        raise RuntimeError("invalid importlib zip source exec payload: dict expected")
-    return payload
-
-
-def _extension_loader_payload(
-    module_name: str, path: str, spec_is_package: bool
-) -> dict[str, object]:
-    _ensure_intrinsics()
-    payload = _MOLT_IMPORTLIB_EXTENSION_LOADER_PAYLOAD(
-        module_name, path, spec_is_package
-    )
-    if not isinstance(payload, dict):
-        raise RuntimeError("invalid importlib extension loader payload: dict expected")
-    return payload
-
-
-def _sourceless_loader_payload(
-    module_name: str, path: str, spec_is_package: bool
-) -> dict[str, object]:
-    _ensure_intrinsics()
-    payload = _MOLT_IMPORTLIB_SOURCELESS_LOADER_PAYLOAD(
-        module_name, path, spec_is_package
-    )
-    if not isinstance(payload, dict):
-        raise RuntimeError("invalid importlib sourceless loader payload: dict expected")
-    return payload
-
-
 def _package_root_from_origin(path: str) -> str | None:
     _ensure_intrinsics()
     value = _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN(path)
@@ -819,126 +534,140 @@ def _coerce_module_name(
     return value
 
 
-_MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD = None
-_MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = None
 _MOLT_IMPORTLIB_READ_FILE = None
 _MOLT_IMPORTLIB_COERCE_MODULE_NAME = None
 _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = None
 _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = None
 _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = None
-_MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE = None
-_MOLT_IMPORTLIB_EXEC_EXTENSION = None
-_MOLT_IMPORTLIB_EXEC_SOURCELESS = None
-_MOLT_IMPORTLIB_EXTENSION_LOADER_PAYLOAD = None
-_MOLT_IMPORTLIB_SOURCELESS_LOADER_PAYLOAD = None
-_MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE = None
+_MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE = None
+_MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE = None
+_MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE = None
+_MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE = None
 _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS = None
 _MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES_FROM_ROOTS = None
 _MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE_FROM_ROOTS = None
 _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS_FROM_ROOTS = None
-_MOLT_IMPORTLIB_PATH_IS_ARCHIVE_MEMBER = None
 _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN = None
 _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = None
-_MOLT_IMPORTLIB_SET_MODULE_STATE = None
-_MOLT_IMPORTLIB_STABILIZE_MODULE_STATE = None
+_MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC = None
 _MOLT_EXCEPTION_CLEAR = None
+_MOLT_EXCEPTION_LAST = None
+_MOLT_EXCEPTION_PENDING = None
 _MOLT_MODULE_IMPORT = None
+_MOLT_IMPORTLIB_INTRINSICS_READY = False
 
 
 def _ensure_intrinsics() -> None:
-    global _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD
-    global _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD
     global _MOLT_IMPORTLIB_READ_FILE
     global _MOLT_IMPORTLIB_COERCE_MODULE_NAME
     global _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC
     global _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC
     global _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE
-    global _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE
-    global _MOLT_IMPORTLIB_EXEC_EXTENSION
-    global _MOLT_IMPORTLIB_EXEC_SOURCELESS
-    global _MOLT_IMPORTLIB_EXTENSION_LOADER_PAYLOAD
-    global _MOLT_IMPORTLIB_SOURCELESS_LOADER_PAYLOAD
-    global _MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE
+    global _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE
+    global _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE
+    global _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE
+    global _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE
     global _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS
     global _MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES_FROM_ROOTS
     global _MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE_FROM_ROOTS
     global _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS_FROM_ROOTS
-    global _MOLT_IMPORTLIB_PATH_IS_ARCHIVE_MEMBER
     global _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN
     global _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME
-    global _MOLT_IMPORTLIB_SET_MODULE_STATE
-    global _MOLT_IMPORTLIB_STABILIZE_MODULE_STATE
+    global _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC
     global _MOLT_EXCEPTION_CLEAR
+    global _MOLT_EXCEPTION_LAST
+    global _MOLT_EXCEPTION_PENDING
     global _MOLT_MODULE_IMPORT
-    if _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD is not None:
+    global _MOLT_IMPORTLIB_INTRINSICS_READY
+    if _MOLT_IMPORTLIB_INTRINSICS_READY:
         return
     _require_intrinsic("molt_stdlib_probe")
-    _MOLT_IMPORTLIB_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
-        "molt_importlib_source_exec_payload"
-    )
-    _MOLT_IMPORTLIB_ZIP_SOURCE_EXEC_PAYLOAD = _require_intrinsic(
-        "molt_importlib_zip_source_exec_payload"
-    )
-    _MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file")
-    _MOLT_IMPORTLIB_COERCE_MODULE_NAME = _require_intrinsic(
+    importlib_read_file = _require_intrinsic("molt_importlib_read_file")
+    importlib_coerce_module_name = _require_intrinsic(
         "molt_importlib_coerce_module_name"
     )
-    _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = _require_intrinsic(
+    importlib_pathfinder_find_spec = _require_intrinsic(
         "molt_importlib_pathfinder_find_spec"
     )
-    _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = _require_intrinsic(
+    importlib_filefinder_find_spec = _require_intrinsic(
         "molt_importlib_filefinder_find_spec"
     )
-    _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = _require_intrinsic(
+    importlib_filefinder_invalidate = _require_intrinsic(
         "molt_importlib_filefinder_invalidate"
     )
-    _MOLT_IMPORTLIB_EXEC_RESTRICTED_SOURCE = _require_intrinsic(
-        "molt_importlib_exec_restricted_source"
+    importlib_sourcefileloader_exec_module = _require_intrinsic(
+        "molt_importlib_sourcefileloader_exec_module"
     )
-    _MOLT_IMPORTLIB_EXEC_EXTENSION = _require_intrinsic("molt_importlib_exec_extension")
-    _MOLT_IMPORTLIB_EXEC_SOURCELESS = _require_intrinsic(
-        "molt_importlib_exec_sourceless"
+    importlib_zip_source_loader_exec_module = _require_intrinsic(
+        "molt_importlib_zip_source_loader_exec_module"
     )
-    _MOLT_IMPORTLIB_EXTENSION_LOADER_PAYLOAD = _require_intrinsic(
-        "molt_importlib_extension_loader_payload"
+    importlib_extension_loader_exec_module = _require_intrinsic(
+        "molt_importlib_extension_loader_exec_module"
     )
-    _MOLT_IMPORTLIB_SOURCELESS_LOADER_PAYLOAD = _require_intrinsic(
-        "molt_importlib_sourceless_loader_payload"
+    importlib_sourceless_loader_exec_module = _require_intrinsic(
+        "molt_importlib_sourceless_loader_exec_module"
     )
-    _MOLT_IMPORTLIB_MODULE_SPEC_IS_PACKAGE = _require_intrinsic(
-        "molt_importlib_module_spec_is_package"
-    )
-    _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS = _require_intrinsic(
+    resources_reader_resource_path_from_roots = _require_intrinsic(
         "molt_importlib_resources_reader_resource_path_from_roots"
     )
-    _MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES_FROM_ROOTS = (
-        _require_intrinsic(
-            "molt_importlib_resources_reader_open_resource_bytes_from_roots"
-        )
+    resources_reader_open_resource_bytes_from_roots = _require_intrinsic(
+        "molt_importlib_resources_reader_open_resource_bytes_from_roots"
     )
-    _MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE_FROM_ROOTS = _require_intrinsic(
+    resources_reader_is_resource_from_roots = _require_intrinsic(
         "molt_importlib_resources_reader_is_resource_from_roots"
     )
-    _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS_FROM_ROOTS = _require_intrinsic(
+    resources_reader_contents_from_roots = _require_intrinsic(
         "molt_importlib_resources_reader_contents_from_roots"
     )
-    _MOLT_IMPORTLIB_PATH_IS_ARCHIVE_MEMBER = _require_intrinsic(
-        "molt_importlib_path_is_archive_member"
-    )
-    _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN = _require_intrinsic(
+    importlib_package_root_from_origin = _require_intrinsic(
         "molt_importlib_package_root_from_origin"
     )
-    _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = _require_intrinsic(
+    importlib_validate_resource_name = _require_intrinsic(
         "molt_importlib_validate_resource_name"
     )
-    _MOLT_IMPORTLIB_SET_MODULE_STATE = _require_intrinsic(
-        "molt_importlib_set_module_state"
+    importlib_load_module_from_spec = _require_intrinsic(
+        "molt_importlib_load_module_from_spec"
     )
-    _MOLT_IMPORTLIB_STABILIZE_MODULE_STATE = _require_intrinsic(
-        "molt_importlib_stabilize_module_state"
+    exception_clear = _require_intrinsic("molt_exception_clear")
+    exception_last = _require_intrinsic("molt_exception_last")
+    exception_pending = _require_intrinsic("molt_exception_pending")
+    module_import = _require_intrinsic("molt_module_import")
+
+    _MOLT_IMPORTLIB_READ_FILE = importlib_read_file
+    _MOLT_IMPORTLIB_COERCE_MODULE_NAME = importlib_coerce_module_name
+    _MOLT_IMPORTLIB_PATHFINDER_FIND_SPEC = importlib_pathfinder_find_spec
+    _MOLT_IMPORTLIB_FILEFINDER_FIND_SPEC = importlib_filefinder_find_spec
+    _MOLT_IMPORTLIB_FILEFINDER_INVALIDATE = importlib_filefinder_invalidate
+    _MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE = (
+        importlib_sourcefileloader_exec_module
     )
-    _MOLT_EXCEPTION_CLEAR = _require_intrinsic("molt_exception_clear")
-    _MOLT_MODULE_IMPORT = _require_intrinsic("molt_module_import")
+    _MOLT_IMPORTLIB_ZIP_SOURCE_LOADER_EXEC_MODULE = (
+        importlib_zip_source_loader_exec_module
+    )
+    _MOLT_IMPORTLIB_EXTENSION_LOADER_EXEC_MODULE = importlib_extension_loader_exec_module
+    _MOLT_IMPORTLIB_SOURCELESS_LOADER_EXEC_MODULE = (
+        importlib_sourceless_loader_exec_module
+    )
+    _MOLT_IMPORTLIB_RESOURCES_READER_RESOURCE_PATH_FROM_ROOTS = (
+        resources_reader_resource_path_from_roots
+    )
+    _MOLT_IMPORTLIB_RESOURCES_READER_OPEN_RESOURCE_BYTES_FROM_ROOTS = (
+        resources_reader_open_resource_bytes_from_roots
+    )
+    _MOLT_IMPORTLIB_RESOURCES_READER_IS_RESOURCE_FROM_ROOTS = (
+        resources_reader_is_resource_from_roots
+    )
+    _MOLT_IMPORTLIB_RESOURCES_READER_CONTENTS_FROM_ROOTS = (
+        resources_reader_contents_from_roots
+    )
+    _MOLT_IMPORTLIB_PACKAGE_ROOT_FROM_ORIGIN = importlib_package_root_from_origin
+    _MOLT_IMPORTLIB_VALIDATE_RESOURCE_NAME = importlib_validate_resource_name
+    _MOLT_IMPORTLIB_LOAD_MODULE_FROM_SPEC = importlib_load_module_from_spec
+    _MOLT_EXCEPTION_CLEAR = exception_clear
+    _MOLT_EXCEPTION_LAST = exception_last
+    _MOLT_EXCEPTION_PENDING = exception_pending
+    _MOLT_MODULE_IMPORT = module_import
+    _MOLT_IMPORTLIB_INTRINSICS_READY = True
 
 
 __all__ = [

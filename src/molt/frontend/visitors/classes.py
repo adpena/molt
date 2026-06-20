@@ -2697,6 +2697,7 @@ class ClassDefVisitorMixin(_MixinBase):
             attr_values=class_attr_values,
             names=set(class_attr_values) | set(methods),
         )
+
         def bind_class_name(name: str, value: MoltValue) -> None:
             # Single source of truth for "this straight-line arm bound a
             # class-body attribute": update the SSA fast-path view, mirror into
@@ -3461,9 +3462,7 @@ class ClassDefVisitorMixin(_MixinBase):
             # path; the ``dynamic_build`` branch below applies the SAME helper, so
             # a dataclass whose body needs block execution (P0 #50) still gets its
             # generated dunders.
-            class_val = self._emit_dataclass_application(
-                node, class_info, class_val
-            )
+            class_val = self._emit_dataclass_application(node, class_info, class_val)
         else:
             # Dynamic path
             self._publish_class_value(node.name, class_val)
@@ -3554,9 +3553,7 @@ class ClassDefVisitorMixin(_MixinBase):
             # frozen guards onto the finished class — must still run.  This is the
             # SAME helper the static-outlined path calls: one code path publishes
             # the dataclass transform regardless of how the class object was built.
-            class_val = self._emit_dataclass_application(
-                node, class_info, class_val
-            )
+            class_val = self._emit_dataclass_application(node, class_info, class_val)
         # Fill the ``__class__`` cell threaded into method closures with the
         # freshly built class object.  The ``dynamic_build`` (metaclass) path
         # fills it from the metaclass call's result earlier; here we cover the

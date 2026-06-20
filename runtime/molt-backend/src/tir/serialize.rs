@@ -4,7 +4,11 @@
 //!
 //! 1. `content_hash` — a fast hash of a [`TirFunction`] used as the cache key.
 //! 2. `serialize_ops` / `deserialize_ops` — round-trip [`OpIR`] slices to/from
-//!    compact JSON bytes for on-disk storage in the [`crate::tir::cache`].
+//!    compact JSON bytes for legacy SimpleIR cache users.
+//! 3. `serialize_tir_function` / `deserialize_tir_function` — round-trip a
+//!    fully optimized [`TirFunction`] as the native backend's cache artifact, so
+//!    cache hits preserve typed block-argument custody instead of re-entering the
+//!    expanded SimpleIR carrier.
 //!
 //! `OpIR` derives `serde::Serialize` + `serde::Deserialize` unconditionally, so
 //! `serde_json` is sufficient — no extra features are required.
@@ -13,6 +17,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use super::function::TirFunction;
+
+const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v1\0";
 
 // ---------------------------------------------------------------------------
 // Content hash (cache key)
@@ -79,6 +85,35 @@ pub fn deserialize_ops(bytes: &[u8]) -> Option<Vec<crate::ir::OpIR>> {
         return None;
     }
     serde_json::from_slice(bytes).ok()
+}
+
+// ---------------------------------------------------------------------------
+// TIR function serialization
+// ---------------------------------------------------------------------------
+
+/// Serialize a complete [`TirFunction`] to compact MessagePack bytes for cache
+/// storage. The magic prefix gives artifact-kind separation from the legacy
+/// JSON SimpleIR cache entries that share the same physical cache directory.
+pub fn serialize_tir_function(func: &TirFunction) -> Vec<u8> {
+    let mut out = Vec::from(TIR_FUNCTION_CACHE_MAGIC);
+    match rmp_serde::to_vec_named(func) {
+        Ok(mut payload) => {
+            out.append(&mut payload);
+            out
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Deserialize a cached [`TirFunction`] written by
+/// [`serialize_tir_function`]. Returns `None` for old SimpleIR JSON entries,
+/// corrupt MessagePack payloads, or empty artifacts.
+pub fn deserialize_tir_function(bytes: &[u8]) -> Option<TirFunction> {
+    let payload = bytes.strip_prefix(TIR_FUNCTION_CACHE_MAGIC)?;
+    if payload.is_empty() {
+        return None;
+    }
+    rmp_serde::from_slice(payload).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -184,5 +219,36 @@ mod tests {
         let bytes = serialize_ops(&ops);
         let restored = deserialize_ops(&bytes).unwrap();
         assert_eq!(restored[0].bytes, Some(payload));
+    }
+
+    #[test]
+    fn test_tir_function_roundtrip() {
+        use crate::tir::blocks::Terminator;
+        use crate::tir::types::TirType;
+
+        let mut func = TirFunction::new("cached".into(), vec![TirType::DynBox], TirType::DynBox);
+        let arg = func.blocks[&func.entry_block].args[0].id;
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+            Terminator::Return { values: vec![arg] };
+        let bytes = serialize_tir_function(&func);
+        assert!(bytes.starts_with(TIR_FUNCTION_CACHE_MAGIC));
+        let restored = deserialize_tir_function(&bytes).expect("TIR cache artifact roundtrip");
+        assert_eq!(restored.name, func.name);
+        assert_eq!(restored.entry_block, func.entry_block);
+        assert_eq!(restored.blocks.len(), func.blocks.len());
+        assert!(matches!(
+            restored.blocks[&restored.entry_block].terminator,
+            Terminator::Return { .. }
+        ));
+    }
+
+    #[test]
+    fn test_tir_deserializer_rejects_legacy_simpleir_json() {
+        let ops = sample_ops();
+        let bytes = serialize_ops(&ops);
+        assert!(
+            deserialize_tir_function(&bytes).is_none(),
+            "legacy SimpleIR cache artifacts must miss the TIR function cache"
+        );
     }
 }

@@ -10,6 +10,7 @@ a link-time failure.
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 
 import molt.cli as cli
 from molt._runtime_feature_gates import (
@@ -20,6 +21,7 @@ from molt._runtime_feature_gates import (
 
 
 STDLIB_ROOT = Path(cli.__file__).resolve().parent / "stdlib"
+MOLT_ROOT = Path(cli.__file__).resolve().parents[2]
 
 
 def _micro_features() -> frozenset[str]:
@@ -47,6 +49,17 @@ def test_full_profile_includes_stdlib_ast() -> None:
 
 def test_full_profile_includes_sqlite() -> None:
     assert "sqlite" in _full_features()
+
+
+def test_full_profile_links_gpu_primitives_claimed_by_tinygrad_profile() -> None:
+    cargo = tomllib.loads((MOLT_ROOT / "runtime/molt-runtime/Cargo.toml").read_text())
+
+    assert "molt_gpu_primitives" in _full_features()
+    assert "molt_gpu_primitives" in cargo["features"]["stdlib_full"]
+
+
+def test_full_profile_includes_stdlib_stringprep() -> None:
+    assert "stdlib_stringprep" in _full_features()
 
 
 def test_ast_module_requires_stdlib_ast_gate() -> None:
@@ -80,6 +93,36 @@ def test_third_gated_module_sqlite_requires_sqlite_feature() -> None:
 def test_sqlite_module_buildable_on_full_profile() -> None:
     gap = cli._profile_feature_gap_for_module(
         STDLIB_ROOT / "_sqlite3.py", _full_features()
+    )
+    assert gap == {}
+
+
+def test_stringprep_module_requires_stdlib_stringprep_gate() -> None:
+    gap = cli._profile_feature_gap_for_module(
+        STDLIB_ROOT / "stringprep.py", _micro_features()
+    )
+    assert set(gap) == {"stdlib_stringprep"}
+    assert any(sym.startswith("molt_stringprep_") for sym in gap["stdlib_stringprep"])
+
+
+def test_stringprep_module_buildable_on_full_profile() -> None:
+    gap = cli._profile_feature_gap_for_module(
+        STDLIB_ROOT / "stringprep.py", _full_features()
+    )
+    assert gap == {}
+
+
+def test_tinygrad_package_requires_gpu_primitives_gate_on_micro_profile() -> None:
+    gap = cli._profile_feature_gap_for_module(
+        STDLIB_ROOT / "tinygrad" / "__init__.py", _micro_features()
+    )
+    assert set(gap) == {"molt_gpu_primitives"}
+    assert gap["molt_gpu_primitives"] == ["molt_gpu_prim_device"]
+
+
+def test_tinygrad_package_buildable_on_full_profile() -> None:
+    gap = cli._profile_feature_gap_for_module(
+        STDLIB_ROOT / "tinygrad" / "__init__.py", _full_features()
     )
     assert gap == {}
 
@@ -253,14 +296,10 @@ def test_wasm_micro_excludes_sqlite_and_refuses_sqlite3() -> None:
 
 def test_wasm_full_excludes_sqlite_and_refuses_sqlite3() -> None:
     wasm_full = frozenset(
-        cli._runtime_builtin_features_for_profile(
-            "full", target_triple="wasm32-wasip1"
-        )
+        cli._runtime_builtin_features_for_profile("full", target_triple="wasm32-wasip1")
     )
     assert "sqlite" not in wasm_full
-    rc, message = _run_pass(
-        [("_sqlite3", STDLIB_ROOT / "_sqlite3.py")], "full", "wasm"
-    )
+    rc, message = _run_pass([("_sqlite3", STDLIB_ROOT / "_sqlite3.py")], "full", "wasm")
     assert rc is not None and rc != 0
     assert message is not None
     assert "sqlite" in message

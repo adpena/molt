@@ -57,9 +57,7 @@ def test_unclassified_os_kill_call_fails(tmp_path: Path) -> None:
     module = _load_audit_tool()
     source = tmp_path / "bad_kill.py"
     source.write_text(
-        "import os\n\n"
-        "def terminate(pid):\n"
-        "    os.kill(pid, 9)\n",
+        "import os\n\ndef terminate(pid):\n    os.kill(pid, 9)\n",
         encoding="utf-8",
     )
 
@@ -76,8 +74,7 @@ def test_unclassified_shell_pkill_string_fails(tmp_path: Path) -> None:
     module = _load_audit_tool()
     source = tmp_path / "bad_shell.py"
     source.write_text(
-        "def script():\n"
-        "    return 'pkill -f molt-backend'\n",
+        "def script():\n    return 'pkill -f molt-backend'\n",
         encoding="utf-8",
     )
 

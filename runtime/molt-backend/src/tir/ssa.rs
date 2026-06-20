@@ -1021,7 +1021,7 @@ impl<'a> SsaContext<'a> {
                 | "set_attr_generic_ptr"
                 | "set_attr_generic_obj"
                 | "guarded_field_set"
-                | "guarded_field_set_init"
+                | "guarded_field_init"
                 | "module_cache_set"
                 | "module_cache_del"
                 | "module_set_attr"

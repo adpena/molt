@@ -8,6 +8,9 @@ from pathlib import Path
 import molt.cli as cli
 
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
 def test_runtime_cargo_features_native_vs_wasm(monkeypatch) -> None:
     cli._runtime_cargo_features_cached.cache_clear()
     monkeypatch.delenv("MOLT_RUNTIME_TK_NATIVE", raising=False)
@@ -73,6 +76,18 @@ def test_builtin_features_from_import_graph_uses_native_micro_surface() -> None:
     assert "stdlib_net" not in json_features
     assert "stdlib_serial" not in json_features
     assert "molt_gpu_primitives" not in json_features
+
+
+def test_runtime_source_paths_include_runtime_leaf_crates() -> None:
+    cli._runtime_source_paths_cached.cache_clear()
+
+    paths = set(cli._runtime_source_paths(ROOT))
+
+    assert ROOT / "runtime/molt-runtime-stringprep/src" in paths
+    assert ROOT / "runtime/molt-runtime-stringprep/Cargo.toml" in paths
+    assert ROOT / "runtime/molt-runtime-http/src" in paths
+    assert ROOT / "runtime/Cargo.toml" in paths
+    assert ROOT / "runtime/Cargo.lock" in paths
 
 
 def test_runtime_builtin_features_exclude_native_only_wasm_domains() -> None:
@@ -358,7 +373,10 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
         cli, "_read_runtime_fingerprint", lambda path: {"hash": "ok"}, raising=True
     )
     monkeypatch.setattr(
-        cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False, raising=True
+        cli,
+        "_runtime_artifact_fingerprint_matches",
+        lambda *args, **kwargs: kwargs["require_artifact_digest"] is True,
+        raising=True,
     )
     monkeypatch.setattr(
         cli,
@@ -384,6 +402,110 @@ def test_ensure_runtime_lib_full_profile_fingerprint_declares_default_stdlib(
     assert "stdlib_full" in captured_features[0]
     assert "default-features" in captured_features[0]
     assert "no-default-features" not in captured_features[0]
+
+
+def test_ensure_runtime_lib_session_cache_is_source_fingerprint_qualified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_lib = tmp_path / "target" / "dev-fast" / "libmolt_runtime.a"
+    runtime_lib.parent.mkdir(parents=True, exist_ok=True)
+    runtime_lib.write_bytes(b"!<arch>\nfake-staticlib")
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    fingerprint_path = tmp_path / "runtime.fingerprint.json"
+    fingerprints = [
+        {
+            "hash": "runtime-hash-a",
+            "rustc": "rustc-test",
+            "inputs_digest": "inputs-a",
+            "meta_digest": "meta",
+        },
+        {
+            "hash": "runtime-hash-b",
+            "rustc": "rustc-test",
+            "inputs_digest": "inputs-b",
+            "meta_digest": "meta",
+        },
+    ]
+    fingerprint_calls: list[str | None] = []
+    artifact_checks: list[str | None] = []
+
+    def fake_runtime_fingerprint(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        fingerprint = fingerprints[len(fingerprint_calls)]
+        fingerprint_calls.append(fingerprint["hash"])
+        return fingerprint
+
+    def fake_runtime_artifact_fingerprint_matches(
+        artifact: Path,
+        fingerprint: dict[str, str | None] | None,
+        fingerprint_path: Path,
+        *,
+        require_artifact_digest: bool,
+    ) -> bool:
+        del artifact, fingerprint_path
+        assert require_artifact_digest is True
+        assert fingerprint is not None
+        artifact_checks.append(fingerprint.get("hash"))
+        return True
+
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", fake_runtime_fingerprint, raising=True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint_path",
+        lambda *args, **kwargs: fingerprint_path,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_read_runtime_fingerprint",
+        lambda path: {
+            "hash": "runtime-hash-a",
+            "rustc": "rustc-test",
+            "inputs_digest": "inputs-a",
+            "meta_digest": "meta",
+        },
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_artifact_fingerprint_matches",
+        fake_runtime_artifact_fingerprint_matches,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_build_lock",
+        lambda *args, **kwargs: contextlib.nullcontext(),
+        raising=True,
+    )
+
+    try:
+        assert cli._ensure_runtime_lib(
+            runtime_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            cargo_timeout=1.0,
+            stdlib_profile="full",
+        )
+        assert cli._ensure_runtime_lib(
+            runtime_lib,
+            target_triple=None,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=project_root,
+            cargo_timeout=1.0,
+            stdlib_profile="full",
+        )
+    finally:
+        cli._RUNTIME_LIB_VERIFIED.clear()
+
+    assert fingerprint_calls == ["runtime-hash-a", "runtime-hash-b"]
+    assert artifact_checks == ["runtime-hash-a", "runtime-hash-b"]
 
 
 def test_ensure_runtime_lib_full_profile_passes_stdlib_full_to_cargo(

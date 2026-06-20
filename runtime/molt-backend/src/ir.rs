@@ -8,8 +8,7 @@ use crate::json_boundary::{
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeSet, VecDeque};
 
-#[derive(Debug, Default, Clone, Deserialize)]
-#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
+#[derive(Debug, Default, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct PgoProfileIR {
     pub version: Option<String>,
@@ -17,15 +16,13 @@ pub struct PgoProfileIR {
     pub hot_functions: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SimpleIR {
     pub functions: Vec<FunctionIR>,
     pub profile: Option<PgoProfileIR>,
 }
 
-#[derive(Debug, Default, Deserialize, Clone)]
-#[cfg_attr(feature = "cbor", derive(serde::Serialize))]
+#[derive(Debug, Default, Deserialize, Clone, serde::Serialize)]
 pub struct FunctionIR {
     pub name: String,
     pub params: Vec<String>,
