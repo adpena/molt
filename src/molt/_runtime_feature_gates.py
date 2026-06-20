@@ -74,6 +74,9 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_tk_", "stdlib_tk"),
     # stringprep: RFC 3454 table helpers live in the extracted leaf crate.
     ("molt_stringprep_", "stdlib_stringprep"),
+    # text: html and unicodedata live in the extracted text leaf crate.
+    ("molt_html_", "stdlib_text"),
+    ("molt_unicodedata_", "stdlib_text"),
     # networking: http, urllib. SSL keeps an always-linkable ABI because
     # asyncio imports ssl eagerly even in micro profiles; runtime operations
     # without net support raise from the Rust intrinsic implementation.
@@ -185,6 +188,7 @@ LINK_AFFECTING_FEATURES: frozenset[str] = frozenset(
         "stdlib_net",
         "stdlib_serialization",
         "stdlib_stringprep",
+        "stdlib_text",
         "stdlib_tk",
     }
 )

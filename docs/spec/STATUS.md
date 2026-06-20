@@ -57,6 +57,11 @@ the implementation. For forward-looking priorities, use
   `MOLT_GENERATOR` custody. This reduces resolver-source invalidation and keeps
   the remaining per-crate sub-registry extraction as the next explicit
   throughput step.
+- Runtime text leaf ownership is now active for `html` and `unicodedata`: the
+  in-facade duplicate modules are deleted, `molt_html_*` and
+  `molt_unicodedata_*` resolver arms are gated by the dep-backed `stdlib_text`
+  feature, and the runtime profile-availability gate refuses micro-profile
+  imports before link rather than relying on fallback symbols.
 - Native networking currently claims the Unix-family native socket ABI and the
   WASM host socket ABI only. Windows native builds route requested `stdlib_net`
   symbols through the explicit no-net intrinsic surface until the WinSock

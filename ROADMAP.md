@@ -55,8 +55,11 @@ roadmap claim drifts.
    live in generated per-category modules under
    `runtime/molt-runtime/src/intrinsics/generated_resolvers/`, leaving
    `generated.rs` as the single parser-facing intrinsic manifest table.
+   The `html` and `unicodedata` text domains now use the extracted
+   `molt-runtime-text` leaf as their only implementation authority, with the
+   in-facade fallback modules deleted and resolver arms gated by `stdlib_text`.
    The next registry throughput step is per-crate intrinsic sub-registries
-   composed by the `molt-runtime` facade as runtime leaf ownership lands.
+   composed by the `molt-runtime` facade as remaining leaf ownership lands.
    `tools/perf_inner_repeat.py` plus its
    perf-scoreboard proof test now route inner-repeat proof children through
    `MOLT_BENCH` / `MOLT_TEST`. `tools/perf_scoreboard.py` also routes

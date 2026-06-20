@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Fail-closed parity guard for the 27 runtime stdlib in-tree <-> satellite
+"""Fail-closed parity guard for runtime stdlib in-tree <-> satellite
 module pairs.
 
 Background (the P0 this guard exists to kill)
 ---------------------------------------------
-molt ships every feature-gated stdlib module in TWO physical copies:
+molt still has several feature-gated stdlib modules in TWO physical copies:
 
   * an IN-TREE copy under runtime/molt-runtime/src/builtins/<mod>.rs, gated
     `#[cfg(not(feature = "stdlib_X"))]`, which is the SOLE compiled source for
@@ -72,11 +72,12 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "runtime"
 INTREE_DIR = RUNTIME / "molt-runtime" / "src"
 
-# The 27 feature-gated in-tree <-> satellite module pairs. The key is a stable
+# The remaining feature-gated in-tree <-> satellite module pairs. The key is a stable
 # short name; values are the in-tree path (relative to molt-runtime/src) and the
 # satellite path (relative to runtime/). Derived from the
 # `#[cfg(not(feature = "stdlib_*"))]` gates in builtins/mod.rs and verified
-# against the on-disk crates.
+# against the on-disk crates. Leaf-owned modules with no in-tree fallback are
+# deliberately absent; adding them back would reintroduce a second authority.
 PAIRS: dict[str, tuple[str, str]] = {
     "functions_http": (
         "builtins/functions_http.rs",
@@ -114,11 +115,6 @@ PAIRS: dict[str, tuple[str, str]] = {
     "functions_email": (
         "builtins/functions_email.rs",
         "molt-runtime-serial/src/email.rs",
-    ),
-    "html": ("builtins/html.rs", "molt-runtime-text/src/html.rs"),
-    "unicodedata_mod": (
-        "builtins/unicodedata_mod.rs",
-        "molt-runtime-text/src/unicodedata_mod.rs",
     ),
     "xml_etree": ("builtins/xml_etree.rs", "molt-runtime-xml/src/xml_etree.rs"),
     "xml_sax": ("builtins/xml_sax.rs", "molt-runtime-xml/src/xml_sax.rs"),
