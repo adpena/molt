@@ -1013,36 +1013,29 @@ def test_ownership_lattice_uses_generated_result_absorption_tables() -> None:
         assert stale not in body
 
 
-def test_drop_insertion_delegates_consume_to_generated_table() -> None:
-    """drop_insertion.rs's `op_consumed_operand_root` must DELEGATE to the
-    generated `kind_consumed_operand_table` (no hand-maintained `matches!` of the
-    CallArgs-builder spellings in its body). This is the council's 'migrate one
-    consumer + delete one duplicate list' proof.
-
-    Scoped to the FUNCTION BODY (not the whole file) so a legitimate #[cfg(test)]
-    fixture that constructs a `call_bind` op — the consume-path regression — is
-    not mistaken for the deleted production hand list."""
-    drop = (ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs").read_text()
-    assert "op_kinds_generated::" in drop, (
-        "drop_insertion.rs must reference the generated op_kinds tables"
+def test_ownership_lattice_delegates_conditional_result_validity_to_generated_table() -> None:
+    """Conditional result validity must stay sourced from generated op-kind facts."""
+    ownership = (
+        ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
+    ).read_text(encoding="utf-8")
+    assert "op_kinds_generated::" in ownership, (
+        "ownership_lattice_min.rs must reference generated op-kind tables"
     )
-    # Extract the `fn op_consumed_operand_root(...) { ... }` body by brace-matching
-    # from the signature to its closing brace.
-    marker = "fn op_consumed_operand_root("
-    assert marker in drop, "op_consumed_operand_root not found"
-    start = drop.index(marker)
-    brace = drop.index("{", start)
+    marker = "fn conditionally_valid_result_roots("
+    assert marker in ownership, "conditionally_valid_result_roots not found"
+    start = ownership.index(marker)
+    brace = ownership.index("{", start)
     depth = 0
     end = brace
-    for i in range(brace, len(source)):
-        if source[i] == "{":
+    for i in range(brace, len(ownership)):
+        if ownership[i] == "{":
             depth += 1
-        elif source[i] == "}":
+        elif ownership[i] == "}":
             depth -= 1
             if depth == 0:
                 end = i + 1
                 break
-    body = source[start:end]
+    body = ownership[start:end]
     assert "opcode_result_is_conditionally_valid_only_on_edge" in body
     assert "aliases.root(result)" in body
     assert "OpCode::IterNextUnboxed" not in body, (
