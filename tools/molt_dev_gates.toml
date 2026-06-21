@@ -219,6 +219,18 @@ gates = [
   "python3 tools/check_ecosystem_compat.py",
 ]
 
+# --- tinygrad static exec registry ---------------------------------------
+[[rule]]
+name = "tinygrad-upat-static-exec-registry"
+description = "tinygrad UPat matcher static exec registry: fail-closed generated factory contract."
+globs = [
+  "tools/tinygrad_upat_static_exec_registry.py",
+  "tests/tools/test_tinygrad_upat_static_exec_registry.py",
+]
+gates = [
+  "uv run python -m pytest -q tests/tools/test_tinygrad_upat_static_exec_registry.py",
+]
+
 # --- Docs architecture / generated status blocks -------------------------
 [[rule]]
 name = "docs-architecture"
