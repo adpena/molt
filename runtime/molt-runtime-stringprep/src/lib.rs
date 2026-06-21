@@ -11,5 +11,6 @@
 /// FFI bridge to molt-runtime internal functions (resolved at link time).
 pub mod bridge;
 
+pub mod intrinsics_generated;
 pub mod stringprep;
 mod tables;

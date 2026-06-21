@@ -15,9 +15,11 @@ for the crate-extraction and incremental-build routing plan.
   exists as a workspace package, but is not yet a `molt-runtime` facade
   dependency.
 - `stdlib_stringprep` is leaf-owned: the old in-facade `builtins/stringprep.rs`
-  fallback is deleted, `molt_stringprep_*` resolver arms are gated by
-  `stdlib_stringprep`, and feature-on/feature-off `molt-runtime` checks prove
-  the facade no longer carries a duplicate stringprep authority.
+  fallback is deleted, `molt_stringprep_*` resolver ownership is generated into
+  `molt-runtime-stringprep/src/intrinsics_generated.rs`, and the `molt-runtime`
+  facade delegates through that leaf sub-registry behind `stdlib_stringprep`.
+  Feature-on/feature-off `molt-runtime` checks prove the facade no longer
+  carries a duplicate stringprep authority.
 - `stdlib_text` now owns the extracted `html` and `unicodedata` implementation:
   the old in-facade `builtins/html.rs` and `builtins/unicodedata_mod.rs`
   fallbacks are deleted, `molt_html_*` and `molt_unicodedata_*` resolver arms
@@ -37,9 +39,9 @@ for the crate-extraction and incremental-build routing plan.
   `runtime/molt-runtime/src/intrinsics/generated.rs` remains the canonical
   `INTRINSICS` manifest table, and
   `runtime/molt-runtime/src/intrinsics/generated_resolvers/` owns category
-  resolver modules. The remaining registry work is to lift those generated
-  categories into per-leaf-crate sub-registries as runtime facade extraction
-  proceeds.
+  resolver modules. `stringprep` is the first generated per-leaf-crate
+  sub-registry; the remaining registry work is to lift the other generated
+  categories the same way as runtime facade extraction proceeds.
 - Remaining structural work: finish runtime facade composition, finish per-crate
   intrinsic registries, isolate native backend codegen into its own crate, and
   preserve deterministic cache/build-state custody across concurrent agents.
