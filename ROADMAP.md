@@ -244,7 +244,11 @@ roadmap claim drifts.
     runner with clean pinned source custody now fails closed at
     `tinygrad/uop/upat.py:167`, where upstream `upat_compile` calls
     `exec(code_str, globs, namespace)`. The current remaining work is a static
-    AOT-compatible path for tinygrad's lazy pattern compiler; artifact:
+    AOT-compatible path for tinygrad's lazy pattern compiler. The producer side
+    now exists as `tools/tinygrad_upat_static_exec_registry.py`, which captures
+    deterministic UPat matcher sources from the pinned checkout and emits a
+    fail-closed generated factory registry without runtime `exec`; runtime/build
+    graph consumption is still open. Prior failure artifact:
     `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`.
 14. Make ecosystem compatibility a first-class generated scoreboard, starting
     with NumPy. The current matrix has a dedicated NumPy row deriving `partial`
@@ -412,7 +416,9 @@ roadmap claim drifts.
   clean pinned source custody now fails closed inside upstream tinygrad's lazy
   pattern compiler at `tinygrad/uop/upat.py:167`, where `upat_compile` calls
   `exec(code_str, globs, namespace)`. This is the current blocker because
-  unrestricted `exec()` is outside Molt's verified AOT subset; artifact:
+  unrestricted `exec()` is outside Molt's verified AOT subset. The static
+  materialization producer is now `tools/tinygrad_upat_static_exec_registry.py`;
+  runtime/build graph consumption remains open. Prior failure artifact:
   `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`.
 - Continue the clean `molt-gpu` scheduler lane from the current code state:
   Movement/ShapeTracker binding is now a real per-kernel input-view contract
@@ -509,7 +515,10 @@ roadmap claim drifts.
 			  Current 2026-06-20 evidence builds the full-stdlib adapter and now fails
 			  closed at upstream `tinygrad/uop/upat.py:167`, where `upat_compile`
 			  requires unrestricted `exec(code_str, globs, namespace)`, outside Molt's
-			  verified AOT subset. `tools/bench_friends.py`
+			  verified AOT subset. `tools/tinygrad_upat_static_exec_registry.py` now
+			  emits the deterministic static-registry producer for those matcher
+			  sources; consuming that registry in static package lowering/runtime
+			  dispatch remains the active blocker. `tools/bench_friends.py`
 	  now fail-closes
 	  git-source custody by verifying requested refs against checked-out `HEAD`,
 	  requiring clean upstream checkouts, supporting per-suite `--suite-root` and
