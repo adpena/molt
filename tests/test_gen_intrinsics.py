@@ -101,6 +101,7 @@ def test_stringprep_category_is_toml_owned() -> None:
 
     assert stdlib_modules["stringprep"] == ["molt_stringprep_"]
     assert ("molt_stringprep_", "stringprep") not in module._EXTRA_PREFIX_MODULES
+    assert "feature" not in module.LEAF_RESOLVER_REGISTRIES["stringprep"]
     assert (
         module._classify_symbol(
             "molt_stringprep_in_table",
@@ -109,6 +110,10 @@ def test_stringprep_category_is_toml_owned() -> None:
             stdlib_modules,
         )
         == "stringprep"
+    )
+    assert (
+        module._leaf_resolver_feature_gate("stringprep", ["molt_stringprep_in_table"])
+        == "stdlib_stringprep"
     )
 
 
