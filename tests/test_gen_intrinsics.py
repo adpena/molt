@@ -95,6 +95,44 @@ def test_generated_resolvers_are_split_from_manifest_table() -> None:
     assert '#[cfg(feature = "stdlib_zoneinfo")]' in zoneinfo_resolver
 
 
+def test_stringprep_category_is_toml_owned() -> None:
+    module = _load_gen_intrinsics_module()
+    builtin_symbols, internal_prefixes, stdlib_modules = module._load_categories()
+
+    assert stdlib_modules["stringprep"] == ["molt_stringprep_"]
+    assert ("molt_stringprep_", "stringprep") not in module._EXTRA_PREFIX_MODULES
+    assert (
+        module._classify_symbol(
+            "molt_stringprep_in_table",
+            builtin_symbols,
+            internal_prefixes,
+            stdlib_modules,
+        )
+        == "stringprep"
+    )
+
+
+def test_stringprep_resolver_is_leaf_owned() -> None:
+    resolver_root = (
+        ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
+    )
+    facade_resolver = (resolver_root / "stringprep_resolver.rs").read_text()
+    leaf_resolver = (
+        ROOT / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs"
+    ).read_text()
+
+    assert "molt_runtime_stringprep::intrinsics_generated::resolve_symbol_with" in (
+        facade_resolver
+    )
+    assert "crate::builtins::functions::runtime_fn_addr" in facade_resolver
+    assert "crate::molt_stringprep_in_table as *const ()" not in facade_resolver
+    assert "pub fn resolve_symbol_with" in leaf_resolver
+    assert "crate::stringprep::molt_stringprep_in_table as *const ()" in leaf_resolver
+    assert "molt_runtime_stringprep::stringprep::molt_stringprep_in_table" in (
+        leaf_resolver
+    )
+
+
 def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
     module = _load_gen_intrinsics_module()
     calls: list[dict[str, object]] = []
