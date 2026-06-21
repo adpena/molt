@@ -126,13 +126,45 @@ gates = [
   "python3 tools/audit_op_kinds.py --check",
 ]
 
+# --- Intrinsic registry (manifest/category/generated resolver sync) -------
+[[rule]]
+name = "intrinsic-registry"
+description = "Intrinsic registry: manifest/category sync + generated resolver ownership."
+globs = [
+  "tools/gen_intrinsics.py",
+  "src/molt/_intrinsics.pyi",
+  "src/molt/_runtime_feature_gates.py",
+  "runtime/molt-runtime/src/intrinsics/manifest.pyi",
+  "runtime/molt-runtime/src/intrinsics/categories.toml",
+  "runtime/molt-runtime/src/intrinsics/generated.rs",
+  "runtime/molt-runtime/src/intrinsics/generated_resolvers/**/*.rs",
+  "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
+  "tests/test_gen_intrinsics.py",
+]
+gates = [
+  "python3 tools/gen_intrinsics.py --check",
+  "python3 -m pytest -q tests/test_gen_intrinsics.py",
+]
+
+# --- StringPrep runtime leaf crate ---------------------------------------
+[[rule]]
+name = "stringprep-leaf"
+description = "StringPrep Rust leaf crate: build health for extracted runtime code."
+globs = [
+  "runtime/molt-runtime-stringprep/**/*.rs",
+  "runtime/molt-runtime-stringprep/Cargo.toml",
+]
+gates = [
+  "cargo check --manifest-path runtime/Cargo.toml -p molt-runtime-stringprep --lib",
+]
+
 # --- StringPrep generated tables -----------------------------------------
 [[rule]]
 name = "stringprep-tables"
 description = "StringPrep generated Rust tables: generated-file sync."
 globs = [
   "tools/gen_stringprep_tables.py",
-  "runtime/molt-runtime-stringprep/**/*.rs",
+  "runtime/molt-runtime-stringprep/src/tables.rs",
   "tests/test_gen_stringprep_tables.py",
 ]
 gates = [
