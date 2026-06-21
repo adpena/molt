@@ -103,11 +103,13 @@ Hard constraints / watch-items:
   resolver files and skips exact-content no-op writes before invoking rustfmt,
   lazy-loads formatting custody only for changed Rust files, and prevents
   repeated generation from dirtying mtimes or triggering needless Cargo
-  rebuilds. The remaining structural target is moving those category resolvers
-  into **per-crate intrinsic sub-registries**
-  composed by a thin facade resolver. This simultaneously: (i) finishes breaking
-  the build hub, (ii) advances the per-app intrinsic tree-shaking / <2MB
-  binary-size goal. Two top priorities solved by one refactor.
+  rebuilds. `molt-runtime-stringprep` now owns the first generated per-crate
+  intrinsic sub-registry, with the `molt-runtime` category resolver reduced to a
+  feature-gated facade delegate. The remaining structural target is moving the
+  other category resolvers into **per-crate intrinsic sub-registries** composed
+  by a thin facade resolver. This simultaneously: (i) finishes breaking the
+  build hub, (ii) advances the per-app intrinsic tree-shaking / <2MB binary-size
+  goal. Two top priorities solved by one refactor.
 - Do it as a real structural arc (one cohesive crate at a time, each landing
   green), not a half-split that leaves two sources of truth.
 
@@ -162,9 +164,10 @@ monolith) + #3 (shared canonical artifact roots and sccache). Keep
 2. **Backend-native extraction:** create the `molt-backend-native` crate only
    when `native_backend/*` plus `llvm_backend/*` can move as one authority over
    native lowering. Keep TIR/passes/representation facts in backend core.
-3. **Intrinsic registry:** the generated resolver source split has landed;
-   continue to per-crate intrinsic sub-registries + thin composing facade
-   resolver, co-designed with the binary-size per-app resolver work.
+3. **Intrinsic registry:** the generated resolver source split has landed and
+   the `stringprep` resolver is now leaf-owned; continue moving remaining
+   categories to per-crate intrinsic sub-registries + thin composing facade
+   resolvers, co-designed with the binary-size per-app resolver work.
 4. **Frontend F2:** replace the F1 move-only mixin split with semantic authority
    surfaces so frontend changes stop serializing through one shared class/state
    owner.

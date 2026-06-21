@@ -2,22 +2,16 @@
 #[inline(never)]
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
-    match symbol {
-        #[cfg(feature = "stdlib_stringprep")]
-        "molt_stringprep_in_table" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_stringprep_in_table",
-            crate::molt_stringprep_in_table as *const (),
-        )),
-        #[cfg(feature = "stdlib_stringprep")]
-        "molt_stringprep_map_table_b2" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_stringprep_map_table_b2",
-            crate::molt_stringprep_map_table_b2 as *const (),
-        )),
-        #[cfg(feature = "stdlib_stringprep")]
-        "molt_stringprep_map_table_b3" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_stringprep_map_table_b3",
-            crate::molt_stringprep_map_table_b3 as *const (),
-        )),
-        _ => None,
+    #[cfg(feature = "stdlib_stringprep")]
+    {
+        molt_runtime_stringprep::intrinsics_generated::resolve_symbol_with(
+            symbol,
+            crate::builtins::functions::runtime_fn_addr,
+        )
+    }
+    #[cfg(not(feature = "stdlib_stringprep"))]
+    {
+        let _ = symbol;
+        None
     }
 }

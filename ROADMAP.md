@@ -59,8 +59,9 @@ roadmap claim drifts.
    runtime leaves as their only implementation authorities, with the in-facade
    fallback modules deleted and resolver arms gated by `stdlib_text` /
    `stdlib_zoneinfo`.
-   The next registry throughput step is per-crate intrinsic sub-registries
-   composed by the `molt-runtime` facade as remaining leaf ownership lands.
+   `stringprep` now owns the first generated per-crate intrinsic sub-registry;
+   the next registry throughput step is moving the remaining generated
+   categories behind the same thin `molt-runtime` facade composition.
    `tools/perf_inner_repeat.py` plus its
    perf-scoreboard proof test now route inner-repeat proof children through
    `MOLT_BENCH` / `MOLT_TEST`. `tools/perf_scoreboard.py` also routes
