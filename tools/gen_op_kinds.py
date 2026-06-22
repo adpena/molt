@@ -138,6 +138,10 @@ _CLASSIFIER_SETS = (
     "classifier_transparent_alias",
     "classifier_no_heap_move",
 )
+_OPCODE_FACT_SETS = (
+    "alias_rc_barrier_opcodes",
+    "alias_heap_barrier_opcodes",
+)
 
 
 # Rust `bool` literal helper.
@@ -240,6 +244,8 @@ def load_table() -> dict:
             raise OpKindTableError(f"{key} has duplicate members")
 
     _validate_canonicalize_facts(data, seen_opcodes)
+    for key in _OPCODE_FACT_SETS:
+        _validate_opcode_fact_set(data, key, seen_opcodes)
 
     kinds = data.get("kind", [])
     # Every mapper spelling (canonical or alias) must be globally unique within
@@ -512,6 +518,17 @@ def _validate_canonicalize_facts(data: dict, opcodes: set[str]) -> None:
                 f"duplicate canonicalize_binary_rules row for {opcode}/{predicate}"
             )
         seen_binary_rules.add(fingerprint)
+
+
+def _validate_opcode_fact_set(data: dict, key: str, opcodes: set[str]) -> None:
+    members = data.get(key, [])
+    if not isinstance(members, list) or not all(isinstance(x, str) for x in members):
+        raise OpKindTableError(f"{key} must be a list of opcode names")
+    if len(set(members)) != len(members):
+        raise OpKindTableError(f"{key} has duplicate opcodes")
+    unknown = sorted(set(members) - opcodes)
+    if unknown:
+        raise OpKindTableError(f"{key} contains unknown OpCode names: {unknown}")
 
 
 def _validate_consuming_kinds(data: dict, valid_spellings: dict[str, str]) -> None:
@@ -1060,6 +1077,28 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_purity_arms(opcodes))
+    out.append("    }\n}\n\n")
+
+    alias_rc_barriers = list(data.get("alias_rc_barrier_opcodes", []))
+    alias_heap_barriers = list(data.get("alias_heap_barrier_opcodes", []))
+    out.append(
+        "/// Whether an opcode is an alias-analysis refcount barrier. EXHAUSTIVE\n"
+        "/// over OpCode; the conservative barrier set lives in op_kinds.toml.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, alias_rc_barriers))
+    out.append("    }\n}\n\n")
+
+    out.append(
+        "/// Whether an opcode may observe, mutate, or escape arbitrary heap memory\n"
+        "/// for alias analysis. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_is_alias_heap_barrier_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, alias_heap_barriers))
     out.append("    }\n}\n\n")
 
     # -- canonicalize facts: exhaustive over OpCode -------------------------

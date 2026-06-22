@@ -54,6 +54,9 @@
 #                  by canonicalize.rs. They live here so operand rewrites do not
 #                  carry backend-local hand-sets beside the generated opcode
 #                  oracle.
+#   - alias_rc_barrier_opcodes / alias_heap_barrier_opcodes - opcode-only
+#                  alias-analysis barrier facts. They are conservative
+#                  fail-closed barriers consumed by alias_analysis.rs.
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -191,6 +194,46 @@ canonicalize_binary_rules = [
     { opcode = "Or", predicate = "rhs_bool", value = false, type_guard = "none", action = "copy_lhs" },
     { opcode = "Or", predicate = "rhs_bool", value = true, type_guard = "none", action = "const_bool", result = true },
     { opcode = "Or", predicate = "lhs_bool", value = true, type_guard = "none", action = "const_bool", result = true },
+]
+
+alias_rc_barrier_opcodes = [
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "ClosureLoad",
+    "ClosureStore",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
+    "StoreAttr",
+    "StoreIndex",
+]
+
+alias_heap_barrier_opcodes = [
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "ClosureStore",
+    "DelAttr",
+    "DelIndex",
+    "Free",
+    "ModuleCacheDel",
+    "ModuleCacheSet",
+    "ModuleDelGlobal",
+    "ModuleDelGlobalIfPresent",
+    "ModuleSetAttr",
+    "Raise",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
+    "StoreAttr",
+    "StoreIndex",
+    "Yield",
+    "YieldFrom",
 ]
 
 # classify_copy_kind inert bucket: no surviving heap reference to own
