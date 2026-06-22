@@ -112,7 +112,7 @@ def collect_module_func_kinds(node: ast.Module) -> dict[str, str]:
     kinds: dict[str, str] = {}
     for stmt in node.body:
         if isinstance(stmt, ast.AsyncFunctionDef):
-            kinds[stmt.name] = "async"
+            kinds[stmt.name] = "async_gen" if _function_contains_yield(stmt) else "async"
         elif isinstance(stmt, ast.FunctionDef):
             if _function_contains_yield(stmt):
                 kinds[stmt.name] = "gen"
