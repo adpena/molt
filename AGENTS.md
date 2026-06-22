@@ -453,6 +453,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - [docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md](docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md): minimum must-pass gate matrix and mandatory memory-guard custody for test execution.
 - [docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md](docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md): determinism/security enforcement checklist.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md): remote access, logging, benchmarks, progress reports, and multi-agent workflow.
+- [docs/ops/MULTI_AGENT_COORDINATION.md](docs/ops/MULTI_AGENT_COORDINATION.md): canonical multi-agent verification coordination protocol; read before long differential, conformance, regrtest, benchmark, or validation lanes.
 - [docs/BENCHMARKING.md](docs/BENCHMARKING.md): benchmarking overview.
 
 ## Build, Test, and Development Commands
@@ -523,6 +524,17 @@ cargo build --profile release-fast -p molt-backend --features native-backend --t
 **Resource limits:** Maximum 2 concurrent builds (OOM risk on machines with less than 128GB RAM).
 
 **Rule:** If you are an agent and another agent may be running, ALWAYS set `MOLT_SESSION_ID` before ANY build command.
+
+**Coordination discovery:** Before starting long differential, conformance,
+regrtest, benchmark, or validation work, read
+[docs/ops/MULTI_AGENT_COORDINATION.md](docs/ops/MULTI_AGENT_COORDINATION.md),
+create/update `logs/agents/<task>/` with `tools/new-agent-task.sh <task>`, and
+record whether you own a targeted proof lane or the single broad-sweep
+coordinator role for the shared target root. Use
+`uv run --python 3.12 python tools/agent_coordination.py env`, then
+`uv run --python 3.12 python tools/agent_coordination.py scan` or
+`uv run --python 3.12 python tools/agent_coordination.py check` to inspect
+machine-readable task claims before launching broad proof work.
 
 **Git discipline (non-negotiable):**
 - NEVER revert unstaged changes — they are partner work
@@ -656,7 +668,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - `python3 tools/bench_friends.py --manifest bench/friends/manifest.toml --suite <id>`: run friend benchmark suites with the pinned manifest (use `--json-out`/`--summary-out` to capture results).
 - `python3 tools/diff_memory_report.py --input <artifact-root>/rss_metrics.jsonl --top 10`: summarize top RSS offenders from diff RSS metrics.
 - `python3 tools/check_type_coverage_todos.py`: ensure type/stdlib TODOs are mirrored in [ROADMAP.md](ROADMAP.md).
-- `uv run --python 3.12 python3 tools/compile_progress.py --clean-state`: capture standardized compile-progress metrics.
+- `uv run --python 3.12 python tools/compile_progress.py --clean-state`: capture standardized compile-progress metrics.
 - `python3 tools/profile.py`: repeatable CPU/alloc profiling runs.
 - `python3 tools/runtime_safety.py clippy|miri|fuzz --target string_ops --runs 10000`: runtime safety gates.
 - `cargo audit` and `cargo deny check`: Rust supply-chain audits.
@@ -664,9 +676,9 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - `cargo nextest run -p molt-runtime --all-targets`: faster Rust test runner.
 - `export RUSTC_WRAPPER=sccache`: enable Rust compile caching (check stats with `sccache -s`).
 - The CLI auto-enables `sccache` when available (`MOLT_USE_SCCACHE=auto`); set `MOLT_USE_SCCACHE=0` to disable or `MOLT_USE_SCCACHE=1` to require it in your shell setup.
-- `uv run --python 3.12 python3 tools/throughput_matrix.py`: run the build-throughput matrix (single-agent vs concurrent, wrapper on/off, dev/release) and write JSON artifacts under the configured artifact root. Prefer `--shared-target-dir <apfs/ext4 path>` for faster Rust incremental compiles.
+- `uv run --python 3.12 python tools/throughput_matrix.py`: run the build-throughput matrix (single-agent vs concurrent, wrapper on/off, dev/release) and write JSON artifacts under the configured artifact root. Prefer `--shared-target-dir <apfs/ext4 path>` for faster Rust incremental compiles.
 - `eval "$(tools/throughput_env.sh --print)"` (or `tools/throughput_env.sh --apply`): bootstrap throughput env defaults with canonical artifact/cache roots, shared target dir, shared diff target (`MOLT_DIFF_CARGO_TARGET_DIR`), and `sccache` sizing tuned for local or external roots.
-- Fast multi-agent bootstrap (recommended before long diff sweeps): `tools/throughput_env.sh --apply && uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py --cache-report`.
+- Fast multi-agent bootstrap (recommended before long diff sweeps): `tools/throughput_env.sh --apply && uv run --python 3.12 python -m molt.cli build --profile dev examples/hello.py --cache-report`.
 - Throughput bootstrap also sets `CARGO_INCREMENTAL=0` by default to improve cross-run/cacheability in highly concurrent workflows; override to `1` when investigating local incremental-only behavior.
 - `python3 tools/molt_cache_prune.py`: enforce Molt cache retention policy (defaults: external `200G` + `30` days; local `30G` + `30` days).
 - `cargo bloat -p molt-runtime --release` and `cargo llvm-lines -p molt-runtime`: size attribution.
@@ -702,7 +714,7 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 - When changing handle resolution or the pointer registry, run strict provenance checks (Miri when available) and the lock-sensitive bench subset.
 
 ## Testing Guidelines
-- Run differential parity through the harness, not raw pytest: `uv run --python 3.12 python3 -u tests/molt_diff.py <file_or_dir>`.
+- Run differential parity through the harness, not raw pytest: `uv run --python 3.12 python -u tests/molt_diff.py <file_or_dir>`.
 - Differential lane contract:
   - `tests/differential/basic`: core language + builtins.
   - `tests/differential/stdlib`: stdlib modules/submodules.
@@ -748,16 +760,16 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   - Optional: set `MOLT_DIFF_DYLD_LOCAL_ROOT=<abs path>` to override the local dyld quarantine root (default: `/tmp/molt_diff_dyld`).
   - Optional: set `MOLT_DIFF_FORCE_NO_CACHE=1|0` to force/disable `--no-cache` in diff runs. Default is cache-enabled on all platforms; dyld guard/retry can force no-cache for the incident-scoped retry.
   - Optional cleanup for interrupted/crashed sessions before starting a new long run: use the custody-aware sentinel, for example `python3 tools/process_sentinel.py --once --stale-orphan-sec 3600 --stale-pytest-sec 900`. Keep one supervising diff run per shared target to minimize contention and memory spikes.
-- Example (configured artifact root + shared cache + temp root): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
-- Example (RSS metrics): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+- Example (configured artifact root + shared cache + temp root): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
+- Example (RSS metrics): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_KEEP=1 MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
   - Example (watch RSS during run): `ps -o pid=,rss=,command= -p <PID> | awk '{printf "pid=%s rss_kb=%s cmd=%s\n",$1,$2,$3}'` (record spikes in [tests/differential/INDEX.md](tests/differential/INDEX.md)).
   - Example (kill on blowup): stop the Molt-owned harness through the memory guard or custody-aware sentinel, then log the abort plus last-known RSS in [tests/differential/INDEX.md](tests/differential/INDEX.md). Raw PID kills are last-resort triage only after proving the process is Molt-owned and outside Claude/Codex/host control-plane groups.
-- Example (multi-target list, auto-parallel): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
+- Example (multi-target list, auto-parallel): `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/augassign_inplace.py tests/differential/basic/container_mutation.py tests/differential/basic/ellipsis_basic.py`
   - Example (parallel full sweep + live log + aggregate log + per-test logs):
-    `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python3 -u tests/molt_diff.py --jobs 8 --live --log-file ${ARTIFACT_ROOT}/tmp/diff_live.log --log-aggregate ${ARTIFACT_ROOT}/tmp/diff_full.log --log-dir ${ARTIFACT_ROOT}/tmp/diff_logs tests/differential`
+    `ARTIFACT_ROOT=${MOLT_EXT_ROOT:-$PWD} CARGO_TARGET_DIR=${ARTIFACT_ROOT}/target MOLT_CACHE=${ARTIFACT_ROOT}/.molt_cache MOLT_DIFF_ROOT=${ARTIFACT_ROOT}/tmp/diff MOLT_DIFF_TMPDIR=${ARTIFACT_ROOT}/tmp MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python -u tests/molt_diff.py --jobs 8 --live --log-file ${ARTIFACT_ROOT}/tmp/diff_live.log --log-aggregate ${ARTIFACT_ROOT}/tmp/diff_full.log --log-dir ${ARTIFACT_ROOT}/tmp/diff_logs tests/differential`
   - Example (monitor live log): `tail -f ${ARTIFACT_ROOT}/tmp/diff_live.log`
   - Example (monitor aggregate log): `tail -f ${ARTIFACT_ROOT}/tmp/diff_full.log`
-  - Disable trusted default: `MOLT_DEV_TRUSTED=0 uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic`.
+  - Disable trusted default: `MOLT_DEV_TRUSTED=0 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
   - Optional speed workflow: prebuild runtime (`cargo build --release --package molt-runtime`), then do a two-pass diff run (no RSS first, RSS only for failures).
   - Always update [tests/differential/INDEX.md](tests/differential/INDEX.md) after diff runs:
     - Record the run date/time, host Python (`uv run --python 3.12/3.13/3.14`), totals, and failure list.
@@ -783,8 +795,8 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
   the missing feature.
 - **NEVER change Python semantics just to make a differential test pass.** This is a hard-stop rule; fix behavior to match CPython or document the genuine incompatibility in specs/tests.
 - Parity-first workflow: execute the ROADMAP parity plan before large optimizations; require parity gates (matrix updates + differential coverage + native/WASM parity checks) for changes that touch runtime semantics.
-- Treat benchmark regressions as failures; run `uv run --python 3.14 python3 tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
-- After native + WASM benches, run `uv run --python 3.14 python3 tools/bench_report.py --update-status-doc` and commit the updated [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md) plus the refreshed [docs/spec/STATUS.md](docs/spec/STATUS.md) benchmark block.
+- Treat benchmark regressions as failures; run `uv run --python 3.14 python tools/bench.py --json-out bench/results/bench.json`, `tools/dev.py lint`, and `tools/dev.py test` after the fix is in, then iterate on optimization until the regression is removed without introducing new regressions.
+- After native + WASM benches, run `uv run --python 3.14 python tools/bench_report.py --update-status-doc` and commit the updated [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md) plus the refreshed [docs/spec/STATUS.md](docs/spec/STATUS.md) benchmark block.
 - Super bench runs (`tools/bench.py --super`, `tools/bench_wasm.py --super`) execute 10 samples and emit mean/median/variance/range stats; run only on explicit request or release tagging, and summarize the stats in [docs/spec/STATUS.md](docs/spec/STATUS.md) and [docs/benchmarks/bench_summary.md](docs/benchmarks/bench_summary.md).
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop (bench → lint → test → optimize) until green, but avoid repeated cycles before the implementation is complete.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
@@ -915,11 +927,19 @@ stubs, compatibility shims, or debt.
 - If a finding implies a major architecture shift or conflict with current specs, write the closure plan first and update the relevant spec/roadmap documents in the same change before implementing.
 
 ## Multi-Agent Workflow
+- [docs/ops/MULTI_AGENT_COORDINATION.md](docs/ops/MULTI_AGENT_COORDINATION.md)
+  is the canonical protocol for parallel proof ownership, task logs, targeted
+  vs broad validation, and respectful collision handling. Follow it before
+  running differential, conformance, regrtest, benchmark, or `molt validate`
+  lanes.
 - This project is fundamentally low-level systems work blended with powerful higher-level abstractions; bring aspirational, genius-level rigor with gritty follow-through, seek the hardest problems first, own complexity end-to-end, and lean into building the future.
 - Do not implement frontend-only workarounds or cheap hacks for runtime/compiler/backend semantics; fix the core layers so compiled binaries match CPython behavior.
 - Agents may use `gh` (GitHub CLI) and git over SSH to open/merge PRs; commit frequently with clear messages.
 - Run linting/testing once after a cohesive change set is complete (`tools/dev.py lint`, `tools/dev.py test`, plus relevant `cargo` checks); avoid repetitive cycles mid-implementation.
 - Prioritize clear, explicit communication: scope, files touched, and tests run.
+- Prefer one broad-sweep coordinator per shared target root; other agents should
+  run targeted proofs, reduce failure queues, or move non-colliding structural
+  work instead of spamming full differential/conformance lanes.
 - After any push, monitor CI logs until green; if failures appear, propose fixes, implement them, push again, and repeat until green.
 - Avoid empty commit/push/CI loops: repeat only when there are new changes,
   changed external state, or a deliberate verification reason. Otherwise move to

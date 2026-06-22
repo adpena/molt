@@ -16,6 +16,7 @@ the source of truth.
 - Canonical reading list: [CANONICALS.md](CANONICALS.md)
 - Developer guide: [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)
 - Operations: [OPERATIONS.md](OPERATIONS.md)
+- Multi-agent verification coordination: [ops/MULTI_AGENT_COORDINATION.md](ops/MULTI_AGENT_COORDINATION.md)
 - Spec index: [spec/README.md](spec/README.md)
 - Compatibility architecture: [spec/areas/compat/README.md](spec/areas/compat/README.md)
 - Import/bootstrap, external package admission, native extension sidecar custody, backend-IR direct-call closure, shared-stdlib cache, and public importlib transaction authority: [spec/areas/compat/contracts/import_system_contract.md](spec/areas/compat/contracts/import_system_contract.md)
