@@ -1575,7 +1575,7 @@ impl ScalarRepresentationPlan {
             let store_target_facts = self.container_storage_store_target_facts(fact_index);
             for (target, fact) in &store_target_facts.entries {
                 if fact.is_none() {
-                    changed |= self.remove_container_storage_fact(*target);
+                    changed |= self.remove_container_storage_fact(target);
                 }
             }
             changed |= self.propagate_container_storage_store_targets(&store_target_facts);
@@ -2484,7 +2484,7 @@ fn store_var_targets_all_sources_where(
     let mut targets: PlanHashMap<&str, bool> =
         plan_hash_map(fact_index.stores.len().saturating_add(1));
     for edge in &fact_index.stores {
-        let source_proven = edge.source.is_some_and(|src| source_proven(src));
+        let source_proven = edge.source.is_some_and(&mut source_proven);
         targets
             .entry(edge.target)
             .and_modify(|all_sources_proven| *all_sources_proven &= source_proven)
@@ -2492,7 +2492,8 @@ fn store_var_targets_all_sources_where(
     }
     targets
         .into_iter()
-        .filter_map(|(target, all_sources_proven)| all_sources_proven.then(|| target.to_string()))
+        .filter(|(_, all_sources_proven)| *all_sources_proven)
+        .map(|(target, _)| target.to_string())
         .collect()
 }
 

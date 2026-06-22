@@ -1,8 +1,10 @@
 use molt_obj_model::MoltObject;
 
-use crate::audit::{AuditArgs, audit_capability_decision};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{GilReleaseGuard, raise_os_error};
+use crate::GilReleaseGuard;
+use crate::audit::{AuditArgs, audit_capability_decision};
+#[cfg(all(not(windows), not(target_arch = "wasm32")))]
+use crate::raise_os_error;
 use crate::{
     IO_EVENT_ERROR, IO_EVENT_READ, IO_EVENT_WRITE, TYPE_ID_LIST, TYPE_ID_TUPLE,
     alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
@@ -13,7 +15,7 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as HashMapEntry;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(windows), not(target_arch = "wasm32")))]
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicI64, Ordering as AtomicOrdering};
 #[cfg(not(target_arch = "wasm32"))]
@@ -54,6 +56,7 @@ enum WatchKind {
 struct SelectWatch {
     obj_bits: u64,
     handle: i64,
+    #[cfg_attr(windows, allow(dead_code))]
     events: u32,
     kind: WatchKind,
 }

@@ -4466,10 +4466,9 @@ pub fn compute_intrinsic_manifest(
         for op in &func_ir.ops {
             if op.kind == "const_str"
                 && let Some(val) = op.s_value.as_deref()
+                && is_candidate_intrinsic_name(val, runtime_intrinsic_symbols)
             {
-                if is_candidate_intrinsic_name(val, runtime_intrinsic_symbols) {
-                    manifest_intrinsic_names.insert(val.to_owned());
-                }
+                manifest_intrinsic_names.insert(val.to_owned());
             }
         }
     }

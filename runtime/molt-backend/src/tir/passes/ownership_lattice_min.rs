@@ -485,17 +485,22 @@ impl PythonLifetimeFacts {
 
     /// Python-bound local-store roots whose release should be placed at the
     /// function boundary by DropInsertion. The lifetime fact is local-slot
-    /// ownership minus explicit release boundaries; DropInsertion owns only the
-    /// eventual placement.
+    /// ownership minus explicit release boundaries, intersected with the
+    /// finalizer-sensitive lattice: ordinary non-finalizer locals can release at
+    /// SSA last use, while finalizer-sensitive locals preserve CPython-observable
+    /// scope-exit ordering. DropInsertion owns only the eventual placement.
     pub(crate) fn boundary_release_roots(
         &self,
         drop_eligibility: &DropEligibility<'_>,
+        ownership_lattice: &OwnershipLattice,
     ) -> HashSet<ValueId> {
         self.local_store_roots
             .iter()
             .copied()
             .filter(|root| {
-                drop_eligibility.is_droppable(*root) && !self.has_explicit_release_boundary(*root)
+                drop_eligibility.is_droppable(*root)
+                    && ownership_lattice.is_finalizer_sensitive_root(*root)
+                    && !self.has_explicit_release_boundary(*root)
                     && !drop_eligibility.is_conditionally_valid_result_root(*root)
             })
             .collect()
@@ -1116,9 +1121,7 @@ mod tests {
         entry
             .ops
             .push(op(OpCode::DeleteVar, vec![missing, loaded], vec![deleted]));
-        entry
-            .ops
-            .push(op(OpCode::ObjectNewBound, vec![], vec![boundary]));
+        entry.ops.push(del_op(boundary));
         entry.ops.push(original_kind_copy(
             "store_var",
             vec![boundary],
@@ -1199,7 +1202,8 @@ mod tests {
             !facts.is_return_boundary_deferred_root(conditional_root, &drop_eligibility),
             "conditionally-valid results are not total definitions and cannot defer to an unconditional return boundary"
         );
-        let boundary_roots = facts.boundary_release_roots(&drop_eligibility);
+        let lat = OwnershipLattice::compute(&f, &aliases);
+        let boundary_roots = facts.boundary_release_roots(&drop_eligibility, &lat);
         assert!(
             boundary_roots.contains(&boundary_root),
             "droppable local-store roots are Python boundary release roots"

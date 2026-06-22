@@ -3035,6 +3035,60 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
     assert "-ladvapi32" in link_cmd
 
 
+def test_windows_native_partial_link_uses_coff_library_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_obj = tmp_path / "app.obj"
+    stdlib_obj = tmp_path / "stdlib.obj"
+    output_obj = tmp_path / "out.obj"
+    input_obj.write_bytes(b"coff")
+    stdlib_obj.write_bytes(b"coff")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli.sys, "platform", "win32")
+    monkeypatch.setattr(
+        cli.shutil,
+        "which",
+        lambda name: "C:/LLVM/bin/llvm-lib.exe" if name == "llvm-lib" else None,
+    )
+
+    def fake_run_native_link_command(
+        *,
+        link_cmd: Sequence[str],
+        json_output: bool,
+        link_timeout: float | None,
+    ) -> subprocess.CompletedProcess[str]:
+        captured["link_cmd"] = list(link_cmd)
+        captured["json_output"] = json_output
+        captured["link_timeout"] = link_timeout
+        return subprocess.CompletedProcess(list(link_cmd), 0, "", "")
+
+    monkeypatch.setattr(
+        cli,
+        "_run_native_link_command",
+        fake_run_native_link_command,
+    )
+
+    result = cli._run_native_partial_link_command(
+        input_objects=[input_obj, stdlib_obj],
+        output_path=output_obj,
+        json_output=True,
+        link_timeout=12.0,
+        target_triple=None,
+    )
+
+    assert result.returncode == 0
+    assert captured["link_cmd"] == [
+        "C:/LLVM/bin/llvm-lib.exe",
+        f"/OUT:{output_obj}",
+        str(input_obj),
+        str(stdlib_obj),
+    ]
+    assert "-Wl,-r" not in captured["link_cmd"]
+    assert captured["json_output"] is True
+    assert captured["link_timeout"] == 12.0
+
+
 def _legacy_streamed_cache_digest(
     payload_ir: Mapping[str, object],
     *,
@@ -9866,13 +9920,17 @@ def test_prepare_backend_setup_uses_runtime_intrinsic_digest_instead_of_native_a
     )
 
 
-def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
+def test_prepare_backend_setup_stages_runtime_intrinsics_for_object_emit_without_async(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime_lib = tmp_path / "libmolt_runtime.a"
+    symbols_file = tmp_path / "libmolt_runtime.a.intrinsics.txt"
+    symbols_file.write_text("molt_len\n", encoding="utf-8")
     output_artifact = tmp_path / "output.o"
     scheduled: list[Path | None] = []
+    ensure_calls: list[Path | None] = []
+    cache_setup_kwargs: list[dict[str, object]] = []
     empty_module_graph_metadata = cli._ModuleGraphMetadata(
         logical_source_path_by_module={},
         entry_override_by_module={},
@@ -9890,7 +9948,8 @@ def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
     monkeypatch.setattr(
         cli,
         "_prepare_backend_cache_setup",
-        lambda **kwargs: cli._BackendCacheSetup(
+        lambda **kwargs: cache_setup_kwargs.append(dict(kwargs))
+        or cli._BackendCacheSetup(
             cache_enabled=True,
             cache_key="module-cache",
             function_cache_key=None,
@@ -9902,6 +9961,20 @@ def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
             cache_hit=False,
             cache_hit_tier=None,
         ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_ensure_runtime_lib_ready",
+        lambda runtime_state, **kwargs: (
+            ensure_calls.append(runtime_state.runtime_lib)
+            or runtime_lib.write_bytes(b"runtime")
+            or True
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_runtime_intrinsic_symbols_file",
+        lambda runtime_lib_path: (symbols_file, None),
     )
     monkeypatch.setattr(
         cli,
@@ -9936,7 +10009,33 @@ def test_prepare_backend_setup_skips_native_runtime_build_async_for_object_emit(
 
     assert backend_setup_error is None
     assert prepared_backend_setup is not None
+    assert ensure_calls == [runtime_lib]
     assert scheduled == []
+    assert os.environ["MOLT_RUNTIME_INTRINSIC_SYMBOLS"] == str(symbols_file)
+    assert cache_setup_kwargs[0]["runtime_intrinsic_symbols_digest"] == (
+        cli._runtime_intrinsic_symbols_digest(symbols_file)
+    )
+
+
+def test_initialize_runtime_artifact_state_assigns_native_object_runtime_lib(
+    tmp_path: Path,
+) -> None:
+    state = cli._initialize_runtime_artifact_state(
+        is_rust_transpile=False,
+        is_wasm=False,
+        emit_mode="obj",
+        molt_root=tmp_path,
+        runtime_cargo_profile="release-fast",
+        target_triple=None,
+        stdlib_profile="micro",
+    )
+
+    assert state.runtime_lib == cli._runtime_lib_path(
+        tmp_path,
+        "release-fast",
+        None,
+        stdlib_profile="micro",
+    )
 
 
 def test_ensure_native_runtime_lib_ready_before_link_awaits_async_future(

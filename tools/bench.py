@@ -11,7 +11,7 @@ import statistics
 import subprocess
 import sys
 import time
-import tempfile
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +22,47 @@ BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
 BENCH_TMP_ROOT = REPO_ROOT / "tmp" / "bench"
 DEFAULT_BASELINE_PATH = BENCH_RESULTS_DIR / "baseline.json"
 DEFAULT_BATCH_BUILD_TIMEOUT_S = 600.0
+MAX_FAILURE_DETAIL_RECORDS = 32
+MAX_FAILURE_MESSAGE_CHARS = 4000
+
+
+def _chmod_tree_readable(root: Path) -> None:
+    try:
+        root.chmod(0o755)
+    except OSError:
+        pass
+    for current, dirs, files in os.walk(root):
+        current_path = Path(current)
+        try:
+            current_path.chmod(0o755)
+        except OSError:
+            pass
+        for name in (*dirs, *files):
+            try:
+                (current_path / name).chmod(0o755)
+            except OSError:
+                pass
+
+
+def _rmtree_bench_temp(path: Path) -> None:
+    try:
+        shutil.rmtree(path)
+        return
+    except OSError:
+        _chmod_tree_readable(path)
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        print(
+            f"warning: failed to remove benchmark temp dir {path}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _append_event_jsonl(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
@@ -32,8 +73,14 @@ from batch_compile_client import BatchCompileServerClient  # noqa: E402
 from bench_evidence import comparable_run_metadata_errors  # noqa: E402
 from bench_metadata import benchmark_reference_contract  # noqa: E402
 import harness_memory_guard  # noqa: E402
+import memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from molt.dx import (  # noqa: E402
+    CANONICAL_RUN_ENV_KEYS,
+    RunContext,
+    select_external_artifact_root,
+)
 
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
@@ -70,10 +117,40 @@ class BenchRunner:
     size_kb: float | None = None
 
 
+class _BenchTempDir:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    @property
+    def name(self) -> str:
+        return str(self.path)
+
+    @classmethod
+    def create(cls, root: Path) -> "_BenchTempDir":
+        root.mkdir(
+            mode=0o755 if os.name == "nt" else 0o777,
+            parents=True,
+            exist_ok=True,
+        )
+        for _attempt in range(100):
+            path = root / f"molt-bench-{uuid.uuid4().hex[:8]}"
+            try:
+                path.mkdir(mode=0o755 if os.name == "nt" else 0o700)
+            except FileExistsError:
+                continue
+            return cls(path)
+        raise FileExistsError(f"could not create unique benchmark temp dir in {root}")
+
+    def cleanup(self) -> None:
+        if not self.path.exists():
+            return
+        _rmtree_bench_temp(self.path)
+
+
 @dataclass(frozen=True)
 class MoltBinary:
     path: Path
-    temp_dir: tempfile.TemporaryDirectory
+    temp_dir: object
     build_s: float
     size_kb: float
 
@@ -93,10 +170,27 @@ class RunSample:
 
 
 @dataclass(frozen=True)
+class MoltFailure:
+    phase: str
+    status: str
+    returncode: int | None
+    timed_out: bool
+    elapsed_s: float | None
+    detail: str | None = None
+    message: str | None = None
+    stdout: str = ""
+    stderr: str = ""
+    signal: dict[str, object] | None = None
+    guard_violation: dict[str, object] | None = None
+    orphaned_process_groups: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class SampleBatch:
     samples: list[RunSample]
     ok: bool
     warmup_samples: list[RunSample] = field(default_factory=list)
+    failure: MoltFailure | None = None
 
     @property
     def times_s(self) -> list[float]:
@@ -178,17 +272,74 @@ def _canonical_interpreter(executable: str) -> str:
     return harness_memory_guard.canonical_interpreter(executable)
 
 
+def _backend_daemon_record_payload(
+    record: daemon_custody.BackendDaemonIdentityRecord,
+) -> dict[str, object]:
+    identity = record.identity
+    return {
+        "identity_path": str(record.path),
+        "pid": identity.pid,
+        "socket_path": str(identity.socket_path),
+        "project_root": str(identity.project_root),
+        "cargo_profile": identity.cargo_profile,
+        "config_digest": identity.config_digest,
+        "backend_bin": str(identity.backend_bin),
+        "created_at": identity.created_at,
+        "command": identity.command,
+    }
+
+
+def _backend_daemon_cleanup_log_path(env: dict[str, str]) -> Path | None:
+    raw_path = env.get("MOLT_BENCH_DAEMON_CLEANUP_LOG", "").strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def _record_backend_daemon_cleanup_event(
+    env: dict[str, str],
+    event: dict[str, object],
+) -> None:
+    log_path = _backend_daemon_cleanup_log_path(env)
+    if log_path is None:
+        return
+    _append_event_jsonl(log_path, event)
+
+
 def _prune_backend_daemons(env: dict[str, str] | None = None) -> int:
-    if os.name != "posix":
-        return 0
     prune_env = env if env is not None else _canonical_bench_env()
-    return len(
-        daemon_custody.terminate_backend_daemons_for_session(
+    event: dict[str, object] = {
+        "schema_version": 1,
+        "event": "bench_backend_daemon_cleanup",
+        "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "reason": prune_env.get("MOLT_BENCH_DAEMON_CLEANUP_REASON", "bench_prune"),
+        "session_id": prune_env.get("MOLT_SESSION_ID", ""),
+        "project_root": str(REPO_ROOT),
+        "status": "ok",
+        "terminated": [],
+        "terminated_count": 0,
+    }
+    if os.name != "posix":
+        event["status"] = "unsupported"
+        event["detail"] = "backend_daemon_posix_signal_custody_unavailable"
+        _record_backend_daemon_cleanup_event(prune_env, event)
+        return 0
+    try:
+        terminated = daemon_custody.terminate_backend_daemons_for_session(
             prune_env,
             project_root=REPO_ROOT,
             grace=0.75,
         )
-    )
+    except Exception as exc:  # noqa: BLE001
+        event["status"] = "failed"
+        event["error"] = str(exc)
+        _record_backend_daemon_cleanup_event(prune_env, event)
+        raise
+    event["terminated"] = [_backend_daemon_record_payload(record) for record in terminated]
+    event["terminated_count"] = len(terminated)
+    _record_backend_daemon_cleanup_event(prune_env, event)
+    return len(terminated)
 
 
 def _is_codon_bench_script(script: str) -> bool:
@@ -212,8 +363,9 @@ def _default_codon_taq_file() -> Path:
     )
     if repo_sample.exists():
         return repo_sample.resolve()
-    BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
-    generated = BENCH_TMP_ROOT / "molt_codon_taq_sample.txt"
+    bench_tmp_root = _bench_tmp_root(_canonical_bench_env())
+    bench_tmp_root.mkdir(parents=True, exist_ok=True)
+    generated = bench_tmp_root / "molt_codon_taq_sample.txt"
     if generated.exists():
         return generated.resolve()
     lines = ["timestamp|source|symbol|price|volume\n"]
@@ -306,29 +458,73 @@ def _bench_session_id(env: dict[str, str] | None = None) -> str:
     return explicit or f"bench-{os.getpid()}"
 
 
+def _selected_bench_artifact_root(env: dict[str, str]) -> Path:
+    explicit = env.get("MOLT_EXT_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    return (
+        select_external_artifact_root(
+            REPO_ROOT,
+            env,
+            create_dirs=True,
+            prefer_external=True,
+        )
+        or REPO_ROOT
+    )
+
+
+def _bench_tmp_root(env: dict[str, str]) -> Path:
+    explicit = env.get("MOLT_BENCH_TMP_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    tmp_root = env.get("MOLT_DIFF_TMPDIR") or env.get("TMPDIR")
+    if tmp_root:
+        return (Path(tmp_root).expanduser().resolve() / "bench")
+    return _selected_bench_artifact_root(env) / "tmp" / "bench"
+
+
 def _canonical_bench_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
-    env = (base_env or os.environ.copy()).copy()
-    env.update(build_molt_conformance_env(REPO_ROOT, _bench_session_id(env)))
+    env = (os.environ.copy() if base_env is None else base_env).copy()
+    explicit_canonical_keys = {
+        key for key in CANONICAL_RUN_ENV_KEYS if env.get(key)
+    }
+    for key, value in build_molt_conformance_env(
+        REPO_ROOT,
+        _bench_session_id(env),
+    ).items():
+        if key not in CANONICAL_RUN_ENV_KEYS:
+            env[key] = value
+    force_default_keys = tuple(
+        key
+        for key in CANONICAL_RUN_ENV_KEYS
+        if key not in explicit_canonical_keys
+        and key not in {"MOLT_EXT_ROOT", "MOLT_SESSION_ID"}
+    )
+    env = RunContext(
+        REPO_ROOT,
+        session_prefix="bench",
+        prefer_external_artifacts=True,
+    ).canonical_env(
+        env,
+        create_dirs=True,
+        force_default_keys=force_default_keys,
+    )
+    env.setdefault("MOLT_BENCH_TMP_ROOT", str(_bench_tmp_root(env)))
     ensure_molt_conformance_dirs(env)
     BENCH_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    BENCH_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    _bench_tmp_root(env).mkdir(parents=True, exist_ok=True)
     return env
 
 
 def _molt_build_cmd(build_profile: str) -> list[str]:
     """Return the command prefix for invoking the Molt compiler.
 
-    Uses ``uv run --python 3.12 python3`` so the subprocess gets a
-    proper virtualenv with ``packaging`` and other build-time
-    dependencies, regardless of how the benchmark harness itself was
-    launched.
+    Benchmarks inherit the exact interpreter running the harness.  That keeps
+    Windows custody single-owner: no nested ``uv run`` launcher can create a
+    second Python process tree with a different hash-seed/bootstrap contract.
     """
     return [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
-        "python3",
+        sys.executable,
         "-m",
         "molt.cli",
         "build",
@@ -347,11 +543,7 @@ class _BenchBatchBuildServer:
         self._limits = self._guard_context.limits
         self._client = BatchCompileServerClient(
             [
-                "uv",
-                "run",
-                "--python",
-                "3.12",
-                "python3",
+                sys.executable,
                 "-m",
                 "molt.cli",
                 "internal-batch-build-server",
@@ -434,6 +626,229 @@ def _batch_response_completed_process(
     )
 
 
+_BUILD_FAILURE_SIGNATURES: tuple[tuple[str, str], ...] = (
+    ("backend daemon returned empty response", "backend_daemon_empty_response"),
+    (
+        "backend daemon died while request was in flight",
+        "backend_daemon_died_in_flight",
+    ),
+    ("backend daemon process is not running", "backend_daemon_process_not_running"),
+    ("backend daemon closed response pipe", "backend_daemon_closed_response_pipe"),
+    ("batch compile server response timed out", "batch_server_response_timeout"),
+    ("batch compile server closed response pipe", "batch_server_closed_response_pipe"),
+    ("batch compile server process is not running", "batch_server_process_not_running"),
+    ("invalid batch compile response json", "batch_server_invalid_json"),
+)
+
+_RUNTIME_FAILURE_SIGNATURES: tuple[tuple[str, str], ...] = (
+    (
+        "molt fatal: invalid object header before dec_ref",
+        "molt_runtime_invalid_object_header_before_dec_ref",
+    ),
+    ("molt fatal:", "molt_runtime_fatal"),
+)
+
+
+def _rss_record_payload(
+    record: memory_guard.RssViolation | None,
+) -> dict[str, object] | None:
+    if record is None:
+        return None
+    return {
+        "pid": record.pid,
+        "rss_kb": record.rss_kb,
+        "rss_gb": record.rss_gb,
+        "command": record.command,
+        "scope": record.scope,
+    }
+
+
+def _failure_output(stdout: str | None, stderr: str | None) -> str:
+    parts = [part.strip() for part in (stderr or "", stdout or "") if part.strip()]
+    return "\n".join(parts)
+
+
+def _bounded_failure_text(
+    value: object,
+    *,
+    limit: int = MAX_FAILURE_MESSAGE_CHARS,
+) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return f"... <truncated to last {limit} chars>\n{text[-limit:]}"
+
+
+def _failure_message(stdout: str | None, stderr: str | None) -> str | None:
+    output = _failure_output(stdout, stderr)
+    if not output:
+        return None
+    return _bounded_failure_text(output)
+
+
+def _failure_detail(phase: str, stdout: str | None, stderr: str | None) -> str | None:
+    haystack = _failure_output(stdout, stderr).casefold()
+    signatures = (
+        _BUILD_FAILURE_SIGNATURES if phase == "build" else _RUNTIME_FAILURE_SIGNATURES
+    )
+    for needle, detail in signatures:
+        if needle in haystack:
+            return detail
+    return None
+
+
+def _resolved_molt_failure_phase(
+    phase: str, stdout: str | None, stderr: str | None
+) -> str:
+    if phase == "run" and _failure_detail("build", stdout, stderr) is not None:
+        return "build"
+    return phase
+
+
+def _classified_molt_failure(
+    *,
+    phase: str,
+    returncode: int | None,
+    stdout: str | None = None,
+    stderr: str | None = None,
+    elapsed_s: float | None,
+    timed_out: bool = False,
+    violation: memory_guard.RssViolation | None = None,
+    orphaned_process_groups: tuple[int, ...] = (),
+    default_status: str,
+    detail: str | None = None,
+) -> MoltFailure:
+    phase = _resolved_molt_failure_phase(phase, stdout, stderr)
+    signal_payload = (
+        None if returncode is None else memory_guard.exit_signal_payload(returncode)
+    )
+    detail = detail or _failure_detail(phase, stdout, stderr)
+    if violation is not None:
+        status = "rss_limit_exceeded"
+    elif timed_out:
+        status = "timeout"
+    elif signal_payload is not None:
+        status = "signal_exit"
+    elif (
+        phase == "build"
+        and detail is not None
+        and detail.startswith(("backend_daemon_", "batch_server_"))
+    ):
+        status = "daemon_crash"
+    elif phase == "run" and detail is not None and detail.startswith("molt_runtime_"):
+        status = "runtime_crash"
+    elif orphaned_process_groups:
+        status = "orphaned_processes_cleaned"
+    else:
+        status = default_status
+    return MoltFailure(
+        phase=phase,
+        status=status,
+        returncode=returncode,
+        timed_out=timed_out,
+        elapsed_s=elapsed_s,
+        detail=detail,
+        message=_failure_message(stdout, stderr),
+        stdout=stdout or "",
+        stderr=stderr or "",
+        signal=signal_payload,
+        guard_violation=_rss_record_payload(violation),
+        orphaned_process_groups=orphaned_process_groups,
+    )
+
+
+def classify_molt_process_failure(
+    *,
+    phase: str,
+    returncode: int | None,
+    stdout: str | None = None,
+    stderr: str | None = None,
+    elapsed_s: float | None,
+    timed_out: bool = False,
+    violation: memory_guard.RssViolation | None = None,
+    orphaned_process_groups: tuple[int, ...] = (),
+    default_status: str | None = None,
+) -> MoltFailure:
+    resolved_phase = _resolved_molt_failure_phase(phase, stdout, stderr)
+    return _classified_molt_failure(
+        phase=resolved_phase,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+        elapsed_s=elapsed_s,
+        timed_out=timed_out,
+        violation=violation,
+        orphaned_process_groups=orphaned_process_groups,
+        default_status=default_status
+        or ("build_failed" if resolved_phase == "build" else "runtime_failed"),
+    )
+
+
+def _classified_molt_exception(
+    *,
+    phase: str,
+    exc: BaseException,
+    elapsed_s: float | None,
+    default_status: str,
+) -> MoltFailure:
+    timed_out = isinstance(exc, (TimeoutError, subprocess.TimeoutExpired))
+    return _classified_molt_failure(
+        phase=phase,
+        returncode=memory_guard.TIMEOUT_RETURN_CODE if timed_out else None,
+        stderr=str(exc),
+        elapsed_s=elapsed_s,
+        timed_out=timed_out,
+        default_status="timeout" if timed_out else default_status,
+    )
+
+
+def molt_failure_payload(failure: MoltFailure) -> dict[str, object]:
+    return {
+        "phase": failure.phase,
+        "status": failure.status,
+        "detail": failure.detail,
+        "message": failure.message,
+        "stdout_tail": _bounded_failure_text(failure.stdout),
+        "stderr_tail": _bounded_failure_text(failure.stderr),
+        "returncode": failure.returncode,
+        "timed_out": failure.timed_out,
+        "elapsed_s": failure.elapsed_s,
+        "signal": failure.signal,
+        "guard_violation": failure.guard_violation,
+        "orphaned_process_groups": list(failure.orphaned_process_groups),
+    }
+
+
+def _molt_failure_json_fields(failure: MoltFailure | None) -> dict[str, object]:
+    status = "pass" if failure is None else failure.status
+    payload = None if failure is None else molt_failure_payload(failure)
+    return {
+        "molt_status": status,
+        "molt_run_status": status,
+        "molt_run_returncode": 0 if failure is None else failure.returncode,
+        "molt_run_timed_out": False if failure is None else failure.timed_out,
+        "molt_failure": payload,
+        "molt_failure_phase": None if payload is None else payload["phase"],
+        "molt_failure_status": None if payload is None else payload["status"],
+        "molt_failure_detail": None if payload is None else payload["detail"],
+        "molt_failure_message": None if payload is None else payload["message"],
+        "molt_failure_returncode": None if payload is None else payload["returncode"],
+        "molt_failure_timed_out": (False if payload is None else payload["timed_out"]),
+        "molt_failure_elapsed_s": None if payload is None else payload["elapsed_s"],
+        "molt_failure_signal": None if payload is None else payload["signal"],
+        "molt_failure_guard_violation": (
+            None if payload is None else payload["guard_violation"]
+        ),
+        "molt_failure_orphaned_process_groups": (
+            [] if payload is None else payload["orphaned_process_groups"]
+        ),
+    }
+
+
 def _emit_molt_build_failure(
     script: str, res: subprocess.CompletedProcess[str]
 ) -> None:
@@ -461,13 +876,14 @@ def prepare_molt_binary(
     build_timeout_s: float = DEFAULT_BATCH_BUILD_TIMEOUT_S,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     use_molt_build_cache: bool = True,
-) -> MoltBinary | None:
+) -> MoltBinary | MoltFailure:
     env = _canonical_bench_env(env)
     _prune_backend_daemons(env)
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
+    bench_tmp_root = _bench_tmp_root(env)
 
-    def _attempt_build() -> MoltBinary | None:
-        temp_dir = tempfile.TemporaryDirectory(prefix="molt-bench-", dir=BENCH_TMP_ROOT)
+    def _attempt_build() -> MoltBinary | MoltFailure:
+        temp_dir = _BenchTempDir.create(bench_tmp_root)
         out_dir = Path(temp_dir.name)
         args = [
             *_molt_build_cmd(build_profile),
@@ -508,36 +924,70 @@ def prepare_molt_binary(
             ValueError,
             subprocess.TimeoutExpired,
         ) as exc:
-            res = subprocess.CompletedProcess(
-                args=args,
-                returncode=124,
-                stdout="",
-                stderr=str(exc),
+            failure = _classified_molt_exception(
+                phase="build",
+                exc=exc,
+                elapsed_s=time.perf_counter() - start,
+                default_status="build_failed",
             )
+            temp_dir.cleanup()
+            return failure
         build_s = time.perf_counter() - start
 
         if res.returncode != 0:
             _emit_molt_build_failure(script, res)
+            failure = _classified_molt_failure(
+                phase="build",
+                returncode=res.returncode,
+                stdout=res.stdout,
+                stderr=res.stderr,
+                elapsed_s=build_s,
+                timed_out=bool(getattr(res, "timed_out", False)),
+                violation=getattr(res, "violation", None),
+                orphaned_process_groups=tuple(
+                    int(pgid)
+                    for pgid in getattr(res, "orphaned_process_groups", ()) or ()
+                ),
+                default_status="build_failed",
+            )
             temp_dir.cleanup()
-            return None
+            return failure
 
         try:
             payload = json.loads(res.stdout.strip() or "{}")
         except json.JSONDecodeError:
             _emit_molt_build_failure(script, res)
+            failure = _classified_molt_failure(
+                phase="build",
+                returncode=res.returncode,
+                stdout=res.stdout,
+                stderr=res.stderr,
+                elapsed_s=build_s,
+                default_status="build_output_invalid",
+                detail="build_json_invalid",
+            )
             temp_dir.cleanup()
-            return None
+            return failure
 
         output_path = _resolve_molt_output(payload)
         if output_path is None:
+            failure = _classified_molt_failure(
+                phase="build",
+                returncode=res.returncode,
+                stdout=res.stdout,
+                stderr=res.stderr,
+                elapsed_s=build_s,
+                default_status="build_artifact_missing",
+                detail="build_output_missing",
+            )
             temp_dir.cleanup()
-            return None
+            return failure
 
         binary_size = output_path.stat().st_size / 1024
         return MoltBinary(output_path, temp_dir, build_s, binary_size)
 
     result = _attempt_build()
-    if result is not None:
+    if isinstance(result, MoltBinary):
         return result
 
     print(
@@ -555,7 +1005,7 @@ def measure_molt_run(
     run_args: list[str] | None = None,
     timeout_s: float | None = None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-) -> RunSample | None:
+) -> RunSample | MoltFailure | None:
     cmd = [str(binary)]
     if run_args:
         cmd.extend(run_args)
@@ -576,16 +1026,37 @@ def measure_molt_run(
             print(f"Molt run timed out for {label}{msg}.", file=sys.stderr)
         else:
             print(f"Molt run timed out{msg}.", file=sys.stderr)
-        return None
+        return MoltFailure(
+            phase="run",
+            status="timeout",
+            returncode=memory_guard.TIMEOUT_RETURN_CODE,
+            timed_out=True,
+            elapsed_s=timeout_s,
+            detail=None,
+            message=None,
+        )
     elapsed_s = getattr(res, "elapsed_s", None)
     if elapsed_s is None:
         elapsed_s = time.perf_counter() - start
-    if res.returncode != 0:
+    orphaned_process_groups = tuple(
+        int(pgid) for pgid in getattr(res, "orphaned_process_groups", ()) or ()
+    )
+    if res.returncode != 0 or orphaned_process_groups:
         err = (res.stderr or res.stdout).strip()
         if err:
             prefix = f"Molt run failed for {label}: " if label else "Molt run failed: "
             print(f"{prefix}{err}", file=sys.stderr)
-        return None
+        return _classified_molt_failure(
+            phase="run",
+            returncode=res.returncode,
+            stdout=res.stdout,
+            stderr=res.stderr,
+            timed_out=bool(getattr(res, "timed_out", False)),
+            elapsed_s=elapsed_s,
+            violation=getattr(res, "violation", None),
+            orphaned_process_groups=orphaned_process_groups,
+            default_status="runtime_failed",
+        )
     return RunSample(elapsed_s, res.stdout, res.stderr)
 
 
@@ -601,13 +1072,27 @@ def collect_samples(measure_fn, samples, warmup=0) -> SampleBatch:
     for _ in range(warmup):
         sample = measure_fn()
         if sample is None:
-            return SampleBatch([], False, warmup_samples)
+            return SampleBatch(
+                [],
+                False,
+                warmup_samples,
+                MoltFailure("run", "runtime_failed", None, False, None),
+            )
+        if isinstance(sample, MoltFailure):
+            return SampleBatch([], False, warmup_samples, sample)
         warmup_samples.append(sample)
     measured: list[RunSample] = []
     for _ in range(samples):
         sample = measure_fn()
         if sample is None:
-            return SampleBatch(measured, False, warmup_samples)
+            return SampleBatch(
+                measured,
+                False,
+                warmup_samples,
+                MoltFailure("run", "runtime_failed", None, False, None),
+            )
+        if isinstance(sample, MoltFailure):
+            return SampleBatch(measured, False, warmup_samples, sample)
         measured.append(sample)
     return SampleBatch(measured, bool(measured), warmup_samples)
 
@@ -952,8 +1437,19 @@ def bench_results(
     nuitka_cmd: str | None,
     pyodide_cmd: str | None,
     use_molt_build_cache: bool = True,
+    artifact_root: Path | None = None,
 ):
     base_env = _canonical_bench_env(_base_python_env())
+    sentinel_artifact_root = artifact_root.resolve() if artifact_root else None
+    if sentinel_artifact_root is not None:
+        (sentinel_artifact_root / "memory_guard").mkdir(parents=True, exist_ok=True)
+        base_env.setdefault(
+            "MOLT_GUARD_PROFILE_LOG",
+            str(sentinel_artifact_root / "memory_guard" / "commands.jsonl"),
+        )
+        base_env["MOLT_BENCH_DAEMON_CLEANUP_LOG"] = str(
+            sentinel_artifact_root / "memory_guard" / "backend_daemon_cleanup.jsonl"
+        )
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", base_env)
     runtimes = {}
     if use_cpython:
@@ -980,6 +1476,8 @@ def bench_results(
             file=sys.stderr,
         )
         use_pyodide = False
+    bench_tmp_root = _bench_tmp_root(base_env)
+    sentinel_artifact_root = sentinel_artifact_root or bench_tmp_root
 
     header = (
         f"{'Benchmark':<30} | {'CPython(s)':<10} | {'PyPy(s)':<10} | "
@@ -997,7 +1495,7 @@ def bench_results(
     data = {}
     with harness_memory_guard.repo_process_sentinel(
         repo_root=REPO_ROOT,
-        artifact_root=BENCH_TMP_ROOT,
+        artifact_root=sentinel_artifact_root,
         label="bench",
         limits=limits,
     ):
@@ -1204,7 +1702,8 @@ def _bench_one(
     molt_args = molt_args_for_benchmark(script)
     molt_ok = False
     molt_batch = SampleBatch([], False)
-    molt_runner = prepare_molt_binary(
+    molt_failure: MoltFailure | None = None
+    molt_runner_result = prepare_molt_binary(
         script,
         molt_args,
         env=base_env,
@@ -1213,7 +1712,8 @@ def _bench_one(
         limits=limits,
         use_molt_build_cache=use_molt_build_cache,
     )
-    if molt_runner is not None:
+    if isinstance(molt_runner_result, MoltBinary):
+        molt_runner = molt_runner_result
         try:
             molt_batch = collect_samples(
                 lambda: measure_molt_run(
@@ -1228,6 +1728,7 @@ def _bench_one(
                 warmup=warmup,
             )
             molt_ok = molt_batch.ok
+            molt_failure = molt_batch.failure
             if molt_ok:
                 molt_samples = molt_batch.times_s
                 molt_time = statistics.mean(molt_samples)
@@ -1237,6 +1738,7 @@ def _bench_one(
         finally:
             molt_runner.temp_dir.cleanup()
     else:
+        molt_failure = molt_runner_result
         print(f"Molt build/run failed for {name}.", file=sys.stderr)
 
     cpython_time = results.get("cpython") if runtime_ok.get("cpython", False) else None
@@ -1248,8 +1750,19 @@ def _bench_one(
         reference_reason=reference_contract.reason,
     )
     if output_parity["checked"] and not output_parity["ok"]:
+        parity_elapsed_s = molt_time
         molt_ok = False
         molt_time = None
+        if molt_failure is None:
+            molt_failure = MoltFailure(
+                phase="parity",
+                status="output_mismatch",
+                returncode=0,
+                timed_out=False,
+                elapsed_s=parity_elapsed_s,
+                detail=str(output_parity.get("reason") or "output_mismatch"),
+            )
+    molt_failure_fields = _molt_failure_json_fields(molt_failure)
     pypy_time = results.get("pypy") if runtime_ok.get("pypy", False) else None
     speedup = (
         (cpython_time / molt_time)
@@ -1362,6 +1875,7 @@ def _bench_one(
         "molt_nuitka_ratio": nuitka_ratio,
         "molt_pyodide_ratio": pyodide_ratio,
         "molt_ok": molt_ok,
+        **molt_failure_fields,
         "molt_output_parity": output_parity,
         "reference_runtime": reference_contract.reference_runtime,
         "reference_reason": reference_contract.reason,
@@ -1414,10 +1928,188 @@ def compare_baseline(current: dict, baseline: dict, max_regression: float) -> li
     return regressions
 
 
+def _summary_path_for_json(json_out: Path, explicit: Path | None) -> Path:
+    if explicit is not None:
+        return explicit
+    if json_out.name == "results.json":
+        return json_out.with_name("summary.md")
+    return json_out.with_name(f"{json_out.stem}_summary.md")
+
+
+def _failure_details_path_for_json(json_out: Path) -> Path:
+    if json_out.name == "results.json":
+        return json_out.with_name("molt_failure_details.jsonl")
+    return json_out.with_name(f"{json_out.stem}_molt_failure_details.jsonl")
+
+
+def _bench_custody_artifacts(
+    *,
+    json_out: Path,
+    summary_out: Path,
+    artifact_root: Path,
+    failure_details_path: Path,
+) -> dict[str, str]:
+    memory_guard_root = artifact_root / "memory_guard"
+    return {
+        "results_json": str(json_out),
+        "summary_md": str(summary_out),
+        "molt_failure_details_jsonl": str(failure_details_path),
+        "harness_command_profile_jsonl": str(memory_guard_root / "commands.jsonl"),
+        "repo_process_sentinel_jsonl": str(memory_guard_root / "bench_sentinel.jsonl"),
+        "backend_daemon_cleanup_jsonl": str(
+            memory_guard_root / "backend_daemon_cleanup.jsonl"
+        ),
+    }
+
+
+def _molt_failure_detail_records(
+    benchmarks: dict[str, object],
+) -> dict[str, object]:
+    records: list[dict[str, object]] = []
+    total = 0
+    for benchmark_name, raw_stats in sorted(benchmarks.items()):
+        if not isinstance(raw_stats, dict):
+            continue
+        raw_failure = raw_stats.get("molt_failure")
+        if not isinstance(raw_failure, dict):
+            continue
+        total += 1
+        if len(records) >= MAX_FAILURE_DETAIL_RECORDS:
+            continue
+        records.append(
+            {
+                "benchmark": benchmark_name,
+                "phase": raw_failure.get("phase"),
+                "status": raw_failure.get("status"),
+                "detail": raw_failure.get("detail"),
+                "returncode": raw_failure.get("returncode"),
+                "timed_out": raw_failure.get("timed_out"),
+                "elapsed_s": raw_failure.get("elapsed_s"),
+                "message": _bounded_failure_text(raw_failure.get("message")),
+                "guard_violation": raw_failure.get("guard_violation"),
+                "signal": raw_failure.get("signal"),
+                "orphaned_process_groups": raw_failure.get(
+                    "orphaned_process_groups"
+                ),
+                "log_refs": raw_failure.get("log_refs", []),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "total": total,
+        "truncated": total > len(records),
+        "max_records": MAX_FAILURE_DETAIL_RECORDS,
+        "records": records,
+    }
+
+
+def _write_failure_details_jsonl(
+    path: Path,
+    failure_details: dict[str, object],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = failure_details.get("records", [])
+    if not isinstance(records, list):
+        records = []
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            if isinstance(record, dict):
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _format_summary_seconds(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "-"
+    return f"{float(value):.4f}"
+
+
+def _render_bench_summary_markdown(payload: dict[str, object]) -> str:
+    custody_artifacts = payload.get("custody_artifacts")
+    if not isinstance(custody_artifacts, dict):
+        custody_artifacts = {}
+    failure_details = payload.get("molt_failure_details")
+    if not isinstance(failure_details, dict):
+        failure_details = {"records": [], "total": 0, "truncated": False}
+    records = failure_details.get("records", [])
+    if not isinstance(records, list):
+        records = []
+
+    lines: list[str] = []
+    lines.append("# Molt Benchmark Summary")
+    lines.append("")
+    lines.append(f"Generated: {payload.get('created_at', '')}")
+    if custody_artifacts.get("results_json"):
+        lines.append(f"JSON: `{custody_artifacts['results_json']}`")
+    lines.append("")
+    lines.append("| Benchmark | Molt Status | CPython s | Molt s | Molt/CPython | Failure |")
+    lines.append("| --- | --- | ---: | ---: | ---: | --- |")
+    benchmarks = payload.get("benchmarks")
+    if isinstance(benchmarks, dict):
+        for name, raw_stats in sorted(benchmarks.items()):
+            if not isinstance(raw_stats, dict):
+                continue
+            failure = raw_stats.get("molt_failure")
+            failure_text = "-"
+            if isinstance(failure, dict):
+                detail = failure.get("detail")
+                failure_text = str(failure.get("status", "failed"))
+                if detail:
+                    failure_text = f"{failure_text} ({detail})"
+            lines.append(
+                "| "
+                f"{name} | {raw_stats.get('molt_status', 'unknown')} | "
+                f"{_format_summary_seconds(raw_stats.get('cpython_time_s'))} | "
+                f"{_format_summary_seconds(raw_stats.get('molt_time_s'))} | "
+                f"{_format_summary_seconds(raw_stats.get('molt_cpython_ratio'))} | "
+                f"{failure_text} |"
+            )
+
+    lines.append("")
+    lines.append("## Custody Artifacts")
+    for key in (
+        "molt_failure_details_jsonl",
+        "harness_command_profile_jsonl",
+        "repo_process_sentinel_jsonl",
+        "backend_daemon_cleanup_jsonl",
+    ):
+        value = custody_artifacts.get(key)
+        if value:
+            lines.append(f"- `{key}`: `{value}`")
+
+    if records:
+        lines.append("")
+        lines.append("## Molt Failure Details")
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            detail = record.get("detail")
+            detail_text = f" detail=`{detail}`" if detail else ""
+            lines.append(
+                f"- `{record.get('benchmark')}` phase=`{record.get('phase')}` "
+                f"status=`{record.get('status')}`{detail_text}"
+            )
+            log_refs = record.get("log_refs")
+            if isinstance(log_refs, list):
+                for ref in log_refs[:4]:
+                    if isinstance(ref, dict) and ref.get("path"):
+                        lines.append(
+                            f"  - {ref.get('kind', 'log')}: `{ref.get('path')}`"
+                        )
+        if failure_details.get("truncated"):
+            lines.append(
+                f"- Failure detail list truncated at {MAX_FAILURE_DETAIL_RECORDS} records."
+            )
+
+    lines.append("")
+    lines.append("Generated by `tools/bench.py`.")
+    return "\n".join(lines) + "\n"
+
+
 def main():
     _enable_line_buffering()
     parser = argparse.ArgumentParser(description="Run Molt benchmark suite.")
     parser.add_argument("--json-out", type=Path, default=None)
+    parser.add_argument("--summary-out", type=Path, default=None)
     parser.add_argument("--baseline", type=Path, default=None)
     parser.add_argument("--update-baseline", action="store_true")
     parser.add_argument("--max-regression", type=float, default=0.15)
@@ -1544,7 +2236,32 @@ def main():
     use_pyodide = not args.no_pyodide
     use_tty = args.tty or os.environ.get("MOLT_TTY") == "1"
 
-    _prune_backend_daemons()
+    json_out = args.json_out
+    if json_out is None:
+        timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
+        json_out = BENCH_RESULTS_DIR / f"bench_{timestamp}.json"
+    json_out = json_out.resolve()
+    summary_out = _summary_path_for_json(json_out, args.summary_out)
+    summary_out = summary_out.resolve()
+    artifact_root = json_out.parent
+    failure_details_path = _failure_details_path_for_json(json_out).resolve()
+    custody_artifacts = _bench_custody_artifacts(
+        json_out=json_out,
+        summary_out=summary_out,
+        artifact_root=artifact_root,
+        failure_details_path=failure_details_path,
+    )
+
+    initial_cleanup_env = _canonical_bench_env(_base_python_env())
+    initial_cleanup_env.setdefault(
+        "MOLT_GUARD_PROFILE_LOG",
+        custody_artifacts["harness_command_profile_jsonl"],
+    )
+    initial_cleanup_env["MOLT_BENCH_DAEMON_CLEANUP_LOG"] = custody_artifacts[
+        "backend_daemon_cleanup_jsonl"
+    ]
+    initial_cleanup_env["MOLT_BENCH_DAEMON_CLEANUP_REASON"] = "bench_start"
+    _prune_backend_daemons(initial_cleanup_env)
 
     warmup = args.warmup if args.warmup is not None else (0 if args.smoke else 1)
     results = bench_results(
@@ -1563,14 +2280,16 @@ def main():
         nuitka_cmd=args.nuitka_cmd,
         pyodide_cmd=args.pyodide_cmd,
         use_molt_build_cache=not args.no_molt_build_cache,
+        artifact_root=artifact_root,
     )
 
     load_avg = None
     try:
         load_avg = os.getloadavg()
-    except OSError:
+    except (AttributeError, OSError):
         load_avg = None
 
+    failure_details = _molt_failure_detail_records(results)
     payload = {
         "schema_version": 1,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -1589,14 +2308,15 @@ def main():
         "memory_guard": harness_memory_guard.limits_summary(
             harness_memory_guard.limits_from_env("MOLT_BENCH")
         ),
+        "custody_artifacts": custody_artifacts,
+        "molt_failure_details": failure_details,
         "benchmarks": results,
     }
 
-    json_out = args.json_out
-    if json_out is None:
-        timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
-        json_out = BENCH_RESULTS_DIR / f"bench_{timestamp}.json"
+    _write_failure_details_jsonl(failure_details_path, failure_details)
     write_json(json_out, payload)
+    summary_out.parent.mkdir(parents=True, exist_ok=True)
+    summary_out.write_text(_render_bench_summary_markdown(payload), encoding="utf-8")
 
     if _has_native_output_parity_failures(payload):
         print(

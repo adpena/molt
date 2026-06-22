@@ -1317,9 +1317,22 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
             let stdout_mode = process_stdio_mode(_py, stdout_bits, "stdout");
             let stderr_mode = process_stdio_mode(_py, stderr_bits, "stderr");
 
-            // Apply start_new_session and process_group via pre_exec on Unix.
+            // Process-session controls are Unix process-model operations.
+            #[cfg(unix)]
             let new_session = is_truthy(_py, obj_from_bits(start_new_session_bits));
+            #[cfg(not(unix))]
+            if is_truthy(_py, obj_from_bits(start_new_session_bits)) {
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "start_new_session is unavailable on this host",
+                );
+            }
+            #[cfg(unix)]
             let pg_obj = obj_from_bits(process_group_bits);
+            #[cfg(not(unix))]
+            let pg_obj = obj_from_bits(process_group_bits);
+            #[cfg(unix)]
             let process_group_val: Option<i64> = if pg_obj.is_none() {
                 None
             } else {
@@ -1334,6 +1347,21 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
                     }
                 }
             };
+            #[cfg(not(unix))]
+            if !pg_obj.is_none() {
+                if to_i64(pg_obj).is_none() {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "process_group must be an integer or None",
+                    );
+                }
+                return raise_exception::<_>(
+                    _py,
+                    "RuntimeError",
+                    "process_group is unavailable on this host",
+                );
+            }
 
             #[cfg(unix)]
             let owns_process_group =
@@ -2360,6 +2388,7 @@ pub(crate) struct ProcessState {
     registry_id: u64,
     child: Mutex<std::process::Child>,
     pub(crate) pid: u32,
+    #[cfg_attr(not(unix), allow(dead_code))]
     owned_process_group: Option<i32>,
     pub(crate) exit_code: AtomicI32,
     kill_requested: AtomicBool,

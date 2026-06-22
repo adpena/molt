@@ -130,7 +130,9 @@ CLASS_RED_STABLE = "RED_STABLE"  # warm<1.00, CI below 1.0, quiescent — TRUE t
 CLASS_RED_NOISY = "RED_NOISY"  # warm<1.00 BUT contaminated/unstable/CI-straddles
 CLASS_TIE = "TIE"  # CI crosses 1.00 — neither a win nor a loss
 CLASS_GREEN = "GREEN_STABLE"  # stable warm>1.00 (kept distinct from 2-D GREEN)
-CLASS_DIMENSIONAL_WIN = "DIMENSIONAL_WIN"  # warm gate flat, but alloc/RSS/size/cold/backend improved
+CLASS_DIMENSIONAL_WIN = (
+    "DIMENSIONAL_WIN"  # warm gate flat, but alloc/RSS/size/cold/backend improved
+)
 # Infra states pass through unchanged (no warm number to classify).
 CLASS_INFRA = "INFRA"  # BUILD_FAILED / RUN_ERROR / RUN_BLOCKED / CPY_INCOMPAT / STALE
 
@@ -687,7 +689,8 @@ def gather_quiescence() -> dict:
     reasons: list[str] = []
     if real_procs:
         names = ", ".join(
-            f"{p['pid']}:{p['cmd'].split()[0] if p['cmd'] else '?'}" for p in real_procs[:6]
+            f"{p['pid']}:{p['cmd'].split()[0] if p['cmd'] else '?'}"
+            for p in real_procs[:6]
         )
         reasons.append(
             f"{len(real_procs)} active build process(es) (cargo/rustc/molt-backend/"
@@ -729,7 +732,8 @@ def gather_quiescence() -> dict:
         "active_cargo_or_rustc_processes": [
             p
             for p in real_procs
-            if "cargo" in p.get("cmd", "").lower() or "rustc" in p.get("cmd", "").lower()
+            if "cargo" in p.get("cmd", "").lower()
+            or "rustc" in p.get("cmd", "").lower()
         ],
         "active_build_processes": real_procs,
         "loadavg_1m": load,
@@ -772,13 +776,22 @@ def _warm_speedup_ci(
         return round(median, 4), None, None, None
     mean = statistics.mean(vals)
     var = statistics.variance(vals)
-    stdev = var ** 0.5
+    stdev = var**0.5
     sem = stdev / (len(vals) ** 0.5)
     # 95% two-sided Student-t critical values for small n (df = n-1). Table is
     # exact for the n we use (2..10); beyond that we clamp to the n=10 value
     # (1.833) which is conservative-enough and avoids a scipy dependency.
-    t_table = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447,
-               7: 2.365, 8: 2.306, 9: 2.262}
+    t_table = {
+        1: 12.706,
+        2: 4.303,
+        3: 3.182,
+        4: 2.776,
+        5: 2.571,
+        6: 2.447,
+        7: 2.365,
+        8: 2.306,
+        9: 2.262,
+    }
     df = len(vals) - 1
     tcrit = t_table.get(df, 2.262 if df >= 9 else 12.706)
     half = tcrit * sem
@@ -883,7 +896,9 @@ def capture_cycle_profile(
     # process group so the sampler has a multi-second window. A non-zero exit on
     # any iteration stops the loop (set -e) — we still sample whatever ran.
     quoted = " ".join(_shquote(a) for a in cmd)
-    loop_cmd = f"for i in $(seq 1 {repeat_runs}); do {quoted} >/dev/null 2>&1 || break; done"
+    loop_cmd = (
+        f"for i in $(seq 1 {repeat_runs}); do {quoted} >/dev/null 2>&1 || break; done"
+    )
     safe_cmd = [
         sys.executable,
         str(SAFE_RUN),
@@ -901,8 +916,15 @@ def capture_cycle_profile(
     # Popen, then start the workload; sample catches the workload at launch.
     try:
         sampler_proc = _profiling_popen(
-            [sampler, target_name, str(sample_seconds), "-wait", "-mayDie",
-             "-f", str(out_file)]
+            [
+                sampler,
+                target_name,
+                str(sample_seconds),
+                "-wait",
+                "-mayDie",
+                "-f",
+                str(out_file),
+            ]
         )
     except OSError as exc:
         return {
@@ -1095,7 +1117,9 @@ def top_in_binary_frames(
             {
                 "symbol": s.get("symbol"),
                 "self_samples": int(s.get("self_samples", 0)),
-                "leaderboard_pct": round(100.0 * int(s.get("self_samples", 0)) / total, 2),
+                "leaderboard_pct": round(
+                    100.0 * int(s.get("self_samples", 0)) / total, 2
+                ),
                 "lib": lib,
             }
         )
@@ -1178,10 +1202,15 @@ def build_profiling_binary(
         meta["reason"] = f"profiling build raised: {exc!r}"
         log_lines.append(f"PROFILING-BUILD EXCEPTION: {exc!r}")
         return None, meta
-    if binary is None:
+    if not isinstance(binary, bench.MoltBinary):
         meta["refused"] = True
-        meta["reason"] = "profiling build produced no binary"
-        log_lines.append("PROFILING-BUILD FAILED")
+        if isinstance(binary, bench.MoltFailure):
+            meta["reason"] = f"profiling build failed: {binary.status}"
+            detail = f" detail={binary.detail}" if binary.detail else ""
+            log_lines.append(f"PROFILING-BUILD FAILED status={binary.status}{detail}")
+        else:
+            meta["reason"] = "profiling build produced no binary"
+            log_lines.append("PROFILING-BUILD FAILED")
         return None, meta
     log_lines.append(
         f"profiling binary built: looped(inner_loops={inner_loops}) + symbolicated "
@@ -1275,7 +1304,9 @@ def capture_hot_only_profile(
             )
             note = "size run OOM (inner-repeat amplified a per-iteration leak)"
         else:
-            reason = f"looped profiling binary failed to run (size phase: {size.status})"
+            reason = (
+                f"looped profiling binary failed to run (size phase: {size.status})"
+            )
             note = "size run failed"
         return {
             "available": False,
@@ -1311,9 +1342,7 @@ def capture_hot_only_profile(
         }
     eff_window_s = max(min_window_s, min(window_s, avail_window_s))
 
-    out_file = Path(
-        tempfile.mktemp(prefix="perfscore-hot-", suffix=".txt", dir="/tmp")
-    )
+    out_file = Path(tempfile.mktemp(prefix="perfscore-hot-", suffix=".txt", dir="/tmp"))
     quoted = " ".join(_shquote(a) for a in cmd)
     run_one = f"{quoted} >/dev/null 2>&1 || true"
     safe_cmd = [
@@ -1424,9 +1453,7 @@ def capture_hot_only_profile(
             ),
             "note": note,
         }
-    in_binary_top = top_in_binary_frames(
-        symbols, binary_lib=target_name, top_n=top_n
-    )
+    in_binary_top = top_in_binary_frames(symbols, binary_lib=target_name, top_n=top_n)
     return {
         "available": True,
         "mode": "hot-only",
@@ -1558,7 +1585,9 @@ def _emit_hot_only_board(
     git_rev = _git_rev()
     SCOREBOARD_DIR.mkdir(parents=True, exist_ok=True)
     out_path = (
-        Path(out) if out else SCOREBOARD_DIR / f"hot_profile_{spec.backend}_{git_rev}.json"
+        Path(out)
+        if out
+        else SCOREBOARD_DIR / f"hot_profile_{spec.backend}_{git_rev}.json"
     )
     doc = {
         "schema_version": SCHEMA_VERSION,
@@ -1735,7 +1764,9 @@ class Cell:
     repeat_variance: float | None = None
     repeat_ci_lo: float | None = None
     repeat_ci_hi: float | None = None
-    repeat_stability: str | None = None  # STABLE_BELOW|STABLE_ABOVE|STRADDLES|UNCONFIRMED
+    repeat_stability: str | None = (
+        None  # STABLE_BELOW|STABLE_ABOVE|STRADDLES|UNCONFIRMED
+    )
 
     # --- Cycle attribution (#69 Rule 1 + --emit-cycle-profile) ------------
     # The CYCLE profile (NOT alloc-count) for warm reds — the next-opt signal.
@@ -2069,8 +2100,12 @@ def _dimensional_improvement(cell: "Cell", baseline_cell: dict | None) -> str | 
         if frac >= DIMENSIONAL_WIN_MIN_FRACTION:
             wins.append(f"{label} {old:.2f}->{new:.2f} (+{frac * 100:.0f}%)")
 
-    _improved_lower(cell.molt_peak_rss_mib, baseline_cell.get("molt_peak_rss_mib"), "RSS")
-    _improved_lower(cell.binary_size_kib, baseline_cell.get("binary_size_kib"), "binary")
+    _improved_lower(
+        cell.molt_peak_rss_mib, baseline_cell.get("molt_peak_rss_mib"), "RSS"
+    )
+    _improved_lower(
+        cell.binary_size_kib, baseline_cell.get("binary_size_kib"), "binary"
+    )
     _improved_lower(cell.compile_time_s, baseline_cell.get("compile_time_s"), "compile")
     _improved_higher(cell.cold_speedup, baseline_cell.get("cold_speedup"), "cold")
     if not wins:
@@ -2276,9 +2311,13 @@ def measure_cell(
         # WASM build/link only — produced via the CLI, not run here.
         binary = _build_wasm_only(script_path, build_env, build_flag, log_lines)
 
-    if binary is None:
+    if not isinstance(binary, bench.MoltBinary):
         cell.build_ok = False
-        log_lines.append("BUILD FAILED")
+        if isinstance(binary, bench.MoltFailure):
+            detail = f" detail={binary.detail}" if binary.detail else ""
+            log_lines.append(f"BUILD FAILED status={binary.status}{detail}")
+        else:
+            log_lines.append("BUILD FAILED")
         cell.finalize(budget_ms=budget_ms, authoritative=authoritative)
         _write_log(log_path, log_lines)
         return cell
@@ -3038,7 +3077,11 @@ def gather_provenance(
         "stdlib_cache_key": _stdlib_cache_key_signal(),
         "authoritative": authoritative,
         "authoritative_reason": _authoritative_reason(
-            diverges, dirty, tool_modified, quiet_blocks=quiet_blocks, quiescence=quiescence
+            diverges,
+            dirty,
+            tool_modified,
+            quiet_blocks=quiet_blocks,
+            quiescence=quiescence,
         ),
         # --- #69 quiescence-guard provenance --------------------------------
         "require_quiescent": require_quiescent,
@@ -3143,9 +3186,7 @@ def build_scoreboard_doc(
         return sorted(_cell_key(asdict(c)) for c in cells if c.verdict == verdict)
 
     def keys_with_class(cls: str) -> list[str]:
-        return sorted(
-            _cell_key(asdict(c)) for c in cells if c.classification == cls
-        )
+        return sorted(_cell_key(asdict(c)) for c in cells if c.classification == cls)
 
     # The gate-failing set (the hard reds). FAIL_STALE is conditional (depends
     # on --allow-nonauthoritative), so it is reported separately, not summed in.
@@ -3429,20 +3470,18 @@ def print_summary(doc: dict) -> None:
                 f"builds=0  thermal={'ok' if q.get('thermal_ok') else q.get('thermal_ok')}"
             )
         else:
-            print(
-                f"  *** NOT QUIESCENT: {'; '.join(q.get('reasons', []))} ***"
-            )
+            print(f"  *** NOT QUIESCENT: {'; '.join(q.get('reasons', []))} ***")
             if prov.get("require_quiescent"):
                 print(
                     "      NON-AUTHORITATIVE: machine not quiet; do not optimize "
                     "from this red list (EXPLORATORY only)"
                 )
     if authoritative:
-        print("  AUTHORITATIVE: tree == origin/main, clean, tool unmodified, machine quiescent")
-    else:
         print(
-            "  *** WARNING: benchmark is NON-AUTHORITATIVE ***"
+            "  AUTHORITATIVE: tree == origin/main, clean, tool unmodified, machine quiescent"
         )
+    else:
+        print("  *** WARNING: benchmark is NON-AUTHORITATIVE ***")
         print(f"      reason: {prov.get('authoritative_reason', 'unknown')}")
     print("=" * 100)
 
@@ -3643,7 +3682,9 @@ def print_summary(doc: dict) -> None:
                 )
         dims = by_class.get(CLASS_DIMENSIONAL_WIN, [])
         if dims:
-            print(f"\n  DIMENSIONAL_WIN ({len(dims)}) — Rule 4 (no warm flip, dimension improved):")
+            print(
+                f"\n  DIMENSIONAL_WIN ({len(dims)}) — Rule 4 (no warm flip, dimension improved):"
+            )
             for c in dims:
                 print(
                     f"    {c['benchmark']} [{c['backend']}/{c['profile']}]  "
@@ -4309,8 +4350,7 @@ def main(argv: list[str]) -> int:
     quiescence = gather_quiescence()
     if not quiescence["quiet"]:
         print(
-            "[scoreboard] machine NOT quiescent — "
-            + "; ".join(quiescence["reasons"]),
+            "[scoreboard] machine NOT quiescent — " + "; ".join(quiescence["reasons"]),
             file=sys.stderr,
         )
         if ns.require_quiescent:
@@ -4666,7 +4706,9 @@ def _print_provenance(provenance: dict) -> None:
     print("  [quiescence (#69 Rule 2)]")
     print(f"    require_quiescent            = {p.get('require_quiescent')}")
     print(f"    quiescent                    = {p.get('quiescent')}")
-    print(f"    active_molt_processes        = {_proc_summary(p.get('active_molt_processes'))}")
+    print(
+        f"    active_molt_processes        = {_proc_summary(p.get('active_molt_processes'))}"
+    )
     print(
         "    active_cargo_or_rustc_processes = "
         f"{_proc_summary(p.get('active_cargo_or_rustc_processes'))}"
@@ -4675,7 +4717,9 @@ def _print_provenance(provenance: dict) -> None:
     print(f"    loadavg_threshold            = {q.get('loadavg_threshold')}")
     print(f"    ncpu                         = {p.get('ncpu')}")
     print(f"    runnable_signal              = {p.get('runnable_signal')}")
-    print(f"    thermal_ok                   = {q.get('thermal_ok')}  ({q.get('thermal_note')})")
+    print(
+        f"    thermal_ok                   = {q.get('thermal_ok')}  ({q.get('thermal_note')})"
+    )
     if q.get("reasons"):
         print(f"    NON-QUIET reasons            = {'; '.join(q.get('reasons', []))}")
     # --- Authority verdict --------------------------------------------------

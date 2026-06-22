@@ -310,9 +310,14 @@ roadmap claim drifts.
   current Molt runtime blocker remains `molt fatal: invalid object header before
   dec_ref` at 1.985 GB peak RSS
   (`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
-  The next structural landing point is runtime object-header/RC correctness,
-  while daemon-enabled runs still need daemon outcome/log custody after the
-  compile-memory split.
+  The native benchmark/friend-suite Molt result contract now records
+  phase-aware `molt_failure` payloads, so the next rerun can distinguish
+  build-phase `daemon_crash` details such as `backend_daemon_empty_response`
+  from run-phase `runtime_crash` details such as
+  `molt_runtime_invalid_object_header_before_dec_ref` instead of collapsing
+  them into generic failed rows. The next structural landing point is runtime
+  object-header/RC correctness, while daemon-enabled runs still need the
+  compile-memory split to leave a complete benchmark artifact.
 - Continue the clean `molt-gpu` scheduler lane from the current code state:
   Movement/ShapeTracker binding is now a real per-kernel input-view contract
   with storage identity separated from binding identity across scheduler,

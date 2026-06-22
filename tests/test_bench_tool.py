@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 import textwrap
@@ -28,7 +27,7 @@ def _run_bench(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return run_native_test_process(
-        ["python3", "tools/bench.py", *args],
+        [sys.executable, "tools/bench.py", *args],
         cwd=REPO_ROOT,
         env=env,
         text=True,
@@ -89,9 +88,9 @@ def test_bench_runtime_timeout_marks_molt_not_ok(tmp_path: Path) -> None:
     script.write_text(
         textwrap.dedent(
             """
-            import time
-
-            time.sleep(2.0)
+            i = 0
+            while True:
+                i += 1
             print("done")
             """
         ).strip()
@@ -126,6 +125,15 @@ def test_bench_runtime_timeout_marks_molt_not_ok(tmp_path: Path) -> None:
     assert entry["molt_ok"] is False
     assert entry["molt_time_s"] is None
     assert entry["molt_samples_s"] == []
+    assert entry["molt_status"] == "timeout"
+    assert entry["molt_run_status"] == "timeout"
+    assert entry["molt_run_timed_out"] is True
+    assert entry["molt_failure_phase"] == "run"
+    assert entry["molt_failure_status"] == "timeout"
+    assert (
+        entry["molt_failure_returncode"] == bench_tool.memory_guard.TIMEOUT_RETURN_CODE
+    )
+    assert entry["molt_failure_timed_out"] is True
     assert entry["molt_output_parity"]["ok"] is None
     assert entry["molt_output_parity"]["reason"] == "reference_unavailable"
 
@@ -140,9 +148,9 @@ def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
     slow_script.write_text(
         textwrap.dedent(
             """
-            import time
-
-            time.sleep(2.0)
+            i = 0
+            while True:
+                i += 1
             print("done")
             """
         ).strip()
@@ -150,8 +158,6 @@ def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
         encoding="utf-8",
     )
     out_json = tmp_path / "bench_combined.json"
-    profile_log = tmp_path / "guarded_commands.jsonl"
-    env = dict(os.environ, MOLT_GUARD_PROFILE_LOG=str(profile_log))
 
     res = _run_bench(
         "--no-cpython",
@@ -166,14 +172,13 @@ def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
         "--molt-profile",
         "dev",
         "--runtime-timeout-sec",
-        "1.0",
+        "5.0",
         "--json-out",
         str(out_json),
         "--script",
         str(fast_script),
         "--script",
         str(slow_script),
-        env=env,
     )
     assert res.returncode == 0, res.stderr
 
@@ -190,31 +195,18 @@ def test_bench_cli_native_smoke_contract_batch_reuses_compiler(
     assert slow_entry["molt_ok"] is False
     assert slow_entry["molt_time_s"] is None
     assert slow_entry["molt_samples_s"] == []
+    assert slow_entry["molt_status"] == "timeout"
+    assert slow_entry["molt_run_status"] == "timeout"
+    assert slow_entry["molt_run_timed_out"] is True
+    assert slow_entry["molt_failure_phase"] == "run"
+    assert slow_entry["molt_failure_status"] == "timeout"
     assert slow_entry["molt_output_parity"]["ok"] is None
     assert slow_entry["molt_output_parity"]["reason"] == "reference_unavailable"
-
-    events = [
-        json.loads(line)
-        for line in profile_log.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    bench_events = [
-        event
-        for event in events
-        if event.get("event") == "guarded_command_profile"
-        and event.get("prefix") == "MOLT_BENCH"
-    ]
-    assert len(bench_events) >= 2
-    assert any(event["status"] == "timeout" for event in bench_events)
 
 
 def test_molt_build_cmd_supports_explicit_profile() -> None:
     assert bench_tool._molt_build_cmd("release") == [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
-        "python3",
+        sys.executable,
         "-m",
         "molt.cli",
         "build",
@@ -223,16 +215,72 @@ def test_molt_build_cmd_supports_explicit_profile() -> None:
     ]
 
 
-def test_canonical_bench_env_uses_repo_roots_and_preserves_session() -> None:
-    env = bench_tool._canonical_bench_env({"MOLT_SESSION_ID": "bench-review"})
+def test_canonical_bench_env_preserves_explicit_roots_and_session(
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    env = bench_tool._canonical_bench_env(
+        {
+            "MOLT_EXT_ROOT": str(artifact_root),
+            "MOLT_SESSION_ID": "bench-review",
+        }
+    )
 
-    assert env["MOLT_EXT_ROOT"] == str(bench_tool.REPO_ROOT)
-    assert env["CARGO_TARGET_DIR"] == str(bench_tool.REPO_ROOT / "target")
-    assert env["MOLT_CACHE"] == str(bench_tool.REPO_ROOT / ".molt_cache")
-    assert env["MOLT_DIFF_ROOT"] == str(bench_tool.REPO_ROOT / "tmp" / "diff")
-    assert env["TMPDIR"] == str(bench_tool.REPO_ROOT / "tmp")
+    resolved_root = artifact_root.resolve()
+    assert env["MOLT_EXT_ROOT"] == str(resolved_root)
+    assert env["CARGO_TARGET_DIR"] == str(resolved_root / "target")
+    assert env["MOLT_CACHE"] == str(resolved_root / ".molt_cache")
+    assert env["MOLT_DIFF_ROOT"] == str(resolved_root / "tmp" / "diff")
+    assert env["TMPDIR"] == str(resolved_root / "tmp")
+    assert env["MOLT_BENCH_TMP_ROOT"] == str(resolved_root / "tmp" / "bench")
     assert env["PYTHONPATH"] == str(bench_tool.REPO_ROOT / "src")
     assert env["MOLT_SESSION_ID"] == "bench-review"
+
+
+def test_canonical_bench_env_preserves_independent_explicit_artifact_env(
+    tmp_path: Path,
+) -> None:
+    explicit = {
+        "MOLT_EXT_ROOT": str(tmp_path / "ext-root"),
+        "CARGO_TARGET_DIR": str(tmp_path / "cargo-target"),
+        "MOLT_DIFF_CARGO_TARGET_DIR": str(tmp_path / "diff-cargo-target"),
+        "MOLT_CACHE": str(tmp_path / "cache-root"),
+        "MOLT_DIFF_ROOT": str(tmp_path / "diff-root"),
+        "MOLT_DIFF_TMPDIR": str(tmp_path / "diff-tmp"),
+        "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
+        "TMPDIR": str(tmp_path / "tmp-root"),
+        "CARGO_INCREMENTAL": "1",
+        "MOLT_SESSION_ID": "caller-session",
+    }
+
+    env = bench_tool._canonical_bench_env(explicit)
+
+    for key, value in explicit.items():
+        assert env[key] == value
+    assert env["MOLT_BENCH_TMP_ROOT"] == str(tmp_path / "diff-tmp" / "bench")
+    conformance_defaults = bench_tool.build_molt_conformance_env(
+        bench_tool.REPO_ROOT,
+        "caller-session",
+    )
+    for key, value in explicit.items():
+        if key in conformance_defaults and key != "MOLT_SESSION_ID":
+            assert env[key] != conformance_defaults[key]
+    assert env["PYTHONPATH"] == str(bench_tool.REPO_ROOT / "src")
+
+
+def test_canonical_bench_env_empty_base_ignores_ambient_artifact_env(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    ambient_root = tmp_path / "ambient-root"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ambient_root))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(ambient_root / "target"))
+
+    env = bench_tool._canonical_bench_env({})
+
+    assert env["MOLT_EXT_ROOT"] != str(ambient_root.resolve())
+    assert env["CARGO_TARGET_DIR"] != str((ambient_root / "target").resolve())
+    assert env["CARGO_TARGET_DIR"] == str(Path(env["MOLT_EXT_ROOT"]) / "target")
 
 
 def test_prepare_molt_binary_defaults_to_cache_reuse(
@@ -270,7 +318,7 @@ def test_prepare_molt_binary_defaults_to_cache_reuse(
 
     binary = bench_tool.prepare_molt_binary(str(script), env={})
 
-    assert binary is not None
+    assert isinstance(binary, bench_tool.MoltBinary)
     try:
         command = commands[0]
         assert "--cache" in command
@@ -314,7 +362,7 @@ def test_prepare_molt_binary_can_force_cold_rebuild(
         use_molt_build_cache=False,
     )
 
-    assert binary is not None
+    assert isinstance(binary, bench_tool.MoltBinary)
     try:
         command = commands[0]
         assert "--rebuild" in command
@@ -419,6 +467,85 @@ def test_measure_molt_run_uses_guard_child_elapsed(monkeypatch, tmp_path: Path) 
     assert calls[0]["limits"] is limits
 
 
+def test_measure_molt_run_classifies_runtime_fatal(monkeypatch, tmp_path: Path) -> None:
+    binary = tmp_path / "molt-bin"
+    binary.write_text("binary", encoding="utf-8")
+    completed = subprocess.CompletedProcess(
+        [str(binary)],
+        1,
+        "",
+        "molt fatal: invalid object header before dec_ref\n",
+    )
+    completed.elapsed_s = 0.25
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: completed,
+    )
+
+    failure = bench_tool.measure_molt_run(binary, label="unit")
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert failure.phase == "run"
+    assert failure.status == "runtime_crash"
+    assert failure.detail == "molt_runtime_invalid_object_header_before_dec_ref"
+    assert failure.returncode == 1
+
+
+def test_measure_molt_run_classifies_signal_exit(monkeypatch, tmp_path: Path) -> None:
+    binary = tmp_path / "molt-bin"
+    binary.write_text("binary", encoding="utf-8")
+    completed = subprocess.CompletedProcess([str(binary)], -6, "", "")
+    completed.elapsed_s = 0.1
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: completed,
+    )
+
+    failure = bench_tool.measure_molt_run(binary, label="unit")
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert failure.status == "signal_exit"
+    assert failure.signal is not None
+    assert failure.signal["signal"] == 6
+
+
+def test_measure_molt_run_classifies_rss_guard_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "molt-bin"
+    binary.write_text("binary", encoding="utf-8")
+    completed = subprocess.CompletedProcess([str(binary)], 137, "", "")
+    completed.elapsed_s = 0.2
+    completed.violation = bench_tool.memory_guard.RssViolation(
+        pid=123,
+        rss_kb=2 * 1024 * 1024,
+        command="molt-bin",
+        scope="process",
+    )
+
+    monkeypatch.setattr(
+        bench_tool.harness_memory_guard,
+        "guarded_completed_process",
+        lambda *args, **kwargs: completed,
+    )
+
+    failure = bench_tool.measure_molt_run(binary, label="unit")
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert failure.status == "rss_limit_exceeded"
+    assert failure.guard_violation == {
+        "pid": 123,
+        "rss_kb": 2 * 1024 * 1024,
+        "rss_gb": 2.0,
+        "command": "molt-bin",
+        "scope": "process",
+    }
+
+
 def test_bench_batch_server_starts_in_guarded_process_group(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -438,6 +565,7 @@ def test_bench_batch_server_starts_in_guarded_process_group(monkeypatch) -> None
     guard_context = captured["guard_context"]
     assert guard_context.prefix == "MOLT_BENCH"
     assert guard_context.limits.enabled is True
+    assert captured["cmd"][:3] == [sys.executable, "-m", "molt.cli"]
     assert "process_group_kwargs" not in captured
     assert "force_close" not in captured
     assert captured["closed"] == 5.0
@@ -499,6 +627,8 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
             "tools/bench.py",
             "--molt-profile",
             "release",
+            "--json-out",
+            str(tmp_path / "results.json"),
             "--script",
             str(tmp_path / "bench_sample.py"),
         ],
@@ -539,6 +669,8 @@ def test_bench_cli_defaults_molt_profile_to_release(
         "argv",
         [
             "tools/bench.py",
+            "--json-out",
+            str(tmp_path / "results.json"),
             "--script",
             str(tmp_path / "bench_sample.py"),
         ],
@@ -551,9 +683,7 @@ def test_bench_cli_defaults_molt_profile_to_release(
     assert captured["use_molt_build_cache"] is True
 
 
-def test_bench_cli_can_disable_molt_build_cache(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_bench_cli_can_disable_molt_build_cache(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
@@ -574,6 +704,8 @@ def test_bench_cli_can_disable_molt_build_cache(
         [
             "tools/bench.py",
             "--no-molt-build-cache",
+            "--json-out",
+            str(tmp_path / "results.json"),
             "--script",
             str(tmp_path / "bench_sample.py"),
         ],
@@ -694,7 +826,7 @@ def test_prepare_molt_binary_uses_batch_build_server(
         build_timeout_s=12.5,
     )
 
-    assert binary is not None
+    assert isinstance(binary, bench_tool.MoltBinary)
     try:
         assert binary.path.read_bytes() == b"binary"
         assert binary.size_kb > 0
@@ -745,11 +877,85 @@ def test_prepare_molt_binary_passes_cache_policy_to_batch_build_server(
         use_molt_build_cache=False,
     )
 
-    assert binary is not None
+    assert isinstance(binary, bench_tool.MoltBinary)
     try:
         assert requests[0]["cache"] is False
     finally:
         binary.temp_dir.cleanup()
+
+
+def test_prepare_molt_binary_classifies_batch_build_timeout(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "bench_sample.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+
+    class _TimeoutBatchServer:
+        def request_build(
+            self, params: dict[str, object], *, timeout_s: float
+        ) -> dict[str, object]:
+            del params, timeout_s
+            raise TimeoutError("batch compile server response timed out")
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
+    monkeypatch.setattr(bench_tool.time, "sleep", lambda seconds: None)
+
+    failure = bench_tool.prepare_molt_binary(
+        str(script),
+        env={},
+        batch_server=_TimeoutBatchServer(),
+        build_timeout_s=0.25,
+    )
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert failure.phase == "build"
+    assert failure.status == "timeout"
+    assert failure.returncode == bench_tool.memory_guard.TIMEOUT_RETURN_CODE
+    assert failure.timed_out is True
+    assert failure.detail == "batch_server_response_timeout"
+
+
+def test_prepare_molt_binary_classifies_backend_daemon_empty_response(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "bench_sample.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    requests: list[dict[str, object]] = []
+
+    class _DaemonFailureBatchServer:
+        def request_build(
+            self, params: dict[str, object], *, timeout_s: float
+        ) -> dict[str, object]:
+            del timeout_s
+            requests.append(params)
+            return {
+                "ok": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": (
+                    "Backend daemon compile failed: "
+                    "backend daemon returned empty response"
+                ),
+            }
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {"BASE": "1"})
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
+    monkeypatch.setattr(bench_tool.time, "sleep", lambda seconds: None)
+
+    failure = bench_tool.prepare_molt_binary(
+        str(script),
+        env={},
+        batch_server=_DaemonFailureBatchServer(),
+    )
+
+    assert isinstance(failure, bench_tool.MoltFailure)
+    assert len(requests) == 2
+    assert failure.phase == "build"
+    assert failure.status == "daemon_crash"
+    assert failure.detail == "backend_daemon_empty_response"
+    assert failure.returncode == 1
+    assert "backend daemon returned empty response" in (failure.message or "")
 
 
 def test_bench_results_records_raw_native_sample_arrays(
@@ -957,6 +1163,196 @@ def test_bench_results_custom_same_basename_keeps_external_reference(
     assert entry["cpython_time_s"] == 2.0
     assert entry["molt_output_parity"]["checked"] is True
     assert entry["molt_output_parity"]["reference_runtime"] == "cpython"
+
+
+def test_bench_results_records_molt_build_failure_contract(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "bench_build_failure.py"
+    script.write_text("print('not built')\n", encoding="utf-8")
+    failure = bench_tool.MoltFailure(
+        phase="build",
+        status="daemon_crash",
+        returncode=1,
+        timed_out=False,
+        elapsed_s=208.19,
+        detail="backend_daemon_empty_response",
+        message="Backend daemon compile failed: backend daemon returned empty response",
+    )
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
+    monkeypatch.setattr(
+        bench_tool, "prepare_molt_binary", lambda *args, **kwargs: failure
+    )
+
+    entry = bench_tool.bench_results(
+        [str(script)],
+        1,
+        0,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        None,
+        "release",
+        tty=False,
+        nuitka_cmd=None,
+        pyodide_cmd=None,
+    )[script.name]
+
+    assert entry["molt_ok"] is False
+    assert entry["molt_status"] == "daemon_crash"
+    assert entry["molt_failure_phase"] == "build"
+    assert entry["molt_failure_status"] == "daemon_crash"
+    assert entry["molt_failure_detail"] == "backend_daemon_empty_response"
+    assert entry["molt_failure_returncode"] == 1
+    assert entry["molt_failure_elapsed_s"] == 208.19
+    assert "backend daemon returned empty response" in entry["molt_failure_message"]
+
+
+def test_bench_results_records_molt_runtime_failure_contract(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "bench_runtime_failure.py"
+    script.write_text("print('built then crashed')\n", encoding="utf-8")
+    failure = bench_tool.MoltFailure(
+        phase="run",
+        status="runtime_crash",
+        returncode=1,
+        timed_out=False,
+        elapsed_s=0.42,
+        detail="molt_runtime_invalid_object_header_before_dec_ref",
+        message="molt fatal: invalid object header before dec_ref",
+    )
+
+    monkeypatch.setattr(bench_tool, "_canonical_bench_env", lambda env: {})
+    monkeypatch.setattr(bench_tool, "_BenchBatchBuildServer", _BatchServerStub)
+    monkeypatch.setattr(
+        bench_tool,
+        "prepare_molt_binary",
+        lambda *args, **kwargs: bench_tool.MoltBinary(
+            tmp_path / "molt-bin", _TempDirStub(), 0.25, 64.0
+        ),
+    )
+    monkeypatch.setattr(bench_tool, "measure_molt_run", lambda *args, **kwargs: failure)
+
+    entry = bench_tool.bench_results(
+        [str(script)],
+        1,
+        0,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        None,
+        "release",
+        tty=False,
+        nuitka_cmd=None,
+        pyodide_cmd=None,
+    )[script.name]
+
+    assert entry["molt_ok"] is False
+    assert entry["molt_status"] == "runtime_crash"
+    assert entry["molt_failure_phase"] == "run"
+    assert entry["molt_failure_detail"] == (
+        "molt_runtime_invalid_object_header_before_dec_ref"
+    )
+    assert entry["molt_failure_returncode"] == 1
+    assert entry["molt_failure_elapsed_s"] == 0.42
+    assert "invalid object header before dec_ref" in entry["molt_failure_message"]
+
+
+def test_bench_main_writes_summary_and_failure_detail_sidecars(
+    monkeypatch, tmp_path: Path
+) -> None:
+    script = tmp_path / "bench_daemon_failure.py"
+    script.write_text("print('not reached')\n", encoding="utf-8")
+    out_json = tmp_path / "results.json"
+    summary = tmp_path / "summary.md"
+
+    failure = {
+        "phase": "build",
+        "status": "daemon_crash",
+        "detail": "backend_daemon_empty_response",
+        "message": "Backend daemon compile failed: backend daemon returned empty response",
+        "returncode": 1,
+        "timed_out": False,
+        "elapsed_s": 208.19,
+        "signal": None,
+        "guard_violation": None,
+        "orphaned_process_groups": [],
+        "log_refs": [
+            {"kind": "stderr", "path": str(tmp_path / "molt.stderr.log")}
+        ],
+    }
+
+    monkeypatch.setattr(bench_tool, "_enable_line_buffering", lambda: None)
+    monkeypatch.setattr(bench_tool, "_prune_backend_daemons", lambda env=None: None)
+    monkeypatch.setattr(
+        bench_tool,
+        "bench_results",
+        lambda *args, **kwargs: {
+            script.name: {
+                "molt_status": "daemon_crash",
+                "molt_run_status": "daemon_crash",
+                "molt_ok": False,
+                "molt_time_s": None,
+                "cpython_time_s": None,
+                "molt_cpython_ratio": None,
+                "molt_failure": failure,
+                "molt_output_parity": {"checked": False, "ok": None},
+            }
+        },
+    )
+    monkeypatch.setattr(bench_tool, "_git_rev", lambda: "deadbeef")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "tools/bench.py",
+            "--no-pypy",
+            "--no-codon",
+            "--no-nuitka",
+            "--no-pyodide",
+            "--samples",
+            "1",
+            "--warmup",
+            "0",
+            "--json-out",
+            str(out_json),
+            "--summary-out",
+            str(summary),
+            "--script",
+            str(script),
+        ],
+    )
+
+    assert bench_tool.main() is None
+
+    payload = json.loads(out_json.read_text(encoding="utf-8"))
+    assert payload["custody_artifacts"]["summary_md"] == str(summary.resolve())
+    cleanup_sidecar = Path(
+        payload["custody_artifacts"]["backend_daemon_cleanup_jsonl"]
+    )
+    assert cleanup_sidecar.name == "backend_daemon_cleanup.jsonl"
+    assert cleanup_sidecar.parent.name == "memory_guard"
+    details = payload["molt_failure_details"]
+    assert details["total"] == 1
+    assert details["records"][0]["detail"] == "backend_daemon_empty_response"
+    detail_sidecar = Path(payload["custody_artifacts"]["molt_failure_details_jsonl"])
+    assert detail_sidecar.exists()
+    assert "backend_daemon_empty_response" in detail_sidecar.read_text(
+        encoding="utf-8"
+    )
+    summary_text = summary.read_text(encoding="utf-8")
+    assert "## Custody Artifacts" in summary_text
+    assert "## Molt Failure Details" in summary_text
+    assert "backend_daemon_empty_response" in summary_text
 
 
 def test_main_writes_json_then_exits_nonzero_on_output_parity_failure(

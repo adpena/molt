@@ -1614,29 +1614,32 @@ pub extern "C" fn molt_asyncio_require_unix_socket_support() -> u64 {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            return raise_exception::<u64>(
+            raise_exception::<u64>(
                 _py,
                 "RuntimeError",
                 "asyncio unix sockets are unavailable on wasm",
-            );
+            )
         }
-        #[cfg(windows)]
+        #[cfg(all(windows, not(target_arch = "wasm32")))]
         {
-            return raise_exception::<u64>(
+            raise_exception::<u64>(
                 _py,
                 "RuntimeError",
                 "asyncio unix sockets are unavailable on Windows",
-            );
+            )
+        }
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            MoltObject::none().bits()
         }
         #[cfg(not(any(unix, windows, target_arch = "wasm32")))]
         {
-            return raise_exception::<u64>(
+            raise_exception::<u64>(
                 _py,
                 "RuntimeError",
                 "asyncio unix sockets are unavailable on this host",
-            );
+            )
         }
-        MoltObject::none().bits()
     })
 }
 
@@ -1652,13 +1655,24 @@ pub extern "C" fn molt_asyncio_require_child_watcher_support() -> u64 {
         }
         #[cfg(any(target_arch = "wasm32", windows))]
         {
-            return raise_exception::<u64>(
+            raise_exception::<u64>(
                 _py,
                 "RuntimeError",
                 "asyncio child watchers are unavailable on this host",
-            );
+            )
         }
-        MoltObject::none().bits()
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            MoltObject::none().bits()
+        }
+        #[cfg(not(any(unix, windows, target_arch = "wasm32")))]
+        {
+            raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "asyncio child watchers are unavailable on this host",
+            )
+        }
     })
 }
 

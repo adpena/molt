@@ -22,8 +22,6 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Seek, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-#[cfg(not(unix))]
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_BUFFER_SIZE: i64 = 8192;
 type VfsWritebackEntry = (Arc<dyn crate::vfs::VfsBackend>, String);
@@ -254,9 +252,7 @@ pub(crate) fn file_handle_close_ptr(ptr: *mut u8) -> bool {
         if had_backend {
             let mut fd_guard = backend_state.crt_fd.lock().unwrap();
             if let Some(fd) = fd_guard.take() {
-                unsafe {
-                    libc::close(fd as libc::c_int);
-                }
+                libc::close(fd as libc::c_int);
             }
         }
         had_backend
@@ -6025,29 +6021,23 @@ pub extern "C" fn molt_file_fileno(handle_bits: u64) -> u64 {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
             match backend {
+                #[cfg(unix)]
                 MoltFileBackend::File(file) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::fd::AsRawFd;
-                        MoltObject::from_int(file.as_raw_fd() as i64).bits()
+                    use std::os::fd::AsRawFd;
+                    MoltObject::from_int(file.as_raw_fd() as i64).bits()
+                }
+                #[cfg(windows)]
+                MoltFileBackend::File(_) => {
+                    let fd_guard = backend_state.crt_fd.lock().unwrap();
+                    if let Some(fd) = *fd_guard {
+                        MoltObject::from_int(fd).bits()
+                    } else {
+                        raise_exception::<_>(_py, "UnsupportedOperation", "fileno")
                     }
-                    #[cfg(windows)]
-                    {
-                        let fd_guard = backend_state.crt_fd.lock().unwrap();
-                        if let Some(fd) = *fd_guard {
-                            MoltObject::from_int(fd).bits()
-                        } else {
-                            raise_exception::<_>(_py, "UnsupportedOperation", "fileno")
-                        }
-                    }
-                    #[cfg(not(any(unix, windows)))]
-                    {
-                        raise_exception::<_>(
-                            _py,
-                            "OSError",
-                            "fileno is unsupported on this platform",
-                        )
-                    }
+                }
+                #[cfg(not(any(unix, windows)))]
+                MoltFileBackend::File(_) => {
+                    raise_exception::<_>(_py, "OSError", "fileno is unsupported on this platform")
                 }
                 MoltFileBackend::Memory(_) | MoltFileBackend::Text(_) => {
                     raise_exception::<_>(_py, "UnsupportedOperation", "fileno")
@@ -6275,7 +6265,7 @@ pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
                     {
                         let fd_guard = backend_state.crt_fd.lock().unwrap();
                         if let Some(fd) = *fd_guard {
-                            let isatty = unsafe { libc::isatty(fd as libc::c_int) == 1 };
+                            let isatty = libc::isatty(fd as libc::c_int) == 1;
                             return MoltObject::from_bool(isatty).bits();
                         }
                         use std::os::windows::io::AsRawHandle;

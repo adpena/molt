@@ -3,7 +3,9 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 use molt_obj_model::MoltObject;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(unix)]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::{
@@ -103,6 +105,7 @@ fn trace_op_silent() -> bool {
     })
 }
 
+#[cfg(unix)]
 fn trace_op_sigtrap_enabled() -> bool {
     static TRACE: OnceLock<bool> = OnceLock::new();
     *TRACE.get_or_init(|| {

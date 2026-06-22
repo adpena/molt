@@ -188,6 +188,25 @@ artifact records hash-only `molt_output_parity` evidence rather than raw output,
 sets `molt_ok=false`, nulls Molt speedup/ratio fields on mismatch, writes the
 JSON evidence, and exits nonzero before any baseline update.
 
+Native Molt rows carry the same phase-aware failure contract used by friend
+suite Molt runners. `molt_status` is `pass` for clean rows; failed rows set
+`molt_failure_phase` (`build`, `run`, or `parity`), `molt_failure_status`, and a
+nested `molt_failure` object with `detail`, `message`, `returncode`,
+`timed_out`, `elapsed_s`, `signal`, `guard_violation`, and cleaned orphan
+process groups. Guard-owned failures retain canonical statuses such as
+`timeout`, `signal_exit`, and `rss_limit_exceeded`; Molt-specific stderr
+signatures refine non-guard failures into details such as
+`backend_daemon_empty_response`, `backend_daemon_died_in_flight`, and
+`molt_runtime_invalid_object_header_before_dec_ref`. A `molt.cli run` failure
+that reports backend-daemon compile failure is classified as build phase even
+when the enclosing friend-suite command was a run command.
+`tools/bench.py` also emits a sibling Markdown summary plus bounded
+`molt_failure_details` in `results.json` and
+`molt_failure_details.jsonl`/`*_molt_failure_details.jsonl`. The JSON
+`custody_artifacts` block references the summary, failure-detail sidecar,
+guard command profile, repo-process sentinel, and backend-daemon cleanup JSONL
+so daemon crashes and RSS-guard kills remain evidence-producing runs.
+
 Benchmarks that directly exercise Molt runtime intrinsics without an external
 reference implementation are explicitly Molt-only in `tools/bench_metadata.py`.
 Those rows must record `reference_runtime="molt"` and skip CPython/PyPy/Codon/
@@ -401,10 +420,15 @@ suite-failing when non-green, but never feed speedup math.
 Artifacts:
 - machine-readable: `results.json`
 - human summary: `summary.md`
+- bounded Molt failure index: `molt_failure_details.jsonl` and the
+  `molt_failure_details` block in `results.json`
 - published summary: `docs/benchmarks/friend_summary.md` (`--update-doc`)
 - memory custody: `memory_guard/bench_friends_sentinel.jsonl`,
   `memory_guard/backend_daemon_cleanup.jsonl`, and serialized
   `memory_guard_incidents` in `results.json`
+- daemon/log custody references: the `custody_artifacts` block in
+  `results.json` points at the guard command profile, sentinel JSONL, backend
+  daemon cleanup JSONL, summary, and failure-detail sidecar.
 
 Rules:
 - Pin friend repos to immutable `repo_ref` values before enabling suites.
@@ -593,6 +617,12 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
   - or `tools/throughput_env.sh --apply` (configures `sccache` size and runs cache prune policy)
 - Defaults use `MOLT_EXT_ROOT` when set; otherwise the tooling falls back to
   canonical repo-local artifact roots.
+- `tools/bench.py` treats explicit canonical artifact env vars as authoritative
+  after conformance setup. `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`,
+  `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `MOLT_DIFF_ROOT`,
+  `MOLT_DIFF_TMPDIR`, `UV_CACHE_DIR`, `TMPDIR`, `CARGO_INCREMENTAL`, and
+  `MOLT_SESSION_ID` are preserved independently when set; only unset keys are
+  derived from the selected artifact root.
 - Throughput bootstrap defaults `CARGO_INCREMENTAL=0` to maximize cacheability/shared throughput under multi-agent contention. Set `CARGO_INCREMENTAL=1` only for local incremental-debug sessions.
 - Prefer `molt build --build-profile dev` for build-only iteration loops, and `--profile dev` for `molt run/compare/diff/test`; reserve release profiles for release gates and perf publication.
 - `--build-profile dev` routes build mode to Cargo `dev` by default; override with `MOLT_DEV_CARGO_PROFILE` when profiling alternative dev profiles.

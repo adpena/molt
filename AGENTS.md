@@ -413,6 +413,11 @@ as host control-plane risks while working in this repo:
   launch time. Treat diagnostics as sensitive because they may contain local
   paths, session references, auth files, or project data. Do not delete or reset
   Codex state as a first response.
+- Treat app logs that stop after `Launching app` / `Appshot hotkey inactive`
+  with a fresh Crashpad dump as Desktop startup-crash evidence, not as proof
+  that the active repo command caused the failure. Preserve the dump/log timing,
+  avoid speculative GPU/updater/profile resets during active Molt work, and
+  continue with bounded local terminal evidence when the CLI remains healthy.
 - Do not delete, rewrite, or hand-edit Codex state databases, rollout files,
   `session_index.jsonl`, plugin caches, or global state as first-line recovery.
   Prefer reversible stabilization: stop Molt-owned workers, remove or disable
@@ -440,11 +445,16 @@ as host control-plane risks while working in this repo:
   `https://github.com/openai/codex/issues/15586`,
   `https://github.com/openai/codex/issues/27979`,
   `https://github.com/openai/codex/issues/28442`,
+  `https://github.com/openai/codex/issues/20867`,
   `https://github.com/openai/codex/issues/20214`,
+  `https://github.com/openai/codex/issues/26454`,
   `https://github.com/openai/codex/issues/26894`,
   `https://github.com/openai/codex/issues/15179`,
+  `https://github.com/openai/codex/issues/27320`,
+  `https://github.com/openai/codex/issues/27806`,
   `https://github.com/openai/codex/issues/27822`,
   `https://github.com/openai/codex/issues/28160`,
+  `https://github.com/openai/codex/issues/28319`,
   `https://github.com/openai/codex/issues/23043`,
   `https://github.com/openai/codex/issues/28909`, and
   `https://community.openai.com/t/codex-windows-app-ui-closes-but-background-processes-remain-blocking-relaunch/1379095`.

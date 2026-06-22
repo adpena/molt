@@ -1143,7 +1143,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         &python_lifetime_facts,
         &drop_eligibility,
     );
-    let boundary_release_roots = python_lifetime_facts.boundary_release_roots(&drop_eligibility);
+    let boundary_release_roots =
+        python_lifetime_facts.boundary_release_roots(&drop_eligibility, &ownership_lattice);
 
     let pred_map_term = crate::tir::dominators::build_pred_map_with(
         func,
@@ -1833,6 +1834,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if !drop_eligibility.is_droppable(v) {
                 continue;
             }
+            let root = canon(v);
+            if deferred.contains(&root)
+                || boundary_release_roots.contains(&root)
+                || statement_release_plan.contains_released_root(root)
+                || python_lifetime_facts.has_explicit_release_boundary(root)
+            {
+                continue;
+            }
             // Conditionally-valid iterator value result (§2.8): NEVER drop it on a
             // die-edge. On the exhaustion edge the value-out slot is uninitialized
             // garbage; a `DecRef` here is a UAF (review P0 #2(b)). On the not-done
@@ -1846,7 +1855,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             if is_conditionally_valid_result_or_alias(v) {
                 continue;
             }
-            let root = canon(v);
             if block_args.contains(&v) || block_args.iter().any(|&a| canon(a) == root) {
                 continue;
             }
@@ -3891,6 +3899,140 @@ mod tests {
             dropped,
             vec![(list_idx + 1, list), (marker_idx + 1, item)],
             "the expression container releases at statement last use while the Python-bound local root waits for the frame boundary"
+        );
+    }
+
+    #[test]
+    fn non_finalizer_local_store_releases_at_last_use_not_return_boundary() {
+        let mut func = TirFunction::new("ordinary_local_scope".into(), vec![], TirType::None);
+        let list = func.fresh_value();
+        func.value_types.insert(list, TirType::DynBox);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops
+                .push(original_copy_with_operands("list_new", vec![], vec![list]));
+            b.ops
+                .push(original_copy_with_operands("store_var", vec![list], vec![]));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let store_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("store_var"))
+            .expect("store_var marker must survive");
+        let marker_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::WarnStderr)
+            .expect("marker op must survive");
+        let dropped: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .map(|(idx, op)| (idx, op.operands[0]))
+            .collect();
+        assert_eq!(
+            dropped,
+            vec![(store_idx + 1, list)],
+            "ordinary local stores must not create a second return-boundary cleanup"
+        );
+        assert!(
+            store_idx < marker_idx,
+            "fixture keeps a side-effect marker after the local store"
+        );
+    }
+
+    #[test]
+    fn edge_dying_skips_finalizer_boundary_owned_local_root() {
+        let mut func =
+            TirFunction::new("finalizer_boundary_edge_exit".into(), vec![], TirType::None);
+        let gate = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let item = func.fresh_value();
+        let list = func.fresh_value();
+        let cond = func.fresh_value();
+        let body_arg = func.fresh_value();
+        let body_use = func.fresh_value();
+        for v in [item, list, body_arg, body_use] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+        {
+            let b = func.blocks.get_mut(&func.entry_block).unwrap();
+            b.ops.push(finalizer_object(item));
+            b.ops.push(original_copy_with_operands(
+                "list_new",
+                vec![item],
+                vec![list],
+            ));
+            b.ops
+                .push(original_copy_with_operands("store_var", vec![list], vec![]));
+            b.terminator = Terminator::Branch {
+                target: gate,
+                args: vec![],
+            };
+        }
+        func.blocks.insert(
+            gate,
+            TirBlock {
+                id: gate,
+                args: vec![],
+                ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![list],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![TirValue {
+                    id: body_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::Copy, vec![body_arg], vec![body_use])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![op(OpCode::WarnStderr, vec![], vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let exit_ops = &func.blocks[&exit].ops;
+        let marker_idx = exit_ops
+            .iter()
+            .position(|op| op.opcode == OpCode::WarnStderr)
+            .expect("exit marker must survive");
+        let dropped: Vec<(usize, ValueId)> = exit_ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .map(|(idx, op)| (idx, op.operands[0]))
+            .collect();
+        assert_eq!(
+            dropped,
+            vec![(marker_idx + 1, list)],
+            "edge-dying must not release a finalizer-sensitive local before its return boundary"
         );
     }
 

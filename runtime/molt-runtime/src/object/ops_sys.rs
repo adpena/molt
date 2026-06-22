@@ -10,6 +10,7 @@ use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::collections::HashMap;
 use std::collections::HashSet;
+#[cfg(unix)]
 use std::ffi::CStr;
 use std::io::{BufRead, BufReader};
 use std::sync::{Mutex, OnceLock};
@@ -781,6 +782,7 @@ pub(crate) fn tzname_wasm() -> Result<(String, String), String> {
     Ok((std_name, dst_name))
 }
 
+#[cfg(any(unix, target_arch = "wasm32"))]
 pub(crate) fn current_epoch_secs_i64() -> Result<i64, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -857,7 +859,7 @@ pub(crate) fn days_from_civil(year: i32, month: i32, day: i32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 pub(crate) fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
     let year = tm.tm_year + 1900;
     let month = tm.tm_mon + 1;
@@ -867,7 +869,7 @@ pub(crate) fn tm_to_epoch_seconds(tm: &libc::tm) -> i64 {
     days.saturating_mul(86_400).saturating_add(seconds)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 pub(crate) fn offset_west_from_secs(secs: i64) -> Result<i64, String> {
     let secs = secs as libc::time_t;
     let local_tm = localtime_tm(secs)?;
@@ -1520,7 +1522,7 @@ pub(crate) fn daylight_native() -> Result<i64, String> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 pub(crate) fn sample_offset_west_native(year: i32, month: i32, day: i32) -> Result<i64, String> {
     let days = days_from_civil(year, month, day);
     let secs = days.saturating_mul(86_400).saturating_add(12 * 3600);

@@ -87,6 +87,31 @@ def test_sample_processes_windows_uses_in_process_snapshot(monkeypatch) -> None:
     assert samples[7].command == "python.exe"
 
 
+def test_windows_guarded_popen_uses_new_process_group(monkeypatch) -> None:
+    module = _load_memory_guard()
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    monkeypatch.setattr(
+        module.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0x00000200,
+        raising=False,
+    )
+
+    kwargs = module._guarded_popen_process_isolation_kwargs()
+
+    assert kwargs == {"creationflags": 0x00000200}
+    assert "start_new_session" not in kwargs
+
+
+def test_posix_guarded_popen_uses_new_session(monkeypatch) -> None:
+    module = _load_memory_guard()
+    monkeypatch.setattr(module, "_is_windows_process_model", lambda: False)
+
+    assert module._guarded_popen_process_isolation_kwargs() == {
+        "start_new_session": True
+    }
+
+
 def test_windows_sampler_limits_full_command_line_reads_to_launcher_processes() -> None:
     module = _load_memory_guard()
 
@@ -209,10 +234,11 @@ def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
     module = _load_memory_guard()
     calls: dict[str, object] = {}
 
-    def fake_run(argv, *, env, check):  # noqa: ANN001
+    def fake_run(argv, *, env, check, creationflags=0):  # noqa: ANN001
         calls["argv"] = argv
         calls["env"] = env
         calls["check"] = check
+        calls["creationflags"] = creationflags
         return SimpleNamespace(returncode=37)
 
     def fail_execve(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -230,6 +256,11 @@ def test_hidden_argv_uses_subprocess_worker_on_windows(monkeypatch) -> None:
 
     assert rc == 37
     assert calls["check"] is False
+    assert calls["creationflags"] == getattr(
+        module.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0,
+    )
     assert calls["argv"][0] == sys.executable
     env = calls["env"]
     assert env[module.INTERNAL_WORKER_ENV] == "1"
@@ -240,10 +271,11 @@ def test_child_runner_uses_subprocess_on_windows(monkeypatch) -> None:
     module = _load_memory_guard()
     calls: dict[str, object] = {}
 
-    def fake_run(argv, *, env, check):  # noqa: ANN001
+    def fake_run(argv, *, env, check, creationflags=0):  # noqa: ANN001
         calls["argv"] = argv
         calls["env"] = env
         calls["check"] = check
+        calls["creationflags"] = creationflags
         return SimpleNamespace(returncode=23)
 
     def fail_execvpe(*args, **kwargs):  # noqa: ANN002, ANN003
@@ -262,6 +294,11 @@ def test_child_runner_uses_subprocess_on_windows(monkeypatch) -> None:
     assert rc == 23
     assert calls["argv"] == ["python", "-c", "print(1)"]
     assert calls["check"] is False
+    assert calls["creationflags"] == getattr(
+        module.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0,
+    )
     child_env = calls["env"]
     assert module.INTERNAL_CHILD_COMMAND_ENV not in child_env
 

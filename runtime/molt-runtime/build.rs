@@ -46,8 +46,8 @@ fn main() {
     // constants, sockaddr storage, resolver, SSL fd ownership, and poller
     // contracts land as one coherent target implementation.
     println!("cargo:rustc-check-cfg=cfg(molt_has_net_io)");
-    let native_net_target_supported = target_arch != "wasm32"
-        && target_family.split(',').any(|family| family == "unix");
+    let native_net_target_supported =
+        target_arch != "wasm32" && target_family.split(',').any(|family| family == "unix");
     if native_net_target_supported {
         // CARGO_FEATURE_<NAME> is set for every enabled Cargo feature.
         if env::var("CARGO_FEATURE_STDLIB_NET").is_ok() {

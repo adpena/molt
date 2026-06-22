@@ -532,6 +532,29 @@ def test_cli_hash_seed_reexec_argv_uses_active_python_executable(
     ]
 
 
+def test_cli_hash_seed_sentinel_requires_applied_seed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exits: list[int] = []
+
+    def fake_exit(code: int) -> None:
+        exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setenv("PYTHONHASHSEED", "random")
+    monkeypatch.setenv(cli._HASH_SEED_SENTINEL_ENV, "1")
+    monkeypatch.setenv(cli._HASH_SEED_OVERRIDE_ENV, "123")
+    monkeypatch.setattr(cli.os, "_exit", fake_exit)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli._ensure_cli_hash_seed()
+
+    assert exc_info.value.code == 127
+    assert exits == [127]
+    assert "deterministic PYTHONHASHSEED restart did not apply" in capsys.readouterr().err
+
+
 def test_cli_doctor_json() -> None:
     res = _run_cli(["doctor", "--json"])
     assert res.returncode == 0

@@ -2401,7 +2401,7 @@ const parseComplexFromString = (text) => {
     trimmed = trimmed.slice(1, -1).trim();
     if (!trimmed) return null;
   }
-  if (/\s/.test(trimmed)) return null;
+  if (/\\s/.test(trimmed)) return null;
   const endsWithJ = trimmed.endsWith('j') || trimmed.endsWith('J');
   if (endsWithJ) {
     const core = trimmed.slice(0, -1);
@@ -13182,7 +13182,7 @@ BASE_IMPORTS = """\
           .split(',')
           .map((part) => part.trim())
           .filter((part) => part.length > 0)
-          .map((part) => part.replace(/^\*+/, '').trim())
+          .map((part) => part.replace(/^\\*+/, '').trim())
           .filter((part) => part.length > 0)
           .map((part) => part.split('=')[0].split(':')[0].trim())
           .filter((part) => isIdent(part));
