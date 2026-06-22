@@ -383,6 +383,109 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         )
 
 
+def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
+    """Alias-analysis opcode-only barrier facts belong in the generated registry.
+
+    The consumer may layer operand/root checks on top, but the RC and arbitrary
+    heap opcode sets must not live as hand-maintained `matches!` lists in
+    alias_analysis.rs.
+    """
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    alias = (
+        ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
+    ).read_text(encoding="utf-8")
+
+    expected_rc = {
+        "Call",
+        "CallBuiltin",
+        "CallMethod",
+        "ChanRecvYield",
+        "ChanSendYield",
+        "ClosureLoad",
+        "ClosureStore",
+        "StateSwitch",
+        "StateTransition",
+        "StateYield",
+        "StoreAttr",
+        "StoreIndex",
+    }
+    expected_heap = {
+        "Call",
+        "CallBuiltin",
+        "CallMethod",
+        "ChanRecvYield",
+        "ChanSendYield",
+        "ClosureStore",
+        "DelAttr",
+        "DelIndex",
+        "Free",
+        "ModuleCacheDel",
+        "ModuleCacheSet",
+        "ModuleDelGlobal",
+        "ModuleDelGlobalIfPresent",
+        "ModuleSetAttr",
+        "Raise",
+        "StateSwitch",
+        "StateTransition",
+        "StateYield",
+        "StoreAttr",
+        "StoreIndex",
+        "Yield",
+        "YieldFrom",
+    }
+    assert set(data["alias_rc_barrier_opcodes"]) == expected_rc
+    assert set(data["alias_heap_barrier_opcodes"]) == expected_heap
+
+    rc_block = rendered.split("fn opcode_is_alias_rc_barrier_table")[1].split(
+        "fn opcode_is_alias_heap_barrier_table"
+    )[0]
+    heap_block = rendered.split("fn opcode_is_alias_heap_barrier_table")[1].split(
+        "enum CanonicalizeCommutativeDomain"
+    )[0]
+    for opcode in expected_rc:
+        assert f"OpCode::{opcode} => true," in rc_block
+    assert "OpCode::Add => false," in rc_block
+    for opcode in expected_heap:
+        assert f"OpCode::{opcode} => true," in heap_block
+    assert "OpCode::ClosureLoad => false," in heap_block
+
+    for fn_name, table_name in (
+        ("fn opcode_is_rc_barrier(", "opcode_is_alias_rc_barrier_table"),
+        ("fn opcode_is_heap_barrier(", "opcode_is_alias_heap_barrier_table"),
+    ):
+        start = alias.index(fn_name)
+        brace = alias.index("{", start)
+        depth = 0
+        end = brace
+        for i in range(brace, len(alias)):
+            if alias[i] == "{":
+                depth += 1
+            elif alias[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        body = alias[start:end]
+        assert table_name in body
+        assert "matches!" not in body
+
+
+def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+    mutated = json.loads(json.dumps(data))
+    mutated["alias_heap_barrier_opcodes"].append("StoreIndx")
+    try:
+        gen._validate_opcode_fact_set(mutated, "alias_heap_barrier_opcodes", opcodes)
+    except gen.OpKindTableError as e:
+        assert "StoreIndx" in str(e)
+    else:
+        raise AssertionError("unknown opcode fact-set member was accepted")
+
+
 def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     """Canonicalize must not carry private OpCode lists beside the registry.
 
