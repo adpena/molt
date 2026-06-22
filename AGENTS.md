@@ -309,6 +309,135 @@ Read these first instead of rediscovering project structure:
 - Do not stop at neat local checkpoints. Only stop for a real blocker, a safety constraint, or when remote proof on tertiary is the next required step.
 - Do not emit tranche summaries after every small fix. Keep going until a substantial bundled burndown is complete.
 
+## Windows Codex App Stability Guardrails (Non-Negotiable)
+
+Public Windows Codex reports reviewed on 2026-06-22 show recurring desktop
+stability failures around renderer load, long pasted terminal payloads,
+PowerShell host startup, external-process launch, stale Git/app background
+processes, Store-package sandbox ACL setup, non-ASCII profile paths, and
+multi-agent/tool-discovery retry storms. A fresh 2026-06-22 review of OpenAI
+Windows docs plus `openai/codex` Windows issues also shows a systemic
+Windows Desktop + WSL risk pattern: config home, runtime platform, plugin cache,
+SQLite state, shell startup, browser/computer-use helpers, MCP enumeration, and
+large thread resume can each infer a different environment model. Treat these
+as host control-plane risks while working in this repo:
+
+- Before any long-running, recovery, Windows, macOS, WSL, or multi-agent turn,
+  determine the actual execution environment. Record host OS, shell, `cwd`,
+  repo path, `CODEX_HOME` when visible, WSL indicators (`WSL_DISTRO_NAME`,
+  WSL interop variables), whether the workspace path is Windows-native,
+  WSL `/home/...`, WSL `/mnt/c/...`, or macOS-native, and the resolved paths
+  for `python`, `python3`, `py`, `bash`, `node`, and `npm` if those tools may
+  be used. Prefer `tools/agent_coordination.py env` for the repo-local snapshot.
+- Never paste huge terminal logs, stack traces, generated diffs, benchmark
+  JSON, or repeated error streams into the Codex prompt. Write large evidence
+  under canonical roots (`logs/`, `tmp/`, `bench/results/`) and summarize the
+  bounded relevant lines in chat.
+- Keep tool output bounded. Avoid broad noisy scans such as repo-wide TODO/HACK
+  searches without tight globs, and set conservative output budgets for any
+  command that can print thousands of lines. If a command is noisy, redirect it
+  to a canonical log file and inspect targeted excerpts.
+- Prefer one active long-running proof lane per resource family on Windows.
+  Avoid launching many concurrent Codex subagents/session threads or repeated
+  tool-discovery loops from the Windows desktop app. If discoverable-tool calls
+  start repeating 403/retry errors, stop expanding orchestration and continue
+  with local terminal evidence in the current thread.
+- Prefer Windows-native Codex on Windows for this repository unless the task
+  explicitly requires a Linux-native WSL toolchain. Use WSL only as a coherent
+  all-Linux environment: Codex runtime, shell, Python/Node, repo, caches, and
+  tool paths must agree on WSL semantics, and repos should live under
+  `/home/<user>/...` rather than `/mnt/c/...`. Do not mix Windows Desktop,
+  WSL app-server, Windows `CODEX_HOME`, `/mnt/c` workspaces, WindowsApps
+  aliases, and WSL/Linux tools in one command lane.
+- On Windows, treat `C:\Windows\System32\bash.exe`, WindowsApps `python.exe` /
+  `python3.exe`, and Windows-side Node/npm shims visible from WSL as unstable
+  boundary shims. Prefer `uv run --python 3.12 ...`, `py -3.12 ...`, or an
+  explicit venv interpreter for Python; prefer Git Bash only when a Bash script
+  is required in a Windows-native lane; prefer WSL binaries only inside a
+  verified WSL-native lane.
+- Treat repeated Windows shell startup failures as host-boundary incidents, not
+  as prompts to retry the same PowerShell command in a loop. If Codex-spawned
+  PowerShell reports `8009001d`, `ResourceUnavailable`, `InitialSessionState`,
+  `GetSaferPolicy`, `AppLocker`, module-load failure, or `getaddrinfo` thread
+  failure while the normal user terminal works, record the exact error once,
+  switch to a known-working shell/tool path only when already available, and do
+  not mutate the Codex installation to make a proof lane pass.
+- Do not change Codex Desktop app settings, WSL mode, integrated shell mode,
+  plugin/MCP registrations, or Codex state files while a long-running goal,
+  build, test, benchmark, or recovery thread is active. If a mode change or app
+  update is necessary, first stop Molt-owned workers through the memory guard or
+  process sentinel, wait for running commands to exit, and preserve logs/state
+  before restarting the app.
+- Keep optional/heavy MCP servers and plugins manual-only during long Molt
+  work. Avoid automatic registration or startup of broad tool surfaces that can
+  cause Desktop to enumerate MCP tools/status during thread resume, goal checks,
+  or crash recovery. Enable only the minimum MCP/plugin set needed for the
+  current task, and disable speculative helpers before resuming a large thread.
+- Treat Codex crash code `3221225786` (`0xC000013A`) on Windows as
+  `STATUS_CONTROL_C_EXIT`: usually an interrupted or torn-down process, not
+  proof that the last WARN line in the dialog is the root cause. Preserve the
+  exact crash text, collect nearby Codex logs, inspect Event Viewer when useful,
+  and correlate with running commands, MCP enumeration, WSL mode, rollout
+  resume, and state DB activity before changing code or deleting state.
+- In native Windows multi-repo workspaces, watch for Codex-spawned Git polling
+  residue before adding more agents or long-running proof lanes. If many
+  overlapping `git.exe`/`conhost.exe` processes appear with `Codex.exe` as the
+  parent, stop expanding orchestration, preserve command-line/parent-chain
+  evidence, and only clean up processes after proving they are stale Codex-owned
+  polling children rather than user-launched Git work.
+- Cleanup must remain custody-aware. Do not use blanket `taskkill`, Task
+  Manager-style process sweeps, or name-based kills against `codex.exe`,
+  Electron/renderer helpers, app-server, node-repl, Claude, or ancestor process
+  groups. Only terminate Molt-owned process groups after proving ownership.
+- Do not mutate Microsoft Store package paths such as
+  `C:\Program Files\WindowsApps\OpenAI.Codex_*`, Codex runtime staging under
+  app-owned directories, `%APPDATA%\Codex`, `%LOCALAPPDATA%\Codex`, or
+  `%USERPROFILE%\.codex` unless the user explicitly asks for Codex app repair
+  and the session/auth data has been backed up or deliberately preserved.
+- Keep Molt build/test/bench artifact roots short, explicit, and preferably
+  ASCII-only on Windows. Use repo-local canonical roots or configured external
+  artifact roots rather than Codex app profile/cache/runtime directories; public
+  reports include startup crashes involving non-ASCII Windows user paths and
+  runtime staging/copy paths.
+- If the Codex app becomes hidden, unresponsive, or crash-looping, collect
+  evidence before changing state: Codex app version, Windows build,
+  `%LOCALAPPDATA%\Codex\Logs`, `%USERPROFILE%\.codex\.sandbox\sandbox.log`
+  when present, Crashpad report presence, and Event Viewer entries around the
+  launch time. Do not delete or reset Codex state as a first response.
+- Do not delete, rewrite, or hand-edit Codex state databases, rollout files,
+  `session_index.jsonl`, plugin caches, or global state as first-line recovery.
+  Prefer reversible stabilization: stop Molt-owned workers, remove or disable
+  optional MCP registrations, avoid resuming huge stale threads, switch back to
+  a coherent native runtime if WSL mode is unstable, and back up any state file
+  before manual repair.
+- On macOS and Linux, keep the same control-plane boundary: never raw-kill the
+  Codex app, renderer, app-server, Claude, node-repl, or ancestor process group.
+  Use repo custody tools for Molt-owned workers, and use platform capability
+  checks for signals (`SIGKILL` exists on Unix but not all Python signal
+  surfaces are portable to Windows).
+- Related public references for future refresh:
+  `https://developers.openai.com/codex/windows`,
+  `https://developers.openai.com/codex/changelog`,
+  `https://github.com/openai/codex/issues/21761`,
+  `https://github.com/openai/codex/issues/25216`,
+  `https://github.com/openai/codex/issues/14461`,
+  `https://github.com/openai/codex/issues/23777`,
+  `https://github.com/openai/codex/issues/16271`,
+  `https://github.com/openai/codex/issues/29408`,
+  `https://github.com/openai/codex/issues/17229`,
+  `https://github.com/openai/codex/issues/14057`,
+  `https://github.com/openai/codex/issues/14221`,
+  `https://github.com/openai/codex/issues/15586`,
+  `https://github.com/openai/codex/issues/27979`,
+  `https://github.com/openai/codex/issues/28442`,
+  `https://github.com/openai/codex/issues/20214`,
+  `https://github.com/openai/codex/issues/26894`,
+  `https://github.com/openai/codex/issues/15179`,
+  `https://github.com/openai/codex/issues/27822`,
+  `https://github.com/openai/codex/issues/28160`,
+  `https://github.com/openai/codex/issues/23043`, and
+  `https://community.openai.com/t/codex-windows-app-ui-closes-but-background-processes-remain-blocking-relaunch/1379095`.
+
 ## Non-Negotiable: Raise On Missing Features
 - Always raise on missing features; never fallback silently.
 - Never build coverage or implementations that rely on host Python in any way.
