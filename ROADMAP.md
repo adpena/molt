@@ -524,7 +524,11 @@ roadmap claim drifts.
   `float_primary_vars` as the single static authority for F64-primary variables.
   TIR functions now own a persistent `value_types` map, and type refinement
   writes op-result facts back into that map instead of leaving them as a
-  transient extraction side table; range/list devirtualization also records the
+  transient extraction side table. The type-refine solver treats produced values
+  as `Never` until solved, recomputes op results from opcode, operands, and
+  structural attrs each round, widens known-dynamic results to `DynBox`, and
+  fails closed on nonconvergence instead of freezing oscillating values through a
+  stderr fallback. Range/list devirtualization also records the
   I64/Bool facts it synthesizes for loop-carried values. Backend scalar
   lowering now builds a final-codegen-time `ScalarRepresentationPlan` from
   refined TIR/LIR facts, `SimpleValueNames`, and explicit single-output

@@ -7,8 +7,17 @@ use super::ops::{AttrValue, OpCode};
 use super::types::TirType;
 use super::values::ValueId;
 
-/// Maximum number of fixpoint iterations before conservative fallback.
+/// Maximum number of fixpoint iterations before a fail-closed nonconvergence
+/// diagnostic.
 const MAX_ROUNDS: usize = 20;
+
+#[derive(Clone, Debug)]
+struct OpTypeSnapshot {
+    opcode: OpCode,
+    operands: Vec<ValueId>,
+    results: Vec<ValueId>,
+    result_type_override: Option<TirType>,
+}
 
 /// Extract a map from every [`ValueId`] to its refined [`TirType`] in a
 /// **post-refinement** TIR function.  Block argument types come from the
@@ -57,19 +66,18 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 .iter()
                 .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
                 .collect();
-            let inferred_types = infer_result_types_with_attrs(
+            let result_type_override = structural_result_type_override(op.opcode, &op.attrs);
+            let inferred_types = solve_result_types(
                 op.opcode,
                 &operand_types,
-                Some(&op.attrs),
+                result_type_override.as_ref(),
                 op.results.len(),
             );
             for (&result_id, inferred) in op.results.iter().zip(inferred_types) {
                 if let Some(inferred) = inferred {
                     env.insert(result_id, inferred);
                 } else {
-                    // No inference possible — preserve any persisted fact first,
-                    // otherwise record DynBox so the map is complete.
-                    env.entry(result_id).or_insert(TirType::DynBox);
+                    env.insert(result_id, TirType::DynBox);
                 }
             }
         }
@@ -79,11 +87,12 @@ pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
 }
 
 /// Refine types in a TIR function.
-/// Iterates to fixpoint (max 20 rounds, conservative fallback on timeout).
+/// Iterates to fixpoint (max 20 rounds, fail-closed on timeout).
 /// Returns the number of values refined from DynBox to concrete types.
 pub fn refine_types(func: &mut TirFunction) -> usize {
     // Build the type environment from existing value types.
     let mut env: HashMap<ValueId, TirType> = func.value_types.clone();
+    let mut result_values = std::collections::HashSet::new();
 
     // Collect initial types from block args and op results.
     for block in func.blocks.values() {
@@ -92,8 +101,11 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
         for op in &block.ops {
             for &result_id in &op.results {
+                result_values.insert(result_id);
                 // Preserve any persisted function-owned fact; if none exists,
-                // start conservatively as DynBox.
+                // record the public pre-refinement default as DynBox so the
+                // refinement count remains about the incoming function state,
+                // not the internal solver's bottom value.
                 env.entry(result_id).or_insert(TirType::DynBox);
             }
         }
@@ -114,6 +126,15 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         .filter(|(_, ty)| matches!(ty, TirType::DynBox))
         .map(|(id, _)| *id)
         .collect();
+
+    // Use Never as the solver's "not solved yet" bottom for produced values.
+    // `value_types` is the current fact map, not an independent source of op
+    // semantics; op results must be recomputed from opcode, operands, and
+    // structural attrs each round so stale narrow facts cannot feed joins after
+    // their operands widen.
+    for result_id in result_values {
+        env.insert(result_id, TirType::Never);
+    }
 
     // Sorted block order for deterministic iteration.
     let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();
@@ -148,76 +169,22 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // `TirType` rather than carrying the full `AttrDict` — the attr is
     // immutable across rounds and cloning AttrDict per op per round
     // would dominate the refinement cost.
-    let ops_by_block: HashMap<BlockId, Vec<(OpCode, Vec<ValueId>, Vec<ValueId>, Option<TirType>)>> =
-        block_order
-            .iter()
-            .map(|&bid| {
-                let ops = func.blocks[&bid]
-                    .ops
-                    .iter()
-                    .map(|op| {
-                        // The attr-derived AUTHORITATIVE result-type override: a
-                        // type the OP ITSELF determines, which must win over
-                        // operand-based inference. Producers (attr-keyed, so
-                        // pre-extracted HERE — the fixpoint snapshot drops attrs):
-                        //
-                        //  1. Call/CallMethod/CallBuiltin `return_type` — the
-                        //     frontend's structural return type. (Legacy
-                        //     `_type_hint` is semantic transport metadata and must
-                        //     NOT refine representation, so it is ignored.)
-                        //  2. A `Copy`-spelled fresh value (the SSA converter's
-                        //     fallback for ops without a dedicated OpCode). Two
-                        //     classifier-backed cases, in priority order:
-                        //     (a) RAW-CARRIER scalar conversions
-                        //         (`copy_kind_raw_carrier_type`: int/float/bool
-                        //         conversions) mint a NEW raw-register value typed
-                        //         by the CONVERSION — operand-0 propagation here is
-                        //         the round-8 repr miscompile (`int(t)`, t: float,
-                        //         typed F64 → def_var repr mismatch).
-                        //     (b) other fresh-value-minting kinds
-                        //         (`copy_kind_mints_fresh_owned_ref`) pin their
-                        //         intrinsic type (`fresh_value_kind_result_type`) —
-                        //         the #45 fix (`complex_from_obj` typed F64 from its
-                        //         real-part operand routed float+complex down the
-                        //         unboxed fadd path).
-                        //     Everything else (transparent aliases) propagates
-                        //     operand 0's type.
-                        let result_type_override = match op.opcode {
-                            OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin => {
-                                op.attrs.get("return_type").and_then(|v| match v {
-                                    AttrValue::Str(s) => parse_return_type_str(s.as_str()),
-                                    _ => None,
-                                })
-                            }
-                            OpCode::Copy => {
-                                let original_kind = match op.attrs.get("_original_kind") {
-                                    Some(AttrValue::Str(k)) => Some(k.as_str()),
-                                    _ => None,
-                                };
-                                crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type(
-                                    original_kind,
-                                )
-                                .or_else(|| {
-                                    original_kind
-                                        .filter(|k| {
-                                            crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(k)
-                                        })
-                                        .map(fresh_value_kind_result_type)
-                                })
-                            }
-                            _ => None,
-                        };
-                        (
-                            op.opcode,
-                            op.operands.clone(),
-                            op.results.clone(),
-                            result_type_override,
-                        )
-                    })
-                    .collect();
-                (bid, ops)
-            })
-            .collect();
+    let ops_by_block: HashMap<BlockId, Vec<OpTypeSnapshot>> = block_order
+        .iter()
+        .map(|&bid| {
+            let ops = func.blocks[&bid]
+                .ops
+                .iter()
+                .map(|op| OpTypeSnapshot {
+                    opcode: op.opcode,
+                    operands: op.operands.clone(),
+                    results: op.results.clone(),
+                    result_type_override: structural_result_type_override(op.opcode, &op.attrs),
+                })
+                .collect();
+            (bid, ops)
+        })
+        .collect();
 
     // When exception handling is present, identify blocks that start with
     // StateBlockStart (exception handler entry points). Block arguments of
@@ -273,16 +240,22 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     //   (a) **Warmup**: a single forward pass over op result types so
     //       that const ops (`ConstInt`, `ConstStr`, etc.) and any other
     //       op whose operand types are already known produce refined
-    //       values in `env`. Without warmup, every op result starts as
-    //       DynBox (from the bulk init at the top of `refine_types`)
-    //       and the seed reads DynBox for the entry-edge value (e.g.,
-    //       `i_init = ConstInt(0)` is still DynBox), defeating the seed.
+    //       values in `env`. Without warmup, every op result is still
+    //       the solver's Never bottom and the seed reads no useful type
+    //       for the entry-edge value (e.g., `i_init = ConstInt(0)`),
+    //       defeating the seed.
     //   (b) **Seed**: meet of non-back-edge incoming types per block-arg.
     {
         // (a) Warmup — single forward pass over op result types.
         for &block_id in &block_order {
             let ops_snapshot = &ops_by_block[&block_id];
-            for (opcode, operands, results, return_type_hint) in ops_snapshot {
+            for op in ops_snapshot {
+                let OpTypeSnapshot {
+                    opcode,
+                    operands,
+                    results,
+                    result_type_override,
+                } = op;
                 if results.is_empty() {
                     continue;
                 }
@@ -296,19 +269,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     .iter()
                     .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
                     .collect();
-                let inferred_types = if results.len() == 1 {
-                    vec![
-                        return_type_hint
-                            .clone()
-                            .or_else(|| infer_result_type(*opcode, &operand_types)),
-                    ]
-                } else {
-                    infer_result_types_with_attrs(*opcode, &operand_types, None, results.len())
-                };
+                let inferred_types = solve_result_types(
+                    *opcode,
+                    &operand_types,
+                    result_type_override.as_ref(),
+                    results.len(),
+                );
                 for (&result_id, inferred) in results.iter().zip(inferred_types) {
-                    if let Some(new_ty) = inferred {
-                        env.insert(result_id, new_ty);
-                    }
+                    env.insert(result_id, inferred.unwrap_or(TirType::Never));
                 }
             }
         }
@@ -362,21 +330,6 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // Oscillation detection (GraalVM deopt cycle detection)
-    // ---------------------------------------------------------------------------
-    //
-    // Track type assignments per ValueId across fixpoint iterations. If a value
-    // oscillates (A -> B -> A), the fixpoint will never converge for that value.
-    // Fix it to DynBox (the most general type) and stop refining it.
-    //
-    // This prevents infinite loops in pathological cases where type inference
-    // bounces between two types due to control-flow joins with conflicting
-    // type information.
-    let mut type_history: HashMap<ValueId, Vec<TirType>> = HashMap::new();
-    // Values that have been frozen to DynBox due to oscillation.
-    let mut frozen: std::collections::HashSet<ValueId> = std::collections::HashSet::new();
-
     // Fixpoint iteration.
     //
     // Each round splits into TWO phases:
@@ -393,6 +346,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // ensures the body's ops always see the latest header-arg type from
     // the previous round (or the seed in round 0), producing a refined
     // back-edge value that the next round's Phase 2 confirms.
+    let mut converged = false;
     for _round in 0..MAX_ROUNDS {
         let mut changed = false;
 
@@ -400,7 +354,13 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         for &block_id in &block_order {
             let ops_snapshot = &ops_by_block[&block_id];
 
-            for (opcode, operands, results, return_type_hint) in ops_snapshot {
+            for op in ops_snapshot {
+                let OpTypeSnapshot {
+                    opcode,
+                    operands,
+                    results,
+                    result_type_override,
+                } = op;
                 if results.is_empty() {
                     continue;
                 }
@@ -422,30 +382,19 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     .map(|id| env.get(id).cloned().unwrap_or(TirType::DynBox))
                     .collect();
 
-                // Frontend-provided return-type hint takes precedence for
-                // opaque call-like opcodes; falls back to operand-based
-                // inference for everything else.
-                let inferred_types = if results.len() == 1 {
-                    vec![
-                        return_type_hint
-                            .clone()
-                            .or_else(|| infer_result_type(*opcode, &operand_types)),
-                    ]
-                } else {
-                    infer_result_types_with_attrs(*opcode, &operand_types, None, results.len())
-                };
+                let inferred_types = solve_result_types(
+                    *opcode,
+                    &operand_types,
+                    result_type_override.as_ref(),
+                    results.len(),
+                );
 
                 for (&result_id, inferred) in results.iter().zip(inferred_types) {
-                    // Skip frozen values — they have been fixed to DynBox.
-                    if frozen.contains(&result_id) {
-                        continue;
-                    }
-                    if let Some(new_ty) = inferred {
-                        let current = env.get(&result_id).cloned().unwrap_or(TirType::DynBox);
-                        if new_ty != current {
-                            env.insert(result_id, new_ty);
-                            changed = true;
-                        }
+                    let new_ty = inferred.unwrap_or(TirType::Never);
+                    let current = env.get(&result_id).cloned().unwrap_or(TirType::Never);
+                    if new_ty != current {
+                        env.insert(result_id, new_ty);
+                        changed = true;
                     }
                 }
             }
@@ -462,11 +411,6 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 let arg_count = func.blocks[&block_id].args.len();
                 for i in 0..arg_count {
                     let arg_id = func.blocks[&block_id].args[i].id;
-
-                    // Skip frozen values.
-                    if frozen.contains(&arg_id) {
-                        continue;
-                    }
 
                     // Exception handler block args must stay DynBox —
                     // the exception could come from any type context.
@@ -503,47 +447,19 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
 
         if !changed {
+            converged = true;
             break;
         }
+    }
+    assert!(
+        converged,
+        "type refinement failed to converge after {MAX_ROUNDS} rounds in {}",
+        func.name
+    );
 
-        // --- Oscillation detection at end of each round ---
-        //
-        // After each fixpoint iteration, record the current type for every
-        // value and check for oscillation patterns. An oscillation is
-        // detected when a value's type history has length >= 3 and the
-        // current type equals the type from two iterations ago (A -> B -> A).
-        //
-        // When detected, freeze the value to DynBox — the most general type
-        // — so the fixpoint can converge. This is sound: DynBox is the top
-        // of the type lattice, so all meet operations will produce DynBox
-        // or a subtype.
-        for (&vid, ty) in &env {
-            let history = type_history.entry(vid).or_default();
-            if history.len() >= 2
-                && history[history.len() - 2] == *ty
-                && history[history.len() - 1] != *ty
-            {
-                // Oscillation detected: A -> B -> A.
-                // Fix to DynBox and freeze this value.
-                eprintln!(
-                    "[type_refine] oscillation detected for {:?}: {:?} -> {:?} -> {:?}, fixing to DynBox",
-                    vid,
-                    &history[history.len() - 2],
-                    &history[history.len() - 1],
-                    ty
-                );
-                frozen.insert(vid);
-            }
-            history.push(ty.clone());
-        }
-
-        // Apply DynBox fixup for all newly frozen values.
-        for &vid in &frozen {
-            if !matches!(env.get(&vid), Some(TirType::DynBox)) {
-                env.insert(vid, TirType::DynBox);
-                // No need to set changed=true here — if we froze values,
-                // the next round will skip them and converge faster.
-            }
+    for ty in env.values_mut() {
+        if matches!(ty, TirType::Never) {
+            *ty = TirType::DynBox;
         }
     }
 
@@ -972,6 +888,91 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     }
 
     proven
+}
+
+/// Attr-derived result type that belongs to the op itself and must win over
+/// operand-based inference.
+fn structural_result_type_override(
+    opcode: OpCode,
+    attrs: &super::ops::AttrDict,
+) -> Option<TirType> {
+    if matches!(opcode, OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack) {
+        if let Some(AttrValue::Str(name)) = attrs.get("_type_hint") {
+            let class_ty = TirType::from_type_hint(name);
+            if matches!(class_ty, TirType::UserClass(_)) {
+                return Some(class_ty);
+            }
+        }
+    }
+
+    if matches!(
+        opcode,
+        OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
+    ) {
+        if let Some(AttrValue::Str(name)) = attrs.get("return_type") {
+            if let Some(ty) = parse_return_type_str(name) {
+                return Some(ty);
+            }
+        }
+    }
+
+    if matches!(opcode, OpCode::CallBuiltin) {
+        if let Some(AttrValue::Str(name)) = attrs.get("name") {
+            if let Some(ty) = structural_builtin_return_type(name) {
+                return Some(ty);
+            }
+        }
+    }
+
+    if matches!(opcode, OpCode::Copy) {
+        let original_kind = match attrs.get("_original_kind") {
+            Some(AttrValue::Str(k)) => Some(k.as_str()),
+            _ => None,
+        };
+        return crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type(original_kind)
+            .or_else(|| {
+                original_kind
+                    .filter(|k| {
+                        crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(k)
+                    })
+                    .map(fresh_value_kind_result_type)
+            });
+    }
+
+    None
+}
+
+fn solve_result_types(
+    opcode: OpCode,
+    operand_types: &[TirType],
+    result_type_override: Option<&TirType>,
+    result_count: usize,
+) -> Vec<Option<TirType>> {
+    if result_count == 0 {
+        return vec![];
+    }
+    if result_count == 1 {
+        if let Some(ty) = result_type_override {
+            return vec![Some(ty.clone())];
+        }
+        return vec![
+            infer_result_type(opcode, operand_types)
+                .or_else(|| dynamic_result_fallback(operand_types)),
+        ];
+    }
+
+    infer_result_types_with_attrs(opcode, operand_types, None, result_count)
+        .into_iter()
+        .map(|ty| ty.or_else(|| dynamic_result_fallback(operand_types)))
+        .collect()
+}
+
+fn dynamic_result_fallback(operand_types: &[TirType]) -> Option<TirType> {
+    if operand_types.iter().any(|ty| matches!(ty, TirType::Never)) {
+        None
+    } else {
+        Some(TirType::DynBox)
+    }
 }
 
 /// Parse a return-type hint string into a `TirType`, returning
@@ -2154,6 +2155,142 @@ mod tests {
             i_arg_ty,
             TirType::I64,
             "unreachable loop-end incoming values must not widen reachable loop-carried types"
+        );
+    }
+
+    #[test]
+    fn loop_carried_result_widens_when_phi_widens() {
+        let entry_id = BlockId(0);
+        let header_id = BlockId(1);
+        let body_id = BlockId(2);
+        let typed_latch_id = BlockId(3);
+        let dynamic_latch_id = BlockId(4);
+        let exit_id = BlockId(5);
+
+        let dyn_param = ValueId(0);
+        let i_init = ValueId(1);
+        let i = ValueId(2);
+        let cond = ValueId(3);
+        let one = ValueId(4);
+        let i_next = ValueId(5);
+        let body_cond = ValueId(6);
+
+        let entry = TirBlock {
+            id: entry_id,
+            args: vec![TirValue {
+                id: dyn_param,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![make_op(OpCode::ConstInt, vec![], vec![i_init], int_attr(0))],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![i_init],
+            },
+        };
+        let header = TirBlock {
+            id: header_id,
+            args: vec![TirValue {
+                id: i,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![make_op(OpCode::ConstBool, vec![], vec![cond], {
+                let mut a = AttrDict::new();
+                a.insert("value".into(), AttrValue::Bool(true));
+                a
+            })],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body_id,
+                then_args: vec![],
+                else_block: exit_id,
+                else_args: vec![],
+            },
+        };
+        let body = TirBlock {
+            id: body_id,
+            args: vec![],
+            ops: vec![
+                make_op(OpCode::ConstInt, vec![], vec![one], int_attr(1)),
+                make_op(OpCode::Add, vec![i, one], vec![i_next], AttrDict::new()),
+                make_op(OpCode::ConstBool, vec![], vec![body_cond], {
+                    let mut a = AttrDict::new();
+                    a.insert("value".into(), AttrValue::Bool(true));
+                    a
+                }),
+            ],
+            terminator: Terminator::CondBranch {
+                cond: body_cond,
+                then_block: typed_latch_id,
+                then_args: vec![],
+                else_block: dynamic_latch_id,
+                else_args: vec![],
+            },
+        };
+        let typed_latch = TirBlock {
+            id: typed_latch_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![i_next],
+            },
+        };
+        let dynamic_latch = TirBlock {
+            id: dynamic_latch_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![dyn_param],
+            },
+        };
+        let exit = TirBlock {
+            id: exit_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        };
+
+        let mut blocks = HashMap::new();
+        blocks.insert(entry_id, entry);
+        blocks.insert(header_id, header);
+        blocks.insert(body_id, body);
+        blocks.insert(typed_latch_id, typed_latch);
+        blocks.insert(dynamic_latch_id, dynamic_latch);
+        blocks.insert(exit_id, exit);
+
+        let mut func = TirFunction {
+            name: "loop_carried_result_widens".into(),
+            param_names: vec!["p".into()],
+            param_types: vec![TirType::DynBox],
+            blocks,
+            return_type: TirType::None,
+            entry_block: entry_id,
+            next_value: 7,
+            next_block: 6,
+            attrs: AttrDict::new(),
+            value_types: HashMap::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        };
+
+        refine_types(&mut func);
+        let type_map = extract_type_map(&func);
+        let header_arg_ty = func.blocks[&header_id].args[0].ty.clone();
+
+        assert_eq!(
+            header_arg_ty,
+            TirType::DynBox,
+            "reachable dynamic back-edge must widen the loop phi to DynBox"
+        );
+        assert_eq!(
+            type_map.get(&i_next),
+            Some(&TirType::DynBox),
+            "operand-derived loop-carried results must widen when their phi operand widens"
         );
     }
 
