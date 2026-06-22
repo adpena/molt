@@ -69,7 +69,8 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    opcode_is_alias_heap_barrier_table, opcode_is_alias_rc_barrier_table,
+    AliasSlotObservation, opcode_alias_slot_observation_table, opcode_is_alias_heap_barrier_table,
+    opcode_is_alias_rc_barrier_table,
 };
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -879,6 +880,18 @@ fn opcode_is_heap_barrier(opcode: OpCode) -> bool {
     opcode_is_alias_heap_barrier_table(opcode)
 }
 
+fn aliasing_op_may_observe_slot(op: &TirOp, root: ValueId, aliases: &AliasUnionFind) -> bool {
+    match opcode_alias_slot_observation_table(op.opcode) {
+        AliasSlotObservation::DirectObserver | AliasSlotObservation::ConservativeObserver => true,
+        AliasSlotObservation::TypedSlotStore => match typed_slot_store(op) {
+            Some((target, _)) => aliases.root(target) != root,
+            None => true,
+        },
+        AliasSlotObservation::TransparentAlias => transparent_alias_root(op, aliases).is_none(),
+        AliasSlotObservation::NeverObserver => false,
+    }
+}
+
 // ===========================================================================
 // AliasAnalysisResult
 // ===========================================================================
@@ -996,43 +1009,7 @@ impl AliasAnalysisResult {
         if !self.aliases.operand_aliases_root(op, root) {
             return false;
         }
-        match op.opcode {
-            // Reads of the slot — direct observation. (Both ProvenPure and
-            // MayDispatch loads observe the slot value; purity only matters for
-            // *whether the load itself can be reordered*, not whether it reads.)
-            OpCode::LoadAttr | OpCode::Index => true,
-            // Recognized typed-slot stores to the same object root are not
-            // observers; they are overwrites. Unknown StoreAttr variants and
-            // stores where `root` appears as the stored value are observers.
-            OpCode::StoreAttr => match typed_slot_store(op) {
-                Some((target, _)) => self.aliases.root(target) != root,
-                None => true,
-            },
-            OpCode::StoreIndex => true,
-            // Calls / raises / yields let the slot be observed externally.
-            OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            | OpCode::Raise
-            | OpCode::Yield
-            | OpCode::YieldFrom => true,
-            // Building a container with `obj` as an element captures it.
-            OpCode::BuildList
-            | OpCode::BuildDict
-            | OpCode::BuildSet
-            | OpCode::BuildTuple
-            | OpCode::BuildSlice
-            | OpCode::AllocTask => true,
-            // Transparent aliases and pure ref ops do not read slot values.
-            OpCode::Copy | OpCode::TypeGuard
-                if transparent_alias_root(op, &self.aliases).is_some() =>
-            {
-                false
-            }
-            OpCode::IncRef | OpCode::DecRef | OpCode::CheckException => false,
-            // Default: conservative — treat any other use as observation.
-            _ => true,
-        }
+        aliasing_op_may_observe_slot(op, root, &self.aliases)
     }
 
     /// The memory region a memory-touching op reads or writes, used for
@@ -1555,6 +1532,29 @@ mod tests {
         OpCode::Free,
     ];
 
+    const OLD_DSE_DIRECT_OBSERVERS: &[OpCode] = &[
+        OpCode::LoadAttr,
+        OpCode::Index,
+        OpCode::StoreIndex,
+        OpCode::Call,
+        OpCode::CallMethod,
+        OpCode::CallBuiltin,
+        OpCode::Raise,
+        OpCode::Yield,
+        OpCode::YieldFrom,
+        OpCode::BuildList,
+        OpCode::BuildDict,
+        OpCode::BuildSet,
+        OpCode::BuildTuple,
+        OpCode::BuildSlice,
+        OpCode::AllocTask,
+    ];
+
+    const OLD_DSE_TRANSPARENT_ALIAS_NON_OBSERVERS: &[OpCode] = &[OpCode::Copy, OpCode::TypeGuard];
+
+    const OLD_DSE_NEVER_OBSERVERS: &[OpCode] =
+        &[OpCode::IncRef, OpCode::DecRef, OpCode::CheckException];
+
     /// `refcount_elim::is_barrier` as it stood before S5 phase 1.
     fn old_refcount_is_barrier(opcode: OpCode) -> bool {
         OLD_REFCOUNT_BARRIER_OPCODES.contains(&opcode)
@@ -1572,31 +1572,24 @@ mod tests {
         if !aliases.operand_aliases_root(op, root) {
             return false;
         }
-        match op.opcode {
-            OpCode::LoadAttr | OpCode::Index => true,
-            OpCode::StoreAttr => match typed_slot_store(op) {
+        if OLD_DSE_DIRECT_OBSERVERS.contains(&op.opcode) {
+            return true;
+        }
+        if op.opcode == OpCode::StoreAttr {
+            return match typed_slot_store(op) {
                 Some((target, _)) => aliases.root(target) != root,
                 None => true,
-            },
-            OpCode::StoreIndex => true,
-            OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            | OpCode::Raise
-            | OpCode::Yield
-            | OpCode::YieldFrom => true,
-            OpCode::BuildList
-            | OpCode::BuildDict
-            | OpCode::BuildSet
-            | OpCode::BuildTuple
-            | OpCode::BuildSlice
-            | OpCode::AllocTask => true,
-            OpCode::Copy | OpCode::TypeGuard if transparent_alias_root(op, aliases).is_some() => {
-                false
-            }
-            OpCode::IncRef | OpCode::DecRef | OpCode::CheckException => false,
-            _ => true,
+            };
         }
+        if OLD_DSE_TRANSPARENT_ALIAS_NON_OBSERVERS.contains(&op.opcode)
+            && transparent_alias_root(op, aliases).is_some()
+        {
+            return false;
+        }
+        if OLD_DSE_NEVER_OBSERVERS.contains(&op.opcode) {
+            return false;
+        }
+        true
     }
 
     // ── Superset proofs ────────────────────────────────────────────────────
