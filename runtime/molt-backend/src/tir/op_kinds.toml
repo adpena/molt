@@ -49,10 +49,11 @@
 #   - [[result_validity]] - per-OpCode/per-result validity facts for result slots
 #                  that are not initialized on every outgoing edge
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
-#   - canonicalize_commutative_reorder / canonicalize_swapped_comparison
-#                  - opcode-level algebraic facts consumed by canonicalize.rs.
-#                  They live here so operand-ordering rewrites do not carry a
-#                  backend-local hand-set beside the generated opcode oracle.
+#   - canonicalize_commutative_reorder / canonicalize_swapped_comparison /
+#                  canonicalize_binary_rules - ordered algebraic facts consumed
+#                  by canonicalize.rs. They live here so operand rewrites do not
+#                  carry backend-local hand-sets beside the generated opcode
+#                  oracle.
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -159,6 +160,37 @@ canonicalize_swapped_comparison = [
     { opcode = "Gt", swapped = "Lt" },
     { opcode = "Le", swapped = "Ge" },
     { opcode = "Ge", swapped = "Le" },
+]
+
+canonicalize_binary_rules = [
+    { opcode = "Add", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "Add", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "copy_rhs" },
+    { opcode = "InplaceAdd", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "InplaceAdd", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "copy_rhs" },
+    { opcode = "Sub", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "InplaceSub", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "Mul", predicate = "rhs_int", value = 1, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "Mul", predicate = "lhs_int", value = 1, type_guard = "rhs_i64", action = "copy_rhs" },
+    { opcode = "Mul", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "Mul", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "const_int", result = 0 },
+    { opcode = "InplaceMul", predicate = "rhs_int", value = 1, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "InplaceMul", predicate = "lhs_int", value = 1, type_guard = "rhs_i64", action = "copy_rhs" },
+    { opcode = "InplaceMul", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "InplaceMul", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "const_int", result = 0 },
+    { opcode = "BitOr", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "BitXor", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "BitAnd", predicate = "rhs_int", value = -1, type_guard = "lhs_i64", action = "copy_lhs" },
+    { opcode = "BitAnd", predicate = "rhs_int", value = 0, type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "BitAnd", predicate = "lhs_int", value = 0, type_guard = "rhs_i64", action = "const_int", result = 0 },
+    { opcode = "Sub", predicate = "same_operands", type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "InplaceSub", predicate = "same_operands", type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "BitXor", predicate = "same_operands", type_guard = "lhs_i64", action = "const_int", result = 0 },
+    { opcode = "And", predicate = "rhs_bool", value = true, type_guard = "none", action = "copy_lhs" },
+    { opcode = "And", predicate = "rhs_bool", value = false, type_guard = "none", action = "const_bool", result = false },
+    { opcode = "And", predicate = "lhs_bool", value = false, type_guard = "none", action = "const_bool", result = false },
+    { opcode = "Or", predicate = "rhs_bool", value = false, type_guard = "none", action = "copy_lhs" },
+    { opcode = "Or", predicate = "rhs_bool", value = true, type_guard = "none", action = "const_bool", result = true },
+    { opcode = "Or", predicate = "lhs_bool", value = true, type_guard = "none", action = "const_bool", result = true },
 ]
 
 # classify_copy_kind inert bucket: no surviving heap reference to own

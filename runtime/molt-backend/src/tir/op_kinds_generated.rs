@@ -1092,6 +1092,416 @@ pub(crate) fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -
     }
 }
 
+/// Operand side used by canonicalize binary rule predicates/actions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CanonicalizeOperandSide {
+    Lhs,
+    Rhs,
+}
+
+/// Predicate for one ordered binary canonicalization rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CanonicalizeBinaryPredicate {
+    IntConst {
+        side: CanonicalizeOperandSide,
+        value: i64,
+    },
+    BoolConst {
+        side: CanonicalizeOperandSide,
+        value: bool,
+    },
+    SameOperands,
+}
+
+/// Live type guard for one binary canonicalization rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CanonicalizeBinaryTypeGuard {
+    None,
+    OperandI64(CanonicalizeOperandSide),
+}
+
+/// Rewrite action for one binary canonicalization rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CanonicalizeBinaryAction {
+    Copy(CanonicalizeOperandSide),
+    ConstInt(i64),
+    ConstBool(bool),
+}
+
+/// Ordered binary canonicalization rule. The pass evaluates rows in table
+/// order and applies the first match, preserving the previous match-arm
+/// priority without keeping opcode semantics in canonicalize.rs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CanonicalizeBinaryRule {
+    pub(crate) predicate: CanonicalizeBinaryPredicate,
+    pub(crate) type_guard: CanonicalizeBinaryTypeGuard,
+    pub(crate) action: CanonicalizeBinaryAction,
+}
+
+const CANONICALIZE_BINARY_RULES_ADD: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Lhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Rhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Rhs),
+    },
+];
+
+const CANONICALIZE_BINARY_RULES_SUB: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::SameOperands,
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::ConstInt(0),
+    },
+];
+
+const CANONICALIZE_BINARY_RULES_MUL: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 1,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Lhs,
+            value: 1,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Rhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Rhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::ConstInt(0),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Lhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Rhs),
+        action: CanonicalizeBinaryAction::ConstInt(0),
+    },
+];
+
+const CANONICALIZE_BINARY_RULES_INPLACE_ADD: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Lhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Rhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Rhs),
+    },
+];
+
+const CANONICALIZE_BINARY_RULES_INPLACE_SUB: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::SameOperands,
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::ConstInt(0),
+    },
+];
+
+const CANONICALIZE_BINARY_RULES_INPLACE_MUL: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 1,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Lhs,
+            value: 1,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Rhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Rhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::ConstInt(0),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Lhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Rhs),
+        action: CanonicalizeBinaryAction::ConstInt(0),
+    },
+];
+
+const CANONICALIZE_BINARY_RULES_BIT_AND: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: -1,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::ConstInt(0),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Lhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Rhs),
+        action: CanonicalizeBinaryAction::ConstInt(0),
+    },
+];
+
+const CANONICALIZE_BINARY_RULES_BIT_OR: &[CanonicalizeBinaryRule] = &[CanonicalizeBinaryRule {
+    predicate: CanonicalizeBinaryPredicate::IntConst {
+        side: CanonicalizeOperandSide::Rhs,
+        value: 0,
+    },
+    type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+    action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+}];
+
+const CANONICALIZE_BINARY_RULES_BIT_XOR: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::IntConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: 0,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::SameOperands,
+        type_guard: CanonicalizeBinaryTypeGuard::OperandI64(CanonicalizeOperandSide::Lhs),
+        action: CanonicalizeBinaryAction::ConstInt(0),
+    },
+];
+
+const CANONICALIZE_BINARY_RULES_AND: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::BoolConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: true,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::None,
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::BoolConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: false,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::None,
+        action: CanonicalizeBinaryAction::ConstBool(false),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::BoolConst {
+            side: CanonicalizeOperandSide::Lhs,
+            value: false,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::None,
+        action: CanonicalizeBinaryAction::ConstBool(false),
+    },
+];
+
+const CANONICALIZE_BINARY_RULES_OR: &[CanonicalizeBinaryRule] = &[
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::BoolConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: false,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::None,
+        action: CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::BoolConst {
+            side: CanonicalizeOperandSide::Rhs,
+            value: true,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::None,
+        action: CanonicalizeBinaryAction::ConstBool(true),
+    },
+    CanonicalizeBinaryRule {
+        predicate: CanonicalizeBinaryPredicate::BoolConst {
+            side: CanonicalizeOperandSide::Lhs,
+            value: true,
+        },
+        type_guard: CanonicalizeBinaryTypeGuard::None,
+        action: CanonicalizeBinaryAction::ConstBool(true),
+    },
+];
+
+/// Ordered binary canonicalization rules. EXHAUSTIVE over OpCode; opcodes
+/// without binary folds map to the empty rule slice.
+#[inline]
+pub(crate) fn opcode_canonicalize_binary_rules_table(
+    opcode: OpCode,
+) -> &'static [CanonicalizeBinaryRule] {
+    match opcode {
+        OpCode::Add => CANONICALIZE_BINARY_RULES_ADD,
+        OpCode::Sub => CANONICALIZE_BINARY_RULES_SUB,
+        OpCode::Mul => CANONICALIZE_BINARY_RULES_MUL,
+        OpCode::CheckedAdd => &[],
+        OpCode::InplaceAdd => CANONICALIZE_BINARY_RULES_INPLACE_ADD,
+        OpCode::InplaceSub => CANONICALIZE_BINARY_RULES_INPLACE_SUB,
+        OpCode::InplaceMul => CANONICALIZE_BINARY_RULES_INPLACE_MUL,
+        OpCode::Div => &[],
+        OpCode::FloorDiv => &[],
+        OpCode::Mod => &[],
+        OpCode::Pow => &[],
+        OpCode::Neg => &[],
+        OpCode::Pos => &[],
+        OpCode::Eq => &[],
+        OpCode::Ne => &[],
+        OpCode::Lt => &[],
+        OpCode::Le => &[],
+        OpCode::Gt => &[],
+        OpCode::Ge => &[],
+        OpCode::Is => &[],
+        OpCode::IsNot => &[],
+        OpCode::In => &[],
+        OpCode::NotIn => &[],
+        OpCode::BitAnd => CANONICALIZE_BINARY_RULES_BIT_AND,
+        OpCode::BitOr => CANONICALIZE_BINARY_RULES_BIT_OR,
+        OpCode::BitXor => CANONICALIZE_BINARY_RULES_BIT_XOR,
+        OpCode::BitNot => &[],
+        OpCode::Shl => &[],
+        OpCode::Shr => &[],
+        OpCode::And => CANONICALIZE_BINARY_RULES_AND,
+        OpCode::Or => CANONICALIZE_BINARY_RULES_OR,
+        OpCode::Not => &[],
+        OpCode::Bool => &[],
+        OpCode::Alloc => &[],
+        OpCode::StackAlloc => &[],
+        OpCode::ObjectNewBound => &[],
+        OpCode::ObjectNewBoundStack => &[],
+        OpCode::Free => &[],
+        OpCode::LoadAttr => &[],
+        OpCode::StoreAttr => &[],
+        OpCode::DelAttr => &[],
+        OpCode::Index => &[],
+        OpCode::StoreIndex => &[],
+        OpCode::DelIndex => &[],
+        OpCode::DeleteVar => &[],
+        OpCode::Call => &[],
+        OpCode::CallMethod => &[],
+        OpCode::CallBuiltin => &[],
+        OpCode::OrdAt => &[],
+        OpCode::BoxVal => &[],
+        OpCode::UnboxVal => &[],
+        OpCode::TypeGuard => &[],
+        OpCode::IncRef => &[],
+        OpCode::DecRef => &[],
+        OpCode::DelBoundary => &[],
+        OpCode::BuildList => &[],
+        OpCode::BuildDict => &[],
+        OpCode::BuildTuple => &[],
+        OpCode::BuildSet => &[],
+        OpCode::BuildSlice => &[],
+        OpCode::GetIter => &[],
+        OpCode::IterNext => &[],
+        OpCode::IterNextUnboxed => &[],
+        OpCode::ForIter => &[],
+        OpCode::AllocTask => &[],
+        OpCode::StateSwitch => &[],
+        OpCode::StateTransition => &[],
+        OpCode::StateYield => &[],
+        OpCode::ChanSendYield => &[],
+        OpCode::ChanRecvYield => &[],
+        OpCode::ClosureLoad => &[],
+        OpCode::ClosureStore => &[],
+        OpCode::Yield => &[],
+        OpCode::YieldFrom => &[],
+        OpCode::Raise => &[],
+        OpCode::CheckException => &[],
+        OpCode::ExceptionPending => &[],
+        OpCode::FunctionDefaultsVersion => &[],
+        OpCode::TryStart => &[],
+        OpCode::TryEnd => &[],
+        OpCode::StateBlockStart => &[],
+        OpCode::StateBlockEnd => &[],
+        OpCode::ConstInt => &[],
+        OpCode::ConstBigInt => &[],
+        OpCode::ConstFloat => &[],
+        OpCode::ConstStr => &[],
+        OpCode::ConstBool => &[],
+        OpCode::ConstNone => &[],
+        OpCode::ConstBytes => &[],
+        OpCode::Copy => &[],
+        OpCode::Import => &[],
+        OpCode::ImportFrom => &[],
+        OpCode::ModuleCacheGet => &[],
+        OpCode::ModuleCacheSet => &[],
+        OpCode::ModuleCacheDel => &[],
+        OpCode::ModuleGetAttr => &[],
+        OpCode::ModuleImportFrom => &[],
+        OpCode::ModuleGetGlobal => &[],
+        OpCode::ModuleGetName => &[],
+        OpCode::ModuleSetAttr => &[],
+        OpCode::ModuleDelGlobal => &[],
+        OpCode::ModuleDelGlobalIfPresent => &[],
+        OpCode::WarnStderr => &[],
+        OpCode::ScfIf => &[],
+        OpCode::ScfFor => &[],
+        OpCode::ScfWhile => &[],
+        OpCode::ScfYield => &[],
+        OpCode::Deopt => &[],
+    }
+}
+
 /// Operand-ownership leaf (design 27 §2.1): does an op release this
 /// operand internally (`Consumed` — the holder must NOT also drop it, a
 /// double-free otherwise) or merely borrow it (`Borrowed` — the holder
