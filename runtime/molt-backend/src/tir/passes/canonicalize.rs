@@ -23,7 +23,9 @@ use std::collections::HashMap;
 use super::PassStats;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    CanonicalizeCommutativeDomain, opcode_canonicalize_commutative_domain_table,
+    CanonicalizeBinaryAction, CanonicalizeBinaryPredicate, CanonicalizeBinaryRule,
+    CanonicalizeBinaryTypeGuard, CanonicalizeCommutativeDomain, CanonicalizeOperandSide,
+    opcode_canonicalize_binary_rules_table, opcode_canonicalize_commutative_domain_table,
     opcode_swapped_comparison_for_canonicalize_table,
 };
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
@@ -189,107 +191,137 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             let lhs_bool = bool_consts.get(&lhs).copied();
             let rhs_bool = bool_consts.get(&rhs).copied();
 
-            match op.opcode {
-                // --- Rule 1: Identity elimination ---
-                OpCode::Add | OpCode::InplaceAdd
-                    if rhs_int == Some(0) && is_i64_value(lhs, &type_map) =>
-                {
-                    replace_with_copy(op, lhs, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::Add | OpCode::InplaceAdd
-                    if lhs_int == Some(0) && is_i64_value(rhs, &type_map) =>
-                {
-                    replace_with_copy(op, rhs, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::Sub | OpCode::InplaceSub
-                    if rhs_int == Some(0) && is_i64_value(lhs, &type_map) =>
-                {
-                    replace_with_copy(op, lhs, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::Mul | OpCode::InplaceMul
-                    if rhs_int == Some(1) && is_i64_value(lhs, &type_map) =>
-                {
-                    replace_with_copy(op, lhs, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::Mul | OpCode::InplaceMul
-                    if lhs_int == Some(1) && is_i64_value(rhs, &type_map) =>
-                {
-                    replace_with_copy(op, rhs, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::BitOr if rhs_int == Some(0) && is_i64_value(lhs, &type_map) => {
-                    replace_with_copy(op, lhs, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::BitXor if rhs_int == Some(0) && is_i64_value(lhs, &type_map) => {
-                    replace_with_copy(op, lhs, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::BitAnd if rhs_int == Some(-1) && is_i64_value(lhs, &type_map) => {
-                    replace_with_copy(op, lhs, result);
-                    stats.values_changed += 1;
-                }
-
-                // --- Rule 2: Absorbing element ---
-                OpCode::Mul | OpCode::InplaceMul
-                    if rhs_int == Some(0) && is_i64_value(lhs, &type_map) =>
-                {
-                    replace_with_const_int(op, 0, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::Mul | OpCode::InplaceMul
-                    if lhs_int == Some(0) && is_i64_value(rhs, &type_map) =>
-                {
-                    replace_with_const_int(op, 0, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::BitAnd if rhs_int == Some(0) && is_i64_value(lhs, &type_map) => {
-                    replace_with_const_int(op, 0, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::BitAnd if lhs_int == Some(0) && is_i64_value(rhs, &type_map) => {
-                    replace_with_const_int(op, 0, result);
-                    stats.values_changed += 1;
-                }
-
-                // --- Rule 3: Self-inverse ---
-                OpCode::Sub | OpCode::InplaceSub if lhs == rhs && is_i64_value(lhs, &type_map) => {
-                    replace_with_const_int(op, 0, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::BitXor if lhs == rhs && is_i64_value(lhs, &type_map) => {
-                    replace_with_const_int(op, 0, result);
-                    stats.values_changed += 1;
-                }
-
-                // --- Rule 6: Boolean simplification (binary) ---
-                OpCode::And if rhs_bool == Some(true) => {
-                    replace_with_copy(op, lhs, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::And if rhs_bool == Some(false) || lhs_bool == Some(false) => {
-                    replace_with_const_bool(op, false, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::Or if rhs_bool == Some(false) => {
-                    replace_with_copy(op, lhs, result);
-                    stats.values_changed += 1;
-                }
-                OpCode::Or if rhs_bool == Some(true) || lhs_bool == Some(true) => {
-                    replace_with_const_bool(op, true, result);
-                    stats.values_changed += 1;
-                }
-
-                _ => {}
+            if apply_canonicalize_binary_rules(
+                op, lhs, rhs, lhs_int, rhs_int, lhs_bool, rhs_bool, result, &type_map,
+            ) {
+                stats.values_changed += 1;
             }
         }
     }
 
     stats
+}
+
+fn apply_canonicalize_binary_rules(
+    op: &mut TirOp,
+    lhs: ValueId,
+    rhs: ValueId,
+    lhs_int: Option<i64>,
+    rhs_int: Option<i64>,
+    lhs_bool: Option<bool>,
+    rhs_bool: Option<bool>,
+    result: ValueId,
+    type_map: &HashMap<ValueId, TirType>,
+) -> bool {
+    for &rule in opcode_canonicalize_binary_rules_table(op.opcode) {
+        if canonicalize_binary_rule_matches(
+            rule, lhs, rhs, lhs_int, rhs_int, lhs_bool, rhs_bool, type_map,
+        ) {
+            apply_canonicalize_binary_action(op, rule.action, lhs, rhs, result);
+            return true;
+        }
+    }
+    false
+}
+
+fn canonicalize_binary_rule_matches(
+    rule: CanonicalizeBinaryRule,
+    lhs: ValueId,
+    rhs: ValueId,
+    lhs_int: Option<i64>,
+    rhs_int: Option<i64>,
+    lhs_bool: Option<bool>,
+    rhs_bool: Option<bool>,
+    type_map: &HashMap<ValueId, TirType>,
+) -> bool {
+    canonicalize_binary_predicate_matches(
+        rule.predicate,
+        lhs,
+        rhs,
+        lhs_int,
+        rhs_int,
+        lhs_bool,
+        rhs_bool,
+    ) && canonicalize_binary_type_guard_matches(rule.type_guard, lhs, rhs, type_map)
+}
+
+fn canonicalize_binary_predicate_matches(
+    predicate: CanonicalizeBinaryPredicate,
+    lhs: ValueId,
+    rhs: ValueId,
+    lhs_int: Option<i64>,
+    rhs_int: Option<i64>,
+    lhs_bool: Option<bool>,
+    rhs_bool: Option<bool>,
+) -> bool {
+    match predicate {
+        CanonicalizeBinaryPredicate::IntConst { side, value } => {
+            int_const_for_side(side, lhs_int, rhs_int) == Some(value)
+        }
+        CanonicalizeBinaryPredicate::BoolConst { side, value } => {
+            bool_const_for_side(side, lhs_bool, rhs_bool) == Some(value)
+        }
+        CanonicalizeBinaryPredicate::SameOperands => lhs == rhs,
+    }
+}
+
+fn canonicalize_binary_type_guard_matches(
+    guard: CanonicalizeBinaryTypeGuard,
+    lhs: ValueId,
+    rhs: ValueId,
+    type_map: &HashMap<ValueId, TirType>,
+) -> bool {
+    match guard {
+        CanonicalizeBinaryTypeGuard::None => true,
+        CanonicalizeBinaryTypeGuard::OperandI64(side) => {
+            is_i64_value(value_for_side(side, lhs, rhs), type_map)
+        }
+    }
+}
+
+fn apply_canonicalize_binary_action(
+    op: &mut TirOp,
+    action: CanonicalizeBinaryAction,
+    lhs: ValueId,
+    rhs: ValueId,
+    result: ValueId,
+) {
+    match action {
+        CanonicalizeBinaryAction::Copy(side) => {
+            replace_with_copy(op, value_for_side(side, lhs, rhs), result)
+        }
+        CanonicalizeBinaryAction::ConstInt(value) => replace_with_const_int(op, value, result),
+        CanonicalizeBinaryAction::ConstBool(value) => replace_with_const_bool(op, value, result),
+    }
+}
+
+fn value_for_side(side: CanonicalizeOperandSide, lhs: ValueId, rhs: ValueId) -> ValueId {
+    match side {
+        CanonicalizeOperandSide::Lhs => lhs,
+        CanonicalizeOperandSide::Rhs => rhs,
+    }
+}
+
+fn int_const_for_side(
+    side: CanonicalizeOperandSide,
+    lhs_int: Option<i64>,
+    rhs_int: Option<i64>,
+) -> Option<i64> {
+    match side {
+        CanonicalizeOperandSide::Lhs => lhs_int,
+        CanonicalizeOperandSide::Rhs => rhs_int,
+    }
+}
+
+fn bool_const_for_side(
+    side: CanonicalizeOperandSide,
+    lhs_bool: Option<bool>,
+    rhs_bool: Option<bool>,
+) -> Option<bool> {
+    match side {
+        CanonicalizeOperandSide::Lhs => lhs_bool,
+        CanonicalizeOperandSide::Rhs => rhs_bool,
+    }
 }
 
 fn is_i64_value(value: ValueId, type_map: &HashMap<ValueId, TirType>) -> bool {

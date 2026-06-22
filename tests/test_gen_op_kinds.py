@@ -400,6 +400,9 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     assert "fn swap_comparison" not in canonicalize
     assert "opcode_canonicalize_commutative_domain_table" in canonicalize
     assert "opcode_swapped_comparison_for_canonicalize_table" in canonicalize
+    assert "opcode_canonicalize_binary_rules_table" in canonicalize
+    assert "OpCode::Add | OpCode::InplaceAdd" not in canonicalize
+    assert "OpCode::And if" not in canonicalize
 
     expected_domains = {
         "Add": "numeric",
@@ -419,6 +422,22 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
         row["opcode"]: row["swapped"]
         for row in data["canonicalize_swapped_comparison"]
     } == expected_swaps
+    assert len(data["canonicalize_binary_rules"]) == 28
+    assert data["canonicalize_binary_rules"][0] == {
+        "opcode": "Add",
+        "predicate": "rhs_int",
+        "value": 0,
+        "type_guard": "lhs_i64",
+        "action": "copy_lhs",
+    }
+    assert data["canonicalize_binary_rules"][-1] == {
+        "opcode": "Or",
+        "predicate": "lhs_bool",
+        "value": True,
+        "type_guard": "none",
+        "action": "const_bool",
+        "result": True,
+    }
 
     variant = {
         "numeric": "CanonicalizeCommutativeDomain::Numeric",
@@ -438,6 +457,15 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     for opcode, swapped in expected_swaps.items():
         assert f"OpCode::{opcode} => Some(OpCode::{swapped})," in swap_block
     assert "OpCode::Eq => None," in swap_block
+
+    binary_block = rendered.split("fn opcode_canonicalize_binary_rules_table")[1].split(
+        "enum OperandOwnership"
+    )[0]
+    assert "CanonicalizeBinaryPredicate::IntConst" in rendered
+    assert "CanonicalizeBinaryAction::ConstBool(true)" in rendered
+    assert "OpCode::Add => CANONICALIZE_BINARY_RULES_ADD," in binary_block
+    assert "OpCode::And => CANONICALIZE_BINARY_RULES_AND," in binary_block
+    assert "OpCode::Eq => &[]," in binary_block
 
 
 def test_canonicalize_fact_validation_rejects_drift() -> None:
@@ -464,6 +492,24 @@ def test_canonicalize_fact_validation_rejects_drift() -> None:
         assert "symmetric" in str(e)
     else:
         raise AssertionError("asymmetric canonicalize comparison swap was accepted")
+
+    bad_binary_predicate = json.loads(json.dumps(data))
+    bad_binary_predicate["canonicalize_binary_rules"][0]["predicate"] = "rhs_float"
+    try:
+        gen._validate_canonicalize_facts(bad_binary_predicate, opcodes)
+    except gen.OpKindTableError as e:
+        assert "predicate" in str(e)
+    else:
+        raise AssertionError("bad canonicalize binary predicate was accepted")
+
+    bad_binary_result = json.loads(json.dumps(data))
+    bad_binary_result["canonicalize_binary_rules"][-1]["result"] = 1
+    try:
+        gen._validate_canonicalize_facts(bad_binary_result, opcodes)
+    except gen.OpKindTableError as e:
+        assert "result" in str(e)
+    else:
+        raise AssertionError("bad canonicalize binary result type was accepted")
 
 
 def test_opcode_effects_exhaustive_over_enum() -> None:

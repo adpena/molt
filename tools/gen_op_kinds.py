@@ -97,6 +97,20 @@ _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
 _TERMINATOR_OWNERSHIP_LEAVES = {"borrowed", "transferred", "none"}
 _RESULT_VALIDITY_VALUES = {"conditional_valid_only_on_edge"}
 _CANONICALIZE_COMMUTATIVE_DOMAINS = {"numeric", "i64", "unboxed_scalar"}
+_CANONICALIZE_BINARY_PREDICATES = {
+    "lhs_int": "int",
+    "rhs_int": "int",
+    "lhs_bool": "bool",
+    "rhs_bool": "bool",
+    "same_operands": "none",
+}
+_CANONICALIZE_BINARY_TYPE_GUARDS = {"none", "lhs_i64", "rhs_i64"}
+_CANONICALIZE_BINARY_ACTIONS = {
+    "copy_lhs": "copy",
+    "copy_rhs": "copy",
+    "const_int": "int",
+    "const_bool": "bool",
+}
 
 # The `Terminator` enum variants (blocks.rs). The [[terminator]] section MUST be
 # EXHAUSTIVE over this set (a new variant fails to render until classified —
@@ -408,6 +422,96 @@ def _validate_canonicalize_facts(data: dict, opcodes: set[str]) -> None:
                 "canonicalize_swapped_comparison must be symmetric: "
                 f"{opcode}->{swapped} but {swapped}->{swaps.get(swapped)!r}"
             )
+
+    binary_rows = data.get("canonicalize_binary_rules", [])
+    if not isinstance(binary_rows, list) or not binary_rows:
+        raise OpKindTableError(
+            "canonicalize_binary_rules must be a non-empty array of tables"
+        )
+    seen_binary_rules: set[tuple[object, ...]] = set()
+    for row in binary_rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError("canonicalize_binary_rules rows must be inline tables")
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"canonicalize_binary_rules row missing opcode: {row}")
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"canonicalize_binary_rules opcode {opcode!r} is not a known OpCode"
+            )
+
+        predicate = row.get("predicate")
+        value_kind = _CANONICALIZE_BINARY_PREDICATES.get(predicate)
+        if value_kind is None:
+            raise OpKindTableError(
+                f"canonicalize_binary_rules {opcode}: predicate must be one of "
+                f"{sorted(_CANONICALIZE_BINARY_PREDICATES)}, got {predicate!r}"
+            )
+        if value_kind == "int":
+            value = row.get("value")
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise OpKindTableError(
+                    f"canonicalize_binary_rules {opcode}/{predicate}: value must "
+                    f"be an int, got {value!r}"
+                )
+        elif value_kind == "bool":
+            value = row.get("value")
+            if not isinstance(value, bool):
+                raise OpKindTableError(
+                    f"canonicalize_binary_rules {opcode}/{predicate}: value must "
+                    f"be a bool, got {value!r}"
+                )
+        elif "value" in row:
+            raise OpKindTableError(
+                f"canonicalize_binary_rules {opcode}/{predicate}: value is not used"
+            )
+
+        type_guard = row.get("type_guard")
+        if type_guard not in _CANONICALIZE_BINARY_TYPE_GUARDS:
+            raise OpKindTableError(
+                f"canonicalize_binary_rules {opcode}: type_guard must be one of "
+                f"{sorted(_CANONICALIZE_BINARY_TYPE_GUARDS)}, got {type_guard!r}"
+            )
+
+        action = row.get("action")
+        result_kind = _CANONICALIZE_BINARY_ACTIONS.get(action)
+        if result_kind is None:
+            raise OpKindTableError(
+                f"canonicalize_binary_rules {opcode}: action must be one of "
+                f"{sorted(_CANONICALIZE_BINARY_ACTIONS)}, got {action!r}"
+            )
+        if result_kind == "int":
+            result = row.get("result")
+            if isinstance(result, bool) or not isinstance(result, int):
+                raise OpKindTableError(
+                    f"canonicalize_binary_rules {opcode}/{action}: result must "
+                    f"be an int, got {result!r}"
+                )
+        elif result_kind == "bool":
+            result = row.get("result")
+            if not isinstance(result, bool):
+                raise OpKindTableError(
+                    f"canonicalize_binary_rules {opcode}/{action}: result must "
+                    f"be a bool, got {result!r}"
+                )
+        elif "result" in row:
+            raise OpKindTableError(
+                f"canonicalize_binary_rules {opcode}/{action}: result is not used"
+            )
+
+        fingerprint = (
+            opcode,
+            predicate,
+            row.get("value"),
+            type_guard,
+            action,
+            row.get("result"),
+        )
+        if fingerprint in seen_binary_rules:
+            raise OpKindTableError(
+                f"duplicate canonicalize_binary_rules row for {opcode}/{predicate}"
+            )
+        seen_binary_rules.add(fingerprint)
 
 
 def _validate_consuming_kinds(data: dict, valid_spellings: dict[str, str]) -> None:
@@ -1000,6 +1104,14 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_swapped_comparison_arms(opcodes, swapped_comparisons))
     out.append("    }\n}\n\n")
 
+    out.append(
+        _render_canonicalize_binary_rules(
+            opcodes,
+            data.get("canonicalize_binary_rules", []),
+        )
+    )
+    out.append("\n")
+
     # -- operand ownership: per-OpCode default + per-spelling consume override --
     out.append(
         _render_operand_ownership(
@@ -1140,6 +1252,168 @@ def _render_swapped_comparison_arms(
         else:
             lines.append(f"        OpCode::{name} => Some(OpCode::{swapped}),\n")
     return "".join(lines)
+
+
+def _render_canonicalize_binary_rules(opcodes: list[dict], rows: list[dict]) -> str:
+    """Render canonicalize.rs's ordered binary fold rules as typed data."""
+    by_opcode: dict[str, list[dict]] = {}
+    for row in rows:
+        by_opcode.setdefault(row["opcode"], []).append(row)
+
+    out: list[str] = []
+    out.append(
+        "/// Operand side used by canonicalize binary rule predicates/actions.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) enum CanonicalizeOperandSide {\n"
+        "    Lhs,\n"
+        "    Rhs,\n"
+        "}\n\n"
+        "/// Predicate for one ordered binary canonicalization rule.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) enum CanonicalizeBinaryPredicate {\n"
+        "    IntConst {\n"
+        "        side: CanonicalizeOperandSide,\n"
+        "        value: i64,\n"
+        "    },\n"
+        "    BoolConst {\n"
+        "        side: CanonicalizeOperandSide,\n"
+        "        value: bool,\n"
+        "    },\n"
+        "    SameOperands,\n"
+        "}\n\n"
+        "/// Live type guard for one binary canonicalization rule.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) enum CanonicalizeBinaryTypeGuard {\n"
+        "    None,\n"
+        "    OperandI64(CanonicalizeOperandSide),\n"
+        "}\n\n"
+        "/// Rewrite action for one binary canonicalization rule.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) enum CanonicalizeBinaryAction {\n"
+        "    Copy(CanonicalizeOperandSide),\n"
+        "    ConstInt(i64),\n"
+        "    ConstBool(bool),\n"
+        "}\n\n"
+        "/// Ordered binary canonicalization rule. The pass evaluates rows in table\n"
+        "/// order and applies the first match, preserving the previous match-arm\n"
+        "/// priority without keeping opcode semantics in canonicalize.rs.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) struct CanonicalizeBinaryRule {\n"
+        "    pub(crate) predicate: CanonicalizeBinaryPredicate,\n"
+        "    pub(crate) type_guard: CanonicalizeBinaryTypeGuard,\n"
+        "    pub(crate) action: CanonicalizeBinaryAction,\n"
+        "}\n\n"
+    )
+
+    for row in opcodes:
+        opcode = row["name"]
+        rules = by_opcode.get(opcode)
+        if not rules:
+            continue
+        out.append(
+            f"const {_canonicalize_binary_rules_const(opcode)}: &[CanonicalizeBinaryRule] = &[\n"
+        )
+        for rule in rules:
+            out.append("    CanonicalizeBinaryRule {\n")
+            out.append(
+                f"        predicate: {_render_canonicalize_binary_predicate(rule)},\n"
+            )
+            out.append(
+                f"        type_guard: {_render_canonicalize_binary_type_guard(rule)},\n"
+            )
+            out.append(f"        action: {_render_canonicalize_binary_action(rule)},\n")
+            out.append("    },\n")
+        out.append("];\n\n")
+
+    out.append(
+        "/// Ordered binary canonicalization rules. EXHAUSTIVE over OpCode; opcodes\n"
+        "/// without binary folds map to the empty rule slice.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_canonicalize_binary_rules_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> &'static [CanonicalizeBinaryRule] {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        opcode = row["name"]
+        if opcode in by_opcode:
+            out.append(
+                f"        OpCode::{opcode} => {_canonicalize_binary_rules_const(opcode)},\n"
+            )
+        else:
+            out.append(f"        OpCode::{opcode} => &[],\n")
+    out.append("    }\n}\n")
+    return "".join(out)
+
+
+def _canonicalize_binary_rules_const(opcode: str) -> str:
+    words: list[str] = []
+    current = ""
+    for ch in opcode:
+        if ch.isupper() and current:
+            words.append(current)
+            current = ch
+        else:
+            current += ch
+    if current:
+        words.append(current)
+    suffix = "_".join(w.upper() for w in words)
+    return f"CANONICALIZE_BINARY_RULES_{suffix}"
+
+
+def _canonicalize_operand_side(side: str) -> str:
+    if side == "lhs":
+        return "CanonicalizeOperandSide::Lhs"
+    if side == "rhs":
+        return "CanonicalizeOperandSide::Rhs"
+    raise AssertionError(f"unknown canonicalize operand side: {side!r}")
+
+
+def _render_canonicalize_binary_predicate(row: dict) -> str:
+    predicate = row["predicate"]
+    if predicate == "same_operands":
+        return "CanonicalizeBinaryPredicate::SameOperands"
+    side, value_kind = predicate.split("_", 1)
+    side_rs = _canonicalize_operand_side(side)
+    if value_kind == "int":
+        return (
+            "CanonicalizeBinaryPredicate::IntConst { "
+            f"side: {side_rs}, value: {row['value']} "
+            "}"
+        )
+    if value_kind == "bool":
+        return (
+            "CanonicalizeBinaryPredicate::BoolConst { "
+            f"side: {side_rs}, value: {_rs_bool(row['value'])} "
+            "}"
+        )
+    raise AssertionError(f"unknown canonicalize binary predicate: {predicate!r}")
+
+
+def _render_canonicalize_binary_type_guard(row: dict) -> str:
+    guard = row["type_guard"]
+    if guard == "none":
+        return "CanonicalizeBinaryTypeGuard::None"
+    side, ty = guard.split("_", 1)
+    if ty == "i64":
+        return (
+            "CanonicalizeBinaryTypeGuard::OperandI64("
+            f"{_canonicalize_operand_side(side)})"
+        )
+    raise AssertionError(f"unknown canonicalize binary type guard: {guard!r}")
+
+
+def _render_canonicalize_binary_action(row: dict) -> str:
+    action = row["action"]
+    if action == "copy_lhs":
+        return "CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Lhs)"
+    if action == "copy_rhs":
+        return "CanonicalizeBinaryAction::Copy(CanonicalizeOperandSide::Rhs)"
+    if action == "const_int":
+        return f"CanonicalizeBinaryAction::ConstInt({row['result']})"
+    if action == "const_bool":
+        return f"CanonicalizeBinaryAction::ConstBool({_rs_bool(row['result'])})"
+    raise AssertionError(f"unknown canonicalize binary action: {action!r}")
 
 
 _OPERAND_OWNERSHIP_VARIANT = {
