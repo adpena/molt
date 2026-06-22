@@ -724,7 +724,7 @@ def test_operand_ownership_table_renders_exhaustive_and_borrowed() -> None:
         "    Transferred,\n"
         "    InteriorBorrowKeepAlive,\n"
         "    ContainerAbsorb,\n"
-        "    NoOperandOwnership,\n"
+        "    NoOperand,\n"
         "}"
     ) in rendered
 
@@ -1228,7 +1228,10 @@ def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() 
     assert "python_lifetime_facts.is_local_store_root(" not in drop
     assert "python_lifetime_facts.is_bound_local_root(" not in drop
     assert "python_lifetime_facts.is_named_slot_root(" not in drop
-    assert "python_lifetime_facts.boundary_release_roots(&drop_eligibility)" in drop
+    assert (
+        "python_lifetime_facts.boundary_release_roots(&drop_eligibility, &ownership_lattice)"
+        in drop
+    )
     assert (
         "python_lifetime_facts.is_statement_release_boundary_root(" not in drop
     )
@@ -1246,6 +1249,7 @@ def test_drop_insertion_consumes_python_lifetime_facts_from_ownership_lattice() 
     assert "pub(crate) fn is_explicit_release_root(" not in lattice
     assert "pub(crate) fn boundary_release_roots(" in lattice
     assert "drop_eligibility.is_droppable(*root)" in lattice
+    assert "ownership_lattice.is_finalizer_sensitive_root(*root)" in lattice
     assert "!self.has_explicit_release_boundary(*root)" in lattice
     assert "pub(crate) fn is_statement_release_boundary_root(" in lattice
     assert "drop_eligibility.is_droppable(root)" in lattice
@@ -1576,7 +1580,7 @@ def test_terminator_table_renders_transferred_and_borrowed() -> None:
     with the design-27 §2.4 transfer set: `Return` value + every branch-arg are
     `Transferred`; the `CondBranch`/`Switch` predicate is `Borrowed`;
     `StateDispatch` has no direct SSA predicate; absent categories are
-    `NoOperandOwnership`. This is the behavior-preserving seed of
+    `NoOperand`. This is the behavior-preserving seed of
     the migrated transfer carve-out — and the first construction of the
     `Transferred` variant by a generated table (not just `from_str`)."""
     gen = _gen()
@@ -1589,7 +1593,7 @@ def test_terminator_table_renders_transferred_and_borrowed() -> None:
     variant = {
         "borrowed": "OperandOwnership::Borrowed",
         "transferred": "OperandOwnership::Transferred",
-        "none": "OperandOwnership::NoOperandOwnership",
+        "none": "OperandOwnership::NoOperand",
     }
     # The behavior-preserving seed (matches the prior hand-coded carve-out
     # exactly): branch-arg forwarders transfer; Return value transfers; the

@@ -988,7 +988,7 @@ _OPERAND_OWNERSHIP_VARIANT = {
     # borrowed|consumed|interior_borrow_keepalive|container_absorb; these are reachable only via
     # the terminator categories.
     "transferred": "OperandOwnership::Transferred",
-    "none": "OperandOwnership::NoOperandOwnership",
+    "none": "OperandOwnership::NoOperand",
 }
 
 _RESULT_VALIDITY_VARIANT = {
@@ -1062,7 +1062,7 @@ def _render_operand_ownership(
         "///     this operand while the caller still owns the producer temp ref. This\n"
         "///     gives DropInsertion a shared release boundary for absorbed temps\n"
         "///     without making the mutator consume the operand.\n"
-        "///   * `NoOperandOwnership` — no ref-bearing operand in that category (a\n"
+        "///   * `NoOperand` — no ref-bearing operand in that category (a\n"
         "///     raw lane; a terminator category absent on a variant — `Branch` has\n"
         "///     no direct operand, `Return` forwards no branch arg).\n"
         "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n"
@@ -1072,7 +1072,7 @@ def _render_operand_ownership(
         "    Transferred,\n"
         "    InteriorBorrowKeepAlive,\n"
         "    ContainerAbsorb,\n"
-        "    NoOperandOwnership,\n"
+        "    NoOperand,\n"
         "}\n\n"
     )
 
@@ -1415,7 +1415,7 @@ def _render_terminator_ownership(terminators: list[dict]) -> str:
         "/// compile until classified. `Transferred` = ownership moves OUT (a\n"
         "/// `Return` value to the caller; a branch-arg into a successor phi);\n"
         "/// `Borrowed` = the predicate is read but not moved (drop relocated to the\n"
-        "/// dying edge); `NoOperandOwnership` = the variant has no operand in that\n"
+        "/// dying edge); `NoOperand` = the variant has no operand in that\n"
         "/// category. The consume axis is N/A for a terminator (nothing frees a\n"
         "/// terminator operand internally), so `Consumed` never appears here.\n"
         "#[inline]\n"

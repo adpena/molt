@@ -65,6 +65,7 @@ from packaging.version import InvalidVersion, Version
 from molt.compat import CompatibilityError
 from molt import backend_daemon_custody as _daemon_custody
 from molt import process_guard as _process_guard
+from molt._host_exit import process_returncode_for_direct_os_exit
 from molt._runtime_feature_gates import link_affecting_feature_gate_for_symbol
 from molt._wasm_runtime_exports import (
     wasm_runtime_export_link_args,
@@ -20672,15 +20673,52 @@ def _collect_cargo_native_link_deps(runtime_lib: Path) -> tuple[list[str], list[
 
 def _native_windows_system_link_libs(target_triple: str | None) -> list[str]:
     """Return Windows system libraries required by Molt's Rust runtime surface."""
+    if not _native_target_is_windows(target_triple):
+        return []
+    return ["-lws2_32", "-lntdll", "-luserenv", "-ladvapi32"]
+
+
+def _native_target_is_windows(target_triple: str | None) -> bool:
     triple = (target_triple or "").lower()
-    is_windows = (
+    return (
         ("windows" in triple or "msvc" in triple)
         if target_triple
         else sys.platform == "win32"
     )
-    if not is_windows:
-        return []
-    return ["-lws2_32", "-lntdll", "-luserenv", "-ladvapi32"]
+
+
+def _windows_coff_library_command(
+    *,
+    input_objects: Sequence[Path],
+    output_path: Path,
+) -> list[str]:
+    override = os.environ.get("MOLT_COFF_LIB")
+    if override:
+        return [
+            *shlex.split(override),
+            f"/OUT:{output_path}",
+            *[str(path) for path in input_objects],
+        ]
+    for tool_name in ("llvm-lib", "lib"):
+        tool = shutil.which(tool_name)
+        if tool:
+            return [
+                tool,
+                f"/OUT:{output_path}",
+                *[str(path) for path in input_objects],
+            ]
+    lld_link = shutil.which("lld-link")
+    if lld_link:
+        return [
+            lld_link,
+            "/lib",
+            f"/OUT:{output_path}",
+            *[str(path) for path in input_objects],
+        ]
+    raise RuntimeError(
+        "Windows native object emission requires llvm-lib, lib.exe, or lld-link "
+        "to combine COFF objects."
+    )
 
 
 def _build_native_link_command(
@@ -21104,6 +21142,16 @@ def _run_native_partial_link_command(
     target_triple: str | None = None,
     sysroot_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    if _native_target_is_windows(target_triple):
+        link_cmd = _windows_coff_library_command(
+            input_objects=input_objects,
+            output_path=output_path,
+        )
+        return _run_native_link_command(
+            link_cmd=link_cmd,
+            json_output=json_output,
+            link_timeout=link_timeout,
+        )
     primary_object = input_objects[0] if input_objects else None
     link_cmd, _linker_hint, _normalized_target = _build_native_link_driver_command(
         output_obj=primary_object,
@@ -22851,7 +22899,7 @@ def _stage_runtime_intrinsic_symbols_for_native_codegen(
     resolved_modules: set[str] | frozenset[str] | None = None,
     is_wasm_freestanding: bool = False,
 ) -> tuple[str, _CliFailure | None]:
-    # Native bin builds: expose the set of intrinsic symbols the linked runtime
+    # Native codegen builds: expose the set of intrinsic symbols the linked runtime
     # staticlib defines so the per-app resolver only references resolvable
     # intrinsics. Setting it in the ambient env propagates to both the backend
     # subprocess and the daemon request env passthrough.
@@ -22949,21 +22997,20 @@ def _prepare_backend_setup(
         stdlib_profile=stdlib_profile,
     )
     runtime_intrinsic_symbols_digest = ""
-    if emit_mode != "obj":
-        runtime_intrinsic_symbols_digest, intrinsic_symbols_error = (
-            _stage_runtime_intrinsic_symbols_for_native_codegen(
-                runtime_state,
-                target_triple=target_triple,
-                json_output=json_output,
-                runtime_cargo_profile=runtime_cargo_profile,
-                molt_root=molt_root,
-                cargo_timeout=cargo_timeout,
-                stdlib_profile=stdlib_profile,
-                resolved_modules=resolved_modules,
-            )
+    runtime_intrinsic_symbols_digest, intrinsic_symbols_error = (
+        _stage_runtime_intrinsic_symbols_for_native_codegen(
+            runtime_state,
+            target_triple=target_triple,
+            json_output=json_output,
+            runtime_cargo_profile=runtime_cargo_profile,
+            molt_root=molt_root,
+            cargo_timeout=cargo_timeout,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
         )
-        if intrinsic_symbols_error is not None:
-            return None, intrinsic_symbols_error
+    )
+    if intrinsic_symbols_error is not None:
+        return None, intrinsic_symbols_error
     cache_setup = _prepare_backend_cache_setup(
         cache_enabled=cache,
         ir=ir,
@@ -26319,7 +26366,7 @@ def _initialize_runtime_artifact_state(
             molt_root, "molt_runtime_reloc.wasm"
         )
         return state
-    if emit_mode == "bin":
+    if emit_mode in {"bin", "obj"}:
         state.runtime_lib = _runtime_lib_path(
             molt_root,
             runtime_cargo_profile,
@@ -38248,11 +38295,10 @@ def _flush_standard_streams() -> None:
 
 
 def _process_exit_code(returncode: int | None) -> int:
-    if returncode is None:
-        return 1
-    if returncode < 0:
-        return 128 + abs(returncode)
-    return returncode
+    return process_returncode_for_direct_os_exit(
+        returncode,
+        windows=_is_windows_process_model(),
+    )
 
 
 def _cli_hash_seed_reexec_argv() -> list[str] | None:

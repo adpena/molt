@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Collection
 import os
-import shutil
 import shlex
+import shutil
 import tomllib
+import uuid
 from pathlib import Path
 from typing import Mapping, cast
 
@@ -25,7 +26,7 @@ CANONICAL_RUN_ENV_KEYS = (
     "CARGO_INCREMENTAL",
     "MOLT_SESSION_ID",
 )
-DEFAULT_EXTERNAL_ARTIFACT_ROOTS = (
+DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
     "/Volumes/VertigoDataTier/Molt",
     "/Volumes/APDataStore/Molt",
 )
@@ -72,6 +73,9 @@ def _env_float(
 
 
 def _looks_like_ambient_tmpdir(raw: str) -> bool:
+    spelling = raw.strip().replace("\\", "/")
+    if spelling in {"/tmp", "/var/tmp"} or spelling.startswith("/var/folders/"):
+        return True
     normalized = str(Path(raw).expanduser()).rstrip(os.sep)
     return normalized in {"/tmp", "/var/tmp"} or normalized.startswith("/var/folders/")
 
@@ -86,22 +90,43 @@ def _drop_ambient_tmpdir(env: dict[str, str], *, prefer_external: bool) -> None:
         env.pop("TMPDIR", None)
 
 
+def _dedupe_paths(paths: list[Path]) -> tuple[Path, ...]:
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for path in paths:
+        key = os.path.normcase(str(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return tuple(deduped)
+
+
+def _default_external_artifact_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    if os.name == "nt":
+        for key in ("LOCALAPPDATA", "TEMP", "TMP"):
+            raw = env.get(key, "").strip()
+            if raw:
+                roots.append(Path(raw).expanduser() / "Molt")
+    roots.extend(Path(path).expanduser() for path in DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS)
+    return _dedupe_paths(roots)
+
+
 def _candidate_roots(env: Mapping[str, str]) -> tuple[Path, ...]:
     raw = (
         env.get("MOLT_EXTERNAL_ARTIFACT_ROOTS")
         or env.get("MOLT_EXTERNAL_ARTIFACT_CANDIDATES")
         or ""
     )
-    candidates = (
-        raw.split(os.pathsep) if raw.strip() else DEFAULT_EXTERNAL_ARTIFACT_ROOTS
-    )
+    candidates = raw.split(os.pathsep) if raw.strip() else ()
     roots: list[Path] = []
     for candidate in candidates:
         text = candidate.strip()
         if not text:
             continue
         roots.append(Path(text).expanduser())
-    return tuple(roots)
+    return _dedupe_paths(roots) if roots else _default_external_artifact_roots(env)
 
 
 def _nearest_existing_parent(path: Path) -> Path | None:
@@ -112,6 +137,25 @@ def _nearest_existing_parent(path: Path) -> Path | None:
             return None
         current = parent
     return current if current.is_dir() else current.parent
+
+
+def _artifact_root_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
+    if not create_dirs:
+        parent = _nearest_existing_parent(path)
+        return parent is not None and os.access(parent, os.W_OK)
+    probe = path / f".molt-write-probe-{os.getpid()}-{uuid.uuid4().hex}"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe.mkdir()
+        list(probe.iterdir())
+    except OSError:
+        return False
+    finally:
+        try:
+            shutil.rmtree(probe)
+        except OSError:
+            pass
+    return True
 
 
 def select_external_artifact_root(
@@ -150,12 +194,10 @@ def select_external_artifact_root(
             continue
         if usage.free < min_free_gb * 1024 * 1024 * 1024:
             continue
-        if create_dirs:
-            try:
-                candidate.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                continue
-        elif not os.access(parent, os.W_OK):
+        if not _artifact_root_accepts_child_dirs(
+            candidate,
+            create_dirs=create_dirs,
+        ):
             continue
         return candidate
     return None
@@ -318,10 +360,13 @@ class DxProject:
                     continue
                 if key in CANONICAL_RUN_ENV_KEYS and env.get(key):
                     continue
-                env[key] = raw_value.format(
+                value = raw_value.format(
                     root=str(self.root),
                     artifact_root=str(artifact_root),
                 )
+                if key in CANONICAL_ROOT_ENV_KEYS or key == "PYTHONPATH":
+                    value = str(Path(value).expanduser().resolve())
+                env[key] = value
         env = RunContext(
             self.root,
             session_prefix="dev",

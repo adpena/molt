@@ -4,15 +4,27 @@ import errno
 import json
 import os
 import shlex
+import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 import sys
 import time
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from molt._host_exit import process_returncode_for_direct_os_exit
+
 PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
+PYTEST_TEMP_ROOT = ROOT / "tmp" / "pytest-temproot"
+PYTEST_CACHE_DIR = ROOT / "tmp" / "pytest-cache"
+WINDOWS_PYTEST_TEMP_ROOT_NAME = "pytest-temproot"
+WINDOWS_PYTEST_CACHE_DIR_NAME = "pytest-cache"
 PYTEST_OUTER_GUARD_REEXEC_ENV = "MOLT_PYTEST_OUTER_GUARD_REEXEC"
 TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV = "MOLT_TEST_SCRIPT_OUTER_GUARD_REEXEC"
 PYTEST_CURRENT_TEST_FILE_ENV = "MOLT_PYTEST_CURRENT_TEST_FILE"
@@ -85,17 +97,26 @@ def _flush_standard_streams() -> None:
 
 
 def _process_exit_code(returncode: int | None) -> int:
-    if returncode is None:
-        return 1
-    if returncode < 0:
-        return 128 + abs(returncode)
-    return returncode
+    return process_returncode_for_direct_os_exit(
+        returncode,
+        windows=_is_windows_process_model(),
+    )
+
+
+def _windows_process_group_kwargs() -> dict[str, object]:
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    return {"creationflags": creationflags} if creationflags else {}
 
 
 def handoff_to_outer_guard(argv: Sequence[str], env: Mapping[str, str]) -> None:
     if _is_windows_process_model():
         try:
-            completed = subprocess.run(list(argv), env=dict(env), check=False)
+            completed = subprocess.run(
+                list(argv),
+                env=dict(env),
+                check=False,
+                **_windows_process_group_kwargs(),
+            )
         except OSError as exc:
             print(f"pytest memory guard bootstrap: spawn failed: {exc}", file=sys.stderr)
             _flush_standard_streams()
@@ -244,6 +265,160 @@ def _pytest_args_enable_guard_config_plugin(args: Sequence[str]) -> bool:
         if plugin_name == "molt.pytest_memory_guard_config_plugin":
             return True
     return False
+
+
+def _pytest_args_disable_cacheprovider(args: Sequence[str]) -> bool:
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "-p":
+            if idx + 1 < len(args) and args[idx + 1] == "no:cacheprovider":
+                return True
+            idx += 2
+            continue
+        if arg in {"-pno:cacheprovider", "-p=no:cacheprovider"}:
+            return True
+        idx += 1
+    return False
+
+
+def _pytest_args_have_cache_dir(args: Sequence[str]) -> bool:
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg == "-o":
+            if idx + 1 < len(args) and args[idx + 1].startswith("cache_dir="):
+                return True
+            idx += 2
+            continue
+        if arg.startswith("-o"):
+            option = arg[2:].lstrip("=")
+            if option.startswith("cache_dir="):
+                return True
+        idx += 1
+    return False
+
+
+def install_windows_pytest_cache_dir_arg(args: list[str]) -> bool:
+    if not _is_windows_process_model():
+        return False
+    if _pytest_args_disable_cacheprovider(args) or _pytest_args_have_cache_dir(args):
+        return False
+    args.extend(["-o", f"cache_dir={windows_pytest_cache_dir()}"])
+    return True
+
+
+def install_windows_pytest_cache_dir_config(
+    early_config: object,
+    args: Sequence[str],
+) -> bool:
+    if not _is_windows_process_model():
+        return False
+    if _pytest_args_disable_cacheprovider(args) or _pytest_args_have_cache_dir(args):
+        return False
+    inicfg = getattr(early_config, "_inicfg", None)
+    if not isinstance(inicfg, dict):
+        return False
+    from _pytest.config.findpaths import ConfigValue
+
+    inicfg["cache_dir"] = ConfigValue(
+        str(windows_pytest_cache_dir()),
+        origin="override",
+        mode="ini",
+    )
+    inicache = getattr(early_config, "_inicache", None)
+    if isinstance(inicache, dict):
+        inicache.pop("cache_dir", None)
+    return True
+
+
+def _ensure_windows_readable_dir(path: Path) -> None:
+    mode = 0o755 if _is_windows_process_model() else 0o777
+    path.mkdir(mode=mode, parents=True, exist_ok=True)
+
+
+def _artifact_root_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
+    probe = path / f".molt-write-probe-{os.getpid()}-{uuid.uuid4().hex}"
+    try:
+        if create_dirs:
+            path.mkdir(mode=0o755, parents=True, exist_ok=True)
+        probe.mkdir(mode=0o755)
+        list(probe.iterdir())
+    except OSError:
+        return False
+    finally:
+        try:
+            shutil.rmtree(probe)
+        except OSError:
+            pass
+    return True
+
+
+def _default_windows_pytest_artifact_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    for key in ("LOCALAPPDATA", "TEMP", "TMP"):
+        raw = os.environ.get(key)
+        if raw:
+            roots.append(Path(raw).expanduser() / "Molt" / "tmp")
+    roots.append(ROOT / "tmp")
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for root in roots:
+        key = os.path.normcase(str(root))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(root)
+    return tuple(deduped)
+
+
+def _windows_pytest_artifact_base() -> Path:
+    explicit = os.environ.get("MOLT_EXT_ROOT")
+    if explicit:
+        return Path(explicit).expanduser() / "tmp"
+    for root in _default_windows_pytest_artifact_roots():
+        if _artifact_root_accepts_child_dirs(root, create_dirs=True):
+            return root
+    return ROOT / "tmp"
+
+
+def windows_pytest_temp_root() -> Path:
+    if not _is_windows_process_model():
+        return PYTEST_TEMP_ROOT
+    token = f"{os.getpid()}-{uuid.uuid4().hex}"
+    return _windows_pytest_artifact_base() / f"{WINDOWS_PYTEST_TEMP_ROOT_NAME}-{token}"
+
+
+def windows_pytest_cache_dir() -> Path:
+    if not _is_windows_process_model():
+        return PYTEST_CACHE_DIR
+    return _windows_pytest_artifact_base() / WINDOWS_PYTEST_CACHE_DIR_NAME
+
+
+def _pytest_user_temp_root(temproot: Path) -> Path:
+    try:
+        from _pytest.tmpdir import get_user
+
+        user = get_user() or "unknown"
+    except Exception:
+        user = "unknown"
+    return temproot / f"pytest-of-{user}"
+
+
+def install_windows_pytest_custody_roots() -> bool:
+    if not _is_windows_process_model():
+        return False
+    raw_temproot = os.environ.get("PYTEST_DEBUG_TEMPROOT")
+    temproot = Path(raw_temproot).expanduser() if raw_temproot else windows_pytest_temp_root()
+    cache_dir = windows_pytest_cache_dir()
+    _ensure_windows_readable_dir(temproot)
+    _ensure_windows_readable_dir(_pytest_user_temp_root(temproot))
+    _ensure_windows_readable_dir(cache_dir)
+    _ensure_windows_readable_dir(cache_dir / "v" / "cache")
+    if raw_temproot:
+        return False
+    os.environ["PYTEST_DEBUG_TEMPROOT"] = str(temproot)
+    return True
 
 
 def _repo_pytest_addopts() -> tuple[str, ...]:
@@ -661,6 +836,36 @@ def ensure_python_test_memory_guard() -> bool:
     )
 
 
+def install_windows_pytest_tempdir_mode_patch() -> bool:
+    if not _is_windows_process_model():
+        return False
+    import _pytest.pathlib as pytest_pathlib
+    import _pytest.tmpdir as pytest_tmpdir
+
+    current = pytest_pathlib.make_numbered_dir
+    already_patched = getattr(current, "_molt_windows_tempdir_mode_patch", False)
+
+    if already_patched:
+        patched = current
+    else:
+        original = current
+
+        def make_numbered_dir_windows_readable(root, prefix, mode=0o700):
+            safe_mode = 0o755 if mode == 0o700 else mode
+            return original(root, prefix, mode=safe_mode)
+
+        make_numbered_dir_windows_readable._molt_windows_tempdir_mode_patch = True
+        patched = make_numbered_dir_windows_readable
+
+    changed = (
+        pytest_pathlib.make_numbered_dir is not patched
+        or pytest_tmpdir.make_numbered_dir is not patched
+    )
+    pytest_pathlib.make_numbered_dir = patched
+    pytest_tmpdir.make_numbered_dir = patched
+    return changed
+
+
 def ensure_pytest_memory_guard(
     *,
     orig_argv: Sequence[str] | None = None,
@@ -704,7 +909,12 @@ def ensure_pytest_memory_guard(
 def pytest_load_initial_conftests(
     early_config: object, parser: object, args: Sequence[str]
 ) -> None:
-    del early_config, parser
+    del parser
+    install_windows_pytest_custody_roots()
+    install_windows_pytest_tempdir_mode_patch()
+    install_windows_pytest_cache_dir_config(early_config, args)
+    if isinstance(args, list):
+        install_windows_pytest_cache_dir_arg(args)
     ensure_pytest_memory_guard(pytest_args=tuple(args))
 
 

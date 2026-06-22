@@ -54,7 +54,10 @@ Outputs:
 - Intermediate artifacts (`main_stub.c`, importer stubs, `output.o` for `--emit bin`) live under `$MOLT_HOME/build/<entry>`.
 - Final outputs (binary/wasm/object) are placed under `--out-dir` when provided; otherwise wasm/object outputs default to `dist/` and native binaries default to `$MOLT_BIN/<entry>_molt`.
 - Native binary defaults to `$MOLT_BIN/<entry>_molt` when `--output` is not provided.
-- `--emit obj` skips linking and returns only the object artifact.
+- `--emit obj` skips executable linking and returns the native object artifact.
+  On PE/COFF targets, the artifact is a COFF static-library object bundle
+  because the platform has no sound `ld -r` equivalent for combining user and
+  shared-stdlib objects.
 - Cache reuse skips the backend compile step only; linking still runs when `--linked` is enabled. Use `--no-cache` for a full recompile.
 - Cache keys are computed from the IR payload plus backend/runtime/tooling source fingerprints, rustc/RUSTFLAGS metadata, and source-tree metadata (path, size, mtime, ctime). Source metadata changes intentionally invalidate object caches so long-lived CLI/batch processes cannot reuse stale compiler outputs after local source edits.
 Environment defaults:

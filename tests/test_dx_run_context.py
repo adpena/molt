@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import molt.dx as dx
 from molt.dx import CANONICAL_RUN_ENV_KEYS, DxProject, RunContext
 from tools import run_context_env
 
@@ -66,6 +67,72 @@ def test_run_context_prefers_healthy_external_artifact_root(tmp_path: Path) -> N
     assert env["CARGO_TARGET_DIR"] == str(resolved_external / "target")
     assert env["MOLT_DIFF_TMPDIR"] == str(resolved_external / "tmp")
     assert resolved_external.is_dir()
+
+
+def test_run_context_prefers_windows_local_appdata_artifact_root_by_default(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    local_appdata = tmp_path / "local-appdata"
+    repo_root.mkdir()
+    local_appdata.mkdir()
+    monkeypatch.setattr(dx.os, "name", "nt")
+
+    env = RunContext(
+        repo_root,
+        session_prefix="test",
+        prefer_external_artifacts=True,
+    ).canonical_env(
+        {
+            "LOCALAPPDATA": str(local_appdata),
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+        },
+        create_dirs=True,
+    )
+
+    resolved_external = (local_appdata / "Molt").resolve()
+    assert env["MOLT_EXT_ROOT"] == str(resolved_external)
+    assert env["CARGO_TARGET_DIR"] == str(resolved_external / "target")
+    assert env["MOLT_DIFF_TMPDIR"] == str(resolved_external / "tmp")
+    assert env["TMPDIR"] == str(resolved_external / "tmp")
+    assert resolved_external.is_dir()
+
+
+def test_run_context_skips_unhealthy_windows_local_appdata_default(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    local_appdata = tmp_path / "local-appdata"
+    temp_root = tmp_path / "temp"
+    repo_root.mkdir()
+    local_appdata.mkdir()
+    temp_root.mkdir()
+    monkeypatch.setattr(dx.os, "name", "nt")
+
+    def fake_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
+        del create_dirs
+        return path != local_appdata / "Molt"
+
+    monkeypatch.setattr(dx, "_artifact_root_accepts_child_dirs", fake_accepts_child_dirs)
+
+    env = RunContext(
+        repo_root,
+        session_prefix="test",
+        prefer_external_artifacts=True,
+    ).canonical_env(
+        {
+            "LOCALAPPDATA": str(local_appdata),
+            "TEMP": str(temp_root),
+            "MOLT_EXTERNAL_MIN_FREE_GB": "0",
+        },
+        create_dirs=True,
+    )
+
+    resolved_external = (temp_root / "Molt").resolve()
+    assert env["MOLT_EXT_ROOT"] == str(resolved_external)
+    assert env["TMPDIR"] == str(resolved_external / "tmp")
 
 
 def test_run_context_preserves_nonambient_tmpdir_with_external_root(

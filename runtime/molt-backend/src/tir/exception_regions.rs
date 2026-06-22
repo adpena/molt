@@ -68,6 +68,7 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
     let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(func)
         .into_iter()
         .collect();
+    let state_resume_depths = compute_state_resume_depths(func, &label_to_block);
     let mut facts = ExceptionRegionFacts::default();
     for (producer, op) in iter_ops(func) {
         let Some(source_kind) = original_kind(op) else {
@@ -79,9 +80,10 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
         let Some(&value) = op.results.first() else {
             continue;
         };
-        let producer_depths: Vec<_> = path_depths_before(func, &label_to_block, producer)
-            .into_iter()
-            .collect();
+        let producer_depths: Vec<_> =
+            path_depths_before(func, &label_to_block, &state_resume_depths, producer)
+                .into_iter()
+                .collect();
         let (release_candidates, producer_depth_ambiguous) = match producer_depths.as_slice() {
             [0] => {
                 // Depth-zero exception reads are observers of pending/global
@@ -91,7 +93,13 @@ pub fn compute_exception_region_facts(func: &TirFunction) -> ExceptionRegionFact
                 continue;
             }
             [depth] => (
-                reachable_region_pops(func, &label_to_block, producer, *depth),
+                reachable_region_pops(
+                    func,
+                    &label_to_block,
+                    &state_resume_depths,
+                    producer,
+                    *depth,
+                ),
                 false,
             ),
             many if many.len() > 1 => {
@@ -225,6 +233,7 @@ fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
 fn reachable_region_pops(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
+    state_resume_depths: &BTreeMap<i64, BTreeSet<usize>>,
     producer: ExceptionOpPosition,
     depth: usize,
 ) -> Vec<ExceptionOpPosition> {
@@ -243,9 +252,12 @@ fn reachable_region_pops(
             continue;
         };
         if op_index >= tir_block.ops.len() {
-            for succ in terminator_successors(&tir_block.terminator) {
-                queue.push_back((succ, 0, path_depth));
-            }
+            enqueue_terminator_successors(
+                &mut queue,
+                &tir_block.terminator,
+                path_depth,
+                StateResumeDepthPolicy::Use(state_resume_depths),
+            );
             continue;
         }
         let op = &tir_block.ops[op_index];
@@ -265,6 +277,21 @@ fn reachable_region_pops(
 fn path_depths_before(
     func: &TirFunction,
     label_to_block: &BTreeMap<i64, BlockId>,
+    state_resume_depths: &BTreeMap<i64, BTreeSet<usize>>,
+    target: ExceptionOpPosition,
+) -> BTreeSet<usize> {
+    path_depths_before_with_state_policy(
+        func,
+        label_to_block,
+        StateResumeDepthPolicy::Use(state_resume_depths),
+        target,
+    )
+}
+
+fn path_depths_before_with_state_policy(
+    func: &TirFunction,
+    label_to_block: &BTreeMap<i64, BlockId>,
+    state_policy: StateResumeDepthPolicy<'_>,
     target: ExceptionOpPosition,
 ) -> BTreeSet<usize> {
     let mut queue = VecDeque::new();
@@ -283,9 +310,7 @@ fn path_depths_before(
             continue;
         };
         if op_index >= tir_block.ops.len() {
-            for succ in terminator_successors(&tir_block.terminator) {
-                queue.push_back((succ, 0, depth));
-            }
+            enqueue_terminator_successors(&mut queue, &tir_block.terminator, depth, state_policy);
             continue;
         }
         let op = &tir_block.ops[op_index];
@@ -296,6 +321,150 @@ fn path_depths_before(
         queue.push_back((block, op_index + 1, next_depth));
     }
     depths
+}
+
+#[derive(Clone, Copy)]
+enum StateResumeDepthPolicy<'a> {
+    IgnoreCases,
+    Use(&'a BTreeMap<i64, BTreeSet<usize>>),
+}
+
+fn enqueue_terminator_successors(
+    queue: &mut VecDeque<(BlockId, usize, usize)>,
+    term: &Terminator,
+    depth: usize,
+    state_policy: StateResumeDepthPolicy<'_>,
+) {
+    match (term, state_policy) {
+        (
+            Terminator::StateDispatch { cases, default, .. },
+            StateResumeDepthPolicy::Use(state_resume_depths),
+        ) => {
+            queue.push_back((*default, 0, depth));
+            for (state_id, target, _) in cases {
+                if let Some(depths) = state_resume_depths.get(state_id) {
+                    for state_depth in depths {
+                        queue.push_back((*target, 0, *state_depth));
+                    }
+                } else {
+                    queue.push_back((*target, 0, depth));
+                }
+            }
+        }
+        (Terminator::StateDispatch { default, .. }, StateResumeDepthPolicy::IgnoreCases) => {
+            queue.push_back((*default, 0, depth));
+        }
+        _ => {
+            for succ in terminator_successors(term) {
+                queue.push_back((succ, 0, depth));
+            }
+        }
+    }
+}
+
+fn compute_state_resume_depths(
+    func: &TirFunction,
+    label_to_block: &BTreeMap<i64, BlockId>,
+) -> BTreeMap<i64, BTreeSet<usize>> {
+    let const_ints = const_int_values(func);
+    let dispatch_targets = state_dispatch_targets(func);
+    let mut depths_by_state: BTreeMap<i64, BTreeSet<usize>> = BTreeMap::new();
+    for (position, op) in iter_ops(func) {
+        let Some(state_id) = saved_resume_state_id(op, &const_ints) else {
+            continue;
+        };
+        let depths = path_depths_before_with_state_policy(
+            func,
+            label_to_block,
+            StateResumeDepthPolicy::IgnoreCases,
+            position,
+        );
+        if depths.is_empty() {
+            continue;
+        }
+        if let Some(targets) = dispatch_targets.get(&state_id) {
+            let entry = depths_by_state.entry(state_id).or_default();
+            for target in targets {
+                let reopened_depth = leading_try_start_count(func, *target);
+                entry.extend(
+                    depths
+                        .iter()
+                        .map(|depth| depth.saturating_sub(reopened_depth)),
+                );
+            }
+        } else {
+            depths_by_state.entry(state_id).or_default().extend(depths);
+        }
+    }
+    depths_by_state
+}
+
+fn state_dispatch_targets(func: &TirFunction) -> BTreeMap<i64, BTreeSet<BlockId>> {
+    let mut targets: BTreeMap<i64, BTreeSet<BlockId>> = BTreeMap::new();
+    for block in func.blocks.values() {
+        if let Terminator::StateDispatch { cases, .. } = &block.terminator {
+            for (state_id, target, _) in cases {
+                targets.entry(*state_id).or_default().insert(*target);
+            }
+        }
+    }
+    targets
+}
+
+fn leading_try_start_count(func: &TirFunction, block: BlockId) -> usize {
+    let Some(tir_block) = func.blocks.get(&block) else {
+        return 0;
+    };
+    let mut count = 0;
+    for op in &tir_block.ops {
+        if op.opcode == OpCode::TryStart {
+            count += 1;
+            continue;
+        }
+        if is_resume_entry_depth_neutral_op(op) {
+            continue;
+        }
+        break;
+    }
+    count
+}
+
+fn is_resume_entry_depth_neutral_op(op: &TirOp) -> bool {
+    if op.opcode != OpCode::Copy {
+        return false;
+    }
+    matches!(
+        original_kind(op),
+        None | Some("store_var" | "line" | "trace_enter_slot" | "trace_exit")
+    )
+}
+
+fn const_int_values(func: &TirFunction) -> BTreeMap<ValueId, i64> {
+    let mut values = BTreeMap::new();
+    for (_, op) in iter_ops(func) {
+        if op.opcode != OpCode::ConstInt {
+            continue;
+        }
+        let Some(&value_id) = op.results.first() else {
+            continue;
+        };
+        if let Some(AttrValue::Int(value)) = op.attrs.get("value") {
+            values.insert(value_id, *value);
+        }
+    }
+    values
+}
+
+fn saved_resume_state_id(op: &TirOp, const_ints: &BTreeMap<ValueId, i64>) -> Option<i64> {
+    match op.opcode {
+        OpCode::StateYield => label_value(op),
+        OpCode::StateTransition | OpCode::ChanSendYield | OpCode::ChanRecvYield => op
+            .operands
+            .last()
+            .and_then(|value| const_ints.get(value))
+            .copied(),
+        _ => None,
+    }
 }
 
 fn depth_after_op(depth: usize, op: &TirOp) -> usize {
@@ -345,6 +514,33 @@ mod tests {
     fn try_end(label: i64) -> TirOp {
         let mut op = op(OpCode::TryEnd);
         op.attrs.insert("value".into(), AttrValue::Int(label));
+        op
+    }
+
+    fn check_exception(label: i64) -> TirOp {
+        let mut op = op(OpCode::CheckException);
+        op.attrs.insert("value".into(), AttrValue::Int(label));
+        op
+    }
+
+    fn const_int(value: i64, out: ValueId) -> TirOp {
+        let mut op = op(OpCode::ConstInt);
+        op.results = vec![out];
+        op.attrs.insert("value".into(), AttrValue::Int(value));
+        op
+    }
+
+    fn state_transition(operands: Vec<ValueId>, out: ValueId) -> TirOp {
+        let mut op = op(OpCode::StateTransition);
+        op.operands = operands;
+        op.results = vec![out];
+        op
+    }
+
+    fn state_yield(state: i64, operand: ValueId) -> TirOp {
+        let mut op = op(OpCode::StateYield);
+        op.operands = vec![operand];
+        op.attrs.insert("value".into(), AttrValue::Int(state));
         op
     }
 
@@ -629,6 +825,119 @@ mod tests {
         (func, exc)
     }
 
+    fn state_resume_inside_try_function() -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new("state_resume_inside_try".into(), vec![], TirType::None);
+        let first_entry = func.fresh_block();
+        let resumed_body = func.fresh_block();
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, 85);
+
+        let pending_state = func.fresh_value();
+        let awaitable = func.fresh_value();
+        let transition_out = func.fresh_value();
+        let exc = func.fresh_value();
+
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
+            cases: vec![(88, resumed_body, vec![])],
+            default: first_entry,
+            default_args: vec![],
+        };
+        func.blocks.insert(
+            first_entry,
+            TirBlock {
+                id: first_entry,
+                args: vec![],
+                ops: vec![try_start(85)],
+                terminator: Terminator::Branch {
+                    target: resumed_body,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            resumed_body,
+            TirBlock {
+                id: resumed_body,
+                args: vec![],
+                ops: vec![
+                    const_int(88, pending_state),
+                    state_transition(vec![awaitable, pending_state], transition_out),
+                    check_exception(85),
+                ],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![
+                    original("exception_last_pending", vec![exc]),
+                    original("exception_pop", vec![]),
+                ],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc)
+    }
+
+    fn state_yield_reopens_try_on_resume_function() -> (TirFunction, ValueId) {
+        let mut func = TirFunction::new(
+            "state_yield_reopens_try_on_resume".into(),
+            vec![],
+            TirType::None,
+        );
+        let yielding = func.fresh_block();
+        let resume = func.fresh_block();
+        let handler = func.fresh_block();
+        func.label_id_map.insert(handler.0, 99);
+
+        let yielded = func.fresh_value();
+        let resume_alias = func.fresh_value();
+        let exc = func.fresh_value();
+        let mut resume_arg_copy = op(OpCode::Copy);
+        resume_arg_copy.operands = vec![yielded];
+        resume_arg_copy.results = vec![resume_alias];
+
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
+            cases: vec![(7, resume, vec![])],
+            default: yielding,
+            default_args: vec![],
+        };
+        func.blocks.insert(
+            yielding,
+            TirBlock {
+                id: yielding,
+                args: vec![],
+                ops: vec![try_start(99), state_yield(7, yielded)],
+                terminator: Terminator::Unreachable,
+            },
+        );
+        func.blocks.insert(
+            resume,
+            TirBlock {
+                id: resume,
+                args: vec![],
+                ops: vec![resume_arg_copy, try_start(99), check_exception(99)],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![],
+                ops: vec![
+                    original("exception_last_pending", vec![exc]),
+                    original("exception_pop", vec![]),
+                ],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        (func, exc)
+    }
+
     #[test]
     fn exception_region_pairs_match_ref_with_reachable_handler_pop() {
         let func = split_cleanup_function();
@@ -837,6 +1146,40 @@ mod tests {
                 op_index: 0,
             }],
             vec![exc],
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_seeds_state_dispatch_resume_with_saved_try_depth() {
+        let (func, exc) = state_resume_inside_try_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: BlockId(3),
+                op_index: 1,
+            }]
+        );
+        assert!(verify_exception_regions(&func).is_ok());
+    }
+
+    #[test]
+    fn exception_region_offsets_state_yield_resume_try_reopen_depth() {
+        let (func, exc) = state_yield_reopens_try_on_resume_function();
+
+        let facts = compute_exception_region_facts(&func);
+
+        assert!(facts.diagnostics.is_empty(), "{:?}", facts.diagnostics);
+        assert_eq!(
+            facts.match_refs[&exc].releases,
+            vec![ExceptionOpPosition {
+                block: BlockId(3),
+                op_index: 1,
+            }]
         );
         assert!(verify_exception_regions(&func).is_ok());
     }

@@ -1,3 +1,7 @@
+// Windows bin-test builds compile Unix daemon protocol code for parser coverage
+// without running the daemon loop; production warning policy remains unchanged.
+#![cfg_attr(all(test, windows), allow(dead_code))]
+
 #[cfg(feature = "jemalloc")]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -11,8 +15,11 @@ use molt_backend::rust::RustBackend;
 #[cfg(feature = "wasm-backend")]
 use molt_backend::wasm::{WasmBackend, WasmCompileOptions};
 use molt_backend::{SimpleIR, rewrite_annotate_stubs};
+#[cfg(any(unix, test))]
 use serde_json::Value as JsonValue;
+#[cfg(any(unix, test))]
 use std::cmp::Reverse;
+#[cfg(any(unix, test))]
 use std::collections::{BinaryHeap, HashMap};
 use std::env;
 use std::fs::File;
@@ -27,6 +34,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 #[cfg(feature = "native-backend")]
 use std::path::PathBuf;
+#[cfg(any(unix, test))]
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[cfg(all(feature = "native-backend", windows))]
@@ -36,10 +44,12 @@ use windows_sys::Win32::System::IO::OVERLAPPED;
 
 mod json_boundary;
 
+#[cfg(any(unix, test))]
 use crate::json_boundary::{
     expect_object, optional_bool, optional_string, optional_u32, required_field, required_string,
 };
 
+#[cfg(any(unix, test))]
 const BACKEND_DAEMON_PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_BACKEND_BATCH_SIZE: usize = 64;
 const DEFAULT_STDLIB_BATCH_SIZE: usize = 128;
@@ -47,7 +57,9 @@ const DEFAULT_BACKEND_BATCH_OP_BUDGET: usize = 8_000;
 const MIB: usize = 1024 * 1024;
 const DEFAULT_DAEMON_REQUEST_LIMIT_BYTES: usize = 512 * MIB;
 const DEFAULT_STDIN_REQUEST_LIMIT_BYTES: usize = DEFAULT_DAEMON_REQUEST_LIMIT_BYTES;
+#[cfg(any(unix, test))]
 const DEFAULT_DAEMON_MAX_JOBS: usize = 512;
+#[cfg(any(unix, test))]
 const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_DISABLE_DEAD_FUNC_ELIM",
     "MOLT_BACKEND_BATCH_SIZE",
@@ -102,6 +114,7 @@ enum BackendOutputKind {
 }
 
 #[derive(Debug)]
+#[cfg(any(unix, test))]
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
@@ -130,6 +143,7 @@ struct DaemonJobRequest {
 }
 
 #[derive(Debug)]
+#[cfg(any(unix, test))]
 struct DaemonRequest {
     version: Option<u32>,
     ping: Option<bool>,
@@ -139,6 +153,7 @@ struct DaemonRequest {
 }
 
 #[derive(Debug)]
+#[cfg(any(unix, test))]
 struct DaemonJobResponse {
     id: String,
     ok: bool,
@@ -152,6 +167,7 @@ struct DaemonJobResponse {
     warnings: Vec<String>,
 }
 
+#[cfg(any(unix, test))]
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -1023,7 +1039,10 @@ fn shared_stdlib_cache_matches(
     cached_partition_manifest.is_some()
 }
 
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(all(
+    any(unix, test),
+    any(feature = "native-backend", feature = "wasm-backend")
+))]
 fn daemon_memory_cache_allowed_for_job(job: &DaemonJobRequest) -> bool {
     if job.is_wasm {
         return true;
@@ -1123,6 +1142,7 @@ fn publish_shared_stdlib_cache_object(
 }
 
 #[derive(Debug)]
+#[cfg(any(unix, test))]
 struct DaemonHealthResponse {
     protocol_version: u32,
     pid: u32,
@@ -1139,6 +1159,7 @@ struct DaemonHealthResponse {
 }
 
 #[derive(Debug)]
+#[cfg(any(unix, test))]
 struct DaemonResponse {
     ok: bool,
     pong: bool,
@@ -1147,6 +1168,7 @@ struct DaemonResponse {
     health: Option<DaemonHealthResponse>,
 }
 
+#[cfg(any(unix, test))]
 impl DaemonJobRequest {
     fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
         let obj = expect_object(value, ctx)?;
@@ -1193,12 +1215,14 @@ impl DaemonJobRequest {
     }
 }
 
+#[cfg(any(unix, test))]
 fn simple_ir_from_json_path(path: &str) -> Result<SimpleIR, String> {
     let file = File::open(path).map_err(|err| format!("failed to open ir_path {path:?}: {err}"))?;
     serde_json::from_reader(io::BufReader::new(file))
         .map_err(|err| format!("failed to parse ir_path {path:?}: {err}"))
 }
 
+#[cfg(any(unix, test))]
 impl DaemonRequest {
     fn from_json_bytes(bytes: &[u8]) -> Result<Self, String> {
         let value: JsonValue =
@@ -1267,6 +1291,7 @@ impl DaemonRequest {
     }
 }
 
+#[cfg(any(unix, test))]
 impl DaemonJobResponse {
     fn to_json_value(&self) -> JsonValue {
         let mut obj = serde_json::Map::new();
@@ -1304,6 +1329,7 @@ impl DaemonJobResponse {
     }
 }
 
+#[cfg(any(unix, test))]
 impl DaemonHealthResponse {
     fn to_json_value(&self) -> JsonValue {
         let mut obj = serde_json::Map::new();
@@ -1347,6 +1373,7 @@ impl DaemonHealthResponse {
     }
 }
 
+#[cfg(any(unix, test))]
 impl DaemonResponse {
     fn to_json_value(&self) -> JsonValue {
         let mut obj = serde_json::Map::new();
@@ -1372,6 +1399,7 @@ impl DaemonResponse {
 }
 
 #[derive(Default)]
+#[cfg(any(unix, test))]
 struct DaemonStats {
     requests_total: u64,
     jobs_total: u64,
@@ -1379,6 +1407,7 @@ struct DaemonStats {
     cache_misses: u64,
 }
 
+#[cfg(any(unix, test))]
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
@@ -1391,6 +1420,7 @@ struct DaemonCache {
     max_bytes: Option<usize>,
 }
 
+#[cfg(any(unix, test))]
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
@@ -1400,6 +1430,7 @@ struct CacheEntry {
     stamp: u64,
 }
 
+#[cfg(any(unix, test))]
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
@@ -1492,6 +1523,7 @@ fn env_usize_limit(name: &str, default: usize, min_value: usize) -> usize {
         .unwrap_or(default)
 }
 
+#[cfg(any(unix, test))]
 fn daemon_request_limit_bytes() -> usize {
     env_usize_limit(
         "MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES",
@@ -1508,6 +1540,7 @@ fn stdin_request_limit_bytes() -> usize {
     )
 }
 
+#[cfg(any(unix, test))]
 fn daemon_max_jobs() -> usize {
     env_usize_limit("MOLT_BACKEND_DAEMON_MAX_JOBS", DEFAULT_DAEMON_MAX_JOBS, 1)
 }
@@ -1566,6 +1599,7 @@ fn read_bounded_request_bytes<R: Read>(
     Ok(bytes)
 }
 
+#[cfg(any(unix, test))]
 fn default_daemon_cache_bytes_from_physical_mem_bytes(bytes: Option<u64>) -> usize {
     let default = bytes
         .and_then(|raw| usize::try_from(raw / 64).ok())
@@ -1573,6 +1607,7 @@ fn default_daemon_cache_bytes_from_physical_mem_bytes(bytes: Option<u64>) -> usi
     default.clamp(128 * MIB, 2 * 1024 * MIB)
 }
 
+#[cfg(any(unix, test))]
 fn daemon_cache_limit_bytes() -> usize {
     env::var("MOLT_BACKEND_DAEMON_CACHE_MB")
         .ok()
@@ -1584,6 +1619,7 @@ fn daemon_cache_limit_bytes() -> usize {
         })
 }
 
+#[cfg(any(unix, test))]
 fn daemon_health(
     cache: &DaemonCache,
     stats: &DaemonStats,
@@ -1609,6 +1645,7 @@ fn daemon_health(
 }
 
 #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(any(unix, test))]
 enum DaemonCompiledOutput {
     #[cfg(feature = "wasm-backend")]
     Bytes(Arc<[u8]>),
@@ -1616,6 +1653,7 @@ enum DaemonCompiledOutput {
 }
 
 #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(any(unix, test))]
 fn insert_daemon_cache_entries(
     cache: &mut DaemonCache,
     cache_key: &str,
@@ -1633,6 +1671,7 @@ fn insert_daemon_cache_entries(
 }
 
 #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(any(unix, test))]
 fn maybe_cache_output_file(
     cache: &mut DaemonCache,
     output_path: &Path,
@@ -1689,6 +1728,7 @@ fn maybe_cache_output_file(
     );
 }
 
+#[cfg(any(unix, test))]
 fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> DaemonJobResponse {
     #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
     {
@@ -2019,7 +2059,8 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                             stdlib_count,
                             stdlib_path.display()
                         );
-                        let temp_stdlib_path = stdlib_cache_temp_publish_path(stdlib_path, "object");
+                        let temp_stdlib_path =
+                            stdlib_cache_temp_publish_path(stdlib_path, "object");
                         if let Err(err) = compile_stdlib_cache_object(
                             &temp_stdlib_path,
                             std::mem::take(&mut stdlib_funcs),
@@ -2161,6 +2202,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
+#[cfg(any(unix, test))]
 fn write_cached_output(path: &str, bytes: &[u8], skip_if_synced: bool) -> io::Result<bool> {
     if skip_if_synced {
         return Ok(false);
@@ -2173,6 +2215,7 @@ fn write_cached_output(path: &str, bytes: &[u8], skip_if_synced: bool) -> io::Re
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)
 )]
+#[cfg(any(unix, test))]
 fn write_output(path: &str, bytes: &[u8]) -> io::Result<()> {
     write_output_path(Path::new(path), bytes)
 }
@@ -4924,10 +4967,9 @@ mod tests {
             read_stdlib_cache_manifest(&stdlib).as_deref(),
             Some("daemon-empty-manifest")
         );
-        let partition_manifest = std::fs::read_to_string(
-            stdlib_cache_partition_manifest_sidecar_path(&stdlib),
-        )
-        .expect("read stdlib partition manifest");
+        let partition_manifest =
+            std::fs::read_to_string(stdlib_cache_partition_manifest_sidecar_path(&stdlib))
+                .expect("read stdlib partition manifest");
         assert!(partition_manifest.contains("\"functions\":[]"));
 
         let _ = std::fs::remove_dir_all(&tmp_dir);

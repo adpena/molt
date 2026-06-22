@@ -163,6 +163,23 @@ def _resolved_dynamic_runtime_owned_intrinsic_exports(
     return _resolved_runtime_owned_intrinsic_exports(dynamic_modules)
 
 
+@lru_cache(maxsize=1)
+def _all_dynamic_runtime_owned_intrinsic_exports() -> tuple[str, ...]:
+    repo_root = Path(__file__).resolve().parents[2]
+    package_root = repo_root / "src" / "molt"
+    stdlib_root = package_root / "stdlib"
+    dynamic_roots = (package_root / "gpu", stdlib_root / "tinygrad")
+    names: set[str] = set()
+    for root in dynamic_roots:
+        if not root.exists():
+            continue
+        for module_path in sorted(root.rglob("*.py")):
+            text = module_path.read_text(encoding="utf-8")
+            for match in _INTRINSIC_CALL_RE.finditer(text):
+                names.add(match.group("name") or match.group("resolved_name"))
+    return tuple(sorted(names))
+
+
 def wasm_runtime_dynamic_export_names(
     resolved_modules: Iterable[str] | None,
 ) -> tuple[str, ...]:
@@ -250,7 +267,7 @@ def wasm_runtime_export_link_args(
         export_names.update(_HOST_RUNTIME_EXPORTS)
         export_names.update(
             canonical_intrinsic_runtime_name(name)
-            for name in _resolved_runtime_owned_intrinsic_exports(resolved_modules)
+            for name in _all_dynamic_runtime_owned_intrinsic_exports()
         )
     else:
         export_names = set(wasm_runtime_required_export_names(required_runtime_imports))

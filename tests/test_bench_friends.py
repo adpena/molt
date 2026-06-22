@@ -56,12 +56,14 @@ def _load_numpy_adapter_module():
 
 def _has_env_pair_casefold(env: dict[str, str], name: str, value: str) -> bool:
     folded = name.upper()
-    return any(key.upper() == folded and candidate == value for key, candidate in env.items())
+    return any(
+        key.upper() == folded and candidate == value for key, candidate in env.items()
+    )
 
 
 def _run_tool(*args: str) -> subprocess.CompletedProcess[str]:
     return run_native_test_process(
-        ["python3", "tools/bench_friends.py", *args],
+        [sys.executable, "tools/bench_friends.py", *args],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -164,13 +166,13 @@ def test_bench_friends_local_suite_runs(tmp_path: Path) -> None:
             timeout_sec = 30
 
             [suite.runners.cpython]
-            run_cmd = ["python3", "-c", "import time; time.sleep(0.01)"]
+            run_cmd = ["{{python}}", "-c", "import time; time.sleep(0.01)"]
 
             [suite.runners.molt]
-            run_cmd = ["python3", "-c", "import time; time.sleep(0.02)"]
+            run_cmd = ["{{python}}", "-c", "import time; time.sleep(0.02)"]
 
             [suite.runners.friend]
-            run_cmd = ["python3", "-c", "import time; time.sleep(0.03)"]
+            run_cmd = ["{{python}}", "-c", "import time; time.sleep(0.03)"]
             """
         ).strip()
         + "\n",
@@ -295,7 +297,9 @@ def test_bench_friends_interrupt_writes_partial_results_and_cleans_daemon(
 
     monkeypatch.setattr(module, "BenchSignalScope", DummySignalScope)
     monkeypatch.setattr(module, "_run_runner", fake_run_runner)
-    monkeypatch.setattr(module, "_cleanup_backend_daemons", fake_cleanup_backend_daemons)
+    monkeypatch.setattr(
+        module, "_cleanup_backend_daemons", fake_cleanup_backend_daemons
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -368,6 +372,214 @@ def test_bench_friends_phase_result_preserves_memory_guard_diagnostics(
     assert payload["guard_orphaned_process_groups"] == [2345]
     assert payload["guard_exit_signal"]["name"] == "SIGTERM"
     assert payload["guard_violation"] is None
+
+
+def test_bench_friends_molt_runner_classifies_daemon_empty_response(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_tool_module()
+
+    class GuardedResult(subprocess.CompletedProcess):
+        elapsed_s = 208.19
+        violation = None
+        timed_out = False
+        limit_at_violation = None
+        orphaned_process_groups = ()
+        cargo_incremental_quarantine = None
+
+    def fake_guarded_completed_process(*args, **kwargs):  # noqa: ANN002, ANN003
+        return GuardedResult(
+            args=["python3", "-m", "molt.cli", "run"],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Backend daemon compile failed: "
+                "backend daemon returned empty response\n"
+            ),
+        )
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+    runner = module.RunnerSpec(
+        name="molt",
+        role="workload",
+        build_cmd=None,
+        run_cmd=["python3", "-m", "molt.cli", "run"],
+        env={},
+        skip_reason=None,
+        json_stdout=False,
+    )
+    suite = module.SuiteSpec(
+        id="tinygrad_off_the_shelf",
+        friend="tinygrad",
+        display_name="tinygrad",
+        enabled=True,
+        source="local",
+        repo_url=None,
+        repo_ref=None,
+        local_path=None,
+        workdir=None,
+        semantic_mode="runs_unmodified",
+        adapter_notes=None,
+        tags=[],
+        timeout_sec=300,
+        repeat=1,
+        env={},
+        prepare_cmds=[],
+        runners={"molt": runner},
+    )
+
+    result = module._run_runner(
+        runner,
+        suite=suite,
+        suite_workdir=tmp_path,
+        suite_env={},
+        tokens={},
+        logs_dir=tmp_path / "logs",
+        dry_run=False,
+        limits=module.harness_memory_guard.limits_from_env("MOLT_BENCH", {}),
+    )
+
+    payload = module._runner_to_dict(result)
+    assert result.status == "failed"
+    assert result.reason == (
+        "run 1 failed: daemon_crash (backend_daemon_empty_response)"
+    )
+    assert payload["molt_failure"]["phase"] == "build"
+    assert payload["molt_failure"]["status"] == "daemon_crash"
+    assert payload["molt_failure"]["detail"] == "backend_daemon_empty_response"
+    assert payload["molt_failure"]["log_refs"][0]["kind"] == "stdout"
+    assert payload["molt_failure"]["log_refs"][1]["kind"] == "stderr"
+    assert payload["runs"][0]["molt_failure"] == payload["molt_failure"]
+
+
+def test_bench_friends_daemon_failure_writes_custody_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_tool_module()
+    manifest = tmp_path / "manifest.toml"
+    output_root = tmp_path / "daemon_failure_out"
+    suite_root = tmp_path / "suite"
+    suite_root.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        textwrap.dedent(
+            f"""
+            schema_version = 1
+
+            [[suite]]
+            id = "tinygrad_off_the_shelf"
+            enabled = true
+            friend = "tinygrad"
+            source = "local"
+            local_path = "{suite_root.as_posix()}"
+            semantic_mode = "runs_unmodified"
+            repeat = 1
+            timeout_sec = 30
+
+            [suite.runners.molt]
+            run_cmd = ["{{python}}", "-m", "molt.cli", "run"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fake_run_runner(runner, **kwargs):  # noqa: ANN001, ANN003
+        logs_dir = kwargs["logs_dir"]
+        stdout_path = logs_dir / "molt.run1.stdout.log"
+        stderr_path = logs_dir / "molt.run1.stderr.log"
+        failure = {
+            "phase": "build",
+            "status": "daemon_crash",
+            "detail": "backend_daemon_empty_response",
+            "message": (
+                "Backend daemon compile failed: "
+                "backend daemon returned empty response"
+            ),
+            "returncode": 1,
+            "timed_out": False,
+            "elapsed_s": 208.19,
+            "signal": None,
+            "guard_violation": None,
+            "orphaned_process_groups": [],
+            "log_refs": [
+                {"kind": "stdout", "path": str(stdout_path)},
+                {"kind": "stderr", "path": str(stderr_path)},
+            ],
+        }
+        phase = module.PhaseResult(
+            cmd=["python3", "-m", "molt.cli", "run"],
+            returncode=1,
+            elapsed_s=208.19,
+            timed_out=False,
+            stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path),
+            guard_status="failed",
+            molt_failure=failure,
+        )
+        return module.RunnerResult(
+            name=runner.name,
+            role=runner.role,
+            status="failed",
+            reason="run 1 failed: daemon_crash (backend_daemon_empty_response)",
+            runs=[phase],
+            molt_failure=failure,
+        )
+
+    monkeypatch.setattr(module, "_run_runner", fake_run_runner)
+    monkeypatch.setattr(
+        module,
+        "_cleanup_backend_daemons",
+        lambda **kwargs: {
+            "status": "ok",
+            "reason": kwargs["reason"],
+            "terminated_count": 0,
+            "terminated": [],
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_friends.py",
+            "--manifest",
+            str(manifest),
+            "--output-root",
+            str(output_root),
+        ],
+    )
+
+    assert module.main() == 1
+
+    payload = json.loads((output_root / "results.json").read_text(encoding="utf-8"))
+    assert payload["partial"] is False
+    assert payload["custody_artifacts"]["summary_md"] == str(
+        (output_root / "summary.md").resolve()
+    )
+    cleanup_sidecar = Path(
+        payload["custody_artifacts"]["backend_daemon_cleanup_jsonl"]
+    )
+    assert cleanup_sidecar.name == "backend_daemon_cleanup.jsonl"
+    assert cleanup_sidecar.parent.name == "memory_guard"
+    details = payload["molt_failure_details"]
+    assert details["total"] == 1
+    assert details["records"][0]["suite"] == "tinygrad_off_the_shelf"
+    assert details["records"][0]["detail"] == "backend_daemon_empty_response"
+    detail_sidecar = Path(payload["custody_artifacts"]["molt_failure_details_jsonl"])
+    assert detail_sidecar.exists()
+    assert "backend_daemon_empty_response" in detail_sidecar.read_text(
+        encoding="utf-8"
+    )
+    summary = (output_root / "summary.md").read_text(encoding="utf-8")
+    assert "## Custody Artifacts" in summary
+    assert "## Molt Failure Details" in summary
+    assert "backend_daemon_empty_response" in summary
+    assert "molt.run1.stderr.log" in summary
 
 
 def test_bench_friends_sentinel_violation_emergency_writes_results(
@@ -504,16 +716,16 @@ def test_bench_friends_nuitka_pyodide_runners(tmp_path: Path) -> None:
             timeout_sec = 30
 
             [suite.runners.cpython]
-            run_cmd = ["python3", "-c", "import time; time.sleep(0.01)"]
+            run_cmd = ["{{python}}", "-c", "import time; time.sleep(0.01)"]
 
             [suite.runners.molt]
-            run_cmd = ["python3", "-c", "import time; time.sleep(0.02)"]
+            run_cmd = ["{{python}}", "-c", "import time; time.sleep(0.02)"]
 
             [suite.runners.nuitka]
-            run_cmd = ["python3", "-c", "import time; time.sleep(0.03)"]
+            run_cmd = ["{{python}}", "-c", "import time; time.sleep(0.03)"]
 
             [suite.runners.pyodide]
-            run_cmd = ["python3", "-c", "import time; time.sleep(0.04)"]
+            run_cmd = ["{{python}}", "-c", "import time; time.sleep(0.04)"]
             """
         ).strip()
         + "\n",
@@ -669,7 +881,7 @@ def test_bench_friends_suite_root_override_and_structured_json_metrics(
             enabled = true
             friend = "local"
             source = "local"
-            local_path = "{(tmp_path / 'missing').as_posix()}"
+            local_path = "{(tmp_path / "missing").as_posix()}"
             semantic_mode = "requires_adapter"
             repeat = 1
             timeout_sec = 30
@@ -959,8 +1171,7 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
         "typeguard",
     ]
     assert any(
-        part.endswith("tools/tinygrad_off_shelf_adapter.py")
-        for part in cpython.run_cmd
+        part.endswith("tools/tinygrad_off_shelf_adapter.py") for part in cpython.run_cmd
     )
     assert "--suite-root" in cpython.run_cmd
     assert "{suite_root}" in cpython.run_cmd
@@ -971,8 +1182,7 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
     assert "--build-arg=--stdlib-profile" in molt.run_cmd
     assert "--build-arg=full" in molt.run_cmd
     assert any(
-        part.endswith("tools/tinygrad_off_shelf_adapter.py")
-        for part in molt.run_cmd
+        part.endswith("tools/tinygrad_off_shelf_adapter.py") for part in molt.run_cmd
     )
     assert molt.env["MOLT_MODULE_ROOTS"] == "{suite_root}"
     assert molt.env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "tinygrad"
@@ -1030,14 +1240,18 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
         "--with",
         "numpy==2.4.2",
     ]
-    assert any(part.endswith("tools/numpy_off_shelf_adapter.py") for part in cpython.run_cmd)
+    assert any(
+        part.endswith("tools/numpy_off_shelf_adapter.py") for part in cpython.run_cmd
+    )
     assert "--require-version" in cpython.run_cmd
     assert "2.4.2" in cpython.run_cmd
     assert molt.skip_reason is None
     assert molt.role == "workload"
     assert molt.json_stdout is True
     assert molt.run_cmd[:4] == ["{python}", "-m", "molt.cli", "run"]
-    assert any(part.endswith("tools/numpy_off_shelf_adapter.py") for part in molt.run_cmd)
+    assert any(
+        part.endswith("tools/numpy_off_shelf_adapter.py") for part in molt.run_cmd
+    )
     assert "--capabilities" in molt.run_cmd
     assert "module.extension.exec" in molt.run_cmd
     assert "--require-module-under" in molt.run_cmd
@@ -1162,7 +1376,7 @@ def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) ->
 
     res = run_native_test_process(
         [
-            "python3",
+            sys.executable,
             "tools/tinygrad_off_shelf_adapter.py",
             "--suite-root",
             str(tmp_path),

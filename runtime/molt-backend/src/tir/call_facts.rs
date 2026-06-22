@@ -618,7 +618,8 @@ fn analyze_call_site_local(op: &TirOp, func: &TirFunction) -> CallFacts {
 ///      (`TirFunction::has_exception_handlers` — a callee that cannot itself
 ///      enter a handler cannot raise *through* one on this edge), OR
 ///   3. the op is a `CallBuiltin` whose builtin is on the no-throw allowlist.
-/// Else `Unknown` (fail-closed).
+///
+/// Otherwise `Unknown` (fail-closed).
 ///
 /// `resolved_callee` is `None` on the intraprocedural floor and for opaque/builtin
 /// targets, so case 2 only fires when the precise module path resolved a body.
@@ -631,18 +632,17 @@ fn no_throw_for(op: &TirOp, resolved_callee: Option<&TirFunction>) -> FactValue 
         return FactValue::Proven;
     }
     // (2) A resolved callee with no handler region.
-    if let Some(callee) = resolved_callee {
-        if !callee.has_exception_handlers() {
-            return FactValue::Proven;
-        }
+    if let Some(callee) = resolved_callee
+        && !callee.has_exception_handlers()
+    {
+        return FactValue::Proven;
     }
     // (3) A no-throw-allowlisted builtin.
-    if op.opcode == OpCode::CallBuiltin {
-        if let Some(name) = builtin_name(op) {
-            if builtin_is_no_throw(name) {
-                return FactValue::Proven;
-            }
-        }
+    if op.opcode == OpCode::CallBuiltin
+        && let Some(name) = builtin_name(op)
+        && builtin_is_no_throw(name)
+    {
+        return FactValue::Proven;
     }
     FactValue::Unknown
 }

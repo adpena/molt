@@ -2391,16 +2391,16 @@ pub unsafe extern "C" fn molt_set_argv_utf16(argc: i32, argv: *const *const u16)
         let mut args = Vec::new();
         if argc > 0 && !argv.is_null() {
             for idx in 0..argc {
-                let ptr = *argv.add(idx as usize);
+                let ptr = unsafe { *argv.add(idx as usize) };
                 if ptr.is_null() {
                     args.push(Vec::new());
                     continue;
                 }
                 let mut len = 0usize;
-                while *ptr.add(len) != 0 {
+                while unsafe { *ptr.add(len) } != 0 {
                     len += 1;
                 }
-                let slice = std::slice::from_raw_parts(ptr, len);
+                let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
                 let mut raw = Vec::with_capacity(slice.len() * 2);
                 for &unit in slice {
                     raw.push((unit & 0x00FF) as u8);
@@ -7356,6 +7356,10 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
                         "molt fatal: invalid object header before dec_ref ptr=0x{:x} bits=0x{:x} type_id={}",
                         ptr as usize, bits, type_id
                     );
+                    if std::env::var("MOLT_TRACE_INVALID_DECREF").as_deref() == Ok("1") {
+                        let bt = std::backtrace::Backtrace::force_capture();
+                        eprintln!("molt invalid dec_ref backtrace:\n{bt}");
+                    }
                     std::process::abort();
                 }
                 molt_dec_ref(ptr);

@@ -42,6 +42,7 @@ try:
     molt_args_for_benchmark = _bench.molt_args_for_benchmark
 except ImportError as _err:
     print(f"Warning: could not import bench.py helpers: {_err}", file=sys.stderr)
+    _bench = None  # type: ignore[assignment]
     prepare_molt_binary = None  # type: ignore[assignment]
     measure_molt_run = None  # type: ignore[assignment]
     BENCHMARKS = []
@@ -161,23 +162,25 @@ def _molt_median(
         return None, None
 
     binary_info = prepare_molt_binary(script, extra_args=extra_args)
-    if binary_info is None:
+    if _bench is None or not isinstance(binary_info, _bench.MoltBinary):
         return None, None
 
     build_s = binary_info.build_s
     times: list[float] = []
     label = f"molt:{Path(script).name}"
-    for _ in range(samples):
-        t = measure_molt_run(binary_info.path, label=label, timeout_s=timeout_s)
-        if t is None:
-            return None, build_s
-        times.append(t)
-
-    # Cleanup temp dir
     try:
-        binary_info.temp_dir.cleanup()
-    except Exception:
-        pass
+        for _ in range(samples):
+            sample = measure_molt_run(
+                binary_info.path, label=label, timeout_s=timeout_s
+            )
+            if not isinstance(sample, _bench.RunSample):
+                return None, build_s
+            times.append(sample.elapsed_s)
+    finally:
+        try:
+            binary_info.temp_dir.cleanup()
+        except Exception:
+            pass
 
     return statistics.median(times), build_s
 
@@ -316,7 +319,7 @@ def audit_benchmarks(
             # We need the binary path — re-build for perf collection
             if prepare_molt_binary is not None:
                 bin_info = prepare_molt_binary(script, extra_args=extra_args)
-                if bin_info is not None:
+                if _bench is not None and isinstance(bin_info, _bench.MoltBinary):
                     perf_data = _collect_perf_data(bin_info.path)
                     try:
                         bin_info.temp_dir.cleanup()
