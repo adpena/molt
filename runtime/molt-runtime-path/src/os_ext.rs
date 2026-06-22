@@ -2091,13 +2091,21 @@ fn filetime_from_seconds(
     let mut nanos = ((seconds - sec_floor) * 1_000_000_000.0).round() as i64;
     if nanos >= 1_000_000_000 {
         secs = secs.checked_add(1).ok_or_else(|| {
-            raise_exception::<u64>(_py, "OverflowError", &format!("utime: {label} out of range"))
+            raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                &format!("utime: {label} out of range"),
+            )
         })?;
         nanos -= 1_000_000_000;
     }
     if nanos < 0 {
         secs = secs.checked_sub(1).ok_or_else(|| {
-            raise_exception::<u64>(_py, "OverflowError", &format!("utime: {label} out of range"))
+            raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                &format!("utime: {label} out of range"),
+            )
         })?;
         nanos += 1_000_000_000;
     }
