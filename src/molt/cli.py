@@ -105,6 +105,7 @@ from molt.debug.verify import build_verify_result_payload, run_default_verify_ch
 from molt.debug.bisect import bisect_backend_profile_ic, bisect_first_bad_pass
 from molt.dx import DxConfigError, DxProject
 from molt.frontend import MoltValue, SimpleTIRGenerator
+from molt.frontend.sema import collect_module_func_kinds
 from molt.type_facts import (
     TypeFacts,
     collect_type_facts_from_paths,
@@ -154,13 +155,16 @@ _RUNTIME_IMPORT_PROTOCOL_TARGETS = frozenset(
         "importlib.util.find_spec",
     }
 )
+_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES = (
+    "importlib",
+    "importlib.util",
+    "importlib.machinery",
+)
 _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
     {
         "builtins",
         "_intrinsics",
-        "importlib",
-        "importlib.util",
-        "importlib.machinery",
+        *_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES,
         "importlib.abc",
         IMPORTER_MODULE_NAME,
     }
@@ -1506,6 +1510,7 @@ class _ToolchainReport:
 class _ScopedLoweringInputs:
     known_modules_by_module: dict[str, tuple[str, ...]]
     known_func_defaults_by_module: dict[str, dict[str, dict[str, Any]]]
+    known_func_kinds_by_module: dict[str, dict[str, dict[str, str]]]
     pgo_hot_function_names_by_module: dict[str, tuple[str, ...]]
     type_facts_by_module: dict[str, TypeFacts | None]
 
@@ -1514,6 +1519,7 @@ class _ScopedLoweringInputs:
 class _ScopedLoweringInputView:
     known_modules: tuple[str, ...]
     known_func_defaults: dict[str, dict[str, Any]]
+    known_func_kinds: dict[str, dict[str, str]]
     pgo_hot_function_names: tuple[str, ...]
     type_facts: TypeFacts | None
     known_modules_payload: list[str] = field(default_factory=list)
@@ -1766,7 +1772,8 @@ class _FrontendLayerExecutionContext:
     enable_phi: bool
     known_modules: Collection[str]
     stdlib_allowlist: Collection[str]
-    known_func_defaults: dict[str, dict[str, Any]]
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    known_func_kinds: dict[str, dict[str, str]]
     module_deps: dict[str, set[str]]
     module_chunk_max_ops: int
     optimization_profile: str
@@ -1822,7 +1829,8 @@ class _SerialFrontendLoweringContext:
     enable_phi: bool
     known_modules: Collection[str]
     stdlib_allowlist: Collection[str]
-    known_func_defaults: dict[str, dict[str, Any]]
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    known_func_kinds: dict[str, dict[str, str]]
     module_deps: dict[str, set[str]]
     module_chunking: bool
     module_chunk_max_ops: int
@@ -1873,7 +1881,8 @@ class _EntryFrontendLoweringContext:
     known_modules: Collection[str]
     known_classes: Mapping[str, Any]
     stdlib_allowlist: Collection[str]
-    known_func_defaults: dict[str, dict[str, Any]]
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    known_func_kinds: dict[str, dict[str, str]]
     module_chunking: bool
     module_chunk_max_ops: int
     optimization_profile: str
@@ -2138,6 +2147,7 @@ class _PreparedEntryModuleGraph:
     module_resolution_cache: "_ModuleResolutionCache"
     module_graph: dict[str, Path]
     explicit_imports: set[str]
+    runtime_import_dispatch_roots: frozenset[str]
     stub_parents: set[str]
     spawn_enabled: bool
     runtime_import_support_policy: _RuntimeImportSupportPolicy
@@ -2168,6 +2178,7 @@ class _ImportPlan:
     module_resolution_cache: "_ModuleResolutionCache"
     module_graph: Mapping[str, Path]
     explicit_imports: frozenset[str]
+    runtime_import_dispatch_roots: frozenset[str]
     stub_parents: frozenset[str]
     spawn_enabled: bool
     runtime_import_support_policy: _RuntimeImportSupportPolicy
@@ -2244,6 +2255,7 @@ class _PreparedFrontendAnalysis:
     module_sources: dict[str, str]
     module_source_catalog: _ModuleSourceCatalog
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    known_func_kinds: dict[str, dict[str, str]]
     module_trees: dict[str, ast.AST]
     module_path_stats: dict[str, os.stat_result | None]
     syntax_error_modules: dict[str, "ModuleSyntaxErrorInfo"]
@@ -2668,13 +2680,23 @@ def _source_content_sha256(
         path_str = os.fspath(path.resolve())
     except OSError:
         path_str = os.fspath(path)
+    ctime_ns = _stat_ctime_ns(path_stat)
+    inode = int(getattr(path_stat, "st_ino", 0) or 0)
+    device = _stat_device(path_stat)
+    if not _source_hash_stat_identity_is_strong(
+        ctime_ns=ctime_ns, inode=inode, device=device
+    ):
+        try:
+            return _sha256_file(Path(path_str))
+        except OSError:
+            return None
     return _source_content_sha256_cached(
         path_str,
         path_stat.st_size,
         path_stat.st_mtime_ns,
-        _stat_ctime_ns(path_stat),
-        int(getattr(path_stat, "st_ino", 0) or 0),
-        _stat_device(path_stat),
+        ctime_ns,
+        inode,
+        device,
         os.fspath(_default_molt_cache()),
     )
 
@@ -5787,7 +5809,9 @@ def _collect_imports(
     module_string_constants: dict[str, str] = {}
     helper_string_functions: dict[str, tuple[list[str], ast.expr]] = {}
     helper_param_import_positions: dict[str, set[int]] = {}
-    helper_import_arg_exprs: dict[str, tuple[list[str], list[ast.expr]]] = {}
+    helper_import_arg_exprs: dict[
+        str, tuple[list[str], set[str], list[ast.expr]]
+    ] = {}
     (
         package_override_set,
         package_override,
@@ -5852,6 +5876,34 @@ def _collect_imports(
                 return left + right
             return None
         if isinstance(node, ast.Call):
+            target = _importlib_target(node.func)
+            if target in {
+                "_MOLT_IMPORTLIB_RESOLVE_NAME",
+                "molt_importlib_resolve_name",
+            } and node.args:
+                resolved = _resolve_string_constant(node.args[0], bindings, seen)
+                if resolved is None:
+                    return None
+                if not resolved.startswith("."):
+                    return resolved
+                if len(node.args) < 2:
+                    return None
+                package = _resolve_string_constant(node.args[1], bindings, seen)
+                if package is None:
+                    return None
+                level = len(resolved) - len(resolved.lstrip("."))
+                module = resolved[level:] or None
+                return _resolve_relative_import(
+                    package,
+                    is_package=True,
+                    level=level,
+                    module=module,
+                    package_override=package_override,
+                    package_override_set=package_override_set,
+                    spec_override=spec_override,
+                    spec_override_set=spec_override_set,
+                    spec_override_is_package=spec_override_is_package,
+                )
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "join"
@@ -5889,6 +5941,85 @@ def _collect_imports(
                     expr, child_bindings, seen | {func_name}
                 )
         return None
+
+    def _function_required_param_names(
+        stmt: ast.FunctionDef | ast.AsyncFunctionDef, params: list[str]
+    ) -> set[str]:
+        positional = list(stmt.args.posonlyargs) + list(stmt.args.args)
+        required_positional_count = max(0, len(positional) - len(stmt.args.defaults))
+        required = {arg.arg for arg in positional[:required_positional_count]}
+        for arg, default in zip(stmt.args.kwonlyargs, stmt.args.kw_defaults):
+            if default is None:
+                required.add(arg.arg)
+        return required.intersection(params)
+
+    def _simple_function_local_expr_bindings(
+        stmt: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> dict[str, ast.expr]:
+        values: dict[str, ast.expr] = {}
+        repeated: set[str] = set()
+        for node in ast.walk(stmt):
+            assignment: tuple[ast.expr, ast.expr] | None = None
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                assignment = (node.targets[0], node.value)
+            elif isinstance(node, ast.AnnAssign):
+                if node.value is not None:
+                    assignment = (node.target, node.value)
+            if assignment is None:
+                continue
+            target, value = assignment
+            if not isinstance(target, ast.Name):
+                continue
+            if target.id in values:
+                repeated.add(target.id)
+                continue
+            values[target.id] = value
+        for name in repeated:
+            values.pop(name, None)
+        return values
+
+    def _resolve_local_expr_binding(
+        expr: ast.expr, local_expr_bindings: dict[str, ast.expr]
+    ) -> ast.expr:
+        seen: set[str] = set()
+        current = expr
+        while isinstance(current, ast.Name) and current.id in local_expr_bindings:
+            if current.id in seen:
+                return expr
+            seen.add(current.id)
+            current = local_expr_bindings[current.id]
+        return current
+
+    def _bind_helper_call_arguments(
+        call: ast.Call, params: list[str], required_params: set[str]
+    ) -> dict[str, object] | None:
+        if len(call.args) > len(params):
+            return None
+        bindings: dict[str, object] = {}
+        for idx, arg in enumerate(call.args):
+            param = params[idx]
+            scalar = _resolve_string_constant(arg)
+            if scalar is not None:
+                bindings[param] = scalar
+                continue
+            seq = _resolve_string_sequence(arg, {}, set())
+            if seq is not None:
+                bindings[param] = seq
+        for keyword in call.keywords:
+            if keyword.arg is None or keyword.arg not in params:
+                return None
+            if keyword.arg in bindings:
+                return None
+            scalar = _resolve_string_constant(keyword.value)
+            if scalar is not None:
+                bindings[keyword.arg] = scalar
+                continue
+            seq = _resolve_string_sequence(keyword.value, {}, set())
+            if seq is not None:
+                bindings[keyword.arg] = seq
+        if not required_params.issubset(bindings):
+            return None
+        return bindings
 
     module_import_helper_scan = isinstance(tree, ast.Module)
 
@@ -5941,6 +6072,8 @@ def _collect_imports(
                 continue
             param_set = set(params)
             param_positions = {name: idx for idx, name in enumerate(params)}
+            required_params = _function_required_param_names(stmt, params)
+            local_expr_bindings = _simple_function_local_expr_bindings(stmt)
             for node in stmt_nodes:
                 if not isinstance(node, ast.Call) or not node.args:
                     continue
@@ -5950,14 +6083,20 @@ def _collect_imports(
                     "builtins.__import__",
                     "importlib.import_module",
                     "importlib.util.find_spec",
+                    "_MOLT_IMPORTLIB_IMPORT_TRANSACTION",
+                    "molt_importlib_import_transaction",
                 }:
                     continue
-                first = node.args[0]
+                first = _resolve_local_expr_binding(node.args[0], local_expr_bindings)
                 helper_entry = helper_import_arg_exprs.get(stmt.name)
                 if helper_entry is None:
-                    helper_import_arg_exprs[stmt.name] = (params, [first])
+                    helper_import_arg_exprs[stmt.name] = (
+                        params,
+                        required_params,
+                        [first],
+                    )
                 else:
-                    helper_entry[1].append(first)
+                    helper_entry[2].append(first)
                 if isinstance(first, ast.Name) and first.id in param_set:
                     pos = param_positions[first.id]
                     helper_param_import_positions.setdefault(stmt.name, set()).add(pos)
@@ -5981,18 +6120,11 @@ def _collect_imports(
                                 imports.append(resolved)
                 helper_expr_entry = helper_import_arg_exprs.get(node.func.id)
                 if helper_expr_entry is not None:
-                    params, exprs = helper_expr_entry
-                    if len(node.args) >= len(params):
-                        call_bindings: dict[str, object] = {}
-                        for idx, param in enumerate(params):
-                            arg = node.args[idx]
-                            scalar = _resolve_string_constant(arg)
-                            if scalar is not None:
-                                call_bindings[param] = scalar
-                                continue
-                            seq = _resolve_string_sequence(arg, {}, set())
-                            if seq is not None:
-                                call_bindings[param] = seq
+                    params, required_params, exprs = helper_expr_entry
+                    call_bindings = _bind_helper_call_arguments(
+                        node, params, required_params
+                    )
+                    if call_bindings is not None:
                         for expr in exprs:
                             resolved = _resolve_string_constant(
                                 expr, call_bindings, set()
@@ -6049,6 +6181,8 @@ def _collect_imports(
                 "builtins.__import__",
                 "importlib.import_module",
                 "importlib.util.find_spec",
+                "_MOLT_IMPORTLIB_IMPORT_TRANSACTION",
+                "molt_importlib_import_transaction",
             }:
                 resolved = _resolve_string_constant(node.args[0])
                 if resolved is not None:
@@ -6398,6 +6532,9 @@ class ModuleSyntaxErrorInfo:
 
 
 def _read_module_source(path: Path) -> str:
+    def normalize_newlines(source: str) -> str:
+        return source.replace("\r\n", "\n").replace("\r", "\n")
+
     with path.open("rb") as handle:
         first_line = handle.readline()
         second_line = handle.readline()
@@ -6415,9 +6552,11 @@ def _read_module_source(path: Path) -> str:
                 if line
             )
         if not has_utf8_bom and not has_encoding_cookie:
-            return (first_line + second_line + handle.read()).decode("utf-8")
+            return normalize_newlines(
+                (first_line + second_line + handle.read()).decode("utf-8")
+            )
     with tokenize.open(path) as handle:
-        return handle.read()
+        return normalize_newlines(handle.read())
 
 
 def _syntax_error_info_from_exception(
@@ -6541,6 +6680,12 @@ def _collect_func_defaults(tree: ast.AST) -> dict[str, dict[str, Any]]:
         default_specs = _default_specs_from_args(stmt.args)
         defaults[stmt.name] = {"params": len(params), "defaults": default_specs}
     return defaults
+
+
+def _collect_func_kinds(tree: ast.AST) -> dict[str, str]:
+    if not isinstance(tree, ast.Module):
+        return {}
+    return collect_module_func_kinds(tree)
 
 
 def _topo_sort_modules(
@@ -6700,10 +6845,13 @@ def _compute_reachable_modules(
     entry_module: str,
     module_deps: dict[str, set[str]],
     module_names: Collection[str],
+    *,
+    extra_roots: Collection[str] = (),
 ) -> set[str]:
     """Compute modules transitively reachable from *entry_module*."""
     reachable: set[str] = set()
     queue: deque[str] = deque()
+    module_name_set = set(module_names)
 
     def _seed(name: str) -> None:
         if name in reachable:
@@ -6712,10 +6860,12 @@ def _compute_reachable_modules(
         queue.append(name)
 
     _seed(entry_module)
-    module_name_set = set(module_names)
     for safe in _DEAD_MODULE_ELIMINATION_SAFELIST:
         if safe in module_name_set:
             _seed(safe)
+    for root in extra_roots:
+        if root in module_name_set:
+            _seed(root)
     while queue:
         current = queue.popleft()
         for dep in module_deps.get(current, ()):
@@ -6737,9 +6887,16 @@ def _apply_dead_module_elimination(
     entry_module: str,
     module_deps: dict[str, set[str]],
     module_names: Collection[str],
+    *,
+    extra_roots: Collection[str] = (),
 ) -> tuple[list[str], list[list[str]], int]:
     """Filter *module_order* and *module_layers* to only reachable modules."""
-    reachable = _compute_reachable_modules(entry_module, module_deps, module_names)
+    reachable = _compute_reachable_modules(
+        entry_module,
+        module_deps,
+        module_names,
+        extra_roots=extra_roots,
+    )
     filtered_order = [m for m in module_order if m in reachable]
     filtered_layers = [[m for m in layer if m in reachable] for layer in module_layers]
     filtered_layers = [layer for layer in filtered_layers if layer]
@@ -6786,6 +6943,23 @@ def _scoped_known_func_defaults(
         name: known_func_defaults[name]
         for name in sorted(scoped_names)
         if name in known_func_defaults
+    }
+
+
+def _scoped_known_func_kinds(
+    module_name: str,
+    *,
+    module_deps: dict[str, set[str]],
+    known_func_kinds: dict[str, dict[str, str]],
+    module_dep_closures: dict[str, frozenset[str]] | None = None,
+) -> dict[str, dict[str, str]]:
+    scoped_names = module_dep_closures.get(module_name) if module_dep_closures else None
+    if scoped_names is None:
+        scoped_names = _module_dependency_closure(module_name, module_deps)
+    return {
+        name: known_func_kinds[name]
+        for name in sorted(scoped_names)
+        if name in known_func_kinds
     }
 
 
@@ -6866,11 +7040,13 @@ def _build_scoped_lowering_inputs(
     module_dep_closures: dict[str, frozenset[str]],
     known_modules: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     pgo_hot_function_names: Collection[str],
     type_facts: TypeFacts | None,
 ) -> _ScopedLoweringInputs:
     scoped_known_modules_by_module: dict[str, tuple[str, ...]] = {}
     scoped_known_func_defaults_by_module: dict[str, dict[str, dict[str, Any]]] = {}
+    scoped_known_func_kinds_by_module: dict[str, dict[str, dict[str, str]]] = {}
     scoped_pgo_hot_function_names_by_module: dict[str, tuple[str, ...]] = {}
     scoped_type_facts_by_module: dict[str, TypeFacts | None] = {}
     for module_name in sorted(module_names):
@@ -6886,6 +7062,12 @@ def _build_scoped_lowering_inputs(
             known_func_defaults=known_func_defaults,
             module_dep_closures=module_dep_closures,
         )
+        scoped_known_func_kinds_by_module[module_name] = _scoped_known_func_kinds(
+            module_name,
+            module_deps=module_deps,
+            known_func_kinds=known_func_kinds,
+            module_dep_closures=module_dep_closures,
+        )
         scoped_pgo_hot_function_names_by_module[module_name] = (
             _scoped_pgo_hot_function_names(module_name, pgo_hot_function_names)
         )
@@ -6898,6 +7080,7 @@ def _build_scoped_lowering_inputs(
     return _ScopedLoweringInputs(
         known_modules_by_module=scoped_known_modules_by_module,
         known_func_defaults_by_module=scoped_known_func_defaults_by_module,
+        known_func_kinds_by_module=scoped_known_func_kinds_by_module,
         pgo_hot_function_names_by_module=scoped_pgo_hot_function_names_by_module,
         type_facts_by_module=scoped_type_facts_by_module,
     )
@@ -6948,6 +7131,7 @@ def _scoped_lowering_input_view(
     module_deps: dict[str, set[str]],
     known_modules: Collection[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     pgo_hot_function_names: Collection[str],
     type_facts: TypeFacts | None,
     module_dep_closures: dict[str, frozenset[str]] | None = None,
@@ -6990,6 +7174,20 @@ def _scoped_lowering_input_view(
         )
     if (
         scoped_lowering_inputs is not None
+        and module_name in scoped_lowering_inputs.known_func_kinds_by_module
+    ):
+        scoped_known_func_kinds = (
+            scoped_lowering_inputs.known_func_kinds_by_module[module_name]
+        )
+    else:
+        scoped_known_func_kinds = _scoped_known_func_kinds(
+            module_name,
+            module_deps=module_deps,
+            known_func_kinds=known_func_kinds,
+            module_dep_closures=module_dep_closures,
+        )
+    if (
+        scoped_lowering_inputs is not None
         and module_name in scoped_lowering_inputs.pgo_hot_function_names_by_module
     ):
         scoped_pgo_hot_function_names = (
@@ -7020,6 +7218,7 @@ def _scoped_lowering_input_view(
     return _ScopedLoweringInputView(
         known_modules=scoped_known_modules,
         known_func_defaults=scoped_known_func_defaults,
+        known_func_kinds=scoped_known_func_kinds,
         pgo_hot_function_names=scoped_pgo_hot_function_names,
         type_facts=scoped_type_facts,
         known_modules_payload=list(scoped_known_modules),
@@ -7459,9 +7658,9 @@ def _extend_module_graph_with_closure(
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     allow_entry_external_imports: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-) -> None:
+) -> frozenset[str]:
     if not entry_paths:
-        return
+        return frozenset()
     closure_graph, _ = _discover_module_graph_from_paths(
         entry_paths,
         list(roots),
@@ -7481,9 +7680,10 @@ def _extend_module_graph_with_closure(
         for name, path in closure_graph.items():
             _record_module_reason(module_reasons, name, reason)
             module_graph.setdefault(name, path)
-        return
+        return frozenset(closure_graph)
     for name, path in closure_graph.items():
         module_graph.setdefault(name, path)
+    return frozenset(closure_graph)
 
 
 def _record_new_module_reasons(
@@ -8570,7 +8770,8 @@ def _module_lowering_execution_view(
     module_graph_metadata: _ModuleGraphMetadata,
     module_deps: dict[str, set[str]],
     known_modules: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     pgo_hot_function_names: Collection[str],
     type_facts: TypeFacts | None,
     known_classes_snapshot: Mapping[str, Any],
@@ -8592,6 +8793,7 @@ def _module_lowering_execution_view(
         module_deps=module_deps,
         known_modules=known_modules,
         known_func_defaults=known_func_defaults,
+        known_func_kinds=known_func_kinds,
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=type_facts,
         module_dep_closures=module_dep_closures,
@@ -8730,20 +8932,21 @@ def _module_order_has_back_edges(
 def _read_worker_source_lease(raw_lease: object) -> str:
     if not isinstance(raw_lease, Mapping):
         raise ValueError("missing source lease")
-    kind = raw_lease.get("kind")
+    lease = cast(Mapping[str, Any], raw_lease)
+    kind = lease.get("kind")
     if kind == "inline":
-        source = raw_lease.get("source")
+        source = lease.get("source")
         if not isinstance(source, str):
             raise ValueError("inline source lease is missing source text")
         return source
     if kind != "path":
         raise ValueError(f"unsupported source lease kind: {kind!r}")
-    raw_path = raw_lease.get("path")
+    raw_path = lease.get("path")
     if not isinstance(raw_path, str) or not raw_path:
         raise ValueError("path source lease is missing path")
     path = Path(raw_path)
-    expected_size = raw_lease.get("source_size")
-    expected_mtime_ns = raw_lease.get("mtime_ns")
+    expected_size = lease.get("source_size")
+    expected_mtime_ns = lease.get("mtime_ns")
     if expected_size is not None or expected_mtime_ns is not None:
         stat = path.stat()
         if isinstance(expected_size, int) and stat.st_size != expected_size:
@@ -8788,6 +8991,9 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     stdlib_allowlist = set(cast(list[str], payload["stdlib_allowlist"]))
     known_func_defaults = cast(
         dict[str, dict[str, dict[str, Any]]], payload["known_func_defaults"]
+    )
+    known_func_kinds = cast(
+        dict[str, dict[str, str]], payload["known_func_kinds"]
     )
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
@@ -8838,6 +9044,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
         known_classes=known_classes,
         stdlib_allowlist=stdlib_allowlist,
         known_func_defaults=known_func_defaults,
+        known_func_kinds=known_func_kinds,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
@@ -9041,7 +9248,7 @@ def _discover_module_graph_from_paths(
                 )
             if persisted_imports is None:
                 try:
-                    source = resolution_cache.read_module_source(path, retain=False)
+                    source = resolution_cache.read_module_source(path)
                 except (OSError, SyntaxError, UnicodeDecodeError):
                     continue
                 try:
@@ -9049,7 +9256,6 @@ def _discover_module_graph_from_paths(
                         path,
                         source,
                         filename=str(path),
-                        retain=False,
                         target_python=target_python,
                     )
                 except SyntaxError:
@@ -9197,8 +9403,8 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 _MODULE_GRAPH_CACHE_SCHEMA_VERSION = 6
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 4
-_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 4
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 5
+_MODULE_ANALYSIS_CACHE_SCHEMA_VERSION = 6
 _MODULE_LOWERING_CACHE_SCHEMA_VERSION = 2
 
 _RUNTIME_STDLIB_PROFILE_ALIASES = {
@@ -10523,7 +10729,7 @@ def _read_shared_stdlib_partition_functions(
     function_count = payload.get("function_count")
     if isinstance(function_count, int) and function_count != len(raw_functions):
         return None
-    return frozenset(raw_functions)
+    return frozenset(cast(list[str], raw_functions))
 
 
 def _unresolved_stdlib_module_symbols(
@@ -14581,7 +14787,7 @@ def _backend_daemon_health_probe(
     timeout: float | None,
 ) -> tuple[bool, dict[str, Any] | None]:
     if timeout is None:
-        return _backend_daemon_ping_health(socket_path)
+        return _backend_daemon_ping_health(socket_path, timeout=None)
     return _backend_daemon_ping_health(socket_path, timeout=timeout)
 
 
@@ -15236,7 +15442,13 @@ def _backend_daemon_request_bytes(
             return None, f"backend daemon request memory guard failed: {exc}"
     try:
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            af_unix = getattr(socket, "AF_UNIX", None)
+            if af_unix is None:
+                return (
+                    None,
+                    "backend daemon request requires a Python build with AF_UNIX socket support",
+                )
+            with socket.socket(af_unix, socket.SOCK_STREAM) as sock:
                 if timeout is not None or daemon_identity is not None:
                     sock.settimeout(timeout if timeout is not None else 1.0)
                 sock.connect(str(socket_path))
@@ -17228,7 +17440,7 @@ def _read_persisted_module_analysis(
     path_stat: os.stat_result | None = None,
     validate_stat: bool = True,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-) -> tuple[dict[str, dict[str, Any]], tuple[str, ...] | None] | None:
+) -> tuple[dict[str, dict[str, Any]], dict[str, str], tuple[str, ...] | None] | None:
     cache_path = _module_analysis_cache_path(
         project_root,
         path,
@@ -17248,6 +17460,12 @@ def _read_persisted_module_analysis(
         return None
     raw_defaults = payload.get("func_defaults")
     if not isinstance(raw_defaults, dict):
+        return None
+    raw_kinds = payload.get("func_kinds")
+    if not isinstance(raw_kinds, dict) or not all(
+        isinstance(name, str) and isinstance(kind, str)
+        for name, kind in raw_kinds.items()
+    ):
         return None
     if validate_stat:
         if path_stat is None:
@@ -17273,7 +17491,7 @@ def _read_persisted_module_analysis(
         normalized[func_name] = cast(
             dict[str, Any], _decode_cached_json_value(func_payload)
         )
-    return normalized, cached_imports
+    return normalized, dict(cast(dict[str, str], raw_kinds)), cached_imports
 
 
 def _write_persisted_module_analysis(
@@ -17284,6 +17502,7 @@ def _write_persisted_module_analysis(
     is_package: bool,
     import_scan_mode: ImportScanMode,
     func_defaults: dict[str, dict[str, Any]],
+    func_kinds: dict[str, str],
     imports: Iterable[str] | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
 ) -> None:
@@ -17310,6 +17529,7 @@ def _write_persisted_module_analysis(
         "mtime_ns": stat.st_mtime_ns,
         "source_sha256": source_sha256,
         "func_defaults": func_defaults,
+        "func_kinds": func_kinds,
     }
     if imports is not None:
         payload["imports"] = list(imports)
@@ -17410,6 +17630,7 @@ def _load_module_analysis(
     ast.AST | None,
     tuple[str, ...],
     dict[str, dict[str, Any]],
+    dict[str, str],
     str | None,
     bool,
     bool,
@@ -17447,8 +17668,11 @@ def _load_module_analysis(
     persisted_defaults = (
         persisted_analysis[0] if persisted_analysis is not None else None
     )
-    persisted_imports_from_analysis = (
+    persisted_kinds = (
         persisted_analysis[1] if persisted_analysis is not None else None
+    )
+    persisted_imports_from_analysis = (
+        persisted_analysis[2] if persisted_analysis is not None else None
     )
     persisted_imports = persisted_imports_from_analysis
     if persisted_imports is None and project_root is not None:
@@ -17461,8 +17685,21 @@ def _load_module_analysis(
             path_stat=path_stat,
             target_python=target_python,
         )
-    if persisted_imports is not None and persisted_defaults is not None:
-        return None, persisted_imports, persisted_defaults, None, True, False, path_stat
+    if (
+        persisted_imports is not None
+        and persisted_defaults is not None
+        and persisted_kinds is not None
+    ):
+        return (
+            None,
+            persisted_imports,
+            persisted_defaults,
+            persisted_kinds,
+            None,
+            True,
+            False,
+            path_stat,
+        )
 
     if source is None:
         source = resolution_cache.read_module_source(path, retain=retain_source)
@@ -17489,6 +17726,10 @@ def _load_module_analysis(
     func_defaults = persisted_defaults
     if func_defaults is None:
         func_defaults = _collect_func_defaults(tree)
+    func_kinds = persisted_kinds
+    if func_kinds is None:
+        func_kinds = _collect_func_kinds(tree)
+    if persisted_defaults is None or persisted_kinds is None:
         if project_root is not None:
             with contextlib.suppress(OSError):
                 _write_persisted_module_analysis(
@@ -17498,22 +17739,25 @@ def _load_module_analysis(
                     is_package=is_package,
                     import_scan_mode=import_scan_mode,
                     func_defaults=func_defaults,
+                    func_kinds=func_kinds,
                     imports=imports,
                     target_python=target_python,
                 )
     interface_changed = True
     if stale_analysis is not None:
-        stale_defaults, stale_imports = stale_analysis
+        stale_defaults, stale_kinds, stale_imports = stale_analysis
         if (
             stale_imports is not None
             and stale_imports == imports
             and stale_defaults == func_defaults
+            and stale_kinds == func_kinds
         ):
             interface_changed = False
     return (
         tree if retain_tree else None,
         imports,
         func_defaults,
+        func_kinds,
         source if retain_source else None,
         False,
         interface_changed,
@@ -17580,6 +17824,7 @@ def _module_frontend_generator(
         known_classes=scoped_known_classes,
         stdlib_allowlist=set(stdlib_allowlist),
         known_func_defaults=scoped_inputs.known_func_defaults,
+        known_func_kinds=scoped_inputs.known_func_kinds,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=cast(BuildProfile, optimization_profile),
@@ -18039,6 +18284,7 @@ def _lower_module_serial_with_context(
         module_deps=lowering_context.module_deps,
         known_modules=lowering_context.known_modules,
         known_func_defaults=lowering_context.known_func_defaults,
+        known_func_kinds=lowering_context.known_func_kinds,
         pgo_hot_function_names=lowering_context.pgo_hot_function_names,
         type_facts=lowering_context.type_facts,
         known_classes_snapshot=lowering_context.known_classes,
@@ -18075,6 +18321,7 @@ def _lower_module_serial_with_context(
             known_modules=lowering_context.known_modules,
             stdlib_allowlist=lowering_context.stdlib_allowlist,
             known_func_defaults=lowering_context.known_func_defaults,
+            known_func_kinds=lowering_context.known_func_kinds,
             module_deps=lowering_context.module_deps,
             module_is_namespace=module_is_namespace,
             module_chunking=lowering_context.module_chunking,
@@ -18422,6 +18669,7 @@ def _lower_entry_module_as_main(
         known_classes=cast(Any, lowering_context.known_classes),
         stdlib_allowlist=set(lowering_context.stdlib_allowlist),
         known_func_defaults=lowering_context.known_func_defaults,
+        known_func_kinds=lowering_context.known_func_kinds,
         module_chunking=lowering_context.module_chunking,
         module_chunk_max_ops=lowering_context.module_chunk_max_ops,
         optimization_profile=cast(BuildProfile, lowering_context.optimization_profile),
@@ -18948,12 +19196,12 @@ def _build_isolate_import_ops(
 
 def _isolate_import_module_order(
     module_order: Sequence[str],
-    explicit_imports: Collection[str],
+    runtime_import_dispatch_roots: Collection[str],
 ) -> list[str]:
-    if not explicit_imports:
+    if not runtime_import_dispatch_roots:
         return []
     import_roots: set[str] = set()
-    for module_name in explicit_imports:
+    for module_name in runtime_import_dispatch_roots:
         parts = module_name.split(".")
         import_roots.update(".".join(parts[:idx]) for idx in range(1, len(parts) + 1))
     return [module_name for module_name in module_order if module_name in import_roots]
@@ -19136,9 +19384,10 @@ def _static_backend_ir_module_call_targets(
         for index, op in enumerate(ops):
             if not isinstance(op, Mapping):
                 continue
-            if op.get("kind") != "call":
+            op_map = cast(Mapping[str, Any], op)
+            if op_map.get("kind") != "call":
                 continue
-            symbol_name = op.get("s_value")
+            symbol_name = op_map.get("s_value")
             if not isinstance(symbol_name, str) or symbol_name.startswith("molt_"):
                 continue
             module_name = _module_owned_symbol_name(symbol_name, module_by_symbol)
@@ -19191,7 +19440,8 @@ def _prepare_backend_ir(
     known_modules: Collection[str],
     known_classes: Mapping[str, Any],
     stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     module_chunking: bool,
     module_chunk_max_ops: int,
     optimization_profile: str,
@@ -19203,7 +19453,7 @@ def _prepare_backend_ir(
     fail: Callable[..., _CliFailure],
     json_output: bool,
     module_order: Sequence[str],
-    explicit_imports: Collection[str],
+    runtime_import_dispatch_roots: Collection[str],
     generated_module_source_paths: Mapping[str, str],
     spawn_enabled: bool,
     pgo_profile_summary: Any | None,
@@ -19363,7 +19613,9 @@ def _prepare_backend_ir(
     )
     import_ops = _build_isolate_import_ops(
         code_slot_count=len(global_code_ids),
-        module_order=_isolate_import_module_order(module_order, explicit_imports),
+        module_order=_isolate_import_module_order(
+            module_order, runtime_import_dispatch_roots
+        ),
         register_global_code_id=register_global_code_id,
     )
     functions.append(
@@ -20428,7 +20680,7 @@ def _native_windows_system_link_libs(target_triple: str | None) -> list[str]:
     )
     if not is_windows:
         return []
-    return ["-lws2_32", "-lntdll", "-luserenv"]
+    return ["-lws2_32", "-lntdll", "-luserenv", "-ladvapi32"]
 
 
 def _build_native_link_command(
@@ -21766,6 +22018,9 @@ def _materialize_import_plan(
         module_resolution_cache=prepared_module_graph.module_resolution_cache,
         module_graph=MappingProxyType(dict(module_graph)),
         explicit_imports=frozenset(prepared_module_graph.explicit_imports),
+        runtime_import_dispatch_roots=frozenset(
+            prepared_module_graph.runtime_import_dispatch_roots
+        ),
         stub_parents=frozenset(stub_parents),
         spawn_enabled=prepared_module_graph.spawn_enabled,
         runtime_import_support_policy=prepared_module_graph.runtime_import_support_policy,
@@ -22015,6 +22270,7 @@ def _prepare_entry_module_graph(
     )
     if augmentation_error is not None:
         return None, augmentation_error
+    runtime_import_dispatch_roots: set[str] = set(augmentation.explicit_imports)
     runtime_import_support_policy = _module_graph_needs_runtime_import_support(
         module_graph=module_graph,
         module_resolution_cache=module_resolution_cache,
@@ -22026,7 +22282,7 @@ def _prepare_entry_module_graph(
     )
     if runtime_import_support_policy.needs_runtime_import_support:
         import_support_paths: list[Path] = []
-        for module_name in ("importlib", "importlib.util", "importlib.machinery"):
+        for module_name in _RUNTIME_IMPORT_SUPPORT_ROOT_MODULES:
             module_path = _resolve_module_path(module_name, [stdlib_root])
             if module_path is None:
                 return None, _fail(
@@ -22036,7 +22292,7 @@ def _prepare_entry_module_graph(
                 )
             import_support_paths.append(module_path)
         before_support = set(module_graph)
-        _extend_module_graph_with_closure(
+        support_closure_modules = _extend_module_graph_with_closure(
             module_graph,
             entry_paths=import_support_paths,
             roots=[stdlib_root],
@@ -22051,6 +22307,7 @@ def _prepare_entry_module_graph(
             import_admission_policy=import_admission_policy,
             target_python=target_python,
         )
+        runtime_import_dispatch_roots.update(support_closure_modules)
         if diagnostics_enabled:
             _record_new_module_reasons(
                 module_graph,
@@ -22064,6 +22321,7 @@ def _prepare_entry_module_graph(
         module_resolution_cache=module_resolution_cache,
         module_graph=dict(module_graph),
         explicit_imports=augmentation.explicit_imports,
+        runtime_import_dispatch_roots=frozenset(runtime_import_dispatch_roots),
         stub_parents=augmentation.stub_parents,
         spawn_enabled=augmentation.spawn_enabled,
         runtime_import_support_policy=runtime_import_support_policy,
@@ -22146,6 +22404,7 @@ def _prepare_frontend_analysis(
     module_sources: dict[str, str] = {}
     module_source_leases: dict[str, _ModuleSourceLease] = {}
     known_func_defaults: dict[str, dict[str, dict[str, Any]]] = {}
+    known_func_kinds: dict[str, dict[str, str]] = {}
     module_trees: dict[str, ast.AST] = {}
     module_path_stats: dict[str, os.stat_result | None] = {}
     syntax_error_modules: dict[str, ModuleSyntaxErrorInfo] = {}
@@ -22157,6 +22416,7 @@ def _prepare_frontend_analysis(
                 tree,
                 module_imports,
                 func_defaults,
+                func_kinds,
                 source,
                 analysis_cache_hit,
                 interface_changed,
@@ -22198,6 +22458,7 @@ def _prepare_frontend_analysis(
             )
             module_deps[module_name] = set()
             known_func_defaults[module_name] = {}
+            known_func_kinds[module_name] = {}
             module_path_stats[module_name] = None
             module_source_leases[module_name] = _ModuleSourceLease.path_backed(
                 module_path
@@ -22217,6 +22478,7 @@ def _prepare_frontend_analysis(
             module_imports,
         )
         known_func_defaults[module_name] = func_defaults
+        known_func_kinds[module_name] = func_kinds
     (
         module_order,
         reverse_module_deps,
@@ -22240,6 +22502,7 @@ def _prepare_frontend_analysis(
         module_sources=module_sources,
         module_source_catalog=module_source_catalog,
         known_func_defaults=known_func_defaults,
+        known_func_kinds=known_func_kinds,
         module_trees=module_trees,
         module_path_stats=module_path_stats,
         syntax_error_modules=syntax_error_modules,
@@ -22265,6 +22528,7 @@ def _prepare_frontend_lowering_config(
     has_back_edges: bool,
     known_modules: set[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     pgo_hot_function_names: set[str],
     generated_module_source_paths: dict[str, str],
     entry_module: str,
@@ -22321,6 +22585,7 @@ def _prepare_frontend_lowering_config(
         module_dep_closures=module_dep_closures,
         known_modules=known_modules,
         known_func_defaults=known_func_defaults,
+        known_func_kinds=known_func_kinds,
         pgo_hot_function_names=pgo_hot_function_names,
         type_facts=cast(TypeFacts | None, type_facts),
     )
@@ -22336,6 +22601,8 @@ def _prepare_frontend_lowering_config(
     stdlib_like_by_module = module_graph_metadata.stdlib_like_by_module
     assert frontend_module_costs is not None
     assert stdlib_like_by_module is not None
+    frontend_module_costs_snapshot = dict(frontend_module_costs)
+    stdlib_like_by_module_snapshot = dict(stdlib_like_by_module)
 
     enable_phi = not is_wasm
     module_chunk_max_ops = 0
@@ -22391,8 +22658,8 @@ def _prepare_frontend_lowering_config(
         known_classes=known_classes,
         scoped_lowering_inputs=scoped_lowering_inputs,
         module_graph_metadata=module_graph_metadata,
-        frontend_module_costs=frontend_module_costs,
-        stdlib_like_by_module=stdlib_like_by_module,
+        frontend_module_costs=frontend_module_costs_snapshot,
+        stdlib_like_by_module=stdlib_like_by_module_snapshot,
         enable_phi=enable_phi,
         module_chunk_max_ops=module_chunk_max_ops,
         module_chunking=module_chunking,
@@ -22417,6 +22684,7 @@ def _prepare_frontend_execution(
     known_modules: set[str],
     stdlib_allowlist: set[str],
     known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     module_deps: dict[str, set[str]],
     module_chunk_max_ops: int,
     optimization_profile: BuildProfile,
@@ -22465,6 +22733,7 @@ def _prepare_frontend_execution(
         known_modules=known_modules,
         stdlib_allowlist=stdlib_allowlist,
         known_func_defaults=known_func_defaults,
+        known_func_kinds=known_func_kinds,
         module_deps=module_deps,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=optimization_profile,
@@ -22499,6 +22768,7 @@ def _prepare_frontend_execution(
         known_modules=known_modules,
         stdlib_allowlist=stdlib_allowlist,
         known_func_defaults=known_func_defaults,
+        known_func_kinds=known_func_kinds,
         module_deps=module_deps,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
@@ -23804,6 +24074,7 @@ def _run_backend_pipeline(
         set[str],
         dict[str, str],
         dict[str, dict[str, dict[str, Any]]],
+        dict[str, dict[str, str]],
         list[str],
         TypeFacts | None,
         dict[str, Any],
@@ -23838,13 +24109,14 @@ def _run_backend_pipeline(
     (
         prepared_frontend_run_ticket,
         module_graph,
-        explicit_imports,
+        runtime_import_dispatch_roots,
         stdlib_allowlist,
         spawn_enabled,
         output_layout,
         known_modules,
         generated_module_source_paths,
         known_func_defaults,
+        known_func_kinds,
         module_order,
         type_facts,
         known_classes,
@@ -23877,6 +24149,7 @@ def _run_backend_pipeline(
         known_classes=known_classes,
         stdlib_allowlist=stdlib_allowlist,
         known_func_defaults=known_func_defaults,
+        known_func_kinds=known_func_kinds,
         module_chunking=module_chunking,
         module_chunk_max_ops=module_chunk_max_ops,
         optimization_profile=profile,
@@ -23888,7 +24161,7 @@ def _run_backend_pipeline(
         fail=_fail,
         json_output=json_output,
         module_order=module_order,
-        explicit_imports=explicit_imports,
+        runtime_import_dispatch_roots=runtime_import_dispatch_roots,
         generated_module_source_paths=generated_module_source_paths,
         spawn_enabled=spawn_enabled,
         pgo_profile_summary=prepared_build_config.pgo_profile_summary,
@@ -25055,6 +25328,7 @@ def _run_build_pipeline(
         set[str],
         dict[str, str],
         dict[str, dict[str, dict[str, Any]]],
+        dict[str, dict[str, str]],
         list[str],
         TypeFacts | None,
         dict[str, Any],
@@ -25097,7 +25371,7 @@ def _run_build_pipeline(
     # standalone molt-backend-mlir binary. This bypasses the standard backend
     # pipeline entirely because the MLIR crate is out-of-workspace.
     output_layout: _BuildOutputLayout = prepared_frontend_pipeline_bundle[5]
-    native_artifact_plan = prepared_frontend_pipeline_bundle[20]
+    native_artifact_plan = prepared_frontend_pipeline_bundle[21]
     native_artifact_custody_error = _external_native_artifact_output_custody_error(
         native_artifact_plan=native_artifact_plan,
         output_layout=output_layout,
@@ -25109,13 +25383,14 @@ def _run_build_pipeline(
         (
             _frt,
             module_graph,
-            explicit_imports,
+            runtime_import_dispatch_roots,
             stdlib_allowlist,
             spawn_enabled,
             _ol,
             known_modules,
             generated_module_source_paths,
             known_func_defaults,
+            known_func_kinds,
             module_order,
             type_facts,
             known_classes,
@@ -25141,6 +25416,7 @@ def _run_build_pipeline(
             known_classes=known_classes,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
+            known_func_kinds=known_func_kinds,
             module_chunking=module_chunking,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=profile,
@@ -25152,7 +25428,7 @@ def _run_build_pipeline(
             fail=_fail,
             json_output=json_output,
             module_order=module_order,
-            explicit_imports=explicit_imports,
+            runtime_import_dispatch_roots=runtime_import_dispatch_roots,
             generated_module_source_paths=generated_module_source_paths,
             spawn_enabled=spawn_enabled,
             pgo_profile_summary=prepared_build_config.pgo_profile_summary,
@@ -25438,7 +25714,7 @@ def _prepare_frontend_stage_state(
         phase_starts["module_analysis"] = time.perf_counter()
     prepared_frontend_analysis, prepared_frontend_analysis_error = (
         _prepare_frontend_analysis(
-            module_graph=import_plan.module_graph,
+            module_graph=dict(import_plan.module_graph),
             module_graph_metadata=import_plan.module_graph_metadata,
             module_resolution_cache=import_plan.module_resolution_cache,
             project_root=project_root,
@@ -25463,12 +25739,13 @@ def _prepare_frontend_stage_state(
             module_deps=prepared_frontend_analysis.module_deps,
             module_dep_closures=prepared_frontend_analysis.module_dep_closures,
             has_back_edges=prepared_frontend_analysis.has_back_edges,
-            known_modules=import_plan.known_modules,
+            known_modules=set(import_plan.known_modules),
             known_func_defaults=prepared_frontend_analysis.known_func_defaults,
+            known_func_kinds=prepared_frontend_analysis.known_func_kinds,
             pgo_hot_function_names=pgo_hot_function_names,
-            generated_module_source_paths=import_plan.generated_module_source_paths,
+            generated_module_source_paths=dict(import_plan.generated_module_source_paths),
             entry_module=entry_module,
-            namespace_module_names=import_plan.namespace_module_names,
+            namespace_module_names=set(import_plan.namespace_module_names),
             module_source_catalog=prepared_frontend_analysis.module_source_catalog,
             is_wasm=prepared_build_outputs.output_layout.is_wasm,
             target_triple=prepared_build_outputs.output_layout.target_triple,
@@ -25527,6 +25804,7 @@ def _prepare_frontend_pipeline(
         set[str],
         dict[str, str],
         dict[str, dict[str, dict[str, Any]]],
+        dict[str, dict[str, str]],
         list[str],
         TypeFacts | None,
         dict[str, Any],
@@ -25538,6 +25816,7 @@ def _prepare_frontend_pipeline(
         Callable[..., None],
         Callable[[], tuple[dict[str, Any] | None, Path | None]],
         Path,
+        _ExternalPackageNativeArtifactPlan,
     ]
     | None,
     _CliFailure | None,
@@ -25621,7 +25900,7 @@ def _prepare_frontend_pipeline(
         midend_diagnostics_state,
     ) = _prepare_frontend_execution(
         syntax_error_modules=prepared_frontend_analysis.syntax_error_modules,
-        module_graph=import_plan.module_graph,
+        module_graph=dict(import_plan.module_graph),
         module_source_catalog=prepared_frontend_analysis.module_source_catalog,
         project_root=prepared_build_roots.project_root,
         module_resolution_cache=import_plan.module_resolution_cache,
@@ -25630,9 +25909,10 @@ def _prepare_frontend_pipeline(
         fallback_policy=fallback_policy,
         type_facts=prepared_frontend_lowering_config.type_facts,
         enable_phi=prepared_frontend_lowering_config.enable_phi,
-        known_modules=import_plan.known_modules,
-        stdlib_allowlist=import_plan.stdlib_allowlist,
+        known_modules=set(import_plan.known_modules),
+        stdlib_allowlist=set(import_plan.stdlib_allowlist),
         known_func_defaults=prepared_frontend_analysis.known_func_defaults,
+        known_func_kinds=prepared_frontend_analysis.known_func_kinds,
         module_deps=prepared_frontend_analysis.module_deps,
         module_chunk_max_ops=prepared_frontend_lowering_config.module_chunk_max_ops,
         optimization_profile=profile,
@@ -25652,7 +25932,7 @@ def _prepare_frontend_pipeline(
         stdlib_like_by_module=prepared_frontend_lowering_config.stdlib_like_by_module,
         known_classes=prepared_frontend_lowering_config.known_classes,
         module_trees=prepared_frontend_analysis.module_trees,
-        generated_module_source_paths=import_plan.generated_module_source_paths,
+        generated_module_source_paths=dict(import_plan.generated_module_source_paths),
         frontend_phase_timeout=prepared_build_config.frontend_phase_timeout,
         record_frontend_timing=record_frontend_timing,
         fail=_fail,
@@ -25674,6 +25954,7 @@ def _prepare_frontend_pipeline(
                 entry_module=resolved_build_entry.entry_module,
                 module_deps=prepared_frontend_analysis.module_deps,
                 module_names=set(import_plan.module_graph),
+                extra_roots=import_plan.runtime_import_dispatch_roots,
             )
         )
         if _dme_eliminated > 0:
@@ -25703,14 +25984,15 @@ def _prepare_frontend_pipeline(
     return (
         (
             prepared_frontend_run_ticket,
-            import_plan.module_graph,
-            import_plan.explicit_imports,
-            import_plan.stdlib_allowlist,
+            dict(import_plan.module_graph),
+            set(import_plan.runtime_import_dispatch_roots),
+            set(import_plan.stdlib_allowlist),
             import_plan.spawn_enabled,
             prepared_build_outputs.output_layout,
-            import_plan.known_modules,
-            import_plan.generated_module_source_paths,
+            set(import_plan.known_modules),
+            dict(import_plan.generated_module_source_paths),
             prepared_frontend_analysis.known_func_defaults,
+            prepared_frontend_analysis.known_func_kinds,
             _dme_module_order,
             prepared_frontend_lowering_config.type_facts,
             prepared_frontend_lowering_config.known_classes,
@@ -26343,7 +26625,8 @@ def _run_frontend_parallel_layer_batches(
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     module_deps: dict[str, set[str]],
     module_chunk_max_ops: int,
     optimization_profile: str,
@@ -26390,6 +26673,7 @@ def _run_frontend_parallel_layer_batches(
             known_modules=known_modules,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
+            known_func_kinds=known_func_kinds,
             module_deps=module_deps,
             module_chunk_max_ops=module_chunk_max_ops,
             optimization_profile=optimization_profile,
@@ -26775,6 +27059,7 @@ def _run_frontend_layer(
                 known_modules=execution_context.known_modules,
                 stdlib_allowlist=execution_context.stdlib_allowlist,
                 known_func_defaults=execution_context.known_func_defaults,
+                known_func_kinds=execution_context.known_func_kinds,
                 module_deps=execution_context.module_deps,
                 module_chunk_max_ops=execution_context.module_chunk_max_ops,
                 optimization_profile=execution_context.optimization_profile,
@@ -26881,7 +27166,8 @@ def _module_lowering_context_payload(
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     module_deps: dict[str, set[str]],
     module_is_namespace: bool,
     module_chunking: bool,
@@ -26911,6 +27197,7 @@ def _module_lowering_context_payload(
             module_deps=module_deps,
             known_modules=known_modules,
             known_func_defaults=known_func_defaults,
+            known_func_kinds=known_func_kinds,
             pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             module_dep_closures=module_dep_closures,
@@ -26923,6 +27210,7 @@ def _module_lowering_context_payload(
         stdlib_allowlist_sorted = tuple(sorted(stdlib_allowlist))
     pgo_hot_function_names_sorted = scoped_inputs.pgo_hot_function_names
     scoped_known_func_defaults = scoped_inputs.known_func_defaults
+    scoped_known_func_kinds = scoped_inputs.known_func_kinds
     if scoped_known_classes is None:
         scoped_known_classes = _scoped_known_classes_view(
             module_name,
@@ -26954,6 +27242,7 @@ def _module_lowering_context_payload(
         "known_classes": scoped_known_classes,
         "stdlib_allowlist": stdlib_allowlist_sorted,
         "known_func_defaults": scoped_known_func_defaults,
+        "known_func_kinds": scoped_known_func_kinds,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
@@ -26999,7 +27288,8 @@ def _module_lowering_context_digest_for_module(
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     module_deps: dict[str, set[str]],
     module_is_namespace: bool,
     module_chunking: bool,
@@ -27032,6 +27322,7 @@ def _module_lowering_context_digest_for_module(
         known_modules=known_modules,
         stdlib_allowlist=stdlib_allowlist,
         known_func_defaults=known_func_defaults,
+        known_func_kinds=known_func_kinds,
         module_deps=module_deps,
         module_is_namespace=module_is_namespace,
         module_chunking=module_chunking,
@@ -27151,7 +27442,8 @@ def _load_cached_module_lowering_result(
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     module_deps: dict[str, set[str]],
     module_is_namespace: bool,
     module_chunking: bool,
@@ -27191,6 +27483,7 @@ def _load_cached_module_lowering_result(
             known_modules=known_modules,
             stdlib_allowlist=stdlib_allowlist,
             known_func_defaults=known_func_defaults,
+            known_func_kinds=known_func_kinds,
             module_deps=module_deps,
             module_is_namespace=module_is_namespace,
             module_chunking=module_chunking,
@@ -27239,7 +27532,8 @@ def _module_worker_payload(
     known_modules: Collection[str],
     known_classes_snapshot: dict[str, Any],
     stdlib_allowlist_sorted: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     module_deps: dict[str, set[str]],
     module_chunking: bool,
     module_chunk_max_ops: int,
@@ -27263,6 +27557,7 @@ def _module_worker_payload(
             module_deps=module_deps,
             known_modules=known_modules,
             known_func_defaults=known_func_defaults,
+            known_func_kinds=known_func_kinds,
             pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             module_dep_closures=module_dep_closures,
@@ -27295,6 +27590,7 @@ def _module_worker_payload(
         "known_classes": scoped_known_classes,
         "stdlib_allowlist": stdlib_allowlist_payload,
         "known_func_defaults": scoped_inputs.known_func_defaults,
+        "known_func_kinds": scoped_inputs.known_func_kinds,
         "module_chunking": module_chunking,
         "module_chunk_max_ops": module_chunk_max_ops,
         "optimization_profile": optimization_profile,
@@ -27320,7 +27616,8 @@ def _prepare_frontend_parallel_batch(
     enable_phi: bool,
     known_modules: Collection[str],
     stdlib_allowlist: Collection[str],
-    known_func_defaults: dict[str, dict[str, Any]],
+    known_func_defaults: dict[str, dict[str, dict[str, Any]]],
+    known_func_kinds: dict[str, dict[str, str]],
     module_deps: dict[str, set[str]],
     module_chunk_max_ops: int,
     optimization_profile: str,
@@ -27369,6 +27666,7 @@ def _prepare_frontend_parallel_batch(
             module_deps=module_deps,
             known_modules=known_modules,
             known_func_defaults=known_func_defaults,
+            known_func_kinds=known_func_kinds,
             pgo_hot_function_names=pgo_hot_function_names,
             type_facts=type_facts,
             known_classes_snapshot=known_classes_snapshot,
@@ -27402,6 +27700,7 @@ def _prepare_frontend_parallel_batch(
                 known_modules=known_modules,
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
+                known_func_kinds=known_func_kinds,
                 module_deps=module_deps,
                 module_is_namespace=module_is_namespace,
                 module_chunking=module_chunking,
@@ -27439,6 +27738,7 @@ def _prepare_frontend_parallel_batch(
                 known_modules=known_modules,
                 stdlib_allowlist=stdlib_allowlist,
                 known_func_defaults=known_func_defaults,
+                known_func_kinds=known_func_kinds,
                 module_deps=module_deps,
                 module_is_namespace=module_is_namespace,
                 module_chunking=module_chunking,
@@ -27482,6 +27782,7 @@ def _prepare_frontend_parallel_batch(
                     stdlib_allowlist_sorted=stdlib_allowlist_sorted,
                     stdlib_allowlist_payload=stdlib_allowlist_payload,
                     known_func_defaults=known_func_defaults,
+                    known_func_kinds=known_func_kinds,
                     module_deps=module_deps,
                     module_chunking=module_chunking,
                     module_chunk_max_ops=module_chunk_max_ops,
@@ -28672,10 +28973,13 @@ def _ensure_runtime_wasm(
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)
     env = _cargo_build_env()
-    runtime_exports = wasm_runtime_export_link_args()
+    runtime_exports = wasm_runtime_export_link_args(
+        required_runtime_imports=None,
+        resolved_modules=resolved_modules,
+    )
     if reloc:
         link_flags = runtime_exports
-        cargo_link_flags = ""
+        cargo_link_flags = runtime_exports
     else:
         # Shared-runtime ABI: import the host-provided memory and table, and
         # allow the table to grow for app-specific call_indirect slots.
@@ -28742,6 +29046,10 @@ def _ensure_runtime_wasm(
         runtime_features=fingerprint_features,
         stored_fingerprint=stored_fingerprint,
     )
+    if fingerprint is None:
+        if not json_output:
+            print("Failed to compute runtime wasm fingerprint.", file=sys.stderr)
+        return False
     lock_suffix = "reloc" if reloc else "shared"
     lock_name = f"runtime.{cargo_profile}.wasm32-wasip1.{lock_suffix}"
     with _build_lock(root, lock_name):
@@ -37987,7 +38295,13 @@ def _ensure_cli_hash_seed() -> None:
     if os.environ.get("PYTHONHASHSEED") == desired:
         return
     if os.environ.get(_HASH_SEED_SENTINEL_ENV) == "1":
-        return
+        print(
+            "molt: deterministic PYTHONHASHSEED restart did not apply "
+            f"(expected {desired!r}, got {os.environ.get('PYTHONHASHSEED')!r}).",
+            file=sys.stderr,
+        )
+        _flush_standard_streams()
+        os._exit(127)
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = desired
     env[_HASH_SEED_SENTINEL_ENV] = "1"

@@ -233,7 +233,50 @@ def _process_command(pid: int) -> str | None:
     return command or None
 
 
+def _strip_matching_quotes(token: str) -> str:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
+        return token[1:-1]
+    return token
+
+
+def _split_windows_command_fallback(command: str) -> tuple[str, ...]:
+    try:
+        return tuple(
+            _strip_matching_quotes(token) for token in shlex.split(command, posix=False)
+        )
+    except ValueError:
+        return tuple(command.split())
+
+
+def _split_windows_command(command: str) -> tuple[str, ...]:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        argc = ctypes.c_int()
+        command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
+        command_line_to_argv.argtypes = (
+            wintypes.LPCWSTR,
+            ctypes.POINTER(ctypes.c_int),
+        )
+        command_line_to_argv.restype = ctypes.POINTER(wintypes.LPWSTR)
+        local_free = ctypes.windll.kernel32.LocalFree
+        local_free.argtypes = (wintypes.HLOCAL,)
+        local_free.restype = wintypes.HLOCAL
+        argv = command_line_to_argv(command, ctypes.byref(argc))
+        if not argv:
+            return _split_windows_command_fallback(command)
+        try:
+            return tuple(argv[index] for index in range(argc.value))
+        finally:
+            local_free(argv)
+    except (AttributeError, OSError, ValueError):
+        return _split_windows_command_fallback(command)
+
+
 def _split_command(command: str) -> tuple[str, ...]:
+    if os.name == "nt":
+        return _split_windows_command(command)
     try:
         return tuple(shlex.split(command))
     except ValueError:
@@ -448,8 +491,9 @@ def terminate_backend_daemon_identity(
         pid_alive=alive_probe,
     ):
         return True
+    kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
     try:
-        os.kill(identity.pid, signal.SIGKILL)
+        os.kill(identity.pid, kill_signal)
     except OSError:
         return False
     return True

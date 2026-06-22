@@ -1085,7 +1085,7 @@ class SerializationMixin(_MixinBase):
                     invoke_op["s_value"] = lane
                 json_ops.append(invoke_op)
             elif op.kind == "CALL_BIND":
-                entry = {
+                entry: dict[str, Any] = {
                     "kind": "call_bind",
                     "args": [arg.name for arg in op.args],
                     "out": op.result.name,

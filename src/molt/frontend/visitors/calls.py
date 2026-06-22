@@ -827,10 +827,14 @@ class CallVisitorMixin(_MixinBase):
         # has side effects (IR ops) that conflict with the CALL_BIND fallback
         # which emits its own arg builder.
         info = self.func_default_specs.get(func_symbol)
+        known_symbol_target = self._known_function_symbol_target(func_symbol)
         if info is None:
             func_name = self.func_symbol_names.get(func_symbol)
             if func_name is not None:
                 info = self._lookup_func_defaults(None, func_name)
+            elif known_symbol_target is not None:
+                module_name, func_name = known_symbol_target
+                info = self._lookup_func_defaults(module_name, func_name)
         if info is not None and info.get("has_vararg"):
             return None, func_obj
         args = self._emit_call_args(node.args)
@@ -849,13 +853,21 @@ class CallVisitorMixin(_MixinBase):
             # mutation deopt guard, a non-const default needs the live read.
             if 0 < missing <= len(defaults):
                 if func_obj is None:
-                    func_obj = self.visit(node.func)
+                    if known_symbol_target is not None:
+                        module_name, func_name = known_symbol_target
+                        func_obj = self._emit_module_attr_get_on(module_name, func_name)
+                    else:
+                        func_obj = self.visit(node.func)
         args = self._apply_default_specs(
             total_params,
             defaults,
             args,
             node,
-            call_name=self.func_symbol_names.get(func_symbol, func_symbol),
+            call_name=(
+                known_symbol_target[1]
+                if known_symbol_target is not None
+                else self.func_symbol_names.get(func_symbol, func_symbol)
+            ),
             func_obj=func_obj,
             positional_limit=positional_limit,
         )
@@ -2661,11 +2673,7 @@ class CallVisitorMixin(_MixinBase):
                 imported_from = self.global_imported_names.get(binding_name)
             if imported_from != "importlib":
                 return None
-            original_attr = self.imported_attr_names.get(binding_name)
-            if original_attr is None:
-                original_attr = self.global_imported_attr_names.get(
-                    binding_name, binding_name
-                )
+            original_attr = self._imported_attr_name(binding_name)
             if original_attr != "import_module":
                 return None
             if not self._imported_module_attr_is_stable(
@@ -4643,7 +4651,7 @@ class CallVisitorMixin(_MixinBase):
             if is_local and imported_binding is None:
                 imported_from = None
             if imported_from == "builtins":
-                imported_attr = self.imported_attr_names.get(func_id)
+                imported_attr = self._imported_attr_name(func_id)
                 if (
                     imported_attr is not None
                     and imported_attr in _BUILTINS_IMPORT_ALIAS_CALL_NAMES
@@ -4658,6 +4666,12 @@ class CallVisitorMixin(_MixinBase):
                     lowered_stats = self._lower_statistics_slice_call(func_id, node)
                     if lowered_stats is not None:
                         return lowered_stats
+                original_attr = self._imported_attr_name(func_id)
+                known_func_hint = self._known_module_function_type_hint(
+                    allowlist_key, original_attr
+                )
+                if known_func_hint is not None:
+                    target_info = MoltValue(func_id, type_hint=known_func_hint)
             # Try lowering _intrinsics.require_intrinsic("name") calls to a
             # BUILTIN_FUNC opcode early, before any local-function dispatch
             # path (e.g. a `def _require_intrinsic(...)` defined in an except
@@ -4691,7 +4705,7 @@ class CallVisitorMixin(_MixinBase):
                 target_module = self._normalize_allowlist_module(imported_from)
                 if target_module is None:
                     target_module = imported_from
-                original_attr = self.imported_attr_names.get(func_id, func_id)
+                original_attr = self._imported_attr_name(func_id)
                 lowered_handle_ctor = self._try_emit_intrinsic_handle_class_constructor(
                     target_module,
                     original_attr,
@@ -5739,7 +5753,7 @@ class CallVisitorMixin(_MixinBase):
                     MoltOp(kind="CHAN_DROP", args=[chan], result=MoltValue("none"))
                 )
                 return None
-            original_import_attr = self.imported_attr_names.get(func_id, func_id)
+            original_import_attr = self._imported_attr_name(func_id)
             class_id = None
             if func_id in self.classes:
                 class_id = func_id
@@ -6329,6 +6343,12 @@ class CallVisitorMixin(_MixinBase):
                         MoltOp(kind="CALL_FUNC", args=[target_value] + args, result=res)
                     )
                 else:
+                    closure_size = max(
+                        closure_size,
+                        self._task_closure_size(
+                            len(args), include_gen_control=False
+                        ),
+                    )
                     self.emit(
                         MoltOp(
                             kind="ALLOC_TASK",
@@ -6415,6 +6435,10 @@ class CallVisitorMixin(_MixinBase):
                         MoltOp(kind="CALL_FUNC", args=[target_value] + args, result=res)
                     )
                 else:
+                    closure_size = max(
+                        closure_size,
+                        self._task_closure_size(len(args), include_gen_control=True),
+                    )
                     gen_val = MoltValue(self.next_var(), type_hint="generator")
                     self.emit(
                         MoltOp(
@@ -6507,6 +6531,10 @@ class CallVisitorMixin(_MixinBase):
                         )
                     )
                     args = [closure_val] + args
+                closure_size = max(
+                    closure_size,
+                    self._task_closure_size(len(args), include_gen_control=True),
+                )
                 res = MoltValue(self.next_var(), type_hint="generator")
                 self.emit(
                     MoltOp(
@@ -6606,6 +6634,8 @@ class CallVisitorMixin(_MixinBase):
                 if not direct_ok:
                     func_name = self.func_symbol_names.get(target_name)
                     if func_name and self._lookup_func_defaults(None, func_name):
+                        direct_ok = True
+                    elif self._known_function_symbol_target(target_name) is not None:
                         direct_ok = True
                 if needs_bind or not direct_ok:
                     callargs = self._emit_call_args_builder(node)
@@ -8309,7 +8339,23 @@ class CallVisitorMixin(_MixinBase):
                 if (
                     target_module is not None
                     and self._is_linkable_module_function_symbol(target_module)
-                    and self._imported_module_attr_is_stable(target_module, func_id)
+                ):
+                    original_attr = self._imported_attr_name(func_id)
+                    target_kind = self._lookup_func_kind(target_module, original_attr)
+                    if target_kind not in {None, "sync"}:
+                        target_module = None
+                if (
+                    target_module is not None
+                    and self._is_linkable_module_function_symbol(target_module)
+                ):
+                    original_attr = self._imported_attr_name(func_id)
+                    if not self._imported_module_attr_is_stable(
+                        target_module, original_attr
+                    ):
+                        target_module = None
+                if (
+                    target_module is not None
+                    and self._is_linkable_module_function_symbol(target_module)
                 ):
                     if needs_bind:
                         callee = self.visit(node.func)
@@ -8326,7 +8372,6 @@ class CallVisitorMixin(_MixinBase):
                         )
                         return res
                     # Resolve alias -> original attr name for cross-module calls
-                    original_attr = self.imported_attr_names.get(func_id, func_id)
                     args = self._emit_direct_call_args(
                         target_module, original_attr, node
                     )
@@ -8390,7 +8435,8 @@ class CallVisitorMixin(_MixinBase):
             ):
                 target_module = normalized or imported_from
                 # Resolve alias -> original attr name for cross-module calls
-                original_attr = self.imported_attr_names.get(func_id, func_id)
+                original_attr = self._imported_attr_name(func_id)
+                target_kind = self._lookup_func_kind(target_module, original_attr)
                 force_bind = original_attr[
                     :1
                 ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
@@ -8398,6 +8444,7 @@ class CallVisitorMixin(_MixinBase):
                 )
                 has_known_direct_target = (
                     self._lookup_func_defaults(target_module, original_attr) is not None
+                    and target_kind in {None, "sync"}
                 )
                 direct_target_is_linkable = self._is_linkable_module_function_symbol(
                     target_module

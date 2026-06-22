@@ -2494,6 +2494,17 @@ def test_collect_type_facts_reads_python_sources_as_utf8(tmp_path: Path) -> None
     assert facts.modules["typed_utf8_source"].globals["value"].type == "int"
 
 
+def test_collect_type_facts_uses_python_source_encoding_for_utf8_bom(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "typed_bom_source.py"
+    path.write_bytes(b"\xef\xbb\xbfvalue: int = 1\n")
+
+    facts = collect_type_facts_from_paths([path], "guarded", infer=True)
+
+    assert facts.modules["typed_bom_source"].globals["value"].type == "int"
+
+
 def test_midend_ignores_retired_walltime_budget_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

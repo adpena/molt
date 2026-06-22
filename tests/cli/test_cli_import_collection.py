@@ -45,6 +45,13 @@ def _clear_molt_home_caches() -> None:
     cli._source_content_sha256_cached.cache_clear()
 
 
+def _enable_fake_backend_daemon_unix_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not hasattr(cli.socket, "AF_UNIX"):
+        monkeypatch.setattr(cli.socket, "AF_UNIX", 1, raising=False)
+
+
 def _compile_c_object(tmp_path: Path, name: str, source: str) -> Path:
     src = tmp_path / f"{name}.c"
     obj = tmp_path / f"{name}.o"
@@ -966,13 +973,17 @@ def test_generated_importer_import_plan_includes_runtime_support_modules(
 
     assert "importlib.util" in import_plan.module_graph
     assert "importlib.machinery" in import_plan.module_graph
+    assert "importlib.machinery" not in import_plan.explicit_imports
+    assert "importlib.machinery" in import_plan.runtime_import_dispatch_roots
+    assert "importlib._bootstrap" in import_plan.runtime_import_dispatch_roots
+    assert "importlib._bootstrap_external" in import_plan.runtime_import_dispatch_roots
     importer_path = import_plan.module_graph[cli.IMPORTER_MODULE_NAME]
     importer_source = importer_path.read_text(encoding="utf-8")
     assert "molt_importlib_import_transaction" in importer_source
     assert "_KNOWN_MODULES" not in importer_source
 
 
-def test_backend_ir_isolate_import_is_bounded_by_explicit_imports(
+def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
@@ -1015,6 +1026,7 @@ def test_backend_ir_isolate_import_is_bounded_by_explicit_imports(
         known_classes={},
         stdlib_allowlist=set(module_graph),
         known_func_defaults={},
+        known_func_kinds={},
         module_chunking=False,
         module_chunk_max_ops=0,
         optimization_profile="dev",
@@ -1026,7 +1038,7 @@ def test_backend_ir_isolate_import_is_bounded_by_explicit_imports(
         fail=cli._fail,
         json_output=True,
         module_order=module_order,
-        explicit_imports={"gc"},
+        runtime_import_dispatch_roots={"gc"},
         generated_module_source_paths={},
         spawn_enabled=False,
         pgo_profile_summary=None,
@@ -1053,6 +1065,118 @@ def test_backend_ir_isolate_import_is_bounded_by_explicit_imports(
         cli.SimpleTIRGenerator.module_init_symbol("importlib.machinery")
         not in call_targets
     )
+
+
+def test_backend_ir_isolate_import_roots_runtime_support_closure(
+    tmp_path: Path,
+) -> None:
+    module_names = [
+        "gc",
+        "importlib",
+        "importlib.machinery",
+        "importlib._bootstrap",
+        "json",
+        "demo",
+    ]
+    module_graph: dict[str, Path] = {}
+    for module_name in module_names:
+        module_path = tmp_path / f"{module_name.replace('.', '_')}.py"
+        module_path.write_text("", encoding="utf-8")
+        module_graph[module_name] = module_path
+    module_order = list(module_names)
+    integration_state = cli._FrontendIntegrationState(
+        functions=[
+            {
+                "name": cli.SimpleTIRGenerator.module_init_symbol(module_name),
+                "params": [],
+                "ops": [{"kind": "ret_void"}],
+            }
+            for module_name in module_order
+        ],
+        known_classes={},
+    )
+    diagnostics_state = cli._MidendDiagnosticsState(
+        policy_outcomes_by_function={},
+        pass_stats_by_function={},
+    )
+
+    prepared, error = cli._prepare_backend_ir(
+        entry_module="demo",
+        module_graph=module_graph,
+        parse_codec="json",
+        type_hint_policy="ignore",
+        fallback_policy="error",
+        type_facts=None,
+        enable_phi=True,
+        known_modules=set(module_graph),
+        known_classes={},
+        stdlib_allowlist=set(module_graph),
+        known_func_defaults={},
+        known_func_kinds={},
+        module_chunking=False,
+        module_chunk_max_ops=0,
+        optimization_profile="dev",
+        pgo_hot_function_names=set(),
+        frontend_phase_timeout=None,
+        integration_state=integration_state,
+        diagnostics_state=diagnostics_state,
+        record_frontend_timing=lambda **_: None,
+        fail=cli._fail,
+        json_output=True,
+        module_order=module_order,
+        runtime_import_dispatch_roots={
+            "gc",
+            "importlib",
+            "importlib.machinery",
+            "importlib._bootstrap",
+        },
+        generated_module_source_paths={},
+        spawn_enabled=False,
+        pgo_profile_summary=None,
+        runtime_feedback_summary=None,
+        emit_ir_path=None,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert error is None
+    assert prepared is not None
+    import_ops = next(
+        func["ops"]
+        for func in prepared.ir["functions"]
+        if func["name"] == "molt_isolate_import"
+    )
+    const_names = [
+        op.get("s_value") for op in import_ops if op.get("kind") == "const_str"
+    ]
+    call_targets = [op.get("s_value") for op in import_ops if op.get("kind") == "call"]
+    for module_name in (
+        "gc",
+        "importlib",
+        "importlib.machinery",
+        "importlib._bootstrap",
+    ):
+        assert module_name in const_names
+        assert cli.SimpleTIRGenerator.module_init_symbol(module_name) in call_targets
+    assert "json" not in const_names
+    assert cli.SimpleTIRGenerator.module_init_symbol("json") not in call_targets
+
+
+def test_dead_module_elimination_keeps_runtime_dispatch_roots() -> None:
+    module_order = ["importlib", "importlib.machinery", "json", "demo"]
+    module_layers = [["importlib", "importlib.machinery", "json"], ["demo"]]
+
+    filtered_order, filtered_layers, eliminated = cli._apply_dead_module_elimination(
+        module_order,
+        module_layers,
+        entry_module="demo",
+        module_deps={"demo": set()},
+        module_names=set(module_order),
+        extra_roots={"importlib.machinery"},
+    )
+
+    assert filtered_order == ["importlib", "importlib.machinery", "demo"]
+    assert filtered_layers == [["importlib", "importlib.machinery"], ["demo"]]
+    assert eliminated == 1
 
 
 def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_supported(
@@ -2010,6 +2134,74 @@ def test_collect_imports_resolves_name_argument_for_import_module() -> None:
     assert "pathlib" in imports
 
 
+def test_collect_imports_resolves_importlib_intrinsic_transaction_wrapper() -> None:
+    tree = ast.parse(
+        "_MOLT_IMPORTLIB_RESOLVE_NAME = object()\n"
+        "_MOLT_IMPORTLIB_IMPORT_TRANSACTION = object()\n"
+        "def import_module(name: str, package: object = None):\n"
+        "    resolved = _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)\n"
+        "    mod = _MOLT_IMPORTLIB_IMPORT_TRANSACTION(\n"
+        "        resolved, globals(), locals(), ('*',), 0\n"
+        "    )\n"
+        "    return mod\n"
+        "machinery = import_module('importlib.machinery')\n"
+        "util = import_module('importlib.util')\n"
+        "_bootstrap = import_module('importlib._bootstrap')\n"
+        "_bootstrap_external = import_module('importlib._bootstrap_external')\n"
+    )
+
+    imports = cli._collect_imports(
+        tree,
+        module_name="importlib",
+        is_package=True,
+        import_scan_mode="module_init",
+    )
+
+    assert "importlib.machinery" in imports
+    assert "importlib.util" in imports
+    assert "importlib._bootstrap" in imports
+    assert "importlib._bootstrap_external" in imports
+
+
+def test_collect_imports_resolves_importlib_relative_resolve_name() -> None:
+    tree = ast.parse(
+        "_MOLT_IMPORTLIB_RESOLVE_NAME = object()\n"
+        "_MOLT_IMPORTLIB_IMPORT_TRANSACTION = object()\n"
+        "def import_module(name, package=None):\n"
+        "    resolved = _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)\n"
+        "    return _MOLT_IMPORTLIB_IMPORT_TRANSACTION(\n"
+        "        resolved, globals(), locals(), ('*',), 0\n"
+        "    )\n"
+        "value = import_module('.machinery', package='importlib')\n"
+    )
+
+    imports = cli._collect_imports(
+        tree,
+        module_name="importlib",
+        is_package=True,
+        import_scan_mode="module_init",
+    )
+
+    assert "importlib.machinery" in imports
+
+
+def test_collect_imports_real_importlib_init_includes_runtime_submodules() -> None:
+    importlib_init = cli._stdlib_root_path() / "importlib" / "__init__.py"
+    tree = ast.parse(importlib_init.read_text(encoding="utf-8"), filename=str(importlib_init))
+
+    imports = cli._collect_imports(
+        tree,
+        module_name="importlib",
+        is_package=True,
+        import_scan_mode="module_init",
+    )
+
+    assert "importlib.machinery" in imports
+    assert "importlib.util" in imports
+    assert "importlib._bootstrap" in imports
+    assert "importlib._bootstrap_external" in imports
+
+
 def test_cached_json_round_trips_molt_value_and_set() -> None:
     payload = {
         "value": MoltValue(name="v1", type_hint="int"),
@@ -2537,7 +2729,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
     assert staged_init in captured_inputs
     assert staged_shim in captured_inputs
     stub_content = prepared.stub_path.read_text(encoding="utf-8")
-    assert str(expected_runtime_root.resolve()) in stub_content
+    assert json.dumps(str(expected_runtime_root.resolve())) in stub_content
     native_main_start = stub_content.index("int main")
     assert stub_content.index(
         "molt_set_runtime_module_roots();", native_main_start
@@ -2558,7 +2750,7 @@ def test_render_native_main_stub_embeds_runtime_module_roots_before_init(
     )
 
     assert "static void molt_set_runtime_module_roots()" in stub_content
-    assert str(runtime_root.resolve()) in stub_content
+    assert json.dumps(str(runtime_root.resolve())) in stub_content
     assert 'getenv("MOLT_MODULE_ROOTS")' in stub_content
     assert 'setenv("MOLT_MODULE_ROOTS", roots, 1)' in stub_content
     native_main_start = stub_content.index("int main")
@@ -2806,6 +2998,7 @@ def test_windows_link_omits_icf_for_fn_identity(
     assert "-lws2_32" in link_cmd
     assert "-lntdll" in link_cmd
     assert "-luserenv" in link_cmd
+    assert "-ladvapi32" in link_cmd
 
 
 def test_windows_gnu_link_uses_gnu_system_lib_flags(
@@ -2839,6 +3032,7 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
     assert "-lws2_32" in link_cmd
     assert "-lntdll" in link_cmd
     assert "-luserenv" in link_cmd
+    assert "-ladvapi32" in link_cmd
 
 
 def _legacy_streamed_cache_digest(
@@ -3140,8 +3334,9 @@ def test_shared_module_resolution_cache_skips_resolve_for_normalized_absolute_pa
     def fail_resolve(self: Path, *args: object, **kwargs: object) -> Path:
         raise AssertionError(f"resolve() should not run for {self}")
 
-    monkeypatch.setattr(Path, "resolve", fail_resolve)
-    assert cache.resolved_path(path) == path
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "resolve", fail_resolve)
+        assert cache.resolved_path(path) == path
 
 
 def test_shared_module_resolution_cache_resolves_relative_paths(
@@ -3365,7 +3560,13 @@ def test_source_content_sha256_reuses_persistent_hash_after_process_cache_clear(
     second_hash = cli._source_content_sha256(module_path)
 
     assert second_hash == first_hash
-    assert hash_calls == 1
+    stat = module_path.stat()
+    stat_identity_is_strong = cli._source_hash_stat_identity_is_strong(
+        ctime_ns=cli._stat_ctime_ns(stat),
+        inode=int(getattr(stat, "st_ino", 0) or 0),
+        device=cli._stat_device(stat),
+    )
+    assert hash_calls == (1 if stat_identity_is_strong else 2)
 
 
 def test_source_content_sha256_rehashes_preserved_mtime_content_change(
@@ -3515,6 +3716,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
         is_package=False,
         import_scan_mode="full",
         func_defaults={"f": {"x": 1}},
+        func_kinds={"f": "sync"},
         imports=("json",),
     )
     assert cli._read_persisted_module_analysis(
@@ -3523,7 +3725,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="full",
-    ) == ({"f": {"x": 1}}, ("json",))
+    ) == ({"f": {"x": 1}}, {"f": "sync"}, ("json",))
 
     monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
     assert (
@@ -3554,6 +3756,7 @@ def test_persisted_module_analysis_cache_tracks_source_content(
         is_package=False,
         import_scan_mode="full",
         func_defaults={"f": {"x": 1}},
+        func_kinds={"f": "sync"},
         imports=("json",),
     )
 
@@ -4198,6 +4401,7 @@ def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
         is_package=False,
         import_scan_mode="full",
         func_defaults={},
+        func_kinds={},
         imports=("os", "warnings"),
     )
     cache_path = cli._module_analysis_cache_path(
@@ -4492,7 +4696,12 @@ def test_backend_daemon_binary_is_newer_prefers_explicit_cargo_target_dir(
     backend_bin.write_text("backend")
     pid_path = tmp_path / "daemon.pid"
     pid_path.write_text("1234")
-    explicit_runtime = tmp_path / "explicit-target" / "release" / "libmolt_runtime.a"
+    explicit_runtime = (
+        tmp_path
+        / "explicit-target"
+        / "release-output"
+        / cli._runtime_lib_archive_name("micro", None)
+    )
     explicit_runtime.parent.mkdir(parents=True)
     explicit_runtime.write_text("runtime")
 
@@ -4806,7 +5015,8 @@ def test_backend_bin_path_is_cached(
     second = cli._backend_bin_path(tmp_path, "dev-fast")
 
     info = cli._backend_bin_path_cached.cache_info()
-    expected = Path.cwd() / "external-target" / "dev-fast" / "molt-backend"
+    exe_suffix = ".exe" if os.name == "nt" else ""
+    expected = Path.cwd() / "external-target" / "dev-fast" / f"molt-backend{exe_suffix}"
     assert first == second == expected
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -4982,7 +5192,10 @@ def test_runtime_lib_path_is_cached(
 
     info = cli._runtime_lib_path_cached.cache_info()
     expected = (
-        Path.cwd() / "external-target" / "dev-fast" / "libmolt_runtime.stdlib_micro.a"
+        Path.cwd()
+        / "external-target"
+        / "dev-fast"
+        / cli._runtime_lib_archive_name("micro", None)
     )
     assert first == second == expected
     assert info.hits >= 1
@@ -5083,6 +5296,7 @@ def test_load_module_analysis_reuses_persisted_cache(
         tree,
         imports,
         func_defaults,
+        func_kinds,
         cached_source,
         cache_hit,
         interface_changed,
@@ -5100,6 +5314,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert tree is not None
     assert imports == ("warnings",)
     assert "f" in func_defaults
+    assert func_kinds == {"f": "sync"}
     assert cached_source == source
     assert cache_hit is False
     assert interface_changed is True
@@ -5113,6 +5328,7 @@ def test_load_module_analysis_reuses_persisted_cache(
         cached_tree,
         cached_imports,
         cached_defaults,
+        cached_kinds,
         cached_source,
         cache_hit,
         interface_changed,
@@ -5131,6 +5347,7 @@ def test_load_module_analysis_reuses_persisted_cache(
     assert cached_tree is None
     assert cached_imports == ("warnings",)
     assert cached_defaults == func_defaults
+    assert cached_kinds == func_kinds
     assert cached_source is None
     assert cache_hit is True
     assert interface_changed is False
@@ -5149,6 +5366,7 @@ def test_load_module_analysis_persists_bytes_defaults(
         tree,
         imports,
         func_defaults,
+        func_kinds,
         cached_source,
         cache_hit,
         interface_changed,
@@ -5172,6 +5390,7 @@ def test_load_module_analysis_persists_bytes_defaults(
             "defaults": [{"const": True, "value": b"abc"}],
         }
     }
+    assert func_kinds == {"f": "sync"}
     assert cached_source == source
     assert cache_hit is False
     assert interface_changed is True
@@ -5185,6 +5404,7 @@ def test_load_module_analysis_persists_bytes_defaults(
         cached_tree,
         cached_imports,
         cached_defaults,
+        cached_kinds,
         cached_source,
         cache_hit,
         interface_changed,
@@ -5203,6 +5423,7 @@ def test_load_module_analysis_persists_bytes_defaults(
     assert cached_tree is None
     assert cached_imports == ()
     assert cached_defaults == func_defaults
+    assert cached_kinds == func_kinds
     assert cached_source is None
     assert cache_hit is True
     assert interface_changed is False
@@ -5244,6 +5465,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
         cached_tree,
         cached_imports,
         cached_defaults,
+        cached_kinds,
         cached_source,
         cache_hit,
         interface_changed,
@@ -5262,6 +5484,7 @@ def test_load_module_analysis_reuses_persisted_module_analysis_imports(
     assert cached_tree is None
     assert cached_imports == ("warnings",)
     assert "f" in cached_defaults
+    assert cached_kinds == {"f": "sync"}
     assert cached_source is None
     assert cache_hit is True
     assert interface_changed is False
@@ -5287,7 +5510,8 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
         project_root=tmp_path,
     )
     assert first[1] == ("os", "warnings")
-    assert first[4] is False
+    assert first[3] == {"f": "sync"}
+    assert first[5] is False
 
     second = cli._load_module_analysis(
         module_path,
@@ -5301,7 +5525,8 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
     )
     assert second[0] is not None
     assert second[1] == ("os",)
-    assert second[4] is False
+    assert second[3] == {"f": "sync"}
+    assert second[5] is False
 
     def fail_parse(*args: object, **kwargs: object) -> ast.AST:
         raise AssertionError("unexpected parse")
@@ -5331,10 +5556,10 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
 
     assert full_cached[0] is None
     assert full_cached[1] == ("os", "warnings")
-    assert full_cached[4] is True
+    assert full_cached[5] is True
     assert module_init_cached[0] is None
     assert module_init_cached[1] == ("os",)
-    assert module_init_cached[4] is True
+    assert module_init_cached[5] is True
 
 
 def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse(
@@ -5356,7 +5581,8 @@ def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse
         project_root=tmp_path,
     )
     assert first[1] == ("os",)
-    assert first[4] is False
+    assert first[3] == {"f": "sync"}
+    assert first[5] is False
 
     second = cli._load_module_analysis(
         module_path,
@@ -5370,7 +5596,8 @@ def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse
     )
     assert second[0] is not None
     assert second[1] == ("os", "warnings")
-    assert second[4] is False
+    assert second[3] == {"f": "sync"}
+    assert second[5] is False
 
 
 def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
@@ -5413,6 +5640,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
         cached_tree,
         cached_imports,
         cached_defaults,
+        cached_kinds,
         cached_source,
         cache_hit,
         interface_changed,
@@ -5431,6 +5659,7 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     assert cached_tree is None
     assert cached_imports == ("warnings",)
     assert "f" in cached_defaults
+    assert cached_kinds == {"f": "sync"}
     assert cached_source is None
     assert calls == 1
     assert cache_hit is True
@@ -5465,6 +5694,7 @@ def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
         tree,
         imports,
         func_defaults,
+        func_kinds,
         cached_source,
         cache_hit,
         interface_changed,
@@ -5483,6 +5713,7 @@ def test_load_module_analysis_marks_body_only_edit_as_interface_stable(
     assert tree is not None
     assert imports == ("warnings",)
     assert "f" in func_defaults
+    assert func_kinds == {"f": "sync"}
     assert cached_source is not None
     assert cache_hit is False
     assert interface_changed is False
@@ -5801,6 +6032,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
             known_modules={"alpha"},
             stdlib_allowlist=set(),
             known_func_defaults={},
+            known_func_kinds={},
             module_deps={"alpha": set()},
             module_chunk_max_ops=0,
             optimization_profile="dev",
@@ -5875,6 +6107,7 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
         known_modules={"alpha"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"alpha": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6038,6 +6271,11 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> No
             "alpha": {"helper": {"params": 1, "defaults": []}},
             "beta": {"unused": {"params": 2, "defaults": []}},
         },
+        known_func_kinds={
+            "main": {"run": "sync"},
+            "alpha": {"helper": "gen"},
+            "beta": {"unused": "sync"},
+        },
         module_deps={"main": {"alpha"}, "alpha": set(), "beta": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6052,7 +6290,9 @@ def test_module_lowering_context_payload_ignores_unrelated_func_defaults() -> No
 
     assert payload is not None
     assert set(payload["known_func_defaults"]) == {"main", "alpha"}
+    assert set(payload["known_func_kinds"]) == {"main", "alpha"}
     assert "beta" not in payload["known_func_defaults"]
+    assert "beta" not in payload["known_func_kinds"]
 
 
 def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
@@ -6072,6 +6312,7 @@ def test_module_lowering_context_payload_tracks_frontend_tooling_fingerprint(
         known_modules={"main"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6112,6 +6353,7 @@ def test_module_lowering_context_payload_scopes_known_modules_and_hot_functions(
         known_modules={"main", "alpha", "beta", "unrelated"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": {"alpha", "beta"}, "alpha": set(), "beta": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6159,6 +6401,7 @@ def test_module_lowering_context_payload_scopes_known_classes() -> None:
         known_modules={"main", "alpha", "unrelated"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6202,6 +6445,11 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
             "alpha": {"helper": {"params": 1, "defaults": []}},
             "unrelated": {"unused": {"params": 0, "defaults": []}},
         },
+        known_func_kinds={
+            "main": {"run": "sync"},
+            "alpha": {"helper": "gen"},
+            "unrelated": {"unused": "sync"},
+        },
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
@@ -6213,6 +6461,7 @@ def test_module_worker_payload_scopes_parallel_lowering_inputs() -> None:
     assert payload["known_modules"] == ["alpha", "main"]
     assert set(payload["known_classes"]) == {"MainClass", "DepClass"}
     assert set(payload["known_func_defaults"]) == {"main", "alpha"}
+    assert set(payload["known_func_kinds"]) == {"main", "alpha"}
     assert payload["pgo_hot_functions"] == ["main::hot"]
     assert "source" not in payload
     assert payload["source_lease"]["kind"] == "inline"
@@ -6237,6 +6486,7 @@ def test_module_worker_payload_reuses_prebuilt_stdlib_allowlist() -> None:
         stdlib_allowlist_sorted=("json",),
         stdlib_allowlist_payload=stdlib_allowlist_payload,
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
@@ -6346,6 +6596,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
             known_modules={"main", "alpha"},
             stdlib_allowlist=set(),
             known_func_defaults={},
+            known_func_kinds={},
             module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
             module_chunk_max_ops=0,
             optimization_profile="dev",
@@ -6406,6 +6657,7 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
             known_modules={"main", "alpha"},
             stdlib_allowlist=set(),
             known_func_defaults={},
+            known_func_kinds={},
             module_deps={"main": {"alpha"}, "alpha": set()},
             module_chunk_max_ops=0,
             optimization_profile="dev",
@@ -6462,6 +6714,7 @@ def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
             known_classes_snapshot={},
             stdlib_allowlist_sorted=(),
             known_func_defaults={},
+            known_func_kinds={},
             module_deps={"main": set()},
             module_chunking=False,
             module_chunk_max_ops=0,
@@ -6509,6 +6762,7 @@ def test_module_lowering_context_payload_scopes_type_facts() -> None:
         known_modules={"main", "alpha", "unrelated"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6555,6 +6809,7 @@ def test_module_worker_payload_scopes_type_facts() -> None:
         known_classes_snapshot={},
         stdlib_allowlist_sorted=("json",),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set(), "unrelated": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
@@ -6593,12 +6848,21 @@ def test_build_scoped_lowering_inputs_precomputes_scoped_views() -> None:
             "alpha": {"helper": {"params": 1, "defaults": []}},
             "unrelated": {"unused": {"params": 0, "defaults": []}},
         },
+        known_func_kinds={
+            "main": {"run": "sync"},
+            "alpha": {"helper": "gen"},
+            "unrelated": {"unused": "sync"},
+        },
         pgo_hot_function_names={"main::hot", "unrelated::cold"},
         type_facts=type_facts,
     )
 
     assert scoped_lowering_inputs.known_modules_by_module["main"] == ("alpha", "main")
     assert set(scoped_lowering_inputs.known_func_defaults_by_module["main"]) == {
+        "main",
+        "alpha",
+    }
+    assert set(scoped_lowering_inputs.known_func_kinds_by_module["main"]) == {
         "main",
         "alpha",
     }
@@ -6632,6 +6896,10 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
             "main": {"run": {"params": 0, "defaults": []}},
             "alpha": {"helper": {"params": 1, "defaults": []}},
         },
+        known_func_kinds={
+            "main": {"run": "sync"},
+            "alpha": {"helper": "gen"},
+        },
         pgo_hot_function_names={"main::hot"},
         type_facts=type_facts,
     )
@@ -6643,6 +6911,10 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
         known_func_defaults={
             "main": {"run": {"params": 0, "defaults": []}},
             "alpha": {"helper": {"params": 1, "defaults": []}},
+        },
+        known_func_kinds={
+            "main": {"run": "sync"},
+            "alpha": {"helper": "gen"},
         },
         pgo_hot_function_names={"main::hot"},
         type_facts=type_facts,
@@ -6664,6 +6936,10 @@ def test_scoped_lowering_input_view_reuses_precomputed_bundle() -> None:
         is scoped_lowering_inputs.known_func_defaults_by_module["main"]
     )
     assert (
+        scoped_view.known_func_kinds
+        is scoped_lowering_inputs.known_func_kinds_by_module["main"]
+    )
+    assert (
         scoped_view.pgo_hot_function_names
         is scoped_lowering_inputs.pgo_hot_function_names_by_module["main"]
     )
@@ -6680,6 +6956,7 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
     scoped_inputs = cli._ScopedLoweringInputView(
         known_modules=("alpha", "main"),
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
+        known_func_kinds={"main": {"run": "sync"}},
         pgo_hot_function_names=("main::hot",),
         type_facts=None,
     )
@@ -6705,6 +6982,7 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
         known_modules={"main", "alpha"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6720,6 +6998,7 @@ def test_module_lowering_context_payload_reuses_precomputed_scoped_inputs(
     assert tuple(payload["known_modules"]) == ("alpha", "main")
     assert tuple(payload["pgo_hot_functions"]) == ("main::hot",)
     assert set(payload["known_func_defaults"]) == {"main"}
+    assert set(payload["known_func_kinds"]) == {"main"}
 
 
 def test_module_worker_payload_reuses_precomputed_scoped_inputs(
@@ -6728,6 +7007,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
     scoped_inputs = cli._ScopedLoweringInputView(
         known_modules=("alpha", "main"),
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
+        known_func_kinds={"main": {"run": "sync"}},
         pgo_hot_function_names=("main::hot",),
         type_facts=None,
     )
@@ -6755,6 +7035,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
         known_classes_snapshot={},
         stdlib_allowlist_sorted=("json",),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set()},
         module_chunking=False,
         module_chunk_max_ops=0,
@@ -6767,6 +7048,7 @@ def test_module_worker_payload_reuses_precomputed_scoped_inputs(
     assert payload["known_modules"] == ["alpha", "main"]
     assert payload["pgo_hot_functions"] == ["main::hot"]
     assert set(payload["known_func_defaults"]) == {"main"}
+    assert set(payload["known_func_kinds"]) == {"main"}
 
 
 def test_load_cached_module_lowering_result_reuses_precomputed_views(
@@ -6819,6 +7101,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         known_modules={"alpha"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"alpha": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6829,6 +7112,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
         scoped_inputs=cli._ScopedLoweringInputView(
             known_modules=("alpha",),
             known_func_defaults={},
+            known_func_kinds={},
             pgo_hot_function_names=(),
             type_facts=None,
         ),
@@ -6857,6 +7141,7 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
         scoped_inputs=cli._ScopedLoweringInputView(
             known_modules=("alpha", "main"),
             known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
+            known_func_kinds={"main": {"run": "sync"}},
             pgo_hot_function_names=("main::hot",),
             type_facts=None,
         ),
@@ -6866,6 +7151,7 @@ def test_module_frontend_generator_uses_scoped_inputs() -> None:
     assert gen.module_name == "main"
     assert gen.known_modules == {"alpha", "main"}
     assert gen.known_func_defaults == {"main": {"run": {"params": 0, "defaults": []}}}
+    assert gen.known_func_kinds == {"main": {"run": "sync"}}
     assert gen.midend_hot_functions == {"main::hot"}
     assert gen.classes["MainClass"]["module"] == "main"
 
@@ -6885,6 +7171,7 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views() ->
         known_modules={"main", "alpha"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": {"alpha"}, "alpha": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6895,6 +7182,7 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views() ->
         scoped_inputs=cli._ScopedLoweringInputView(
             known_modules=("alpha", "main"),
             known_func_defaults={},
+            known_func_kinds={},
             pgo_hot_function_names=(),
             type_facts=None,
         ),
@@ -6904,6 +7192,58 @@ def test_module_lowering_context_digest_for_module_reuses_precomputed_views() ->
 
     assert isinstance(digest, str)
     assert digest
+
+
+def test_module_lowering_context_digest_includes_scoped_func_kinds(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "main.py"
+    module_path.write_text(
+        "from helpers import cpu_profile\n"
+        "def run():\n"
+        "    return cpu_profile('x')\n",
+        encoding="utf-8",
+    )
+    common: dict[str, object] = {
+        "logical_source_path": str(module_path),
+        "entry_override": None,
+        "known_classes_snapshot": {},
+        "parse_codec": "json",
+        "type_hint_policy": "ignore",
+        "fallback_policy": "error",
+        "type_facts": None,
+        "enable_phi": True,
+        "known_modules": {"main", "helpers"},
+        "stdlib_allowlist": set(),
+        "known_func_defaults": {
+            "helpers": {"cpu_profile": {"params": 1, "defaults": []}}
+        },
+        "module_deps": {"main": {"helpers"}, "helpers": set()},
+        "module_is_namespace": False,
+        "module_chunking": False,
+        "module_chunk_max_ops": 0,
+        "optimization_profile": "dev",
+        "pgo_hot_function_names": set(),
+        "module_dep_closures": {"main": frozenset({"main", "helpers"})},
+        "path_stat": module_path.stat(),
+    }
+
+    sync_digest = cli._module_lowering_context_digest_for_module(
+        "main",
+        module_path,
+        known_func_kinds={"helpers": {"cpu_profile": "sync"}},
+        **common,
+    )
+    gen_digest = cli._module_lowering_context_digest_for_module(
+        "main",
+        module_path,
+        known_func_kinds={"helpers": {"cpu_profile": "gen"}},
+        **common,
+    )
+
+    assert sync_digest is not None
+    assert gen_digest is not None
+    assert sync_digest != gen_digest
 
 
 def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> None:
@@ -6942,6 +7282,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> N
         known_modules={"main"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6952,6 +7293,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> N
         scoped_inputs=cli._ScopedLoweringInputView(
             known_modules=("main",),
             known_func_defaults={},
+            known_func_kinds={},
             pgo_hot_function_names=(),
             type_facts=facts_a,
         ),
@@ -6972,6 +7314,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> N
         known_modules={"main"},
         stdlib_allowlist=set(),
         known_func_defaults={},
+        known_func_kinds={},
         module_deps={"main": set()},
         module_is_namespace=False,
         module_chunking=False,
@@ -6982,6 +7325,7 @@ def test_module_lowering_context_digest_ignores_type_facts_metadata_noise() -> N
         scoped_inputs=cli._ScopedLoweringInputView(
             known_modules=("main",),
             known_func_defaults={},
+            known_func_kinds={},
             pgo_hot_function_names=(),
             type_facts=facts_b,
         ),
@@ -8210,6 +8554,7 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
         module_deps={"main": {"alpha"}, "alpha": set()},
         known_modules={"main", "alpha"},
         known_func_defaults={"main": {"run": {"params": 0, "defaults": []}}},
+        known_func_kinds={"main": {"run": "sync"}},
         pgo_hot_function_names={"main::hot"},
         type_facts=None,
         known_classes_snapshot={"MainClass": {"module": "main", "fields": {}}},
@@ -8222,6 +8567,9 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
     assert execution_view.metadata.logical_source_path == "generated/main.py"
     assert execution_view.metadata.path_stat is not None
     assert execution_view.scoped_inputs.known_modules == ("alpha", "main")
+    assert execution_view.scoped_inputs.known_func_kinds == {
+        "main": {"run": "sync"}
+    }
     assert execution_view.scoped_inputs.pgo_hot_function_names == ("main::hot",)
     assert set(execution_view.scoped_known_classes) == {"MainClass"}
 
@@ -8295,7 +8643,7 @@ def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
     payload = {
         "module_name": "worker_module",
         "module_path": str(module_path),
-        "source": "x = 1\ny = x + 2\n",
+        "source_lease": {"kind": "inline", "source": "x = 1\ny = x + 2\n"},
         "parse_codec": "msgpack",
         "type_hint_policy": "ignore",
         "fallback_policy": "error",
@@ -8306,6 +8654,7 @@ def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
         "known_classes": {},
         "stdlib_allowlist": [],
         "known_func_defaults": {},
+        "known_func_kinds": {},
         "module_chunking": False,
         "module_chunk_max_ops": 0,
         "optimization_profile": "dev",
@@ -8342,6 +8691,7 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         has_back_edges=False,
         known_modules={"entry"},
         known_func_defaults={},
+        known_func_kinds={},
         pgo_hot_function_names=set(),
         generated_module_source_paths={},
         entry_module="entry",
@@ -11139,7 +11489,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         frontend_layer_execution_context=cli._FrontendLayerExecutionContext(
             syntax_error_modules={},
             module_graph={},
-            module_sources={},
+            module_source_catalog=cli._build_module_source_catalog({}),
             project_root=tmp_path,
             module_resolution_cache=cli._ModuleResolutionCache(),
             parse_codec="json",
@@ -11150,6 +11500,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
             known_modules=set(),
             stdlib_allowlist=set(),
             known_func_defaults={},
+            known_func_kinds={},
             module_deps={},
             module_chunk_max_ops=0,
             optimization_profile="dev",
@@ -11188,6 +11539,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         False,
         output_layout,
         set(),
+        {},
         {},
         {},
         [],
@@ -11345,7 +11697,8 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend"
+    exe_suffix = ".exe" if os.name == "nt" else ""
+    backend_bin = tmp_path / "target" / "dev-fast" / f"molt-backend{exe_suffix}"
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
@@ -11367,6 +11720,11 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
 
     monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
     monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
+    )
 
     assert cli._ensure_backend_binary(
         backend_bin,
@@ -11396,7 +11754,10 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend"
+    exe_suffix = ".exe" if os.name == "nt" else ""
+    backend_bin = (
+        tmp_path / "target" / "dev-fast" / f"molt-backend.wasm_backend{exe_suffix}"
+    )
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
@@ -11411,7 +11772,8 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         build_cmds.append(list(cmd))
-        cargo_output = backend_bin.parent / "molt-backend"
+        exe_suffix = ".exe" if os.name == "nt" else ""
+        cargo_output = backend_bin.parent / f"molt-backend{exe_suffix}"
         cargo_output.parent.mkdir(parents=True, exist_ok=True)
         cargo_output.write_text("#!/bin/sh\n")
         cargo_output.chmod(0o755)
@@ -11419,6 +11781,11 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
 
     monkeypatch.setattr(cli, "_backend_fingerprint", fake_backend_fingerprint)
     monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
+    )
 
     assert cli._ensure_backend_binary(
         backend_bin,
@@ -11449,12 +11816,13 @@ def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebui
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target_dir = tmp_path / "target"
-    backend_bin = target_dir / "dev-fast" / "molt-backend.wasm_backend"
-    cargo_output = target_dir / "dev-fast" / "molt-backend"
+    exe_suffix = ".exe" if os.name == "nt" else ""
+    backend_bin = target_dir / "dev-fast" / f"molt-backend.wasm_backend{exe_suffix}"
+    cargo_output = target_dir / "dev-fast" / f"molt-backend{exe_suffix}"
     backend_source = tmp_path / "runtime" / "molt-backend" / "src" / "lib.rs"
     backend_source.parent.mkdir(parents=True, exist_ok=True)
     backend_source.write_text("// backend source\n", encoding="utf-8")
-    os.utime(backend_source, ns=(1, 1))
+    os.utime(backend_source, (1.0, 1.0))
     cargo_output.parent.mkdir(parents=True, exist_ok=True)
     cargo_output.write_text(
         "#!/bin/sh\n"
@@ -11486,6 +11854,11 @@ def test_ensure_backend_binary_materializes_prebuilt_feature_alias_without_rebui
             build_cmds.append(list(cmd))
             or subprocess.CompletedProcess(cmd, 1, "", "unexpected rebuild")
         ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
     assert cli._ensure_backend_binary(
@@ -11553,7 +11926,8 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
     backend_output = tmp_path / "out.rs"
-    canonical_backend = backend_bin.parent / "molt-backend"
+    exe_suffix = ".exe" if os.name == "nt" else ""
+    canonical_backend = backend_bin.parent / f"molt-backend{exe_suffix}"
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     seen_features: list[tuple[str, ...]] = []
     build_cmds: list[list[str]] = []
@@ -11688,7 +12062,8 @@ def test_build_release_rust_target_uses_release_fast_backend_profile_by_default(
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
     backend_output = tmp_path / "out.rs"
-    canonical_backend = backend_bin.parent / "molt-backend"
+    exe_suffix = ".exe" if os.name == "nt" else ""
+    canonical_backend = backend_bin.parent / f"molt-backend{exe_suffix}"
     fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
     build_cmds: list[list[str]] = []
 
@@ -14137,8 +14512,8 @@ def test_backend_daemon_enabled_is_cached(
     second = cli._backend_daemon_enabled()
 
     info = cli._backend_daemon_enabled_cached.cache_info()
-    assert first is True
-    assert second is True
+    assert first is (os.name == "posix")
+    assert second is first
     assert info.hits >= 1
     assert info.currsize >= 1
 
@@ -14651,7 +15026,7 @@ def test_compile_with_backend_daemon_probes_cache_without_ir_on_hit(
             assert timeout == 0.1
 
         def connect(self, address: str) -> None:
-            assert address == "/tmp/fake.sock"
+            assert address == str(Path("/tmp/fake.sock"))
 
         def sendall(self, data: bytes) -> None:
             payload = json.loads(data)
@@ -14688,6 +15063,7 @@ def test_compile_with_backend_daemon_probes_cache_without_ir_on_hit(
         def close(self) -> None:
             return None
 
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
@@ -14747,7 +15123,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         def connect(self, address: str) -> None:
             nonlocal connects
             connects += 1
-            assert address == "/tmp/fake.sock"
+            assert address == str(Path("/tmp/fake.sock"))
 
         def sendall(self, data: bytes) -> None:
             payload = json.loads(data)
@@ -14800,6 +15176,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         def close(self) -> None:
             return None
 
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
@@ -14871,7 +15248,7 @@ def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
             assert timeout == 0.1
 
         def connect(self, address: str) -> None:
-            assert address == "/tmp/fake.sock"
+            assert address == str(Path("/tmp/fake.sock"))
 
         def sendall(self, data: bytes) -> None:
             payload = json.loads(data)
@@ -14920,6 +15297,7 @@ def test_compile_with_backend_daemon_sends_ir_when_shared_stdlib_cache_missing(
         def close(self) -> None:
             return None
 
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
@@ -14979,7 +15357,7 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
             assert timeout == 0.1
 
         def connect(self, address: str) -> None:
-            assert address == "/tmp/fake.sock"
+            assert address == str(Path("/tmp/fake.sock"))
 
         def sendall(self, data: bytes) -> None:
             payload = json.loads(data)
@@ -15017,6 +15395,7 @@ def test_compile_with_backend_daemon_defers_full_encode_until_probe_miss(
     monkeypatch.setattr(
         cli, "_backend_daemon_compile_request_bytes", wrapped_compile_request_bytes
     )
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
@@ -15071,6 +15450,7 @@ def test_compile_with_backend_daemon_fails_fast_when_daemon_dies_mid_request(
         project_root=tmp_path,
     )
 
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     monkeypatch.setattr(
         cli,
@@ -15175,6 +15555,7 @@ def test_backend_daemon_request_bytes_accumulates_partial_chunks(
             buffer[: len(chunk)] = chunk
             return len(chunk)
 
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
 
     response, err = cli._backend_daemon_request_bytes(
@@ -15242,6 +15623,7 @@ def test_backend_daemon_request_bytes_waits_while_live_daemon_is_still_compiling
         identity_checks.append(identity.pid)
         return True
 
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     monkeypatch.setattr(
         cli,
@@ -15293,6 +15675,7 @@ def test_backend_daemon_request_bytes_rejects_whitespace_only_response(
             buffer[: len(chunk)] = chunk
             return len(chunk)
 
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
 
     response, err = cli._backend_daemon_request_bytes(
@@ -15350,6 +15733,7 @@ def test_backend_daemon_request_bytes_reports_empty_response_with_identity_prove
             assert len(buffer) == 65536
             return 0
 
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
     monkeypatch.setattr(
         cli,
@@ -15410,6 +15794,7 @@ def test_backend_daemon_request_bytes_ignores_redirect_file(
             buffer[: len(chunk)] = chunk
             return len(chunk)
 
+    _enable_fake_backend_daemon_unix_socket(monkeypatch)
     monkeypatch.setattr(cli.socket, "socket", lambda *args: _FakeSocket())
 
     response, err = cli._backend_daemon_request_bytes(
@@ -15457,12 +15842,15 @@ def test_kill_stale_backend_daemon_requires_verified_identity(
         lambda pid: f"{backend_bin} --daemon --socket {socket_path}",
     )
 
-    def fake_kill(pid: int, sig: int) -> None:
-        killed.append((pid, sig))
-        if sig == signal.SIGTERM:
-            alive[pid] = False
+    def fake_terminate(
+        daemon_identity: cli._BackendDaemonIdentity, *, grace: float = 1.0
+    ) -> bool:
+        assert grace == 1.0
+        killed.append((daemon_identity.pid, signal.SIGTERM))
+        alive[daemon_identity.pid] = False
+        return True
 
-    monkeypatch.setattr(cli.os, "kill", fake_kill)
+    monkeypatch.setattr(cli, "_terminate_backend_daemon_identity", fake_terminate)
 
     cli._kill_stale_backend_daemon(tmp_path, "dev-fast")
 
@@ -15479,7 +15867,9 @@ def test_backend_daemon_stale_check_tracks_active_runtime_profiles(
     target_root = project_root / "target"
     (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     backend_bin = target_root / "dev-fast" / "molt-backend"
-    runtime_lib = target_root / "release-output" / "libmolt_runtime.a"
+    runtime_lib = (
+        target_root / "release-output" / cli._runtime_lib_archive_name("micro", None)
+    )
     pid_path = target_root / ".molt_state" / "backend_daemon" / "molt-backend.pid"
     for path in (backend_bin, runtime_lib, pid_path):
         path.parent.mkdir(parents=True, exist_ok=True)
