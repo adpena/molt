@@ -21,6 +21,10 @@ def _identity(tmp_path: Path, *, pid: int = 101) -> custody.BackendDaemonIdentit
     )
 
 
+def _backend_daemon_force_kill_signal() -> int:
+    return getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
 def test_backend_daemon_identity_roundtrip_and_rejects_malformed(
     tmp_path: Path,
 ) -> None:
@@ -46,6 +50,16 @@ def test_backend_daemon_command_match_requires_daemon_backend_and_socket(
         command,
         backend_bin=identity.backend_bin,
         socket_path=identity.socket_path,
+    )
+    spaced_backend_bin = tmp_path / "target with space" / "debug" / "molt-backend"
+    spaced_socket_path = tmp_path / "socket dir" / "daemon.sock"
+    quoted_command = (
+        f'"{spaced_backend_bin}" --daemon --socket "{spaced_socket_path}"'
+    )
+    assert custody.backend_daemon_command_matches_identity(
+        quoted_command,
+        backend_bin=spaced_backend_bin,
+        socket_path=spaced_socket_path,
     )
     assert not custody.backend_daemon_command_matches_identity(
         f"{identity.backend_bin} --socket {identity.socket_path}",
@@ -164,7 +178,36 @@ def test_backend_daemon_termination_escalates_only_after_verified_grace(
     )
 
     assert custody.terminate_backend_daemon_identity(identity, grace=0.01)
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert signals == [signal.SIGTERM, _backend_daemon_force_kill_signal()]
+
+
+def test_backend_daemon_termination_escalates_with_sigterm_without_sigkill(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    identity = _identity(tmp_path)
+    command = f"{identity.backend_bin} --daemon --socket {identity.socket_path}"
+    signals: list[int] = []
+    ticks = iter([0.0, 0.0, 0.1])
+    signal_without_sigkill = type(
+        "SignalWithoutSigkill",
+        (),
+        {"SIGTERM": signal.SIGTERM},
+    )
+
+    monkeypatch.setattr(custody, "signal", signal_without_sigkill)
+    monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(custody, "_process_command", lambda pid: command)
+    monkeypatch.setattr(custody.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(custody.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        custody.os,
+        "kill",
+        lambda pid, sig: signals.append(sig),
+    )
+
+    assert custody.terminate_backend_daemon_identity(identity, grace=0.01)
+    assert signals == [signal.SIGTERM, signal.SIGTERM]
 
 
 def test_backend_daemon_legacy_pid_cleanup_unlinks_without_signaling(

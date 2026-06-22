@@ -158,6 +158,7 @@ class _GeneratorProtocol(Protocol):
     in_generator: Any
     instance_attr_mutations: dict[str, set[str]]
     known_func_defaults: dict[str, dict[str, dict[str, Any]]]
+    known_func_kinds: dict[str, dict[str, str]]
     known_modules: Any
     lambda_counter: Any
     local_class_names: set[str]
@@ -265,6 +266,7 @@ class _GeneratorProtocol(Protocol):
         known_classes: dict[str, ClassInfo] | None = None,
         stdlib_allowlist: set[str] | None = None,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
+        known_func_kinds: dict[str, dict[str, str]] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
@@ -896,6 +898,18 @@ class _GeneratorProtocol(Protocol):
     def _lookup_func_defaults(
         self, module_name: str | None, func_id: str
     ) -> dict[str, Any] | None: ...
+
+    def _lookup_func_kind(self, module_name: str | None, func_id: str) -> str | None: ...
+
+    def _imported_attr_name(self, bind_name: str) -> str: ...
+
+    def _known_function_symbol_target(
+        self, func_symbol: str
+    ) -> tuple[str, str] | None: ...
+
+    def _known_module_function_type_hint(
+        self, module_name: str | None, func_id: str
+    ) -> str | None: ...
 
     def _emit_module_attr_get_on(self, module_name: str, name: str) -> MoltValue: ...
 

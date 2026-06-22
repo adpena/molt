@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import tokenize
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -165,7 +166,8 @@ def collect_type_facts_from_paths(
     facts = TypeFacts(strict=(trust == "trusted"))
     for path in paths:
         module_name = path.stem
-        source = path.read_text(encoding="utf-8")
+        with tokenize.open(path) as handle:
+            source = handle.read()
         module = facts.module(module_name)
         _collect_module_facts(module, source, trust, infer=infer)
     return facts

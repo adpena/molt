@@ -127,12 +127,14 @@ def test_func_kinds_sync_async_gen() -> None:
     src = (
         "def s(): return 1\n"
         "async def a(): pass\n"
+        "async def ag():\n    yield 1\n"
         "def g():\n    yield 1\n"
         "def gf():\n    yield from range(3)\n"
     )
     assert collect_module_func_kinds(ast.parse(src)) == {
         "s": "sync",
         "a": "async",
+        "ag": "async_gen",
         "g": "gen",
         "gf": "gen",
     }

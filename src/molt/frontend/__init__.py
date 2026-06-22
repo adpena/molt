@@ -258,6 +258,7 @@ class SimpleTIRGenerator(
         known_classes: dict[str, ClassInfo] | None = None,
         stdlib_allowlist: set[str] | None = None,
         known_func_defaults: dict[str, dict[str, dict[str, Any]]] | None = None,
+        known_func_kinds: dict[str, dict[str, str]] | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
         optimization_profile: MidendProfile = "release",
@@ -435,6 +436,7 @@ class SimpleTIRGenerator(
         self.known_func_defaults: dict[str, dict[str, dict[str, Any]]] = (
             known_func_defaults or {}
         )
+        self.known_func_kinds: dict[str, dict[str, str]] = known_func_kinds or {}
         self.module_func_defaults: dict[str, dict[str, Any]] = {}
         self.module_annotations: MoltValue | None = None
         self.module_annotation_items: list[tuple[str, ast.expr, int]] = []
@@ -2775,7 +2777,7 @@ class SimpleTIRGenerator(
             self.module_intrinsic_globals.values()
         )
         for func_name, kind in self.module_declared_funcs.items():
-            if kind in {"sync", "async", "gen"}:
+            if kind in {"sync", "async", "gen", "async_gen"}:
                 self._reserve_function_symbol(func_name)
         self.module_defined_funcs = set()
         # module_func_defaults is populated by _populate_sema_state above (the
@@ -5013,6 +5015,78 @@ class SimpleTIRGenerator(
         if module_defaults is None:
             return None
         return module_defaults.get(func_id)
+
+    def _lookup_func_kind(self, module_name: str | None, func_id: str) -> str | None:
+        if module_name is None:
+            module_name = self.module_name
+        normalized = self._normalize_allowlist_module(module_name)
+        if normalized is not None:
+            module_name = normalized
+        module_kinds = self.known_func_kinds.get(module_name)
+        if module_kinds is None and module_name == self.module_name:
+            module_kinds = self.module_declared_funcs
+        if module_kinds is None:
+            return None
+        return module_kinds.get(func_id)
+
+    def _imported_attr_name(self, bind_name: str) -> str:
+        return self.imported_attr_names.get(
+            bind_name, self.global_imported_attr_names.get(bind_name, bind_name)
+        )
+
+    def _known_function_symbol_target(self, func_symbol: str) -> tuple[str, str] | None:
+        candidate_modules = set(self.known_func_defaults) | set(self.known_func_kinds)
+        for raw_module_name in sorted(candidate_modules):
+            module_name = (
+                self._normalize_allowlist_module(raw_module_name) or raw_module_name
+            )
+            symbol_prefix = f"{self._sanitize_module_name(module_name)}__"
+            if not func_symbol.startswith(symbol_prefix):
+                continue
+            func_id = func_symbol[len(symbol_prefix) :]
+            if (
+                self._lookup_func_defaults(module_name, func_id) is not None
+                or self._lookup_func_kind(module_name, func_id) is not None
+            ):
+                return module_name, func_id
+        return None
+
+    def _known_module_function_type_hint(
+        self, module_name: str | None, func_id: str
+    ) -> str | None:
+        if module_name is None:
+            module_name = self.module_name
+        normalized = self._normalize_allowlist_module(module_name)
+        if normalized is not None:
+            module_name = normalized
+        info = self._lookup_func_defaults(module_name, func_id)
+        kind = self._lookup_func_kind(module_name, func_id)
+        if info is None and kind is None:
+            return None
+        kind = kind or "sync"
+        func_symbol = f"{self._sanitize_module_name(module_name)}__{func_id}"
+        if kind == "sync":
+            return f"Func:{func_symbol}"
+        total_params = info.get("params") if info is not None else None
+        payload_slots = total_params if isinstance(total_params, int) else 0
+        if kind == "gen":
+            closure_size = self._task_closure_size(
+                payload_slots, include_gen_control=True
+            )
+            return f"GenFunc:{func_symbol}_poll:{closure_size}"
+        if kind == "async":
+            closure_size = self._task_closure_size(
+                payload_slots, include_gen_control=False
+            )
+            return f"AsyncFunc:{func_symbol}_poll:{closure_size}"
+        if kind == "async_gen":
+            closure_size = self._task_closure_size(
+                payload_slots, include_gen_control=True
+            )
+            return f"AsyncGenFunc:{func_symbol}_poll:{closure_size}"
+        raise ValueError(
+            f"unsupported function kind for {module_name}.{func_id}: {kind!r}"
+        )
 
     def _emit_module_attr_get_on(self, module_name: str, name: str) -> MoltValue:
         module_val = self._emit_module_load(module_name)
@@ -7403,18 +7477,31 @@ class SimpleTIRGenerator(
         if not isinstance(hint, str):
             return
         if hint.startswith(
-            ("AsyncFunc:", "AsyncClosureFunc:", "GenFunc:", "GenClosureFunc:")
+            (
+                "AsyncFunc:",
+                "AsyncClosureFunc:",
+                "AsyncGenFunc:",
+                "AsyncGenClosureFunc:",
+                "GenFunc:",
+                "GenClosureFunc:",
+            )
         ):
             symbol = hint.split(":")[1]
             base_symbol = (
                 symbol[: -len("_poll")] if symbol.endswith("_poll") else symbol
             )
-            if base_symbol in self.func_default_specs:
+            if (
+                base_symbol in self.func_default_specs
+                or self._known_function_symbol_target(base_symbol) is not None
+            ):
                 value_node.type_hint = hint
             return
         if hint.startswith("Func:"):
             symbol = hint.split(":")[1]
-            if symbol in self.func_default_specs:
+            if (
+                symbol in self.func_default_specs
+                or self._known_function_symbol_target(symbol) is not None
+            ):
                 value_node.type_hint = hint
 
     @staticmethod
@@ -14245,6 +14332,7 @@ class SimpleTIRGenerator(
             and name not in self.boxed_locals
             and name not in self.free_vars
             and name not in self.nonlocal_decls
+            and old_val is not None
         ):
             self._emit_delete_local_value(name, missing, old_val)
         else:
@@ -19638,6 +19726,11 @@ class SimpleTIRGenerator(
             if module_name == "asyncio" and attr_name in {"run", "sleep"}:
                 module_prefix = f"{self._sanitize_module_name(module_name)}__"
                 attr_val.type_hint = f"Func:{module_prefix}{attr_name}"
+            known_func_hint = self._known_module_function_type_hint(
+                module_name, attr_name
+            )
+            if known_func_hint is not None:
+                attr_val.type_hint = known_func_hint
             # Only update the import-origin binding when the source module is
             # resolvable (in known_modules, stdlib_allowlist, or at least
             # importable at runtime).  This prevents a try/except ImportError
@@ -20498,7 +20591,6 @@ class SimpleTIRGenerator(
         if self._source_is_stdlib_module:
             self.midend_stats["midend_module_skips"] += 1
             return ops
-        module_name = self.module_name or ""
         ops = self._coalesce_check_exception_ops(ops)
         ops, structural_rewrites = self._ensure_structural_cfg_validity(
             ops, stage="midend_entry"

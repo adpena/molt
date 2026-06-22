@@ -23,7 +23,7 @@ import sys
 import tempfile
 from pathlib import Path
 from collections.abc import Sequence
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from molt import process_guard
 
@@ -188,7 +188,7 @@ def run_repl(
     history_path: Path | None = None
     readline_module: Any | None = None
     try:
-        import readline as readline_module
+        readline_module = cast(Any, __import__("readline"))
 
         readline_module.parse_and_bind("tab: complete")
 
