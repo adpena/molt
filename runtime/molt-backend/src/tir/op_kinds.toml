@@ -57,6 +57,8 @@
 #   - alias_rc_barrier_opcodes / alias_heap_barrier_opcodes - opcode-only
 #                  alias-analysis barrier facts. They are conservative
 #                  fail-closed barriers consumed by alias_analysis.rs.
+#   - alias_slot_*_opcodes - opcode classes for alias_analysis.rs slot
+#                  observation. Omitted opcodes are conservative observers.
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -234,6 +236,39 @@ alias_heap_barrier_opcodes = [
     "StoreIndex",
     "Yield",
     "YieldFrom",
+]
+
+alias_slot_direct_observer_opcodes = [
+    "AllocTask",
+    "BuildDict",
+    "BuildList",
+    "BuildSet",
+    "BuildSlice",
+    "BuildTuple",
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "Index",
+    "LoadAttr",
+    "Raise",
+    "StoreIndex",
+    "Yield",
+    "YieldFrom",
+]
+
+alias_slot_typed_store_opcodes = [
+    "StoreAttr",
+]
+
+alias_slot_transparent_alias_opcodes = [
+    "Copy",
+    "TypeGuard",
+]
+
+alias_slot_never_observer_opcodes = [
+    "CheckException",
+    "DecRef",
+    "IncRef",
 ]
 
 # classify_copy_kind inert bucket: no surviving heap reference to own

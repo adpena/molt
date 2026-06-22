@@ -472,6 +472,70 @@ def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
         assert "matches!" not in body
 
 
+def test_alias_slot_observation_delegates_to_generated_table() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    alias = (
+        ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
+    ).read_text(encoding="utf-8")
+
+    expected_direct = {
+        "AllocTask",
+        "BuildDict",
+        "BuildList",
+        "BuildSet",
+        "BuildSlice",
+        "BuildTuple",
+        "Call",
+        "CallBuiltin",
+        "CallMethod",
+        "Index",
+        "LoadAttr",
+        "Raise",
+        "StoreIndex",
+        "Yield",
+        "YieldFrom",
+    }
+    expected_typed_store = {"StoreAttr"}
+    expected_transparent = {"Copy", "TypeGuard"}
+    expected_never = {"CheckException", "DecRef", "IncRef"}
+    assert set(data["alias_slot_direct_observer_opcodes"]) == expected_direct
+    assert set(data["alias_slot_typed_store_opcodes"]) == expected_typed_store
+    assert set(data["alias_slot_transparent_alias_opcodes"]) == expected_transparent
+    assert set(data["alias_slot_never_observer_opcodes"]) == expected_never
+
+    block = rendered.split("fn opcode_alias_slot_observation_table")[1].split(
+        "enum CanonicalizeCommutativeDomain"
+    )[0]
+    for opcode in expected_direct:
+        assert f"OpCode::{opcode} => AliasSlotObservation::DirectObserver," in block
+    assert "OpCode::StoreAttr => AliasSlotObservation::TypedSlotStore," in block
+    for opcode in expected_transparent:
+        assert f"OpCode::{opcode} => AliasSlotObservation::TransparentAlias," in block
+    for opcode in expected_never:
+        assert f"OpCode::{opcode} => AliasSlotObservation::NeverObserver," in block
+    assert "OpCode::Add => AliasSlotObservation::ConservativeObserver," in block
+
+    start = alias.index("pub fn may_observe_slot(")
+    brace = alias.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(alias)):
+        if alias[i] == "{":
+            depth += 1
+        elif alias[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = alias[start:end]
+    assert "aliasing_op_may_observe_slot" in body
+    assert "OpCode::LoadAttr" not in body
+    assert "OpCode::StoreAttr" not in body
+    assert "match op.opcode" not in body
+
+
 def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
     gen = _gen()
     data = gen.load_table()
@@ -484,6 +548,15 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
         assert "StoreIndx" in str(e)
     else:
         raise AssertionError("unknown opcode fact-set member was accepted")
+
+    overlap = json.loads(json.dumps(data))
+    overlap["alias_slot_never_observer_opcodes"].append("LoadAttr")
+    try:
+        gen._validate_alias_slot_observation_sets(overlap)
+    except gen.OpKindTableError as e:
+        assert "LoadAttr" in str(e)
+    else:
+        raise AssertionError("overlapping alias slot observation class was accepted")
 
 
 def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
