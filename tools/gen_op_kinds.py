@@ -96,6 +96,7 @@ _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
 # terminator (nothing frees a terminator operand internally), so it is excluded.
 _TERMINATOR_OWNERSHIP_LEAVES = {"borrowed", "transferred", "none"}
 _RESULT_VALIDITY_VALUES = {"conditional_valid_only_on_edge"}
+_CANONICALIZE_COMMUTATIVE_DOMAINS = {"numeric", "i64", "unboxed_scalar"}
 
 # The `Terminator` enum variants (blocks.rs). The [[terminator]] section MUST be
 # EXHAUSTIVE over this set (a new variant fails to render until classified —
@@ -224,6 +225,8 @@ def load_table() -> dict:
         if len(set(members)) != len(members):
             raise OpKindTableError(f"{key} has duplicate members")
 
+    _validate_canonicalize_facts(data, seen_opcodes)
+
     kinds = data.get("kind", [])
     # Every mapper spelling (canonical or alias) must be globally unique within
     # the mapper — a kind string maps to exactly one OpCode; two rows owning it
@@ -318,6 +321,93 @@ def _validate_operand_ownership(name: str, value: object) -> None:
         f"opcode {name}: 'operand_ownership' must be a string shorthand or a list, "
         f"got {type(value).__name__}"
     )
+
+
+def _validate_canonicalize_facts(data: dict, opcodes: set[str]) -> None:
+    """Validate opcode-level canonicalization facts.
+
+    These rows replace backend-local opcode lists in canonicalize.rs. They must
+    be explicit, duplicate-free, and opcode-backed so a typo cannot silently
+    disable an algebraic rewrite or make a comparison swap one-way.
+    """
+    reorder_rows = data.get("canonicalize_commutative_reorder", [])
+    if not isinstance(reorder_rows, list) or not reorder_rows:
+        raise OpKindTableError(
+            "canonicalize_commutative_reorder must be a non-empty array of tables"
+        )
+    seen_reorder: set[str] = set()
+    for row in reorder_rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(
+                "canonicalize_commutative_reorder rows must be inline tables"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"canonicalize_commutative_reorder row missing opcode: {row}"
+            )
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"canonicalize_commutative_reorder opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen_reorder:
+            raise OpKindTableError(
+                f"duplicate canonicalize_commutative_reorder opcode: {opcode}"
+            )
+        seen_reorder.add(opcode)
+        domain = row.get("domain")
+        if domain not in _CANONICALIZE_COMMUTATIVE_DOMAINS:
+            raise OpKindTableError(
+                f"canonicalize_commutative_reorder {opcode}: domain must be one of "
+                f"{sorted(_CANONICALIZE_COMMUTATIVE_DOMAINS)}, got {domain!r}"
+            )
+
+    swap_rows = data.get("canonicalize_swapped_comparison", [])
+    if not isinstance(swap_rows, list) or not swap_rows:
+        raise OpKindTableError(
+            "canonicalize_swapped_comparison must be a non-empty array of tables"
+        )
+    swaps: dict[str, str] = {}
+    for row in swap_rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(
+                "canonicalize_swapped_comparison rows must be inline tables"
+            )
+        opcode = row.get("opcode")
+        swapped = row.get("swapped")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"canonicalize_swapped_comparison row missing opcode: {row}"
+            )
+        if not isinstance(swapped, str) or not swapped:
+            raise OpKindTableError(
+                f"canonicalize_swapped_comparison {opcode}: swapped must name an OpCode"
+            )
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"canonicalize_swapped_comparison opcode {opcode!r} is not a known OpCode"
+            )
+        if swapped not in opcodes:
+            raise OpKindTableError(
+                f"canonicalize_swapped_comparison {opcode}: swapped opcode "
+                f"{swapped!r} is not a known OpCode"
+            )
+        if opcode == swapped:
+            raise OpKindTableError(
+                f"canonicalize_swapped_comparison {opcode}: swapped opcode must differ"
+            )
+        if opcode in swaps:
+            raise OpKindTableError(
+                f"duplicate canonicalize_swapped_comparison opcode: {opcode}"
+            )
+        swaps[opcode] = swapped
+
+    for opcode, swapped in swaps.items():
+        if swaps.get(swapped) != opcode:
+            raise OpKindTableError(
+                "canonicalize_swapped_comparison must be symmetric: "
+                f"{opcode}->{swapped} but {swapped}->{swaps.get(swapped)!r}"
+            )
 
 
 def _validate_consuming_kinds(data: dict, valid_spellings: dict[str, str]) -> None:
@@ -868,6 +958,48 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_purity_arms(opcodes))
     out.append("    }\n}\n\n")
 
+    # -- canonicalize facts: exhaustive over OpCode -------------------------
+    commutative_domains = {
+        row["opcode"]: row["domain"]
+        for row in data.get("canonicalize_commutative_reorder", [])
+    }
+    swapped_comparisons = {
+        row["opcode"]: row["swapped"]
+        for row in data.get("canonicalize_swapped_comparison", [])
+    }
+    out.append(
+        "/// Type domain required before canonicalize.rs may reorder a commutative\n"
+        "/// opcode. The domain belongs in the generated opcode oracle; the\n"
+        "/// consumer still checks the live operand types before rewriting.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) enum CanonicalizeCommutativeDomain {\n"
+        "    Numeric,\n"
+        "    I64,\n"
+        "    UnboxedScalar,\n"
+        "}\n\n"
+        "/// Canonicalize commutative-reorder domain. EXHAUSTIVE over the enum; a new\n"
+        "/// opcode cannot silently inherit a false default in canonicalize.rs.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_canonicalize_commutative_domain_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> Option<CanonicalizeCommutativeDomain> {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_canonicalize_commutative_domain_arms(opcodes, commutative_domains))
+    out.append("    }\n}\n\n")
+
+    out.append(
+        "/// Swapped comparison opcode for canonicalizing constants to the RHS.\n"
+        "/// EXHAUSTIVE over OpCode; non-comparison opcodes map to None.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_swapped_comparison_for_canonicalize_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> Option<OpCode> {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_swapped_comparison_arms(opcodes, swapped_comparisons))
+    out.append("    }\n}\n\n")
+
     # -- operand ownership: per-OpCode default + per-spelling consume override --
     out.append(
         _render_operand_ownership(
@@ -968,6 +1100,45 @@ def _render_opcode_purity_arms(opcodes: list[dict]) -> str:
         name = row["name"]
         variant = _PURITY_VARIANT[row["purity"]]
         lines.append(f"        OpCode::{name} => {variant},\n")
+    return "".join(lines)
+
+
+_CANONICALIZE_COMMUTATIVE_VARIANT = {
+    "numeric": "CanonicalizeCommutativeDomain::Numeric",
+    "i64": "CanonicalizeCommutativeDomain::I64",
+    "unboxed_scalar": "CanonicalizeCommutativeDomain::UnboxedScalar",
+}
+
+
+def _render_canonicalize_commutative_domain_arms(
+    opcodes: list[dict], domains: dict[str, str]
+) -> str:
+    """Render exhaustive `OpCode::X => Option<CanonicalizeCommutativeDomain>` arms."""
+    lines = []
+    for row in opcodes:
+        name = row["name"]
+        domain = domains.get(name)
+        if domain is None:
+            lines.append(f"        OpCode::{name} => None,\n")
+        else:
+            lines.append(
+                f"        OpCode::{name} => Some({_CANONICALIZE_COMMUTATIVE_VARIANT[domain]}),\n"
+            )
+    return "".join(lines)
+
+
+def _render_swapped_comparison_arms(
+    opcodes: list[dict], swapped_comparisons: dict[str, str]
+) -> str:
+    """Render exhaustive `OpCode::X => Option<OpCode>` comparison-swap arms."""
+    lines = []
+    for row in opcodes:
+        name = row["name"]
+        swapped = swapped_comparisons.get(name)
+        if swapped is None:
+            lines.append(f"        OpCode::{name} => None,\n")
+        else:
+            lines.append(f"        OpCode::{name} => Some(OpCode::{swapped}),\n")
     return "".join(lines)
 
 
