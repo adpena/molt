@@ -18,6 +18,7 @@ of truth when a claim drifts.
 - [ROOT_LAYOUT.md](ROOT_LAYOUT.md)
 - [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)
 - [OPERATIONS.md](OPERATIONS.md)
+- [ops/MULTI_AGENT_COORDINATION.md](ops/MULTI_AGENT_COORDINATION.md)
 - [INDEX.md](INDEX.md)
 
 ## Scope And Contracts

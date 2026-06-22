@@ -1,51 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# new-agent-task.sh
-# Creates a standard agent task directory under logs/agents/<task-name>/,
-# writes an initial progress report, and creates progress.log + artifacts/.
-
 if [ $# -lt 1 ]; then
-  echo "Usage: new-agent-task <task-name>"
+  echo "Usage: new-agent-task <task-name> [agent-coordination-init-args...]"
   exit 1
 fi
 
-TASK="$1"
-BASE="logs/agents/$TASK"
-TS="$(date -u +%Y%m%d-%H%M%S)"
-
-mkdir -p "$BASE/artifacts"
-
-cat > "$BASE/report_${TS}.md" <<EOF
-# Agent Progress Report
-
-## Meta
-- Task: $TASK
-- Report ID: $TS
-- Agent:
-- Repo:
-- Branch/Commit:
-- Session:
-- Status: running | paused | blocked | done
-
-## Summary
-- Initialized task directory
-
-## Outputs
-- Artifacts:
-  - $BASE/artifacts/
-- Logs:
-  - $BASE/progress.log
-
-## Next Steps
-1) Fill Meta fields
-2) Write plan
-3) Start implementation
-
-## Resume Instructions
-- tmux attach -t molt
-EOF
-
-touch "$BASE/progress.log"
-
-echo "Created task scaffold at $BASE"
+if [ -n "${PYTHON:-}" ]; then
+  PYTHON_CMD=("$PYTHON")
+elif command -v uv >/dev/null 2>&1; then
+  exec uv run --python 3.12 python tools/agent_coordination.py init "$@"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_CMD=(python)
+elif command -v py >/dev/null 2>&1; then
+  PYTHON_CMD=(py -3.12)
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON3_PATH="$(command -v python3)"
+  NORMALIZED_PYTHON3_PATH="$(printf '%s' "$PYTHON3_PATH" | tr '[:upper:]\\' '[:lower:]/')"
+  case "$NORMALIZED_PYTHON3_PATH" in
+    *"/microsoft/windowsapps/"*)
+      echo "Refusing WindowsApps python3 alias; install Python or use uv." >&2
+      exit 2
+      ;;
+  esac
+  PYTHON_CMD=(python3)
+else
+  echo "No usable Python launcher found; install uv or set PYTHON." >&2
+  exit 2
+fi
+exec "${PYTHON_CMD[@]}" tools/agent_coordination.py init "$@"

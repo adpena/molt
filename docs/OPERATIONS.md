@@ -163,7 +163,7 @@ wasm-tools validate "$CARGO_TARGET_DIR/wasm32-wasip1/release-fast/molt_runtime.w
 # Force fallback profile lane (default fallback is release-fast).
 export MOLT_WASM_RUNTIME_FALLBACK_PROFILE=release-fast
 export MOLT_WASM_FORCE_CC=1
-uv run --python 3.12 python3 -m molt.cli build --target wasm --require-linked examples/hello.py
+uv run --python 3.12 python -m molt.cli build --target wasm --require-linked examples/hello.py
 ```
 
 ### Failure String -> Copy-Paste Response
@@ -175,7 +175,7 @@ python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 
 `stdlib intrinsics lint failed: top-level module/package duplicate mapping`
 ```bash
-uv run --python 3.12 python3 - <<'PY'
+uv run --python 3.12 python - <<'PY'
 from pathlib import Path
 root = Path("src/molt/stdlib")
 mods = {}
@@ -193,7 +193,7 @@ PY
 
 `stdlib intrinsics lint failed: stdlib package kind gate violated`
 ```bash
-uv run --python 3.12 python3 - <<'PY'
+uv run --python 3.12 python - <<'PY'
 from pathlib import Path
 import runpy
 base = runpy.run_path("tools/stdlib_module_union.py")
@@ -215,7 +215,7 @@ python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 
 `stdlib intrinsics lint failed: submodule/package duplicate mapping`
 ```bash
-uv run --python 3.12 python3 - <<'PY'
+uv run --python 3.12 python - <<'PY'
 from pathlib import Path
 root = Path("src/molt/stdlib")
 mods = {}
@@ -235,7 +235,7 @@ PY
 
 `stdlib intrinsics lint failed: stdlib subpackage kind gate violated`
 ```bash
-uv run --python 3.12 python3 - <<'PY'
+uv run --python 3.12 python - <<'PY'
 from pathlib import Path
 import runpy
 base = runpy.run_path("tools/stdlib_module_union.py")
@@ -426,7 +426,7 @@ that is documented by vision/break-policy constraints.
 #
 # 2) Run differential lane as normal; harness auto-converts fail->pass as XFAIL
 #    only when CPython passes and the test path is in that manifest tuple.
-uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/exec_locals_scope.py
+uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_locals_scope.py
 
 # 3) XPASS is treated as failure; remove stale expected-failure entries when
 #    Molt gains support.
@@ -518,7 +518,7 @@ uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/exec
 - **Cache retention**: `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` using policy defaults. Override with `MOLT_CACHE_MAX_GB`, `MOLT_CACHE_MAX_AGE_DAYS`, or disable via `MOLT_CACHE_PRUNE=0`.
 - **Diff run coordination lock**: `tests/molt_diff.py` acquires `<CARGO_TARGET_DIR>/.molt_state/diff_run.lock` so concurrent agents queue instead of running overlapping diff sweeps. Tune with `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 - **Matrix harness**: use `tools/throughput_matrix.py` for reproducible single-vs-concurrent build throughput checks (profiles + wrapper modes), with optional differential mini-matrix.
-  - Example: `uv run --python 3.12 python3 tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir /Volumes/APDataStore/Molt/cargo-target --run-diff --diff-jobs 2 --diff-timeout-sec 180`
+  - Example: `uv run --python 3.12 python tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir /Volumes/APDataStore/Molt/cargo-target --run-diff --diff-jobs 2 --diff-timeout-sec 180`
   - Output: `matrix_results.json` under the output root (`$MOLT_EXT_ROOT/...` by default).
   - `matrix_results.json` now includes `gate_status` (thresholds, observed counts, violation details, pass/fail).
   - Use `--fail-on-gate` to return exit code `2` on gate failure.
@@ -526,7 +526,7 @@ uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/exec
   - If rustc prints incremental hard-link fallback warnings, move `--shared-target-dir` to a local APFS/ext4 path.
 - **Compile-progress suite**: use `tools/compile_progress.py` for standardized
   cold/warm + cache-hit/no-cache + daemon-on/off compile tracking.
-  - Example: `uv run --python 3.12 python3 tools/compile_progress.py --clean-state`
+  - Example: `uv run --python 3.12 python tools/compile_progress.py --clean-state`
   - Include `--diagnostics` to capture per-case phase timing + module-reason
     payloads from compiler builds.
   - Queue lane (daemon warm queue): add
@@ -553,7 +553,7 @@ uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic/exec
   - Optional output file: `--diagnostics-file <path>` (relative paths are
     resolved under the build artifacts directory).
   - Example:
-    `uv run --python 3.12 python3 -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
+    `uv run --python 3.12 python -m molt.cli build --profile dev --no-cache --diagnostics --diagnostics-file build_diag.json examples/hello.py`
   - Midend diagnostics now carry tier-promotion telemetry (`tier_base_summary`,
     `promoted_functions`, `promotion_source_summary`,
     `promotion_hotspots_top`) to verify PGO-guided promotion decisions.
@@ -573,8 +573,8 @@ Rules:
 
 ### Fast Dev Playbook (Recommended)
 1. `tools/throughput_env.sh --apply`
-2. `uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py --cache-report`
-3. `UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py --build-profile dev --jobs 2 tests/differential/basic`
+2. `uv run --python 3.12 python -m molt.cli build --profile dev examples/hello.py --cache-report`
+3. `UV_NO_SYNC=1 uv run --python 3.12 python -u tests/molt_diff.py --build-profile dev --jobs 2 tests/differential/basic`
 
 Expected behavior in this lane:
 - Runtime/backend Cargo crates rebuild once per fingerprint and profile, with parallel agents waiting on shared build-state locks whenever they share `CARGO_TARGET_DIR` or `MOLT_BUILD_STATE_DIR`.
@@ -756,12 +756,18 @@ Use this when updating every 10–20 minutes.
 ### Coverage reporting helpers
 Generate differential coverage summaries and keep spec TODOs in sync:
 ```bash
-uv run --python 3.12 python3 tools/diff_coverage.py
-uv run --python 3.12 python3 tools/check_type_coverage_todos.py
+uv run --python 3.12 python tools/diff_coverage.py
+uv run --python 3.12 python tools/check_type_coverage_todos.py
 ```
 
 ## Multi-Agent Workflow
 This section standardizes parallel agent work on Molt.
+
+The canonical protocol for proof-lane ownership, task logs, targeted vs broad
+validation, and collision handling is
+[ops/MULTI_AGENT_COORDINATION.md](ops/MULTI_AGENT_COORDINATION.md). Agents
+running long differential, conformance, regrtest, benchmark, or `molt validate`
+lanes must follow that protocol first.
 
 ### Access and tooling
 - Agents may use `gh` (GitHub CLI) and git over SSH.
@@ -772,11 +778,23 @@ This section standardizes parallel agent work on Molt.
 - Assign each agent a scoped area (runtime/frontend/docs/tests) and avoid
   overlap.
 - If cross-cutting changes are required, coordinate early.
+- Keep one broad-sweep coordinator per shared target root for full
+  differential, CPython regrtest, conformance, or release validation lanes.
+  Other agents should run targeted proofs, reduce failure queues, or move to
+  non-colliding structural work.
 
 ### Communication rules
 - Always announce: scope, files touched, and expected tests.
 - Keep status updates short and explicit.
 - Flag any risky changes early.
+- Use `tools/new-agent-task.sh <task-name>` or update an existing
+  `logs/agents/<task>/` record before long proof work, including owned files,
+  proof lane, artifacts, and next command.
+- Use `uv run --python 3.12 python tools/agent_coordination.py env` to capture
+  OS/Python/shell facts before choosing platform-specific commands. Then use
+  `uv run --python 3.12 python tools/agent_coordination.py scan` to inspect
+  active task claims, and `... check` to fail fast on duplicate broad-sweep
+  coordinator claims for the same lane and shared target root.
 
 ### Quality gates
 - Run extensive linting and tests before PRs or merges.
