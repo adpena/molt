@@ -10,6 +10,9 @@
 /// FFI bridge to molt-runtime internal functions (resolved at link time).
 pub mod bridge;
 
+#[cfg(test)]
+mod test_host;
+
 #[cfg(target_arch = "wasm32")]
 pub mod libc_compat;
 
