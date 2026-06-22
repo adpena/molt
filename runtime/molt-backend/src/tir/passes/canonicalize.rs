@@ -22,35 +22,14 @@ use std::collections::HashMap;
 
 use super::PassStats;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    CanonicalizeCommutativeDomain, opcode_canonicalize_commutative_domain_table,
+    opcode_swapped_comparison_for_canonicalize_table,
+};
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::type_refine::extract_type_map;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-
-/// Returns `true` if the opcode is commutative (operand order doesn't matter).
-fn is_commutative(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Add
-            | OpCode::Mul
-            | OpCode::BitAnd
-            | OpCode::BitOr
-            | OpCode::BitXor
-            | OpCode::Eq
-            | OpCode::Ne
-    )
-}
-
-/// Returns the "swapped" comparison opcode: Lt↔Gt, Le↔Ge.
-fn swap_comparison(opcode: OpCode) -> Option<OpCode> {
-    match opcode {
-        OpCode::Lt => Some(OpCode::Gt),
-        OpCode::Gt => Some(OpCode::Lt),
-        OpCode::Le => Some(OpCode::Ge),
-        OpCode::Ge => Some(OpCode::Le),
-        _ => None,
-    }
-}
 
 pub fn run(func: &mut TirFunction) -> PassStats {
     let mut stats = PassStats {
@@ -113,14 +92,16 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             let result = op.results[0];
 
             // --- Rule 5: Commutative ordering (constants on the right) ---
-            if op.operands.len() == 2 && is_commutative(op.opcode) {
+            if op.operands.len() == 2
+                && let Some(domain) = opcode_canonicalize_commutative_domain_table(op.opcode)
+            {
                 let lhs = op.operands[0];
                 let rhs = op.operands[1];
                 let lhs_is_const = int_consts.contains_key(&lhs) || bool_consts.contains_key(&lhs);
                 let rhs_is_const = int_consts.contains_key(&rhs) || bool_consts.contains_key(&rhs);
                 if lhs_is_const
                     && !rhs_is_const
-                    && can_reorder_commutative(op.opcode, lhs, rhs, &type_map)
+                    && can_reorder_commutative(domain, lhs, rhs, &type_map)
                 {
                     op.operands.swap(0, 1);
                     stats.values_changed += 1;
@@ -129,16 +110,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
             // --- Rule 7: Comparison canonicalization (constant on right) ---
             if op.operands.len() == 2
-                && let Some(swapped) = swap_comparison(op.opcode)
+                && let Some(swapped) = opcode_swapped_comparison_for_canonicalize_table(op.opcode)
             {
                 let lhs = op.operands[0];
                 let rhs = op.operands[1];
                 let lhs_is_const = int_consts.contains_key(&lhs) || bool_consts.contains_key(&lhs);
                 let rhs_is_const = int_consts.contains_key(&rhs) || bool_consts.contains_key(&rhs);
-                if lhs_is_const
-                    && !rhs_is_const
-                    && can_reorder_comparison(op.opcode, lhs, rhs, &type_map)
-                {
+                if lhs_is_const && !rhs_is_const && can_reorder_comparison(lhs, rhs, &type_map) {
                     op.opcode = swapped;
                     op.operands.swap(0, 1);
                     stats.values_changed += 1;
@@ -341,21 +319,19 @@ fn both_unboxed_scalar(lhs: ValueId, rhs: ValueId, type_map: &HashMap<ValueId, T
 }
 
 fn can_reorder_commutative(
-    opcode: OpCode,
+    domain: CanonicalizeCommutativeDomain,
     lhs: ValueId,
     rhs: ValueId,
     type_map: &HashMap<ValueId, TirType>,
 ) -> bool {
-    match opcode {
-        OpCode::Add | OpCode::Mul => both_numeric(lhs, rhs, type_map),
-        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => both_i64(lhs, rhs, type_map),
-        OpCode::Eq | OpCode::Ne => both_unboxed_scalar(lhs, rhs, type_map),
-        _ => false,
+    match domain {
+        CanonicalizeCommutativeDomain::Numeric => both_numeric(lhs, rhs, type_map),
+        CanonicalizeCommutativeDomain::I64 => both_i64(lhs, rhs, type_map),
+        CanonicalizeCommutativeDomain::UnboxedScalar => both_unboxed_scalar(lhs, rhs, type_map),
     }
 }
 
 fn can_reorder_comparison(
-    _opcode: OpCode,
     lhs: ValueId,
     rhs: ValueId,
     type_map: &HashMap<ValueId, TirType>,

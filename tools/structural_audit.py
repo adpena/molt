@@ -715,7 +715,7 @@ def format_board(findings: list[Finding], metrics: dict[str, float]) -> str:
         if len(items) > 40:
             lines.append(f"| … | _{len(items) - 40} more_ | | run `--json` for full list |")
         lines.append("")
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip("\n")
 
 
 def main(argv: list[str] | None = None) -> int:

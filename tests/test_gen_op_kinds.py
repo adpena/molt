@@ -383,6 +383,89 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
         )
 
 
+def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
+    """Canonicalize must not carry private OpCode lists beside the registry.
+
+    The generated table owns opcode-level algebraic facts; canonicalize.rs only
+    applies the live operand-type safety predicate and performs the rewrite.
+    """
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    canonicalize = (
+        ROOT / "runtime/molt-backend/src/tir/passes/canonicalize.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "fn is_commutative" not in canonicalize
+    assert "fn swap_comparison" not in canonicalize
+    assert "opcode_canonicalize_commutative_domain_table" in canonicalize
+    assert "opcode_swapped_comparison_for_canonicalize_table" in canonicalize
+
+    expected_domains = {
+        "Add": "numeric",
+        "Mul": "numeric",
+        "BitAnd": "i64",
+        "BitOr": "i64",
+        "BitXor": "i64",
+        "Eq": "unboxed_scalar",
+        "Ne": "unboxed_scalar",
+    }
+    expected_swaps = {"Lt": "Gt", "Gt": "Lt", "Le": "Ge", "Ge": "Le"}
+    assert {
+        row["opcode"]: row["domain"]
+        for row in data["canonicalize_commutative_reorder"]
+    } == expected_domains
+    assert {
+        row["opcode"]: row["swapped"]
+        for row in data["canonicalize_swapped_comparison"]
+    } == expected_swaps
+
+    variant = {
+        "numeric": "CanonicalizeCommutativeDomain::Numeric",
+        "i64": "CanonicalizeCommutativeDomain::I64",
+        "unboxed_scalar": "CanonicalizeCommutativeDomain::UnboxedScalar",
+    }
+    domain_block = rendered.split(
+        "fn opcode_canonicalize_commutative_domain_table"
+    )[1].split("fn opcode_swapped_comparison_for_canonicalize_table")[0]
+    for opcode, domain in expected_domains.items():
+        assert f"OpCode::{opcode} => Some({variant[domain]})," in domain_block
+    assert "OpCode::Sub => None," in domain_block
+
+    swap_block = rendered.split(
+        "fn opcode_swapped_comparison_for_canonicalize_table"
+    )[1].split("enum OperandOwnership")[0]
+    for opcode, swapped in expected_swaps.items():
+        assert f"OpCode::{opcode} => Some(OpCode::{swapped})," in swap_block
+    assert "OpCode::Eq => None," in swap_block
+
+
+def test_canonicalize_fact_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_domain = json.loads(json.dumps(data))
+    bad_domain["canonicalize_commutative_reorder"][0]["domain"] = "boxed"
+    try:
+        gen._validate_canonicalize_facts(bad_domain, opcodes)
+    except gen.OpKindTableError as e:
+        assert "domain" in str(e)
+    else:
+        raise AssertionError("bad canonicalize commutative domain was accepted")
+
+    asymmetric_swap = json.loads(json.dumps(data))
+    asymmetric_swap["canonicalize_swapped_comparison"] = [
+        {"opcode": "Lt", "swapped": "Gt"},
+    ]
+    try:
+        gen._validate_canonicalize_facts(asymmetric_swap, opcodes)
+    except gen.OpKindTableError as e:
+        assert "symmetric" in str(e)
+    else:
+        raise AssertionError("asymmetric canonicalize comparison swap was accepted")
+
+
 def test_opcode_effects_exhaustive_over_enum() -> None:
     """The effect table must cover EVERY OpCode variant — the exhaustiveness that
     kills the matches!-default-false trap. Cross-check the table's opcode names
