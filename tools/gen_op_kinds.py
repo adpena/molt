@@ -141,6 +141,16 @@ _CLASSIFIER_SETS = (
 _OPCODE_FACT_SETS = (
     "alias_rc_barrier_opcodes",
     "alias_heap_barrier_opcodes",
+    "alias_slot_direct_observer_opcodes",
+    "alias_slot_typed_store_opcodes",
+    "alias_slot_transparent_alias_opcodes",
+    "alias_slot_never_observer_opcodes",
+)
+_ALIAS_SLOT_OBSERVATION_SETS = (
+    "alias_slot_direct_observer_opcodes",
+    "alias_slot_typed_store_opcodes",
+    "alias_slot_transparent_alias_opcodes",
+    "alias_slot_never_observer_opcodes",
 )
 
 
@@ -246,6 +256,7 @@ def load_table() -> dict:
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
+    _validate_alias_slot_observation_sets(data)
 
     kinds = data.get("kind", [])
     # Every mapper spelling (canonical or alias) must be globally unique within
@@ -529,6 +540,18 @@ def _validate_opcode_fact_set(data: dict, key: str, opcodes: set[str]) -> None:
     unknown = sorted(set(members) - opcodes)
     if unknown:
         raise OpKindTableError(f"{key} contains unknown OpCode names: {unknown}")
+
+
+def _validate_alias_slot_observation_sets(data: dict) -> None:
+    owners: dict[str, str] = {}
+    for key in _ALIAS_SLOT_OBSERVATION_SETS:
+        for opcode in data.get(key, []):
+            if opcode in owners:
+                raise OpKindTableError(
+                    f"alias slot observation opcode {opcode!r} appears in both "
+                    f"{owners[opcode]} and {key}"
+                )
+            owners[opcode] = key
 
 
 def _validate_consuming_kinds(data: dict, valid_spellings: dict[str, str]) -> None:
@@ -1101,6 +1124,9 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, alias_heap_barriers))
     out.append("    }\n}\n\n")
 
+    out.append(_render_alias_slot_observation(opcodes, data))
+    out.append("\n")
+
     # -- canonicalize facts: exhaustive over OpCode -------------------------
     commutative_domains = {
         row["opcode"]: row["domain"]
@@ -1291,6 +1317,49 @@ def _render_swapped_comparison_arms(
         else:
             lines.append(f"        OpCode::{name} => Some(OpCode::{swapped}),\n")
     return "".join(lines)
+
+
+_ALIAS_SLOT_OBSERVATION_VARIANTS = {
+    "alias_slot_direct_observer_opcodes": "AliasSlotObservation::DirectObserver",
+    "alias_slot_typed_store_opcodes": "AliasSlotObservation::TypedSlotStore",
+    "alias_slot_transparent_alias_opcodes": "AliasSlotObservation::TransparentAlias",
+    "alias_slot_never_observer_opcodes": "AliasSlotObservation::NeverObserver",
+}
+
+
+def _render_alias_slot_observation(opcodes: list[dict], data: dict) -> str:
+    class_by_opcode: dict[str, str] = {}
+    for key, variant in _ALIAS_SLOT_OBSERVATION_VARIANTS.items():
+        for opcode in data.get(key, []):
+            class_by_opcode[opcode] = variant
+
+    out: list[str] = []
+    out.append(
+        "/// Alias-analysis slot observation class for an opcode after the caller\n"
+        "/// has proven that the op aliases the object root. Omitted opcodes are\n"
+        "/// conservative observers.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) enum AliasSlotObservation {\n"
+        "    DirectObserver,\n"
+        "    TypedSlotStore,\n"
+        "    TransparentAlias,\n"
+        "    NeverObserver,\n"
+        "    ConservativeObserver,\n"
+        "}\n\n"
+        "/// Slot-observation opcode class for alias_analysis.rs. EXHAUSTIVE over\n"
+        "/// OpCode; unlisted opcodes conservatively observe the slot.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_alias_slot_observation_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> AliasSlotObservation {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        variant = class_by_opcode.get(name, "AliasSlotObservation::ConservativeObserver")
+        out.append(f"        OpCode::{name} => {variant},\n")
+    out.append("    }\n}\n")
+    return "".join(out)
 
 
 def _render_canonicalize_binary_rules(opcodes: list[dict], rows: list[dict]) -> str:
