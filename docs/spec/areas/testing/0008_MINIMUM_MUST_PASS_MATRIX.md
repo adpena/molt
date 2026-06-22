@@ -35,18 +35,28 @@ This is the executable gate for the Month 1 "must-pass" roadmap item.
   the shared guard path.
 - Use canonical repo-local roots: `target/`, `tmp/diff`, `.molt_cache/`, and `.uv-cache/`.
 - If `MOLT_EXT_ROOT` is set, place those same roots under it explicitly.
+- Bench conformance setup must not override explicit canonical artifact env
+  vars; unset keys derive from the active artifact root, while explicitly set
+  roots remain independent and authoritative.
+- In multi-agent sessions, follow
+  [docs/ops/MULTI_AGENT_COORDINATION.md](../../../ops/MULTI_AGENT_COORDINATION.md):
+  one broad-sweep coordinator owns each shared target root while other agents
+  use targeted proof, failure-queue reduction, or non-colliding structural work.
+  Run `uv run --python 3.12 python tools/agent_coordination.py env` and
+  `uv run --python 3.12 python tools/agent_coordination.py check` before
+  starting broad differential, regrtest, conformance, or validation lanes.
 
 ## Gate Matrix
 
 | Gate | Scope | Required Command(s) | Pass Criteria |
 | --- | --- | --- | --- |
 | G0 | Fast compile sanity | `cargo check -p molt-runtime -p molt-backend` | Exit 0; no compile errors. |
-| G1 | Lint/type hygiene | `uv run --python 3.12 python3 tools/dev.py lint` | Exit 0; lint/format/type checks clean. |
-| G2 | Core lowering + IR lane regression smoke | `uv run --python 3.12 python3 -m molt.cli debug verify --format json && uv run --python 3.12 pytest -q tests/test_codec_lowering.py` | Exit 0; IR inventory/semantic gate and lowering smoke remain green. |
-| G3 | Tier 0/1 differential parity (basic + stdlib lanes) | `MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_FAILURES=ir_probe_failures.txt uv run --python 3.12 python3 -u tests/molt_diff.py tests/differential/basic tests/differential/stdlib && uv run --python 3.12 python3 -m molt.cli debug verify --require-probe-execution --probe-rss-metrics rss_metrics.jsonl --failure-queue ir_probe_failures.txt --format json` | Exit 0; both differential lanes are green with RSS recorded, and required IR probes executed with `status=ok` and absent from failure queue. |
-| G4 | Cross-version Python test sweep | `uv run --python 3.12 python3 tools/dev.py test` | Exit 0; 3.12/3.13/3.14 sweep green. |
-| G5 | CPython parity regression lane (periodic/pre-release) | `uv run --python 3.12 python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare` | Exit 0; expected skips only; summary and junit emitted. |
-| G6 | Runtime feedback artifact validation (guard/deopt instrumentation surface) | `PYTHONPATH=src MOLT_PROFILE=1 MOLT_RUNTIME_FEEDBACK=1 MOLT_RUNTIME_FEEDBACK_FILE=target/molt_runtime_feedback_gate.json uv run --python 3.12 python3 -m molt.cli run --profile dev examples/hello.py && uv run --python 3.12 python3 tools/check_runtime_feedback.py target/molt_runtime_feedback_gate.json` | Exit 0; feedback artifact exists and schema keys validate, including required `deopt_reasons` counters for `call_indirect`, `invoke_ffi`, `guard_tag`, and `guard_dict_shape` lanes plus the guard-layout mismatch breakdown keys. |
+| G1 | Lint/type hygiene | `uv run --python 3.12 python tools/dev.py lint` | Exit 0; lint/format/type checks clean. |
+| G2 | Core lowering + IR lane regression smoke | `uv run --python 3.12 python -m molt.cli debug verify --format json && uv run --python 3.12 pytest -q tests/test_codec_lowering.py` | Exit 0; IR inventory/semantic gate and lowering smoke remain green. |
+| G3 | Tier 0/1 differential parity (basic + stdlib lanes) | `MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_FAILURES=ir_probe_failures.txt uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic tests/differential/stdlib && uv run --python 3.12 python -m molt.cli debug verify --require-probe-execution --probe-rss-metrics rss_metrics.jsonl --failure-queue ir_probe_failures.txt --format json` | Exit 0; both differential lanes are green with RSS recorded, and required IR probes executed with `status=ok` and absent from failure queue. |
+| G4 | Cross-version Python test sweep | `uv run --python 3.12 python tools/dev.py test` | Exit 0; 3.12/3.13/3.14 sweep green. |
+| G5 | CPython parity regression lane (periodic/pre-release) | `uv run --python 3.12 python tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare` | Exit 0; expected skips only; summary and junit emitted. |
+| G6 | Runtime feedback artifact validation (guard/deopt instrumentation surface) | `PYTHONPATH=src MOLT_PROFILE=1 MOLT_RUNTIME_FEEDBACK=1 MOLT_RUNTIME_FEEDBACK_FILE=target/molt_runtime_feedback_gate.json uv run --python 3.12 python -m molt.cli run --profile dev examples/hello.py && uv run --python 3.12 python tools/check_runtime_feedback.py target/molt_runtime_feedback_gate.json` | Exit 0; feedback artifact exists and schema keys validate, including required `deopt_reasons` counters for `call_indirect`, `invoke_ffi`, `guard_tag`, and `guard_dict_shape` lanes plus the guard-layout mismatch breakdown keys. |
 
 ## Import / Bootstrap Must-Pass Matrix
 
@@ -56,7 +66,7 @@ Use these lanes for import-system, package-entry, and bootstrap regressions. The
 | --- | --- | --- | --- |
 | IB0 | Native import/bootstrap regressions | `uv run --python 3.12 pytest -q tests/test_native_import_bootstrap_regressions.py tests/test_stdlib_package_bootstrap_surface.py tests/test_import_runtime_private_module_surfaces.py tests/test_intrinsics_bootstrap_contract.py` | Existing native coverage stays green for package-entry bootstrap identity, direct and relative imports, stdlib package bootstrap, frozen import runtime surfaces, and the bootstrap contract. |
 | IB1 | WASM import/bootstrap smoke | `uv run --python 3.12 pytest -q tests/test_wasm_importlib_smoke.py tests/test_wasm_importlib_package_bootstrap.py` | Existing WASM coverage stays green for `importlib`/`importlib.machinery` bootstrap, module-body execution, package-relative imports, and both linked and split-runtime execution paths. |
-| IB2 | Differential import semantics | `MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_SUMMARY=tmp/diff/importlib_9file_summary.json uv run --python 3.12 python3 -u tests/molt_diff.py --stdlib-profile full --jobs 1 --log-file logs/importlib_9file.log tests/differential/stdlib/importlib_basic.py tests/differential/stdlib/importlib_import_module_basic.py tests/differential/stdlib/importlib_import_module_helper_constant.py tests/differential/stdlib/importlib_import_module_helper_dotted.py tests/differential/stdlib/importlib_import_module_helper_submodule.py tests/differential/stdlib/importlib_import_module_relative_package_typeerror.py tests/differential/stdlib/importlib_relative_import_from_package.py tests/differential/stdlib/importlib_runtime_state_payload_intrinsic.py tests/differential/stdlib/importlib_support_bootstrap.py` | Acceptance requires basic import resolution, folded `importlib.import_module` transaction paths, dotted/submodule helpers, relative package imports, runtime-state payload custody, and bootstrap support behavior to stay green; valid summary/log receipts must record 9 passed, 0 failed with RSS enabled. |
+| IB2 | Differential import semantics | `MOLT_DIFF_MEASURE_RSS=1 MOLT_DIFF_SUMMARY=tmp/diff/importlib_9file_summary.json uv run --python 3.12 python -u tests/molt_diff.py --stdlib-profile full --jobs 1 --log-file logs/importlib_9file.log tests/differential/stdlib/importlib_basic.py tests/differential/stdlib/importlib_import_module_basic.py tests/differential/stdlib/importlib_import_module_helper_constant.py tests/differential/stdlib/importlib_import_module_helper_dotted.py tests/differential/stdlib/importlib_import_module_helper_submodule.py tests/differential/stdlib/importlib_import_module_relative_package_typeerror.py tests/differential/stdlib/importlib_relative_import_from_package.py tests/differential/stdlib/importlib_runtime_state_payload_intrinsic.py tests/differential/stdlib/importlib_support_bootstrap.py` | Acceptance requires basic import resolution, folded `importlib.import_module` transaction paths, dotted/submodule helpers, relative package imports, runtime-state payload custody, and bootstrap support behavior to stay green; valid summary/log receipts must record 9 passed, 0 failed with RSS enabled. |
 
 ## Ownership / Exception Must-Pass Matrix
 
@@ -68,7 +78,7 @@ Use these lanes for import-system, package-entry, and bootstrap regressions. The
 
 | Lane | Scope | Required Command(s) | Pass Criteria |
 | --- | --- | --- | --- |
-| SS0 | Tiny output startup/size baseline | `uv run --python 3.14 python3 tools/output_startup_size_audit.py --targets native --build-profiles release --backends auto --stdlib-profile micro --samples 5 --require-runners --strict --json-out bench/results/output_startup_size_audit.json --out-dir bench/results/output_startup_size_audit_outputs --json` | Baseline artifact records binary bytes plus same-path and cold-first-sighting startup measurements for the native micro profile; this is a ratchet artifact, not a performance win claim. |
+| SS0 | Tiny output startup/size baseline | `uv run --python 3.14 python tools/output_startup_size_audit.py --targets native --build-profiles release --backends auto --stdlib-profile micro --samples 5 --require-runners --strict --json-out bench/results/output_startup_size_audit.json --out-dir bench/results/output_startup_size_audit_outputs --json` | Baseline artifact records binary bytes plus same-path and cold-first-sighting startup measurements for the native micro profile; this is a ratchet artifact, not a performance win claim. |
 
 ## GPU / Browser Host Must-Pass Matrix
 
@@ -79,7 +89,7 @@ Use these lanes for import-system, package-entry, and bootstrap regressions. The
 | GB2 | Browser-host WebGPU dispatch contract | `uv run --python 3.12 pytest -q tests/test_wasm_browser_gpu_host.py -k compiled_gpu_kernel_uses_webgpu_dispatch` | Browser-host wasm compiled kernel uses the WebGPU dispatch boundary rather than the sequential fallback and produces the expected output. |
 
 Required hardening gate details for IR dedicated probes (part of G3):
-- `uv run --python 3.12 python3 -m molt.cli debug verify --require-probe-execution --probe-rss-metrics <MOLT_DIFF_ROOT>/rss_metrics.jsonl --failure-queue <failure-queue-path> --format json`
+- `uv run --python 3.12 python -m molt.cli debug verify --require-probe-execution --probe-rss-metrics <MOLT_DIFF_ROOT>/rss_metrics.jsonl --failure-queue <failure-queue-path> --format json`
 - Pass criteria: all required probes executed with `status=ok` and none present in the failure queue.
 
 ## Required Differential Runtime Controls
@@ -115,4 +125,5 @@ Required hardening gate details for IR dedicated probes (part of G3):
 - [docs/ROADMAP_90_DAYS.md](docs/ROADMAP_90_DAYS.md)
 - [docs/spec/areas/testing/0007-testing.md](docs/spec/areas/testing/0007-testing.md)
 - [docs/OPERATIONS.md](docs/OPERATIONS.md)
+- [docs/ops/MULTI_AGENT_COORDINATION.md](../../../ops/MULTI_AGENT_COORDINATION.md)
 - [docs/spec/STATUS.md](docs/spec/STATUS.md)
