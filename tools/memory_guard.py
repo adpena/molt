@@ -1534,6 +1534,8 @@ def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
             return True
     try:
         os.killpg(pgid, signal.SIGTERM)
+    except KeyboardInterrupt:
+        return False
     except ProcessLookupError:
         return True
     except OSError:
@@ -1548,7 +1550,10 @@ def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:
             return True
         except OSError:
             return True
-        time.sleep(0.02)
+        try:
+            time.sleep(0.02)
+        except KeyboardInterrupt:
+            return False
     return False
 
 
@@ -1557,6 +1562,8 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
         return True
     try:
         os.kill(pid, signal.SIGTERM)
+    except KeyboardInterrupt:
+        return False
     except ProcessLookupError:
         return True
     except OSError:
@@ -1569,7 +1576,10 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
             return True
         except OSError:
             return True
-        time.sleep(0.02)
+        try:
+            time.sleep(0.02)
+        except KeyboardInterrupt:
+            return False
     return False
 
 
@@ -1797,7 +1807,12 @@ def _run_child_runner(environ: Mapping[str, str]) -> int:
     _write_child_started_timestamp(environ)
     if _is_windows_process_model():
         try:
-            completed = subprocess.run(command, env=child_env, check=False)
+            completed = subprocess.run(
+                command,
+                env=child_env,
+                check=False,
+                **_guarded_popen_process_isolation_kwargs(),
+            )
         except OSError as exc:
             print(f"memory_guard child_runner: spawn failed: {exc}", file=sys.stderr)
             return 127
@@ -1942,6 +1957,13 @@ def _close_fds(fds: Sequence[int | None]) -> None:
             continue
         with contextlib.suppress(OSError):
             os.close(fd)
+
+
+def _guarded_popen_process_isolation_kwargs() -> dict[str, object]:
+    if _is_windows_process_model():
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return {"creationflags": creationflags} if creationflags else {}
+    return {"start_new_session": True}
 
 
 def _read_child_started_at(fd: int | None) -> float | None:
@@ -2402,7 +2424,7 @@ def run_guarded(
         "stderr": stderr_capture if capture_output else None,
         "stdin": subprocess.PIPE if input is not None else None,
         "text": text,
-        "start_new_session": True,
+        **_guarded_popen_process_isolation_kwargs(),
     }
     if launch.pass_fds:
         popen_kwargs["pass_fds"] = launch.pass_fds
@@ -3630,6 +3652,7 @@ def main(
                 worker_argv,
                 env=_worker_env(current_env, command),
                 check=False,
+                **_guarded_popen_process_isolation_kwargs(),
             )
             return completed.returncode
         execve(

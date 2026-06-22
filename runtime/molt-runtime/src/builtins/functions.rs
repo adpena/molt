@@ -158,84 +158,7 @@ fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> 
 }
 
 pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
-    runtime_callable_key_from_raw(fn_ptr).unwrap_or(fn_ptr)
-}
-
-fn runtime_callable_key_from_raw(fn_ptr: u64) -> Option<u64> {
-    if fn_ptr == (molt_type_call as *const () as usize as u64) {
-        return Some(RUNTIME_CALLABLE_KEY_BASE);
-    }
-    if fn_ptr == (molt_type_new as *const () as usize as u64) {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 1);
-    }
-    if fn_ptr == (molt_type_init as *const () as usize as u64) {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 2);
-    }
-    if fn_ptr == (molt_object_new_bound as *const () as usize as u64) {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 3);
-    }
-    if fn_ptr == (molt_object_init as *const () as usize as u64) {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 4);
-    }
-    if fn_ptr == (molt_object_init_subclass as *const () as usize as u64) {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 5);
-    }
-    if fn_ptr == (molt_exception_new_bound as *const () as usize as u64) {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 6);
-    }
-    if fn_ptr == (molt_exception_init as *const () as usize as u64) {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 7);
-    }
-    if fn_ptr == (molt_exceptiongroup_init as *const () as usize as u64) {
-        return Some(RUNTIME_CALLABLE_KEY_BASE + 8);
-    }
-    runtime_poll_callable_key_from_raw(fn_ptr)
-}
-
-fn runtime_poll_callable_key_from_raw(fn_ptr: u64) -> Option<u64> {
-    macro_rules! poll_key {
-        ($func:path, $slot:expr) => {
-            if fn_ptr == ($func as *const () as usize as u64) {
-                return Some(RUNTIME_POLL_CALLABLE_KEY_BASE + $slot);
-            }
-        };
-    }
-    poll_key!(crate::molt_async_sleep_poll, 1);
-    poll_key!(crate::molt_anext_default_poll, 2);
-    poll_key!(crate::molt_asyncgen_poll, 3);
-    poll_key!(crate::molt_promise_poll, 4);
-    poll_key!(crate::molt_io_wait, 5);
-    poll_key!(crate::molt_thread_poll, 6);
-    poll_key!(crate::molt_process_poll, 7);
-    poll_key!(crate::molt_ws_wait, 8);
-    poll_key!(crate::molt_asyncio_wait_for_poll, 9);
-    poll_key!(crate::molt_asyncio_wait_poll, 10);
-    poll_key!(crate::molt_asyncio_gather_poll, 11);
-    poll_key!(crate::molt_asyncio_socket_reader_read_poll, 12);
-    poll_key!(crate::molt_asyncio_socket_reader_readline_poll, 13);
-    poll_key!(crate::molt_asyncio_stream_reader_read_poll, 14);
-    poll_key!(crate::molt_asyncio_stream_reader_readline_poll, 15);
-    poll_key!(crate::molt_asyncio_stream_send_all_poll, 16);
-    poll_key!(crate::molt_asyncio_sock_recv_poll, 17);
-    poll_key!(crate::molt_asyncio_sock_connect_poll, 18);
-    poll_key!(crate::molt_asyncio_sock_accept_poll, 19);
-    poll_key!(crate::molt_asyncio_sock_recv_into_poll, 20);
-    poll_key!(crate::molt_asyncio_sock_sendall_poll, 21);
-    poll_key!(crate::molt_asyncio_sock_recvfrom_poll, 22);
-    poll_key!(crate::molt_asyncio_sock_recvfrom_into_poll, 23);
-    poll_key!(crate::molt_asyncio_sock_sendto_poll, 24);
-    poll_key!(crate::molt_asyncio_timer_handle_poll, 25);
-    poll_key!(crate::molt_asyncio_fd_watcher_poll, 26);
-    poll_key!(crate::molt_asyncio_server_accept_loop_poll, 27);
-    poll_key!(crate::molt_asyncio_ready_runner_poll, 28);
-    poll_key!(crate::molt_contextlib_asyncgen_enter_poll, 29);
-    poll_key!(crate::molt_contextlib_asyncgen_exit_poll, 30);
-    poll_key!(crate::molt_contextlib_async_exitstack_exit_poll, 31);
-    poll_key!(
-        crate::molt_contextlib_async_exitstack_enter_context_poll,
-        32
-    );
-    None
+    fn_ptr
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -5809,6 +5732,23 @@ pub extern "C" fn molt_import_smoke_runtime_ready() -> u64 {
 #[cfg(test)]
 mod wasm_runtime_callable_tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn raw_core_function_address_does_not_impersonate_named_runtime_key() {
+        let raw_type_init = crate::molt_type_init as *const () as usize as u64;
+        let named_type_init = fn_addr!(crate::molt_type_init);
+
+        assert_ne!(named_type_init, raw_type_init);
+        assert_eq!(
+            canonicalize_runtime_callable_key(raw_type_init),
+            raw_type_init
+        );
+        assert_eq!(
+            runtime_callable_target_ptr(named_type_init),
+            Some(crate::molt_type_init as *const ())
+        );
+    }
 
     #[test]
     fn wasm_runtime_callable_symbols_resolve_in_functions_scope() {

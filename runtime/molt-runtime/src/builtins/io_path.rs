@@ -251,15 +251,17 @@ pub extern "C" fn molt_path_mkdir(path_bits: u64, mode_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         let mode = mode as u32;
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let mut builder = {
+            let mut builder = std::fs::DirBuilder::new();
             builder.mode(mode);
-        }
-        #[cfg(windows)]
-        {
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = {
             let _ = mode;
-        }
+            std::fs::DirBuilder::new()
+        };
         match builder.create(&path) {
             Ok(()) => MoltObject::none().bits(),
             Err(err) => {
@@ -773,15 +775,17 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
                 _ => raise_exception::<_>(_py, "OSError", &msg),
             };
         }
-        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let mut builder = {
+            let mut builder = std::fs::DirBuilder::new();
             builder.mode(mode);
-        }
-        #[cfg(windows)]
-        {
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = {
             let _ = mode;
-        }
+            std::fs::DirBuilder::new()
+        };
         match builder.create(&path) {
             Ok(()) => MoltObject::none().bits(),
             Err(err) => {
@@ -1837,19 +1841,16 @@ fn stat_tuple_from_metadata(_py: &PyToken<'_>, metadata: &std::fs::Metadata) -> 
 /// carry a recorded exception, so callers just propagate them. Always compiled
 /// (regardless of the `stdlib_path` feature) so it is the single shared home
 /// for both os_ext sources.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 #[inline]
 pub(crate) fn at_path_to_cstring(
     _py: &PyToken<'_>,
     path: &std::path::Path,
 ) -> Result<std::ffi::CString, u64> {
-    #[cfg(unix)]
     let bytes: Vec<u8> = {
         use std::os::unix::ffi::OsStrExt;
         path.as_os_str().as_bytes().to_vec()
     };
-    #[cfg(not(unix))]
-    let bytes: Vec<u8> = path.to_string_lossy().as_bytes().to_vec();
     match std::ffi::CString::new(bytes) {
         Ok(c) => Ok(c),
         Err(_) => Err(raise_exception::<u64>(
@@ -2021,7 +2022,7 @@ pub extern "C" fn molt_os_lstat_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
         }
         #[cfg(not(unix))]
         {
-            let _ = dir_fd_bits;
+            let _ = (path, dir_fd_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "lstat")
         }
     })
@@ -2152,7 +2153,7 @@ pub extern "C" fn molt_os_stat_at(
         }
         #[cfg(not(unix))]
         {
-            let _ = (dir_fd_bits, follow_symlinks_bits);
+            let _ = (path, dir_fd_bits, follow_symlinks_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "stat")
         }
     })
@@ -2216,7 +2217,7 @@ pub extern "C" fn molt_os_rename_at(
         }
         #[cfg(not(unix))]
         {
-            let _ = (src_dir_fd_bits, dst_dir_fd_bits);
+            let _ = (src, dst, src_dir_fd_bits, dst_dir_fd_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "rename")
         }
     })
@@ -2284,7 +2285,7 @@ pub extern "C" fn molt_os_replace_at(
         }
         #[cfg(not(unix))]
         {
-            let _ = (src_dir_fd_bits, dst_dir_fd_bits);
+            let _ = (src, dst, src_dir_fd_bits, dst_dir_fd_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "replace")
         }
     })
@@ -2363,7 +2364,13 @@ pub extern "C" fn molt_os_link_at(
         }
         #[cfg(not(unix))]
         {
-            let _ = (src_dir_fd_bits, dst_dir_fd_bits, follow_symlinks_bits);
+            let _ = (
+                src,
+                dst,
+                src_dir_fd_bits,
+                dst_dir_fd_bits,
+                follow_symlinks_bits,
+            );
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "link")
         }
     })

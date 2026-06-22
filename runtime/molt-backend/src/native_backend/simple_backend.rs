@@ -1542,7 +1542,7 @@ pub(crate) fn drain_cleanup_tracked_dedup(
     alias_roots: &BTreeMap<String, String>,
     op_idx: usize,
     skip: Option<&str>,
-    mut already_decrefed: Option<&mut BTreeSet<String>>,
+    already_decrefed: Option<&mut BTreeSet<String>>,
 ) -> Vec<String> {
     drain_cleanup_tracked_dedup_with_budget(
         names,
@@ -1550,7 +1550,7 @@ pub(crate) fn drain_cleanup_tracked_dedup(
         alias_roots,
         op_idx,
         skip,
-        already_decrefed.as_deref_mut(),
+        already_decrefed,
         None,
     )
 }
@@ -1598,9 +1598,7 @@ pub(crate) fn drain_cleanup_tracked_dedup_with_budget(
         let last = last_use.get(name).copied().unwrap_or(usize::MAX);
         if last <= op_idx {
             if let Some(ref mut set) = already_decrefed {
-                if !set.contains(cleanup_key) {
-                    set.insert(cleanup_key.to_string());
-                }
+                set.insert(cleanup_key.to_string());
             }
             cleanup.push(name.clone());
             return false;

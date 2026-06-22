@@ -127,7 +127,15 @@ Interpretation:
 - Every `tools/dev.py` command that launches through `uv run` first installs
   the canonical Molt artifact/cache/temp roots and a session id before entering
   the shared memory guard, while preserving explicit caller-provided root
-  overrides for deliberate external artifact placement.
+  overrides for deliberate external artifact placement. When external artifacts
+  are preferred and no explicit root is set, Windows hosts use local
+  `%LOCALAPPDATA%\Molt` / temp-backed Molt roots before falling back to the
+  repository, keeping volatile pytest/build temp directories off synced
+  workspaces such as OneDrive.
+- On Windows, the shared memory guard, pytest bootstrap handoff, and child
+  runner all launch guarded subprocesses in an explicit new process group so
+  timeout/RSS cleanup cannot deliver interrupt-style console control events into
+  the parent guard or Codex/app control plane.
 - Shared guarded subprocesses also run the default stale-orphan preflight before
   launch: orphaned Molt process groups older than one hour and orphaned
   pytest-style groups older than fifteen minutes are drained with process age,

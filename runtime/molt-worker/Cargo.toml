@@ -15,7 +15,7 @@ crossbeam-channel = "0.5"
 # Keep 0.2 isolated to the postgres decoding boundary.
 fallible-iterator-02 = { package = "fallible-iterator", version = "0.2" }
 molt-db = { path = "../molt-db", features = ["sqlite", "async", "postgres"] }
-postgres-protocol = "0.6"
+postgres-protocol = "0.6.12"
 rmp-serde = "1"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -23,7 +23,7 @@ serde_bytes = "0.11"
 serde_json = "1"
 sqlparser = "0.61"
 tokio = { version = "1.50", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 uuid = "1"
 
 [dev-dependencies]

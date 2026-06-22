@@ -19,8 +19,9 @@ _SRC_ROOT = REPO_ROOT / "src"
 if _SRC_ROOT.exists() and str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
-import harness_memory_guard
-from molt import backend_daemon_custody as daemon_custody
+import harness_memory_guard  # noqa: E402
+import bench as bench_tool  # noqa: E402
+from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 
 
 SUPPORTED_SEMANTIC_MODES = {
@@ -36,6 +37,8 @@ SUPPORTED_RUNNER_ROLES = {
 }
 
 RUNNER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+MAX_FAILURE_DETAIL_RECORDS = 32
+MAX_FAILURE_MESSAGE_CHARS = 4000
 
 _PASSTHROUGH_ENV_KEYS = {
     "CC",
@@ -170,6 +173,7 @@ class PhaseResult:
     guard_orphaned_process_groups: list[int] = field(default_factory=list)
     guard_exit_signal: dict[str, Any] | None = None
     guard_cargo_incremental_quarantine: dict[str, Any] | None = None
+    molt_failure: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -191,6 +195,7 @@ class RunnerResult:
     structured_outputs: list[Any] = field(default_factory=list)
     structured_samples_s: dict[str, list[float]] = field(default_factory=dict)
     structured_median_s: dict[str, float] = field(default_factory=dict)
+    molt_failure: dict[str, Any] | None = None
 
 
 @dataclass
@@ -558,6 +563,43 @@ def _guarded_phase_diagnostics(
     }
 
 
+def _molt_failure_reason_suffix(payload: dict[str, Any] | None) -> str:
+    if not payload:
+        return ""
+    detail = payload.get("detail")
+    detail_text = f" ({detail})" if detail else ""
+    return f": {payload.get('status', 'failed')}{detail_text}"
+
+
+def _bounded_failure_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if not text:
+        return None
+    if len(text) <= MAX_FAILURE_MESSAGE_CHARS:
+        return text
+    return (
+        f"... <truncated to last {MAX_FAILURE_MESSAGE_CHARS} chars>\n"
+        f"{text[-MAX_FAILURE_MESSAGE_CHARS:]}"
+    )
+
+
+def _molt_failure_with_log_refs(
+    payload: dict[str, Any],
+    *,
+    stdout_path: Path,
+    stderr_path: Path,
+) -> dict[str, Any]:
+    enriched = dict(payload)
+    enriched["message"] = _bounded_failure_text(enriched.get("message"))
+    enriched["log_refs"] = [
+        {"kind": "stdout", "path": str(stdout_path)},
+        {"kind": "stderr", "path": str(stderr_path)},
+    ]
+    return enriched
+
+
 def _run_command(
     cmd: list[str],
     *,
@@ -569,6 +611,7 @@ def _run_command(
     dry_run: bool,
     limits: harness_memory_guard.HarnessMemoryLimits,
     parse_stdout_json: bool = False,
+    molt_failure_phase: str | None = None,
 ) -> PhaseResult:
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
@@ -590,6 +633,7 @@ def _run_command(
     timed_out = False
     guard_elapsed_s: float | None = None
     diagnostics: dict[str, Any] = {}
+    res: subprocess.CompletedProcess[str] | None = None
     try:
         res = harness_memory_guard.guarded_completed_process(
             cmd,
@@ -635,6 +679,31 @@ def _run_command(
     stdout_json_error = None
     if parse_stdout_json:
         stdout_json, stdout_json_error = _parse_stdout_json(stdout)
+    molt_failure = None
+    if molt_failure_phase is not None and (
+        rc != 0
+        or timed_out
+        or diagnostics.get("guard_violation") is not None
+        or diagnostics.get("guard_orphaned_process_groups")
+    ):
+        failure = bench_tool.classify_molt_process_failure(
+            phase=molt_failure_phase,
+            returncode=rc,
+            stdout=stdout,
+            stderr=stderr,
+            elapsed_s=elapsed,
+            timed_out=timed_out,
+            violation=getattr(res, "violation", None) if res is not None else None,
+            orphaned_process_groups=tuple(
+                int(pgid)
+                for pgid in diagnostics.get("guard_orphaned_process_groups", []) or []
+            ),
+        )
+        molt_failure = _molt_failure_with_log_refs(
+            bench_tool.molt_failure_payload(failure),
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+        )
     return PhaseResult(
         cmd=cmd,
         returncode=rc,
@@ -644,6 +713,7 @@ def _run_command(
         stderr_path=str(stderr_path),
         stdout_json=stdout_json,
         stdout_json_error=stdout_json_error,
+        molt_failure=molt_failure,
         **diagnostics,
     )
 
@@ -736,7 +806,9 @@ def _verify_git_source_custody(
     )
     if rc != 0 or out.strip() != "true":
         detail = err.strip() or out.strip()
-        raise RuntimeError(f"suite {suite.id}: suite root is not a git checkout: {detail}")
+        raise RuntimeError(
+            f"suite {suite.id}: suite root is not a git checkout: {detail}"
+        )
 
     rc, head_out, err = _run_git(
         ["rev-parse", "HEAD"],
@@ -746,7 +818,9 @@ def _verify_git_source_custody(
         limits=limits,
     )
     if rc != 0:
-        raise RuntimeError(f"suite {suite.id}: git rev-parse HEAD failed: {err.strip()}")
+        raise RuntimeError(
+            f"suite {suite.id}: git rev-parse HEAD failed: {err.strip()}"
+        )
     head_ref = head_out.strip()
 
     rc, expected_out, err = _run_git(
@@ -828,7 +902,9 @@ def _acquire_suite(
     limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> SuiteAcquisition:
     if suite.source == "local":
-        local_path = str(suite_root_override) if suite_root_override else suite.local_path
+        local_path = (
+            str(suite_root_override) if suite_root_override else suite.local_path
+        )
         if not local_path:
             raise ValueError(
                 f"suite {suite.id}: local_path is required for source=local"
@@ -1005,11 +1081,15 @@ def _run_runner(
             stderr_path=logs_dir / f"{runner.name}.build.stderr.log",
             dry_run=dry_run,
             limits=limits,
+            molt_failure_phase="build" if runner.name == "molt" else None,
         )
         result.build = build
         if not build.ok:
             result.status = "failed"
-            result.reason = "build failed"
+            result.molt_failure = build.molt_failure
+            result.reason = (
+                f"build failed{_molt_failure_reason_suffix(build.molt_failure)}"
+            )
             return result
 
     run_cmd = _resolve_tokenized(runner.run_cmd, tokens)
@@ -1024,25 +1104,30 @@ def _run_runner(
             dry_run=dry_run,
             limits=limits,
             parse_stdout_json=runner.json_stdout,
+            molt_failure_phase="run" if runner.name == "molt" else None,
         )
         result.runs.append(phase)
         if not phase.ok:
             result.status = "failed"
-            result.reason = f"run {run_idx} failed"
+            result.molt_failure = phase.molt_failure
+            result.reason = (
+                f"run {run_idx} failed{_molt_failure_reason_suffix(phase.molt_failure)}"
+            )
             return result
         if runner.json_stdout and not dry_run:
             if phase.stdout_json_error is not None:
                 result.status = "failed"
-                result.reason = f"run {run_idx} JSON parse failed: {phase.stdout_json_error}"
+                result.reason = (
+                    f"run {run_idx} JSON parse failed: {phase.stdout_json_error}"
+                )
                 return result
             if phase.stdout_json is None:
                 result.status = "failed"
                 result.reason = f"run {run_idx} did not emit JSON stdout"
                 return result
-            if (
-                isinstance(phase.stdout_json, dict)
-                and phase.stdout_json.get("status") not in (None, "ok")
-            ):
+            if isinstance(phase.stdout_json, dict) and phase.stdout_json.get(
+                "status"
+            ) not in (None, "ok"):
                 result.status = "failed"
                 result.reason = (
                     f"run {run_idx} emitted non-ok JSON status: "
@@ -1197,6 +1282,8 @@ def _render_summary_markdown(
     interrupted: dict[str, Any] | None = None,
     backend_daemon_cleanup: list[dict[str, Any]] | None = None,
     memory_guard_incidents: list[dict[str, Any]] | None = None,
+    custody_artifacts: dict[str, str] | None = None,
+    molt_failure_details: dict[str, Any] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.append("# Friend Benchmark Summary")
@@ -1251,6 +1338,47 @@ def _render_summary_markdown(
         "- Compile-vs-run separation is recorded per runner when build commands "
         "are configured."
     )
+
+    artifacts = custody_artifacts or {}
+    if artifacts:
+        lines.append("")
+        lines.append("## Custody Artifacts")
+        for key in (
+            "molt_failure_details_jsonl",
+            "harness_command_profile_jsonl",
+            "repo_process_sentinel_jsonl",
+            "backend_daemon_cleanup_jsonl",
+        ):
+            value = artifacts.get(key)
+            if value:
+                lines.append(f"- `{key}`: `{value}`")
+
+    failure_details = molt_failure_details or {}
+    failure_records = failure_details.get("records", [])
+    if isinstance(failure_records, list) and failure_records:
+        lines.append("")
+        lines.append("## Molt Failure Details")
+        for record in failure_records:
+            if not isinstance(record, dict):
+                continue
+            detail = record.get("detail")
+            detail_text = f" detail=`{detail}`" if detail else ""
+            lines.append(
+                f"- `{record.get('suite')}` runner=`{record.get('runner')}` "
+                f"phase=`{record.get('phase')}` status=`{record.get('status')}`"
+                f"{detail_text}"
+            )
+            log_refs = record.get("log_refs")
+            if isinstance(log_refs, list):
+                for ref in log_refs[:4]:
+                    if isinstance(ref, dict) and ref.get("path"):
+                        lines.append(
+                            f"  - {ref.get('kind', 'log')}: `{ref.get('path')}`"
+                        )
+        if failure_details.get("truncated"):
+            lines.append(
+                f"- Failure detail list truncated at {MAX_FAILURE_DETAIL_RECORDS} records."
+            )
 
     failures = [s for s in suites if s.status != "ok"]
     if failures:
@@ -1313,6 +1441,7 @@ def _runner_to_dict(result: RunnerResult) -> dict[str, Any]:
         "structured_outputs": result.structured_outputs,
         "structured_samples_s": result.structured_samples_s,
         "structured_median_s": result.structured_median_s,
+        "molt_failure": result.molt_failure,
     }
 
 
@@ -1332,6 +1461,7 @@ def _phase_to_dict(phase: PhaseResult) -> dict[str, Any]:
         "guard_orphaned_process_groups": phase.guard_orphaned_process_groups,
         "guard_exit_signal": phase.guard_exit_signal,
         "guard_cargo_incremental_quarantine": phase.guard_cargo_incremental_quarantine,
+        "molt_failure": phase.molt_failure,
     }
 
 
@@ -1436,7 +1566,9 @@ def _cleanup_backend_daemons(
                 f"reason={reason} count={len(terminated)} pids={pids}",
                 file=sys.stderr,
             )
-    _append_event_jsonl(output_root / "memory_guard" / "backend_daemon_cleanup.jsonl", event)
+    _append_event_jsonl(
+        output_root / "memory_guard" / "backend_daemon_cleanup.jsonl", event
+    )
     return event
 
 
@@ -1449,6 +1581,92 @@ def _interrupted_payload(interrupted: BenchInterrupted | None) -> dict[str, Any]
         "returncode": 128 + interrupted.signum,
         "recorded_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
+
+
+def _failure_details_path(json_out: Path) -> Path:
+    if json_out.name == "results.json":
+        return json_out.with_name("molt_failure_details.jsonl")
+    return json_out.with_name(f"{json_out.stem}_molt_failure_details.jsonl")
+
+
+def _custody_artifacts(
+    *,
+    output_root: Path,
+    json_out: Path,
+    summary_out: Path,
+    failure_details_path: Path,
+    run_env: dict[str, str],
+) -> dict[str, str]:
+    memory_guard_root = output_root / "memory_guard"
+    return {
+        "results_json": str(json_out),
+        "summary_md": str(summary_out),
+        "molt_failure_details_jsonl": str(failure_details_path),
+        "harness_command_profile_jsonl": str(
+            harness_memory_guard.command_profile_log_path(run_env, repo_root=REPO_ROOT)
+        ),
+        "repo_process_sentinel_jsonl": str(
+            memory_guard_root / "bench_friends_sentinel.jsonl"
+        ),
+        "backend_daemon_cleanup_jsonl": str(
+            memory_guard_root / "backend_daemon_cleanup.jsonl"
+        ),
+    }
+
+
+def _molt_failure_detail_records(
+    suites: list[SuiteResult],
+) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    total = 0
+    for suite in suites:
+        for runner_name, runner in sorted(suite.runners.items()):
+            failure = runner.molt_failure
+            if not isinstance(failure, dict):
+                continue
+            total += 1
+            if len(records) >= MAX_FAILURE_DETAIL_RECORDS:
+                continue
+            records.append(
+                {
+                    "suite": suite.id,
+                    "runner": runner_name,
+                    "phase": failure.get("phase"),
+                    "status": failure.get("status"),
+                    "detail": failure.get("detail"),
+                    "returncode": failure.get("returncode"),
+                    "timed_out": failure.get("timed_out"),
+                    "elapsed_s": failure.get("elapsed_s"),
+                    "message": _bounded_failure_text(failure.get("message")),
+                    "guard_violation": failure.get("guard_violation"),
+                    "signal": failure.get("signal"),
+                    "orphaned_process_groups": failure.get(
+                        "orphaned_process_groups"
+                    ),
+                    "log_refs": failure.get("log_refs", []),
+                }
+            )
+    return {
+        "schema_version": 1,
+        "total": total,
+        "truncated": total > len(records),
+        "max_records": MAX_FAILURE_DETAIL_RECORDS,
+        "records": records,
+    }
+
+
+def _write_failure_details_jsonl(
+    path: Path,
+    failure_details: dict[str, Any],
+) -> None:
+    records = failure_details.get("records", [])
+    if not isinstance(records, list):
+        records = []
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            if isinstance(record, dict):
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def _write_run_outputs(
@@ -1466,9 +1684,20 @@ def _write_run_outputs(
     interrupted: BenchInterrupted | None,
     backend_daemon_cleanup: list[dict[str, Any]],
     memory_guard_incidents: list[dict[str, Any]],
+    run_env: dict[str, str],
 ) -> tuple[Path, Path, str]:
     json_out = (args.json_out or (output_root / "results.json")).resolve()
     json_out.parent.mkdir(parents=True, exist_ok=True)
+    summary_out = (args.summary_out or (output_root / "summary.md")).resolve()
+    failure_details_path = _failure_details_path(json_out).resolve()
+    custody_artifact_refs = _custody_artifacts(
+        output_root=output_root,
+        json_out=json_out,
+        summary_out=summary_out,
+        failure_details_path=failure_details_path,
+        run_env=run_env,
+    )
+    molt_failure_details = _molt_failure_detail_records(suite_results)
     interrupt_payload = _interrupted_payload(interrupted)
     payload = {
         "schema_version": 1,
@@ -1477,9 +1706,12 @@ def _write_run_outputs(
         "manifest_path": str(manifest_path),
         "git_rev": _git_rev(),
         "dry_run": args.dry_run,
+        "partial": interrupted is not None,
         "interrupted": interrupt_payload,
         "backend_daemon_cleanup": backend_daemon_cleanup,
         "memory_guard_incidents": memory_guard_incidents,
+        "custody_artifacts": custody_artifact_refs,
+        "molt_failure_details": molt_failure_details,
         "memory_guard": harness_memory_guard.limits_summary(limits),
         "host": {
             "platform": platform.platform(),
@@ -1495,15 +1727,16 @@ def _write_run_outputs(
             "timeout_override": args.timeout_sec,
             "runner_filter": sorted(runner_filters),
             "suite_root_overrides": {
-                suite_id: str(path) for suite_id, path in sorted(suite_root_overrides.items())
+                suite_id: str(path)
+                for suite_id, path in sorted(suite_root_overrides.items())
             },
             "repo_ref_overrides": dict(sorted(repo_ref_overrides.items())),
         },
         "suites": [_suite_to_dict(suite) for suite in suite_results],
     }
+    _write_failure_details_jsonl(failure_details_path, molt_failure_details)
     json_out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
-    summary_out = (args.summary_out or (output_root / "summary.md")).resolve()
     summary_out.parent.mkdir(parents=True, exist_ok=True)
     summary_text = _render_summary_markdown(
         run_started_at=run_started.isoformat(),
@@ -1513,6 +1746,8 @@ def _write_run_outputs(
         interrupted=interrupt_payload,
         backend_daemon_cleanup=backend_daemon_cleanup,
         memory_guard_incidents=memory_guard_incidents,
+        custody_artifacts=custody_artifact_refs,
+        molt_failure_details=molt_failure_details,
     )
     summary_out.write_text(summary_text, encoding="utf-8")
     return json_out, summary_out, summary_text
@@ -1534,12 +1769,16 @@ def _parse_keyed_path_overrides(values: list[str], option_name: str) -> dict[str
     overrides: dict[str, Path] = {}
     for raw in values:
         if "=" not in raw:
-            raise ValueError(f"{option_name} entries must be <suite-id>=<path>: {raw!r}")
+            raise ValueError(
+                f"{option_name} entries must be <suite-id>=<path>: {raw!r}"
+            )
         suite_id, value = raw.split("=", 1)
         suite_id = suite_id.strip()
         value = value.strip()
         if not suite_id or not value:
-            raise ValueError(f"{option_name} entries must be <suite-id>=<path>: {raw!r}")
+            raise ValueError(
+                f"{option_name} entries must be <suite-id>=<path>: {raw!r}"
+            )
         if suite_id in overrides:
             raise ValueError(f"{option_name} specified multiple times for {suite_id!r}")
         overrides[suite_id] = Path(value).expanduser()
@@ -1550,12 +1789,16 @@ def _parse_keyed_str_overrides(values: list[str], option_name: str) -> dict[str,
     overrides: dict[str, str] = {}
     for raw in values:
         if "=" not in raw:
-            raise ValueError(f"{option_name} entries must be <suite-id>=<value>: {raw!r}")
+            raise ValueError(
+                f"{option_name} entries must be <suite-id>=<value>: {raw!r}"
+            )
         suite_id, value = raw.split("=", 1)
         suite_id = suite_id.strip()
         value = value.strip()
         if not suite_id or not value:
-            raise ValueError(f"{option_name} entries must be <suite-id>=<value>: {raw!r}")
+            raise ValueError(
+                f"{option_name} entries must be <suite-id>=<value>: {raw!r}"
+            )
         if suite_id in overrides:
             raise ValueError(f"{option_name} specified multiple times for {suite_id!r}")
         overrides[suite_id] = value
@@ -1586,9 +1829,7 @@ def _apply_runner_filter(suite: SuiteSpec, runner_filters: set[str]) -> SuiteSpe
     if not runner_filters:
         return suite
     runners = {
-        name: runner
-        for name, runner in suite.runners.items()
-        if name in runner_filters
+        name: runner for name, runner in suite.runners.items() if name in runner_filters
     }
     if not runners:
         raise ValueError(
@@ -1761,6 +2002,10 @@ def main() -> int:
     repos_root = args.repos_root.resolve()
 
     run_env = _base_run_env()
+    run_env.setdefault(
+        "MOLT_GUARD_PROFILE_LOG",
+        str(output_root / "memory_guard" / "commands.jsonl"),
+    )
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH", run_env)
 
     suite_results: list[SuiteResult] = []
@@ -1786,6 +2031,7 @@ def main() -> int:
                 interrupted=interrupted,
                 backend_daemon_cleanup=list(backend_daemon_cleanup),
                 memory_guard_incidents=list(memory_guard_incidents),
+                run_env=run_env,
             )
 
     def record_sentinel_violation(
@@ -1823,6 +2069,7 @@ def main() -> int:
                 interrupted=interrupted,
                 backend_daemon_cleanup=list(backend_daemon_cleanup),
                 memory_guard_incidents=list(memory_guard_incidents),
+                run_env=run_env,
             )
 
     try:
@@ -1846,7 +2093,9 @@ def main() -> int:
                             }
                         )
                         if suite.id in repo_ref_overrides:
-                            suite = replace(suite, repo_ref=repo_ref_overrides[suite.id])
+                            suite = replace(
+                                suite, repo_ref=repo_ref_overrides[suite.id]
+                            )
                         try:
                             acquisition = _acquire_suite(
                                 suite,
@@ -1946,10 +2195,13 @@ def main() -> int:
                                     requested_ref=suite.repo_ref,
                                     expected_ref=None,
                                     head_ref=None,
-                                    ref_verified=False if suite.source == "git" else None,
+                                    ref_verified=False
+                                    if suite.source == "git"
+                                    else None,
                                     git_clean=False if suite.source == "git" else None,
                                     git_status_porcelain=None,
-                                    suite_root_overridden=suite.id in suite_root_overrides,
+                                    suite_root_overridden=suite.id
+                                    in suite_root_overrides,
                                     verification="not_acquired",
                                 ),
                                 status="failed",

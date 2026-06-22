@@ -653,7 +653,7 @@ mod tests {
         );
         assert_eq!(
             crate::builtins::functions::canonicalize_runtime_callable_key(raw_ptr),
-            poll_id
+            raw_ptr
         );
     }
 }

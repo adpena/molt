@@ -187,11 +187,6 @@ pub(crate) fn raw_from_bytes_text(text: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(not(unix))]
-fn bytes_text_from_raw(raw: &[u8]) -> String {
-    String::from_utf8_lossy(raw).into_owned()
-}
-
-#[cfg(not(unix))]
 pub(crate) fn raw_from_bytes_text(text: &str) -> Option<Vec<u8>> {
     Some(text.as_bytes().to_vec())
 }
@@ -670,6 +665,7 @@ pub(crate) fn path_parents_text(path: &str, sep: char) -> Vec<String> {
 pub(crate) fn path_isabs_text(path: &str, sep: char) -> bool {
     #[cfg(windows)]
     {
+        let _ = sep;
         let text = path.replace('/', "\\");
         if text.starts_with("\\\\") || text.starts_with('\\') {
             return true;

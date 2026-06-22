@@ -2003,7 +2003,7 @@ consumed_operand = "last"
 #              for an unclassified terminator silently inheriting a borrow/transfer
 #              assumption, mirroring the [[opcode]] exhaustiveness discipline).
 #   direct / branch_arg : the `OperandOwnership` leaf for that category, OR
-#              "none" (NoOperandOwnership) when the variant has no operand in that
+#              "none" (NoOperand) when the variant has no operand in that
 #              category (e.g. `Branch` has no direct operand; `Return` forwards no
 #              branch arg; `Unreachable` has neither).
 # ===========================================================================

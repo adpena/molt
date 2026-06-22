@@ -881,7 +881,7 @@ pub(crate) fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {
 ///     this operand while the caller still owns the producer temp ref. This
 ///     gives DropInsertion a shared release boundary for absorbed temps
 ///     without making the mutator consume the operand.
-///   * `NoOperandOwnership` — no ref-bearing operand in that category (a
+///   * `NoOperand` — no ref-bearing operand in that category (a
 ///     raw lane; a terminator category absent on a variant — `Branch` has
 ///     no direct operand, `Return` forwards no branch arg).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -891,7 +891,7 @@ pub(crate) enum OperandOwnership {
     Transferred,
     InteriorBorrowKeepAlive,
     ContainerAbsorb,
-    NoOperandOwnership,
+    NoOperand,
 }
 
 /// Per-OpCode operand-ownership DEFAULT: how `OpCode` treats the operand
@@ -1436,7 +1436,7 @@ pub(crate) enum OperandCategory {
 /// compile until classified. `Transferred` = ownership moves OUT (a
 /// `Return` value to the caller; a branch-arg into a successor phi);
 /// `Borrowed` = the predicate is read but not moved (drop relocated to the
-/// dying edge); `NoOperandOwnership` = the variant has no operand in that
+/// dying edge); `NoOperand` = the variant has no operand in that
 /// category. The consume axis is N/A for a terminator (nothing frees a
 /// terminator operand internally), so `Consumed` never appears here.
 #[inline]
@@ -1445,28 +1445,20 @@ pub(crate) fn terminator_operand_ownership_table(
     category: OperandCategory,
 ) -> OperandOwnership {
     match (kind, category) {
-        (TerminatorKind::Branch, OperandCategory::Direct) => OperandOwnership::NoOperandOwnership,
+        (TerminatorKind::Branch, OperandCategory::Direct) => OperandOwnership::NoOperand,
         (TerminatorKind::Branch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
         (TerminatorKind::CondBranch, OperandCategory::Direct) => OperandOwnership::Borrowed,
         (TerminatorKind::CondBranch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
         (TerminatorKind::Switch, OperandCategory::Direct) => OperandOwnership::Borrowed,
         (TerminatorKind::Switch, OperandCategory::BranchArg) => OperandOwnership::Transferred,
-        (TerminatorKind::StateDispatch, OperandCategory::Direct) => {
-            OperandOwnership::NoOperandOwnership
-        }
+        (TerminatorKind::StateDispatch, OperandCategory::Direct) => OperandOwnership::NoOperand,
         (TerminatorKind::StateDispatch, OperandCategory::BranchArg) => {
             OperandOwnership::Transferred
         }
         (TerminatorKind::Return, OperandCategory::Direct) => OperandOwnership::Transferred,
-        (TerminatorKind::Return, OperandCategory::BranchArg) => {
-            OperandOwnership::NoOperandOwnership
-        }
-        (TerminatorKind::Unreachable, OperandCategory::Direct) => {
-            OperandOwnership::NoOperandOwnership
-        }
-        (TerminatorKind::Unreachable, OperandCategory::BranchArg) => {
-            OperandOwnership::NoOperandOwnership
-        }
+        (TerminatorKind::Return, OperandCategory::BranchArg) => OperandOwnership::NoOperand,
+        (TerminatorKind::Unreachable, OperandCategory::Direct) => OperandOwnership::NoOperand,
+        (TerminatorKind::Unreachable, OperandCategory::BranchArg) => OperandOwnership::NoOperand,
     }
 }
 

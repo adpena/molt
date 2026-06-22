@@ -32,6 +32,10 @@ def _path_is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
+def _relative_posix(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
 def _json_safe(value: Any) -> Any:
     if hasattr(value, "tolist"):
         return value.tolist()
@@ -144,14 +148,14 @@ def _audit_source_tree(suite_root: Path) -> dict[str, Any]:
         root / "numpy" / "__init__.py",
         root / "numpy" / "_core",
     ]
-    missing = [str(path.relative_to(root)) for path in required if not path.exists()]
+    missing = [_relative_posix(path, root) for path in required if not path.exists()]
     if missing:
         raise FileNotFoundError(
             "NumPy source checkout is missing required paths: " + ", ".join(missing)
         )
     return {
         "suite_root": str(root),
-        "required_paths": [str(path.relative_to(root)) for path in required],
+        "required_paths": [_relative_posix(path, root) for path in required],
     }
 
 

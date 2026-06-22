@@ -1412,11 +1412,11 @@ struct FunctionPreanalysis {
     ///   - it is returned from the function (ret)
     ///   - it has explicit inc_ref/dec_ref ops in the IR
     scalar_slot_exclusion_unsafe: BTreeSet<String>,
-    /// Op indexes for `store` / `store_init` operations proven safe to lower
-    /// as plain payload writes. These are limited to fresh fixed-layout objects
-    /// and known non-heap values, so codegen can skip refcount, profiling,
-    /// header-flag, and pointer-tag slow-path scaffolding.
-    direct_field_store_ops: BTreeSet<usize>,
+    /// Per-field-store ownership facts for fresh fixed-layout object payloads.
+    /// `FreshInit` means the old slot is proven uninitialized zero storage,
+    /// even when the surface op is `store`; `DirectNonHeap` is the narrower
+    /// performance fact that both old and new slot contents are non-heap.
+    field_store_modes: BTreeMap<usize, FieldStoreMode>,
     /// RC drop-insertion substrate (design 20, R1 guard): true when the TIR
     /// drop-insertion pass processed this function (detected via the leading
     /// `drop_inserted` marker op). When set, the ad-hoc `loop_reassign_old_val`
@@ -1424,6 +1424,13 @@ struct FunctionPreanalysis {
     /// loop-carried DecRef, and running both would double-drop (refcount
     /// underflow → use-after-free / abort).
     drop_inserted: bool,
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum FieldStoreMode {
+    FreshInit,
+    DirectNonHeap,
 }
 
 #[cfg(feature = "native-backend")]
@@ -1484,6 +1491,60 @@ fn import_func_ref(
     let func_ref = module.declare_func_in_func(func_id, builder.func);
     local_refs.insert(name, func_ref);
     func_ref
+}
+
+#[cfg(feature = "native-backend")]
+fn emit_guarded_object_field_get(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    obj_bits: Value,
+    offset_bytes: i64,
+    nbc: &crate::NanBoxConsts,
+) -> Value {
+    let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
+    let tag_bits = builder.ins().band(obj_bits, tag_mask);
+    let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
+    let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
+    let none_bits = builder.ins().iconst(types::I64, box_none());
+
+    let load_block = builder.create_block();
+    let none_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder.append_block_param(merge_block, types::I64);
+    if let Some(current_block) = builder.current_block() {
+        builder.insert_block_after(load_block, current_block);
+        builder.insert_block_after(none_block, load_block);
+        builder.insert_block_after(merge_block, none_block);
+    }
+    builder.ins().brif(is_ptr, load_block, &[], none_block, &[]);
+
+    switch_to_block_materialized(builder, load_block);
+    seal_block_once(builder, sealed_blocks, load_block);
+    let obj_ptr = unbox_ptr_value(builder, obj_bits, nbc);
+    let offset = builder.ins().iconst(types::I64, offset_bytes);
+    let callee = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        "molt_object_field_get_ptr",
+        &[types::I64, types::I64],
+        &[types::I64],
+    );
+    let call = builder.ins().call(callee, &[obj_ptr, offset]);
+    let result = builder.inst_results(call)[0];
+    jump_block(builder, merge_block, &[result]);
+
+    switch_to_block_materialized(builder, none_block);
+    seal_block_once(builder, sealed_blocks, none_block);
+    jump_block(builder, merge_block, &[none_bits]);
+
+    switch_to_block_materialized(builder, merge_block);
+    seal_block_once(builder, sealed_blocks, merge_block);
+    builder.block_params(merge_block)[0]
 }
 
 #[cfg(feature = "native-backend")]
@@ -1611,22 +1672,24 @@ fn op_allocates_fresh_fixed_layout_object(op: &OpIR) -> bool {
 }
 
 #[cfg(feature = "native-backend")]
-fn analyze_direct_field_stores(
+fn analyze_field_store_modes(
     func_ir: &FunctionIR,
     alias_roots: &BTreeMap<String, String>,
     int_like_vars: &BTreeSet<String>,
     bool_like_vars: &BTreeSet<String>,
     float_like_vars: &BTreeSet<String>,
     none_like_vars: &BTreeSet<String>,
-) -> BTreeSet<usize> {
-    let mut direct_ops = BTreeSet::new();
+) -> BTreeMap<usize, FieldStoreMode> {
+    let mut modes = BTreeMap::new();
     let mut direct_object_roots: BTreeSet<String> = BTreeSet::new();
+    let mut initialized_slots: BTreeSet<(String, i64)> = BTreeSet::new();
     let mut known_non_heap_slots: BTreeSet<(String, i64)> = BTreeSet::new();
 
     for (idx, op) in func_ir.ops.iter().enumerate() {
         let kind = op.kind.as_str();
         if direct_field_store_control_boundary(kind) {
             direct_object_roots.clear();
+            initialized_slots.clear();
             known_non_heap_slots.clear();
             continue;
         }
@@ -1659,17 +1722,27 @@ fn analyze_direct_field_stores(
                 none_like_vars,
             );
             let slot = (root.clone(), offset);
-            let slot_known_non_heap = kind == "store_init" || known_non_heap_slots.contains(&slot);
+            let slot_initialized = initialized_slots.contains(&slot);
+            let slot_known_non_heap = known_non_heap_slots.contains(&slot);
+
+            if kind == "store_init" || !slot_initialized {
+                modes.insert(idx, FieldStoreMode::FreshInit);
+                initialized_slots.insert(slot.clone());
+                if value_known_non_heap {
+                    known_non_heap_slots.insert(slot);
+                } else {
+                    known_non_heap_slots.remove(&slot);
+                }
+                continue;
+            }
 
             if value_known_non_heap && slot_known_non_heap {
-                direct_ops.insert(idx);
+                modes.insert(idx, FieldStoreMode::DirectNonHeap);
+                initialized_slots.insert(slot.clone());
                 known_non_heap_slots.insert(slot);
             } else {
-                remove_direct_field_store_root(
-                    &root,
-                    &mut direct_object_roots,
-                    &mut known_non_heap_slots,
-                );
+                initialized_slots.insert(slot.clone());
+                known_non_heap_slots.remove(&slot);
             }
             continue;
         }
@@ -1699,10 +1772,11 @@ fn analyze_direct_field_stores(
                 &mut direct_object_roots,
                 &mut known_non_heap_slots,
             );
+            initialized_slots.retain(|(slot_root, _)| slot_root != &root);
         }
     }
 
-    direct_ops
+    modes
 }
 
 #[cfg(feature = "native-backend")]
@@ -1753,13 +1827,14 @@ fn preanalyze_function_ir(
             _ => {}
         }
 
-        let logical_out = op.out.as_ref().or_else(|| {
-            if matches!(op.kind.as_str(), "store_var" | "delete_var") {
-                op.var.as_ref()
-            } else {
-                None
-            }
-        });
+        let logical_out =
+            op.out
+                .as_ref()
+                .or(if matches!(op.kind.as_str(), "store_var" | "delete_var") {
+                    op.var.as_ref()
+                } else {
+                    None
+                });
         if let Some(out) = logical_out
             && out != "none"
         {
@@ -2339,7 +2414,7 @@ fn preanalyze_function_ir(
         }
     }
 
-    let direct_field_store_ops = analyze_direct_field_stores(
+    let field_store_modes = analyze_field_store_modes(
         func_ir,
         &alias_roots,
         &int_like_vars,
@@ -2347,11 +2422,9 @@ fn preanalyze_function_ir(
         &float_like_vars,
         &none_like_vars,
     );
-    let has_store = func_ir
-        .ops
-        .iter()
-        .enumerate()
-        .any(|(idx, op)| op.kind == "store" && !direct_field_store_ops.contains(&idx));
+    let has_store = func_ir.ops.iter().enumerate().any(|(idx, op)| {
+        op.kind == "store" && field_store_modes.get(&idx) != Some(&FieldStoreMode::DirectNonHeap)
+    });
 
     let mut var_names: Vec<String> = var_names.into_iter().collect();
     var_names.sort();
@@ -2437,7 +2510,7 @@ fn preanalyze_function_ir(
         has_arena_eligible,
         arena_eligible_outs,
         scalar_slot_exclusion_unsafe,
-        direct_field_store_ops,
+        field_store_modes,
         drop_inserted,
     }
 }
@@ -2711,7 +2784,7 @@ impl SimpleBackend {
             has_arena_eligible,
             arena_eligible_outs: _arena_eligible_outs,
             scalar_slot_exclusion_unsafe,
-            direct_field_store_ops,
+            field_store_modes,
             drop_inserted,
         } = preanalyze_function_ir(&func_ir, return_alias_summaries, &representation_plan);
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the SimpleIR-level
@@ -21949,7 +22022,8 @@ impl SimpleBackend {
                     .expect("Value not found");
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    if direct_field_store_ops.contains(&op_idx) {
+                    let field_store_mode = field_store_modes.get(&op_idx).copied();
+                    if field_store_mode == Some(FieldStoreMode::DirectNonHeap) {
                         // Defense-in-depth (#50): the inlined-constructor direct
                         // field store writes `*(obj_ptr + offset) = val` with no
                         // header read, but `obj_ptr` is garbage/NULL when the
@@ -22214,10 +22288,15 @@ impl SimpleBackend {
                     switch_to_block_materialized(&mut builder, slow_block);
                     seal_block_once(&mut builder, &mut sealed_blocks, slow_block);
                     let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
+                    let helper_name = if field_store_mode == Some(FieldStoreMode::FreshInit) {
+                        "molt_object_field_init_ptr"
+                    } else {
+                        "molt_object_field_set_ptr"
+                    };
                     let callee = Self::import_func_id_split(
                         &mut self.module,
                         &mut self.import_ids,
-                        "molt_object_field_set_ptr",
+                        helper_name,
                         &[types::I64, types::I64, types::I64],
                         &[types::I64],
                     );
@@ -22367,7 +22446,9 @@ impl SimpleBackend {
                     .expect("Value not found");
                     let offset = op.value.unwrap_or(0) as i32;
                     let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    if direct_field_store_ops.contains(&op_idx) {
+                    if field_store_modes.get(&op_idx).copied()
+                        == Some(FieldStoreMode::DirectNonHeap)
+                    {
                         // Defense-in-depth (#50): the inlined-constructor direct
                         // field store writes `*(obj_ptr + offset) = val` with no
                         // header read, but `obj_ptr` is garbage/NULL when the
@@ -22648,18 +22729,16 @@ impl SimpleBackend {
                     )
                     .expect("Object not found");
                     let offset_val = op.value.unwrap_or(0);
-                    let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    // Inline the field load: read u64 at obj_ptr + offset,
-                    // then inc_ref the result. This eliminates the runtime
-                    // function call (GIL acquire + debug checks) on the hot
-                    // path for known-layout attribute access.
-                    let res = builder.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        obj_ptr,
-                        offset_val as i32,
+                    let res = emit_guarded_object_field_get(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        *obj,
+                        offset_val,
+                        &nbc,
                     );
-                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
                     let Some(out_name) = op.out else {
                         continue;
                     };
@@ -22768,14 +22847,17 @@ impl SimpleBackend {
                         box_int_tag_var,
                     )
                     .expect("Object not found");
-                    let offset = op.value.unwrap_or(0) as i32;
-                    let obj_ptr = unbox_ptr_value(&mut builder, *obj, &nbc);
-                    // Use volatile to absolutely prevent Cranelift from merging
-                    // or reordering loads from object fields.
-                    let mut flags = MemFlags::new();
-                    flags.set_readonly();
-                    let res = builder.ins().load(types::I64, flags, obj_ptr, offset);
-                    emit_maybe_ref_adjust_v2(&mut builder, res, local_inc_ref_obj, &nbc);
+                    let offset = op.value.unwrap_or(0);
+                    let res = emit_guarded_object_field_get(
+                        &mut self.module,
+                        &mut self.import_ids,
+                        &mut builder,
+                        &mut import_refs,
+                        &mut sealed_blocks,
+                        *obj,
+                        offset,
+                        &nbc,
+                    );
                     let Some(out_name) = op.out else {
                         continue;
                     };
@@ -24495,7 +24577,7 @@ impl SimpleBackend {
                     // Use Variable-backed shadow (phi-resolved across loop iterations)
                     // when available, falling back to Value-based shadow.
                     if let Some(ref var_name) = op.var
-                        && !op.args.as_ref().is_some_and(|args| !args.is_empty())
+                        && op.args.as_ref().is_none_or(|args| args.is_empty())
                     {
                         if let Some(&slot) = slot_backed_join_slots.get(var_name) {
                             // Raw-backed slot: the slot holds RAW i64 (or a
@@ -25501,12 +25583,12 @@ fn drain_dead_block_temps_for_suspend(
 #[cfg(all(test, feature = "native-backend"))]
 mod tests {
     use super::{
-        FunctionPreanalysis, ScalarRepresentationPlan, alias_root_name, box_raw_bool_value,
-        cleanup_roots_for_names, collect_slot_backed_join_names, def_var_from_boxed_transport,
-        generic_list_int_lane_eligible, index_fallback_import_name, is_cold_module_chunk_function,
-        jump_block, live_exception_rebind_vars_for_op, mark_cleanup_root_once,
-        materialize_label_block, preanalyze_function_ir, protect_cleanup_names,
-        scan_loop_int_sum_reduction, store_index_fallback_import_name,
+        FieldStoreMode, FunctionPreanalysis, ScalarRepresentationPlan, alias_root_name,
+        box_raw_bool_value, cleanup_roots_for_names, collect_slot_backed_join_names,
+        def_var_from_boxed_transport, generic_list_int_lane_eligible, index_fallback_import_name,
+        is_cold_module_chunk_function, jump_block, live_exception_rebind_vars_for_op,
+        mark_cleanup_root_once, materialize_label_block, preanalyze_function_ir,
+        protect_cleanup_names, scan_loop_int_sum_reduction, store_index_fallback_import_name,
         switch_to_block_materialized, switch_to_block_with_rebind,
     };
     use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
@@ -26382,9 +26464,14 @@ mod tests {
             "immediate stores into fresh stack object slots should lower as direct field writes"
         );
         assert_eq!(
-            analysis.direct_field_store_ops,
-            [3usize, 6usize].into_iter().collect(),
-            "both the init write and later same-slot immediate write should be direct"
+            analysis.field_store_modes.get(&3),
+            Some(&FieldStoreMode::FreshInit),
+            "the init write owns fresh-slot initialization semantics"
+        );
+        assert_eq!(
+            analysis.field_store_modes.get(&6),
+            Some(&FieldStoreMode::DirectNonHeap),
+            "the later same-slot immediate write should be direct"
         );
     }
 
@@ -26460,8 +26547,13 @@ mod tests {
             "non-heap stores into fresh fixed-layout heap object slots should lower as direct field writes"
         );
         assert_eq!(
-            analysis.direct_field_store_ops,
-            [3usize, 7usize].into_iter().collect(),
+            analysis.field_store_modes.get(&3),
+            Some(&FieldStoreMode::FreshInit),
+            "sized object_new_bound roots should initialize fixed payload slots"
+        );
+        assert_eq!(
+            analysis.field_store_modes.get(&7),
+            Some(&FieldStoreMode::DirectNonHeap),
             "sized object_new_bound roots should share the stack-object direct-store contract"
         );
     }
@@ -26536,7 +26628,177 @@ mod tests {
             analysis.has_store,
             "heap object stores without a fixed payload-size proof must keep runtime field helpers"
         );
-        assert!(analysis.direct_field_store_ops.is_empty());
+        assert!(analysis.field_store_modes.is_empty());
+    }
+
+    #[test]
+    fn preanalysis_classifies_fresh_heap_field_first_store_as_init() {
+        let func = FunctionIR {
+            name: "fresh_heap_first_store".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("cls".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "object_new_bound".to_string(),
+                    out: Some("obj".to_string()),
+                    args: Some(vec!["cls".to_string()]),
+                    value: Some(24),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "dict_new".to_string(),
+                    out: Some("regs".to_string()),
+                    args: Some(vec![]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store".to_string(),
+                    args: Some(vec!["obj".to_string(), "regs".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+
+        assert_eq!(
+            analysis.field_store_modes.get(&3),
+            Some(&FieldStoreMode::FreshInit),
+            "first heap-valued write to a fresh fixed-layout slot must not use overwrite semantics"
+        );
+    }
+
+    #[test]
+    fn preanalysis_keeps_heap_field_second_store_as_overwrite() {
+        let func = FunctionIR {
+            name: "fresh_heap_second_store".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("cls".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "object_new_bound".to_string(),
+                    out: Some("obj".to_string()),
+                    args: Some(vec!["cls".to_string()]),
+                    value: Some(24),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "dict_new".to_string(),
+                    out: Some("first".to_string()),
+                    args: Some(vec![]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store".to_string(),
+                    args: Some(vec!["obj".to_string(), "first".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "dict_new".to_string(),
+                    out: Some("second".to_string()),
+                    args: Some(vec![]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store".to_string(),
+                    args: Some(vec!["obj".to_string(), "second".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+
+        assert_eq!(
+            analysis.field_store_modes.get(&3),
+            Some(&FieldStoreMode::FreshInit)
+        );
+        assert!(
+            !analysis.field_store_modes.contains_key(&5),
+            "second heap write to the same slot must stay generic overwrite so the old dict is released"
+        );
+    }
+
+    #[test]
+    fn preanalysis_rejects_fresh_init_after_escape() {
+        let func = FunctionIR {
+            name: "fresh_store_after_escape".to_string(),
+            params: vec![],
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    out: Some("cls".to_string()),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "object_new_bound".to_string(),
+                    out: Some("obj".to_string()),
+                    args: Some(vec!["cls".to_string()]),
+                    value: Some(24),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call".to_string(),
+                    args: Some(vec!["obj".to_string()]),
+                    out: Some("escaped".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "dict_new".to_string(),
+                    out: Some("regs".to_string()),
+                    args: Some(vec![]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "store".to_string(),
+                    args: Some(vec!["obj".to_string(), "regs".to_string()]),
+                    value: Some(0),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let analysis = preanalyze_for_test(&func, &BTreeMap::new());
+
+        assert!(
+            !analysis.field_store_modes.contains_key(&4),
+            "once the object escapes, first-write init semantics are no longer locally provable"
+        );
     }
 
     #[test]
