@@ -68,6 +68,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    opcode_is_alias_heap_barrier_table, opcode_is_alias_rc_barrier_table,
+};
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
@@ -860,26 +863,7 @@ fn typed_slot_class(op: &TirOp) -> Option<String> {
 /// StateTransition, StateYield, ClosureLoad, ClosureStore, ChanSendYield,
 /// ChanRecvYield}) is present here. Verified in `tests::rc_barrier_is_superset_*`.
 fn opcode_is_rc_barrier(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        // ── Calls: a callee may inspect / store / mutate any refcount. ──
-        OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            // ── Stores into heap objects / containers capture references. ──
-            | OpCode::StoreAttr
-            | OpCode::StoreIndex
-            // ── Coroutine / generator / channel suspension points: control
-            //    escapes to the scheduler, which may observe live references. ──
-            | OpCode::StateSwitch
-            | OpCode::StateTransition
-            | OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            // ── Closure cells store/load captured references. ──
-            | OpCode::ClosureLoad
-            | OpCode::ClosureStore
-    )
+    opcode_is_alias_rc_barrier_table(opcode)
 }
 
 /// True if `opcode` may observe / mutate / escape *arbitrary* heap memory — the
@@ -892,38 +876,7 @@ fn opcode_is_rc_barrier(opcode: OpCode) -> bool {
 /// ChanRecvYield, ClosureStore, Free}): every one is present here. Verified in
 /// `tests::reuse_barrier_is_superset`.
 fn opcode_is_heap_barrier(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        // Calls — arbitrary side effects on arbitrary heap state.
-        OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            // Stores mutate heap memory.
-            | OpCode::StoreAttr
-            | OpCode::StoreIndex
-            | OpCode::DelAttr
-            | OpCode::DelIndex
-            // Exception propagation observes / escapes live objects.
-            | OpCode::Raise
-            // Generator / coroutine suspension exposes the heap to the scheduler.
-            | OpCode::Yield
-            | OpCode::YieldFrom
-            | OpCode::StateSwitch
-            | OpCode::StateTransition
-            | OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            // Closure-cell store captures references into a heap cell.
-            | OpCode::ClosureStore
-            // Explicit free mutates the allocator's view of heap memory.
-            | OpCode::Free
-            // Module-dictionary mutation writes globally-visible heap state.
-            | OpCode::ModuleCacheSet
-            | OpCode::ModuleCacheDel
-            | OpCode::ModuleSetAttr
-            | OpCode::ModuleDelGlobal
-            | OpCode::ModuleDelGlobalIfPresent
-    )
+    opcode_is_alias_heap_barrier_table(opcode)
 }
 
 // ===========================================================================
@@ -1569,46 +1522,48 @@ mod tests {
 
     // ── The OLD four barrier lists, reproduced verbatim as oracles ─────────
 
+    const OLD_REFCOUNT_BARRIER_OPCODES: &[OpCode] = &[
+        OpCode::Call,
+        OpCode::CallMethod,
+        OpCode::CallBuiltin,
+        OpCode::StoreAttr,
+        OpCode::StoreIndex,
+        OpCode::StateSwitch,
+        OpCode::StateTransition,
+        OpCode::StateYield,
+        OpCode::ClosureLoad,
+        OpCode::ClosureStore,
+        OpCode::ChanSendYield,
+        OpCode::ChanRecvYield,
+    ];
+
+    const OLD_REUSE_OPCODE_BARRIERS: &[OpCode] = &[
+        OpCode::Call,
+        OpCode::CallMethod,
+        OpCode::CallBuiltin,
+        OpCode::StoreAttr,
+        OpCode::StoreIndex,
+        OpCode::Raise,
+        OpCode::Yield,
+        OpCode::YieldFrom,
+        OpCode::StateSwitch,
+        OpCode::StateTransition,
+        OpCode::StateYield,
+        OpCode::ChanSendYield,
+        OpCode::ChanRecvYield,
+        OpCode::ClosureStore,
+        OpCode::Free,
+    ];
+
     /// `refcount_elim::is_barrier` as it stood before S5 phase 1.
     fn old_refcount_is_barrier(opcode: OpCode) -> bool {
-        matches!(
-            opcode,
-            OpCode::Call
-                | OpCode::CallMethod
-                | OpCode::CallBuiltin
-                | OpCode::StoreAttr
-                | OpCode::StoreIndex
-                | OpCode::StateSwitch
-                | OpCode::StateTransition
-                | OpCode::StateYield
-                | OpCode::ClosureLoad
-                | OpCode::ClosureStore
-                | OpCode::ChanSendYield
-                | OpCode::ChanRecvYield
-        )
+        OLD_REFCOUNT_BARRIER_OPCODES.contains(&opcode)
     }
 
     /// `reuse_analysis::is_aliasing_op`'s opcode portion (excluding the
     /// operand-uses-val branch, tested separately).
     fn old_reuse_opcode_barrier(opcode: OpCode) -> bool {
-        matches!(
-            opcode,
-            OpCode::Call
-                | OpCode::CallMethod
-                | OpCode::CallBuiltin
-                | OpCode::StoreAttr
-                | OpCode::StoreIndex
-                | OpCode::Raise
-                | OpCode::Yield
-                | OpCode::YieldFrom
-                | OpCode::StateSwitch
-                | OpCode::StateTransition
-                | OpCode::StateYield
-                | OpCode::ChanSendYield
-                | OpCode::ChanRecvYield
-                | OpCode::ClosureStore
-                | OpCode::Free
-        )
+        OLD_REUSE_OPCODE_BARRIERS.contains(&opcode)
     }
 
     /// `dead_store_elim::may_observe_slot` as it stood before S5 phase 1.
