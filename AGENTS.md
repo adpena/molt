@@ -373,6 +373,13 @@ as host control-plane risks while working in this repo:
   cause Desktop to enumerate MCP tools/status during thread resume, goal checks,
   or crash recovery. Enable only the minimum MCP/plugin set needed for the
   current task, and disable speculative helpers before resuming a large thread.
+- Keep Codex worktree and local-environment state boring and explicit.
+  Worktrees inherit checked-in files by default, so ignored toolchains, caches,
+  credentials, or setup files must come from checked-in setup scripts or an
+  intentional `.worktreeinclude`, never from ambient profile state. The project
+  `.codex` local-environment config must live at the project root opened in the
+  app, and stale automation worktrees should be archived instead of pinned
+  indefinitely.
 - Treat Codex crash code `3221225786` (`0xC000013A`) on Windows as
   `STATUS_CONTROL_C_EXIT`: usually an interrupted or torn-down process, not
   proof that the last WARN line in the dialog is the root cause. Preserve the
@@ -403,7 +410,9 @@ as host control-plane risks while working in this repo:
   evidence before changing state: Codex app version, Windows build,
   `%LOCALAPPDATA%\Codex\Logs`, `%USERPROFILE%\.codex\.sandbox\sandbox.log`
   when present, Crashpad report presence, and Event Viewer entries around the
-  launch time. Do not delete or reset Codex state as a first response.
+  launch time. Treat diagnostics as sensitive because they may contain local
+  paths, session references, auth files, or project data. Do not delete or reset
+  Codex state as a first response.
 - Do not delete, rewrite, or hand-edit Codex state databases, rollout files,
   `session_index.jsonl`, plugin caches, or global state as first-line recovery.
   Prefer reversible stabilization: stop Molt-owned workers, remove or disable
@@ -416,6 +425,7 @@ as host control-plane risks while working in this repo:
   checks for signals (`SIGKILL` exists on Unix but not all Python signal
   surfaces are portable to Windows).
 - Related public references for future refresh:
+  `https://developers.openai.com/codex/app/troubleshooting`,
   `https://developers.openai.com/codex/windows`,
   `https://developers.openai.com/codex/changelog`,
   `https://github.com/openai/codex/issues/21761`,
@@ -435,7 +445,8 @@ as host control-plane risks while working in this repo:
   `https://github.com/openai/codex/issues/15179`,
   `https://github.com/openai/codex/issues/27822`,
   `https://github.com/openai/codex/issues/28160`,
-  `https://github.com/openai/codex/issues/23043`, and
+  `https://github.com/openai/codex/issues/23043`,
+  `https://github.com/openai/codex/issues/28909`, and
   `https://community.openai.com/t/codex-windows-app-ui-closes-but-background-processes-remain-blocking-relaunch/1379095`.
 
 ## Non-Negotiable: Raise On Missing Features
