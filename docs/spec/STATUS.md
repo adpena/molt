@@ -547,9 +547,13 @@ the implementation. For forward-looking priorities, use
   accepts an external type-map channel, and opaque call returns refine only
   through structural TIR `return_type` metadata. TIR functions now own a
   persistent `value_types` map, and type refinement writes op-result facts back
-  into that function-owned map; range/list devirtualization records the I64 and
-  Bool facts it synthesizes for generated loop carriers and comparisons instead
-  of leaving those facts solely in `_fast_int` attrs. TIR-to-SimpleIR value
+  into that function-owned map. The type-refine solver treats produced values as
+  `Never` until solved, recomputes op results from opcode, operands, and
+  structural attrs each round, widens known-dynamic results to `DynBox`, and
+  fails closed on nonconvergence instead of freezing oscillating values through a
+  stderr fallback. Range/list devirtualization records the I64 and Bool facts it
+  synthesizes for generated loop carriers and comparisons instead of leaving
+  those facts solely in `_fast_int` attrs. TIR-to-SimpleIR value
   naming is now centralized in `SimpleValueNames`, keeping parameter identity
   and block-argument storage names on one reusable contract. TIR lift also
   records explicit single-output SimpleIR provenance so backends can map final
