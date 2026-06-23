@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -20,6 +21,8 @@ from typing import Any, Callable, Iterator
 
 
 WorkloadFn = Callable[[Any, int], dict[str, Any]]
+STATIC_EXEC_REGISTRY_MODULE = "_molt_tinygrad_upat_static_exec_registry"
+STATIC_EXEC_REGISTRY_ROOT_ENV = "MOLT_TINYGRAD_UPAT_STATIC_EXEC_ROOT"
 
 
 def _as_nested_list(value: Any) -> Any:
@@ -190,6 +193,37 @@ def _import_tinygrad() -> Any:
     return tinygrad
 
 
+def _install_tinygrad_upat_static_exec_registry(tinygrad: Any) -> bool:
+    registry_root = os.environ.get(STATIC_EXEC_REGISTRY_ROOT_ENV, "").strip()
+    if not registry_root:
+        return False
+    root_path = str(Path(registry_root).resolve())
+    sys.path.insert(0, root_path)
+    try:
+        import _molt_tinygrad_upat_static_exec_registry as registry  # noqa: PLC0415
+    except Exception as exc:
+        raise RuntimeError(
+            "MOLT_COMPAT_ERROR: configured tinygrad UPat static exec registry "
+            f"{STATIC_EXEC_REGISTRY_MODULE!r} could not be imported from {root_path!r}"
+        ) from exc
+    finally:
+        try:
+            sys.path.remove(root_path)
+        except ValueError:
+            pass
+    exec_static = getattr(registry, "exec_static", None)
+    if exec_static is None:
+        raise RuntimeError(
+            "MOLT_COMPAT_ERROR: tinygrad UPat static exec registry does not "
+            "export exec_static"
+        )
+    from tinygrad.uop import upat  # noqa: PLC0415
+
+    upat.exec = exec_static
+    setattr(tinygrad, "_molt_upat_static_exec_registry", registry)
+    return True
+
+
 def _selected_workloads(name: str) -> list[str]:
     if name == "all":
         return sorted(WORKLOADS)
@@ -224,6 +258,7 @@ def main(argv: list[str] | None = None) -> int:
 
     with _suppress_bytecode_writes(), _suite_root_import_path(args.suite_root):
         tinygrad = _import_tinygrad()
+        static_exec_registry = _install_tinygrad_upat_static_exec_registry(tinygrad)
         selected = _selected_workloads(args.workload)
         results = {
             name: {
@@ -235,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "status": "ok",
         "suite_root": str(args.suite_root.resolve()) if args.suite_root else None,
+        "static_exec_registry": static_exec_registry,
         "tinygrad_module": getattr(tinygrad, "__file__", None),
         "workloads": results,
     }

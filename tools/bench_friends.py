@@ -2311,6 +2311,7 @@ def main() -> int:
                                 "suite_root": str(suite_root.resolve()),
                                 "suite_workdir": str(suite_workdir.resolve()),
                                 "output_root": str(output_root),
+                                "pathsep": os.pathsep,
                                 "python": sys.executable,
                                 "project_python": _project_python(),
                             }
