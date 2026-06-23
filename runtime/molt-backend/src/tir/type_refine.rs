@@ -11,46 +11,47 @@ use super::values::ValueId;
 /// diagnostic.
 const MAX_ROUNDS: usize = 20;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum TypeFact {
-    Unknown,
-    Known(TirType),
+fn fact_or_bottom(facts: &HashMap<ValueId, TirType>, id: ValueId) -> TirType {
+    facts.get(&id).cloned().unwrap_or(TirType::Never)
 }
 
-impl TypeFact {
-    fn known(ty: TirType) -> Self {
-        Self::Known(ty)
-    }
+fn is_bottom_type(ty: &TirType) -> bool {
+    matches!(ty, TirType::Never)
+}
 
-    fn is_known(&self) -> bool {
-        matches!(self, Self::Known(_))
+fn contains_bottom_type(ty: &TirType) -> bool {
+    match ty {
+        TirType::Never => true,
+        TirType::List(inner)
+        | TirType::Set(inner)
+        | TirType::Iterator(inner)
+        | TirType::Box(inner)
+        | TirType::Ptr(inner) => contains_bottom_type(inner),
+        TirType::Dict(key, value) => contains_bottom_type(key) || contains_bottom_type(value),
+        TirType::Tuple(items) | TirType::Union(items) => items.iter().any(contains_bottom_type),
+        _ => false,
     }
+}
 
-    fn as_type_or_dynbox(&self) -> TirType {
-        match self {
-            Self::Unknown => TirType::DynBox,
-            Self::Known(ty) => ty.clone(),
-        }
+fn publish_fact_type(ty: TirType) -> TirType {
+    if is_bottom_type(&ty) {
+        TirType::DynBox
+    } else {
+        ty
     }
+}
 
-    fn join(&self, other: &Self) -> Self {
-        match (self, other) {
-            (Self::Unknown, fact) | (fact, Self::Unknown) => fact.clone(),
-            (Self::Known(left), Self::Known(right)) => Self::Known(left.meet(right)),
-        }
-    }
+fn is_refined_public_type(ty: &TirType) -> bool {
+    !matches!(ty, TirType::DynBox | TirType::Never)
 }
 
 fn join_assign_type_fact(
-    facts: &mut HashMap<ValueId, TypeFact>,
+    facts: &mut HashMap<ValueId, TirType>,
     id: ValueId,
-    incoming: TypeFact,
+    incoming: TirType,
 ) -> bool {
-    if matches!(incoming, TypeFact::Unknown) {
-        return false;
-    }
-    let current = facts.get(&id).cloned().unwrap_or(TypeFact::Unknown);
-    let joined = current.join(&incoming);
+    let current = fact_or_bottom(facts, id);
+    let joined = current.meet(&incoming);
     if joined != current {
         facts.insert(id, joined);
         true
@@ -61,10 +62,10 @@ fn join_assign_type_fact(
 
 fn infer_result_facts_with_attrs(
     opcode: OpCode,
-    operand_facts: &[TypeFact],
+    operand_facts: &[TirType],
     attrs: Option<&super::ops::AttrDict>,
     result_count: usize,
-) -> Vec<TypeFact> {
+) -> Vec<TirType> {
     if result_count == 0 {
         return vec![];
     }
@@ -73,20 +74,18 @@ fn infer_result_facts_with_attrs(
         && let Some(attrs) = attrs
         && let Some(proven_ty) = parse_guard_type(attrs)
     {
-        return vec![TypeFact::known(proven_ty); result_count];
+        return vec![proven_ty; result_count];
     }
 
-    let operands_known = operand_facts.iter().all(TypeFact::is_known);
-    let operand_types: Vec<TirType> = operand_facts
-        .iter()
-        .map(TypeFact::as_type_or_dynbox)
-        .collect();
+    let operands_ready = operand_facts.iter().all(|ty| !is_bottom_type(ty));
+    let operand_types: Vec<TirType> = operand_facts.to_vec();
     infer_result_types_with_attrs(opcode, &operand_types, attrs, result_count)
         .into_iter()
         .map(|inferred| match inferred {
-            Some(ty) => TypeFact::known(ty),
-            None if operands_known => TypeFact::known(TirType::DynBox),
-            None => TypeFact::Unknown,
+            Some(ty) if contains_bottom_type(&ty) => TirType::Never,
+            Some(ty) => ty,
+            None if operands_ready => TirType::DynBox,
+            None => TirType::Never,
         })
         .collect()
 }
@@ -192,23 +191,23 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         all_value_ids.insert(id);
     }
 
-    // `Unknown` is bottom: the solver has not yet seen the producer's facts.
-    // `Known(DynBox)` is top: the value is dynamically typed and must never be
+    // `Never` is bottom: the solver has not yet seen the producer's facts.
+    // `DynBox` is top: the value is dynamically typed and must never be
     // narrowed again by a later transfer in this fixpoint.
-    let mut facts: HashMap<ValueId, TypeFact> = HashMap::new();
+    let mut facts: HashMap<ValueId, TirType> = HashMap::new();
     for (&id, ty) in &func.value_types {
         if produced_values.contains(&id) {
             continue;
         }
         if !defined_values.contains(&id) || !matches!(ty, TirType::DynBox) {
-            facts.insert(id, TypeFact::known(ty.clone()));
+            facts.insert(id, ty.clone());
         }
     }
 
     if let Some(entry) = func.blocks.get_mut(&func.entry_block) {
         for (arg, param_ty) in entry.args.iter_mut().zip(func.param_types.iter()) {
             arg.ty = param_ty.clone();
-            facts.insert(arg.id, TypeFact::known(param_ty.clone()));
+            facts.insert(arg.id, param_ty.clone());
         }
     }
 
@@ -218,7 +217,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         .filter(|id| {
             !matches!(
                 facts.get(id),
-                Some(TypeFact::Known(ty)) if !matches!(ty, TirType::DynBox)
+                Some(ty) if is_refined_public_type(ty)
             )
         })
         .copied()
@@ -384,7 +383,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             if is_exception_label_entry || starts_with_handler_marker {
                 for arg in &block.args {
                     eh_handler_args.insert(arg.id);
-                    facts.insert(arg.id, TypeFact::known(TirType::DynBox));
+                    facts.insert(arg.id, TirType::DynBox);
                 }
             }
         }
@@ -436,26 +435,21 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 }
                 if has_eh && matches!(opcode, OpCode::CheckException) {
                     for &result_id in results {
-                        facts.insert(result_id, TypeFact::known(TirType::DynBox));
+                        facts.insert(result_id, TirType::DynBox);
                     }
                     continue;
                 }
-                let operand_facts: Vec<TypeFact> = operands
+                let operand_facts: Vec<TirType> = operands
                     .iter()
-                    .map(|id| facts.get(id).cloned().unwrap_or(TypeFact::Unknown))
+                    .map(|id| fact_or_bottom(&facts, *id))
                     .collect();
                 let inferred_facts = if results.len() == 1 {
-                    vec![
-                        return_type_hint
-                            .clone()
-                            .map(TypeFact::known)
-                            .unwrap_or_else(|| {
-                                infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
-                                    .into_iter()
-                                    .next()
-                                    .unwrap_or(TypeFact::Unknown)
-                            }),
-                    ]
+                    vec![return_type_hint.clone().unwrap_or_else(|| {
+                        infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
+                            .into_iter()
+                            .next()
+                            .unwrap_or(TirType::Never)
+                    })]
                 } else {
                     infer_result_facts_with_attrs(*opcode, &operand_facts, None, results.len())
                 };
@@ -488,7 +482,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 if eh_handler_args.contains(&arg_id) {
                     continue;
                 }
-                let mut accumulated = TypeFact::Unknown;
+                let mut accumulated = TirType::Never;
                 let mut saw_non_back_edge = false;
                 for (source_bid, edge_args) in edge_list {
                     if i >= edge_args.len() {
@@ -503,17 +497,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     if is_back_edge {
                         continue;
                     }
-                    let incoming_fact = facts
-                        .get(&edge_args[i])
-                        .cloned()
-                        .unwrap_or(TypeFact::Unknown);
-                    accumulated = accumulated.join(&incoming_fact);
+                    let incoming_fact = facts.get(&edge_args[i]).cloned().unwrap_or(TirType::Never);
+                    accumulated = accumulated.meet(&incoming_fact);
                     saw_non_back_edge = true;
                 }
                 if saw_non_back_edge {
-                    let current = facts.get(&arg_id).cloned().unwrap_or(TypeFact::Unknown);
-                    if matches!(current, TypeFact::Unknown) {
-                        if !matches!(accumulated, TypeFact::Unknown) {
+                    let current = fact_or_bottom(&facts, arg_id);
+                    if is_bottom_type(&current) {
+                        if !is_bottom_type(&accumulated) {
                             facts.insert(arg_id, accumulated);
                         }
                     } else {
@@ -557,35 +548,26 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                 // coming out of an exception check is dynamically typed.
                 if has_eh && matches!(opcode, OpCode::CheckException) {
                     for &result_id in results {
-                        changed |= join_assign_type_fact(
-                            &mut facts,
-                            result_id,
-                            TypeFact::known(TirType::DynBox),
-                        );
+                        changed |= join_assign_type_fact(&mut facts, result_id, TirType::DynBox);
                     }
                     continue;
                 }
 
-                let operand_facts: Vec<TypeFact> = operands
+                let operand_facts: Vec<TirType> = operands
                     .iter()
-                    .map(|id| facts.get(id).cloned().unwrap_or(TypeFact::Unknown))
+                    .map(|id| fact_or_bottom(&facts, *id))
                     .collect();
 
                 // Frontend-provided return-type hint takes precedence for
                 // opaque call-like opcodes; falls back to operand-based
                 // inference for everything else.
                 let inferred_facts = if results.len() == 1 {
-                    vec![
-                        return_type_hint
-                            .clone()
-                            .map(TypeFact::known)
-                            .unwrap_or_else(|| {
-                                infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
-                                    .into_iter()
-                                    .next()
-                                    .unwrap_or(TypeFact::Unknown)
-                            }),
-                    ]
+                    vec![return_type_hint.clone().unwrap_or_else(|| {
+                        infer_result_facts_with_attrs(*opcode, &operand_facts, None, 1)
+                            .into_iter()
+                            .next()
+                            .unwrap_or(TirType::Never)
+                    })]
                 } else {
                     infer_result_facts_with_attrs(*opcode, &operand_facts, None, results.len())
                 };
@@ -611,25 +593,19 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     // Exception handler block args must stay DynBox —
                     // the exception could come from any type context.
                     if eh_handler_args.contains(&arg_id) {
-                        changed |= join_assign_type_fact(
-                            &mut facts,
-                            arg_id,
-                            TypeFact::known(TirType::DynBox),
-                        );
+                        changed |= join_assign_type_fact(&mut facts, arg_id, TirType::DynBox);
                         continue;
                     }
 
-                    let mut accumulated = TypeFact::Unknown;
+                    let mut accumulated = TirType::Never;
                     for (source_bid, edge_args) in edge_list {
                         if !reachable_blocks.contains(source_bid) {
                             continue;
                         }
                         if i < edge_args.len() {
-                            let incoming_fact = facts
-                                .get(&edge_args[i])
-                                .cloned()
-                                .unwrap_or(TypeFact::Unknown);
-                            accumulated = accumulated.join(&incoming_fact);
+                            let incoming_fact =
+                                facts.get(&edge_args[i]).cloned().unwrap_or(TirType::Never);
+                            accumulated = accumulated.meet(&incoming_fact);
                         }
                     }
                     changed |= join_assign_type_fact(&mut facts, arg_id, accumulated);
@@ -655,12 +631,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             id,
             facts
                 .get(&id)
-                .map(TypeFact::as_type_or_dynbox)
+                .cloned()
+                .map(publish_fact_type)
                 .unwrap_or(TirType::DynBox),
         );
     }
     for (&id, fact) in &facts {
-        env.entry(id).or_insert_with(|| fact.as_type_or_dynbox());
+        env.entry(id)
+            .or_insert_with(|| publish_fact_type(fact.clone()));
     }
 
     // --- Guard-to-type-environment propagation ---
@@ -2153,6 +2131,85 @@ mod tests {
     }
 
     #[test]
+    fn never_bottom_waits_for_late_dominator_and_drops_stale_result_fact() {
+        let body_id = BlockId(0);
+        let entry_id = BlockId(1);
+        let source = ValueId(0);
+        let alias = ValueId(1);
+
+        let body = TirBlock {
+            id: body_id,
+            args: vec![],
+            ops: vec![make_op(
+                OpCode::Copy,
+                vec![source],
+                vec![alias],
+                AttrDict::new(),
+            )],
+            terminator: Terminator::Return {
+                values: vec![alias],
+            },
+        };
+        let entry = TirBlock {
+            id: entry_id,
+            args: vec![],
+            ops: vec![make_op(
+                OpCode::ConstInt,
+                vec![],
+                vec![source],
+                int_attr(41),
+            )],
+            terminator: Terminator::Branch {
+                target: body_id,
+                args: vec![],
+            },
+        };
+        let mut blocks = HashMap::new();
+        blocks.insert(body_id, body);
+        blocks.insert(entry_id, entry);
+
+        let mut func = TirFunction {
+            name: "never_bottom_late_dominator".into(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: TirType::I64,
+            blocks,
+            entry_block: entry_id,
+            next_value: 2,
+            next_block: 2,
+            attrs: AttrDict::new(),
+            value_types: HashMap::from([(alias, TirType::Str)]),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        };
+
+        refine_types(&mut func);
+        let once = extract_type_map(&func);
+        assert_eq!(
+            once.get(&alias),
+            Some(&TirType::I64),
+            "bottom operands must wait for the dominating producer instead of \
+             publishing the stale result fact or cementing DynBox"
+        );
+        assert_eq!(
+            func.value_types.get(&alias),
+            Some(&TirType::I64),
+            "refine_types must publish the converged fact, not the stale input fact"
+        );
+
+        refine_types(&mut func);
+        assert_eq!(
+            extract_type_map(&func),
+            once,
+            "Never-bottom convergence must be idempotent after publication"
+        );
+    }
+
+    #[test]
     fn dense_check_exception_results_are_top_and_idempotent() {
         let ops: Vec<TirOp> = (0..1024)
             .map(|idx| {
@@ -2300,6 +2357,112 @@ mod tests {
             TirType::I64,
             "loop induction variable seeded with entry-edge I64 must converge to I64, got {:?}",
             i_arg_ty
+        );
+    }
+
+    #[test]
+    fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
+        let entry_id = BlockId(0);
+        let header_id = BlockId(1);
+        let body_id = BlockId(2);
+        let exit_id = BlockId(3);
+
+        let i_init = ValueId(0);
+        let i = ValueId(1);
+        let cond = ValueId(2);
+        let i_next = ValueId(3);
+
+        let entry = TirBlock {
+            id: entry_id,
+            args: vec![],
+            ops: vec![make_op(OpCode::ConstInt, vec![], vec![i_init], int_attr(0))],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![i_init],
+            },
+        };
+        let header = TirBlock {
+            id: header_id,
+            args: vec![TirValue {
+                id: i,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![make_op(OpCode::ConstBool, vec![], vec![cond], {
+                let mut a = AttrDict::new();
+                a.insert("value".into(), AttrValue::Bool(true));
+                a
+            })],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body_id,
+                then_args: vec![],
+                else_block: exit_id,
+                else_args: vec![],
+            },
+        };
+        let body = TirBlock {
+            id: body_id,
+            args: vec![],
+            ops: vec![make_op(
+                OpCode::Call,
+                vec![i],
+                vec![i_next],
+                AttrDict::new(),
+            )],
+            terminator: Terminator::Branch {
+                target: header_id,
+                args: vec![i_next],
+            },
+        };
+        let exit = TirBlock {
+            id: exit_id,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        };
+
+        let mut blocks = HashMap::new();
+        blocks.insert(entry_id, entry);
+        blocks.insert(header_id, header);
+        blocks.insert(body_id, body);
+        blocks.insert(exit_id, exit);
+
+        let mut func = TirFunction {
+            name: "iv_loop_dynamic_backedge".into(),
+            param_names: vec![],
+            param_types: vec![],
+            return_type: TirType::None,
+            blocks,
+            entry_block: entry_id,
+            next_value: 4,
+            next_block: 4,
+            attrs: AttrDict::new(),
+            value_types: HashMap::new(),
+            has_exception_handling: false,
+            label_id_map: HashMap::new(),
+            loop_roles: HashMap::new(),
+            loop_pairs: HashMap::new(),
+            loop_break_kinds: HashMap::new(),
+            loop_cond_blocks: HashMap::new(),
+        };
+
+        refine_types(&mut func);
+        let first = func.value_types.clone();
+        assert_eq!(
+            func.blocks[&header_id].args[0].ty,
+            TirType::DynBox,
+            "entry-edge I64 seed must widen when the reachable back-edge is dynamic"
+        );
+        assert_eq!(
+            first.get(&i_next),
+            Some(&TirType::DynBox),
+            "dynamic back-edge producer must publish top, not stay at bottom"
+        );
+
+        refine_types(&mut func);
+        assert_eq!(
+            func.value_types, first,
+            "loop-carried dynamic widening must be stable, not an oscillation fallback"
         );
     }
 
