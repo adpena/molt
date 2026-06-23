@@ -224,6 +224,12 @@ the implementation. For forward-looking priorities, use
   `run_module_pipeline` (E1 inliner, generator fusion, module-slot promotion,
   terminal DropInsertion) before fail-closed back-conversion. Guarded evidence:
   `luau_tir_module_pipeline_inlines_direct_local_calls`.
+- Luau `checked_add` is implemented through the target's f64 helper contract:
+  `molt_checked_i64_add(a, b)` returns `(a + b, false)`, preserving Luau's
+  existing number model while avoiding target-gating the portable TIR
+  `CheckedAdd` transform. Guarded evidence:
+  `test_compile_checked_lowers_checked_add_helper`; generated matrix status:
+  `implemented-exact`.
 - Native, WASM, LLVM, and Luau backend-facing lowering now run through the TIR
   pipeline; the old environment-variable opt-out has been removed so SimpleIR
   transport metadata cannot bypass typed-IR validation.

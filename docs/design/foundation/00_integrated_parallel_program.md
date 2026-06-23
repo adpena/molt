@@ -201,7 +201,7 @@ TIER 6 (verification)
   V1  translation-validation      OUTSTANDING  (gates L2/E5/D1 risky lowering)
 
 PARITY arcs (cross-cutting)
-  Luau CheckedAdd lowering         OUTSTANDING  (design 15; portable helper, Luau f64 model)
+  Luau CheckedAdd lowering         DONE          (portable helper, Luau f64 model)
   asyncio-wasm event loop          OUTSTANDING  (design 18; WASI poll_oneoff, 4 blockers)
   Luau module-phase parity         DONE          (E1/module-slot/drop authority active)
   CPython surface / stdlib / GPU   ongoing      (design 16)
@@ -257,8 +257,8 @@ proves a direct local Luau call boundary is removed by the TIR module inliner.
 
 The remaining perf-frontier work is no longer "activate E1"; it is proving and
 exploiting that activation across real workloads: E3/E4/E5 summaries and
-monomorphization, L4/L2 loop/SIMD work, Luau CheckedAdd and broader
-CPython-vs-Luau parity, and authoritative benchmark evidence.
+monomorphization, L4/L2 loop/SIMD work, broader CPython-vs-Luau parity, and
+authoritative benchmark evidence.
 
 ### 4.3 The size/startup lever
 
@@ -291,11 +291,12 @@ open until fusion lands). Requires E1 active (DONE native/WASM) + SROA (DONE,
 
 ### 4.5 Parity arcs
 
-- **Luau CheckedAdd** (design 15): the `overflow_peel` arc landed `CheckedAdd` on
-  4 backends, but Luau needs a portable helper — Luau is f64-only, has no i64
-  overflow signal, so `CheckedAdd` lowers to `molt_checked_i64_add(a,b) → (a+b,
-  false)` (overflow never fires; byte-identical to the un-peeled Luau path). No
-  target-conditional pass logic.
+- **Luau CheckedAdd** (design 15): DONE. `checked_add` is generated in the Luau
+  support matrix as `implemented-exact`, and checked source emission lowers it
+  through `molt_checked_i64_add(a,b) -> (a+b, false)`. Luau is f64-only and has
+  no i64 overflow signal, so the overflow branch is correctly dead without
+  target-conditional pass logic. Guarded by
+  `test_compile_checked_lowers_checked_add_helper`.
 - **asyncio-wasm** (design 18): 4 blockers (event-loop I/O has no WASM pathway —
   `add_reader`/`add_writer` are `#[cfg(not(wasm32))]` stubs; table-ref trap;
   zipimport; thread unavailability). The structural fix is a first-class WASM

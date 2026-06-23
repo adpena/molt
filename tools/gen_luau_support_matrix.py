@@ -183,11 +183,12 @@ def collect_rows_from_text(text: str) -> list[Row]:
 
 def _render(rows: list[Row], source: Path) -> str:
     counts = Counter(row.status for row in rows)
+    source_display = source.relative_to(ROOT) if source.is_relative_to(ROOT) else source
     lines: list[str] = [
         "# Luau Backend OpIR Support Matrix",
         "",
         "**Status:** Generated",
-        f"**Source:** `{source.relative_to(ROOT) if source.is_relative_to(ROOT) else source}`",
+        f"**Source:** `{source_display.as_posix()}`",
         "**Target:** current/future Luau surface; Molt does not add legacy Lua compatibility shims.",
         "",
         "## Summary",

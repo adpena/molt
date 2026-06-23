@@ -2,24 +2,37 @@
 
 # Luau Lowering Plan for `OpCode::CheckedAdd`
 
-## 1. How the Luau Backend Consumes SimpleIR Today
+**Status (2026-06-23): implemented.** Current authority: `runtime/molt-backend/src/luau.rs`
+emits `checked_add` via the conditional `molt_checked_i64_add` helper,
+`runtime/molt-backend/src/tir/lower_to_simple.rs` round-trips `OpCode::CheckedAdd`
+as SimpleIR `checked_add`, `test_compile_checked_lowers_checked_add_helper`
+guards checked Luau emission, and
+`docs/spec/areas/compiler/luau_support_matrix.generated.md` lists `checked_add`
+as `implemented-exact`. The original recon below is retained for the semantic
+rationale; line anchors and "today" statements from 2026-06-04 are historical
+routing notes and must be verified against live code before use.
 
-### Entry path (main.rs:2171–2259)
+## 1. Original Recon Context (Historical)
 
-The Luau compilation path in `/Users/adpena/Projects/molt/runtime/molt-backend/src/main.rs` runs the SAME per-function TIR pipeline as native/WASM (`main.rs:2182–2207`):
+### Entry path
 
 ```
 tree_shake_luau()
-→ for each func:
-    lower_to_tir(func)
+→ lower all non-extern functions to one TirModule
+→ for each local TIR function:
     → type_refine::refine_types()
-    → run_pipeline(&mut tir_func, &TargetInfo::native_from_simd_caps(...))
-    → lower_to_simple_ir(&tir_func)   ← produces SimpleIR ops
+    → run_pipeline(&mut tir_func, &TargetInfo::luau_release_fast())
+    → type_refine::refine_types()
+→ run_module_pipeline(&mut module, &TargetInfo::luau_release_fast(), empty_non_inlinable)
+→ fail-closed lower_to_simple_ir() for each module function
 → eliminate_dead_ops()
-→ LuauBackend::compile_checked(&ir)  ← the text emitter
+→ LuauBackend::compile_checked(&ir)
 ```
 
-Key fact: the Luau backend calls `TargetInfo::native_from_simd_caps(...)`, NOT `TargetInfo::luau_*`. `TargetKind::Luau` exists in the enum (`target_info.rs:64`) but no constructor creates a `TargetInfo` with that variant. No existing TIR pass queries `tti.target` anywhere — confirmed by grep. The shared pipeline is blind to whether its output goes to Cranelift, WASM, LLVM, or Luau.
+Current key fact: Luau has an explicit `TargetInfo::luau_release_fast()` path and
+runs the shared TIR module phase before checked text emission. `CheckedAdd`
+therefore reaches Luau as SimpleIR `checked_add`; the backend consumes it through
+the f64 helper contract instead of target-gating the portable TIR transform.
 
 ### SimpleIR op dispatch in `emit_op` (luau.rs:1209–4592)
 
@@ -122,13 +135,13 @@ The helper approach is structurally better: `CheckedAdd` is a first-class TIR op
 
 Because the PLAN doc's `overflow_peel` was explicitly designed as a portable TIR transform. If the transform fires, the result is correct on all targets (Luau's fast loop just never takes the overflow branch). Refusing the peel for Luau means Luau keeps the boxed-path accumulator, which is already the status quo — not a regression, but not the "parity across ALL targets" mandate either. If the accumulator in the Luau fast loop produces an inexact f64 result (>2^53), it is no less exact than the un-peeled loop would produce — both use the same `+` operator. The peel's correctness guarantee for Luau is "same result as the un-peeled Luau path", which is satisfied by the always-false helper.
 
-## 6. Exact Files and Anchors for Luau Changes (Phase A only)
+## 6. Implemented Files And Evidence
 
-| File | Change | Line anchor |
-|---|---|---|
-| `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/lower_to_simple.rs` | Add `OpCode::CheckedAdd` arm (exhaustive match requires it). Encode as a multi-output SimpleIR op using `out` + `var` exactly like `IterNextUnboxed:1620`. Map `results[0]` (sum) → `var`, `results[1]` (flag) → `out`. Kind string: `"checked_add"`. | After `OpCode::Add` arm at line 1391. Without this, the `lower_to_simple.rs` match is non-exhaustive on `OpCode::CheckedAdd` → compile error. |
-| `/Users/adpena/Projects/molt/runtime/molt-backend/src/luau.rs` | Add `"checked_add"` arm in `emit_op` at line 4580 (before the `_ =>` default). Emit: (1) `molt_checked_i64_add` call storing into a tmp; (2) extract `out` (flag) from tmp; (3) extract `var` (sum) from tmp. Exactly mirrors the `iter_next_unboxed` pattern at lines 4391-4410. | Before line 4580. |
-| `/Users/adpena/Projects/molt/runtime/molt-backend/src/luau.rs` | Add `molt_checked_i64_add` to the conditional prelude helpers list at line 412. Source: `"@native\nlocal function molt_checked_i64_add(a: number, b: number): (number, boolean)\n\treturn a + b, false\nend\n"`. Detection: `used_call("molt_checked_i64_add")`. | After existing helper tuple, around line 521. |
+| File | Current authority |
+|---|---|
+| `runtime/molt-backend/src/tir/lower_to_simple.rs` | `OpCode::CheckedAdd` lowers to SimpleIR `checked_add` with `var` as sum and `out` as overflow flag; guarded by `checked_add_two_result_round_trip_survives_relift`. |
+| `runtime/molt-backend/src/luau.rs` | `emit_op` handles `checked_add` with Luau multi-return destructuring from `molt_checked_i64_add`; guarded by `test_compile_checked_lowers_checked_add_helper`. |
+| `docs/spec/areas/compiler/luau_support_matrix.generated.md` | Generated from `luau.rs`; lists `checked_add` as `implemented-exact`. |
 
 **The `emit_op` arm for `"checked_add"` in `luau.rs`:**
 ```rust
@@ -166,11 +179,20 @@ Per the PLAN doc's warning and the MEMORY.md lesson from import-error parity wor
 
 ## 8. Essential Files
 
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/luau.rs` — `emit_op` dispatch (lines 1209–4592), prelude helpers (lines 412–562), `iter_next_unboxed` precedent (lines 4391–4410)
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/main.rs` — Luau TIR pipeline invocation (lines 2182–2211)
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/lower_to_simple.rs` — exhaustive `OpCode` match including `IterNextUnboxed` multi-result pattern (lines 1620–1631), exhaustive match end (line 1941)
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/ops.rs` — `OpCode` enum (lines 22–237); `CheckedAdd` does NOT yet exist here
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/effects.rs` — `opcode_may_throw` (line 90) and `opcode_is_side_effecting` (line 137) `matches!` oracles; `CheckedAdd` is correctly absent from both
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/target_info.rs` — `TargetKind::Luau` exists (line 64) but no `TargetInfo::luau_*` constructor; Luau path uses `native_from_simd_caps`
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/pass_manager.rs` — `build_default_pipeline` (line 282); no pass queries `tti.target`; confirmed zero target-gated passes
-- `/Users/adpena/Projects/molt/runtime/molt-backend/src/ir.rs` — `OpIR` struct (lines 46–92); `out` + `var` are the two fields used to encode two results (no new fields needed)
+- `runtime/molt-backend/src/luau.rs` — `emit_op` dispatch, conditional helper prelude,
+  and `test_compile_checked_lowers_checked_add_helper`.
+- `runtime/molt-backend/src/main.rs` — Luau lifts source-emission IR through the
+  shared TIR module pipeline before checked source emission.
+- `runtime/molt-backend/src/tir/lower_to_simple.rs` — exhaustive `OpCode` lowering
+  plus `CheckedAdd` two-result round-trip coverage.
+- `runtime/molt-backend/src/tir/op_kinds.toml` — canonical generated opcode
+  authority; `CheckedAdd` is registered and generated into backend/frontend
+  tables.
+- `runtime/molt-backend/src/tir/passes/effects.rs` — `CheckedAdd` remains pure,
+  non-throwing, and non-side-effecting by deliberate omission from throwing and
+  side-effecting oracles.
+- `runtime/molt-backend/src/tir/target_info.rs` — Luau has explicit target info;
+  avoid target-gating portable TIR transforms when a backend semantic helper can
+  preserve the operation contract.
+- `runtime/molt-backend/src/ir.rs` — `OpIR.out` + `OpIR.var` are the two-result
+  transport fields; no new SimpleIR field is required.
