@@ -78,11 +78,122 @@ class Row:
     note: str
 
 
-_ARM_RE = re.compile(
-    r'^\s*(?P<pat>(?:"[^"]+"\s*(?:\|\s*"[^"]+"\s*)*|kind if kind\.starts_with\("[^"]+"\).*?))\s*=>'
+_ARM_START_RE = re.compile(
+    r'^\s*(?:_\s*=>|(?:\|\s*)?(?:"[^"]+"|kind if kind\.starts_with\())'
 )
 _STRING_RE = re.compile(r'"([^"]+)"')
 _STARTS_WITH_RE = re.compile(r'kind\.starts_with\("([^"]+)"\)')
+
+
+def _find_matching_brace(text: str, open_idx: int) -> int:
+    depth = 0
+    in_string = False
+    in_char = False
+    in_line_comment = False
+    escaped = False
+
+    for idx in range(open_idx, len(text)):
+        ch = text[idx]
+        nxt = text[idx + 1] if idx + 1 < len(text) else ""
+
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+            continue
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if in_char:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "'":
+                in_char = False
+            continue
+
+        if ch == "/" and nxt == "/":
+            in_line_comment = True
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "'":
+            in_char = True
+            continue
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                return idx
+
+    raise ValueError("could not find closing brace for Luau emit_op match")
+
+
+def _strip_rust_strings_and_comments(line: str) -> str:
+    out: list[str] = []
+    in_string = False
+    in_char = False
+    escaped = False
+    idx = 0
+
+    while idx < len(line):
+        ch = line[idx]
+        nxt = line[idx + 1] if idx + 1 < len(line) else ""
+
+        if in_string:
+            out.append(" ")
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            idx += 1
+            continue
+
+        if in_char:
+            out.append(" ")
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "'":
+                in_char = False
+            idx += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            break
+        if ch == '"':
+            in_string = True
+            out.append(" ")
+            idx += 1
+            continue
+        if ch == "'":
+            in_char = True
+            out.append(" ")
+            idx += 1
+            continue
+
+        out.append(ch)
+        idx += 1
+
+    return "".join(out)
+
+
+def _brace_delta(line: str) -> int:
+    code = _strip_rust_strings_and_comments(line)
+    return code.count("{") - code.count("}")
 
 
 def _extract_emit_op_match(text: str) -> str:
@@ -93,43 +204,60 @@ def _extract_emit_op_match(text: str) -> str:
     match_start = text.find("match op.kind.as_str()", start)
     if match_start < 0:
         raise ValueError("could not find emit_op match on op.kind")
-    helper_start = text.find("\n    // --- helper: binary op ---", match_start)
-    if helper_start < 0:
-        helper_start = len(text)
-    return text[match_start:helper_start]
+    open_idx = text.find("{", match_start)
+    if open_idx < 0:
+        raise ValueError("could not find emit_op match body")
+    close_idx = _find_matching_brace(text, open_idx)
+    return text[open_idx + 1 : close_idx]
 
 
 def _ops_from_pattern(pattern: str) -> list[str]:
-    starts_with = _STARTS_WITH_RE.search(pattern)
+    starts_with = _STARTS_WITH_RE.findall(pattern)
     if starts_with:
-        return [f"{starts_with.group(1)}*"]
+        return [f"{prefix}*" for prefix in starts_with]
     return _STRING_RE.findall(pattern)
 
 
 def _iter_arms(match_text: str) -> list[tuple[list[str], str]]:
     arms: list[tuple[list[str], str]] = []
+    pending_pattern: list[str] = []
     current_ops: list[str] | None = None
     current_body: list[str] = []
+    body_depth = 0
+    body_started = False
 
     for line in match_text.splitlines():
-        arm = _ARM_RE.match(line)
-        if arm:
-            if current_ops is not None:
-                arms.append((current_ops, "\n".join(current_body)))
-            pattern = arm.group("pat")
+        if current_ops is None:
+            if not pending_pattern and not _ARM_START_RE.match(line):
+                continue
+            pending_pattern.append(line)
+            code = _strip_rust_strings_and_comments(line)
+            if "=>" not in code:
+                continue
+            pattern = "\n".join(pending_pattern)
             current_ops = _ops_from_pattern(pattern)
             current_body = [line]
-            continue
-        if current_ops is not None:
-            if re.match(r"^\s*_ =>", line):
+            body_depth = _brace_delta(line)
+            body_started = bool(code.split("=>", 1)[1].strip())
+            pending_pattern = []
+            if body_started and body_depth == 0:
                 arms.append((current_ops, "\n".join(current_body)))
                 current_ops = None
                 current_body = []
-                continue
-            current_body.append(line)
+            continue
+
+        current_body.append(line)
+        body_depth += _brace_delta(line)
+        body_started = body_started or bool(_strip_rust_strings_and_comments(line).strip())
+        if body_started and body_depth == 0:
+            arms.append((current_ops, "\n".join(current_body)))
+            current_ops = None
+            current_body = []
 
     if current_ops is not None:
         arms.append((current_ops, "\n".join(current_body)))
+    if pending_pattern:
+        raise ValueError(f"unterminated Luau emit_op match arm pattern: {pending_pattern!r}")
     return arms
 
 

@@ -11324,6 +11324,49 @@ mod tests {
     }
 
     #[test]
+    fn test_compile_checked_lowers_object_set_class_metatable() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "object_set_class_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "object_new".to_string(),
+                        out: Some("obj".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "class_new".to_string(),
+                        out: Some("cls".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "object_set_class".to_string(),
+                        args: Some(vec!["obj".to_string(), "cls".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("object_set_class must lower to Luau metatable assignment");
+        assert!(
+            source.contains("setmetatable(obj, cls)"),
+            "object_set_class should bind the object to its class metatable, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[class op: object_set_class]"),
+            "object_set_class must not be reported as a class-op marker, got:\n{source}"
+        );
+    }
+
+    #[test]
     fn test_default_luau_dispatch_uses_checked_path() {
         // Verify that both compile_via_ir and compile_checked reject the same ops.
         // This ensures no fail-open path exists.

@@ -42,6 +42,27 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "bridge_unavailable" => {
                 self.emit_line("local out: any = error({__type=\"RuntimeError\", __msg=\"Molt bridge unavailable: \" .. tostring(msg)})");
             }
+            "object_set_class" => {
+                self.emit_line("setmetatable(obj, class)");
+            }
+            "class_set_layout_version"
+            | "class_apply_set_name"
+            | "class_layout_version"
+            | "class_merge_layout" => {
+                self.emit_line(&format!("-- [class op: {}]", op.kind));
+            }
+            "call_internal" => {
+                let mapped = match name {
+                    "molt_abs_builtin" => "function(a) return math.abs(a[1]) end",
+                    _ => "nil",
+                };
+                self.emit_line(mapped);
+            }
+            kind if kind.starts_with("vec_sum_")
+                || kind.starts_with("vec_prod_") =>
+            {
+                self.emit_line("local out = {acc, false} -- [vectorized: kind]");
+            }
             "is" => {
                 // Python non-None identity maps to equality in Luau.
                 self.emit_line("local out = (a == b)");
@@ -63,6 +84,15 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["br_if"].status == "implemented-exact"
     assert "missing target labels fail closed" in rows["br_if"].note
     assert rows["bridge_unavailable"].status == "implemented-exact"
+    assert rows["object_set_class"].status == "implemented-exact"
+    assert rows["class_set_layout_version"].status == "not-admitted"
+    assert rows["class_apply_set_name"].status == "not-admitted"
+    assert rows["class_layout_version"].status == "not-admitted"
+    assert rows["class_merge_layout"].status == "not-admitted"
+    assert rows["call_internal"].status == "implemented-exact"
+    assert "molt_abs_builtin" not in rows
+    assert rows["vec_sum_*"].status == "implemented-exact"
+    assert rows["vec_prod_*"].status == "implemented-exact"
     assert rows["is"].status == "implemented-target-limited"
     assert rows["getargv"].status == "implemented-target-limited"
 
