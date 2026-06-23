@@ -1037,7 +1037,9 @@ def test_imported_known_vararg_function_call_bind_uses_imported_value() -> None:
     )
     gen.visit(ast.parse("from typing import TypeVar\nT = TypeVar('T')\n"))
     main_ops = next(
-        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "molt_main"
     )
     const_str = {
         op["out"]: op["s_value"]
@@ -1329,9 +1331,7 @@ def test_from_import_generator_kind_lowers_to_poll_task_with_defaults() -> None:
     )
     gen.visit(
         ast.parse(
-            "from helpers import cpu_profile\n"
-            "def run():\n"
-            "    return cpu_profile('x')\n"
+            "from helpers import cpu_profile\ndef run():\n    return cpu_profile('x')\n"
         )
     )
     func_ops = next(
@@ -1360,7 +1360,9 @@ def test_from_import_generator_kind_lowers_to_poll_task_with_defaults() -> None:
     )
 
 
-def test_aliased_import_generator_kind_without_defaults_never_direct_calls_base() -> None:
+def test_aliased_import_generator_kind_without_defaults_never_direct_calls_base() -> (
+    None
+):
     gen = SimpleTIRGenerator(
         module_name="main",
         known_modules={"helpers", "main"},
@@ -1441,7 +1443,9 @@ def test_assigned_alias_of_imported_generator_preserves_poll_task_defaults() -> 
     )
 
 
-def test_aliased_import_async_generator_lowers_to_generator_task_then_asyncgen() -> None:
+def test_aliased_import_async_generator_lowers_to_generator_task_then_asyncgen() -> (
+    None
+):
     gen = SimpleTIRGenerator(
         module_name="main",
         known_modules={"helpers", "main"},
@@ -1487,6 +1491,46 @@ def test_aliased_import_async_generator_lowers_to_generator_task_then_asyncgen()
     )
     assert not any(
         op.get("kind") == "call_bind" and op.get("s_value") == "helpers__events"
+        for op in func_ops
+    )
+
+
+def test_imported_module_attr_generator_uses_same_poll_task_path() -> None:
+    gen = SimpleTIRGenerator(
+        module_name="main",
+        known_modules={"helpers", "main"},
+        stdlib_allowlist={"helpers"},
+        known_func_defaults={
+            "helpers": {
+                "cpu_profile": {
+                    "params": 2,
+                    "defaults": [{"const": True, "value": "TINY"}],
+                    "kwonly": 0,
+                    "has_vararg": False,
+                }
+            }
+        },
+        known_func_kinds={"helpers": {"cpu_profile": "gen"}},
+    )
+    gen.visit(
+        ast.parse("import helpers as h\ndef run():\n    return h.cpu_profile('x')\n")
+    )
+    func_ops = next(
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "main__run"
+    )
+    alloc_task = next(
+        op
+        for op in func_ops
+        if op.get("kind") == "alloc_task"
+        and op.get("s_value") == "helpers__cpu_profile_poll"
+    )
+
+    assert alloc_task.get("task_kind") == "generator"
+    assert len(alloc_task.get("args") or []) == 2
+    assert not any(
+        op.get("kind") == "call" and op.get("s_value") == "helpers__cpu_profile"
         for op in func_ops
     )
 
