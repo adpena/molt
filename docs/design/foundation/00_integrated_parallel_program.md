@@ -130,34 +130,33 @@ one complete A+B change:
 Recovered WIP under `memory/recovery/stall_20260608/` is a baton, not accepted
 implementation. Do not land the CreationRef half without the MatchRef half.
 
-### RC-2 — LLVM exception-CFG arc — **in flight, no numbered design doc yet**
+### RC-2 — LLVM exception-CFG handler reachability — **DONE**
 
-**The bug**: the LLVM backend's `compute_function_rpo`
-(`llvm_backend/lowering.rs:645`) walks **terminator edges only**. The
-`CheckException` op introduces a mid-block branch to a handler block that is not
-visible in the TIR block terminator (see the comment at `lowering.rs:5435`:
-"Mid-block branches from CheckException (not visible in TIR terminators)").
-Handler blocks reached only by those CheckException edges are therefore never
-included in the RPO walk → never lowered → emitted as `unreachable`
-(`build_unreachable`, `lowering.rs:503,512,5405`) → control that does reach them
-hits `llvm.assume`-style UB. The consequence is **0/25 exception differential
-tests passing on the LLVM target.**
+The first LLVM exception-CFG blocker is closed in current code. LLVM's
+`compute_function_rpo` no longer walks terminator edges alone: it routes through
+the same `tir::dominators::exception_label_to_block` /
+`exception_successors` authority as the TIR analyses, so
+`CheckException`/`TryStart` handler blocks that are reachable only by a
+mid-block exception edge are included in the LLVM lowering order instead of
+being stamped with a bare `unreachable`.
 
-A second, related granularity class: the mid-block `CheckException` edge splits a
-block's effective dominance below TIR block granularity, so phi/dominance
-reasoning over those edges is coarse (the `check_exception_edge_feeds_handler_phi`
-test at `lowering.rs:9096` exercises exactly this seam).
+Guarded evidence:
 
-**The fix** (summary — to be promoted to a numbered design doc): make the LLVM
-RPO/successor walk CheckException-aware so handler blocks are discovered and
-lowered, and refine the dominance granularity at the mid-block exception edge.
-This is the LLVM analogue of the C2/C3 exception-observation correctness arc on
-the Cranelift/WASM paths.
+- `runtime/molt-backend/src/tir/dominators.rs` owns the single
+  label-to-handler and exception-successor extraction path.
+- `runtime/molt-backend/src/llvm_backend/lowering.rs::compute_function_rpo`
+  appends terminator successors and exception successors in one traversal.
+- `runtime/molt-backend/tests/llvm_rpo.rs` includes regression tests for
+  exception-edge-only reachable handlers and transitively reachable handler
+  bodies.
+- `runtime/molt-backend/src/llvm_backend/lowering.rs` includes the
+  `check_exception_edge_feeds_handler_phi` lowering/verifier regression.
 
-**Dependency**: RC-1 Phase 3 on the LLVM target *requires this arc first* —
-drop ops on exception paths need the handler blocks to actually be lowered, or
-the inserted `DecRef`s land in `unreachable` blocks. Land RC-2 before RC-1's
-LLVM coverage.
+The remaining exception-CFG work is not the old "handler block is never
+lowered" bug. It is the wider `HandlerState` / mid-block dominance granularity
+front tracked by RC-1b/design 45 and the broader backend parity gates: a
+`CheckException` still splits a block's effective dominance below TIR block
+granularity, and ownership/drop placement must stay proven on those paths.
 
 ---
 
@@ -170,7 +169,7 @@ TIER 1 (correctness — open)
     ├─ finalizer ordering/#65       OUTSTANDING  (Python lifetime boundary)
     └─ delete legacy native RC      OUTSTANDING  (after convergence proof)
   RC-1b ExceptionRegion Phase 1     OUTSTANDING  (design 45; CreationRef+MatchRef together)
-  RC-2 LLVM exception-CFG arc       IN FLIGHT     (exception handler reachability/dominance)
+  RC-2 LLVM handler reachability    DONE          (CheckException/TryStart edge-aware RPO)
 
 TIER 2 (engine)
   E1-e  inliner activation
@@ -321,7 +320,7 @@ dev-fast, debug-with-asserts).** Headline targets: sieve → 1000×, cold start
 
 | Horizon | Outcome | Carrying arcs |
 |---------|---------|---------------|
-| **Y1** | Foundations + CPython ≥3.12 parity | Tier-0 substrates (S1–S6, **DONE**), Tier-1 correctness (C1–C3 **DONE**; **RC-1 + RC-2 the open front**), import/surface parity (designs 14–19) |
+| **Y1** | Foundations + CPython ≥3.12 parity | Tier-0 substrates (S1–S6, **DONE**), Tier-1 correctness (C1–C3 and RC-2 handler reachability **DONE**; **RC-1 + RC-1b/HandlerState the open front**), import/surface parity (designs 14–19) |
 | **Y1.5** | Ecosystem / dlopen | `libmolt` extension support (ROADMAP long-term), ecosystem compat (design 17), third-party import graph |
 | **Y2** | Perf frontier | E1-e full activation, E3/E4/E5 IPO (design 03/12), S5-ph2c/2e memory opt (design 02), L4/L2/L1 loops + **real SIMD** (design 04/05), **W1 PGO** (design 06) |
 | **Y2–3** | ML / AI | tinygrad fidelity + DFlash + GPU codegen (currently CPU-sim; ROADMAP molt-gpu Movement/Contiguous blocker), CLAUDE.md tinygrad/DFlash fidelity policy |
@@ -330,8 +329,8 @@ dev-fast, debug-with-asserts).** Headline targets: sieve → 1000×, cold start
 | **Y5** | Leadership | "Mojo/Julia speed, Python semantics" delivered across all four targets; the full evidence matrix (native/WASM/Luau/MLIR) green on cold-start, size, and throughput simultaneously |
 
 The single highest-leverage ordering: **finish the RC correctness front (RC-1 +
-RC-2) → complete E1-e on LLVM/Luau → E3/E5 IPO → L2 SIMD / W1 PGO → D1 fusion +
-W3 size.** Correctness gates perf; perf gates the five-year claim.
+RC-1b/HandlerState) → complete E1-e on LLVM/Luau → E3/E5 IPO → L2 SIMD / W1 PGO
+→ D1 fusion + W3 size.** Correctness gates perf; perf gates the five-year claim.
 
 ---
 
