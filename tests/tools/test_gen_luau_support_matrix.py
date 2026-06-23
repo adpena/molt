@@ -57,12 +57,27 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "class_apply_set_name" => {
                 self.emit_line(&format!("-- [class op: {}]", op.kind));
             }
+            "classmethod_new" => {
+                self.emit_line("local out = {__molt_descriptor_kind=\"classmethod\", __func=f}");
+            }
+            "staticmethod_new" => {
+                self.emit_line("local out = {__molt_descriptor_kind=\"staticmethod\", __func=f}");
+            }
+            "property_new" => {
+                self.emit_line("local out = {__molt_descriptor_kind=\"property\", __get=g}");
+            }
             "call_internal" => {
                 let mapped = match name {
                     "molt_abs_builtin" => "function(a) return math.abs(a[1]) end",
                     _ => "nil",
                 };
                 self.emit_line(mapped);
+            }
+            "call_method" => {
+                self.emit_line("local out; do local __method = molt_get_attr(obj, \"name\"); out = __method() end");
+            }
+            "get_attr_generic_obj" | "set_attr_generic_obj" | "del_attr_generic_obj" => {
+                self.emit_line("molt_get_attr(obj, \"name\")");
             }
             "isinstance" => {
                 self.emit_line("local out = molt_isinstance(obj, cls)");
@@ -101,6 +116,13 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["class_apply_set_name"].status == "not-admitted"
     assert rows["class_layout_version"].status == "implemented-target-limited"
     assert rows["class_merge_layout"].status == "implemented-target-limited"
+    assert rows["classmethod_new"].status == "implemented-target-limited"
+    assert rows["staticmethod_new"].status == "implemented-target-limited"
+    assert rows["property_new"].status == "implemented-target-limited"
+    assert rows["call_method"].status == "implemented-target-limited"
+    assert rows["get_attr_generic_obj"].status == "implemented-target-limited"
+    assert rows["set_attr_generic_obj"].status == "implemented-target-limited"
+    assert rows["del_attr_generic_obj"].status == "implemented-target-limited"
     assert rows["call_internal"].status == "implemented-exact"
     assert "molt_abs_builtin" not in rows
     assert rows["isinstance"].status == "implemented-target-limited"
