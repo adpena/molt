@@ -989,6 +989,81 @@ class CallVisitorMixin(_MixinBase):
         self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
         return res
 
+    def _try_emit_imported_module_direct_or_task_call(
+        self,
+        target_module: str | None,
+        original_attr: str,
+        node: ast.Call,
+        *,
+        imported_from: str | None,
+        normalized: str | None,
+        needs_bind: bool,
+        force_bind: bool,
+        direct_registry_authorized: bool,
+    ) -> MoltValue | None:
+        if target_module is None:
+            return None
+        target_kind = self._lookup_func_kind(target_module, original_attr)
+        known_direct_target = self._lookup_func_defaults(target_module, original_attr)
+        has_known_direct_target = known_direct_target is not None
+        known_info_kind = self._known_module_func_kind(known_direct_target)
+        has_known_task_target = (
+            target_kind not in {None, "sync"} or known_info_kind is not None
+        )
+        direct_target_is_linkable = self._is_linkable_module_function_symbol(
+            target_module
+        )
+        allow_speculative_internal_direct = (
+            not has_known_direct_target
+            and target_kind in {None, "sync"}
+            and imported_from is not None
+            and imported_from not in self.stdlib_allowlist
+            and (normalized is None or normalized not in self.stdlib_allowlist)
+            and (
+                self._is_internal_module(imported_from)
+                or self._is_known_project_module(imported_from)
+            )
+            and not force_bind
+        )
+        if (
+            not direct_target_is_linkable
+            or not self._imported_module_attr_is_stable(target_module, original_attr)
+            or not (
+                direct_registry_authorized
+                or has_known_direct_target
+                or has_known_task_target
+                or allow_speculative_internal_direct
+            )
+        ):
+            return None
+
+        lowered_task_func = self._emit_known_module_task_func_call(
+            target_module,
+            original_attr,
+            node,
+            needs_bind=needs_bind or force_bind,
+        )
+        if lowered_task_func is not None:
+            return lowered_task_func
+        if needs_bind or force_bind or has_known_task_target:
+            return self._emit_call_bind_for_known_module_func(
+                node,
+                result_hint="Any",
+            )
+        if allow_speculative_internal_direct and not has_known_direct_target:
+            args = None if node.keywords else self._emit_call_args(node.args)
+        else:
+            args = self._emit_direct_call_args(target_module, original_attr, node)
+        if args is None:
+            return self._emit_call_bind_for_known_module_func(
+                node,
+                result_hint="Any",
+            )
+        res = MoltValue(self.next_var(), type_hint="Any")
+        target_name = f"{self._sanitize_module_name(target_module)}__{original_attr}"
+        self.emit(MoltOp(kind="CALL", args=[target_name] + args, result=res))
+        return res
+
     def _emit_dataclasses_field_call(
         self, module_name: str, node: ast.Call
     ) -> MoltValue:
@@ -2752,9 +2827,8 @@ class CallVisitorMixin(_MixinBase):
     def _local_name_shadows_import_binding(self, name: str) -> bool:
         if self.current_func_name == "molt_main":
             return False
-        if (
-            name in getattr(self, "local_imported_names", set())
-            or name in getattr(self, "local_imported_modules", set())
+        if name in getattr(self, "local_imported_names", set()) or name in getattr(
+            self, "local_imported_modules", set()
         ):
             return False
         if name in self.global_decls:
@@ -4612,9 +4686,7 @@ class CallVisitorMixin(_MixinBase):
         if isinstance(node.func, ast.Attribute):
             module_name = None
             if isinstance(node.func.value, ast.Name):
-                module_name = self._imported_module_binding_target(
-                    node.func.value.id
-                )
+                module_name = self._imported_module_binding_target(node.func.value.id)
             if module_name:
                 func_id = node.func.attr
                 normalized = self._normalize_allowlist_module(module_name)
@@ -6489,9 +6561,7 @@ class CallVisitorMixin(_MixinBase):
                 else:
                     closure_size = max(
                         closure_size,
-                        self._task_closure_size(
-                            len(args), include_gen_control=False
-                        ),
+                        self._task_closure_size(len(args), include_gen_control=False),
                     )
                     self.emit(
                         MoltOp(
@@ -8512,118 +8582,20 @@ class CallVisitorMixin(_MixinBase):
                 ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
                     target_module or "", set()
                 )
-                target_kind = (
-                    self._lookup_func_kind(target_module, original_attr)
-                    if target_module is not None
-                    else None
-                )
-                known_direct_target = (
-                    self._lookup_func_defaults(target_module, original_attr)
-                    if target_module is not None
-                    else None
-                )
-                has_known_direct_target = known_direct_target is not None
-                known_info_kind = self._known_module_func_kind(known_direct_target)
-                direct_target_is_linkable = (
-                    target_module is not None
-                    and self._is_linkable_module_function_symbol(target_module)
-                )
-                allow_speculative_internal_direct = (
-                    target_module is not None
-                    and not has_known_direct_target
-                    and target_kind in {None, "sync"}
-                    and imported_from not in self.stdlib_allowlist
-                    and (normalized is None or normalized not in self.stdlib_allowlist)
-                    and (
-                        self._is_internal_module(imported_from)
-                        or self._is_known_project_module(imported_from)
-                    )
-                    and not force_bind
-                )
-                if (
-                    target_module is not None
-                    and direct_target_is_linkable
-                    and self._imported_module_attr_is_stable(
-                        target_module, original_attr
-                    )
-                    and (
-                        target_module in MOLT_DIRECT_CALLS
-                        or has_known_direct_target
-                        or allow_speculative_internal_direct
-                    )
-                ):
-                    lowered_task_func = self._emit_known_module_task_func_call(
+                lowered_imported_call = (
+                    self._try_emit_imported_module_direct_or_task_call(
                         target_module,
                         original_attr,
                         node,
+                        imported_from=imported_from,
+                        normalized=normalized,
                         needs_bind=needs_bind,
+                        force_bind=force_bind,
+                        direct_registry_authorized=target_module in MOLT_DIRECT_CALLS,
                     )
-                    if lowered_task_func is not None:
-                        return lowered_task_func
-                    if needs_bind:
-                        callee = self.visit(node.func)
-                        if callee is None:
-                            raise NotImplementedError("Unsupported call target")
-                        res = MoltValue(self.next_var(), type_hint="Any")
-                        callargs = self._emit_call_args_builder(node)
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[callee, callargs],
-                                result=res,
-                            )
-                        )
-                        return res
-                    if (
-                        target_kind not in {None, "sync"}
-                        or known_info_kind is not None
-                    ):
-                        callee = self.visit(node.func)
-                        if callee is None:
-                            raise NotImplementedError("Unsupported call target")
-                        res = MoltValue(self.next_var(), type_hint="Any")
-                        callargs = self._emit_call_args_builder(node)
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[callee, callargs],
-                                result=res,
-                            )
-                        )
-                        return res
-                    if (
-                        allow_speculative_internal_direct
-                        and not has_known_direct_target
-                    ):
-                        args = (
-                            None if node.keywords else self._emit_call_args(node.args)
-                        )
-                    else:
-                        args = self._emit_direct_call_args(
-                            target_module, original_attr, node
-                        )
-                    if args is None:
-                        callee = self.visit(node.func)
-                        if callee is None:
-                            raise NotImplementedError("Unsupported call target")
-                        res = MoltValue(self.next_var(), type_hint="Any")
-                        callargs = self._emit_call_args_builder(node)
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[callee, callargs],
-                                result=res,
-                            )
-                        )
-                        return res
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    target_name = (
-                        f"{self._sanitize_module_name(target_module)}__{original_attr}"
-                    )
-                    self.emit(
-                        MoltOp(kind="CALL", args=[target_name] + args, result=res)
-                    )
-                    return res
+                )
+                if lowered_imported_call is not None:
+                    return lowered_imported_call
             if imported_from is not None:
                 normalized = self._normalize_allowlist_module(imported_from)
             else:
@@ -8663,87 +8635,25 @@ class CallVisitorMixin(_MixinBase):
                 target_module = normalized or imported_from
                 # Resolve alias -> original attr name for cross-module calls
                 original_attr = self._imported_attr_name(func_id)
-                target_kind = self._lookup_func_kind(target_module, original_attr)
                 force_bind = original_attr[
                     :1
                 ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
                     target_module, set()
                 )
-                known_direct_target = self._lookup_func_defaults(
-                    target_module, original_attr
-                )
-                has_known_direct_target = known_direct_target is not None
-                known_info_kind = self._known_module_func_kind(known_direct_target)
-                has_known_task_target = (
-                    target_kind not in {None, "sync"} or known_info_kind is not None
-                )
-                direct_target_is_linkable = self._is_linkable_module_function_symbol(
-                    target_module
-                )
-                allow_speculative_internal_direct = (
-                    not has_known_direct_target
-                    and target_kind in {None, "sync"}
-                    and imported_from not in self.stdlib_allowlist
-                    and (normalized is None or normalized not in self.stdlib_allowlist)
-                    and (
-                        self._is_internal_module(imported_from)
-                        or self._is_known_project_module(imported_from)
-                    )
-                    and not force_bind
-                )
-                if (
-                    not needs_bind
-                    and not force_bind
-                    and direct_target_is_linkable
-                    and self._imported_module_attr_is_stable(
-                        target_module, original_attr
-                    )
-                    and (
-                        has_known_direct_target
-                        or has_known_task_target
-                        or allow_speculative_internal_direct
-                    )
-                ):
-                    lowered_task_func = self._emit_known_module_task_func_call(
+                lowered_imported_call = (
+                    self._try_emit_imported_module_direct_or_task_call(
                         target_module,
                         original_attr,
                         node,
-                        needs_bind=False,
+                        imported_from=imported_from,
+                        normalized=normalized,
+                        needs_bind=needs_bind,
+                        force_bind=force_bind,
+                        direct_registry_authorized=False,
                     )
-                    if lowered_task_func is not None:
-                        return lowered_task_func
-                    if has_known_task_target:
-                        callee = self.visit(node.func)
-                        if callee is None:
-                            raise NotImplementedError("Unsupported call target")
-                        res = MoltValue(self.next_var(), type_hint="Any")
-                        callargs = self._emit_call_args_builder(node)
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[callee, callargs],
-                                result=res,
-                            )
-                        )
-                        return res
-                    if (
-                        allow_speculative_internal_direct
-                        and not has_known_direct_target
-                    ):
-                        args = (
-                            None if node.keywords else self._emit_call_args(node.args)
-                        )
-                    else:
-                        args = self._emit_direct_call_args(
-                            target_module, original_attr, node
-                        )
-                    if args is not None:
-                        res = MoltValue(self.next_var(), type_hint="Any")
-                        target_name = f"{self._sanitize_module_name(target_module)}__{original_attr}"
-                        self.emit(
-                            MoltOp(kind="CALL", args=[target_name] + args, result=res)
-                        )
-                        return res
+                )
+                if lowered_imported_call is not None:
+                    return lowered_imported_call
                 callee = self.visit(node.func)
                 if callee is None:
                     raise NotImplementedError("Unsupported call target")
