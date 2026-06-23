@@ -222,6 +222,7 @@ impl Default for WgslRenderer {
 
 impl Renderer for WgslRenderer {
     fn render(&self, kernel: &FusedKernel) -> String {
+        kernel.assert_no_mxfp_dtypes("WGSL renderer");
         let mut out = String::with_capacity(4096);
 
         // Emit subgroup enable directive when configured.

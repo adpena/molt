@@ -148,6 +148,33 @@ impl FusedKernel {
             }
         }
     }
+
+    pub(crate) fn assert_no_mxfp_dtypes(&self, context: &str) {
+        for (binding_idx, binding) in self.bufs.iter().enumerate() {
+            assert!(
+                !binding.dtype.is_mxfp(),
+                "molt-gpu {context}: MXFP requires explicit block/exponent storage lowering before binding {binding_idx} can use {:?}",
+                binding.dtype
+            );
+        }
+
+        for (op_idx, op) in self.ops.iter().enumerate() {
+            assert!(
+                !op.dst_dtype().is_mxfp(),
+                "molt-gpu {context}: MXFP requires explicit block/exponent storage lowering before op {op_idx} can produce {:?}",
+                op.dst_dtype()
+            );
+            for src in op.srcs() {
+                if let FusedSrc::Const { dtype, .. } = src {
+                    assert!(
+                        !dtype.is_mxfp(),
+                        "molt-gpu {context}: MXFP requires explicit block/exponent storage lowering before op {op_idx} can consume {:?} constants",
+                        dtype
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Source reference for a fused op.
