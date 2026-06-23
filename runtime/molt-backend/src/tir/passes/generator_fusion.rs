@@ -76,6 +76,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use super::super::blocks::{BlockId, Terminator, TirBlock};
 use super::super::call_graph::CallGraph;
 use super::super::function::{TirFunction, TirModule};
+use super::super::op_kinds_generated::opcode_has_exception_label_attr_table;
 use super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::target_info::TargetInfo;
 use super::super::types::TirType;
@@ -1384,10 +1385,7 @@ fn remap_exception_label_attr_local(
     attrs: &mut AttrDict,
     label_remap: &HashMap<i64, i64>,
 ) {
-    if !matches!(
-        opcode,
-        OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
-    ) {
+    if !opcode_has_exception_label_attr_table(opcode) {
         return;
     }
     if let Some(AttrValue::Int(old)) = attrs.get("value")
@@ -1420,10 +1418,8 @@ fn function_label_ids(func: &TirFunction) -> BTreeSet<i64> {
     let mut labels: BTreeSet<i64> = func.label_id_map.values().copied().collect();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if matches!(
-                op.opcode,
-                OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
-            ) && let Some(AttrValue::Int(l)) = op.attrs.get("value")
+            if opcode_has_exception_label_attr_table(op.opcode)
+                && let Some(AttrValue::Int(l)) = op.attrs.get("value")
             {
                 labels.insert(*l);
             }

@@ -82,6 +82,7 @@ use super::super::call_facts::{InlineEligibility, InlineWhyNot};
 use super::super::call_graph::CallGraph;
 use super::super::dominators::{CfgEdgePolicy, reachable_blocks_with};
 use super::super::function::{TirFunction, TirModule};
+use super::super::op_kinds_generated::opcode_has_exception_label_attr_table;
 use super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::target_info::TargetInfo;
 use super::super::types::TirType;
@@ -864,10 +865,7 @@ fn clone_loop_break_kind(kind: &LoopBreakKind) -> LoopBreakKind {
 /// reference a block by label rather than by `BlockId`, so they are the only ops
 /// whose attrs need label remapping when a body is cloned.
 fn is_exception_label_op(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd
-    )
+    opcode_has_exception_label_attr_table(opcode)
 }
 
 /// Read the label id from an exception op's `"value"` attr, if present.

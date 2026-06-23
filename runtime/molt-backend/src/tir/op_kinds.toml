@@ -51,6 +51,10 @@
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
 #   - literal_payload_opcodes - opcode literal payload facts consumed by
 #                  canonicalize.rs and check_exception_elim.rs.
+#   - exception_label_attr_opcodes - opcode facts for ops whose `value` attr is
+#                  a SimpleIR exception label id.
+#   - exception_transfer_edge_opcodes - subset of exception-label ops whose
+#                  label-valued `value` attr contributes an implicit CFG edge.
 #   - canonicalize_commutative_reorder / canonicalize_swapped_comparison /
 #                  canonicalize_binary_rules - ordered algebraic facts consumed
 #                  by canonicalize.rs. They live here so operand rewrites do not
@@ -320,6 +324,17 @@ i64_zero_divisor_guard_opcodes = [
 literal_payload_opcodes = [
     { opcode = "ConstInt", literal = "int" },
     { opcode = "ConstBool", literal = "bool" },
+]
+
+exception_label_attr_opcodes = [
+    "CheckException",
+    "TryStart",
+    "TryEnd",
+]
+
+exception_transfer_edge_opcodes = [
+    "CheckException",
+    "TryStart",
 ]
 
 alias_memory_inert_opcodes = [

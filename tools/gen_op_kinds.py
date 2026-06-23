@@ -150,6 +150,8 @@ _OPCODE_FACT_SETS = (
     "alias_slot_never_observer_opcodes",
     "fusion_barrier_opcodes",
     "i64_zero_divisor_guard_opcodes",
+    "exception_label_attr_opcodes",
+    "exception_transfer_edge_opcodes",
 )
 _ALIAS_TYPED_SLOT_ROLE_SETS = (
     "alias_typed_slot_load_opcodes",
@@ -1285,6 +1287,30 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, i64_zero_divisor_guards))
+    out.append("    }\n}\n\n")
+
+    exception_label_attrs = list(data.get("exception_label_attr_opcodes", []))
+    out.append(
+        "/// Whether an opcode's `value` attr is a SimpleIR exception label id.\n"
+        "/// EXHAUSTIVE over OpCode so cloning/lowering/remapping consumers share\n"
+        "/// one source of truth for label-valued exception metadata.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, exception_label_attrs))
+    out.append("    }\n}\n\n")
+
+    exception_transfer_edges = list(data.get("exception_transfer_edge_opcodes", []))
+    out.append(
+        "/// Whether an opcode's exception label attr contributes an implicit CFG\n"
+        "/// transfer edge. TryEnd deliberately maps false: its label is pairing\n"
+        "/// metadata, not a handler branch.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, exception_transfer_edges))
     out.append("    }\n}\n\n")
 
     out.append(_render_alias_typed_slot_role(opcodes, data))
