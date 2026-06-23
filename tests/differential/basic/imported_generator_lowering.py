@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 import imported_generator_lowering_mod as mod
-from imported_generator_lowering_mod import consume, ladder, nested
+from imported_generator_lowering_mod import consume, ladder
 
 
 def consume_factory(factory, limit):
