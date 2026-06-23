@@ -683,8 +683,11 @@ roadmap claim drifts.
   that tiny payloads are possible under the right linked/profile discipline;
   native must converge by making runtime reachability as precise as the WASM
   import/export path rather than relying on coarse domain features alone.
-- Keep the generated Luau support matrix current and use it to prioritize
-  checked CPython-vs-Luau feature-gap closure.
+- Luau source emission now runs through the shared TIR module phase before text
+  codegen: per-function TIR pipeline, `run_module_pipeline`, and fail-closed
+  SimpleIR back-conversion. Keep the generated Luau support matrix current and
+  use it to prioritize post-E1 runtime, surface, and CPython-vs-Luau feature-gap
+  closure.
 - Keep the canonical local validation matrix green across:
   - `molt validate --suite smoke`
   - `molt validate`

@@ -246,6 +246,49 @@ fn rust_source_for_ir(ir: &SimpleIR) -> io::Result<String> {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LuauTirModulePipelineStats {
+    functions: usize,
+    module_changed: usize,
+}
+
+fn run_luau_tir_module_pipeline(ir: &mut SimpleIR) -> io::Result<LuauTirModulePipelineStats> {
+    let target_info = molt_backend::tir::target_info::TargetInfo::luau_release_fast();
+    let (mut tir_module, idx_map) =
+        molt_backend::tir::lower_from_simple::lower_functions_to_tir_module(&ir.functions);
+    tir_module.name = "luau_module".to_string();
+
+    for tir_func in &mut tir_module.functions {
+        molt_backend::tir::type_refine::refine_types(tir_func);
+        let _stats = molt_backend::tir::passes::run_pipeline(tir_func, &target_info);
+        molt_backend::tir::type_refine::refine_types(tir_func);
+    }
+
+    let non_inlinable = std::collections::HashSet::new();
+    let module_analysis =
+        molt_backend::tir::run_module_pipeline(&mut tir_module, &target_info, &non_inlinable);
+
+    for (pos, &orig_idx) in idx_map.iter().enumerate() {
+        let tir_func = &tir_module.functions[pos];
+        let ops = molt_backend::tir::lower_to_simple::lower_to_simple_ir(tir_func);
+        if !molt_backend::tir::lower_to_simple::validate_labels(&ops) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Luau TIR module back-conversion emitted invalid labels for '{}'",
+                    tir_func.name
+                ),
+            ));
+        }
+        ir.functions[orig_idx].ops = ops;
+    }
+
+    Ok(LuauTirModulePipelineStats {
+        functions: tir_module.functions.len(),
+        module_changed: module_analysis.changed_functions.len(),
+    })
+}
+
 fn partition_functions_for_batches(
     functions: Vec<molt_backend::FunctionIR>,
     max_functions_per_batch: usize,
@@ -3365,39 +3408,21 @@ fn main() -> io::Result<()> {
         ir.tree_shake_luau();
     }
 
-    // Run the full TIR optimization pipeline for Luau — same passes the
-    // native and WASM backends get (refine_types → run_pipeline → refine_types).
-    // Without this, the Luau backend would be operating on unoptimized
-    // SimpleIR, missing unboxing, escape analysis, SCCP, strength reduction,
-    // BCE, DCE etc. Pipeline contents are documented in
-    // `tir::passes::run_pipeline`; do not enumerate the count here so this
-    // comment can't go stale when passes are added.
+    // Luau module phase (Tier-2 E1 parity): source emission is still one
+    // compilation unit, so every local body is owned by this module and the
+    // inliner has no external-linkage exclusions. Keep Luau on the same
+    // structural path as native/WASM: lift once to TIR, run every local
+    // function through the per-function pipeline, then run the whole-module
+    // pipeline (E1 inliner, generator fusion, module-slot promotion, terminal
+    // DropInsertion) before one fail-closed back-conversion.
     if is_luau {
         let tir_start = Instant::now();
-        let mut tir_count = 0usize;
-        for func in &mut ir.functions {
-            // Skip tiny functions and annotation stubs.
-            if func.ops.len() < 4 || func.name.contains("__annotate__") {
-                continue;
-            }
-            if func.ops.iter().any(|op| op.kind == "phi") {
-                molt_backend::rewrite_phi_to_store_load(&mut func.ops);
-            }
-            let mut tir_func = molt_backend::tir::lower_from_simple::lower_to_tir(func);
-            molt_backend::tir::type_refine::refine_types(&mut tir_func);
-            let target_info = molt_backend::tir::target_info::TargetInfo::luau_release_fast();
-            let _stats = molt_backend::tir::passes::run_pipeline(&mut tir_func, &target_info);
-            let _drop_changed =
-                molt_backend::tir::drop_phase::finalize_function_drops(&mut tir_func, &target_info);
-            molt_backend::tir::type_refine::refine_types(&mut tir_func);
-            let ops = molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
-            if molt_backend::tir::lower_to_simple::validate_labels(&ops) {
-                func.ops = ops;
-                tir_count += 1;
-            }
-        }
+        let module_stats = run_luau_tir_module_pipeline(&mut ir)?;
         let tir_elapsed = tir_start.elapsed();
-        eprintln!("[molt-luau] TIR optimization: {tir_count} functions in {tir_elapsed:.2?}");
+        eprintln!(
+            "[molt-luau] TIR module pipeline: {} functions, {} module-changed in {tir_elapsed:.2?}",
+            module_stats.functions, module_stats.module_changed
+        );
         molt_backend::eliminate_dead_ops(&mut ir);
     }
 
@@ -3684,7 +3709,7 @@ mod tests {
         prune_and_partition_native_stdlib, read_bounded_request_bytes, read_json_artifact,
         read_stdlib_cache_key, read_stdlib_cache_manifest, relocatable_linker_binary,
         remove_native_batch_temp_dir, resolve_backend_output_path, resolved_batch_op_budget_limit,
-        resolved_batch_size_limit, shared_stdlib_cache_matches,
+        resolved_batch_size_limit, run_luau_tir_module_pipeline, shared_stdlib_cache_matches,
         shared_stdlib_partition_closure_issue, shared_stdlib_partition_manifest,
         stdlib_cache_count_sidecar_path, stdlib_cache_partition_manifest_sidecar_path,
         validate_shared_stdlib_partition, with_shared_stdlib_cache_publish_lock,
@@ -3723,6 +3748,87 @@ mod tests {
         let module = cache.entries.get("module").expect("module entry");
         let function = cache.entries.get("function").expect("function entry");
         assert!(Arc::ptr_eq(&module.bytes, &function.bytes));
+    }
+
+    #[test]
+    fn luau_tir_module_pipeline_inlines_direct_local_calls() {
+        let callee = FunctionIR {
+            name: "luau_add1".to_string(),
+            params: vec!["x".to_string()],
+            param_types: Some(vec!["int".to_string()]),
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(1),
+                    out: Some("one".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "add".to_string(),
+                    args: Some(vec!["x".to_string(), "one".to_string()]),
+                    out: Some("sum".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["sum".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            source_file: None,
+            is_extern: false,
+        };
+        let caller = FunctionIR {
+            name: "molt_main".to_string(),
+            params: Vec::new(),
+            param_types: None,
+            ops: vec![
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(41),
+                    out: Some("arg".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "call".to_string(),
+                    s_value: Some("luau_add1".to_string()),
+                    args: Some(vec!["arg".to_string()]),
+                    out: Some("result".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            source_file: None,
+            is_extern: false,
+        };
+        let mut ir = SimpleIR {
+            functions: vec![caller, callee],
+            profile: None,
+        };
+
+        let stats = run_luau_tir_module_pipeline(&mut ir).expect("luau module pipeline");
+
+        assert_eq!(stats.functions, 2);
+        assert!(
+            stats.module_changed >= 1,
+            "direct call inlining must report at least one changed function"
+        );
+        let main = ir
+            .functions
+            .iter()
+            .find(|func| func.name == "molt_main")
+            .expect("molt_main");
+        assert!(
+            main.ops
+                .iter()
+                .all(|op| !(op.kind == "call" && op.s_value.as_deref() == Some("luau_add1"))),
+            "Luau module phase must inline direct local calls instead of leaving a call boundary: {:?}",
+            main.ops
+        );
     }
 
     #[test]
