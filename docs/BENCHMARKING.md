@@ -334,7 +334,10 @@ executes `CHECK_OOB=0 DEV=CPU TYPED=1 python test/test_tiny.py` through
 `uv run --isolated --with typeguard` because the pinned upstream package imports
 its typeguard hook at module import time; runner-local `PYTHONPATH={suite_root}`
 and `PYTHONDONTWRITEBYTECODE=1` let `test/test_tiny.py` import the checked-out
-package without installing or modifying it, so source custody stays clean. The
+package without installing or modifying it, so source custody stays clean.
+Suite-wide `XDG_CACHE_HOME` and `CACHEDB` resolve under the run `output_root`,
+so upstream tinygrad cache writes are evidence artifacts rather than pinned
+checkout mutations. The
 CPython runner executes
 `tools/tinygrad_off_shelf_adapter.py` against the checked-out upstream package
 through the same isolated `typeguard` dependency and bytecode-write ban; the
