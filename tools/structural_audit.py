@@ -488,11 +488,27 @@ def probe_duplicate_authorities(root: Path) -> list[Finding]:
         except OSError:
             continue
         rel = path.relative_to(root).as_posix()
+        # Test code is not a semantic authority: predicates inside the file's test
+        # module (`#[cfg(test)]` / `mod tests`) are regression fixtures whose names
+        # happen to match a property keyword (e.g. `side_effecting_ops_preserved`).
+        test_offsets = [text.find("#[cfg(test)]"), text.find("mod tests")]
+        test_boundary = min((o for o in test_offsets if o >= 0), default=len(text))
         for m in _PREDICATE_RE.finditer(text):
+            if m.start() >= test_boundary:
+                continue  # test-module fixture, not a classifier
             fn = m.group(1)
             # require opcode/kind context in the function body window
             window = text[m.end() : m.end() + 800]
             if not _OPCODE_CONTEXT_RE.search(window):
+                continue
+            # A duplicate AUTHORITY hand-classifies with literals (`matches!(...)`
+            # or `OpCode::Variant` arms). A predicate that merely DELEGATES to the
+            # single generated authority (reads a `*_table`, calls another
+            # predicate) is a CONSUMER, not a second authority — counting it would
+            # report drift that does not exist (the op_kinds.toml registry remains
+            # the sole source of truth). Discovery may be heuristic; this keeps it
+            # from manufacturing false positives the ratchet would then enshrine.
+            if "matches!(" not in window and "OpCode::" not in window:
                 continue
             for needle, prop in keyword_map.items():
                 if needle in fn:
@@ -824,13 +840,17 @@ def main(argv: list[str] | None = None) -> int:
     baseline_path = root / BASELINE_PATH_REL
 
     if args.update_baseline:
-        baseline_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n")
+        baseline_path.write_text(
+            json.dumps(metrics, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         print(f"baseline updated: {baseline_path}")
         return 0
 
     if args.write_board:
         board_path = root / BOARD_PATH_REL
-        board_path.write_text(format_board(findings, metrics) + "\n")
+        board_path.write_text(
+            format_board(findings, metrics) + "\n", encoding="utf-8"
+        )
         print(f"board written: {board_path}")
         return 0
 
