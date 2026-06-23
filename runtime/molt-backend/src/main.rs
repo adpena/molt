@@ -17,6 +17,8 @@ use molt_backend::wasm::{WasmBackend, WasmCompileOptions};
 use molt_backend::{SimpleIR, rewrite_annotate_stubs};
 #[cfg(any(unix, test))]
 use serde_json::Value as JsonValue;
+#[cfg(feature = "native-backend")]
+use sha2::{Digest, Sha256};
 #[cfg(any(unix, test))]
 use std::cmp::Reverse;
 #[cfg(any(unix, test))]
@@ -64,10 +66,23 @@ const DAEMON_REQUEST_ENV_KEYS: &[&str] = &[
     "MOLT_DISABLE_DEAD_FUNC_ELIM",
     "MOLT_BACKEND_BATCH_SIZE",
     "MOLT_BACKEND_BATCH_OP_BUDGET",
+    "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+    "MOLT_CLI_MEMORY_AVAILABLE_GB",
+    "MOLT_CLI_MEM_AVAILABLE_GB",
+    "MOLT_MEMORY_AVAILABLE_GB",
+    "MOLT_MEM_AVAILABLE_GB",
+    "MOLT_BACKEND_MAX_RSS_GB",
+    "MOLT_BACKEND_MEMORY_RESERVE_GB",
+    "MOLT_CLI_MEMORY_RESERVE_GB",
+    "MOLT_CLI_MEM_RESERVE_GB",
+    "MOLT_MEMORY_RESERVE_GB",
+    "MOLT_MEM_RESERVE_GB",
     "MOLT_MAX_FUNCTION_OPS",
     "MOLT_DISABLE_RC_COALESCING",
+    "RAYON_NUM_THREADS",
     "TIR_DUMP",
     "TIR_OPT_STATS",
+    "MOLT_TIR_TRACE_FUNC",
     "MOLT_DUMP_CLIF",
     "MOLT_DUMP_CLIF_ON_ERROR",
     "MOLT_DUMP_CLIF_ON_CFG_ERROR",
@@ -278,6 +293,35 @@ fn batch_external_function_names(
         .collect()
 }
 
+#[cfg(all(feature = "native-backend", target_os = "macos"))]
+fn release_native_backend_batch_memory_to_os() {
+    unsafe extern "C" {
+        fn malloc_default_zone() -> *mut libc::c_void;
+        fn malloc_zone_pressure_relief(zone: *mut libc::c_void, goal: usize) -> usize;
+    }
+
+    unsafe {
+        let zone = malloc_default_zone();
+        if !zone.is_null() {
+            let _ = malloc_zone_pressure_relief(zone, usize::MAX);
+        }
+    }
+}
+
+#[cfg(all(feature = "native-backend", target_os = "linux", target_env = "gnu"))]
+fn release_native_backend_batch_memory_to_os() {
+    unsafe {
+        let _ = libc::malloc_trim(0);
+    }
+}
+
+#[cfg(all(
+    feature = "native-backend",
+    not(target_os = "macos"),
+    not(all(target_os = "linux", target_env = "gnu"))
+))]
+fn release_native_backend_batch_memory_to_os() {}
+
 fn resolved_batch_size_limit(default: usize) -> usize {
     let raw = std::env::var("MOLT_BACKEND_BATCH_SIZE")
         .ok()
@@ -307,6 +351,30 @@ struct NativeApplicationObjectOptions<'a> {
 struct NativeApplicationObjectResult {
     function_count: usize,
     batch_count: usize,
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(serde::Deserialize, serde::Serialize)]
+struct NativeBatchModuleMetadata {
+    module_context: molt_backend::NativeBackendModuleContext,
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(serde::Deserialize, serde::Serialize)]
+struct NativeBatchObjectJob {
+    ir: SimpleIR,
+    module_context_path: PathBuf,
+    target_triple: Option<String>,
+    emit_app_intrinsic_resolver: bool,
+    app_intrinsic_manifest: Option<std::collections::BTreeSet<String>>,
+    external_function_names: std::collections::BTreeSet<String>,
+}
+
+#[cfg(feature = "native-backend")]
+#[derive(Debug, Clone)]
+struct NativeBatchJobSpec {
+    job_path: PathBuf,
+    object_path: PathBuf,
 }
 
 #[cfg(feature = "native-backend")]
@@ -389,6 +457,264 @@ fn merge_relocatable_objects(
 }
 
 #[cfg(feature = "native-backend")]
+fn write_json_artifact<T: serde::Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    ensure_output_parent_dir(path.to_str().unwrap_or_default())?;
+    let file = File::create(path)?;
+    let writer = io::BufWriter::new(file);
+    serde_json::to_writer(writer, value).map_err(io::Error::other)
+}
+
+#[cfg(feature = "native-backend")]
+fn read_json_artifact<T: serde::de::DeserializeOwned>(path: &Path, label: &str) -> io::Result<T> {
+    let file = File::open(path).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("failed to open {label} '{}': {err}", path.display()),
+        )
+    })?;
+    let reader = io::BufReader::new(file);
+    serde_json::from_reader(reader).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid {label} '{}': {err}", path.display()),
+        )
+    })
+}
+
+#[cfg(feature = "native-backend")]
+fn remove_native_batch_temp_dir(path: &Path, label: &str) -> io::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(io::Error::new(
+            err.kind(),
+            format!("failed to remove {label} '{}': {err}", path.display()),
+        )),
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn finish_native_batch_temp_dir(
+    path: &Path,
+    label: &str,
+    compile_result: io::Result<()>,
+) -> io::Result<()> {
+    let cleanup_result = remove_native_batch_temp_dir(path, label);
+    match (compile_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(cleanup_err)) => Err(cleanup_err),
+        (Err(compile_err), Ok(())) => Err(compile_err),
+        (Err(compile_err), Err(cleanup_err)) => {
+            eprintln!(
+                "MOLT_BACKEND: failed to clean {label} '{}' after compile error: {cleanup_err}",
+                path.display()
+            );
+            Err(compile_err)
+        }
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn compile_native_batch_object_job(
+    job: NativeBatchObjectJob,
+    output_path: &Path,
+) -> io::Result<()> {
+    let metadata: NativeBatchModuleMetadata =
+        read_json_artifact(&job.module_context_path, "native batch module metadata")?;
+    let mut backend = SimpleBackend::new_with_target(job.target_triple.as_deref());
+    backend.skip_ir_passes = true;
+    backend.skip_shared_stdlib_partition = true;
+    backend.emit_app_intrinsic_resolver = job.emit_app_intrinsic_resolver;
+    backend.app_intrinsic_manifest = job.app_intrinsic_manifest;
+    backend.external_function_names = job.external_function_names;
+    backend.set_module_context(metadata.module_context);
+    let output = backend.compile(job.ir);
+    write_output_path(output_path, &output.bytes)
+}
+
+#[cfg(feature = "native-backend")]
+fn compile_native_batch_object_job_file(job_path: &Path, output_path: &Path) -> io::Result<()> {
+    let job: NativeBatchObjectJob = read_json_artifact(job_path, "native batch object job")?;
+    compile_native_batch_object_job(job, output_path)
+}
+
+#[cfg(feature = "native-backend")]
+fn sanitize_debug_artifact_component(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let sanitized = sanitized.trim_matches('_');
+    if sanitized.is_empty() {
+        "artifact".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+#[cfg(feature = "native-backend")]
+fn preserve_native_batch_worker_failure_artifacts(
+    label: &str,
+    job_path: &Path,
+    object_path: &Path,
+) -> io::Result<PathBuf> {
+    let mut job: NativeBatchObjectJob =
+        read_json_artifact(job_path, "failed native batch object job")?;
+    let job_stem = job_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(sanitize_debug_artifact_component)
+        .unwrap_or_else(|| "batch".to_string());
+    let label_component = sanitize_debug_artifact_component(label);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let manifest_marker = molt_backend::debug_artifacts::prepare_debug_artifact_path(format!(
+        "native-batch-failures/{label_component}/{}-{nonce}-{job_stem}/manifest.json",
+        std::process::id()
+    ))?;
+    let artifact_dir = manifest_marker
+        .parent()
+        .ok_or_else(|| io::Error::other("debug artifact path has no parent"))?
+        .to_path_buf();
+    std::fs::create_dir_all(&artifact_dir)?;
+
+    let copied_module_context = artifact_dir.join("module_context.json");
+    std::fs::copy(&job.module_context_path, &copied_module_context).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "failed to preserve native batch module context '{}' to '{}': {err}",
+                job.module_context_path.display(),
+                copied_module_context.display()
+            ),
+        )
+    })?;
+    let original_module_context_path = job.module_context_path.clone();
+    job.module_context_path = copied_module_context.clone();
+
+    let copied_job = artifact_dir.join(
+        job_path
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("batch.json")),
+    );
+    write_json_artifact(&copied_job, &job)?;
+
+    let copied_object = if object_path.exists() {
+        let copied_object = artifact_dir.join(
+            object_path
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("batch.o")),
+        );
+        std::fs::copy(object_path, &copied_object).map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "failed to preserve partial native batch object '{}' to '{}': {err}",
+                    object_path.display(),
+                    copied_object.display()
+                ),
+            )
+        })?;
+        Some(copied_object)
+    } else {
+        None
+    };
+    let replay_object = artifact_dir.join("replay.o");
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "label": label,
+        "source_job_path": job_path.display().to_string(),
+        "source_object_path": object_path.display().to_string(),
+        "source_module_context_path": original_module_context_path.display().to_string(),
+        "copied_job_path": copied_job.display().to_string(),
+        "copied_object_path": copied_object.as_ref().map(|path| path.display().to_string()),
+        "copied_module_context_path": copied_module_context.display().to_string(),
+        "replay": {
+            "argv": [
+                "target/debug/molt-backend",
+                "--native-batch-job-file",
+                copied_job.display().to_string(),
+                "--output",
+                replay_object.display().to_string()
+            ]
+        }
+    });
+    write_json_artifact(&manifest_marker, &manifest)?;
+    Ok(artifact_dir)
+}
+
+#[cfg(feature = "native-backend")]
+fn run_native_batch_worker_with_failure_artifacts(
+    label: &str,
+    job_path: &Path,
+    object_path: &Path,
+) -> io::Result<()> {
+    match run_native_batch_worker(job_path, object_path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let original_error = err.to_string();
+            match preserve_native_batch_worker_failure_artifacts(label, job_path, object_path) {
+                Ok(artifact_dir) => Err(io::Error::new(
+                    err.kind(),
+                    format!(
+                        "{original_error}; preserved replayable {label} artifacts at '{}'",
+                        artifact_dir.display()
+                    ),
+                )),
+                Err(preserve_err) => Err(io::Error::new(
+                    err.kind(),
+                    format!(
+                        "{original_error}; additionally failed to preserve {label} artifacts: {preserve_err}"
+                    ),
+                )),
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "native-backend", not(test)))]
+fn run_native_batch_worker(job_path: &Path, object_path: &Path) -> io::Result<()> {
+    let exe = std::env::current_exe().map_err(|err| {
+        io::Error::other(format!(
+            "failed to resolve current backend executable for batch worker: {err}"
+        ))
+    })?;
+    let status = std::process::Command::new(&exe)
+        .arg("--native-batch-job-file")
+        .arg(job_path)
+        .arg("--output")
+        .arg(object_path)
+        .status()
+        .map_err(|err| {
+            io::Error::other(format!(
+                "failed to spawn native batch worker '{}' for '{}': {err}",
+                exe.display(),
+                job_path.display()
+            ))
+        })?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "native batch worker failed for '{}' with {status}",
+        job_path.display()
+    )))
+}
+
+#[cfg(all(feature = "native-backend", test))]
+fn run_native_batch_worker(job_path: &Path, object_path: &Path) -> io::Result<()> {
+    compile_native_batch_object_job_file(job_path, object_path)
+}
+
+#[cfg(feature = "native-backend")]
 fn compile_native_application_object_to_path(
     mut ir: SimpleIR,
     output_path: &Path,
@@ -458,7 +784,12 @@ fn compile_native_application_object_to_path(
             .as_nanos()
     ));
     std::fs::create_dir_all(&tmp_dir)?;
-    let mut batch_paths: Vec<std::path::PathBuf> = Vec::new();
+    let module_context_path = tmp_dir.join("module_context.json");
+    write_json_artifact(
+        &module_context_path,
+        &NativeBatchModuleMetadata { module_context },
+    )?;
+    let mut batch_specs: Vec<NativeBatchJobSpec> = Vec::new();
     let compile_result = (|| -> io::Result<()> {
         for (batch_idx, batch_funcs) in batches.into_iter().enumerate() {
             let batch_ops = batch_funcs
@@ -476,32 +807,57 @@ fn compile_native_application_object_to_path(
                 functions: batch_funcs,
                 profile: profile.clone(),
             };
-            let mut backend = SimpleBackend::new_with_target(options.target_triple);
-            backend.skip_ir_passes = true;
-            backend.skip_shared_stdlib_partition = true;
-            if batch_idx == 0 {
-                backend.app_intrinsic_manifest = options.app_intrinsic_manifest.take();
-            } else {
-                backend.emit_app_intrinsic_resolver = false;
-            }
-            backend.external_function_names =
+            let external_function_names =
                 batch_external_function_names(&all_func_names, &batch_ir.functions);
-            backend.set_module_context(module_context.clone());
-            let obj_output = backend.compile(batch_ir);
-
+            let job_path = tmp_dir.join(format!("batch_{batch_idx}.json"));
             let batch_path = tmp_dir.join(format!("batch_{batch_idx}.o"));
-            std::fs::write(&batch_path, &obj_output.bytes)?;
-            batch_paths.push(batch_path);
+            write_json_artifact(
+                &job_path,
+                &NativeBatchObjectJob {
+                    ir: batch_ir,
+                    module_context_path: module_context_path.clone(),
+                    target_triple: options.target_triple.map(str::to_owned),
+                    emit_app_intrinsic_resolver: batch_idx == 0,
+                    app_intrinsic_manifest: if batch_idx == 0 {
+                        options.app_intrinsic_manifest.take()
+                    } else {
+                        None
+                    },
+                    external_function_names,
+                },
+            )?;
+            batch_specs.push(NativeBatchJobSpec {
+                job_path,
+                object_path: batch_path,
+            });
+        }
+        release_native_backend_batch_memory_to_os();
+
+        let mut batch_paths: Vec<std::path::PathBuf> = Vec::with_capacity(batch_specs.len());
+        for (batch_idx, spec) in batch_specs.iter().enumerate() {
+            eprintln!(
+                "{}: compiling materialized batch {}/{}",
+                options.log_prefix,
+                batch_idx + 1,
+                total_batches
+            );
+            run_native_batch_worker_with_failure_artifacts(
+                "native application batch worker",
+                &spec.job_path,
+                &spec.object_path,
+            )?;
+            batch_paths.push(spec.object_path.clone());
+            release_native_backend_batch_memory_to_os();
         }
 
         merge_relocatable_objects(output_path, &batch_paths, None)
     })();
 
-    for batch_path in &batch_paths {
-        let _ = std::fs::remove_file(batch_path);
-    }
-    let _ = std::fs::remove_dir(&tmp_dir);
-    compile_result?;
+    finish_native_batch_temp_dir(
+        &tmp_dir,
+        "native application batch temp dir",
+        compile_result,
+    )?;
 
     eprintln!(
         "Successfully compiled to {} ({} functions, {} batches)",
@@ -575,7 +931,14 @@ fn compile_stdlib_cache_object(
     let stdlib_tmp_dir =
         std::env::temp_dir().join(format!("molt_stdlib_batch_{}", std::process::id()));
     std::fs::create_dir_all(&stdlib_tmp_dir)?;
-    let mut stdlib_batch_paths: Vec<std::path::PathBuf> = Vec::new();
+    let module_context_path = stdlib_tmp_dir.join("module_context.json");
+    write_json_artifact(
+        &module_context_path,
+        &NativeBatchModuleMetadata {
+            module_context: stdlib_module_context,
+        },
+    )?;
+    let mut stdlib_batch_specs: Vec<NativeBatchJobSpec> = Vec::new();
     let compile_result = (|| -> io::Result<()> {
         for (stdlib_batch_idx, batch_funcs) in stdlib_batches.into_iter().enumerate() {
             let batch_ops = batch_funcs.iter().map(|f| f.ops.len()).sum::<usize>();
@@ -591,29 +954,53 @@ fn compile_stdlib_cache_object(
                 functions: batch_funcs,
                 profile: profile.clone(),
             };
-            let mut batch_backend = SimpleBackend::new_with_target(target_triple);
-            batch_backend.skip_ir_passes = true;
-            batch_backend.skip_shared_stdlib_partition = true;
-            // Stdlib cache batches are not the main application object.
-            batch_backend.emit_app_intrinsic_resolver = false;
-            batch_backend.external_function_names =
+            let external_function_names =
                 batch_external_function_names(&all_stdlib_names, &batch_ir.functions);
-            batch_backend.set_module_context(stdlib_module_context.clone());
-            let batch_output = batch_backend.compile(batch_ir);
+            let job_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.json"));
             let batch_path = stdlib_tmp_dir.join(format!("batch_{stdlib_batch_idx}.o"));
-            std::fs::write(&batch_path, &batch_output.bytes)?;
-            stdlib_batch_paths.push(batch_path);
+            write_json_artifact(
+                &job_path,
+                &NativeBatchObjectJob {
+                    ir: batch_ir,
+                    module_context_path: module_context_path.clone(),
+                    target_triple: target_triple.map(str::to_owned),
+                    emit_app_intrinsic_resolver: false,
+                    app_intrinsic_manifest: None,
+                    external_function_names,
+                },
+            )?;
+            stdlib_batch_specs.push(NativeBatchJobSpec {
+                job_path,
+                object_path: batch_path,
+            });
+        }
+        release_native_backend_batch_memory_to_os();
+
+        let mut stdlib_batch_paths: Vec<std::path::PathBuf> =
+            Vec::with_capacity(stdlib_batch_specs.len());
+        for (stdlib_batch_idx, spec) in stdlib_batch_specs.iter().enumerate() {
+            eprintln!(
+                "{log_prefix}: compiling materialized stdlib batch {}/{}",
+                stdlib_batch_idx + 1,
+                stdlib_total_batches
+            );
+            run_native_batch_worker_with_failure_artifacts(
+                "native stdlib batch worker",
+                &spec.job_path,
+                &spec.object_path,
+            )?;
+            stdlib_batch_paths.push(spec.object_path.clone());
+            release_native_backend_batch_memory_to_os();
         }
 
         merge_relocatable_objects(stdlib_path, &stdlib_batch_paths, None)
     })();
 
-    for batch_path in &stdlib_batch_paths {
-        let _ = std::fs::remove_file(batch_path);
-    }
-    let _ = std::fs::remove_dir(&stdlib_tmp_dir);
-
-    compile_result
+    finish_native_batch_temp_dir(
+        &stdlib_tmp_dir,
+        "native stdlib batch temp dir",
+        compile_result,
+    )
 }
 
 #[cfg(feature = "native-backend")]
@@ -700,6 +1087,26 @@ fn stdlib_cache_manifest_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf 
 #[cfg(feature = "native-backend")]
 fn stdlib_cache_partition_manifest_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
     stdlib_path.with_extension("partition.json")
+}
+
+#[cfg(feature = "native-backend")]
+fn stdlib_cache_object_digest_sidecar_path(stdlib_path: &Path) -> std::path::PathBuf {
+    stdlib_path.with_extension("sha256")
+}
+
+#[cfg(feature = "native-backend")]
+fn sha256_file_hex(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[cfg(feature = "native-backend")]
@@ -1010,6 +1417,7 @@ fn remove_shared_stdlib_cache_artifacts(stdlib_path: &Path) {
     let _ = std::fs::remove_file(stdlib_cache_key_sidecar_path(stdlib_path));
     let _ = std::fs::remove_file(stdlib_cache_manifest_sidecar_path(stdlib_path));
     let _ = std::fs::remove_file(stdlib_cache_partition_manifest_sidecar_path(stdlib_path));
+    let _ = std::fs::remove_file(stdlib_cache_object_digest_sidecar_path(stdlib_path));
 }
 
 #[cfg(feature = "native-backend")]
@@ -1028,6 +1436,17 @@ fn shared_stdlib_cache_matches(
     if read_stdlib_cache_key(stdlib_path).as_deref() != Some(expected_key)
         || read_stdlib_cache_manifest(stdlib_path).as_deref() != Some(expected_manifest)
     {
+        return false;
+    }
+    let Ok(actual_object_digest) = sha256_file_hex(stdlib_path) else {
+        return false;
+    };
+    let Ok(cached_object_digest) =
+        std::fs::read_to_string(stdlib_cache_object_digest_sidecar_path(stdlib_path))
+    else {
+        return false;
+    };
+    if cached_object_digest.trim() != actual_object_digest {
         return false;
     }
     let cached_partition_manifest = read_stdlib_cache_partition_manifest(stdlib_path);
@@ -1102,6 +1521,11 @@ fn write_shared_stdlib_cache_sidecars(
         &stdlib_cache_partition_manifest_sidecar_path(stdlib_path),
         partition_manifest,
     )?;
+    let object_digest = sha256_file_hex(stdlib_path)?;
+    write_atomic_text_file(
+        &stdlib_cache_object_digest_sidecar_path(stdlib_path),
+        &object_digest,
+    )?;
     Ok(())
 }
 
@@ -1146,6 +1570,8 @@ fn publish_shared_stdlib_cache_object(
 struct DaemonHealthResponse {
     protocol_version: u32,
     pid: u32,
+    spawn_config_digest: Option<String>,
+    active_config_digest: Option<String>,
     uptime_ms: u64,
     cache_entries: usize,
     cache_bytes: usize,
@@ -1338,6 +1764,18 @@ impl DaemonHealthResponse {
             JsonValue::from(self.protocol_version),
         );
         obj.insert("pid".to_string(), JsonValue::from(self.pid));
+        if let Some(spawn_config_digest) = &self.spawn_config_digest {
+            obj.insert(
+                "spawn_config_digest".to_string(),
+                JsonValue::String(spawn_config_digest.clone()),
+            );
+        }
+        if let Some(active_config_digest) = &self.active_config_digest {
+            obj.insert(
+                "active_config_digest".to_string(),
+                JsonValue::String(active_config_digest.clone()),
+            );
+        }
         obj.insert("uptime_ms".to_string(), JsonValue::from(self.uptime_ms));
         obj.insert(
             "cache_entries".to_string(),
@@ -1623,6 +2061,8 @@ fn daemon_cache_limit_bytes() -> usize {
 fn daemon_health(
     cache: &DaemonCache,
     stats: &DaemonStats,
+    spawn_config_digest: Option<&str>,
+    active_config_digest: Option<&str>,
     start: Instant,
     request_limit_bytes: usize,
     max_jobs: usize,
@@ -1631,6 +2071,8 @@ fn daemon_health(
     DaemonHealthResponse {
         protocol_version: BACKEND_DAEMON_PROTOCOL_VERSION,
         pid: std::process::id(),
+        spawn_config_digest: spawn_config_digest.map(str::to_string),
+        active_config_digest: active_config_digest.map(str::to_string),
         uptime_ms,
         cache_entries: cache.entries.len(),
         cache_bytes: cache.bytes,
@@ -2026,8 +2468,7 @@ fn compile_single_job(job: DaemonJobRequest, _cache: &mut DaemonCache) -> Daemon
                             let mut retained = std::mem::take(&mut user_remaining);
                             let mut extern_count = 0usize;
                             for mut func in std::mem::take(&mut stdlib_funcs) {
-                                func.is_extern = true;
-                                func.ops.clear();
+                                molt_backend::externalize_function_with_signature(&mut func);
                                 extern_count += 1;
                                 retained.push(func);
                             }
@@ -2283,6 +2724,10 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
     let max_jobs = daemon_max_jobs();
     let mut cache = DaemonCache::new(Some(daemon_cache_limit_bytes()));
     let mut stats = DaemonStats::default();
+    let spawn_config_digest = env::var("MOLT_BACKEND_DAEMON_CONFIG_DIGEST")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let mut active_config_digest: Option<String> = None;
     let started_at = Instant::now();
     for stream in listener.incoming() {
@@ -2290,12 +2735,15 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
             Ok(mut conn) => {
                 if let Err(err) = handle_daemon_connection(
                     &mut conn,
-                    &mut cache,
-                    &mut stats,
-                    &mut active_config_digest,
-                    started_at,
-                    request_limit_bytes,
-                    max_jobs,
+                    DaemonConnectionContext {
+                        cache: &mut cache,
+                        stats: &mut stats,
+                        spawn_config_digest: spawn_config_digest.as_deref(),
+                        active_config_digest: &mut active_config_digest,
+                        started_at,
+                        request_limit_bytes,
+                        max_jobs,
+                    },
                 ) {
                     eprintln!("backend daemon connection error: {err}");
                 }
@@ -2309,15 +2757,30 @@ fn run_daemon(socket_path: &str) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn handle_daemon_connection(
-    stream: &mut std::os::unix::net::UnixStream,
-    cache: &mut DaemonCache,
-    stats: &mut DaemonStats,
-    active_config_digest: &mut Option<String>,
+struct DaemonConnectionContext<'a> {
+    cache: &'a mut DaemonCache,
+    stats: &'a mut DaemonStats,
+    spawn_config_digest: Option<&'a str>,
+    active_config_digest: &'a mut Option<String>,
     started_at: Instant,
     request_limit_bytes: usize,
     max_jobs: usize,
+}
+
+#[cfg(unix)]
+fn handle_daemon_connection(
+    stream: &mut std::os::unix::net::UnixStream,
+    ctx: DaemonConnectionContext<'_>,
 ) -> io::Result<()> {
+    let DaemonConnectionContext {
+        cache,
+        stats,
+        spawn_config_digest,
+        active_config_digest,
+        started_at,
+        request_limit_bytes,
+        max_jobs,
+    } = ctx;
     let mut reader = io::BufReader::new(stream.try_clone()?);
     loop {
         let raw_bytes = read_daemon_request_bytes(&mut reader, request_limit_bytes)?;
@@ -2361,7 +2824,15 @@ fn handle_daemon_connection(
                     "unsupported protocol version {version}; expected {BACKEND_DAEMON_PROTOCOL_VERSION}"
                 )),
                 health: include_health.then(|| {
-                    daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)
+                    daemon_health(
+                        cache,
+                        stats,
+                        spawn_config_digest,
+                        active_config_digest.as_deref(),
+                        started_at,
+                        request_limit_bytes,
+                        max_jobs,
+                    )
                 }),
             };
             write_daemon_response(stream, &response)?;
@@ -2376,6 +2847,8 @@ fn handle_daemon_connection(
                 health: Some(daemon_health(
                     cache,
                     stats,
+                    spawn_config_digest,
+                    active_config_digest.as_deref(),
                     started_at,
                     request_limit_bytes,
                     max_jobs,
@@ -2403,7 +2876,15 @@ fn handle_daemon_connection(
                 jobs: Vec::new(),
                 error: Some("missing jobs in request".to_string()),
                 health: include_health.then(|| {
-                    daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)
+                    daemon_health(
+                        cache,
+                        stats,
+                        spawn_config_digest,
+                        active_config_digest.as_deref(),
+                        started_at,
+                        request_limit_bytes,
+                        max_jobs,
+                    )
                 }),
             };
             write_daemon_response(stream, &response)?;
@@ -2416,7 +2897,15 @@ fn handle_daemon_connection(
                 jobs: Vec::new(),
                 error: Some("empty jobs in request".to_string()),
                 health: include_health.then(|| {
-                    daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)
+                    daemon_health(
+                        cache,
+                        stats,
+                        spawn_config_digest,
+                        active_config_digest.as_deref(),
+                        started_at,
+                        request_limit_bytes,
+                        max_jobs,
+                    )
                 }),
             };
             write_daemon_response(stream, &response)?;
@@ -2433,7 +2922,15 @@ fn handle_daemon_connection(
                     max_jobs
                 )),
                 health: include_health.then(|| {
-                    daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)
+                    daemon_health(
+                        cache,
+                        stats,
+                        spawn_config_digest,
+                        active_config_digest.as_deref(),
+                        started_at,
+                        request_limit_bytes,
+                        max_jobs,
+                    )
                 }),
             };
             write_daemon_response(stream, &response)?;
@@ -2456,8 +2953,17 @@ fn handle_daemon_connection(
             pong: false,
             jobs: results,
             error: None,
-            health: include_health
-                .then(|| daemon_health(cache, stats, started_at, request_limit_bytes, max_jobs)),
+            health: include_health.then(|| {
+                daemon_health(
+                    cache,
+                    stats,
+                    spawn_config_digest,
+                    active_config_digest.as_deref(),
+                    started_at,
+                    request_limit_bytes,
+                    max_jobs,
+                )
+            }),
         };
         write_daemon_response(stream, &response)?;
     }
@@ -2656,6 +3162,23 @@ fn main() -> io::Result<()> {
         .position(|arg| arg == "--output")
         .and_then(|idx| args.get(idx + 1))
         .map(String::as_str);
+    #[cfg(feature = "native-backend")]
+    let native_batch_job_file = args
+        .iter()
+        .position(|arg| arg == "--native-batch-job-file")
+        .and_then(|idx| args.get(idx + 1))
+        .map(String::as_str);
+    #[cfg(feature = "native-backend")]
+    if let Some(job_file) = native_batch_job_file {
+        let output_file = output_path.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--output is required with --native-batch-job-file",
+            )
+        })?;
+        compile_native_batch_object_job_file(Path::new(job_file), Path::new(output_file))?;
+        return Ok(());
+    }
 
     let ir_file_path = args
         .iter()
@@ -2864,9 +3387,8 @@ fn main() -> io::Result<()> {
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
             let target_info = molt_backend::tir::target_info::TargetInfo::luau_release_fast();
             let _stats = molt_backend::tir::passes::run_pipeline(&mut tir_func, &target_info);
-            molt_backend::tir::type_refine::refine_types(&mut tir_func);
-            let _drop_stats =
-                molt_backend::tir::passes::run_drop_phase(&mut tir_func, &target_info);
+            let _drop_changed =
+                molt_backend::tir::drop_phase::finalize_function_drops(&mut tir_func, &target_info);
             molt_backend::tir::type_refine::refine_types(&mut tir_func);
             let ops = molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir_func);
             if molt_backend::tir::lower_to_simple::validate_labels(&ops) {
@@ -3055,8 +3577,7 @@ fn main() -> io::Result<()> {
                         let mut retained = std::mem::take(&mut user_remaining);
                         let mut extern_count = 0usize;
                         for mut func in stdlib_funcs.drain(..) {
-                            func.is_extern = true;
-                            func.ops.clear();
+                            molt_backend::externalize_function_with_signature(&mut func);
                             extern_count += 1;
                             retained.push(func);
                         }
@@ -3159,17 +3680,19 @@ mod tests {
         create_backend_output_file, default_backend_max_rss_gb_from_physical_mem_bytes,
         default_backend_output_path, default_daemon_cache_bytes_from_physical_mem_bytes,
         ensure_output_parent_dir, is_user_owned_symbol, merge_relocatable_objects,
-        partition_functions_for_batches, prune_and_partition_native_stdlib,
-        read_bounded_request_bytes, read_stdlib_cache_key, read_stdlib_cache_manifest,
-        relocatable_linker_binary, resolve_backend_output_path, resolved_batch_op_budget_limit,
+        partition_functions_for_batches, preserve_native_batch_worker_failure_artifacts,
+        prune_and_partition_native_stdlib, read_bounded_request_bytes, read_json_artifact,
+        read_stdlib_cache_key, read_stdlib_cache_manifest, relocatable_linker_binary,
+        remove_native_batch_temp_dir, resolve_backend_output_path, resolved_batch_op_budget_limit,
         resolved_batch_size_limit, shared_stdlib_cache_matches,
         shared_stdlib_partition_closure_issue, shared_stdlib_partition_manifest,
         stdlib_cache_count_sidecar_path, stdlib_cache_partition_manifest_sidecar_path,
         validate_shared_stdlib_partition, with_shared_stdlib_cache_publish_lock,
-        write_cached_output, write_shared_stdlib_cache_sidecars,
+        write_cached_output, write_json_artifact, write_shared_stdlib_cache_sidecars,
     };
     #[cfg(unix)]
     use super::{DaemonResponse, daemon_response_payload, read_daemon_request_bytes};
+    use super::{NativeBatchModuleMetadata, NativeBatchObjectJob};
     use molt_backend::{FunctionIR, OpIR, SimpleIR};
     use std::io::{self, Cursor, Read, Write};
     use std::sync::{Arc, Mutex};
@@ -3584,6 +4107,105 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(feature = "native-backend")]
+    #[test]
+    fn native_batch_temp_cleanup_reports_non_directory_path() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("molt-backend-cleanup-file-{nonce}"));
+        std::fs::write(&path, b"not-a-directory").expect("write cleanup sentinel");
+
+        let err = remove_native_batch_temp_dir(&path, "native batch cleanup test")
+            .expect_err("file path must not be silently accepted as cleaned temp dir");
+
+        assert!(
+            err.to_string()
+                .contains("failed to remove native batch cleanup test"),
+            "unexpected cleanup error: {err}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(feature = "native-backend")]
+    #[test]
+    fn native_batch_failure_artifact_rewrites_context_path_for_replay() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prior_debug_artifact_dir = std::env::var("MOLT_DEBUG_ARTIFACT_DIR").ok();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "molt-batch-failure-artifact-test-{}-{nonce}",
+            std::process::id()
+        ));
+        let source_dir = root.join("source");
+        let debug_dir = root.join("debug");
+        std::fs::create_dir_all(&source_dir).expect("create source batch dir");
+        unsafe { std::env::set_var("MOLT_DEBUG_ARTIFACT_DIR", &debug_dir) };
+
+        let module_context_path = source_dir.join("module_context.json");
+        write_json_artifact(
+            &module_context_path,
+            &NativeBatchModuleMetadata {
+                module_context: molt_backend::NativeBackendModuleContext::default(),
+            },
+        )
+        .expect("write source module context");
+        let job_path = source_dir.join("batch_7.json");
+        write_json_artifact(
+            &job_path,
+            &NativeBatchObjectJob {
+                ir: SimpleIR {
+                    functions: vec![],
+                    profile: None,
+                },
+                module_context_path: module_context_path.clone(),
+                target_triple: None,
+                emit_app_intrinsic_resolver: false,
+                app_intrinsic_manifest: None,
+                external_function_names: std::collections::BTreeSet::new(),
+            },
+        )
+        .expect("write source job");
+        let object_path = source_dir.join("batch_7.o");
+
+        let artifact_dir = preserve_native_batch_worker_failure_artifacts(
+            "native application batch worker",
+            &job_path,
+            &object_path,
+        )
+        .expect("preserve failed worker artifacts");
+        std::fs::remove_dir_all(&source_dir).expect("source batch temp dir cleanup");
+
+        let copied_job_path = artifact_dir.join("batch_7.json");
+        let copied_job: NativeBatchObjectJob =
+            read_json_artifact(&copied_job_path, "copied native batch job")
+                .expect("read copied native batch job");
+        assert_eq!(
+            copied_job.module_context_path,
+            artifact_dir.join("module_context.json")
+        );
+        assert!(
+            copied_job.module_context_path.exists(),
+            "copied module context must survive source cleanup"
+        );
+        assert!(
+            artifact_dir.join("manifest.json").exists(),
+            "artifact manifest must describe replay command"
+        );
+
+        match prior_debug_artifact_dir {
+            Some(value) => unsafe { std::env::set_var("MOLT_DEBUG_ARTIFACT_DIR", value) },
+            None => unsafe { std::env::remove_var("MOLT_DEBUG_ARTIFACT_DIR") },
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn default_backend_output_paths_use_dist_root() {
         assert_eq!(
@@ -3967,6 +4589,22 @@ mod tests {
             Some("{\"cache_key\":\"abc123\"}"),
             None,
         ));
+        assert!(!shared_stdlib_cache_matches(
+            &stdlib_path,
+            Some("abc123"),
+            Some("{\"cache_key\":\"abc123\"}"),
+            Some("partition-a"),
+        ));
+
+        write_shared_stdlib_cache_sidecars(
+            &stdlib_path,
+            7,
+            Some("abc123"),
+            Some("{\"cache_key\":\"abc123\"}"),
+            "partition-a",
+        )
+        .expect("rewrite sidecars");
+        std::fs::write(&stdlib_path, b"changed-object").expect("mutate object");
         assert!(!shared_stdlib_cache_matches(
             &stdlib_path,
             Some("abc123"),
@@ -5275,6 +5913,101 @@ mod tests {
             Some("demo")
         );
         assert!(std::env::var("MOLT_STDLIB_MODULE_SYMBOLS").is_err());
+    }
+
+    #[test]
+    fn daemon_request_env_clears_omitted_resource_and_trace_keys_between_requests() {
+        let _env_guard = ENV_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let keys = [
+            "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+            "MOLT_CLI_MEMORY_AVAILABLE_GB",
+            "MOLT_CLI_MEM_AVAILABLE_GB",
+            "MOLT_MEMORY_AVAILABLE_GB",
+            "MOLT_MEM_AVAILABLE_GB",
+            "MOLT_BACKEND_MAX_RSS_GB",
+            "MOLT_BACKEND_MEMORY_RESERVE_GB",
+            "MOLT_CLI_MEMORY_RESERVE_GB",
+            "MOLT_CLI_MEM_RESERVE_GB",
+            "MOLT_MEMORY_RESERVE_GB",
+            "MOLT_MEM_RESERVE_GB",
+            "RAYON_NUM_THREADS",
+            "MOLT_TIR_TRACE_FUNC",
+        ];
+        let prior_env: Vec<_> = keys
+            .iter()
+            .map(|key| (*key, std::env::var(key).ok()))
+            .collect();
+        unsafe {
+            for key in keys {
+                std::env::set_var(key, "stale");
+            }
+        }
+
+        let first = serde_json::json!({
+            "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+            "config_digest": "daemon-resource-env-set",
+            "env": {
+                "MOLT_BACKEND_MEMORY_AVAILABLE_GB": "9",
+                "MOLT_BACKEND_MEMORY_RESERVE_GB": "1",
+                "RAYON_NUM_THREADS": "3",
+                "MOLT_TIR_TRACE_FUNC": "target_func",
+            },
+            "jobs": [],
+        });
+        DaemonRequest::from_json_bytes(
+            serde_json::to_string(&first)
+                .expect("serialize first request")
+                .as_bytes(),
+        )
+        .expect("parse first daemon request");
+        assert_eq!(
+            std::env::var("MOLT_BACKEND_MEMORY_AVAILABLE_GB")
+                .ok()
+                .as_deref(),
+            Some("9")
+        );
+        assert_eq!(
+            std::env::var("MOLT_BACKEND_MEMORY_RESERVE_GB")
+                .ok()
+                .as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            std::env::var("RAYON_NUM_THREADS").ok().as_deref(),
+            Some("3")
+        );
+        assert_eq!(
+            std::env::var("MOLT_TIR_TRACE_FUNC").ok().as_deref(),
+            Some("target_func")
+        );
+
+        let second = serde_json::json!({
+            "version": BACKEND_DAEMON_PROTOCOL_VERSION,
+            "config_digest": "daemon-resource-env-clear",
+            "env": {},
+            "jobs": [],
+        });
+        DaemonRequest::from_json_bytes(
+            serde_json::to_string(&second)
+                .expect("serialize second request")
+                .as_bytes(),
+        )
+        .expect("parse second daemon request");
+
+        for key in keys {
+            assert!(
+                std::env::var(key).is_err(),
+                "{key} leaked across daemon requests"
+            );
+        }
+        for (key, value) in prior_env {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
     }
 
     #[test]

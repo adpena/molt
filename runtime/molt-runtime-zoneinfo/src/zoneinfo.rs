@@ -18,6 +18,11 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 static NEXT_ZONE_ID: AtomicI64 = AtomicI64::new(1);
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_zoneinfo_runtime_ready() -> u64 {
+    MoltObject::from_bool(true).bits()
+}
+
 fn next_zone_id() -> i64 {
     NEXT_ZONE_ID.fetch_add(1, Ordering::Relaxed)
 }

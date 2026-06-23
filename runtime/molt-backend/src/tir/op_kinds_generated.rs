@@ -69,7 +69,7 @@ pub(crate) fn kind_to_opcode_table(kind: &str) -> Option<OpCode> {
         | "set_attr_generic_ptr"
         | "set_attr_generic_obj"
         | "guarded_field_set"
-        | "guarded_field_set_init"
+        | "guarded_field_init"
         | "store"
         | "store_init" => Some(OpCode::StoreAttr),
         "del_attr" | "del_attr_name" | "del_attr_generic_ptr" | "del_attr_generic_obj" => {
@@ -156,8 +156,11 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
         kind,
         "aiter"
             | "ascii_from_obj"
+            | "classmethod_new"
+            | "code_new"
             | "complex_from_obj"
             | "contains"
+            | "class_def"
             | "dataclass_new"
             | "dataclass_new_values"
             | "dict_from_obj"
@@ -171,8 +174,11 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
             | "exception_new_builtin_empty"
             | "exception_new_builtin_one"
             | "exception_new_from_class"
+            | "exception_finally_pending_observer"
             | "float_from_obj"
             | "frozenset_new"
+            | "func_new"
+            | "func_new_closure"
             | "inplace_bit_and"
             | "inplace_bit_or"
             | "inplace_bit_xor"
@@ -192,11 +198,13 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {
             | "list_pop"
             | "matmul"
             | "object_new"
+            | "property_new"
             | "range_new"
             | "repr_from_obj"
             | "set_new"
             | "slice"
             | "slice_new"
+            | "staticmethod_new"
             | "str_from_obj"
             | "string_format"
             | "string_join"
@@ -927,11 +935,11 @@ pub(crate) fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::ClosureStore => true,
         OpCode::Yield => false,
         OpCode::YieldFrom => false,
-        OpCode::Raise => false,
-        OpCode::CheckException => false,
+        OpCode::Raise => true,
+        OpCode::CheckException => true,
         OpCode::ExceptionPending => false,
         OpCode::FunctionDefaultsVersion => false,
-        OpCode::TryStart => false,
+        OpCode::TryStart => true,
         OpCode::TryEnd => false,
         OpCode::StateBlockStart => false,
         OpCode::StateBlockEnd => false,
@@ -2274,6 +2282,11 @@ pub(crate) fn opcode_canonicalize_binary_rules_table(
 ///     this operand while the caller still owns the producer temp ref. This
 ///     gives DropInsertion a shared release boundary for absorbed temps
 ///     without making the mutator consume the operand.
+///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:
+///     valid only on the not-exhausted edge, NEVER unconditionally
+///     droppable (non-owned `None` sentinel on the exhaustion edge). The LONE
+///     remaining `from_str`-only variant (its consumer hand-list —
+///     `iter_cond_value_results` — migrates in the iter-cond tranche, #74).
 ///   * `NoOperand` — no ref-bearing operand in that category (a
 ///     raw lane; a terminator category absent on a variant — `Branch` has
 ///     no direct operand, `Return` forwards no branch arg).
@@ -2284,7 +2297,68 @@ pub(crate) enum OperandOwnership {
     Transferred,
     InteriorBorrowKeepAlive,
     ContainerAbsorb,
+    ConditionalValidOnlyOnEdge,
     NoOperand,
+}
+
+// Parse/render path for the operand-ownership vocabulary. `Transferred`
+// is LIVE through `terminator_operand_ownership_table` (ladder #72) and
+// `InteriorBorrowKeepAlive` through `opcode_operand_ownership_table` /
+// `opcode_borrows_source_operand` (ladder #73); `from_str` remains the
+// toml-ingest path the LAST migration (the `conditional_valid_only_on_edge`
+// row, #74) reads and is not yet wired to a runtime caller, so
+// `from_str`/`as_str`/`ALL` keep allow(dead_code) — SCOPED to this
+// forward-compat parse API, never the enum (every variant is constructed)
+// nor the file. `ALL` + the round-trip test keep every variant constructed
+// and live today.
+#[allow(dead_code)]
+impl OperandOwnership {
+    pub(crate) const ALL: [OperandOwnership; 7] = [
+        OperandOwnership::Borrowed,
+        OperandOwnership::Consumed,
+        OperandOwnership::Transferred,
+        OperandOwnership::InteriorBorrowKeepAlive,
+        OperandOwnership::ContainerAbsorb,
+        OperandOwnership::ConditionalValidOnlyOnEdge,
+        OperandOwnership::NoOperand,
+    ];
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            OperandOwnership::Borrowed => "borrowed",
+            OperandOwnership::Consumed => "consumed",
+            OperandOwnership::Transferred => "transferred",
+            OperandOwnership::InteriorBorrowKeepAlive => "interior_borrow_keepalive",
+            OperandOwnership::ContainerAbsorb => "container_absorb",
+            OperandOwnership::ConditionalValidOnlyOnEdge => "conditional_valid_only_on_edge",
+            OperandOwnership::NoOperand => "no_operand_ownership",
+        }
+    }
+    pub(crate) fn from_str(s: &str) -> Option<OperandOwnership> {
+        match s {
+            "borrowed" => Some(OperandOwnership::Borrowed),
+            "consumed" => Some(OperandOwnership::Consumed),
+            "transferred" => Some(OperandOwnership::Transferred),
+            "interior_borrow_keepalive" => Some(OperandOwnership::InteriorBorrowKeepAlive),
+            "container_absorb" => Some(OperandOwnership::ContainerAbsorb),
+            "conditional_valid_only_on_edge" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),
+            "no_operand_ownership" => Some(OperandOwnership::NoOperand),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod operand_ownership_schema_tests {
+    use super::OperandOwnership;
+    #[test]
+    fn every_variant_round_trips() {
+        // The schema is alive: every declared variant parses + renders +
+        // round-trips. Dropping or renaming a variant breaks this test.
+        for v in OperandOwnership::ALL {
+            assert_eq!(OperandOwnership::from_str(v.as_str()), Some(v));
+        }
+        assert_eq!(OperandOwnership::from_str("bogus"), None);
+    }
 }
 
 /// Per-OpCode operand-ownership DEFAULT: how `OpCode` treats the operand
@@ -2635,7 +2709,7 @@ pub(crate) fn kind_result_mints_owned_selected_operand_table(kind: &str) -> bool
 pub(crate) fn kind_result_absorbs_operand_ownership_table(kind: &str) -> bool {
     matches!(
         kind,
-        "dict_new" | "frozenset_new" | "list_new" | "set_new" | "tuple_new"
+        "class_def" | "dict_new" | "frozenset_new" | "list_new" | "set_new" | "tuple_new"
     )
 }
 
@@ -2792,6 +2866,135 @@ pub(crate) fn opcode_result_is_conditionally_valid_only_on_edge(
         opcode_result_validity_table(opcode, result_idx),
         ResultValidity::ConditionalValidOnlyOnEdge
     )
+}
+
+/// Python lifetime release-boundary fact: which operand roots an opcode
+/// explicitly releases. This is separate from operand ownership: `DecRef`
+/// consumes/releases all operands, while `DeleteVar` releases the old slot
+/// occupant at operand 1 after storing the missing sentinel. DropInsertion
+/// uses this table to avoid a pass-local `DecRef | DeleteVar` hand list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ExplicitReleaseOperands {
+    None,
+    All,
+    One(usize),
+}
+
+#[inline]
+pub(crate) fn opcode_explicit_release_operands_table(
+    opcode: OpCode,
+    _arity: usize,
+) -> ExplicitReleaseOperands {
+    match opcode {
+        OpCode::Add => ExplicitReleaseOperands::None,
+        OpCode::Sub => ExplicitReleaseOperands::None,
+        OpCode::Mul => ExplicitReleaseOperands::None,
+        OpCode::CheckedAdd => ExplicitReleaseOperands::None,
+        OpCode::InplaceAdd => ExplicitReleaseOperands::None,
+        OpCode::InplaceSub => ExplicitReleaseOperands::None,
+        OpCode::InplaceMul => ExplicitReleaseOperands::None,
+        OpCode::Div => ExplicitReleaseOperands::None,
+        OpCode::FloorDiv => ExplicitReleaseOperands::None,
+        OpCode::Mod => ExplicitReleaseOperands::None,
+        OpCode::Pow => ExplicitReleaseOperands::None,
+        OpCode::Neg => ExplicitReleaseOperands::None,
+        OpCode::Pos => ExplicitReleaseOperands::None,
+        OpCode::Eq => ExplicitReleaseOperands::None,
+        OpCode::Ne => ExplicitReleaseOperands::None,
+        OpCode::Lt => ExplicitReleaseOperands::None,
+        OpCode::Le => ExplicitReleaseOperands::None,
+        OpCode::Gt => ExplicitReleaseOperands::None,
+        OpCode::Ge => ExplicitReleaseOperands::None,
+        OpCode::Is => ExplicitReleaseOperands::None,
+        OpCode::IsNot => ExplicitReleaseOperands::None,
+        OpCode::In => ExplicitReleaseOperands::None,
+        OpCode::NotIn => ExplicitReleaseOperands::None,
+        OpCode::BitAnd => ExplicitReleaseOperands::None,
+        OpCode::BitOr => ExplicitReleaseOperands::None,
+        OpCode::BitXor => ExplicitReleaseOperands::None,
+        OpCode::BitNot => ExplicitReleaseOperands::None,
+        OpCode::Shl => ExplicitReleaseOperands::None,
+        OpCode::Shr => ExplicitReleaseOperands::None,
+        OpCode::And => ExplicitReleaseOperands::None,
+        OpCode::Or => ExplicitReleaseOperands::None,
+        OpCode::Not => ExplicitReleaseOperands::None,
+        OpCode::Bool => ExplicitReleaseOperands::None,
+        OpCode::Alloc => ExplicitReleaseOperands::None,
+        OpCode::StackAlloc => ExplicitReleaseOperands::None,
+        OpCode::ObjectNewBound => ExplicitReleaseOperands::None,
+        OpCode::ObjectNewBoundStack => ExplicitReleaseOperands::None,
+        OpCode::Free => ExplicitReleaseOperands::None,
+        OpCode::LoadAttr => ExplicitReleaseOperands::None,
+        OpCode::StoreAttr => ExplicitReleaseOperands::None,
+        OpCode::DelAttr => ExplicitReleaseOperands::None,
+        OpCode::Index => ExplicitReleaseOperands::None,
+        OpCode::StoreIndex => ExplicitReleaseOperands::None,
+        OpCode::DelIndex => ExplicitReleaseOperands::None,
+        OpCode::DeleteVar => ExplicitReleaseOperands::One(1),
+        OpCode::Call => ExplicitReleaseOperands::None,
+        OpCode::CallMethod => ExplicitReleaseOperands::None,
+        OpCode::CallBuiltin => ExplicitReleaseOperands::None,
+        OpCode::OrdAt => ExplicitReleaseOperands::None,
+        OpCode::BoxVal => ExplicitReleaseOperands::None,
+        OpCode::UnboxVal => ExplicitReleaseOperands::None,
+        OpCode::TypeGuard => ExplicitReleaseOperands::None,
+        OpCode::IncRef => ExplicitReleaseOperands::None,
+        OpCode::DecRef => ExplicitReleaseOperands::All,
+        OpCode::DelBoundary => ExplicitReleaseOperands::None,
+        OpCode::BuildList => ExplicitReleaseOperands::None,
+        OpCode::BuildDict => ExplicitReleaseOperands::None,
+        OpCode::BuildTuple => ExplicitReleaseOperands::None,
+        OpCode::BuildSet => ExplicitReleaseOperands::None,
+        OpCode::BuildSlice => ExplicitReleaseOperands::None,
+        OpCode::GetIter => ExplicitReleaseOperands::None,
+        OpCode::IterNext => ExplicitReleaseOperands::None,
+        OpCode::IterNextUnboxed => ExplicitReleaseOperands::None,
+        OpCode::ForIter => ExplicitReleaseOperands::None,
+        OpCode::AllocTask => ExplicitReleaseOperands::None,
+        OpCode::StateSwitch => ExplicitReleaseOperands::None,
+        OpCode::StateTransition => ExplicitReleaseOperands::None,
+        OpCode::StateYield => ExplicitReleaseOperands::None,
+        OpCode::ChanSendYield => ExplicitReleaseOperands::None,
+        OpCode::ChanRecvYield => ExplicitReleaseOperands::None,
+        OpCode::ClosureLoad => ExplicitReleaseOperands::None,
+        OpCode::ClosureStore => ExplicitReleaseOperands::None,
+        OpCode::Yield => ExplicitReleaseOperands::None,
+        OpCode::YieldFrom => ExplicitReleaseOperands::None,
+        OpCode::Raise => ExplicitReleaseOperands::None,
+        OpCode::CheckException => ExplicitReleaseOperands::None,
+        OpCode::ExceptionPending => ExplicitReleaseOperands::None,
+        OpCode::FunctionDefaultsVersion => ExplicitReleaseOperands::None,
+        OpCode::TryStart => ExplicitReleaseOperands::None,
+        OpCode::TryEnd => ExplicitReleaseOperands::None,
+        OpCode::StateBlockStart => ExplicitReleaseOperands::None,
+        OpCode::StateBlockEnd => ExplicitReleaseOperands::None,
+        OpCode::ConstInt => ExplicitReleaseOperands::None,
+        OpCode::ConstBigInt => ExplicitReleaseOperands::None,
+        OpCode::ConstFloat => ExplicitReleaseOperands::None,
+        OpCode::ConstStr => ExplicitReleaseOperands::None,
+        OpCode::ConstBool => ExplicitReleaseOperands::None,
+        OpCode::ConstNone => ExplicitReleaseOperands::None,
+        OpCode::ConstBytes => ExplicitReleaseOperands::None,
+        OpCode::Copy => ExplicitReleaseOperands::None,
+        OpCode::Import => ExplicitReleaseOperands::None,
+        OpCode::ImportFrom => ExplicitReleaseOperands::None,
+        OpCode::ModuleCacheGet => ExplicitReleaseOperands::None,
+        OpCode::ModuleCacheSet => ExplicitReleaseOperands::None,
+        OpCode::ModuleCacheDel => ExplicitReleaseOperands::None,
+        OpCode::ModuleGetAttr => ExplicitReleaseOperands::None,
+        OpCode::ModuleImportFrom => ExplicitReleaseOperands::None,
+        OpCode::ModuleGetGlobal => ExplicitReleaseOperands::None,
+        OpCode::ModuleGetName => ExplicitReleaseOperands::None,
+        OpCode::ModuleSetAttr => ExplicitReleaseOperands::None,
+        OpCode::ModuleDelGlobal => ExplicitReleaseOperands::None,
+        OpCode::ModuleDelGlobalIfPresent => ExplicitReleaseOperands::None,
+        OpCode::WarnStderr => ExplicitReleaseOperands::None,
+        OpCode::ScfIf => ExplicitReleaseOperands::None,
+        OpCode::ScfFor => ExplicitReleaseOperands::None,
+        OpCode::ScfWhile => ExplicitReleaseOperands::None,
+        OpCode::ScfYield => ExplicitReleaseOperands::None,
+        OpCode::Deopt => ExplicitReleaseOperands::None,
+    }
 }
 
 /// Zero-cost discriminant of the `Terminator` enum (blocks.rs) the

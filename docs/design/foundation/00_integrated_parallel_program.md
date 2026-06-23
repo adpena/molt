@@ -91,8 +91,11 @@ code state is:
 - `runtime/molt-backend/src/tir/drop_phase.rs` runs drop insertion as a terminal
   phase after per-function and module transforms, preserving module-slot
   promotion and final representation facts.
-- `target_uses_tir_drop_insertion` currently enables LLVM, WASM, and Luau. Native
-  Cranelift remains `false` until the loop-phi representation invariant is fixed.
+- `target_uses_tir_drop_insertion` currently enables LLVM, WASM, Luau, and
+  NativeCranelift. Native now consumes the shared terminal drop phase; the
+  remaining native RC work is deletion of broader automatic temp-RC/value
+  tracking lanes once shared drop/codegen facts cover their full ownership
+  surface.
 
 ### RC-1 — DropInsertion convergence and native RC retirement
 
@@ -100,11 +103,12 @@ The original whole-program expression-temporary leak is no longer a missing-pass
 problem on the activated lanes. The remaining RC blocker is structural
 convergence:
 
-- **Native activation blocker:** drop-inserted loop phis can mix raw and heap
-  incoming representations. Variable-keyed backends reject that shape; the fix is
-  to keep one representation across all incoming block-arg edges or fail closed.
-- **Legacy deletion requirement:** once native is activated and the convergence
-  sweep is green, the native automatic temp-RC substrate and any duplicate
+- **Native legacy-RC retirement blocker:** native is active on the shared
+  terminal drop path, but the broader automatic temp-RC/value-tracking substrate
+  must not be deleted until shared ownership facts cover every surviving release
+  lane and the full no-worse corpus/memory gates are green.
+- **Legacy deletion requirement:** once that convergence sweep is green, the
+  native automatic temp-RC substrate and any duplicate
   `rc_coalescing`/loop-reassign ownership lane must be deleted or structurally
   reconciled in the same arc. No compatibility switch remains.
 - **Finalizer boundary blocker:** finalizer dispatch is present, but non-escaping
@@ -161,8 +165,8 @@ LLVM coverage.
 
 ```
 TIER 1 (correctness — open)
-  RC-1 DropInsertion convergence   IN FLIGHT    (design 20; active LLVM/WASM/Luau, native gated)
-    ├─ loop-phi repr invariant      OUTSTANDING  (native activation blocker)
+  RC-1 DropInsertion convergence   IN FLIGHT    (design 20; active LLVM/WASM/Luau/Native)
+    ├─ native legacy-RC deletion    OUTSTANDING  (after full ownership-surface proof)
     ├─ finalizer ordering/#65       OUTSTANDING  (Python lifetime boundary)
     └─ delete legacy native RC      OUTSTANDING  (after convergence proof)
   RC-1b ExceptionRegion Phase 1     OUTSTANDING  (design 45; CreationRef+MatchRef together)
@@ -229,7 +233,7 @@ remain. Do not schedule a bare gate-flip as if it were a perf unlock.
 
 ```
 DropInsertion terminal phase landed
-        ├─→ loop-phi repr fix → native activation → delete legacy native RC
+        ├─→ full ownership-surface proof → delete legacy native RC
         ├─→ finalizer lifetime boundary → standalone __del__ swallow parity
         └─→ ExceptionRegion Phase 1 (CreationRef + MatchRef together)
 ```

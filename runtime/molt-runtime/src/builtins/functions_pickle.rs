@@ -2167,7 +2167,25 @@ fn pickle_dataclass_state_bits(_py: &crate::PyToken<'_>, ptr: *mut u8) -> Result
             dec_ref_bits(_py, slot_state_bits);
             return Ok(None);
         }
-        let tuple_ptr = alloc_tuple(_py, &[MoltObject::none().bits(), slot_state_bits]);
+        let dict_state_bits = if unsafe { (*desc_ptr).allows_dict } {
+            let dict_bits = unsafe { crate::dataclass_dict_bits(ptr) };
+            if dict_bits != 0
+                && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
+                && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+            {
+                inc_ref_bits(_py, dict_bits);
+                dict_bits
+            } else {
+                MoltObject::none().bits()
+            }
+        } else {
+            MoltObject::none().bits()
+        };
+        let tuple_ptr = alloc_tuple(_py, &[dict_state_bits, slot_state_bits]);
+        if !obj_from_bits(dict_state_bits).is_none() {
+            dec_ref_bits(_py, dict_state_bits);
+        }
         dec_ref_bits(_py, slot_state_bits);
         if tuple_ptr.is_null() {
             return Err(MoltObject::none().bits());

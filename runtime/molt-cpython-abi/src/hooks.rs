@@ -25,6 +25,12 @@ pub struct RuntimeHooks {
     pub alloc_str: unsafe extern "C" fn(data: *const u8, len: usize) -> u64,
     /// Allocate a bytes object. Returns handle bits, 0 on failure.
     pub alloc_bytes: unsafe extern "C" fn(data: *const u8, len: usize) -> u64,
+    /// Allocate an int object from a signed 64-bit value. Returns handle bits, 0 on failure.
+    pub int_from_i64: unsafe extern "C" fn(value: i64) -> u64,
+    /// Allocate an int object from an unsigned 64-bit value. Returns handle bits, 0 on failure.
+    pub int_from_u64: unsafe extern "C" fn(value: u64) -> u64,
+    /// Convert an int-compatible object to i64. Returns -1 on failure.
+    pub int_as_i64: unsafe extern "C" fn(bits: u64) -> i64,
     /// Allocate an empty list. Returns handle bits.
     pub alloc_list: unsafe extern "C" fn() -> u64,
     /// Append `item_bits` to the list at `list_bits`.
@@ -151,6 +157,15 @@ unsafe extern "C" fn stub_alloc_str(_data: *const u8, _len: usize) -> u64 {
 unsafe extern "C" fn stub_alloc_bytes(_data: *const u8, _len: usize) -> u64 {
     0
 }
+unsafe extern "C" fn stub_int_from_i64(_value: i64) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_int_from_u64(_value: u64) -> u64 {
+    0
+}
+unsafe extern "C" fn stub_int_as_i64(_bits: u64) -> i64 {
+    -1
+}
 unsafe extern "C" fn stub_alloc_list() -> u64 {
     0
 }
@@ -226,6 +241,9 @@ unsafe extern "C" fn stub_register_c_function(
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_str: stub_alloc_str,
     alloc_bytes: stub_alloc_bytes,
+    int_from_i64: stub_int_from_i64,
+    int_from_u64: stub_int_from_u64,
+    int_as_i64: stub_int_as_i64,
     alloc_list: stub_alloc_list,
     list_append: stub_list_append,
     list_len: stub_list_len,

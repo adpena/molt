@@ -5439,8 +5439,9 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     let order = dict_order(dict_ptr);
+                    let hashes = dict_hashes(dict_ptr);
                     let table = dict_table(dict_ptr);
-                    let found = dict_find_entry(_py, order, table, item_bits);
+                    let found = dict_find_entry(_py, order, hashes, table, item_bits);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -5565,8 +5566,9 @@ pub extern "C" fn molt_contains(container_bits: u64, item_bits: u64) -> u64 {
                             return MoltObject::none().bits();
                         }
                         let order = set_order(ptr);
+                        let hashes = set_hashes(ptr);
                         let table = set_table(ptr);
-                        let found = set_find_entry(_py, order, table, item_bits);
+                        let found = set_find_entry(_py, order, hashes, table, item_bits);
                         if exception_pending(_py) {
                             return MoltObject::none().bits();
                         }
@@ -6037,15 +6039,6 @@ pub(crate) extern "C" fn dict_get_method(self_bits: u64, key_bits: u64, default_
     molt_dict_get(self_bits, key_bits, default_bits) as i64
 }
 
-pub(crate) extern "C" fn dict_pop_method(
-    self_bits: u64,
-    key_bits: u64,
-    default_bits: u64,
-    has_default_bits: u64,
-) -> i64 {
-    molt_dict_pop(self_bits, key_bits, default_bits, has_default_bits) as i64
-}
-
 pub(crate) extern "C" fn dict_clear_method(self_bits: u64) -> i64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(self_bits);
@@ -6103,10 +6096,12 @@ pub(crate) extern "C" fn dict_popitem_method(self_bits: u64) -> i64 {
                 return MoltObject::none().bits() as i64;
             }
             order.truncate(order.len() - 2);
+            let hashes = dict_hashes(ptr);
+            hashes.truncate(hashes.len().saturating_sub(1));
             let entries = order.len() / 2;
             let table = dict_table(ptr);
             let capacity = dict_table_capacity(entries.max(1));
-            dict_rebuild(_py, order, table, capacity);
+            dict_rebuild(_py, order, hashes, table, capacity);
             if order.is_empty() {
                 (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
             }
@@ -6304,6 +6299,7 @@ pub(crate) unsafe fn dict_inc_prehashed_string_key_in_place(
         let hash = hash_string_bytes(_py, key_bytes) as u64;
 
         let order = dict_order(dict_ptr);
+        let hashes = dict_hashes(dict_ptr);
         let table = dict_table(dict_ptr);
         if !table.is_empty() {
             let mask = table.len() - 1;
@@ -6315,6 +6311,10 @@ pub(crate) unsafe fn dict_inc_prehashed_string_key_in_place(
                 }
                 let entry_idx = entry - 1;
                 if entry_idx * 2 >= order.len() {
+                    slot = (slot + 1) & mask;
+                    continue;
+                }
+                if hashes.get(entry_idx).copied() != Some(hash) {
                     slot = (slot + 1) & mask;
                     continue;
                 }
@@ -6377,16 +6377,19 @@ pub(crate) unsafe fn dict_inc_prehashed_string_key_in_place(
         let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
         if needs_resize {
             let capacity = dict_table_capacity(new_entries);
-            dict_rebuild(_py, order, table, capacity);
+            dict_rebuild(_py, order, hashes, table, capacity);
             if exception_pending(_py) {
                 return Some(false);
             }
         }
-        if !reserve_dict_order(_py, order, 2) {
+        if !reserve_dict_order(_py, order, 2)
+            || !reserve_hashes(_py, hashes, 1, "dict allocation failed")
+        {
             return Some(false);
         }
         order.push(key_bits);
         order.push(sum_bits);
+        hashes.push(hash);
         inc_ref_bits(_py, key_bits);
         inc_ref_bits(_py, sum_bits);
         let entry_idx = order.len() / 2 - 1;
@@ -6444,6 +6447,7 @@ unsafe fn dict_inc_with_string_token(
         let hash = hash_string_bytes(_py, token) as u64;
         {
             let order = dict_order(dict_ptr);
+            let hashes = dict_hashes(dict_ptr);
             let table = dict_table(dict_ptr);
             if !table.is_empty() {
                 let mask = table.len() - 1;
@@ -6455,6 +6459,10 @@ unsafe fn dict_inc_with_string_token(
                     }
                     let entry_idx = entry - 1;
                     if entry_idx * 2 >= order.len() {
+                        slot = (slot + 1) & mask;
+                        continue;
+                    }
+                    if hashes.get(entry_idx).copied() != Some(hash) {
                         slot = (slot + 1) & mask;
                         continue;
                     }
@@ -6539,12 +6547,13 @@ unsafe fn dict_inc_with_string_token(
             sum_owned = true;
         }
         let order = dict_order(dict_ptr);
+        let hashes = dict_hashes(dict_ptr);
         let table = dict_table(dict_ptr);
         let new_entries = (order.len() / 2) + 1;
         let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
         if needs_resize {
             let capacity = dict_table_capacity(new_entries);
-            dict_rebuild(_py, order, table, capacity);
+            dict_rebuild(_py, order, hashes, table, capacity);
             if exception_pending(_py) {
                 if sum_owned {
                     dec_ref_bits(_py, sum_bits);
@@ -6553,7 +6562,9 @@ unsafe fn dict_inc_with_string_token(
                 return false;
             }
         }
-        if !reserve_dict_order(_py, order, 2) {
+        if !reserve_dict_order(_py, order, 2)
+            || !reserve_hashes(_py, hashes, 1, "dict allocation failed")
+        {
             if sum_owned {
                 dec_ref_bits(_py, sum_bits);
             }
@@ -6562,6 +6573,7 @@ unsafe fn dict_inc_with_string_token(
         }
         order.push(key_bits);
         order.push(sum_bits);
+        hashes.push(hash);
         inc_ref_bits(_py, key_bits);
         inc_ref_bits(_py, sum_bits);
         let entry_idx = order.len() / 2 - 1;
@@ -6589,6 +6601,7 @@ unsafe fn dict_setdefault_empty_list_with_string_token(
         let hash = hash_string_bytes(_py, token) as u64;
         {
             let order = dict_order(dict_ptr);
+            let hashes = dict_hashes(dict_ptr);
             let table = dict_table(dict_ptr);
             if !table.is_empty() {
                 let mask = table.len() - 1;
@@ -6600,6 +6613,10 @@ unsafe fn dict_setdefault_empty_list_with_string_token(
                     }
                     let entry_idx = entry - 1;
                     if entry_idx * 2 >= order.len() {
+                        slot = (slot + 1) & mask;
+                        continue;
+                    }
+                    if hashes.get(entry_idx).copied() != Some(hash) {
                         slot = (slot + 1) & mask;
                         continue;
                     }
@@ -6637,25 +6654,29 @@ unsafe fn dict_setdefault_empty_list_with_string_token(
         }
         let default_bits = MoltObject::from_ptr(default_ptr).bits();
         let order = dict_order(dict_ptr);
+        let hashes = dict_hashes(dict_ptr);
         let table = dict_table(dict_ptr);
         let new_entries = (order.len() / 2) + 1;
         let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
         if needs_resize {
             let capacity = dict_table_capacity(new_entries);
-            dict_rebuild(_py, order, table, capacity);
+            dict_rebuild(_py, order, hashes, table, capacity);
             if exception_pending(_py) {
                 dec_ref_bits(_py, default_bits);
                 dec_ref_bits(_py, key_bits);
                 return None;
             }
         }
-        if !reserve_dict_order(_py, order, 2) {
+        if !reserve_dict_order(_py, order, 2)
+            || !reserve_hashes(_py, hashes, 1, "dict allocation failed")
+        {
             dec_ref_bits(_py, default_bits);
             dec_ref_bits(_py, key_bits);
             return None;
         }
         order.push(key_bits);
         order.push(default_bits);
+        hashes.push(hash);
         inc_ref_bits(_py, key_bits);
         inc_ref_bits(_py, default_bits);
         let entry_idx = order.len() / 2 - 1;
@@ -7298,7 +7319,7 @@ pub(crate) unsafe fn frozenset_from_iter_bits(_py: &PyToken<'_>, other_bits: u64
             let mut val_bits = 0;
             let done_bits = crate::object::ops_iter::molt_iter_next_unboxed(
                 iter_bits,
-                &mut val_bits as *mut u64,
+                (&mut val_bits as *mut u64) as u64,
             );
             if done_bits == MoltObject::none().bits() || exception_pending(_py) {
                 dec_ref_bits(_py, iter_bits);
@@ -7352,10 +7373,20 @@ pub extern "C" fn molt_dec_ref_obj(bits: u64) {
                 let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *const MoltHeader;
                 let type_id = (*header_ptr).type_id;
                 if !crate::object::is_valid_heap_type_id(type_id) {
-                    eprintln!(
-                        "molt fatal: invalid object header before dec_ref ptr=0x{:x} bits=0x{:x} type_id={}",
-                        ptr as usize, bits, type_id
-                    );
+                    if let Some((file, line, frame, col, end_col)) =
+                        crate::builtins::exceptions::frame_stack_top_info(_py)
+                    {
+                        eprintln!(
+                            "molt fatal: invalid object header before dec_ref \
+                             ptr=0x{:x} bits=0x{:x} type_id={} frame={} file={} line={} col={} end_col={}",
+                            ptr as usize, bits, type_id, frame, file, line, col, end_col
+                        );
+                    } else {
+                        eprintln!(
+                            "molt fatal: invalid object header before dec_ref ptr=0x{:x} bits=0x{:x} type_id={}",
+                            ptr as usize, bits, type_id
+                        );
+                    }
                     if std::env::var("MOLT_TRACE_INVALID_DECREF").as_deref() == Ok("1") {
                         let bt = std::backtrace::Backtrace::force_capture();
                         eprintln!("molt invalid dec_ref backtrace:\n{bt}");
@@ -7404,13 +7435,13 @@ pub extern "C" fn molt_dec_ref_n(bits: u64, count: u32) {
 ///
 /// # Safety
 ///
-/// `output_ptr` must reference writable storage for at least `expected_count`
+/// `output_ptr_bits` must encode writable storage for at least `expected_count`
 /// `u64` elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_unpack_sequence(
     seq_bits: u64,
     expected_count: u64,
-    output_ptr: *mut u64,
+    output_ptr_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if exception_pending(_py) {
@@ -7418,6 +7449,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(
         }
         let obj = obj_from_bits(seq_bits);
         let expected = expected_count as usize;
+        let output_ptr = output_ptr_bits as usize as *mut u64;
         let Some(ptr) = obj.as_ptr() else {
             raise_exception::<u64>(_py, "TypeError", "cannot unpack non-sequence");
             return MoltObject::none().bits();
@@ -8220,8 +8252,10 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                         return false;
                     }
                     let r_table = set_table(rp);
+                    let r_hashes = set_hashes(rp);
                     for key_bits in l_elems.iter().copied() {
-                        if set_find_entry_fast(_py, r_elems, r_table, key_bits).is_none() {
+                        if set_find_entry_fast(_py, r_elems, r_hashes, r_table, key_bits).is_none()
+                        {
                             return false;
                         }
                     }
@@ -8267,8 +8301,11 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                         equal = false;
                     } else {
                         let r_table = set_table(rhs_ptr);
+                        let r_hashes = set_hashes(rhs_ptr);
                         for key_bits in l_elems.iter().copied() {
-                            if set_find_entry_fast(_py, r_elems, r_table, key_bits).is_none() {
+                            if set_find_entry_fast(_py, r_elems, r_hashes, r_table, key_bits)
+                                .is_none()
+                            {
                                 equal = false;
                                 break;
                             }
@@ -8402,11 +8439,13 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     return false;
                 }
                 let r_table = dict_table(rp);
+                let r_hashes = dict_hashes(rp);
                 let entries = l_pairs.len() / 2;
                 for entry_idx in 0..entries {
                     let key_bits = l_pairs[entry_idx * 2];
                     let val_bits = l_pairs[entry_idx * 2 + 1];
-                    let Some(r_entry_idx) = dict_find_entry_fast(_py, r_pairs, r_table, key_bits)
+                    let Some(r_entry_idx) =
+                        dict_find_entry_fast(_py, r_pairs, r_hashes, r_table, key_bits)
                     else {
                         crate::state::recursion::recursion_guard_exit_fast();
                         return false;
@@ -8427,8 +8466,9 @@ pub(crate) fn obj_eq(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) -> boo
                     return false;
                 }
                 let r_table = set_table(rp);
+                let r_hashes = set_hashes(rp);
                 for key_bits in l_elems.iter().copied() {
-                    if set_find_entry_fast(_py, r_elems, r_table, key_bits).is_none() {
+                    if set_find_entry_fast(_py, r_elems, r_hashes, r_table, key_bits).is_none() {
                         return false;
                     }
                 }
@@ -8540,17 +8580,30 @@ unsafe fn reserve_set_order(_py: &PyToken<'_>, order: &mut Vec<u64>, additional:
     }
 }
 
-fn dict_insert_entry(_py: &PyToken<'_>, order: &[u64], table: &mut [usize], entry_idx: usize) {
-    let mask = table.len() - 1;
-    let key_bits = order[entry_idx * 2];
-    // Fast path: inline int keys use hash_int directly, avoiding the
-    // full hash_bits dispatch through exception-checking code paths.
-    let key_obj = obj_from_bits(key_bits);
-    let hash = if let Some(i) = key_obj.as_int() {
-        hash_int(i) as u64
-    } else {
-        hash_bits(_py, key_bits)
+#[inline]
+unsafe fn reserve_hashes(
+    _py: &PyToken<'_>,
+    hashes: &mut Vec<u64>,
+    additional: usize,
+    message: &'static str,
+) -> bool {
+    let Some(required_len) = hashes.len().checked_add(additional) else {
+        let _ = raise_exception::<u64>(_py, "MemoryError", message);
+        return false;
     };
+    unsafe {
+        crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            hashes as *mut Vec<u64>,
+            required_len,
+            message,
+        )
+    }
+}
+
+fn dict_insert_entry(_py: &PyToken<'_>, hashes: &[u64], table: &mut [usize], entry_idx: usize) {
+    let mask = table.len() - 1;
+    let hash = hashes[entry_idx];
     let mut slot = (hash as usize) & mask;
     let mut first_tombstone = None;
     loop {
@@ -8593,6 +8646,7 @@ pub(crate) fn dict_insert_entry_with_hash(
 pub(crate) fn dict_rebuild(
     _py: &PyToken<'_>,
     order: &[u64],
+    hashes: &[u64],
     table: &mut Vec<usize>,
     capacity: usize,
 ) {
@@ -8610,13 +8664,14 @@ pub(crate) fn dict_rebuild(
     table.resize(capacity, 0);
     let entry_count = order.len() / 2;
     for entry_idx in 0..entry_count {
-        dict_insert_entry(_py, order, table, entry_idx);
+        dict_insert_entry(_py, hashes, table, entry_idx);
     }
 }
 
 pub(crate) fn dict_find_entry_fast(
     _py: &PyToken<'_>,
     order: &[u64],
+    hashes: &[u64],
     table: &[usize],
     key_bits: u64,
 ) -> Option<usize> {
@@ -8624,7 +8679,8 @@ pub(crate) fn dict_find_entry_fast(
         return None;
     }
     let mask = table.len() - 1;
-    let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    let hash = hash_bits(_py, key_bits);
+    let mut slot = (hash as usize) & mask;
     loop {
         let entry = table[slot];
         if entry == 0 {
@@ -8636,6 +8692,10 @@ pub(crate) fn dict_find_entry_fast(
         }
         let entry_idx = entry - 1;
         if entry_idx * 2 >= order.len() {
+            slot = (slot + 1) & mask;
+            continue;
+        }
+        if hashes.get(entry_idx).copied() != Some(hash) {
             slot = (slot + 1) & mask;
             continue;
         }
@@ -8651,6 +8711,7 @@ pub(crate) fn dict_find_entry_fast(
 pub(crate) fn dict_find_entry(
     _py: &PyToken<'_>,
     order: &[u64],
+    hashes: &[u64],
     table: &[usize],
     key_bits: u64,
 ) -> Option<usize> {
@@ -8659,7 +8720,8 @@ pub(crate) fn dict_find_entry(
     }
     let pending_before = exception_pending(_py);
     let mask = table.len() - 1;
-    let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    let hash = hash_bits(_py, key_bits);
+    let mut slot = (hash as usize) & mask;
     loop {
         let entry = table[slot];
         if entry == 0 {
@@ -8675,6 +8737,10 @@ pub(crate) fn dict_find_entry(
         // into a graceful "not found".
         if entry_idx * 2 >= order.len() {
             // Corrupted entry — skip it like a tombstone.
+            slot = (slot + 1) & mask;
+            continue;
+        }
+        if hashes.get(entry_idx).copied() != Some(hash) {
             slot = (slot + 1) & mask;
             continue;
         }
@@ -9087,6 +9153,7 @@ unsafe fn string_bits_eq(a_bits: u64, b_bits: u64) -> Option<bool> {
 pub(crate) fn dict_find_entry_with_hash(
     _py: &PyToken<'_>,
     order: &[u64],
+    hashes: &[u64],
     table: &[usize],
     key_bits: u64,
     hash: u64,
@@ -9107,6 +9174,10 @@ pub(crate) fn dict_find_entry_with_hash(
         }
         let entry_idx = entry - 1;
         if entry_idx * 2 >= order.len() {
+            slot = (slot + 1) & mask;
+            continue;
+        }
+        if hashes.get(entry_idx).copied() != Some(hash) {
             slot = (slot + 1) & mask;
             continue;
         }
@@ -9136,10 +9207,9 @@ pub(crate) fn set_table_capacity(entries: usize) -> usize {
     dict_table_capacity(entries)
 }
 
-fn set_insert_entry(_py: &PyToken<'_>, order: &[u64], table: &mut [usize], entry_idx: usize) {
+fn set_insert_entry(_py: &PyToken<'_>, hashes: &[u64], table: &mut [usize], entry_idx: usize) {
     let mask = table.len() - 1;
-    let key_bits = order[entry_idx];
-    let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    let mut slot = (hashes[entry_idx] as usize) & mask;
     let mut first_tombstone = None;
     loop {
         let entry = table[slot];
@@ -9181,6 +9251,7 @@ fn set_insert_entry_with_hash(
 pub(super) fn set_rebuild(
     _py: &PyToken<'_>,
     order: &[u64],
+    hashes: &[u64],
     table: &mut Vec<usize>,
     capacity: usize,
 ) {
@@ -9198,13 +9269,14 @@ pub(super) fn set_rebuild(
     table.clear();
     table.resize(capacity, 0);
     for entry_idx in 0..order.len() {
-        set_insert_entry(_py, order, table, entry_idx);
+        set_insert_entry(_py, hashes, table, entry_idx);
     }
 }
 
 pub(crate) fn set_find_entry_fast(
     _py: &PyToken<'_>,
     order: &[u64],
+    hashes: &[u64],
     table: &[usize],
     key_bits: u64,
 ) -> Option<usize> {
@@ -9212,7 +9284,8 @@ pub(crate) fn set_find_entry_fast(
         return None;
     }
     let mask = table.len() - 1;
-    let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    let hash = hash_bits(_py, key_bits);
+    let mut slot = (hash as usize) & mask;
     loop {
         let entry = table[slot];
         if entry == 0 {
@@ -9223,6 +9296,10 @@ pub(crate) fn set_find_entry_fast(
             continue;
         }
         let entry_idx = entry - 1;
+        if hashes.get(entry_idx).copied() != Some(hash) {
+            slot = (slot + 1) & mask;
+            continue;
+        }
         let entry_key = order[entry_idx];
         // Identity check first (CPython semantics: `x is y or x == y`).
         if entry_key == key_bits {
@@ -9238,6 +9315,7 @@ pub(crate) fn set_find_entry_fast(
 pub(crate) fn set_find_entry(
     _py: &PyToken<'_>,
     order: &[u64],
+    hashes: &[u64],
     table: &[usize],
     key_bits: u64,
 ) -> Option<usize> {
@@ -9245,7 +9323,8 @@ pub(crate) fn set_find_entry(
         return None;
     }
     let mask = table.len() - 1;
-    let mut slot = (hash_bits(_py, key_bits) as usize) & mask;
+    let hash = hash_bits(_py, key_bits);
+    let mut slot = (hash as usize) & mask;
     loop {
         let entry = table[slot];
         if entry == 0 {
@@ -9256,6 +9335,10 @@ pub(crate) fn set_find_entry(
             continue;
         }
         let entry_idx = entry - 1;
+        if hashes.get(entry_idx).copied() != Some(hash) {
+            slot = (slot + 1) & mask;
+            continue;
+        }
         let entry_key = order[entry_idx];
         // Identity check first (CPython semantics: `x is y or x == y`).
         if entry_key == key_bits {
@@ -9274,6 +9357,7 @@ pub(crate) fn set_find_entry(
 pub(crate) fn set_find_entry_with_hash(
     _py: &PyToken<'_>,
     order: &[u64],
+    hashes: &[u64],
     table: &[usize],
     key_bits: u64,
     hash: u64,
@@ -9293,6 +9377,10 @@ pub(crate) fn set_find_entry_with_hash(
             continue;
         }
         let entry_idx = entry - 1;
+        if hashes.get(entry_idx).copied() != Some(hash) {
+            slot = (slot + 1) & mask;
+            continue;
+        }
         let entry_key = order[entry_idx];
         // Identity check first (CPython semantics: `x is y or x == y`).
         if entry_key == key_bits {
@@ -9384,8 +9472,9 @@ pub(crate) unsafe fn dict_set_in_place(
             return;
         }
         let order = dict_order(ptr);
+        let hashes = dict_hashes(ptr);
         let table = dict_table(ptr);
-        let found = dict_find_entry_with_hash(_py, order, table, key_bits, hash);
+        let found = dict_find_entry_with_hash(_py, order, hashes, table, key_bits, hash);
         if exception_pending(_py) {
             return;
         }
@@ -9409,17 +9498,20 @@ pub(crate) unsafe fn dict_set_in_place(
         let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
         if needs_resize {
             let capacity = dict_table_capacity(new_entries);
-            dict_rebuild(_py, order, table, capacity);
+            dict_rebuild(_py, order, hashes, table, capacity);
             if exception_pending(_py) {
                 return;
             }
         }
 
-        if !reserve_dict_order(_py, order, 2) {
+        if !reserve_dict_order(_py, order, 2)
+            || !reserve_hashes(_py, hashes, 1, "dict allocation failed")
+        {
             return;
         }
         order.push(key_bits);
         order.push(val_bits);
+        hashes.push(hash);
         if crate::object::refcount_opt::is_heap_ref(key_bits) {
             inc_ref_bits(_py, key_bits);
         }
@@ -9451,6 +9543,7 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
     unsafe {
         let hash = hash_int(key_int) as u64;
         let order = dict_order(ptr);
+        let hashes = dict_hashes(ptr);
         let table = dict_table(ptr);
 
         // Inline find: for integer keys, bit-equality is sufficient.
@@ -9464,7 +9557,9 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
                 }
                 if entry != TABLE_TOMBSTONE {
                     let entry_idx = entry - 1;
-                    if order[entry_idx * 2] == key_bits {
+                    if hashes.get(entry_idx).copied() == Some(hash)
+                        && order[entry_idx * 2] == key_bits
+                    {
                         // Key exists -- update value in place.
                         let val_idx = entry_idx * 2 + 1;
                         let old_bits = order[val_idx];
@@ -9493,14 +9588,17 @@ pub(crate) unsafe fn dict_set_inline_int_in_place(
         let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
         if needs_resize {
             let capacity = dict_table_capacity(new_entries);
-            dict_rebuild(_py, order, table, capacity);
+            dict_rebuild(_py, order, hashes, table, capacity);
         }
 
-        if !reserve_dict_order(_py, order, 2) {
+        if !reserve_dict_order(_py, order, 2)
+            || !reserve_hashes(_py, hashes, 1, "dict allocation failed")
+        {
             return;
         }
         order.push(key_bits);
         order.push(val_bits);
+        hashes.push(hash);
         // key is inline int: no refcount needed.
         // value: only inc_ref if heap-allocated.
         let val_obj = obj_from_bits(val_bits);
@@ -9526,6 +9624,7 @@ pub(crate) unsafe fn dict_get_inline_int_in_place(
     unsafe {
         let hash = hash_int(key_int) as u64;
         let order = dict_order(ptr);
+        let hashes = dict_hashes(ptr);
         let table = dict_table(ptr);
         if table.is_empty() {
             return None;
@@ -9539,7 +9638,8 @@ pub(crate) unsafe fn dict_get_inline_int_in_place(
             }
             if entry != TABLE_TOMBSTONE {
                 let entry_idx = entry - 1;
-                if order[entry_idx * 2] == key_bits {
+                if hashes.get(entry_idx).copied() == Some(hash) && order[entry_idx * 2] == key_bits
+                {
                     return Some(order[entry_idx * 2 + 1]);
                 }
             }
@@ -9577,8 +9677,9 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
             }
         }
         let order = dict_order(ptr);
+        let hashes = dict_hashes(ptr);
         let table = dict_table(ptr);
-        let found = dict_find_entry_with_hash(_py, order, table, key_bits, hash);
+        let found = dict_find_entry_with_hash(_py, order, hashes, table, key_bits, hash);
         if exception_pending(_py) {
             if !pending_before {
                 return;
@@ -9606,7 +9707,7 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
         let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
         if needs_resize {
             let capacity = dict_table_capacity(new_entries);
-            dict_rebuild(_py, order, table, capacity);
+            dict_rebuild(_py, order, hashes, table, capacity);
             if exception_pending(_py) {
                 if !pending_before {
                     return;
@@ -9633,8 +9734,12 @@ pub(crate) unsafe fn dict_set_in_place_preserving_pending(
             }
             return;
         }
+        if !reserve_hashes(_py, hashes, 1, "dict allocation failed") {
+            return;
+        }
         order.push(key_bits);
         order.push(val_bits);
+        hashes.push(hash);
         inc_ref_bits(_py, key_bits);
         inc_ref_bits(_py, val_bits);
         let entry_idx = order.len() / 2 - 1;
@@ -9663,8 +9768,9 @@ pub(crate) unsafe fn set_add_in_place(
             return;
         }
         let order = set_order(ptr);
+        let hashes = set_hashes(ptr);
         let table = set_table(ptr);
-        let found = set_find_entry_with_hash(_py, order, table, key_bits, hash);
+        let found = set_find_entry_with_hash(_py, order, hashes, table, key_bits, hash);
         if exception_pending(_py) {
             return;
         }
@@ -9676,16 +9782,19 @@ pub(crate) unsafe fn set_add_in_place(
         let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
         if needs_resize {
             let capacity = set_table_capacity(new_entries);
-            set_rebuild(_py, order, table, capacity);
+            set_rebuild(_py, order, hashes, table, capacity);
             if exception_pending(_py) {
                 return;
             }
         }
 
-        if !reserve_set_order(_py, order, 1) {
+        if !reserve_set_order(_py, order, 1)
+            || !reserve_hashes(_py, hashes, 1, "set allocation failed")
+        {
             return;
         }
         order.push(key_bits);
+        hashes.push(hash);
         inc_ref_bits(_py, key_bits);
         let entry_idx = order.len() - 1;
         set_insert_entry_with_hash(_py, order, table, entry_idx, hash);
@@ -9728,8 +9837,9 @@ pub(crate) unsafe fn dict_get_in_place(
             0
         };
         let order = dict_order(ptr);
+        let hashes = dict_hashes(ptr);
         let table = dict_table(ptr);
-        let found = dict_find_entry(_py, order, table, key_bits);
+        let found = dict_find_entry(_py, order, hashes, table, key_bits);
         if exception_pending(_py) {
             if !pending_before {
                 return None;
@@ -9759,8 +9869,9 @@ pub(crate) unsafe fn dict_find_entry_kv_in_place(
             0
         };
         let order = dict_order(ptr);
+        let hashes = dict_hashes(ptr);
         let table = dict_table(ptr);
-        let found = dict_find_entry(_py, order, table, key_bits);
+        let found = dict_find_entry(_py, order, hashes, table, key_bits);
         if exception_pending(_py) {
             if !pending_before {
                 return None;
@@ -9785,8 +9896,9 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
             return false;
         }
         let order = set_order(ptr);
+        let hashes = set_hashes(ptr);
         let table = set_table(ptr);
-        let found = set_find_entry(_py, order, table, key_bits);
+        let found = set_find_entry(_py, order, hashes, table, key_bits);
         if exception_pending(_py) {
             return false;
         }
@@ -9795,6 +9907,7 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
         };
         let key_val = order[entry_idx];
         order.remove(entry_idx);
+        hashes.remove(entry_idx);
         let removed_slot_val = entry_idx + 1;
         let mut tombstones = 0usize;
         for slot in table.iter_mut() {
@@ -9819,7 +9932,7 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
         if table.len() > desired_capacity.saturating_mul(4)
             || tombstones.saturating_mul(4) > table.len()
         {
-            set_rebuild(_py, order, table, desired_capacity);
+            set_rebuild(_py, order, hashes, table, desired_capacity);
         }
         if order.is_empty() {
             (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -9833,10 +9946,19 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
     unsafe {
         crate::gil_assert();
         let order = set_order(ptr);
+        let hashes = set_hashes(ptr);
         let capacity = set_table_capacity(entries.len().max(1));
         if !crate::object::backing::tracked_vec_reserve_or_raise(
             _py,
             order as *mut Vec<u64>,
+            entries.len(),
+            "set allocation failed",
+        ) {
+            return;
+        }
+        if !crate::object::backing::tracked_vec_reserve_or_raise(
+            _py,
+            hashes as *mut Vec<u64>,
             entries.len(),
             "set allocation failed",
         ) {
@@ -9850,13 +9972,23 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
         ) {
             return;
         }
+        let mut replacement_hashes = Vec::with_capacity(entries.len());
+        for &entry in entries {
+            let hash = hash_bits(_py, entry);
+            if exception_pending(_py) {
+                return;
+            }
+            replacement_hashes.push(hash);
+        }
         for entry in entries {
             inc_ref_bits(_py, *entry);
         }
         let removed: Vec<u64> = order.drain(..).collect();
+        hashes.clear();
         order.extend_from_slice(entries);
+        hashes.extend_from_slice(&replacement_hashes);
         let table = set_table(ptr);
-        set_rebuild(_py, order, table, capacity);
+        set_rebuild(_py, order, hashes, table, capacity);
         if entries
             .iter()
             .any(|&entry| crate::object::refcount_opt::is_heap_ref(entry))
@@ -9877,8 +10009,9 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
             return false;
         }
         let order = dict_order(ptr);
+        let hashes = dict_hashes(ptr);
         let table = dict_table(ptr);
-        let found = dict_find_entry(_py, order, table, key_bits);
+        let found = dict_find_entry(_py, order, hashes, table, key_bits);
         if exception_pending(_py) {
             return false;
         }
@@ -9888,6 +10021,7 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
         let key_idx = entry_idx * 2;
         let val_idx = key_idx + 1;
         let removed: Vec<u64> = order.drain(key_idx..=val_idx).collect();
+        hashes.remove(entry_idx);
         let removed_slot_val = entry_idx + 1;
         let mut tombstones = 0usize;
         for slot in table.iter_mut() {
@@ -9912,7 +10046,7 @@ pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits
         if table.len() > desired_capacity.saturating_mul(4)
             || tombstones.saturating_mul(4) > table.len()
         {
-            dict_rebuild(_py, order, table, desired_capacity);
+            dict_rebuild(_py, order, hashes, table, desired_capacity);
         }
         if order.is_empty() {
             (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -9929,6 +10063,8 @@ pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
         crate::gil_assert();
         let order = dict_order(ptr);
         let removed: Vec<u64> = order.drain(..).collect();
+        let hashes = dict_hashes(ptr);
+        hashes.clear();
         let table = dict_table(ptr);
         table.clear();
         (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -9944,6 +10080,8 @@ pub(crate) unsafe fn dict_clear_in_place_shutdown(_py: &PyToken<'_>, ptr: *mut u
         crate::gil_assert();
         let order = dict_order(ptr);
         let removed: Vec<u64> = order.drain(..).collect();
+        let hashes = dict_hashes(ptr);
+        hashes.clear();
         let table = dict_table(ptr);
         table.clear();
         (*header_from_obj_ptr(ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -9961,14 +10099,14 @@ pub(crate) unsafe fn dict_clear_in_place_shutdown(_py: &PyToken<'_>, ptr: *mut u
 ///
 /// # Safety
 ///
-/// `bases_ptr` must reference `nbases` entries when `nbases > 0`, and
-/// `attrs_ptr` must reference `nattrs * 2` entries when `nattrs > 0`.
+/// `bases_ptr_bits` must encode `nbases` entries when `nbases > 0`, and
+/// `attrs_ptr_bits` must encode `nattrs * 2` entries when `nattrs > 0`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_guarded_class_def(
     name_bits: u64,
-    bases_ptr: *const u64,
+    bases_ptr_bits: u64,
     nbases: u64,
-    attrs_ptr: *const u64,
+    attrs_ptr_bits: u64,
     nattrs: u64,
     layout_size: i64,
     layout_version: i64,
@@ -9988,6 +10126,8 @@ pub unsafe extern "C" fn molt_guarded_class_def(
         return class_bits;
     }
 
+    let bases_ptr = bases_ptr_bits as usize as *const u64;
+    let attrs_ptr = attrs_ptr_bits as usize as *const u64;
     let nb = nbases as usize;
     let bases_vec = if nb > 0 {
         unsafe { std::slice::from_raw_parts(bases_ptr, nb).to_vec() }

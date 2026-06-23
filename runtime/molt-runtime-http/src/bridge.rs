@@ -21,6 +21,7 @@ unsafe extern "C" {
 
     fn __molt_http_exception_pending() -> i32;
     fn __molt_http_clear_exception();
+    fn __molt_http_clear_attribute_error_if_pending() -> i32;
     fn __molt_http_molt_exception_last() -> u64;
     fn __molt_http_exception_kind_bits(ptr: *mut u8) -> u64;
     fn __molt_http_molt_exception_init(self_bits: u64, args_bits: u64) -> u64;
@@ -40,6 +41,10 @@ pub fn exception_pending(_py: &CoreGilToken) -> bool {
 
 pub fn clear_exception(_py: &CoreGilToken) {
     unsafe { __molt_http_clear_exception() }
+}
+
+pub fn clear_attribute_error_if_pending(_py: &CoreGilToken) -> bool {
+    unsafe { __molt_http_clear_attribute_error_if_pending() != 0 }
 }
 
 pub fn molt_exception_last() -> u64 {
@@ -190,6 +195,16 @@ pub fn inc_ref_bits(_py: &CoreGilToken, bits: u64) {
 unsafe extern "C" {
     fn __molt_http_to_i64(bits: u64, out: *mut i64) -> i32;
     fn __molt_http_to_f64(bits: u64, out: *mut f64) -> i32;
+    fn __molt_http_index_bigint_from_obj(
+        obj_bits: u64,
+        err_ptr: *const u8,
+        err_len: usize,
+        out_sign: *mut i32,
+        out_ptr: *mut *const u8,
+        out_len: *mut usize,
+    ) -> i32;
+    fn __molt_http_int_bits_from_bigint(sign: i32, data_ptr: *const u8, data_len: usize) -> u64;
+    fn __molt_http_molt_float_from_obj(val_bits: u64) -> u64;
 }
 
 pub fn to_i64(obj: MoltObject) -> Option<i64> {
@@ -202,6 +217,55 @@ pub fn to_f64(obj: MoltObject) -> Option<f64> {
     let mut out: f64 = 0.0;
     let ok = unsafe { __molt_http_to_f64(obj.bits(), &mut out) };
     if ok != 0 { Some(out) } else { None }
+}
+
+pub fn index_bigint_from_obj(
+    _py: &CoreGilToken,
+    obj_bits: u64,
+    err: &str,
+) -> Option<num_bigint::BigInt> {
+    use num_bigint::{BigInt, Sign};
+    let mut out_sign: i32 = 0;
+    let mut out_ptr: *const u8 = std::ptr::null();
+    let mut out_len: usize = 0;
+    let ok = unsafe {
+        __molt_http_index_bigint_from_obj(
+            obj_bits,
+            err.as_ptr(),
+            err.len(),
+            &mut out_sign,
+            &mut out_ptr,
+            &mut out_len,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let sign = match out_sign {
+        -1 => Sign::Minus,
+        0 => Sign::NoSign,
+        _ => Sign::Plus,
+    };
+    if out_len == 0 {
+        return Some(BigInt::from(0));
+    }
+    let bytes = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
+    Some(BigInt::from_bytes_be(sign, &bytes))
+}
+
+pub fn int_bits_from_bigint(_py: &CoreGilToken, value: num_bigint::BigInt) -> u64 {
+    use num_bigint::Sign;
+    let (sign, bytes) = value.to_bytes_be();
+    let sign_i32 = match sign {
+        Sign::Minus => -1i32,
+        Sign::NoSign => 0i32,
+        Sign::Plus => 1i32,
+    };
+    unsafe { __molt_http_int_bits_from_bigint(sign_i32, bytes.as_ptr(), bytes.len()) }
+}
+
+pub fn molt_float_from_obj(val_bits: u64) -> u64 {
+    unsafe { __molt_http_molt_float_from_obj(val_bits) }
 }
 
 // ---------------------------------------------------------------------------

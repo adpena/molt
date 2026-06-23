@@ -13,4 +13,10 @@ pub(crate) struct FrameEntry {
     /// This is set by compiler-emitted ops (`frame_locals_set`) and is owned by
     /// the frame stack entry (we INCREF on set and DECREF on pop/replacement).
     pub(crate) locals_bits: u64,
+    /// Optional globals dict for function frames.
+    ///
+    /// Function objects own their `__globals__` slot; frame entries retain it so
+    /// runtime global lookups and `globals()` observe the active function
+    /// namespace even when the same code object is re-bound by `types.FunctionType`.
+    pub(crate) globals_bits: u64,
 }

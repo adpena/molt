@@ -207,6 +207,12 @@ when the enclosing friend-suite command was a run command.
 guard command profile, repo-process sentinel, and backend-daemon cleanup JSONL
 so daemon crashes and RSS-guard kills remain evidence-producing runs.
 
+Hot-only `tools/perf_scoreboard.py --sample-hot-only` receipts are attribution
+evidence, not speedup gates. If the looped profiling binary fails during the
+size phase, the JSON refusal now preserves bounded `size_stdout_tail` and
+`size_stderr_tail` fields plus `size_status`/`size_exit_code`; use those fields
+to diagnose the failed binary before rerunning or moving any performance claim.
+
 Benchmarks that directly exercise Molt runtime intrinsics without an external
 reference implementation are explicitly Molt-only in `tools/bench_metadata.py`.
 Those rows must record `reference_runtime="molt"` and skip CPython/PyPy/Codon/
@@ -333,13 +339,17 @@ CPython runner executes
 `tools/tinygrad_off_shelf_adapter.py` against the checked-out upstream package
 through the same isolated `typeguard` dependency and bytecode-write ban; the
 adapter is only a public-API workload driver. The Molt runner is executable by
-default and uses the harness interpreter (`{python} -m molt.cli run`) while
-forwarding the required full-stdlib build profile with
-`--build-arg=--stdlib-profile --build-arg=full`; do not replace it with ambient
-`molt` from `PATH` or a micro-profile build. Current evidence reaches
+default and uses the project interpreter token
+(`{project_python} -m molt.cli run`) while forwarding the required full-stdlib
+build profile with `--build-arg=--stdlib-profile --build-arg=full`; do not
+replace it with ambient `molt` from `PATH` or a micro-profile build.
+`{python}` remains the harness/base interpreter token for isolated friend
+commands such as `uv run --python {python}`; Molt CLI runners use
+`{project_python}` so repo-installed dependencies are present under
+`PYTHONNOUSERSITE=1`. Earlier guarded evidence reached
 `molt-backend --daemon` and then trips the process RSS guard at 12.005 GB after
 435.5s (`tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`), proving
-the blocker is backend-daemon compile memory before adapter workload execution.
+that blocker was backend-daemon compile memory before adapter workload execution.
 Native TIR optimization now processes uncached user functions in bounded
 op/count batches and applies/cache-writes each batch immediately; the next Molt
 runner proof (`bench/results/friends/20260612T184515Z/`) reached that bounded
@@ -361,14 +371,54 @@ The 21:12 guard sidecar
 separate daemon compile-memory event: the suite sentinel terminated only the
 Molt-owned `molt-backend --daemon` process group when the daemon reached the 12
 GB process RSS cap. Native application-object batching now consumes the same
-`MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching. Daemon-off proof
+`MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching, and the production
+self-spawn worker path is covered by
+`cargo test -p molt-backend --test native_batch_worker_spawn`
+(`tmp/memory_guard/cargo_test_native_batch_worker_spawn_cleanup_diag_20260615.json`):
+the real `molt-backend` binary compiles two live functions as two materialized
+batches through `--native-batch-job-file`. Daemon-off proof
 now builds the full-stdlib adapter and reaches runtime execution under guard;
-after the importlib bootstrap export fix and list-clear detach proof, the
-current Molt runtime blocker remains `molt fatal: invalid object header before
-dec_ref` at 1.985 GB peak RSS
-(`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
-Daemon-enabled runs still need daemon outcome/log custody after the compile
-memory split. Do not patch, vendor, or translate tinygrad sources for this lane.
+a 2026-06-15 list-workloads smoke
+(`tmp/memory_guard/tinygrad_importlib_module_from_spec_smoke.json`) timed out
+after 900s with `violation=null`, no orphaned process groups, 3.75 GB peak
+process-tree RSS, and Cargo incremental quarantine while compiling the
+full-stdlib tinygrad adapter. The active backend IR was 49 MB with 5,845
+functions and 866,671 ops, so this is cold build/compiler-throughput evidence
+before adapter workload enumeration, not a tinygrad semantic failure. Direct
+guarded backend replays of that IR
+(`tmp/memory_guard/tinygrad_backend_replay_indexed_20260615.json` and
+`tmp/memory_guard/tinygrad_backend_replay_indexed_scratch_20260615.json`) both
+detected 1,469 leaf functions and failed closed before object emission because
+`MOLT_RUNTIME_INTRINSIC_SYMBOLS` was absent; their 0.891 GB and 0.887 GB peak
+RSS receipts are backend compile-memory evidence only. A later lazy-index
+guarded list-workloads retry
+(`tmp/memory_guard/tinygrad_adapter_list_workloads_lazy_index_20260615.json`)
+still timed out in the full-stdlib adapter build after 1200s with
+`violation=null`, no orphaned process groups, 1.34 GB peak process RSS, and
+2.28 GB peak process-tree RSS; the post-run sentinel receipt
+(`tmp/memory_guard/process_sentinel_after_lazy_index_20260615.json`) returned 0
+with no incident or orphaned process groups. The older 1.985 GB invalid-header
+receipt is now historical after the importlib bootstrap export, list-clear
+detach, namedtuple return-boundary ownership, defaultdict factory-handle
+ownership, and Python-origin carrier cleanup fixes. Direct rebuilt-adapter
+evidence covered the then-four default public-API workloads.
+The current CPython adapter source now enumerates five default public-API
+workloads, including `attention_core`, and the pinned upstream CPython probe
+exits cleanly for all five. The official `tinygrad_off_the_shelf` Molt friend
+runner with clean pinned source custody now builds the full-stdlib adapter and
+fails closed inside upstream tinygrad's lazy pattern compiler at
+`tinygrad/uop/upat.py:167`, where
+`upat_compile` calls `exec(code_str, globs, namespace)`. This is the current
+blocker because unrestricted `exec()` is outside Molt's verified AOT subset;
+artifact: `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`. A
+source-custody CPython probe of the pinned `attention_core` workload with
+`UPAT_COMPILE=0` also returned 1 before Molt was involved: it got past
+`upat_compile` but failed in upstream tinygrad's interpreted matcher with
+`NameError: name 'do_substitute' is not defined` from
+`tinygrad/codegen/simplify.py:57` via `tinygrad/uop/ops.py:1346`
+`universal_match`. Therefore `UPAT_COMPILE=0` is not a usable Molt diagnostic
+lane for this pinned attention workload and must not be used as completion
+evidence. Do not patch, vendor, or translate tinygrad sources for this lane.
 Its output is intended to drive GPU primitive, typed runtime upload/readback,
 MLIR/MIL lowering, and profiler work.
 
@@ -444,7 +494,11 @@ Rules:
 - Treat interrupted runs and RSS sentinel trips as evidence-producing runs when
   the suite can finalize an artifact; emergency-writer tests cover partial
   JSON/markdown snapshots, while real sentinel trips may leave only bounded
-  sidecar receipts plus identity-verified backend-daemon cleanup logs.
+  sidecar receipts plus identity-verified backend-daemon cleanup logs. Guarded
+  commands with `--summary-json` write a `status: "running"` summary before child
+  launch, so a hard-killed guard parent still leaves repro command, resolved
+  limits, guard process identity, and host/control-plane samples at the requested
+  summary path.
 
 ## Binary Size & Cold-Start (Optional)
 
@@ -615,8 +669,11 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
 - Bootstrap a consistent throughput environment first:
   - `eval "$(tools/throughput_env.sh --print)"`
   - or `tools/throughput_env.sh --apply` (configures `sccache` size and runs cache prune policy)
-- Defaults use `MOLT_EXT_ROOT` when set; otherwise the tooling falls back to
-  canonical repo-local artifact roots.
+- Defaults preserve explicit root env vars. When external artifacts are
+  preferred, the tooling selects the first healthy configured external root
+  (default order `/Volumes/VertigoDataTier/Molt`, then
+  `/Volumes/APDataStore/Molt`); otherwise it falls back to canonical repo-local
+  artifact roots.
 - `tools/bench.py` treats explicit canonical artifact env vars as authoritative
   after conformance setup. `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`,
   `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `MOLT_DIFF_ROOT`,
@@ -745,7 +802,7 @@ payloads automatically.
 
 - `tools/throughput_env.sh --apply` runs `tools/molt_cache_prune.py` by default.
 - Defaults:
-  - `MOLT_CACHE`: `200G` max + `30` day age pruning.
+  - `MOLT_CACHE`: `30G` max + `30` day age pruning.
 - Override with env vars before running the script:
   - `MOLT_CACHE_MAX_GB=<n>`
   - `MOLT_CACHE_MAX_AGE_DAYS=<n>`

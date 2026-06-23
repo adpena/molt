@@ -320,7 +320,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, reset_ptrs: b
     clear_asyncgen_locals(_py, state);
     trace_shutdown("clear_thread_local_state");
     clear_thread_local_state(_py);
-    // Code objects in the fn-ptr map own co_filename/co_name/co_varnames
+    // Code objects in the fn-ptr map own co_filename/co_name/co_varnames/co_names
     // references that may point at interned/builder singletons. Release them
     // before clearing those singleton pools, or code teardown can walk freed
     // metadata during process shutdown.
@@ -463,6 +463,12 @@ fn clear_thread_local_state(_py: &PyToken<'_>) {
         for entry in old {
             if entry.code_bits != 0 {
                 dec_ref_bits(_py, entry.code_bits);
+            }
+            if entry.locals_bits != 0 && !obj_from_bits(entry.locals_bits).is_none() {
+                dec_ref_bits(_py, entry.locals_bits);
+            }
+            if entry.globals_bits != 0 && !obj_from_bits(entry.globals_bits).is_none() {
+                dec_ref_bits(_py, entry.globals_bits);
             }
         }
     });

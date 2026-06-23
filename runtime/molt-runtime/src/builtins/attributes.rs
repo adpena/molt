@@ -11,10 +11,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::async_rt::generators::{generator_locals_dict, generator_yieldfrom_bits};
 use crate::builtins::annotations::pep649_enabled;
 use crate::builtins::attr::{
-    attr_lookup_ptr_allow_missing, awaitable_await_func_bits, class_slots_info,
-    clear_attribute_error_if_pending, exception_is_attribute_error, object_attr_lookup_raw,
+    attr_lookup_ptr_allow_missing, awaitable_await_func_bits, class_own_slot_field_offset,
+    class_slots_info, clear_attribute_error_if_pending, exception_is_attribute_error,
+    object_attr_lookup_raw,
 };
 use crate::builtins::containers::tuple_method_bits;
+use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::builtins::methods::{
     asyncgen_method_bits, complex_method_bits, coroutine_method_bits, float_method_bits,
     generator_method_bits, int_method_bits, object_method_bits, property_method_bits,
@@ -464,7 +466,7 @@ unsafe fn classed_attr_lookup_without_dict_inner(
                 traceback_suppress_exit();
             }
             if exception_pending(_py) {
-                let exc_bits = molt_exception_last();
+                let exc_bits = molt_exception_last_pending();
                 let kind_bits = molt_exception_kind(exc_bits);
                 let kind = string_obj_to_owned(obj_from_bits(kind_bits));
                 dec_ref_bits(_py, kind_bits);
@@ -988,7 +990,7 @@ unsafe fn type_attr_lookup_ptr_inner(
                         traceback_suppress_exit();
                     }
                     if exception_pending(_py) {
-                        let exc_bits = molt_exception_last();
+                        let exc_bits = molt_exception_last_pending();
                         let kind_bits = molt_exception_kind(exc_bits);
                         let kind = string_obj_to_owned(obj_from_bits(kind_bits));
                         dec_ref_bits(_py, kind_bits);
@@ -1062,6 +1064,22 @@ pub(crate) unsafe fn attr_lookup_ptr(
         }
         profile_hit(_py, &ATTR_LOOKUP_COUNT);
         let type_id = object_type_id(obj_ptr);
+        if !matches!(
+            type_id,
+            TYPE_ID_OBJECT | TYPE_ID_DATACLASS | TYPE_ID_TYPE | TYPE_ID_EXCEPTION
+        ) {
+            let class_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.class_name, b"__class__");
+            if obj_eq(
+                _py,
+                obj_from_bits(attr_bits),
+                obj_from_bits(class_name_bits),
+            ) {
+                let res_bits = type_of_bits(_py, MoltObject::from_ptr(obj_ptr).bits());
+                inc_ref_bits(_py, res_bits);
+                return Some(res_bits);
+            }
+        }
         if type_id == TYPE_ID_MODULE {
             return module_attr_lookup(_py, obj_ptr, attr_bits);
         }
@@ -2310,6 +2328,18 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     }
                     return Some(MoltObject::from_ptr(tuple_ptr).bits());
                 }
+                "co_names" => {
+                    let bits = code_names_bits(obj_ptr);
+                    if bits != 0 {
+                        inc_ref_bits(_py, bits);
+                        return Some(bits);
+                    }
+                    let tuple_ptr = alloc_tuple(_py, &[]);
+                    if tuple_ptr.is_null() {
+                        return Some(MoltObject::none().bits());
+                    }
+                    return Some(MoltObject::from_ptr(tuple_ptr).bits());
+                }
                 "co_freevars" | "co_cellvars" => {
                     let tuple_ptr = alloc_tuple(_py, &[]);
                     if tuple_ptr.is_null() {
@@ -2390,6 +2420,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
             let desc_ptr = dataclass_desc_ptr(obj_ptr);
             if !desc_ptr.is_null() {
                 let slots = (*desc_ptr).slots;
+                let allows_dict = (*desc_ptr).allows_dict;
                 let attr_name = string_obj_to_owned(obj_from_bits(attr_bits));
                 let class_bits = (*desc_ptr).class_bits;
                 if class_bits != 0
@@ -2415,7 +2446,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         exception_stack_push();
                         let res_bits = call_callable1(_py, call_bits, attr_bits);
                         if exception_pending(_py) {
-                            let exc_bits = molt_exception_last();
+                            let exc_bits = molt_exception_last_pending();
                             let kind_bits = molt_exception_kind(exc_bits);
                             let kind = string_obj_to_owned(obj_from_bits(kind_bits));
                             dec_ref_bits(_py, kind_bits);
@@ -2458,6 +2489,24 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         exception_stack_pop(_py);
                         return Some(res_bits);
                     }
+                    if class_bits != 0
+                        && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                        && object_type_id(class_ptr) == TYPE_ID_TYPE
+                        && class_own_slot_field_offset(_py, class_ptr, attr_bits).is_some()
+                        && let Some(name) = attr_name.as_deref()
+                        && let Some(&index) = (*desc_ptr).field_name_to_index.get(name)
+                    {
+                        let fields = dataclass_fields_ref(obj_ptr);
+                        if index < fields.len() {
+                            let val_bits = fields[index];
+                            if is_missing_bits(_py, val_bits) {
+                                return None;
+                            }
+                            inc_ref_bits(_py, val_bits);
+                            return Some(val_bits);
+                        }
+                        return None;
+                    }
                     if let Some(val_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
                         && descriptor_is_data(_py, val_bits)
                     {
@@ -2487,7 +2536,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 let dict_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
                 if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(dict_name_bits)) {
-                    if !slots {
+                    if allows_dict {
                         let mut dict_bits = dataclass_dict_bits(obj_ptr);
                         if dict_bits == 0 {
                             let dict_ptr = alloc_dict_with_pairs(_py, &[]);
@@ -2497,7 +2546,8 @@ pub(crate) unsafe fn attr_lookup_ptr(
                             }
                         }
                         if dict_bits != 0 {
-                            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                            if !slots
+                                && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                                 && object_type_id(dict_ptr) == TYPE_ID_DICT
                             {
                                 let fields = dataclass_fields_ref(obj_ptr);
@@ -2546,6 +2596,16 @@ pub(crate) unsafe fn attr_lookup_ptr(
                             inc_ref_bits(_py, val_bits);
                             return Some(val_bits);
                         }
+                    }
+                }
+                if slots && allows_dict {
+                    let dict_bits = dataclass_dict_bits(obj_ptr);
+                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                        && object_type_id(dict_ptr) == TYPE_ID_DICT
+                        && let Some(val) = dict_get_in_place(_py, dict_ptr, attr_bits)
+                    {
+                        inc_ref_bits(_py, val);
+                        return Some(val);
                     }
                 }
                 if class_bits != 0
@@ -2670,7 +2730,6 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 }
             }
             let class_bits = object_class_bits(obj_ptr);
-            let mut cached_attr_bits: Option<u64> = None;
             if class_bits == 0 {
                 let await_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.await_name, b"__await__");
@@ -2734,7 +2793,7 @@ pub(crate) unsafe fn attr_lookup_ptr(
                         traceback_suppress_exit();
                     }
                     if exception_pending(_py) {
-                        let exc_bits = molt_exception_last();
+                        let exc_bits = molt_exception_last_pending();
                         let kind_bits = molt_exception_kind(exc_bits);
                         let kind = string_obj_to_owned(obj_from_bits(kind_bits));
                         dec_ref_bits(_py, kind_bits);
@@ -2769,22 +2828,39 @@ pub(crate) unsafe fn attr_lookup_ptr(
                     exception_stack_pop(_py);
                     return Some(res_bits);
                 }
+                if let Some(offset) = class_own_slot_field_offset(_py, class_ptr, attr_bits) {
+                    let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
+                    if is_missing_bits(_py, bits) {
+                        dec_ref_bits(_py, bits);
+                        return None;
+                    }
+                    return Some(bits);
+                }
                 let class_version = class_layout_version_bits(class_ptr);
-                if let Some(entry) = descriptor_cache_lookup(class_bits, attr_bits, class_version) {
+                let mut descriptor_cache_hit = false;
+                if let Some(entry) =
+                    descriptor_cache_lookup(_py, class_bits, attr_bits, class_version)
+                {
+                    descriptor_cache_hit = true;
                     if let Some(bits) = entry.data_desc_bits {
-                        if let Some(bound) = descriptor_bind(_py, bits, class_ptr, Some(obj_ptr)) {
+                        let bound = descriptor_bind(_py, bits, class_ptr, Some(obj_ptr));
+                        let pending = exception_pending(_py);
+                        entry.release(_py);
+                        if let Some(bound) = bound {
                             return Some(bound);
                         }
-                        if exception_pending(_py) {
+                        if pending {
                             return None;
                         }
+                    } else {
+                        entry.release(_py);
                     }
-                    cached_attr_bits = entry.class_attr_bits;
                 }
-                if cached_attr_bits.is_none() {
+                if !descriptor_cache_hit {
                     if let Some(val_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits) {
                         if descriptor_is_data(_py, val_bits) {
                             descriptor_cache_store(
+                                _py,
                                 class_bits,
                                 attr_bits,
                                 class_version,
@@ -2799,17 +2875,25 @@ pub(crate) unsafe fn attr_lookup_ptr(
                             if exception_pending(_py) {
                                 return None;
                             }
+                        } else {
+                            descriptor_cache_store(
+                                _py,
+                                class_bits,
+                                attr_bits,
+                                class_version,
+                                None,
+                                Some(val_bits),
+                            );
                         }
-                        cached_attr_bits = Some(val_bits);
+                    } else {
                         descriptor_cache_store(
+                            _py,
                             class_bits,
                             attr_bits,
                             class_version,
                             None,
-                            Some(val_bits),
+                            None,
                         );
-                    } else {
-                        descriptor_cache_store(class_bits, attr_bits, class_version, None, None);
                     }
                 }
                 if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits) {
@@ -2942,20 +3026,46 @@ pub(crate) unsafe fn attr_lookup_ptr(
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE
             {
-                if cached_attr_bits.is_none()
-                    && let Some(val_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
+                let class_version = class_layout_version_bits(class_ptr);
+                if let Some(entry) =
+                    descriptor_cache_lookup(_py, class_bits, attr_bits, class_version)
                 {
-                    cached_attr_bits = Some(val_bits);
-                    let class_version = class_layout_version_bits(class_ptr);
+                    if entry.data_desc_bits.is_none()
+                        && let Some(val_bits) = entry.class_attr_bits
+                    {
+                        let bound = descriptor_bind(_py, val_bits, class_ptr, Some(obj_ptr));
+                        let pending = exception_pending(_py);
+                        entry.release(_py);
+                        if let Some(bound) = bound {
+                            return Some(bound);
+                        }
+                        if pending {
+                            return None;
+                        }
+                    } else {
+                        entry.release(_py);
+                    }
+                } else if let Some(val_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
+                {
+                    if descriptor_is_data(_py, val_bits) {
+                        descriptor_cache_store(
+                            _py,
+                            class_bits,
+                            attr_bits,
+                            class_version,
+                            Some(val_bits),
+                            None,
+                        );
+                        return None;
+                    }
                     descriptor_cache_store(
+                        _py,
                         class_bits,
                         attr_bits,
                         class_version,
                         None,
                         Some(val_bits),
                     );
-                }
-                if let Some(val_bits) = cached_attr_bits {
                     if let Some(bound) = descriptor_bind(_py, val_bits, class_ptr, Some(obj_ptr)) {
                         return Some(bound);
                     }
@@ -3033,7 +3143,7 @@ pub unsafe extern "C" fn molt_get_attr_generic(
                 return val as i64;
             }
             if exception_pending(_py) {
-                let exc_bits = molt_exception_last();
+                let exc_bits = molt_exception_last_pending();
                 molt_exception_clear();
                 let _ = molt_raise(exc_bits);
                 dec_ref_bits(_py, exc_bits);
@@ -3041,7 +3151,7 @@ pub unsafe extern "C" fn molt_get_attr_generic(
             }
             if type_id == TYPE_ID_DATACLASS {
                 let desc_ptr = dataclass_desc_ptr(obj_ptr);
-                if !desc_ptr.is_null() && (*desc_ptr).slots {
+                if !desc_ptr.is_null() && (*desc_ptr).slots && !(*desc_ptr).allows_dict {
                     let name = &(*desc_ptr).name;
                     let type_label = if name.is_empty() {
                         "dataclass"
@@ -3072,7 +3182,7 @@ pub unsafe extern "C" fn molt_get_attr_generic(
                     .unwrap_or_default();
                 let msg = format!("type object '{class_name}' has no attribute '{attr_name}'");
                 let res = attr_error_with_message(_py, &msg);
-                let exc_bits = molt_exception_last();
+                let exc_bits = molt_exception_last_pending();
                 if !obj_from_bits(exc_bits).is_none() {
                     let _ = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);
@@ -3580,6 +3690,17 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                     if attr_name == "__defaults__" || attr_name == "__kwdefaults__" {
                         function_bump_defaults_version(obj_ptr);
                     }
+                    if matches!(
+                        attr_name,
+                        "__molt_bind_kind__"
+                            | "__molt_vararg__"
+                            | "__molt_varkw__"
+                            | "__molt_kwonly_names__"
+                            | "__defaults__"
+                            | "__kwdefaults__"
+                    ) {
+                        crate::call::bind::refresh_function_requires_binder_flag(_py, obj_ptr);
+                    }
                     dec_ref_bits(_py, attr_bits);
                     return MoltObject::none().bits() as i64;
                 }
@@ -3678,7 +3799,7 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                             );
                         }
                     }
-                    if (*desc_ptr).slots {
+                    if !(*desc_ptr).allows_dict {
                         dec_ref_bits(_py, attr_bits);
                         let name = &(*desc_ptr).name;
                         let type_label = if name.is_empty() {
@@ -3788,6 +3909,11 @@ pub unsafe extern "C" fn molt_set_attr_generic(
                         let _ = call_callable2(_py, call_bits, attr_bits, val_bits);
                         dec_ref_bits(_py, attr_bits);
                         return MoltObject::none().bits() as i64;
+                    }
+                    if let Some(offset) = class_own_slot_field_offset(_py, class_ptr, attr_bits) {
+                        let res = object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
+                        dec_ref_bits(_py, attr_bits);
+                        return res as i64;
                     }
                     if let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
                         && descriptor_is_data(_py, desc_bits)
@@ -4196,7 +4322,7 @@ pub(crate) unsafe fn del_attr_ptr(
                         "cannot delete frozen dataclass field",
                     );
                 }
-                if (*desc_ptr).slots {
+                if !(*desc_ptr).allows_dict {
                     let name = &(*desc_ptr).name;
                     let type_label = if name.is_empty() {
                         "dataclass"
@@ -4401,6 +4527,9 @@ pub(crate) unsafe fn object_setattr_raw(
             && object_type_id(class_ptr) == TYPE_ID_TYPE
         {
             slots_info = class_slots_info(_py, class_ptr, attr_bits);
+            if let Some(offset) = class_own_slot_field_offset(_py, class_ptr, attr_bits) {
+                return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits) as i64;
+            }
             if let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
                 && descriptor_is_data(_py, desc_bits)
             {
@@ -4523,6 +4652,23 @@ unsafe fn dataclass_setattr_inner(
             if class_bits != 0
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE
+                && class_own_slot_field_offset(_py, class_ptr, attr_bits).is_some()
+                && let Some(&index) = (*desc_ptr).field_name_to_index.get(attr_name)
+            {
+                let fields = dataclass_fields_mut(obj_ptr);
+                if index < fields.len() {
+                    let old_bits = fields[index];
+                    if old_bits != val_bits {
+                        dec_ref_bits(_py, old_bits);
+                        inc_ref_bits(_py, val_bits);
+                        fields[index] = val_bits;
+                    }
+                }
+                return MoltObject::none().bits() as i64;
+            }
+            if class_bits != 0
+                && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+                && object_type_id(class_ptr) == TYPE_ID_TYPE
                 && let Some(desc_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)
                 && descriptor_is_data(_py, desc_bits)
             {
@@ -4592,7 +4738,7 @@ unsafe fn dataclass_setattr_inner(
                 }
                 return MoltObject::none().bits() as i64;
             }
-            if (*desc_ptr).slots {
+            if !(*desc_ptr).allows_dict {
                 let name = &(*desc_ptr).name;
                 let type_label = if name.is_empty() {
                     "dataclass"
@@ -4879,7 +5025,7 @@ unsafe fn dataclass_delattr_inner(
                 }
                 return MoltObject::none().bits() as i64;
             }
-            if (*desc_ptr).slots {
+            if !(*desc_ptr).allows_dict {
                 let name = &(*desc_ptr).name;
                 let type_label = if name.is_empty() {
                     "dataclass"
@@ -5199,16 +5345,18 @@ pub unsafe extern "C" fn molt_get_attr_object_ic(
 }
 
 /// # Safety
-/// Dereferences raw pointers. Caller must ensure attr_name_ptr is valid UTF-8.
+/// Dereferences pointer bits. Caller must ensure `attr_name_ptr_bits` encodes
+/// valid UTF-8 of length `attr_name_len_bits`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_get_attr_special(
     obj_bits: u64,
-    attr_name_ptr: *const u8,
+    attr_name_ptr_bits: u64,
     attr_name_len_bits: u64,
 ) -> i64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
             let attr_name_len = usize_from_bits(attr_name_len_bits);
+            let attr_name_ptr = attr_name_ptr_bits as usize as *const u8;
             let obj = obj_from_bits(obj_bits);
             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_name_len);
             let attr_name = std::str::from_utf8(slice).unwrap_or("<attr>");
@@ -5345,7 +5493,7 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                 let type_id = object_type_id(obj_ptr);
                 if type_id == TYPE_ID_DATACLASS {
                     let desc_ptr = dataclass_desc_ptr(obj_ptr);
-                    if !desc_ptr.is_null() && (*desc_ptr).slots {
+                    if !desc_ptr.is_null() && (*desc_ptr).slots && !(*desc_ptr).allows_dict {
                         let name = &(*desc_ptr).name;
                         let type_label = if name.is_empty() {
                             "dataclass"
@@ -5380,6 +5528,11 @@ pub extern "C" fn molt_get_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                 ) as u64;
             }
             let obj = obj_from_bits(obj_bits);
+            if attr_name == "__class__" {
+                let class_bits = type_of_bits(_py, obj_bits);
+                inc_ref_bits(_py, class_bits);
+                return class_bits;
+            }
             if (obj.is_int() || obj.is_bool())
                 && let Some(func_bits) = int_method_bits(_py, &attr_name)
             {
@@ -5493,6 +5646,11 @@ pub extern "C" fn molt_get_attr_name_default(
                 return default_bits;
             }
             let obj = obj_from_bits(obj_bits);
+            if attr_name == "__class__" {
+                let class_bits = type_of_bits(_py, obj_bits);
+                inc_ref_bits(_py, class_bits);
+                return class_bits;
+            }
             if (obj.is_int() || obj.is_bool())
                 && let Some(func_bits) = int_method_bits(_py, &attr_name)
             {
@@ -5517,7 +5675,7 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             return raise_attr_name_type_error(_py, name_bits);
         };
         if exception_pending(_py) {
-            let exc_bits = molt_exception_last();
+            let exc_bits = molt_exception_last_pending();
             if exception_is_attribute_error(_py, exc_bits) {
                 clear_exception(_py);
                 dec_ref_bits(_py, exc_bits);
@@ -5532,12 +5690,14 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
             if object_type_id(name_ptr) != TYPE_ID_STRING {
                 return raise_attr_name_type_error(_py, name_bits);
             }
+            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<attr>".to_string());
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 if attr_lookup_ptr(_py, obj_ptr, name_bits).is_some() {
                     return MoltObject::from_bool(true).bits();
                 }
                 if exception_pending(_py) {
-                    let exc_bits = molt_exception_last();
+                    let exc_bits = molt_exception_last_pending();
                     if exception_is_attribute_error(_py, exc_bits) {
                         clear_exception(_py);
                         dec_ref_bits(_py, exc_bits);
@@ -5549,6 +5709,9 @@ pub extern "C" fn molt_has_attr_name(obj_bits: u64, name_bits: u64) -> u64 {
                     return MoltObject::from_bool(false).bits();
                 }
                 return MoltObject::from_bool(false).bits();
+            }
+            if attr_name == "__class__" {
+                return MoltObject::from_bool(true).bits();
             }
         }
         MoltObject::from_bool(false).bits()

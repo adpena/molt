@@ -19,6 +19,8 @@ tls = ["dep:rustls", "dep:webpki-roots"]
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 libc = "0.2"
+num-bigint = "0.4"
+num-traits = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustls = { version = "0.23", optional = true }

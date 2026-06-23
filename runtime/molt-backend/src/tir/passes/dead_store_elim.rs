@@ -415,6 +415,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         attrs_changed: 0,
         ops_removed: total_removed,
         ops_added: 0,
+        facts_changed: 0,
     }
 }
 

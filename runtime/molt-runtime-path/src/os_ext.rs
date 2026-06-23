@@ -1508,8 +1508,19 @@ pub extern "C" fn molt_os_lseek(fd_bits: u64, pos_bits: u64, how_bits: u64) -> u
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            #[cfg(unix)]
             let result =
                 unsafe { libc::lseek(fd as libc::c_int, pos as libc::off_t, how as libc::c_int) };
+            #[cfg(windows)]
+            let result = unsafe {
+                libc::lseek64(
+                    fd as libc::c_int,
+                    pos as libc::c_longlong,
+                    how as libc::c_int,
+                )
+            };
+            #[cfg(not(any(unix, windows)))]
+            let result = -1;
             if result == -1 {
                 let err = std::io::Error::last_os_error();
                 if let Some(errno) = err.raw_os_error() {

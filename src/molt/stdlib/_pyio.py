@@ -13,6 +13,7 @@ import os
 import abc
 import codecs
 import errno
+import locale
 import stat
 import sys
 
@@ -2304,13 +2305,7 @@ class TextIOWrapper(TextIOBase):
         return chars
 
     def _get_locale_encoding(self):
-        try:
-            import locale
-        except ImportError:
-            # Importing locale may fail if Python is being built
-            return "utf-8"
-        else:
-            return locale.getencoding()
+        return locale.getencoding()
 
     def _rewind_decoded_chars(self, n):
         """Rewind the _decoded_chars buffer."""

@@ -206,7 +206,14 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
 
     assert ops[0] == {"kind": "code_slots_init", "value": 17}
     assert not any(op.get("kind") == "code_slot_set" for op in ops)
-    assert any(op.get("s_value") == "molt_init_sys" for op in ops)
+    init_idx = next(
+        i for i, op in enumerate(ops) if op.get("s_value") == "molt_init_sys"
+    )
+    assert ops[init_idx + 1] == {"kind": "check_exception", "value": 1}
+    assert ops[-3]["kind"] == "label"
+    assert ops[-3]["value"] == 1
+    assert ops[-2]["kind"] == "const_none"
+    assert ops[-1] == {"kind": "ret", "args": [ops[-2]["out"]]}
 
 
 def test_isolate_import_module_order_is_explicit_import_bounded() -> None:
@@ -456,8 +463,9 @@ def test_hostfed_call_bundle_parses_profile_and_classifies_timeout(
         encoding="utf-8",
     )
 
-    def _fake_run_cmd(cmd, env, capture, tty, log, timeout_s=None):
+    def _fake_run_cmd(cmd, env, capture, tty, log, timeout_s=None, limits=None):
         assert timeout_s == 12.5
+        assert limits is None
         return bench_wasm._RunResult(
             returncode=124,
             stderr=(

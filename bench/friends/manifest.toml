@@ -114,13 +114,13 @@ timeout_sec = 1800
 
 [suite.runners.cpython]
 json_stdout = true
-env = { PYTHONDONTWRITEBYTECODE = "1" }
+env = { DEV = "PYTHON", PYTHONDONTWRITEBYTECODE = "1" }
 run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "typeguard", "python", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
 
 [suite.runners.molt]
 json_stdout = true
-env = { MOLT_MODULE_ROOTS = "{suite_root}", MOLT_EXTERNAL_STATIC_PACKAGES = "tinygrad", PYTHONDONTWRITEBYTECODE = "1", PYTHONPATH = "{repo_root}/src:{suite_root}" }
-run_cmd = ["{python}", "-m", "molt.cli", "run", "--profile", "dev", "--build-arg=--stdlib-profile", "--build-arg=full", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
+env = { DEV = "PYTHON", MOLT_MODULE_ROOTS = "{suite_root}", MOLT_EXTERNAL_STATIC_PACKAGES = "tinygrad", MOLT_STATIC_IMPORT_MODULES = "tinygrad.runtime.ops_python tinygrad.uop.ops", PYTHONDONTWRITEBYTECODE = "1", PYTHONPATH = "{repo_root}/src:{suite_root}" }
+run_cmd = ["{project_python}", "-m", "molt.cli", "run", "--profile", "dev", "--capabilities", "ffi.unsafe", "--build-arg=--stdlib-profile", "--build-arg=full", "--build-arg=--rebuild", "--build-arg=--no-cache", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
 
 [suite.runners.tinygrad]
 env = { CHECK_OOB = "0", DEV = "CPU", PYTHONDONTWRITEBYTECODE = "1", TYPED = "1", PYTHONPATH = "{suite_root}" }
@@ -149,12 +149,12 @@ run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "numpy==
 role = "workload"
 json_stdout = true
 env = { MOLT_MODULE_ROOTS = "{suite_root}", MOLT_EXTERNAL_STATIC_PACKAGES = "numpy", PYTHONPATH = "{repo_root}/src:{suite_root}" }
-run_cmd = ["{python}", "-m", "molt.cli", "run", "--profile", "dev", "--build-arg=--stdlib-profile", "--build-arg=full", "--capabilities", "module.extension.exec", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "5", "--json", "--require-module-under", "{suite_root}"]
+run_cmd = ["{project_python}", "-m", "molt.cli", "run", "--profile", "dev", "--build-arg=--stdlib-profile", "--build-arg=full", "--capabilities", "module.extension.exec", "{repo_root}/tools/numpy_off_shelf_adapter.py", "--", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "5", "--json", "--require-module-under", "{suite_root}"]
 
 [suite.runners.c_api_scan]
 role = "c_api_scan"
 json_stdout = true
-run_cmd = ["{python}", "-m", "molt.cli", "extension", "scan", "--project", "{suite_root}", "--source", "{suite_root}/numpy", "--fail-on-missing", "--json"]
+run_cmd = ["{project_python}", "-m", "molt.cli", "extension", "scan", "--project", "{suite_root}", "--source", "{suite_root}/numpy", "--fail-on-missing", "--json"]
 
 [suite.runners.source_audit]
 role = "custody_audit"

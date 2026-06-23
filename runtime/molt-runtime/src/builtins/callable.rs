@@ -139,7 +139,7 @@ unsafe fn is_callable_for_ptr(_py: &crate::PyToken<'_>, ptr: *mut u8) -> bool {
                 let call_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.call_name, b"__call__");
                 let desc_ptr = dataclass_desc_ptr(ptr);
-                if !desc_ptr.is_null() && !(*desc_ptr).slots {
+                if !desc_ptr.is_null() && (*desc_ptr).allows_dict {
                     let dict_bits = dataclass_dict_bits(ptr);
                     if dict_bits != 0
                         && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()

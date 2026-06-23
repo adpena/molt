@@ -277,6 +277,7 @@ define_method_cache! {
     list_contains,
     list_reversed,
     str_iter,
+    str_hash,
     str_len,
     str_str,
     str_contains,
@@ -380,6 +381,7 @@ define_method_cache! {
     bytearray_setitem,
     bytearray_delitem,
     int_new,
+    int_hash,
     int_int,
     int_index,
     int_bit_length,
@@ -545,6 +547,9 @@ define_method_cache! {
     int_as_integer_ratio,
     int_conjugate,
     int_is_integer,
+    float_new,
+    float_hash,
+    float_float,
     float_as_integer_ratio,
     float_conjugate,
     float_hex,
@@ -728,6 +733,7 @@ pub(crate) fn intern_runtime_static_name(_py: &PyToken<'_>, name: &'static [u8])
     intern_static_name(_py, slot, name)
 }
 
+#[cfg(any(feature = "stdlib_math", feature = "stdlib_serial"))]
 pub(crate) fn intern_bridge_protocol_name(_py: &PyToken<'_>, key: &[u8]) -> Option<u64> {
     let interned = &crate::runtime_state(_py).interned;
     let (slot, name): (&AtomicU64, &'static [u8]) = match key {
@@ -746,6 +752,7 @@ pub(crate) fn intern_bridge_protocol_name(_py: &PyToken<'_>, key: &[u8]) -> Opti
     Some(intern_static_name(_py, slot, name))
 }
 
+#[cfg(feature = "stdlib_logging_ext")]
 pub(crate) fn intern_bridge_write_name(_py: &PyToken<'_>, key: &[u8]) -> Option<u64> {
     match key {
         b"write" => Some(intern_static_name(

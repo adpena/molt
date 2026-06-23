@@ -1,6 +1,6 @@
 /// The TIR type system. Designed for progressive refinement:
 /// values start as DynBox and get refined to concrete types.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 pub enum TirType {
     // Unboxed scalars (register-resident)
     I64,
@@ -56,7 +56,7 @@ pub enum TirType {
 }
 
 /// Function signature for `TirType::Func`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 pub struct FuncSignature {
     pub params: Vec<TirType>,
     pub return_type: Box<TirType>,

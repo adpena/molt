@@ -23,8 +23,9 @@ pub extern "C" fn molt_set_contains(container_bits: u64, item_bits: u64) -> u64 
                     return MoltObject::none().bits();
                 }
                 let order = set_order(ptr);
+                let hashes = set_hashes(ptr);
                 let table = set_table(ptr);
-                let found = set_find_entry(_py, order, table, item_bits);
+                let found = set_find_entry(_py, order, hashes, table, item_bits);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
@@ -167,10 +168,12 @@ pub extern "C" fn molt_set_pop(set_bits: u64) -> u64 {
                         return raise_exception::<_>(_py, "KeyError", "pop from an empty set");
                     }
                     let key_bits = order.pop().unwrap_or_else(|| MoltObject::none().bits());
+                    let hashes = set_hashes(ptr);
+                    hashes.pop();
                     let entries = order.len();
                     let table = set_table(ptr);
                     let capacity = set_table_capacity(entries.max(1));
-                    set_rebuild(_py, order, table, capacity);
+                    set_rebuild(_py, order, hashes, table, capacity);
                     if order.is_empty() {
                         (*header_from_obj_ptr(ptr)).flags &=
                             !crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -304,11 +307,13 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
                             return MoltObject::none().bits();
                         }
                         let other_order = set_order(other_ptr);
+                        let other_hashes = set_hashes(other_ptr);
                         let other_table = set_table(other_ptr);
                         let set_entries = set_order(set_ptr).clone();
                         let mut new_entries = Vec::with_capacity(set_entries.len());
                         for entry in set_entries {
-                            let found = set_find_entry(_py, other_order, other_table, entry);
+                            let found =
+                                set_find_entry(_py, other_order, other_hashes, other_table, entry);
                             if exception_pending(_py) {
                                 return MoltObject::none().bits();
                             }
@@ -328,11 +333,13 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
                             return MoltObject::none().bits();
                         };
                         let other_order = set_order(view_set_ptr);
+                        let other_hashes = set_hashes(view_set_ptr);
                         let other_table = set_table(view_set_ptr);
                         let set_entries = set_order(set_ptr).clone();
                         let mut new_entries = Vec::with_capacity(set_entries.len());
                         for entry in set_entries {
-                            let found = set_find_entry(_py, other_order, other_table, entry);
+                            let found =
+                                set_find_entry(_py, other_order, other_hashes, other_table, entry);
                             if exception_pending(_py) {
                                 dec_ref_bits(_py, bits);
                                 return MoltObject::none().bits();
@@ -357,11 +364,13 @@ pub extern "C" fn molt_set_intersection_update(set_bits: u64, other_bits: u64) -
                         return MoltObject::none().bits();
                     };
                     let other_order = set_order(other_ptr);
+                    let other_hashes = set_hashes(other_ptr);
                     let other_table = set_table(other_ptr);
                     let set_entries = set_order(set_ptr).clone();
                     let mut new_entries = Vec::with_capacity(set_entries.len());
                     for entry in set_entries {
-                        let found = set_find_entry(_py, other_order, other_table, entry);
+                        let found =
+                            set_find_entry(_py, other_order, other_hashes, other_table, entry);
                         if exception_pending(_py) {
                             dec_ref_bits(_py, other_set_bits);
                             return MoltObject::none().bits();
@@ -395,11 +404,13 @@ pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> 
                             return MoltObject::none().bits();
                         }
                         let other_order = set_order(other_ptr);
+                        let other_hashes = set_hashes(other_ptr);
                         let other_table = set_table(other_ptr);
                         let set_entries = set_order(set_ptr).clone();
                         let mut new_entries = Vec::with_capacity(set_entries.len());
                         for entry in set_entries {
-                            let found = set_find_entry(_py, other_order, other_table, entry);
+                            let found =
+                                set_find_entry(_py, other_order, other_hashes, other_table, entry);
                             if exception_pending(_py) {
                                 return MoltObject::none().bits();
                             }
@@ -419,11 +430,13 @@ pub extern "C" fn molt_set_difference_update(set_bits: u64, other_bits: u64) -> 
                             return MoltObject::none().bits();
                         };
                         let other_order = set_order(view_set_ptr);
+                        let other_hashes = set_hashes(view_set_ptr);
                         let other_table = set_table(view_set_ptr);
                         let set_entries = set_order(set_ptr).clone();
                         let mut new_entries = Vec::with_capacity(set_entries.len());
                         for entry in set_entries {
-                            let found = set_find_entry(_py, other_order, other_table, entry);
+                            let found =
+                                set_find_entry(_py, other_order, other_hashes, other_table, entry);
                             if exception_pending(_py) {
                                 dec_ref_bits(_py, bits);
                                 return MoltObject::none().bits();
@@ -486,13 +499,16 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                             return MoltObject::none().bits();
                         }
                         let other_order = set_order(other_ptr);
+                        let other_hashes = set_hashes(other_ptr);
                         let other_table = set_table(other_ptr);
                         let set_entries = set_order(set_ptr).clone();
+                        let set_hashes_vec = set_hashes(set_ptr).clone();
                         let set_table_ptr = set_table(set_ptr);
                         let mut new_entries =
                             Vec::with_capacity(set_entries.len() + other_order.len());
                         for entry in &set_entries {
-                            let found = set_find_entry(_py, other_order, other_table, *entry);
+                            let found =
+                                set_find_entry(_py, other_order, other_hashes, other_table, *entry);
                             if exception_pending(_py) {
                                 return MoltObject::none().bits();
                             }
@@ -501,8 +517,13 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                             }
                         }
                         for entry in other_order.iter().copied() {
-                            let found =
-                                set_find_entry(_py, set_entries.as_slice(), set_table_ptr, entry);
+                            let found = set_find_entry(
+                                _py,
+                                set_entries.as_slice(),
+                                set_hashes_vec.as_slice(),
+                                set_table_ptr,
+                                entry,
+                            );
                             if exception_pending(_py) {
                                 return MoltObject::none().bits();
                             }
@@ -522,13 +543,16 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                             return MoltObject::none().bits();
                         };
                         let other_order = set_order(view_set_ptr);
+                        let other_hashes = set_hashes(view_set_ptr);
                         let other_table = set_table(view_set_ptr);
                         let set_entries = set_order(set_ptr).clone();
+                        let set_hashes_vec = set_hashes(set_ptr).clone();
                         let set_table_ptr = set_table(set_ptr);
                         let mut new_entries =
                             Vec::with_capacity(set_entries.len() + other_order.len());
                         for entry in &set_entries {
-                            let found = set_find_entry(_py, other_order, other_table, *entry);
+                            let found =
+                                set_find_entry(_py, other_order, other_hashes, other_table, *entry);
                             if exception_pending(_py) {
                                 dec_ref_bits(_py, bits);
                                 return MoltObject::none().bits();
@@ -538,8 +562,13 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                             }
                         }
                         for entry in other_order.iter().copied() {
-                            let found =
-                                set_find_entry(_py, set_entries.as_slice(), set_table_ptr, entry);
+                            let found = set_find_entry(
+                                _py,
+                                set_entries.as_slice(),
+                                set_hashes_vec.as_slice(),
+                                set_table_ptr,
+                                entry,
+                            );
                             if exception_pending(_py) {
                                 dec_ref_bits(_py, bits);
                                 return MoltObject::none().bits();
@@ -566,12 +595,15 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                         return MoltObject::none().bits();
                     };
                     let other_order = set_order(other_ptr);
+                    let other_hashes = set_hashes(other_ptr);
                     let other_table = set_table(other_ptr);
                     let set_entries = set_order(set_ptr).clone();
+                    let set_hashes_vec = set_hashes(set_ptr).clone();
                     let set_table_ptr = set_table(set_ptr);
                     let mut new_entries = Vec::with_capacity(set_entries.len() + other_order.len());
                     for entry in &set_entries {
-                        let found = set_find_entry(_py, other_order, other_table, *entry);
+                        let found =
+                            set_find_entry(_py, other_order, other_hashes, other_table, *entry);
                         if exception_pending(_py) {
                             dec_ref_bits(_py, other_set_bits);
                             return MoltObject::none().bits();
@@ -581,8 +613,13 @@ pub extern "C" fn molt_set_symdiff_update(set_bits: u64, other_bits: u64) -> u64
                         }
                     }
                     for entry in other_order.iter().copied() {
-                        let found =
-                            set_find_entry(_py, set_entries.as_slice(), set_table_ptr, entry);
+                        let found = set_find_entry(
+                            _py,
+                            set_entries.as_slice(),
+                            set_hashes_vec.as_slice(),
+                            set_table_ptr,
+                            entry,
+                        );
                         if exception_pending(_py) {
                             dec_ref_bits(_py, other_set_bits);
                             return MoltObject::none().bits();
@@ -956,15 +993,18 @@ pub extern "C" fn molt_set_isdisjoint(set_bits: u64, other_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let self_order = set_order(ptr);
+            let self_hashes = set_hashes(ptr);
             let other_order = set_order(other_ptr);
-            let (probe_order, probe_table, output) = if self_order.len() <= other_order.len() {
-                (other_order, set_table(other_ptr), self_order)
-            } else {
-                (self_order, set_table(ptr), other_order)
-            };
+            let other_hashes = set_hashes(other_ptr);
+            let (probe_order, probe_hashes, probe_table, output) =
+                if self_order.len() <= other_order.len() {
+                    (other_order, other_hashes, set_table(other_ptr), self_order)
+                } else {
+                    (self_order, self_hashes, set_table(ptr), other_order)
+                };
             let mut disjoint = true;
             for &entry in output.iter() {
-                let found = set_find_entry(_py, probe_order, probe_table, entry);
+                let found = set_find_entry(_py, probe_order, probe_hashes, probe_table, entry);
                 if exception_pending(_py) {
                     if let Some(bits) = drop_bits {
                         dec_ref_bits(_py, bits);
@@ -1004,10 +1044,11 @@ pub extern "C" fn molt_set_issubset(set_bits: u64, other_bits: u64) -> u64 {
             };
             let self_order = set_order(ptr);
             let other_order = set_order(other_ptr);
+            let other_hashes = set_hashes(other_ptr);
             let other_table = set_table(other_ptr);
             let mut subset = true;
             for &entry in self_order.iter() {
-                let found = set_find_entry(_py, other_order, other_table, entry);
+                let found = set_find_entry(_py, other_order, other_hashes, other_table, entry);
                 if exception_pending(_py) {
                     if let Some(bits) = drop_bits {
                         dec_ref_bits(_py, bits);
@@ -1044,11 +1085,12 @@ pub extern "C" fn molt_set_issuperset(set_bits: u64, other_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             };
             let self_order = set_order(ptr);
+            let self_hashes = set_hashes(ptr);
             let self_table = set_table(ptr);
             let other_order = set_order(other_ptr);
             let mut superset = true;
             for &entry in other_order.iter() {
-                let found = set_find_entry(_py, self_order, self_table, entry);
+                let found = set_find_entry(_py, self_order, self_hashes, self_table, entry);
                 if exception_pending(_py) {
                     if let Some(bits) = drop_bits {
                         dec_ref_bits(_py, bits);

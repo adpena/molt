@@ -7,8 +7,33 @@ from typing import Any
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = [
+    "Array",
+    "_SimpleCData",
     "Structure",
+    "c_bool",
+    "c_byte",
+    "c_char",
+    "c_double",
+    "c_float",
+    "c_int8",
+    "c_int16",
+    "c_int32",
+    "c_int64",
     "c_int",
+    "c_long",
+    "c_longlong",
+    "c_short",
+    "c_size_t",
+    "c_ubyte",
+    "c_uint8",
+    "c_uint16",
+    "c_uint32",
+    "c_uint64",
+    "c_uint",
+    "c_ulong",
+    "c_ulonglong",
+    "c_ushort",
+    "c_void_p",
     "pointer",
     "sizeof",
 ]
@@ -29,24 +54,41 @@ class _CType:
     _size = 0
 
     def __init__(self, value: Any = 0) -> None:
-        self.value = int(value)
+        self.value = value
 
     def __int__(self) -> int:
         return int(self.value)
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({int(self.value)})"
+        return f"{self.__class__.__name__}({self.value!r})"
+
+
+_SimpleCData = _CType
 
 
 class _CTypeSpec:
-    def __init__(self, name: str, size: int) -> None:
+    def __init__(
+        self,
+        name: str,
+        size: int,
+        *,
+        kind: str = "int",
+        bits: int | None = None,
+        signed: bool = True,
+    ) -> None:
         self.__name__ = name
         self._size = int(size)
+        self._kind = kind
+        self._bits = int(bits if bits is not None else size * 8)
+        self._signed = bool(signed)
 
     def __call__(self, value: Any = 0) -> _CType:
         _MOLT_CTYPES_REQUIRE_FFI()
         inst = _CType(_MOLT_CTYPES_COERCE_VALUE(self, value))
         inst._size = self._size
+        inst._kind = self._kind
+        inst._bits = self._bits
+        inst._signed = self._signed
         return inst
 
     def __mul__(self, length: int) -> type:
@@ -59,7 +101,30 @@ class _CTypeSpec:
         return self.__name__
 
 
-c_int = _CTypeSpec("c_int", 4)
+c_bool = _CTypeSpec("c_bool", 1, kind="bool", bits=8, signed=False)
+c_char = _CTypeSpec("c_char", 1, kind="char", bits=8, signed=False)
+c_byte = _CTypeSpec("c_byte", 1, bits=8, signed=True)
+c_ubyte = _CTypeSpec("c_ubyte", 1, bits=8, signed=False)
+c_int8 = _CTypeSpec("c_int8", 1, bits=8, signed=True)
+c_uint8 = _CTypeSpec("c_uint8", 1, bits=8, signed=False)
+c_int16 = _CTypeSpec("c_int16", 2, bits=16, signed=True)
+c_uint16 = _CTypeSpec("c_uint16", 2, bits=16, signed=False)
+c_short = _CTypeSpec("c_short", 2, bits=16, signed=True)
+c_ushort = _CTypeSpec("c_ushort", 2, bits=16, signed=False)
+c_int = _CTypeSpec("c_int", 4, bits=32, signed=True)
+c_uint = _CTypeSpec("c_uint", 4, bits=32, signed=False)
+c_int32 = _CTypeSpec("c_int32", 4, bits=32, signed=True)
+c_uint32 = _CTypeSpec("c_uint32", 4, bits=32, signed=False)
+c_long = _CTypeSpec("c_long", 8, bits=64, signed=True)
+c_ulong = _CTypeSpec("c_ulong", 8, bits=64, signed=False)
+c_longlong = _CTypeSpec("c_longlong", 8, bits=64, signed=True)
+c_ulonglong = _CTypeSpec("c_ulonglong", 8, bits=64, signed=False)
+c_int64 = _CTypeSpec("c_int64", 8, bits=64, signed=True)
+c_uint64 = _CTypeSpec("c_uint64", 8, bits=64, signed=False)
+c_size_t = _CTypeSpec("c_size_t", 8, bits=64, signed=False)
+c_void_p = _CTypeSpec("c_void_p", 8, kind="void_p", bits=64, signed=False)
+c_float = _CTypeSpec("c_float", 4, kind="float", bits=32, signed=True)
+c_double = _CTypeSpec("c_double", 8, kind="float", bits=64, signed=True)
 
 
 def _coerce_value(ctype: Any, value: Any) -> Any:
@@ -89,7 +154,7 @@ def _make_array_type(ctype: Any, length: int) -> type:
     if length_val < 0:
         raise ValueError("array length must be non-negative")
 
-    class Array:
+    class Array(_ArrayBase):
         _ctype = ctype
         _length = length_val
         _size = _sizeof_type(ctype) * length_val
@@ -121,6 +186,15 @@ def _make_array_type(ctype: Any, length: int) -> type:
 
     Array.__name__ = f"{ctype.__name__}Array_{length_val}"
     return Array
+
+
+class _ArrayBase:
+    _ctype: Any
+    _length = 0
+    _size = 0
+
+
+Array = _ArrayBase
 
 
 class _StructureMeta(type):

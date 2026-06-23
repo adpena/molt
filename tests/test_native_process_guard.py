@@ -38,6 +38,48 @@ def test_run_native_test_process_uses_shared_memory_guard(
     assert captured["kwargs"]["timeout"] == 60
 
 
+def test_run_native_test_process_exposes_env_overridable_default_timeout(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "ok\n", "")
+
+    monkeypatch.setattr(
+        native_process_guard.process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    native_process_guard.run_native_test_process(
+        ["true"],
+        env={"MOLT_NATIVE_TEST_TIMEOUT_SEC": "1200"},
+        default_timeout=600,
+    )
+
+    assert captured["kwargs"]["timeout"] == 1200
+
+
+def test_run_native_test_process_uses_custom_default_timeout(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, "ok\n", "")
+
+    monkeypatch.setattr(
+        native_process_guard.process_guard_common.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    native_process_guard.run_native_test_process(["true"], default_timeout=600)
+
+    assert captured["kwargs"]["timeout"] == 600
+
+
 def test_run_native_test_process_preserves_check_semantics(monkeypatch) -> None:
     def fake_guarded_completed_process(cmd, **kwargs):  # type: ignore[no-untyped-def]
         return subprocess.CompletedProcess(cmd, 9, "out", "err")

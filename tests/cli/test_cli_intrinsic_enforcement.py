@@ -42,6 +42,27 @@ def test_probe_only_module_status(tmp_path: Path) -> None:
     assert cli._stdlib_module_intrinsic_status(module) == "probe-only"
 
 
+def test_fail_closed_import_policy_gate_is_not_python_only(tmp_path: Path) -> None:
+    module = _write_module(
+        tmp_path,
+        "policy_gate.py",
+        (
+            '"""namespace reservation"""\n'
+            "raise ImportError('not supported; use the explicit adapter')\n"
+        ),
+    )
+    assert cli._stdlib_module_intrinsic_status(module) == "policy-gate"
+
+
+def test_policy_gate_classifier_rejects_executable_python_body(tmp_path: Path) -> None:
+    module = _write_module(
+        tmp_path,
+        "not_policy_gate.py",
+        ('"""not a pure gate"""\nVALUE = 1\nraise ImportError(\'not supported\')\n'),
+    )
+    assert cli._stdlib_module_intrinsic_status(module) == "python-only"
+
+
 def test_syntax_error_with_intrinsic_marker_is_python_only(tmp_path: Path) -> None:
     module = _write_module(
         tmp_path,

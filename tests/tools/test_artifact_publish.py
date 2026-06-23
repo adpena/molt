@@ -180,11 +180,5 @@ def test_atomic_write_json_writes_sorted_indented_text_with_trailing_newline(
     )
 
     assert final.read_text(encoding="utf-8") == (
-        "{\n"
-        '    "a": {\n'
-        '        "b": 1,\n'
-        '        "c": 3\n'
-        "    },\n"
-        '    "z": 2\n'
-        "}\n"
+        '{\n    "a": {\n        "b": 1,\n        "c": 3\n    },\n    "z": 2\n}\n'
     )

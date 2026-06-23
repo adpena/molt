@@ -14,8 +14,9 @@ import json
 import math
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 
 WorkloadFn = Callable[[Any, int], dict[str, Any]]
@@ -86,6 +87,28 @@ def _workload_matmul_2x2(tinygrad: Any, iterations: int) -> dict[str, Any]:
     return {"elapsed_s": elapsed, "result": values}
 
 
+def _workload_attention_core(tinygrad: Any, iterations: int) -> dict[str, Any]:
+    tensor = tinygrad.Tensor
+    q = tensor([[[[1.0, 0.0], [0.0, 1.0]]]])
+    k = tensor([[[[1.0, 0.0], [0.0, 1.0]]]])
+    v = tensor([[[[10.0, 1.0], [2.0, 20.0]]]])
+    mask = tensor([[[[0.0, -1.0e9], [-1.0e9, 0.0]]]])
+    result = None
+    start = time.perf_counter()
+    for _ in range(iterations):
+        result = _realize(
+            q.scaled_dot_product_attention(k, v, attn_mask=mask, is_causal=False)
+        )
+    elapsed = time.perf_counter() - start
+    values = _as_nested_list(result)
+    _assert_close(
+        values,
+        [[[[10.0, 1.0], [2.0, 20.0]]]],
+        workload="attention_core",
+    )
+    return {"elapsed_s": elapsed, "result": values}
+
+
 def _workload_where_promotion(tinygrad: Any, iterations: int) -> dict[str, Any]:
     tensor = tinygrad.Tensor
     cond = tensor([1, 0, 1, 0])
@@ -107,10 +130,7 @@ def _workload_movement_views(tinygrad: Any, iterations: int) -> dict[str, Any]:
     start = time.perf_counter()
     for _ in range(iterations):
         result = _realize(
-            base.pad((1, 0, 0, 1))
-            .shrink(((1, 3), (1, 3)))
-            .flip(1)
-            .contiguous()
+            base.pad((1, 0, 0, 1)).shrink(((1, 3), (1, 3))).flip(1).contiguous()
         )
     elapsed = time.perf_counter() - start
     values = _as_nested_list(result)
@@ -119,6 +139,7 @@ def _workload_movement_views(tinygrad: Any, iterations: int) -> dict[str, Any]:
 
 
 WORKLOADS: dict[str, WorkloadFn] = {
+    "attention_core": _workload_attention_core,
     "elementwise_chain": _workload_elementwise_chain,
     "matmul_2x2": _workload_matmul_2x2,
     "movement_views": _workload_movement_views,
@@ -126,9 +147,40 @@ WORKLOADS: dict[str, WorkloadFn] = {
 }
 
 
-def _import_tinygrad(suite_root: Path | None) -> Any:
-    if suite_root is not None:
-        sys.path.insert(0, str(suite_root.resolve()))
+@contextmanager
+def _suppress_bytecode_writes() -> Iterator[None]:
+    # Off-the-shelf custody requires the upstream checkout to remain byte-clean:
+    # adapter probes must not leave CPython cache files beside pinned sources.
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        yield
+    finally:
+        sys.dont_write_bytecode = previous
+
+
+@contextmanager
+def _suite_root_import_path(suite_root: Path | None) -> Iterator[None]:
+    if suite_root is None:
+        yield
+        return
+    path_entry = str(suite_root.resolve())
+    sys.path.insert(0, path_entry)
+    try:
+        yield
+    finally:
+        if sys.path and sys.path[0] == path_entry:
+            del sys.path[0]
+        else:
+            try:
+                sys.path.remove(path_entry)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"tinygrad suite root escaped sys.path cleanup: {path_entry}"
+                ) from exc
+
+
+def _import_tinygrad() -> Any:
     import tinygrad  # noqa: PLC0415
 
     if not hasattr(tinygrad, "Tensor"):
@@ -142,7 +194,9 @@ def _selected_workloads(name: str) -> list[str]:
     if name == "all":
         return sorted(WORKLOADS)
     if name not in WORKLOADS:
-        raise ValueError(f"unknown workload {name!r}; expected one of {sorted(WORKLOADS)}")
+        raise ValueError(
+            f"unknown workload {name!r}; expected one of {sorted(WORKLOADS)}"
+        )
     return [name]
 
 
@@ -159,17 +213,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_workloads:
         payload = {"workloads": sorted(WORKLOADS)}
-        print(json.dumps(payload, indent=2, sort_keys=True) if args.json else "\n".join(payload["workloads"]))
+        print(
+            json.dumps(payload, indent=2, sort_keys=True)
+            if args.json
+            else "\n".join(payload["workloads"])
+        )
         return 0
     if args.iterations <= 0:
         raise ValueError("--iterations must be positive")
 
-    tinygrad = _import_tinygrad(args.suite_root)
-    selected = _selected_workloads(args.workload)
-    results = {
-        name: {"iterations": args.iterations, **WORKLOADS[name](tinygrad, args.iterations)}
-        for name in selected
-    }
+    with _suppress_bytecode_writes(), _suite_root_import_path(args.suite_root):
+        tinygrad = _import_tinygrad()
+        selected = _selected_workloads(args.workload)
+        results = {
+            name: {
+                "iterations": args.iterations,
+                **WORKLOADS[name](tinygrad, args.iterations),
+            }
+            for name in selected
+        }
     payload = {
         "status": "ok",
         "suite_root": str(args.suite_root.resolve()) if args.suite_root else None,
@@ -180,7 +242,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         for name, entry in results.items():
-            print(f"{name}: {entry['elapsed_s']:.6f}s ({entry['iterations']} iterations)")
+            print(
+                f"{name}: {entry['elapsed_s']:.6f}s ({entry['iterations']} iterations)"
+            )
     return 0
 
 

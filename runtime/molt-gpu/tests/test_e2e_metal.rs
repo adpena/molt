@@ -78,6 +78,20 @@ mod metal_e2e {
         result
     }
 
+    fn run_kernel_metal_vs_cpu_f32(
+        kernel: &FusedKernel,
+        inputs: &[Vec<u8>],
+    ) -> (Vec<f32>, Vec<f32>) {
+        assert_eq!(kernel.bufs[0].dtype, DType::Float32);
+        let out_len = kernel.bufs[0].st.numel() * DType::Float32.size_bytes();
+        let mut cpu_bufs = vec![vec![0u8; out_len]];
+        cpu_bufs.extend(inputs.iter().cloned());
+        interpret::execute_kernel(kernel, &mut cpu_bufs);
+        let cpu = bytes_to_f32(&cpu_bufs[0]);
+        let metal = bytes_to_f32(&run_kernel_metal_bytes(kernel, inputs));
+        (metal, cpu)
+    }
+
     fn materialize_copy_kernel(dtype: DType, src_st: ShapeTracker) -> FusedKernel {
         let numel = src_st.numel();
         FusedKernel {
@@ -799,6 +813,385 @@ mod metal_e2e {
 
         assert_eq!(cpu_result, vec![6.0, 15.0]); // 1+2+3=6, 4+5+6=15
         assert_f32_close(&metal_result, &cpu_result, "MatmulReduceSum", 1e-5);
+    }
+
+    #[test]
+    fn test_metal_e2e_attention_core_masked_sdpa_row() {
+        let query = [1.0f32, 2.0];
+        let keys = [1.0f32, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 1.0];
+        let mask = [1.0f32, 1.0, 0.0, 0.0];
+        let values = [10.0f32, 20.0, 30.0, 40.0];
+        let n_keys = values.len();
+        let head_dim = query.len();
+        let scale = 1.0 / (head_dim as f64).sqrt();
+        let masked_sentinel = -1.0e9f64;
+        let mut tiled_query = Vec::with_capacity(n_keys * head_dim);
+        for _ in 0..n_keys {
+            tiled_query.extend_from_slice(&query);
+        }
+
+        let qk_kernel = FusedKernel {
+            body: Default::default(),
+            ops: vec![
+                FusedOp::elementwise(
+                    PrimitiveOp::Mul,
+                    vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                    DType::Float32,
+                ),
+                FusedOp::reduction(
+                    PrimitiveOp::ReduceSum,
+                    vec![FusedSrc::Op(0)],
+                    DType::Float32,
+                    ReductionDomain::from_axis(&[n_keys, head_dim], 1),
+                ),
+            ],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n_keys, head_dim]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[n_keys, head_dim]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [n_keys as u32, 1, 1],
+            local: [n_keys as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        };
+        let qk_inputs = [f32_to_bytes(&tiled_query), f32_to_bytes(&keys)];
+        let (qk_scores, cpu_qk_scores) = run_kernel_metal_vs_cpu_f32(&qk_kernel, &qk_inputs);
+        assert_f32_close(&qk_scores, &cpu_qk_scores, "SDPAQK", 1e-5);
+        assert_f32_close(&qk_scores, &[1.0, 2.0, 3.0, 4.0], "SDPAQKRef", 1e-5);
+
+        let scale_kernel = FusedKernel {
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Mul,
+                vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Const {
+                        val: scale,
+                        dtype: DType::Float32,
+                    },
+                ],
+                DType::Float32,
+            )],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [n_keys as u32, 1, 1],
+            local: [n_keys as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        };
+        let scale_inputs = [f32_to_bytes(&qk_scores)];
+        let (scaled_scores, cpu_scaled_scores) =
+            run_kernel_metal_vs_cpu_f32(&scale_kernel, &scale_inputs);
+        assert_f32_close(&scaled_scores, &cpu_scaled_scores, "SDPAScale", 1e-6);
+
+        let masked_kernel = FusedKernel {
+            body: Default::default(),
+            ops: vec![FusedOp::elementwise(
+                PrimitiveOp::Where,
+                vec![
+                    FusedSrc::Buf(1),
+                    FusedSrc::Buf(2),
+                    FusedSrc::Const {
+                        val: masked_sentinel,
+                        dtype: DType::Float32,
+                    },
+                ],
+                DType::Float32,
+            )],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [n_keys as u32, 1, 1],
+            local: [n_keys as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        };
+        let masked_inputs = [f32_to_bytes(&mask), f32_to_bytes(&scaled_scores)];
+        let (masked_scores, cpu_masked_scores) =
+            run_kernel_metal_vs_cpu_f32(&masked_kernel, &masked_inputs);
+        assert_f32_close(&masked_scores, &cpu_masked_scores, "SDPAMask", 0.0);
+        assert!(masked_scores[2] < -1.0e8);
+        assert!(masked_scores[3] < -1.0e8);
+
+        let max_kernel = FusedKernel {
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceMax,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n_keys], 0),
+            )],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [1, 1, 1],
+            local: [1, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        };
+        let max_inputs = [f32_to_bytes(&masked_scores)];
+        let (max_values, cpu_max_values) = run_kernel_metal_vs_cpu_f32(&max_kernel, &max_inputs);
+        assert_f32_close(&max_values, &cpu_max_values, "SDPAMax", 1e-6);
+        let max_val = max_values[0];
+
+        let exp_kernel = FusedKernel {
+            body: Default::default(),
+            ops: vec![
+                FusedOp::elementwise(
+                    PrimitiveOp::Sub,
+                    vec![
+                        FusedSrc::Buf(1),
+                        FusedSrc::Const {
+                            val: max_val as f64,
+                            dtype: DType::Float32,
+                        },
+                    ],
+                    DType::Float32,
+                ),
+                FusedOp::elementwise(
+                    PrimitiveOp::Mul,
+                    vec![
+                        FusedSrc::Op(0),
+                        FusedSrc::Const {
+                            val: std::f64::consts::LOG2_E,
+                            dtype: DType::Float32,
+                        },
+                    ],
+                    DType::Float32,
+                ),
+                FusedOp::elementwise(PrimitiveOp::Exp2, vec![FusedSrc::Op(1)], DType::Float32),
+            ],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [n_keys as u32, 1, 1],
+            local: [n_keys as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        };
+        let exp_inputs = [f32_to_bytes(&masked_scores)];
+        let (exp_vals, cpu_exp_vals) = run_kernel_metal_vs_cpu_f32(&exp_kernel, &exp_inputs);
+        assert_f32_close(&exp_vals, &cpu_exp_vals, "SDPAExp", 1e-5);
+
+        let sum_kernel = FusedKernel {
+            body: Default::default(),
+            ops: vec![FusedOp::reduction(
+                PrimitiveOp::ReduceSum,
+                vec![FusedSrc::Buf(1)],
+                DType::Float32,
+                ReductionDomain::from_axis(&[n_keys], 0),
+            )],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [1, 1, 1],
+            local: [1, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        };
+        let sum_inputs = [f32_to_bytes(&exp_vals)];
+        let (sum_vals, cpu_sum_vals) = run_kernel_metal_vs_cpu_f32(&sum_kernel, &sum_inputs);
+        assert_f32_close(&sum_vals, &cpu_sum_vals, "SDPASum", 1e-5);
+        let sum_val = sum_vals[0];
+
+        let prob_kernel = FusedKernel {
+            body: Default::default(),
+            ops: vec![
+                FusedOp::elementwise(
+                    PrimitiveOp::Reciprocal,
+                    vec![FusedSrc::Const {
+                        val: sum_val as f64,
+                        dtype: DType::Float32,
+                    }],
+                    DType::Float32,
+                ),
+                FusedOp::elementwise(
+                    PrimitiveOp::Mul,
+                    vec![FusedSrc::Buf(1), FusedSrc::Op(0)],
+                    DType::Float32,
+                ),
+            ],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [n_keys as u32, 1, 1],
+            local: [n_keys as u32, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        };
+        let prob_inputs = [f32_to_bytes(&exp_vals)];
+        let (probs, cpu_probs) = run_kernel_metal_vs_cpu_f32(&prob_kernel, &prob_inputs);
+        assert_f32_close(&probs, &cpu_probs, "SDPAProb", 1e-5);
+
+        let value_kernel = FusedKernel {
+            body: Default::default(),
+            ops: vec![
+                FusedOp::elementwise(
+                    PrimitiveOp::Mul,
+                    vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                    DType::Float32,
+                ),
+                FusedOp::reduction(
+                    PrimitiveOp::ReduceSum,
+                    vec![FusedSrc::Op(0)],
+                    DType::Float32,
+                    ReductionDomain::from_axis(&[n_keys], 0),
+                ),
+            ],
+            bufs: vec![
+                BufferBinding {
+                    buf_id: 0,
+                    st: ShapeTracker::contiguous(&[1]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Write,
+                },
+                BufferBinding {
+                    buf_id: 1,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+                BufferBinding {
+                    buf_id: 2,
+                    st: ShapeTracker::contiguous(&[n_keys]),
+                    dtype: DType::Float32,
+                    access: BufferAccess::Read,
+                },
+            ],
+            grid: [1, 1, 1],
+            local: [1, 1, 1],
+            spec: None,
+            vectorize_width: 1,
+        };
+        let value_inputs = [f32_to_bytes(&probs), f32_to_bytes(&values)];
+        let (attended, cpu_attended) = run_kernel_metal_vs_cpu_f32(&value_kernel, &value_inputs);
+        assert_f32_close(&attended, &cpu_attended, "SDPAAttended", 1e-4);
+
+        let ref_scores: Vec<f64> = keys
+            .chunks_exact(head_dim)
+            .map(|key| {
+                query
+                    .iter()
+                    .zip(key.iter())
+                    .map(|(&q, &k)| q as f64 * k as f64)
+                    .sum::<f64>()
+                    * scale
+            })
+            .collect();
+        let ref_max = ref_scores
+            .iter()
+            .zip(mask.iter())
+            .filter_map(|(&score, &keep)| (keep != 0.0).then_some(score))
+            .fold(f64::NEG_INFINITY, f64::max);
+        let ref_exps: Vec<f64> = ref_scores
+            .iter()
+            .zip(mask.iter())
+            .map(|(&score, &keep)| {
+                if keep != 0.0 {
+                    (score - ref_max).exp()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let ref_sum: f64 = ref_exps.iter().sum();
+        let ref_probs: Vec<f32> = ref_exps.iter().map(|&exp| (exp / ref_sum) as f32).collect();
+        let ref_attended: f32 = ref_probs
+            .iter()
+            .zip(values.iter())
+            .map(|(&prob, &value)| prob * value)
+            .sum();
+        assert_f32_close(&probs, &ref_probs, "SDPAProbRef", 1e-5);
+        assert_f32_close(&attended, &[ref_attended], "SDPAAttendedRef", 1e-4);
     }
 
     // --- WHERE (ternary) ---

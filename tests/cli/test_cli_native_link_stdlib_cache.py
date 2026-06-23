@@ -25,6 +25,9 @@ def _write_complete_stdlib_contract(stdlib_obj: Path, cache_key: str) -> str:
         '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}\n',
         encoding="utf-8",
     )
+    cli._stdlib_object_digest_sidecar_path(stdlib_obj).write_text(
+        cli._sha256_file(stdlib_obj) + "\n", encoding="utf-8"
+    )
     return manifest
 
 

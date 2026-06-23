@@ -252,6 +252,45 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
 
     let mut out = Vec::new();
 
+    let state_dispatch_targets_by_state: HashMap<i64, BlockId> = func
+        .blocks
+        .values()
+        .flat_map(|block| match &block.terminator {
+            Terminator::StateDispatch { cases, .. } => cases
+                .iter()
+                .map(|(state_id, target, _)| (*state_id, *target))
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect();
+    let mut state_yield_resume_after: HashMap<BlockId, BlockId> = HashMap::new();
+    let mut state_yield_resume_states: HashMap<BlockId, Option<i64>> = HashMap::new();
+    for (bid, block) in &func.blocks {
+        let Some(state_id) = block.ops.iter().find_map(|op| {
+            (op.opcode == OpCode::StateYield)
+                .then(|| attr_int(&op.attrs, "value"))
+                .flatten()
+        }) else {
+            continue;
+        };
+        let Some(&resume_target) = state_dispatch_targets_by_state.get(&state_id) else {
+            continue;
+        };
+        state_yield_resume_after.insert(*bid, resume_target);
+        state_yield_resume_states
+            .entry(resume_target)
+            .and_modify(|slot| {
+                if *slot != Some(state_id) {
+                    *slot = None;
+                }
+            })
+            .or_insert(Some(state_id));
+    }
+    let state_yield_resume_state_for_block: HashMap<BlockId, i64> = state_yield_resume_states
+        .into_iter()
+        .filter_map(|(bid, state)| state.map(|state| (bid, state)))
+        .collect();
+
     // RC drop-insertion substrate (design 20): function-level attrs do NOT
     // round-trip through `FunctionIR`, so drop facts are carried as leading no-op
     // marker `OpIR`s. `drop_inserted` is the full-function RC authority marker
@@ -283,7 +322,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     }
 
     // Compute block visit order (reverse-postorder from entry).
-    let rpo = reverse_postorder(func);
+    let rpo = reverse_postorder(func, &state_yield_resume_after);
     let debug_lower_func = std::env::var("MOLT_DEBUG_LOWER_FUNC").ok();
     let debug_loop_if_return = func.name == "loop_if_return_continue_roundtrip"
         || debug_lower_func.as_deref() == Some(func.name.as_str());
@@ -299,18 +338,41 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     // block's fallback) are assigned fresh IDs guaranteed not to collide.
     let label_id_for_block: HashMap<BlockId, i64> = {
         let used_ids: HashSet<i64> = func.label_id_map.values().copied().collect();
+        let reserved_state_ids: HashSet<i64> = state_yield_resume_state_for_block
+            .values()
+            .copied()
+            .collect();
         let max_used = used_ids.iter().copied().max().unwrap_or(0);
         let max_bid = func.blocks.keys().map(|b| b.0 as i64).max().unwrap_or(0);
         let mut next_fresh = max_used.max(max_bid) + 1;
         let mut mapping = HashMap::new();
-        for bid in func.blocks.keys() {
-            if let Some(&label_val) = func.label_id_map.get(&bid.0) {
-                mapping.insert(*bid, label_val);
+        let mut assigned_ids: HashSet<i64> = HashSet::new();
+        let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
+        block_ids.sort_by_key(|bid| bid.0);
+        for bid in block_ids {
+            if let Some(&state_id) = state_yield_resume_state_for_block.get(&bid) {
+                let collides_with_other_original_label = func
+                    .label_id_map
+                    .iter()
+                    .any(|(&other_bid, &label_id)| other_bid != bid.0 && label_id == state_id);
+                if !collides_with_other_original_label && assigned_ids.insert(state_id) {
+                    mapping.insert(bid, state_id);
+                    continue;
+                }
+            }
+            if let Some(&label_val) = func.label_id_map.get(&bid.0)
+                && assigned_ids.insert(label_val)
+            {
+                mapping.insert(bid, label_val);
             } else {
-                while used_ids.contains(&next_fresh) {
+                while used_ids.contains(&next_fresh)
+                    || reserved_state_ids.contains(&next_fresh)
+                    || assigned_ids.contains(&next_fresh)
+                {
                     next_fresh += 1;
                 }
-                mapping.insert(*bid, next_fresh);
+                mapping.insert(bid, next_fresh);
+                assigned_ids.insert(next_fresh);
                 next_fresh += 1;
             }
         }
@@ -318,21 +380,6 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     };
     let block_label_id =
         |bid: &BlockId| -> i64 { label_id_for_block.get(bid).copied().unwrap_or(bid.0 as i64) };
-    let state_case_labels: HashMap<BlockId, Vec<i64>> = {
-        let mut labels: HashMap<BlockId, Vec<i64>> = HashMap::new();
-        for block in func.blocks.values() {
-            if let Terminator::StateDispatch { cases, .. } = &block.terminator {
-                for (state_id, target, _) in cases {
-                    labels.entry(*target).or_default().push(*state_id);
-                }
-            }
-        }
-        for values in labels.values_mut() {
-            values.sort_unstable();
-            values.dedup();
-        }
-        labels
-    };
     if debug_loop_if_return {
         eprintln!("LOWER_DEBUG_LABEL_MAP: {:?}", label_id_for_block);
     }
@@ -1043,21 +1090,20 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         // headers stay in the generic label/jump form: emitting only loop_start
         // here creates a half-structured loop with no matching loop_end.
         if *bid != func.entry_block {
-            if let Some(labels) = state_case_labels.get(bid) {
-                for state_id in labels {
-                    out.push(OpIR {
-                        kind: "state_label".to_string(),
-                        value: Some(*state_id),
-                        ..OpIR::default()
-                    });
-                }
+            let label_id = block_label_id(bid);
+            let label_kind = if state_yield_resume_state_for_block
+                .get(bid)
+                .is_some_and(|state_id| *state_id == label_id)
+            {
+                "state_label"
             } else {
-                out.push(OpIR {
-                    kind: "label".to_string(),
-                    value: Some(block_label_id(bid)),
-                    ..OpIR::default()
-                });
-            }
+                "label"
+            };
+            out.push(OpIR {
+                kind: label_kind.to_string(),
+                value: Some(label_id),
+                ..OpIR::default()
+            });
 
             // Load block argument variables into SSA-named vars.
             if let Some(param_vars) = block_param_vars.get(bid) {
@@ -1580,6 +1626,7 @@ fn lower_op_many(op: &TirOp) -> Vec<OpIR> {
         && let Some(result) = op.results.first()
     {
         let args = operand_args(op);
+        let source_var = args.first().cloned();
         return vec![
             OpIR {
                 kind: "store_var".to_string(),
@@ -1589,8 +1636,7 @@ fn lower_op_many(op: &TirOp) -> Vec<OpIR> {
             },
             OpIR {
                 kind: "copy_var".to_string(),
-                args: Some(args),
-                var: attr_str(&op.attrs, "_var"),
+                var: source_var,
                 out: Some(value_var(*result)),
                 ..OpIR::default()
             },
@@ -1742,12 +1788,13 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::StoreAttr => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "set_attr".to_string());
+            let out = result_or_stream_out(op, out_var);
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
                 value: attr_int(&op.attrs, "value"),
-                out: out_var,
+                out,
                 class_name: attr_str(&op.attrs, "_class"),
                 ..OpIR::default()
             })
@@ -1765,10 +1812,11 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::StoreIndex => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "store_index".to_string());
+            let out = result_or_stream_out(op, out_var);
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
-                out: out_var,
+                out,
                 container_type: attr_str(&op.attrs, "container_type"),
                 // Propagate BCE proof so codegen can skip bounds checks.
                 bce_safe: attr_bool(&op.attrs, "bce_safe"),
@@ -2275,19 +2323,23 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         OpCode::DelAttr => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "del_attr".to_string());
+            let out = result_or_stream_out(op, out_var);
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
                 s_value: attr_str(&op.attrs, "name").or_else(|| attr_str(&op.attrs, "s_value")),
+                out,
                 ..OpIR::default()
             })
         }
         OpCode::DelIndex => {
             let kind =
                 attr_str(&op.attrs, "_original_kind").unwrap_or_else(|| "del_index".to_string());
+            let out = result_or_stream_out(op, out_var);
             Some(OpIR {
                 kind,
                 args: Some(operand_args(op)),
+                out,
                 ..OpIR::default()
             })
         }
@@ -3021,7 +3073,7 @@ fn emit_block_ops_inner(
     out: &mut Vec<OpIR>,
 ) {
     for op in &block.ops {
-        if op.opcode == OpCode::CheckException
+        if dominators::is_exception_transfer_edge(op.opcode)
             && let Some(orig_id) = attr_int(&op.attrs, "value")
             && let Some(&handler_block) = original_label_to_block.get(&orig_id)
         {
@@ -3261,7 +3313,7 @@ fn emit_terminator(
         }
 
         Terminator::Unreachable => {
-            if block_ends_with_suspend_op(block) {
+            if block.ops.iter().any(|op| op.opcode == OpCode::StateYield) {
                 return;
             }
             out.push(OpIR {
@@ -3270,18 +3322,6 @@ fn emit_terminator(
             });
         }
     }
-}
-
-fn block_ends_with_suspend_op(block: &TirBlock) -> bool {
-    block.ops.last().is_some_and(|op| {
-        matches!(
-            op.opcode,
-            OpCode::StateTransition
-                | OpCode::StateYield
-                | OpCode::ChanSendYield
-                | OpCode::ChanRecvYield
-        )
-    })
 }
 
 /// Emit `store_var` ops to pass values to the target block's argument variables.
@@ -3309,7 +3349,10 @@ fn emit_block_arg_stores(
 // RPO traversal
 // ---------------------------------------------------------------------------
 
-fn reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
+fn reverse_postorder(
+    func: &TirFunction,
+    state_yield_resume_after: &HashMap<BlockId, BlockId>,
+) -> Vec<BlockId> {
     let mut visited: HashSet<BlockId> = HashSet::new();
     let mut postorder: Vec<BlockId> = Vec::new();
     let mut stack: Vec<(BlockId, bool)> = vec![(func.entry_block, false)];
@@ -3327,7 +3370,10 @@ fn reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
 
         if let Some(block) = func.blocks.get(&bid) {
             // Push successors in reverse order for correct DFS.
-            let succs = successors_of(block);
+            let succs = match &block.terminator {
+                Terminator::StateDispatch { default, .. } => vec![*default],
+                _ => successors_of(block),
+            };
             for succ in succs.into_iter().rev() {
                 if !visited.contains(&succ) {
                     stack.push((succ, false));
@@ -3337,16 +3383,32 @@ fn reverse_postorder(func: &TirFunction) -> Vec<BlockId> {
     }
 
     postorder.reverse();
+    let mut ordered: Vec<BlockId> = Vec::with_capacity(postorder.len());
+    let mut emitted: HashSet<BlockId> = HashSet::new();
+    for bid in postorder {
+        if emitted.insert(bid) {
+            ordered.push(bid);
+        }
+        if let Some(&resume_bid) = state_yield_resume_after.get(&bid)
+            && emitted.insert(resume_bid)
+        {
+            ordered.push(resume_bid);
+        }
+    }
+    let mut postorder = ordered;
 
     // Append any blocks not reachable via normal control flow (e.g. exception
-    // handler blocks only reachable via check_exception implicit edges).
+    // handler blocks only reachable via check_exception implicit edges, or
+    // state-machine resume blocks only reachable via state_switch dispatch).
     // These must still appear in the output so the native backend can create
     // state_blocks for their labels.
-    if func.has_exception_handling && visited.len() < func.blocks.len() {
+    if (func.has_exception_handling || !state_yield_resume_after.is_empty())
+        && postorder.len() < func.blocks.len()
+    {
         let mut unreachable: Vec<BlockId> = func
             .blocks
             .keys()
-            .filter(|bid| !visited.contains(bid))
+            .filter(|bid| !emitted.contains(bid))
             .copied()
             .collect();
         // Sort for deterministic output.
@@ -3522,6 +3584,12 @@ fn attr_str(attrs: &super::ops::AttrDict, key: &str) -> Option<String> {
     }
 }
 
+/// TIR results and SimpleIR stream outputs are separate: zero-result
+/// side-effect ops may still carry `_simple_out` for round-trip fidelity.
+fn result_or_stream_out(op: &TirOp, result_out: Option<String>) -> Option<String> {
+    result_out.or_else(|| attr_str(&op.attrs, "_simple_out"))
+}
+
 fn attr_bool(attrs: &super::ops::AttrDict, key: &str) -> Option<bool> {
     match attrs.get(key) {
         Some(AttrValue::Bool(b)) => Some(*b),
@@ -3620,157 +3688,97 @@ mod tests {
     }
 
     #[test]
-    fn lower_to_simple_keeps_suspend_resume_next_op_canonical() {
+    fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
         let mut func = TirFunction::new(
-            "generator_resume_try_region_suspend_roundtrip".into(),
+            "state_yield_resume_continuation_is_linearized_immediately_after_suspend".into(),
             vec![],
-            TirType::None,
+            TirType::DynBox,
         );
         let entry = func.entry_block;
-        let yielding = func.fresh_block();
-        let resume = func.fresh_block();
-        let handler = func.fresh_block();
-        let yielded = func.fresh_value();
+        let yield_block = func.fresh_block();
+        let unrelated_unreachable = func.fresh_block();
+        let resume_block = func.fresh_block();
+        let yielded_pair = func.fresh_value();
+        let done_value = func.fresh_value();
 
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::StateDispatch {
-            cases: vec![(7, resume, vec![])],
-            default: yielding,
+            cases: vec![(5, resume_block, vec![])],
+            default: yield_block,
             default_args: vec![],
         };
 
-        let mut state_attrs = AttrDict::new();
-        state_attrs.insert("value".into(), AttrValue::Int(7));
+        let mut yield_attrs = AttrDict::new();
+        yield_attrs.insert("value".into(), AttrValue::Int(5));
         func.blocks.insert(
-            yielding,
+            yield_block,
             TirBlock {
-                id: yielding,
+                id: yield_block,
                 args: vec![],
                 ops: vec![
                     TirOp {
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstNone,
                         operands: vec![],
-                        results: vec![yielded],
+                        results: vec![yielded_pair],
                         attrs: AttrDict::new(),
                         source_span: None,
                     },
                     TirOp {
                         dialect: Dialect::Molt,
                         opcode: OpCode::StateYield,
-                        operands: vec![yielded],
+                        operands: vec![yielded_pair],
                         results: vec![],
-                        attrs: state_attrs,
+                        attrs: yield_attrs,
                         source_span: None,
                     },
                 ],
                 terminator: Terminator::Unreachable,
             },
         );
-
-        let mut try_attrs = AttrDict::new();
-        try_attrs.insert("value".into(), AttrValue::Int(99));
         func.blocks.insert(
-            resume,
+            unrelated_unreachable,
             TirBlock {
-                id: resume,
-                args: vec![],
-                ops: vec![
-                    TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::TryStart,
-                        operands: vec![],
-                        results: vec![],
-                        attrs: try_attrs.clone(),
-                        source_span: None,
-                    },
-                    TirOp {
-                        dialect: Dialect::Molt,
-                        opcode: OpCode::TryEnd,
-                        operands: vec![],
-                        results: vec![],
-                        attrs: try_attrs,
-                        source_span: None,
-                    },
-                ],
-                terminator: Terminator::Return { values: vec![] },
-            },
-        );
-        func.blocks.insert(
-            handler,
-            TirBlock {
-                id: handler,
+                id: unrelated_unreachable,
                 args: vec![],
                 ops: vec![],
                 terminator: Terminator::Return { values: vec![] },
             },
         );
-        func.has_exception_handling = true;
-        func.label_id_map.insert(yielding.0, 11);
-        func.label_id_map.insert(resume.0, 7);
-        func.label_id_map.insert(handler.0, 99);
+        func.blocks.insert(
+            resume_block,
+            TirBlock {
+                id: resume_block,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstNone,
+                    operands: vec![],
+                    results: vec![done_value],
+                    attrs: AttrDict::new(),
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![done_value],
+                },
+            },
+        );
 
         let ops = lower_to_simple_ir(&func);
-        let yield_idx = ops
+        let state_yield_idx = ops
             .iter()
             .position(|op| op.kind == "state_yield")
-            .expect("state_yield must survive lower_to_simple");
-        let resume_label = ops
-            .get(yield_idx + 1)
-            .expect("state_yield resume continuation must stay adjacent");
-
-        assert_ne!(
-            resume_label.kind, "unreachable",
-            "state_yield is the terminal suspend event; a synthetic unreachable \
-             after it becomes the next-op resume target on relift: {ops:?}"
-        );
+            .expect("state_yield op");
+        let next = ops
+            .get(state_yield_idx + 1)
+            .expect("resume continuation after state_yield");
+        assert_eq!(next.kind, "state_label", "{ops:?}");
+        assert_eq!(next.value, Some(5), "{ops:?}");
         assert!(
-            matches!(resume_label.kind.as_str(), "label" | "state_label"),
-            "state_yield must hand the next-op slot to real linear control, not \
-             a synthetic terminator that lower_from_simple can mistake for the \
-             resume edge: {ops:?}"
-        );
-        let state_label_idx = ops
-            .iter()
-            .position(|op| op.kind == "state_label" && op.value == Some(7))
-            .expect("StateDispatch case block must roundtrip as state_label 7");
-        assert!(
-            ops.iter()
-                .skip(state_label_idx + 1)
-                .take_while(|op| !matches!(op.kind.as_str(), "label" | "state_label"))
-                .any(|op| op.kind == "try_start" && op.value == Some(99)),
-            "the dispatch case state_label must lead the exception-region resume \
-             continuation: {ops:?}"
-        );
-        let relifted = lower_to_tir(&FunctionIR {
-            name: "generator_resume_try_region_suspend_roundtrip".into(),
-            ops,
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-        });
-        let entry = relifted
-            .blocks
-            .get(&relifted.entry_block)
-            .expect("relifted entry block must exist");
-        let Terminator::StateDispatch { cases, .. } = &entry.terminator else {
-            panic!("relifted function must keep a StateDispatch terminator: {relifted:?}");
-        };
-        let (_, target, _) = cases
-            .iter()
-            .find(|(state_id, _, _)| *state_id == 7)
-            .expect("state 7 case must survive relift");
-        let target_block = relifted
-            .blocks
-            .get(target)
-            .expect("state 7 target block must exist");
-        assert!(
-            target_block.ops.iter().any(|op| {
-                op.opcode == OpCode::TryStart
-                    && matches!(op.attrs.get("value"), Some(AttrValue::Int(99)))
-            }),
-            "state 7 dispatch must target the try-reopening resume block, not \
-             the post-yield cleanup block: {relifted:?}"
+            ops[state_yield_idx + 1..]
+                .iter()
+                .take_while(|op| !(op.kind == "ret" || op.kind == "ret_void"))
+                .all(|op| op.kind != "unreachable"),
+            "pure state_yield suspend must not emit an unreachable before its resume continuation: {ops:?}"
         );
     }
 
@@ -3825,13 +3833,12 @@ mod tests {
             .expect("result-carrying store_var must define its SSA alias result");
         assert_eq!(
             alias.var.as_deref(),
-            Some("slot"),
-            "store_var alias result must preserve the Python local name"
+            Some(source_name.as_str()),
+            "store_var alias result must preserve the canonical copy_var source"
         );
         assert_eq!(
-            alias.args.as_deref(),
-            Some(&[source_name][..]),
-            "store_var alias result must copy the stored source bits"
+            alias.args, None,
+            "store_var alias copy_var must not duplicate its source through args"
         );
 
         let relifted = lower_to_tir(&FunctionIR {
@@ -3854,6 +3861,22 @@ mod tests {
                 })
             }),
             "store_var lifetime marker must survive a SimpleIR relift"
+        );
+        let relifted_alias = relifted
+            .blocks
+            .values()
+            .flat_map(|block| block.ops.iter())
+            .find(|op| {
+                op.opcode == OpCode::Copy
+                    && op.attrs.get("_simple_out").is_some_and(
+                        |out| matches!(out, AttrValue::Str(out) if out == &stored_name),
+                    )
+            })
+            .expect("store_var alias copy_var must survive a SimpleIR relift");
+        assert_eq!(
+            relifted_alias.operands.len(),
+            1,
+            "store_var alias relift must have exactly one source operand"
         );
     }
 
@@ -4709,6 +4732,96 @@ mod tests {
                         .is_some_and(|args| args == &vec![entry_value.clone()])
             }),
             "check_exception lowering must materialize handler arg stores before the handler label: {ops:?}"
+        );
+        assert!(
+            ops.iter().any(|op| {
+                op.kind == "load_var"
+                    && op.var.as_deref() == Some(handler_param.as_str())
+                    && op.out.as_deref() == Some(handler_value.as_str())
+            }),
+            "handler block must still reload its synthesized arg slot: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn try_start_materializes_handler_arg_stores() {
+        let mut func = TirFunction::new("try_start_handler_args".into(), vec![], TirType::I64);
+
+        let value = func.fresh_value();
+        let exit_block = func.fresh_block();
+        let handler_block = func.fresh_block();
+        let handler_arg = func.fresh_value();
+
+        let mut const_attrs = AttrDict::new();
+        const_attrs.insert("value".into(), AttrValue::Int(7));
+        let mut handler_attrs = AttrDict::new();
+        handler_attrs.insert("value".into(), AttrValue::Int(100));
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![value],
+            attrs: const_attrs,
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::TryStart,
+            operands: vec![value],
+            results: vec![],
+            attrs: handler_attrs,
+            source_span: None,
+        });
+        entry.terminator = Terminator::Branch {
+            target: exit_block,
+            args: vec![],
+        };
+
+        func.blocks.insert(
+            exit_block,
+            TirBlock {
+                id: exit_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        func.blocks.insert(
+            handler_block,
+            TirBlock {
+                id: handler_block,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![handler_arg],
+                },
+            },
+        );
+
+        func.has_exception_handling = true;
+        func.label_id_map.insert(handler_block.0, 100);
+
+        let ops = lower_to_simple_ir(&func);
+        let handler_param = format!("_bb{}_arg0", handler_block.0);
+        let handler_value = value_var(handler_arg);
+        let entry_value = value_var(value);
+
+        assert!(
+            ops.iter().any(|op| {
+                op.kind == "store_var"
+                    && op.var.as_deref() == Some(handler_param.as_str())
+                    && op
+                        .args
+                        .as_ref()
+                        .is_some_and(|args| args == &vec![entry_value.clone()])
+            }),
+            "try_start lowering must materialize handler arg stores before the handler label: {ops:?}"
         );
         assert!(
             ops.iter().any(|op| {
@@ -5696,6 +5809,47 @@ mod tests {
     }
 
     #[test]
+    fn tir_round_trip_preserves_guarded_field_init_offset() {
+        use crate::ir::{FunctionIR, OpIR};
+        use crate::tir::lower_from_simple::lower_to_tir;
+
+        let func_ir = FunctionIR {
+            name: "guarded_init".into(),
+            params: vec![
+                "obj".into(),
+                "class_bits".into(),
+                "expected".into(),
+                "value".into(),
+            ],
+            ops: vec![OpIR {
+                kind: "guarded_field_init".into(),
+                args: Some(vec![
+                    "obj".into(),
+                    "class_bits".into(),
+                    "expected".into(),
+                    "value".into(),
+                ]),
+                s_value: Some("x".into()),
+                value: Some(24),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        };
+
+        let tir_func = lower_to_tir(&func_ir);
+        let round_tripped = lower_to_simple_ir(&tir_func);
+        let init_op = round_tripped
+            .iter()
+            .find(|op| op.kind == "guarded_field_init")
+            .expect("expected guarded_field_init after TIR round-trip");
+
+        assert_eq!(init_op.s_value.as_deref(), Some("x"));
+        assert_eq!(init_op.value, Some(24));
+    }
+
+    #[test]
     fn tir_round_trip_preserves_guarded_field_get_offset() {
         use crate::ir::{FunctionIR, OpIR};
         use crate::tir::lower_from_simple::lower_to_tir;
@@ -5771,10 +5925,7 @@ mod tests {
 
         assert_eq!(init_op.s_value.as_deref(), Some("x"));
         assert_eq!(init_op.value, Some(24));
-        assert!(
-            init_op.out.is_some(),
-            "guarded_field_init must preserve an output"
-        );
+        assert_eq!(init_op.out.as_deref(), Some("init_result"));
     }
 
     #[test]
@@ -5854,6 +6005,19 @@ mod tests {
                     ..OpIR::default()
                 },
                 OpIR {
+                    kind: "guarded_field_init".into(),
+                    args: Some(vec![
+                        "obj".into(),
+                        "class_bits".into(),
+                        "expected".into(),
+                        "value".into(),
+                    ]),
+                    s_value: Some("x".into()),
+                    value: Some(24),
+                    class_name: Some("Point".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
                     kind: "load".into(),
                     args: Some(vec!["obj".into()]),
                     value: Some(8),
@@ -5876,7 +6040,11 @@ mod tests {
 
         let tir_func = lower_to_tir(&func_ir);
         let round_tripped = lower_to_simple_ir(&tir_func);
-        for kind in ["guarded_field_get", "guarded_field_set"] {
+        for kind in [
+            "guarded_field_get",
+            "guarded_field_set",
+            "guarded_field_init",
+        ] {
             let op = round_tripped
                 .iter()
                 .find(|op| op.kind == kind)
@@ -6650,6 +6818,13 @@ mod tests {
                     ..OpIR::default()
                 },
                 OpIR {
+                    kind: "tuple_new".into(),
+                    args: Some(vec![]),
+                    out: Some("v94".into()),
+                    type_hint: Some("tuple".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
                     kind: "code_new".into(),
                     args: Some(vec![
                         "v88".into(),
@@ -6657,6 +6832,7 @@ mod tests {
                         "v89".into(),
                         "v83".into(),
                         "v93".into(),
+                        "v94".into(),
                         "v68".into(),
                         "v81".into(),
                         "v81".into(),

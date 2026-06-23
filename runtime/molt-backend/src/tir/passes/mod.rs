@@ -3,6 +3,7 @@
 
 pub mod alias_analysis;
 pub mod bce;
+pub mod block_arg_prune;
 pub mod block_versioning;
 pub mod branchless_count;
 pub mod canonicalize;
@@ -54,11 +55,19 @@ pub struct PassStats {
     pub attrs_changed: usize,
     pub ops_removed: usize,
     pub ops_added: usize,
+    /// Semantic facts or function/op attributes changed without adding/removing
+    /// executable ops. These are pipeline mutations: restoring a pre-pass
+    /// snapshot would erase backend authority facts such as `drop_inserted`.
+    pub facts_changed: usize,
 }
 
 impl PassStats {
     pub fn total_changes(&self) -> usize {
-        self.values_changed + self.attrs_changed + self.ops_removed + self.ops_added
+        self.values_changed
+            + self.attrs_changed
+            + self.ops_removed
+            + self.ops_added
+            + self.facts_changed
     }
 }
 
@@ -71,7 +80,7 @@ pub const PIPELINE_PASS_CAPACITY_HINT: usize = 32;
 
 /// Run the full TIR optimization pipeline on a function.
 ///
-/// This is the public entry point. It builds the canonical 30-pass pipeline
+/// This is the public entry point. It builds the canonical optimization pipeline
 /// ([`pass_manager::build_default_pipeline`](crate::tir::pass_manager::build_default_pipeline))
 /// and runs it through the [`PassManager`](crate::tir::pass_manager::PassManager),
 /// which threads a per-function

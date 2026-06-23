@@ -33,9 +33,10 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    OperandCategory, OperandOwnership, TerminatorKind, kind_consumed_operand_table,
-    kind_container_absorbed_operand_table, kind_result_absorbs_operand_ownership_table,
-    kind_result_finalizer_source_operand_table, opcode_container_absorbed_operand,
+    ExplicitReleaseOperands, OperandCategory, OperandOwnership, TerminatorKind,
+    kind_consumed_operand_table, kind_container_absorbed_operand_table,
+    kind_result_absorbs_operand_ownership_table, kind_result_finalizer_source_operand_table,
+    opcode_container_absorbed_operand, opcode_explicit_release_operands_table,
     opcode_operand_ownership_table, opcode_result_absorbs_operand_ownership_table,
     opcode_result_is_conditionally_valid_only_on_edge, terminator_operand_is_transferred,
 };
@@ -48,7 +49,7 @@ use super::alias_analysis::{
 };
 use super::escape_analysis::finalizer_alloc_roots;
 
-fn original_kind(op: &TirOp) -> Option<&str> {
+pub(crate) fn original_kind(op: &TirOp) -> Option<&str> {
     match op.attrs.get("_original_kind") {
         Some(AttrValue::Str(kind)) => Some(kind.as_str()),
         _ => None,
@@ -94,7 +95,7 @@ pub(crate) fn op_consumed_operand_root(
 /// moving a heap ownership obligation. DropPlacement may remap SSA through this
 /// alias during CFG surgery; the classifier read itself stays in the ownership
 /// fact module.
-pub(crate) fn copy_no_heap_move_alias(op: &TirOp) -> Option<NoHeapCopyAlias> {
+pub(crate) fn copy_transparent_alias(op: &TirOp) -> Option<NoHeapCopyAlias> {
     if op.opcode != OpCode::Copy || op.operands.len() != 1 || op.results.len() != 1 {
         return None;
     }
@@ -460,8 +461,8 @@ impl PythonLifetimeFacts {
                     }
                 }
 
-                match op.opcode {
-                    OpCode::DecRef => {
+                match opcode_explicit_release_operands_table(op.opcode, op.operands.len()) {
+                    ExplicitReleaseOperands::All => {
                         facts.explicit_release_roots.extend(
                             op.operands
                                 .iter()
@@ -469,14 +470,12 @@ impl PythonLifetimeFacts {
                                 .map(|operand| aliases.root(operand)),
                         );
                     }
-                    OpCode::DeleteVar => {
-                        if let Some(&old_slot_value) = op.operands.get(1) {
-                            facts
-                                .explicit_release_roots
-                                .insert(aliases.root(old_slot_value));
+                    ExplicitReleaseOperands::One(idx) => {
+                        if let Some(&released) = op.operands.get(idx) {
+                            facts.explicit_release_roots.insert(aliases.root(released));
                         }
                     }
-                    _ => {}
+                    ExplicitReleaseOperands::None => {}
                 }
             }
         }
@@ -601,7 +600,21 @@ impl OwnershipLattice {
                             .filter(|root| finalizer_sensitive_roots.contains(root))
                             .collect();
                         if !absorbed_sensitive.is_empty() {
-                            statement_release_finalizer_roots.extend(absorbed_sensitive);
+                            statement_release_finalizer_roots
+                                .extend(absorbed_sensitive.iter().copied());
+                            for &absorbed in &absorbed_sensitive {
+                                if statement_release_finalizer_boundary_keys
+                                    .insert((block_id, op_index, absorbed))
+                                {
+                                    statement_release_finalizer_boundaries.push(
+                                        StatementReleaseFinalizerBoundary {
+                                            block: block_id,
+                                            op_index,
+                                            root: absorbed,
+                                        },
+                                    );
+                                }
+                            }
                             for &result in &op.results {
                                 if finalizer_sensitive_roots.insert(aliases.root(result)) {
                                     changed = true;
@@ -893,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_no_heap_move_alias_selects_only_single_operand_copy_aliases() {
+    fn copy_transparent_alias_selects_only_single_operand_copy_aliases() {
         let mut f = func();
         let source = f.fresh_value();
         let alias_result = f.fresh_value();
@@ -902,7 +915,7 @@ mod tests {
 
         let alias = original_kind_copy("copy_var", vec![source], vec![alias_result]);
         assert_eq!(
-            copy_no_heap_move_alias(&alias),
+            copy_transparent_alias(&alias),
             Some(NoHeapCopyAlias {
                 source,
                 result: alias_result,
@@ -910,18 +923,18 @@ mod tests {
         );
 
         let non_no_heap = original_kind_copy("list_new", vec![source], vec![fresh_result]);
-        assert_eq!(copy_no_heap_move_alias(&non_no_heap), None);
+        assert_eq!(copy_transparent_alias(&non_no_heap), None);
 
         let too_many_operands =
             original_kind_copy("copy_var", vec![source, extra], vec![alias_result]);
-        assert_eq!(copy_no_heap_move_alias(&too_many_operands), None);
+        assert_eq!(copy_transparent_alias(&too_many_operands), None);
 
         let too_many_results =
             original_kind_copy("copy_var", vec![source], vec![alias_result, extra]);
-        assert_eq!(copy_no_heap_move_alias(&too_many_results), None);
+        assert_eq!(copy_transparent_alias(&too_many_results), None);
 
         let non_copy = op(OpCode::Call, vec![source], vec![alias_result]);
-        assert_eq!(copy_no_heap_move_alias(&non_copy), None);
+        assert_eq!(copy_transparent_alias(&non_copy), None);
     }
 
     #[test]
@@ -1352,6 +1365,48 @@ mod tests {
         assert!(
             lat.statement_release_finalizer_roots().contains(&a),
             "Copy-preserved list_new must mark the absorbed producer"
+        );
+    }
+
+    #[test]
+    fn copy_class_def_absorbs_descriptor_into_class_owner() {
+        let mut f = func();
+        let name = f.fresh_value();
+        let descriptor = f.fresh_value();
+        let class_obj = f.fresh_value();
+        let entry_id = f.entry_block;
+        let entry = f.blocks.get_mut(&entry_id).unwrap();
+        entry.ops.push(del_op(descriptor));
+        entry.ops.push(original_kind_copy(
+            "class_def",
+            vec![name, descriptor],
+            vec![class_obj],
+        ));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let aliases = build_alias_union_find(&f);
+        let descriptor_root = aliases.root(descriptor);
+        let class_obj_root = aliases.root(class_obj);
+        let lat = OwnershipLattice::compute(&f, &aliases);
+        assert!(lat.is_finalizer_sensitive_root(descriptor_root));
+        assert!(
+            lat.is_finalizer_sensitive_root(class_obj_root),
+            "Copy-preserved class_def must keep class-body descriptor lifetime behind the class owner"
+        );
+        assert!(
+            lat.statement_release_finalizer_roots()
+                .contains(&descriptor_root),
+            "Copy-preserved class_def must mark the absorbed descriptor temp"
+        );
+        assert!(
+            lat.statement_release_finalizer_boundaries()
+                .iter()
+                .any(|boundary| {
+                    boundary.block == entry_id
+                        && boundary.op_index == 1
+                        && boundary.root == descriptor_root
+                }),
+            "class_def must expose the exact class-construction absorption boundary"
         );
     }
 

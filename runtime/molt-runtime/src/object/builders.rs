@@ -300,7 +300,8 @@ pub extern "C" fn molt_alloc_class_static(size_bits: u64, class_bits: u64) -> u6
 pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<*mut Vec<usize>>();
+        + std::mem::size_of::<*mut Vec<usize>>()
+        + std::mem::size_of::<*mut Vec<u64>>();
     let ptr = alloc_object(_py, total, TYPE_ID_DICT);
     if ptr.is_null() {
         return ptr;
@@ -318,8 +319,17 @@ pub(crate) fn alloc_dict_with_pairs(_py: &PyToken<'_>, pairs: &[u64]) -> *mut u8
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
+        let Some(hashes_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<u64>(0)
+        else {
+            drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
+            drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         *(ptr as *mut *mut Vec<u64>) = order_ptr;
         *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
+        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
+            as *mut *mut Vec<u64>) = hashes_ptr;
         for pair in pairs.chunks(2) {
             if pair.len() == 2 {
                 dict_set_in_place(_py, ptr, pair[0], pair[1]);
@@ -336,7 +346,8 @@ pub(crate) fn alloc_set_like_with_entries(
 ) -> *mut u8 {
     let total = std::mem::size_of::<MoltHeader>()
         + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<*mut Vec<usize>>();
+        + std::mem::size_of::<*mut Vec<usize>>()
+        + std::mem::size_of::<*mut Vec<u64>>();
     let ptr = alloc_object(_py, total, type_id);
     if ptr.is_null() {
         return ptr;
@@ -359,8 +370,18 @@ pub(crate) fn alloc_set_like_with_entries(
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
             return std::ptr::null_mut();
         };
+        let Some(hashes_ptr) =
+            crate::object::backing::tracked_vec_box_with_capacity::<u64>(entries.len())
+        else {
+            drop(crate::object::backing::tracked_vec_box_from_raw(table_ptr));
+            drop(crate::object::backing::tracked_vec_box_from_raw(order_ptr));
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        };
         *(ptr as *mut *mut Vec<u64>) = order_ptr;
         *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) = table_ptr;
+        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
+            as *mut *mut Vec<u64>) = hashes_ptr;
         for &entry in entries {
             set_add_in_place(_py, ptr, entry, HashContext::SetElement);
         }
@@ -1064,12 +1085,13 @@ pub(crate) fn alloc_union_type(_py: &PyToken<'_>, args_bits: u64) -> *mut u8 {
 pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> *mut u8 {
     // Slots 0..9 are the function object fields (fn_ptr, arity, dict, closure,
     // code, trampoline, annotations, annotate, call_target, globals); slot 10
-    // is the `__defaults__`/`__kwdefaults__` mutation version stamp (a plain
-    // u64 counter, NOT a refcounted object — dealloc leaves it alone). It is 0
-    // at creation and bumped only on a user-reachable mutation of those attrs,
-    // so the compile-time devirt's baked-literal defaults stay valid IFF the
-    // version is still 0 ("never mutated since creation").
-    let total = std::mem::size_of::<MoltHeader>() + 11 * std::mem::size_of::<u64>();
+    // is the `__defaults__`/`__kwdefaults__` mutation version stamp, and slot 11
+    // is the explicit globals-override flag used by `types.FunctionType`.
+    // Slots 10/11 are plain u64 values, NOT refcounted objects — dealloc leaves
+    // them alone. The defaults version is 0 at creation and bumped only on a
+    // user-reachable mutation of defaults attrs, so compile-time defaults stay
+    // valid IFF the version is still 0 ("never mutated since creation").
+    let total = std::mem::size_of::<MoltHeader>() + 12 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_FUNCTION);
     if ptr.is_null() {
         return ptr;
@@ -1087,6 +1109,7 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = std::ptr::null();
         *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         inc_ref_bits(_py, none_bits);
         let globals_bits = crate::molt_globals_builtin();
         if globals_bits != 0 && !obj_from_bits(globals_bits).is_none() {
@@ -1100,10 +1123,10 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
 #[allow(clippy::too_many_arguments)]
 /// Allocate a code object and retain all object-valued fields.
 ///
-/// `filename_bits`, `name_bits`, `linetable_bits`, and `varnames_bits` are
-/// borrowed inputs.  The returned code object owns one reference to each
-/// non-zero field; callers that created temporary field objects must drop their
-/// creator reference after this constructor returns.
+/// `filename_bits`, `name_bits`, `linetable_bits`, `varnames_bits`, and
+/// `names_bits` are borrowed inputs.  The returned code object owns one
+/// reference to each non-zero field; callers that created temporary field
+/// objects must drop their creator reference after this constructor returns.
 pub(crate) fn alloc_code_obj(
     _py: &PyToken<'_>,
     filename_bits: u64,
@@ -1111,11 +1134,15 @@ pub(crate) fn alloc_code_obj(
     firstlineno: i64,
     linetable_bits: u64,
     varnames_bits: u64,
+    names_bits: u64,
     argcount: u64,
     posonlyargcount: u64,
     kwonlyargcount: u64,
 ) -> *mut u8 {
-    let total = std::mem::size_of::<MoltHeader>() + 8 * std::mem::size_of::<u64>();
+    // Slots 0..8 are CPython-visible code facts, 9..11 hold the Molt callable
+    // identity, and 12..16 retain immutable signature facts used by
+    // `types.FunctionType` reconstruction.
+    let total = std::mem::size_of::<MoltHeader>() + 17 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_CODE);
     if ptr.is_null() {
         return ptr;
@@ -1126,9 +1153,18 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut i64) = firstlineno;
         *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = linetable_bits;
         *(ptr.add(4 * std::mem::size_of::<u64>()) as *mut u64) = varnames_bits;
-        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = argcount;
-        *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = posonlyargcount;
-        *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = kwonlyargcount;
+        *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = names_bits;
+        *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = argcount;
+        *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = posonlyargcount;
+        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut u64) = kwonlyargcount;
+        *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(12 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(13 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(14 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(15 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(16 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         if filename_bits != 0 {
             inc_ref_bits(_py, filename_bits);
         }
@@ -1140,6 +1176,9 @@ pub(crate) fn alloc_code_obj(
         }
         if varnames_bits != 0 {
             inc_ref_bits(_py, varnames_bits);
+        }
+        if names_bits != 0 {
+            inc_ref_bits(_py, names_bits);
         }
     }
     ptr
@@ -1166,9 +1205,16 @@ pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         return std::ptr::null_mut();
     }
     let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
+    let name_key_ptr = alloc_string(_py, b"__name__");
+    if name_key_ptr.is_null() {
+        dec_ref_bits(_py, dict_bits);
+        return std::ptr::null_mut();
+    }
+    let name_key_bits = MoltObject::from_ptr(name_key_ptr).bits();
     let total = std::mem::size_of::<MoltHeader>() + 2 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_MODULE);
     if ptr.is_null() {
+        dec_ref_bits(_py, name_key_bits);
         dec_ref_bits(_py, dict_bits);
         return ptr;
     }
@@ -1176,6 +1222,12 @@ pub(crate) fn alloc_module_obj(_py: &PyToken<'_>, name_bits: u64) -> *mut u8 {
         *(ptr as *mut u64) = name_bits;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = dict_bits;
         inc_ref_bits(_py, name_bits);
+        dict_set_in_place(_py, dict_ptr, name_key_bits, name_bits);
+        dec_ref_bits(_py, name_key_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return std::ptr::null_mut();
+        }
         // Mark module objects as immortal.  The native backend's Cranelift
         // code generation emits dec_ref_obj calls for every SSA value whose
         // last-use point is reached (Perceus-style reference counting).

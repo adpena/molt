@@ -233,6 +233,7 @@ extern "C" fn c_api_test_bound_identity(self_bits: u64, arg_bits: u64) -> u64 {
 }
 
 static FINALIZER_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static SET_NAME_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -244,7 +245,85 @@ extern "C" fn c_api_test_finalizer_records(self_bits: u64) -> u64 {
     })
 }
 
-extern "C" fn c_api_test_init_stores_tag_borrowed_self(self_bits: u64, tag_bits: u64) -> u64 {
+extern "C" fn c_api_test_set_name_records(self_bits: u64, owner_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ self missing");
+        }
+        if obj_from_bits(owner_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ owner missing");
+        }
+        if obj_from_bits(name_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ name missing");
+        }
+        SET_NAME_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        none_bits()
+    })
+}
+
+extern "C" fn c_api_test_set_name_deletes_owner_attr(
+    self_bits: u64,
+    owner_bits: u64,
+    name_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ self missing");
+        }
+        if obj_from_bits(owner_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ owner missing");
+        }
+        if obj_from_bits(name_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__set_name__ name missing");
+        }
+        SET_NAME_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+        let _ = crate::molt_del_attr_name(owner_bits, name_bits);
+        if exception_pending(_py) {
+            return none_bits();
+        }
+
+        // Prove `molt_class_apply_set_name` retained the borrowed class-dict
+        // key/value pair across arbitrary hook execution.  Without that owner,
+        // deleting the class attr above can free both objects before this point.
+        inc_ref_bits(_py, self_bits);
+        dec_ref_bits(_py, self_bits);
+        inc_ref_bits(_py, name_bits);
+        dec_ref_bits(_py, name_bits);
+        none_bits()
+    })
+}
+
+extern "C" fn c_api_test_descriptor_get_deletes_owner_attr(
+    self_bits: u64,
+    _instance_bits: u64,
+    owner_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__get__ self missing");
+        }
+        if obj_from_bits(owner_bits).is_none() {
+            return raise_exception::<u64>(_py, "RuntimeError", "__get__ owner missing");
+        }
+        let name_bits = unsafe { molt_string_from(b"marker".as_ptr(), 6) };
+        assert!(!obj_from_bits(name_bits).is_none());
+        let _ = crate::molt_del_attr_name(owner_bits, name_bits);
+        dec_ref_bits(_py, name_bits);
+        if exception_pending(_py) {
+            return none_bits();
+        }
+
+        // `descriptor_bind` must own the descriptor while `__get__` runs.  The
+        // owner-class deletion above removes the class-dict owner, so this
+        // retain/release pair catches stale borrowed descriptor bits.
+        inc_ref_bits(_py, self_bits);
+        dec_ref_bits(_py, self_bits);
+
+        unsafe { molt_string_from(b"descriptor-value".as_ptr(), 16) }
+    })
+}
+
+extern "C" fn c_api_test_init_stores_tag_and_borrows_self(self_bits: u64, tag_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if obj_from_bits(self_bits).is_none() {
             return raise_exception::<u64>(_py, "RuntimeError", "__init__ self missing");
@@ -311,9 +390,9 @@ fn create_guarded_test_class(
     let class_bits = unsafe {
         crate::object::ops::molt_guarded_class_def(
             name_bits,
-            bases.as_ptr(),
+            bases.as_ptr() as usize as u64,
             bases.len() as u64,
-            attr_storage.as_ptr(),
+            attr_storage.as_ptr() as usize as u64,
             attrs.len() as u64,
             std::mem::size_of::<u64>() as i64,
             1,
@@ -323,6 +402,194 @@ fn create_guarded_test_class(
     assert!(!obj_from_bits(class_bits).is_none());
     dec_ref_bits(_py, name_bits);
     (class_bits, attr_storage)
+}
+
+fn heap_refcount(bits: u64) -> u32 {
+    let ptr = obj_from_bits(bits).as_ptr().expect("expected heap object");
+    unsafe {
+        (*crate::object::header_from_obj_ptr(ptr))
+            .ref_count
+            .load(Ordering::Acquire)
+    }
+}
+
+#[test]
+fn guarded_class_def_retains_attr_values_after_source_drop() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        let value_bits = unsafe { molt_string_from(b"owned-class-attr".as_ptr(), 16) };
+        assert!(!obj_from_bits(value_bits).is_none());
+        let source_refcount = heap_refcount(value_bits);
+        let (class_bits, attr_storage) =
+            create_guarded_test_class(_py, b"AttrOwner", &[(b"marker", value_bits)]);
+        assert_eq!(
+            heap_refcount(value_bits),
+            source_refcount + 1,
+            "class definition must retain heap attribute values"
+        );
+
+        dec_ref_bits(_py, value_bits);
+
+        let attr_bits = attr_storage[0];
+        let got_bits = molt_object_getattr(class_bits, attr_bits);
+        assert_eq!(got_bits, value_bits);
+        dec_ref_bits(_py, got_bits);
+
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, class_bits);
+    });
+}
+
+#[test]
+fn guarded_class_def_set_name_keeps_descriptor_attr_value_owner() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        SET_NAME_CALL_COUNT.store(0, Ordering::SeqCst);
+        let set_name_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_set_name_records",
+                c_api_test_set_name_records as *const (),
+            ),
+            3,
+        );
+        assert!(!set_name_ptr.is_null());
+        let set_name_bits = MoltObject::from_ptr(set_name_ptr).bits();
+        let descriptor_class_bits = create_test_heap_class(
+            _py,
+            b"DescriptorWithSetName",
+            &[(b"__set_name__", set_name_bits)],
+        );
+        let _ = crate::molt_class_apply_set_name(descriptor_class_bits);
+        let descriptor_class_ptr = obj_from_bits(descriptor_class_bits)
+            .as_ptr()
+            .expect("descriptor class ptr");
+        let descriptor_bits = unsafe { crate::alloc_instance_for_class(_py, descriptor_class_ptr) };
+        assert!(!obj_from_bits(descriptor_bits).is_none());
+        let source_refcount = heap_refcount(descriptor_bits);
+
+        let (owner_class_bits, attr_storage) =
+            create_guarded_test_class(_py, b"OwnerWithDescriptor", &[(b"marker", descriptor_bits)]);
+        crate::builtins::attr::clear_attr_tls_caches(_py);
+        assert_eq!(SET_NAME_CALL_COUNT.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            heap_refcount(descriptor_bits),
+            source_refcount + 1,
+            "class dict must retain descriptor after __set_name__ hook dispatch"
+        );
+
+        dec_ref_bits(_py, descriptor_bits);
+
+        let attr_bits = attr_storage[0];
+        let got_bits = molt_object_getattr(owner_class_bits, attr_bits);
+        assert_eq!(got_bits, descriptor_bits);
+        dec_ref_bits(_py, got_bits);
+
+        for attr_bits in attr_storage.into_iter().step_by(2) {
+            dec_ref_bits(_py, attr_bits);
+        }
+        dec_ref_bits(_py, owner_class_bits);
+        dec_ref_bits(_py, descriptor_class_bits);
+        dec_ref_bits(_py, set_name_bits);
+    });
+}
+
+#[test]
+fn class_apply_set_name_retains_entries_across_hook_mutation() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        SET_NAME_CALL_COUNT.store(0, Ordering::SeqCst);
+        let set_name_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_set_name_deletes_owner_attr",
+                c_api_test_set_name_deletes_owner_attr as *const (),
+            ),
+            3,
+        );
+        assert!(!set_name_ptr.is_null());
+        let set_name_bits = MoltObject::from_ptr(set_name_ptr).bits();
+        let descriptor_class_bits = create_test_heap_class(
+            _py,
+            b"DescriptorDeletingOwnerAttr",
+            &[(b"__set_name__", set_name_bits)],
+        );
+        let _ = crate::molt_class_apply_set_name(descriptor_class_bits);
+        let descriptor_class_ptr = obj_from_bits(descriptor_class_bits)
+            .as_ptr()
+            .expect("descriptor class ptr");
+        let descriptor_bits = unsafe { crate::alloc_instance_for_class(_py, descriptor_class_ptr) };
+        assert!(!obj_from_bits(descriptor_bits).is_none());
+
+        let owner_class_bits = create_test_heap_class(
+            _py,
+            b"OwnerWithDeletingDescriptor",
+            &[(b"marker", descriptor_bits)],
+        );
+        dec_ref_bits(_py, descriptor_bits);
+
+        let res_bits = crate::molt_class_apply_set_name(owner_class_bits);
+        assert!(obj_from_bits(res_bits).is_none());
+        assert!(!exception_pending(_py));
+        assert_eq!(SET_NAME_CALL_COUNT.load(Ordering::SeqCst), 1);
+
+        dec_ref_bits(_py, owner_class_bits);
+        dec_ref_bits(_py, descriptor_class_bits);
+        dec_ref_bits(_py, set_name_bits);
+    });
+}
+
+#[test]
+fn descriptor_bind_retains_descriptor_across_get_mutation() {
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::builtins::attr::clear_attr_tls_caches(_py);
+        let get_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_descriptor_get_deletes_owner_attr",
+                c_api_test_descriptor_get_deletes_owner_attr as *const (),
+            ),
+            3,
+        );
+        assert!(!get_ptr.is_null());
+        let get_bits = MoltObject::from_ptr(get_ptr).bits();
+        let descriptor_class_bits =
+            create_test_heap_class(_py, b"DescriptorDeletingOnGet", &[(b"__get__", get_bits)]);
+        let descriptor_class_ptr = obj_from_bits(descriptor_class_bits)
+            .as_ptr()
+            .expect("descriptor class ptr");
+        let descriptor_bits = unsafe { crate::alloc_instance_for_class(_py, descriptor_class_ptr) };
+        assert!(!obj_from_bits(descriptor_bits).is_none());
+
+        let owner_class_bits =
+            create_test_heap_class(_py, b"OwnerDescriptorGet", &[(b"marker", descriptor_bits)]);
+        let owner_class_ptr = obj_from_bits(owner_class_bits)
+            .as_ptr()
+            .expect("owner class ptr");
+        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, owner_class_ptr) };
+        assert!(!obj_from_bits(inst_bits).is_none());
+        dec_ref_bits(_py, descriptor_bits);
+
+        let attr_bits = unsafe { molt_string_from(b"marker".as_ptr(), 6) };
+        assert!(!obj_from_bits(attr_bits).is_none());
+        let got_bits = molt_object_getattr(inst_bits, attr_bits);
+        assert_eq!(
+            string_obj_to_owned(obj_from_bits(got_bits)).as_deref(),
+            Some("descriptor-value")
+        );
+        assert!(!exception_pending(_py));
+
+        dec_ref_bits(_py, got_bits);
+        dec_ref_bits(_py, attr_bits);
+        dec_ref_bits(_py, inst_bits);
+        dec_ref_bits(_py, owner_class_bits);
+        dec_ref_bits(_py, descriptor_class_bits);
+        dec_ref_bits(_py, get_bits);
+        crate::builtins::attr::clear_attr_tls_caches(_py);
+    });
 }
 
 #[test]
@@ -506,7 +773,7 @@ fn call_bind_constructed_finalizer_element_survives_append_temp_drop_until_clear
         assert!(!del_func_ptr.is_null());
         let init_func_ptr = crate::object::builders::alloc_function_obj(
             _py,
-            c_api_test_init_stores_tag_borrowed_self as *const () as usize as u64,
+            c_api_test_init_stores_tag_and_borrows_self as *const () as usize as u64,
             2,
         );
         assert!(!init_func_ptr.is_null());

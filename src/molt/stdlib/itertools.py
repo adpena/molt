@@ -1,4 +1,4 @@
-# Shim churn audit: 6 intrinsic-direct / 20 total exports
+# Shim churn audit: 10 intrinsic-direct / 20 total exports
 """Iterator helpers for Molt.
 
 Iterator helpers are backed by runtime intrinsics; missing intrinsics are a hard error.
@@ -45,7 +45,7 @@ _MOLT_KWD_MARK = _require_intrinsic("molt_itertools_kwd_mark")
 _MOLT_CHAIN = _require_intrinsic("molt_itertools_chain")
 _MOLT_CHAIN_FROM_ITERABLE = _require_intrinsic("molt_itertools_chain_from_iterable")
 _MOLT_ISLICE = _require_intrinsic("molt_itertools_islice")
-_MOLT_REPEAT = _require_intrinsic("molt_itertools_repeat")
+_MOLT_REPEAT_TYPE = _require_intrinsic("molt_itertools_repeat_type")
 _MOLT_COUNT = _require_intrinsic("molt_itertools_count")
 _MOLT_ACCUMULATE = _require_intrinsic("molt_itertools_accumulate")
 _MOLT_BATCHED = _require_intrinsic("molt_itertools_batched")
@@ -67,13 +67,12 @@ combinations_with_replacement = _require_intrinsic(
 )
 
 # Classes whose __new__ is a pure forwarding shim — bind intrinsic directly.
-# CPython exposes these as types, but Molt callers use them as callables;
-# the intrinsic returns an iterator, preserving the call-site contract.
 compress = _require_intrinsic("molt_itertools_compress")
 dropwhile = _require_intrinsic("molt_itertools_dropwhile")
 filterfalse = _require_intrinsic("molt_itertools_filterfalse")
 starmap = _require_intrinsic("molt_itertools_starmap")
 takewhile = _require_intrinsic("molt_itertools_takewhile")
+repeat = _MOLT_REPEAT_TYPE()
 
 
 # --- Retained wrappers (argument adaptation or Python logic required) ---
@@ -109,12 +108,6 @@ def islice(
         return _islice_intrinsic(iterable, start_or_stop, _missing, _missing)
     # islice(iterable, start, stop[, step])
     return _islice_intrinsic(iterable, start_or_stop, stop, step)
-
-
-def repeat(
-    obj: T, times: int | None = None, _repeat_intrinsic=_MOLT_REPEAT
-) -> Iterator[T]:
-    return _repeat_intrinsic(obj, times)
 
 
 def count(start: Any = 0, step: Any = 1, _count_intrinsic=_MOLT_COUNT) -> Iterator[Any]:
@@ -180,7 +173,7 @@ for _name in (
     "_MOLT_CHAIN",
     "_MOLT_CHAIN_FROM_ITERABLE",
     "_MOLT_ISLICE",
-    "_MOLT_REPEAT",
+    "_MOLT_REPEAT_TYPE",
     "_MOLT_COUNT",
     "_MOLT_ACCUMULATE",
     "_MOLT_BATCHED",

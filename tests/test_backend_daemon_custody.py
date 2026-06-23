@@ -112,6 +112,36 @@ def test_backend_daemon_identity_health_probe_can_verify_matching_pid(
     )
 
 
+def test_backend_daemon_identity_from_health_requires_spawn_generation(
+    tmp_path: Path,
+) -> None:
+    identity = _identity(tmp_path)
+
+    assert (
+        custody.backend_daemon_identity_from_health(
+            {"pid": identity.pid, "spawn_config_digest": "other"},
+            socket_path=identity.socket_path,
+            project_root=identity.project_root,
+            cargo_profile=identity.cargo_profile,
+            config_digest=identity.config_digest,
+            backend_bin=identity.backend_bin,
+        )
+        is None
+    )
+
+    adopted = custody.backend_daemon_identity_from_health(
+        {"pid": identity.pid, "spawn_config_digest": identity.config_digest},
+        socket_path=identity.socket_path,
+        project_root=identity.project_root,
+        cargo_profile=identity.cargo_profile,
+        config_digest=identity.config_digest,
+        backend_bin=identity.backend_bin,
+    )
+
+    assert adopted is not None
+    assert adopted.pid == identity.pid
+
+
 def test_backend_daemon_termination_never_signals_unverified_identity(
     tmp_path: Path,
     monkeypatch,

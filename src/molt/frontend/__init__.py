@@ -385,6 +385,8 @@ class SimpleTIRGenerator(
         self.global_imported_attr_names: dict[str, str] = {}
         self.imported_modules: dict[str, str] = {}
         self.global_imported_modules: dict[str, str] = {}
+        self.local_imported_names: set[str] = set()
+        self.local_imported_modules: set[str] = set()
         self.imported_module_attr_mutations: set[tuple[str, str]] = set()
         self.global_imported_module_attr_mutations: set[tuple[str, str]] = set()
         self.local_intrinsic_wrappers: set[str] = set()
@@ -764,6 +766,18 @@ class SimpleTIRGenerator(
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=linetable_val))
             varnames_val = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=varnames_val))
+            names_vals: list[MoltValue] = []
+            for code_name in self._collect_code_names_for_body(
+                node.body,
+                varnames=[],
+                free_vars=[],
+                module_scope=True,
+            ):
+                name_item = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[code_name], result=name_item))
+                names_vals.append(name_item)
+            names_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=names_vals, result=names_tuple))
             argcount_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(MoltOp(kind="CONST", args=[0], result=argcount_val))
             posonly_val = MoltValue(self.next_var(), type_hint="int")
@@ -780,6 +794,7 @@ class SimpleTIRGenerator(
                         line_val,
                         linetable_val,
                         varnames_val,
+                        names_tuple,
                         argcount_val,
                         posonly_val,
                         kwonly_val,
@@ -884,6 +899,8 @@ class SimpleTIRGenerator(
         self.imported_names = dict(self.global_imported_names)
         self.imported_attr_names = dict(self.global_imported_attr_names)
         self.imported_modules = dict(self.global_imported_modules)
+        self.local_imported_names = set()
+        self.local_imported_modules = set()
         # Clear the per-function module cache so that module references are
         # re-fetched via MODULE_CACHE_GET in each new chunk function.  Without
         # this, a cached MoltValue from a previous chunk's WASM locals would be
@@ -1573,7 +1590,11 @@ class SimpleTIRGenerator(
             call_args.append(result_val)
         res = MoltValue(self.next_var(), type_hint="Future")
         self.emit(
-            MoltOp(kind="CALL_ASYNC", args=["molt_async_sleep", *call_args], result=res)
+            MoltOp(
+                kind="CALL_ASYNC",
+                args=["molt_async_sleep_poll", *call_args],
+                result=res,
+            )
         )
         return res
 
@@ -1992,6 +2013,8 @@ class SimpleTIRGenerator(
         self.imported_names = dict(self.global_imported_names)
         self.imported_attr_names = dict(self.global_imported_attr_names)
         self.imported_modules = dict(self.global_imported_modules)
+        self.local_imported_names = set()
+        self.local_imported_modules = set()
         self.imported_module_attr_mutations = set(
             self.global_imported_module_attr_mutations
         )
@@ -2443,6 +2466,8 @@ class SimpleTIRGenerator(
             "defaults": default_specs,
             "posonly": len(args.posonlyargs),
             "kwonly": len(args.kwonlyargs),
+            "kind": "sync",
+            "has_decorators": False,
         }
 
     def _normalized_return_hint(self, returns: ast.expr | None) -> str | None:
@@ -2618,6 +2643,8 @@ class SimpleTIRGenerator(
             "imported_names": self.imported_names,
             "imported_attr_names": self.imported_attr_names,
             "imported_modules": self.imported_modules,
+            "local_imported_names": self.local_imported_names,
+            "local_imported_modules": self.local_imported_modules,
             "imported_module_attr_mutations": self.imported_module_attr_mutations,
             "class_definition_pending": self.class_definition_pending,
             "block_terminated": self.block_terminated,
@@ -2678,6 +2705,8 @@ class SimpleTIRGenerator(
         self.imported_names = state["imported_names"]
         self.imported_attr_names = state["imported_attr_names"]
         self.imported_modules = state["imported_modules"]
+        self.local_imported_names = state["local_imported_names"]
+        self.local_imported_modules = state["local_imported_modules"]
         self.imported_module_attr_mutations = state["imported_module_attr_mutations"]
         self.class_definition_pending = state["class_definition_pending"]
         self.block_terminated = state["block_terminated"]
@@ -3119,33 +3148,20 @@ class SimpleTIRGenerator(
         label = self.function_exception_label
         if label is None:
             return
+        module_failure_cleanup = bool(
+            self.module_name
+            and (
+                self.current_func_name == "molt_main"
+                or self.current_func_name.startswith("molt_init_")
+            )
+        )
+        if module_failure_cleanup and not self._ends_with_return_jump():
+            self.emit(MoltOp(kind="ret_void", args=[], result=MoltValue("none")))
         prev_label = self.function_exception_label
         self.function_exception_label = None
         with self._suppress_check_exception(emit_on_exit=False):
             self.emit(MoltOp(kind="LABEL", args=[label], result=MoltValue("none")))
-            if self.module_name and (
-                self.current_func_name == "molt_main"
-                or self.current_func_name.startswith("molt_init_")
-            ):
-                # Guard MODULE_CACHE_DEL with an exception-pending check.
-                # The exception handler label is reachable both from
-                # check_exception jumps (exception pending) and from normal
-                # fallthrough when no explicit ret precedes the label.
-                # Deleting the module from the cache unconditionally would
-                # corrupt the module cache on the normal (non-error) path.
-                _guard_exc = MoltValue(self.next_var(), type_hint="exception")
-                self.emit(MoltOp(kind="EXCEPTION_LAST", args=[], result=_guard_exc))
-                _guard_none = MoltValue(self.next_var(), type_hint="None")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=_guard_none))
-                _guard_is = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(
-                    MoltOp(kind="IS", args=[_guard_exc, _guard_none], result=_guard_is)
-                )
-                _guard_pending = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="NOT", args=[_guard_is], result=_guard_pending))
-                self.emit(
-                    MoltOp(kind="IF", args=[_guard_pending], result=MoltValue("none"))
-                )
+            if module_failure_cleanup:
                 module_name_val = MoltValue(self.next_var(), type_hint="str")
                 self.emit(
                     MoltOp(
@@ -3179,7 +3195,6 @@ class SimpleTIRGenerator(
                             result=MoltValue("none"),
                         )
                     )
-                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         self._emit_restore_exception_stack_depth()
         if self._function_needs_frame_trace():
             self.emit(MoltOp(kind="TRACE_EXIT", args=[], result=MoltValue("none")))
@@ -3190,7 +3205,7 @@ class SimpleTIRGenerator(
         if not self.current_ops:
             return False
         last = self.current_ops[-1]
-        if last.kind == "ret":
+        if last.kind in {"ret", "ret_void"}:
             return True
         if (
             last.kind == "JUMP"
@@ -4230,6 +4245,7 @@ class SimpleTIRGenerator(
         poll_fn_symbol: str | None = None,
         emit_code: bool = True,
         varnames: list[str] | None = None,
+        code_names: list[str] | None = None,
     ) -> None:
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
@@ -4328,6 +4344,16 @@ class SimpleTIRGenerator(
             self.emit(
                 MoltOp(kind="TUPLE_NEW", args=varname_vals, result=varnames_tuple)
             )
+            code_name_vals: list[MoltValue] = []
+            if code_names is not None:
+                for code_name in code_names:
+                    code_name_val = MoltValue(self.next_var(), type_hint="str")
+                    self.emit(
+                        MoltOp(kind="CONST_STR", args=[code_name], result=code_name_val)
+                    )
+                    code_name_vals.append(code_name_val)
+            names_tuple = MoltValue(self.next_var(), type_hint="tuple")
+            self.emit(MoltOp(kind="TUPLE_NEW", args=code_name_vals, result=names_tuple))
             argcount_val = MoltValue(self.next_var(), type_hint="int")
             self.emit(
                 MoltOp(
@@ -4354,6 +4380,7 @@ class SimpleTIRGenerator(
                         line_val,
                         linetable_val,
                         varnames_tuple,
+                        names_tuple,
                         argcount_val,
                         posonly_val,
                         kwonly_val,
@@ -4941,10 +4968,23 @@ class SimpleTIRGenerator(
         )
         return imported_val
 
-    def _emit_importlib_import_module_transaction(self, module_name: str) -> MoltValue:
-        return self._emit_import_transaction(
-            module_name, fromlist_names=("*",), level=0
+    def _emit_importlib_import_module_leaf(self, module_name: str) -> MoltValue:
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
+        package_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=package_val))
+        import_module_func = self._emit_intrinsic_function(
+            "molt_importlib_import_module"
         )
+        imported_val = MoltValue(self.next_var(), type_hint="module")
+        self.emit(
+            MoltOp(
+                kind="CALL_FUNC",
+                args=[import_module_func, name_val, package_val],
+                result=imported_val,
+            )
+        )
+        return imported_val
 
     def _emit_source_import_transaction(
         self,
@@ -4959,6 +4999,16 @@ class SimpleTIRGenerator(
             level=level,
             globals_val=self._emit_globals_dict(),
         )
+
+    def _emit_source_import_alias_binding(self, module_name: str) -> MoltValue:
+        bound_val = self._emit_source_import_transaction(
+            module_name,
+            fromlist_names=(),
+            level=0,
+        )
+        for attr_name in module_name.split(".")[1:]:
+            bound_val = self._emit_module_import_from_value(bound_val, attr_name)
+        return bound_val
 
     def _emit_module_load(self, module_name: str) -> MoltValue:
         # NOTE: Earlier versions cached loaded_val in _module_cache_values to
@@ -5016,6 +5066,14 @@ class SimpleTIRGenerator(
             return None
         return module_defaults.get(func_id)
 
+    @staticmethod
+    def _normalize_func_kind(kind: object) -> str | None:
+        if kind == "async_gen":
+            return "asyncgen"
+        if kind in {"sync", "async", "gen", "asyncgen"}:
+            return cast(str, kind)
+        return None
+
     def _lookup_func_kind(self, module_name: str | None, func_id: str) -> str | None:
         if module_name is None:
             module_name = self.module_name
@@ -5027,7 +5085,7 @@ class SimpleTIRGenerator(
             module_kinds = self.module_declared_funcs
         if module_kinds is None:
             return None
-        return module_kinds.get(func_id)
+        return self._normalize_func_kind(module_kinds.get(func_id))
 
     def _imported_attr_name(self, bind_name: str) -> str:
         return self.imported_attr_names.get(
@@ -5060,8 +5118,11 @@ class SimpleTIRGenerator(
         if normalized is not None:
             module_name = normalized
         info = self._lookup_func_defaults(module_name, func_id)
-        kind = self._lookup_func_kind(module_name, func_id)
+        info_kind = self._normalize_func_kind(info.get("kind")) if info else None
+        kind = self._lookup_func_kind(module_name, func_id) or info_kind
         if info is None and kind is None:
+            return None
+        if info is not None and info.get("has_decorators"):
             return None
         kind = kind or "sync"
         func_symbol = f"{self._sanitize_module_name(module_name)}__{func_id}"
@@ -5079,7 +5140,7 @@ class SimpleTIRGenerator(
                 payload_slots, include_gen_control=False
             )
             return f"AsyncFunc:{func_symbol}_poll:{closure_size}"
-        if kind == "async_gen":
+        if kind == "asyncgen":
             closure_size = self._task_closure_size(
                 payload_slots, include_gen_control=True
             )
@@ -6306,6 +6367,138 @@ class SimpleTIRGenerator(
             locals_only.append(name)
         return params + locals_only
 
+    def _collect_code_names_for_body(
+        self,
+        nodes: Sequence[ast.AST],
+        *,
+        varnames: Sequence[str],
+        free_vars: Sequence[str],
+        module_scope: bool = False,
+    ) -> list[str]:
+        """Collect the ordered name table backing ``code.co_names``.
+
+        The table is a runtime introspection fact, not an execution fallback:
+        it mirrors the names referenced by bytecode-style name operations for
+        the current code object while leaving nested code objects to describe
+        their own bodies.
+        """
+
+        local_names = set(varnames)
+        free_var_names = set(free_vars)
+        stmt_nodes = [node for node in nodes if isinstance(node, ast.stmt)]
+        global_decls = self._collect_global_decls(stmt_nodes)
+        nonlocal_decls = self._collect_nonlocal_decls(stmt_nodes)
+        names: list[str] = []
+        seen: set[str] = set()
+
+        def add(name: str | None) -> None:
+            if not name or name in seen:
+                return
+            seen.add(name)
+            names.append(name)
+
+        def import_store_name(alias: ast.alias) -> str:
+            if alias.asname:
+                return alias.asname
+            return alias.name.split(".", 1)[0]
+
+        class CodeNamesCollector(ast.NodeVisitor):
+            def visit_Name(self, node: ast.Name) -> None:
+                if module_scope:
+                    add(node.id)
+                    return
+                if node.id in nonlocal_decls or node.id in free_var_names:
+                    return
+                if node.id in global_decls:
+                    add(node.id)
+                    return
+                if isinstance(node.ctx, ast.Load) and node.id not in local_names:
+                    add(node.id)
+
+            def visit_Attribute(self, node: ast.Attribute) -> None:
+                self.visit(node.value)
+                add(node.attr)
+
+            def visit_Import(self, node: ast.Import) -> None:
+                for alias in node.names:
+                    add(alias.name)
+                    if "." in alias.name:
+                        if module_scope:
+                            add(import_store_name(alias))
+                        else:
+                            add(alias.name.rsplit(".", 1)[1])
+                    elif module_scope:
+                        add(import_store_name(alias))
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                add("." * int(node.level or 0) + (node.module or ""))
+                for alias in node.names:
+                    add(alias.name)
+                    if module_scope and alias.asname:
+                        add(alias.asname)
+
+            def _visit_function_signature(
+                self, node: ast.FunctionDef | ast.AsyncFunctionDef
+            ) -> None:
+                for deco in node.decorator_list:
+                    self.visit(deco)
+                for default in node.args.defaults:
+                    self.visit(default)
+                for default in node.args.kw_defaults:
+                    if default is not None:
+                        self.visit(default)
+                for arg in (
+                    list(node.args.posonlyargs)
+                    + list(node.args.args)
+                    + list(node.args.kwonlyargs)
+                ):
+                    if arg.annotation is not None:
+                        self.visit(arg.annotation)
+                if (
+                    node.args.vararg is not None
+                    and node.args.vararg.annotation is not None
+                ):
+                    self.visit(node.args.vararg.annotation)
+                if (
+                    node.args.kwarg is not None
+                    and node.args.kwarg.annotation is not None
+                ):
+                    self.visit(node.args.kwarg.annotation)
+                if node.returns is not None:
+                    self.visit(node.returns)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                self._visit_function_signature(node)
+                if module_scope or node.name in global_decls:
+                    add(node.name)
+
+            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+                self._visit_function_signature(node)
+                if module_scope or node.name in global_decls:
+                    add(node.name)
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:
+                for default in node.args.defaults:
+                    self.visit(default)
+                for default in node.args.kw_defaults:
+                    if default is not None:
+                        self.visit(default)
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                for deco in node.decorator_list:
+                    self.visit(deco)
+                for base in node.bases:
+                    self.visit(base)
+                for keyword in node.keywords:
+                    self.visit(keyword.value)
+                if module_scope or node.name in global_decls:
+                    add(node.name)
+
+        collector = CodeNamesCollector()
+        for node in nodes:
+            collector.visit(node)
+        return names
+
     @staticmethod
     def _is_type_checking_test(expr: ast.expr) -> bool:
         if isinstance(expr, ast.Name):
@@ -7425,6 +7618,12 @@ class SimpleTIRGenerator(
             func_id = value.func.id
             if func_id in {"dict", "list", "set", "tuple"}:
                 return func_id
+            if (
+                func_id in {"globals", "locals", "vars"}
+                and not value.args
+                and not value.keywords
+            ):
+                return "dict"
         return None
 
     def _update_exact_local(self, name: str, value: ast.AST | None) -> None:
@@ -7656,10 +7855,10 @@ class SimpleTIRGenerator(
             return res
         return cached
 
-    def _emit_plain_local_del_boundary(
+    def _plain_local_del_boundary_enabled(
         self, name: str, value: MoltValue | None
-    ) -> None:
-        if (
+    ) -> bool:
+        return not (
             value is None
             or value.name in ("none", "")
             or value.type_hint == "missing"
@@ -7668,7 +7867,12 @@ class SimpleTIRGenerator(
             or name in self.closure_locals
             or name in self.boxed_locals
             or self.is_async()
-        ):
+        )
+
+    def _emit_plain_local_del_boundary(
+        self, name: str, value: MoltValue | None
+    ) -> None:
+        if not self._plain_local_del_boundary_enabled(name, value):
             return
         # `self.locals[name]` is the syntactic cached producer. Across loop
         # phis the current frame slot may be a block argument, so make the
@@ -7787,7 +7991,8 @@ class SimpleTIRGenerator(
         ):
             self.emit(MoltOp(kind="INC_REF", args=[preserve], result=MoltValue("none")))
         for name, value in bindings:
-            self._emit_plain_local_del_boundary(name, value)
+            boundary_value = self._load_local_value(name, guard_unbound=False) or value
+            self._emit_plain_local_del_boundary(name, boundary_value)
 
     def _store_local_value(
         self,
@@ -7899,8 +8104,15 @@ class SimpleTIRGenerator(
         if emit_rebind_boundary:
             self._emit_plain_local_alias_retain(name, value)
             previous = self.locals.get(name)
-            if previous is not None and previous.name != value.name:
-                self._emit_plain_local_del_boundary(name, previous)
+            if (
+                previous is not None
+                and previous.name != value.name
+                and self._plain_local_del_boundary_enabled(name, previous)
+            ):
+                boundary_value = (
+                    self._load_local_value(name, guard_unbound=False) or previous
+                )
+                self._emit_plain_local_del_boundary(name, boundary_value)
         self.locals[name] = value
         # Named-local fact (#58 ordering keystone): stamp `bound_local` on the
         # op that PRODUCED the bound value. CPython holds a named local in the
@@ -13615,6 +13827,8 @@ class SimpleTIRGenerator(
             self.imported_names.pop(target.id, None)
             self.imported_attr_names.pop(target.id, None)
             self.imported_modules.pop(target.id, None)
+            self.local_imported_names.discard(target.id)
+            self.local_imported_modules.discard(target.id)
             if self.current_func_name == "molt_main":
                 self.global_imported_names.pop(target.id, None)
                 self.global_imported_attr_names.pop(target.id, None)
@@ -16518,7 +16732,12 @@ class SimpleTIRGenerator(
             )
         )
         exc_val = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_val))
+        pending_observer_kind = (
+            "EXCEPTION_LAST_PENDING"
+            if node.handlers
+            else "EXCEPTION_FINALLY_PENDING_OBSERVER"
+        )
+        self.emit(MoltOp(kind=pending_observer_kind, args=[], result=exc_val))
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         is_none = MoltValue(self.next_var(), type_hint="bool")
@@ -16590,7 +16809,11 @@ class SimpleTIRGenerator(
             if node.handlers:
                 final_exc = MoltValue(self.next_var(), type_hint="exception")
                 self.emit(
-                    MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=final_exc)
+                    MoltOp(
+                        kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                        args=[],
+                        result=final_exc,
+                    )
                 )
             else:
                 final_exc = exc_val
@@ -16620,7 +16843,13 @@ class SimpleTIRGenerator(
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_after))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=exc_after,
+                )
+            )
             is_none_after = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
                 MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
@@ -16683,7 +16912,11 @@ class SimpleTIRGenerator(
         if node.finalbody:
             else_final_exc = MoltValue(self.next_var(), type_hint="exception")
             self.emit(
-                MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=else_final_exc)
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=else_final_exc,
+                )
             )
             else_final_slot = None
             if self.is_async():
@@ -16713,7 +16946,13 @@ class SimpleTIRGenerator(
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             else_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=else_after))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=else_after,
+                )
+            )
             is_none_after = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
                 MoltOp(kind="IS", args=[else_after, none_after], result=is_none_after)
@@ -16873,7 +17112,12 @@ class SimpleTIRGenerator(
         self.try_handler_scopes.append(scope)
 
         exc_val = MoltValue(self.next_var(), type_hint="exception")
-        self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_val))
+        pending_observer_kind = (
+            "EXCEPTION_LAST_PENDING"
+            if node.handlers
+            else "EXCEPTION_FINALLY_PENDING_OBSERVER"
+        )
+        self.emit(MoltOp(kind=pending_observer_kind, args=[], result=exc_val))
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         is_none = MoltValue(self.next_var(), type_hint="bool")
@@ -17146,7 +17390,13 @@ class SimpleTIRGenerator(
 
         if node.finalbody:
             final_exc = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=final_exc))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=final_exc,
+                )
+            )
             final_slot = None
             if self.is_async():
                 final_slot = self._async_local_offset(
@@ -17173,7 +17423,13 @@ class SimpleTIRGenerator(
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             exc_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_after))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=exc_after,
+                )
+            )
             is_none_after = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
                 MoltOp(kind="IS", args=[exc_after, none_after], result=is_none_after)
@@ -17236,7 +17492,11 @@ class SimpleTIRGenerator(
         if node.finalbody:
             else_final_exc = MoltValue(self.next_var(), type_hint="exception")
             self.emit(
-                MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=else_final_exc)
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=else_final_exc,
+                )
             )
             else_final_slot = None
             if self.is_async():
@@ -17266,7 +17526,13 @@ class SimpleTIRGenerator(
             none_after = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_after))
             else_after = MoltValue(self.next_var(), type_hint="exception")
-            self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=else_after))
+            self.emit(
+                MoltOp(
+                    kind="EXCEPTION_FINALLY_PENDING_OBSERVER",
+                    args=[],
+                    result=else_after,
+                )
+            )
             is_none_after = MoltValue(self.next_var(), type_hint="bool")
             self.emit(
                 MoltOp(kind="IS", args=[else_after, none_after], result=is_none_after)
@@ -18133,6 +18399,11 @@ class SimpleTIRGenerator(
                 is_async_generator=True,
                 poll_fn_symbol=poll_func_name,
                 varnames=varnames,
+                code_names=self._collect_code_names_for_body(
+                    node.body,
+                    varnames=varnames,
+                    free_vars=free_vars,
+                ),
             )
             names_vals: list[MoltValue] = []
             offsets_vals: list[MoltValue] = []
@@ -18422,6 +18693,11 @@ class SimpleTIRGenerator(
             docstring=ast.get_docstring(node, clean=False),
             is_coroutine=True,
             varnames=varnames,
+            code_names=self._collect_code_names_for_body(
+                node.body,
+                varnames=varnames,
+                free_vars=free_vars,
+            ),
         )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
@@ -18638,6 +18914,11 @@ class SimpleTIRGenerator(
                 docstring=ast.get_docstring(node, clean=False),
                 is_generator=True,
                 varnames=varnames,
+                code_names=self._collect_code_names_for_body(
+                    node.body,
+                    varnames=varnames,
+                    free_vars=free_vars,
+                ),
             )
             if func_spill is not None:
                 func_val = self._reload_async_value(func_spill, func_val.type_hint)
@@ -18915,6 +19196,11 @@ class SimpleTIRGenerator(
             kw_default_exprs=node.args.kw_defaults,
             docstring=ast.get_docstring(node, clean=False),
             varnames=varnames,
+            code_names=self._collect_code_names_for_body(
+                node.body,
+                varnames=varnames,
+                free_vars=free_vars,
+            ),
         )
         is_gpu_kernel = self._has_gpu_kernel_decorator(node)
         # ── @gpu.kernel: mark function IR so the backend routes through GPU pipeline ──
@@ -19208,6 +19494,11 @@ class SimpleTIRGenerator(
                 docstring=None,
                 is_generator=True,
                 varnames=varnames,
+                code_names=self._collect_code_names_for_body(
+                    [ast.Expr(value=node.body)],
+                    varnames=varnames,
+                    free_vars=free_vars,
+                ),
             )
             if func_spill is not None:
                 func_val = self._reload_async_value(func_spill, func_val.type_hint)
@@ -19414,6 +19705,14 @@ class SimpleTIRGenerator(
                     kind="FUNC_NEW", args=[func_symbol, len(params)], result=func_val
                 )
             )
+        varnames = self._collect_varnames_for_body(
+            posonly_params=posonly_names,
+            pos_or_kw_params=pos_or_kw_names,
+            kwonly_params=kwonly_names,
+            vararg=vararg,
+            varkw=varkw,
+            body=[ast.Expr(value=node.body)],
+        )
         self._emit_function_metadata(
             func_val,
             name="<lambda>",
@@ -19427,13 +19726,11 @@ class SimpleTIRGenerator(
             default_exprs=node.args.defaults,
             kw_default_exprs=node.args.kw_defaults,
             docstring=None,
-            varnames=self._collect_varnames_for_body(
-                posonly_params=posonly_names,
-                pos_or_kw_params=pos_or_kw_names,
-                kwonly_params=kwonly_names,
-                vararg=vararg,
-                varkw=varkw,
-                body=[ast.Expr(value=node.body)],
+            varnames=varnames,
+            code_names=self._collect_code_names_for_body(
+                [ast.Expr(value=node.body)],
+                varnames=varnames,
+                free_vars=free_vars,
             ),
         )
 
@@ -19567,11 +19864,7 @@ class SimpleTIRGenerator(
             bind_name = alias.asname or module_name.split(".")[0]
             if self._source_imports_use_transaction():
                 if alias.asname:
-                    bound_val = self._emit_source_import_transaction(
-                        module_name,
-                        fromlist_names=("*",),
-                        level=0,
-                    )
+                    bound_val = self._emit_source_import_alias_binding(module_name)
                 else:
                     bound_val = self._emit_source_import_transaction(
                         module_name,
@@ -19597,6 +19890,8 @@ class SimpleTIRGenerator(
                 self._store_local_value(bind_name, bound_val)
             self._emit_module_attr_set(bind_name, bound_val)
             self.imported_modules[bind_name] = module_name
+            if self.current_func_name != "molt_main":
+                self.local_imported_modules.add(bind_name)
             self.module_intrinsic_globals.pop(bind_name, None)
             if self.current_func_name == "molt_main":
                 self.global_imported_modules[bind_name] = module_name
@@ -19645,6 +19940,8 @@ class SimpleTIRGenerator(
                     continue
                 bind_name = alias.asname or alias.name
                 self.imported_names[bind_name] = module_name
+                if self.current_func_name != "molt_main":
+                    self.local_imported_names.add(bind_name)
                 self.imported_attr_names[bind_name] = alias.name
                 if self.current_func_name == "molt_main":
                     self.global_imported_names[bind_name] = module_name
@@ -19683,8 +19980,11 @@ class SimpleTIRGenerator(
                 self._store_local_value(bind_name, bound_val)
                 self._emit_module_attr_set(bind_name, bound_val)
                 if self.current_func_name == "molt_main":
+                    self.module_global_mutations.add(bind_name)
                     self.globals[bind_name] = bound_val
-                self.locals[bind_name] = bound_val
+                    self.locals.pop(bind_name, None)
+                else:
+                    self.locals[bind_name] = bound_val
             return None
         if module_name in self._STUB_IMPORT_MODULES:
             return None
@@ -19750,6 +20050,8 @@ class SimpleTIRGenerator(
                 # resolve to the canonical function name, not the alias.
                 # e.g. `from X import Y as Z` -> imported_attr_names["Z"] = "Y"
                 self.imported_attr_names[bind_name] = attr_name
+                if self.current_func_name != "molt_main":
+                    self.local_imported_names.add(bind_name)
                 if self.current_func_name == "molt_main":
                     self.global_imported_names[bind_name] = module_name
                     self.global_imported_attr_names[bind_name] = attr_name
@@ -20619,6 +20921,7 @@ class SimpleTIRGenerator(
                 self._record_midend_policy_outcome(
                     policy=policy,
                     spent_ms=0.0,
+                    work_units_spent=0.0,
                     degraded=True,
                     degrade_events=[
                         {
@@ -21099,6 +21402,12 @@ class SimpleTIRGenerator(
             + alpha * max(1, len(ops))
             + beta * max(1, block_count)
         ) * scale
+        budget_ms_override_raw = os.getenv("MOLT_MIDEND_BUDGET_MS", "").strip()
+        if budget_ms_override_raw:
+            try:
+                budget_ms = max(0.0, float(budget_ms_override_raw))
+            except ValueError:
+                pass
         # Deterministic work-unit budget for the degrade ladder (#73).  The
         # ladder accumulates a deterministic cost — the op count processed —
         # at each inter-pass checkpoint, and degrades when the running total
@@ -21191,6 +21500,7 @@ class SimpleTIRGenerator(
         *,
         policy: MidendFunctionPolicy,
         spent_ms: float,
+        work_units_spent: float,
         degraded: bool,
         degrade_events: list[dict[str, Any]],
         round_snapshots: list[dict[str, Any]] | None = None,
@@ -21210,6 +21520,8 @@ class SimpleTIRGenerator(
             "monolith_pressure_level": policy.monolith_pressure_level,
             "budget_ms": round(policy.budget_ms, 3),
             "spent_ms": round(max(0.0, spent_ms), 3),
+            "work_budget": round(max(0.0, policy.work_budget), 3),
+            "work_units_spent": round(max(0.0, work_units_spent), 3),
             "degraded": degraded,
             "degrade_events": list(degrade_events),
             "round_snapshots": list(round_snapshots) if round_snapshots else [],
@@ -26836,9 +27148,11 @@ class SimpleTIRGenerator(
                 value=max_rounds,
             )
             degraded = True
+            enable_idempotence_probe = False
             self._record_midend_policy_outcome(
                 policy=policy,
                 spent_ms=spent_midend_ms(),
+                work_units_spent=work_units_spent,
                 degraded=degraded,
                 degrade_events=degrade_events,
                 round_snapshots=round_snapshots,
@@ -26873,6 +27187,7 @@ class SimpleTIRGenerator(
                 self._record_midend_policy_outcome(
                     policy=policy,
                     spent_ms=spent_midend_ms(),
+                    work_units_spent=work_units_spent,
                     degraded=degraded,
                     degrade_events=degrade_events,
                     round_snapshots=round_snapshots,
@@ -26984,6 +27299,7 @@ class SimpleTIRGenerator(
         self._record_midend_policy_outcome(
             policy=policy,
             spent_ms=spent_midend_ms(),
+            work_units_spent=work_units_spent,
             degraded=degraded,
             degrade_events=degrade_events,
             round_snapshots=round_snapshots,

@@ -7,7 +7,8 @@
 //
 // Corresponds to SimpleTIRGenerator._run_ir_midend_passes:
 //   constFold → SCCP → DCE → edgeThread → CSE → guardHoist → joinCanon
-// applied in a fixed-point loop with budget-based degradation.
+// applied in a fixed-point loop with deterministic work-budget-based
+// degradation; wall-clock budget_ms is telemetry-only.
 //
 // Each pass is modeled as a function on an abstract program representation
 // (a set of IR nodes with types and values). Pass effects are abstracted:

@@ -1270,57 +1270,51 @@ pub fn run_inliner(
 ) -> InlinerStats {
     let mut stats = InlinerStats::default();
 
-    // The set of callee names that are inlinable (computed once over the
-    // pre-pass bodies — phase a/b inlines a single bottom-up sweep, no
-    // fixed-point, so callee bodies do not change under us during the sweep).
+    // The set of callee names that are inlinable (computed once from the
+    // pre-pass call graph/summaries). Bodies stay module-owned and are borrowed
+    // live at the splice site, so bottom-up callee changes are visible to callers
+    // without cloning a second body authority.
     let defined: Vec<String> = module.functions.iter().map(|f| f.name.clone()).collect();
 
-    // Snapshot every inlinable callee body up front (owned clones), keyed by
-    // name. This sidesteps the borrow-checker disjointness problem: the splice
-    // reads the callee from this snapshot while holding `&mut` on the caller in
-    // the module vector. The snapshot is the pre-sweep body, which is exactly
-    // the bottom-up contract (callees finalized before callers; a callee is not
-    // re-inlined into after being snapshotted because the sweep visits each SCC
-    // once).
     // Callees that an in-budget inline misses but whose inlining unlocks the
     // split-field deforestation (a caller hands them a non-escaping
     // `string_split_field` result). These are admitted on the safety gate alone
     // (over-budget but sound) — the targeted enabling the baton specifies.
     let split_enabled = split_field_enabled_callees(module, &defined);
 
-    let inlinable_bodies: HashMap<String, TirFunction> = module
+    // Map function name -> index in the module vector for O(1) lookup.
+    let index_of: HashMap<String, usize> = module
         .functions
         .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.clone(), i))
+        .collect();
+
+    // Record inlinable callees by module index, not by cloned body. The module
+    // owns each body exactly once; call-site splicing borrows the caller mutably
+    // and the callee immutably via `split_at_mut` below. That preserves the
+    // bottom-up contract without a whole-module body snapshot.
+    let inlinable_indices: HashMap<String, usize> = module
+        .functions
+        .iter()
+        .enumerate()
         // A callee whose canonical definition is linked externally (e.g. a
         // shared-stdlib-partition symbol that the native/wasm driver will
         // externalize into `stdlib_shared.o`) has external linkage: this module
         // does not own its body, so splicing a private copy at the call site is
         // unsound (it drops the external reference and forks the definition).
         // Refused unconditionally — the `Call` survives as an external reference.
-        .filter(|f| !non_inlinable.contains(&f.name))
-        .filter(|f| {
+        .filter(|(_, f)| !non_inlinable.contains(&f.name))
+        .filter(|(_, f)| {
             is_inlineable(f, call_graph, summaries, tti)
                 || (split_enabled.contains(&f.name) && is_inline_safe(f, call_graph))
         })
-        .map(|f| (f.name.clone(), f.clone()))
+        .map(|(idx, f)| (f.name.clone(), idx))
         .collect();
 
-    if inlinable_bodies.is_empty() {
+    if inlinable_indices.is_empty() {
         return stats;
     }
-
-    // Map function name -> index in the module vector for O(1) lookup.
-    let index_of: HashMap<&str, usize> = module
-        .functions
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.name.as_str(), i))
-        .collect::<HashMap<_, _>>();
-    // Own the indices (drop the borrow on `module.functions` before mutation).
-    let index_of: HashMap<String, usize> = index_of
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect();
 
     // Walk bottom-up over the SCC condensation: callees before callers.
     for scc in call_graph.bottom_up_order() {
@@ -1351,14 +1345,21 @@ pub fn run_inliner(
                 if site.callee == caller_name {
                     continue; // self-call (recursive) — never inline.
                 }
-                let Some(callee) = inlinable_bodies.get(&site.callee) else {
+                let Some(&callee_idx) = inlinable_indices.get(&site.callee) else {
                     continue;
                 };
-                // Clone the callee snapshot so the borrow on the map does not
-                // overlap the `&mut module.functions[caller_idx]`.
-                let callee_owned = callee.clone();
-                let caller = &mut module.functions[caller_idx];
-                let did_inline = splice_call_site(caller, &callee_owned, &site);
+                if callee_idx == caller_idx {
+                    continue;
+                }
+                let (caller, callee) = if caller_idx < callee_idx {
+                    let (left, right) = module.functions.split_at_mut(callee_idx);
+                    (&mut left[caller_idx], &right[0])
+                } else {
+                    let (left, right) = module.functions.split_at_mut(caller_idx);
+                    (&mut right[0], &left[callee_idx])
+                };
+                let callee_has_exception_handling = callee.has_exception_handling;
+                let did_inline = splice_call_site(caller, callee, &site);
                 if did_inline {
                     stats.sites_inlined += 1;
                     changed_this_fn = true;
@@ -1370,7 +1371,7 @@ pub fn run_inliner(
                     // this flag. (The caller is usually already flagged, since it
                     // has its own post-call `CheckException`, but a caller with no
                     // exception ops of its own would otherwise be left unflagged.)
-                    if callee_owned.has_exception_handling {
+                    if callee_has_exception_handling {
                         caller.has_exception_handling = true;
                     }
                 }

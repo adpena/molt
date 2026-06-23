@@ -70,11 +70,20 @@ def test_corpus_typed_return_parse():
 
     doc = {
         "functions": [
-            {"stats": {"opcodes": {
-                "call": {"result_reprs": {"dynbox": 3, "i64": 1}, "boxed_result_values": 3},
-                "call_method": {"result_reprs": {"i64": 4}},
-                "add": {"result_reprs": {"i64": 99}},  # non-call, must be ignored
-            }}},
+            {
+                "stats": {
+                    "opcodes": {
+                        "call": {
+                            "result_reprs": {"dynbox": 3, "i64": 1},
+                            "boxed_result_values": 3,
+                        },
+                        "call_method": {"result_reprs": {"i64": 4}},
+                        "add": {
+                            "result_reprs": {"i64": 99}
+                        },  # non-call, must be ignored
+                    }
+                }
+            },
         ]
     }
     with tempfile.TemporaryDirectory() as td:

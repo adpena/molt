@@ -6,21 +6,13 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 
 import os as _os
-import sys as _sys
 
 _require_intrinsic("molt_stdlib_probe")
-_MOLT_IMPORTLIB_RESOLVE_NAME = _require_intrinsic("molt_importlib_resolve_name")
-_MOLT_IMPORTLIB_KNOWN_ABSENT_MISSING_NAME = _require_intrinsic(
-    "molt_importlib_known_absent_missing_name"
-)
-_MOLT_IMPORTLIB_RUNTIME_MODULES = _require_intrinsic("molt_importlib_runtime_modules")
+_MOLT_IMPORTLIB_IMPORT_MODULE = _require_intrinsic("molt_importlib_import_module")
 _MOLT_IMPORTLIB_INVALIDATE_CACHES = _require_intrinsic(
     "molt_importlib_invalidate_caches"
 )
 _MOLT_IMPORTLIB_RELOAD = _require_intrinsic("molt_importlib_reload")
-_MOLT_IMPORTLIB_IMPORT_TRANSACTION = _require_intrinsic(
-    "molt_importlib_import_transaction"
-)
 
 
 __all__ = [
@@ -39,63 +31,14 @@ if "__path__" not in globals():
         __path__ = [_os.path.dirname(_pkg_file)]
 
 
-def _runtime_modules() -> dict[str, object]:
-    modules = _MOLT_IMPORTLIB_RUNTIME_MODULES()
-    if not isinstance(modules, dict):
-        raise RuntimeError("invalid importlib runtime state payload: modules")
-    return modules
+def import_module(name: object, package: object = None):
+    return _MOLT_IMPORTLIB_IMPORT_MODULE(name, package)
 
 
-def _canonical_codecs_file(path: object) -> object:
-    if not isinstance(path, str):
-        return path
-    marker = "/cpython-3.12."
-    idx = path.find(marker)
-    if idx < 0:
-        return path
-    suffix = path[idx + len(marker) :]
-    dash = suffix.find("-")
-    if dash < 0:
-        return path
-    candidate = path[:idx] + "/cpython-3.12-" + suffix[dash + 1 :]
-    if _os.path.exists(candidate):
-        return candidate
-    return path
-
-
-def import_module(name: str, package: object = None):
-    resolved = _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)
-    # `encodings.oem` is intentionally unavailable on non-Windows when codecs
-    # does not expose OEM helpers; raise at the importlib boundary so callers
-    # see CPython-shaped ImportError semantics.
-    if resolved == "encodings.oem" and _sys.platform != "win32":
-        import codecs as _codecs
-
-        if not hasattr(_codecs, "oem_encode"):
-            raise ImportError(
-                "cannot import name 'oem_encode' from 'codecs' "
-                f"({_canonical_codecs_file(getattr(_codecs, '__file__', None))})"
-            )
-
-    missing_name = _MOLT_IMPORTLIB_KNOWN_ABSENT_MISSING_NAME(resolved)
-    if missing_name is not None:
-        raise ModuleNotFoundError(f"No module named '{missing_name}'")
-    mod = _MOLT_IMPORTLIB_IMPORT_TRANSACTION(resolved, globals(), locals(), ("*",), 0)
-    modules = _runtime_modules()
-    cached = modules.get(resolved)
-    if cached is not None:
-        return cached
-    if mod is not None:
-        return mod
-    if resolved in modules:
-        raise ImportError(f"import of {resolved} halted; None in sys.modules")
-    raise ModuleNotFoundError(f"No module named '{resolved}'")
-
-
-machinery = import_module("importlib.machinery")
-util = import_module("importlib.util")
-_bootstrap = import_module("importlib._bootstrap")
-_bootstrap_external = import_module("importlib._bootstrap_external")
+import importlib.machinery as machinery
+import importlib.util as util
+import importlib._bootstrap as _bootstrap  # noqa: F401
+import importlib._bootstrap_external as _bootstrap_external  # noqa: F401
 
 
 def invalidate_caches() -> None:

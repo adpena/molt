@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use molt_obj_model::MoltObject;
 
 use crate::builtins::annotations::pep649_enabled;
+use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::{
     FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD,
     TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
@@ -25,8 +26,8 @@ use crate::{
     exception_type_bits_from_name, inc_ref_bits, init_atomic_bits, instance_dict_bits,
     instance_set_dict_bits, intern_static_name, is_builtin_class_bits, is_missing_bits, is_truthy,
     issubclass_bits, maybe_ptr_from_bits, module_dict_bits, molt_awaitable_await,
-    molt_bound_method_new, molt_exception_last, molt_function_get_code, molt_function_get_globals,
-    molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_class_bits, object_field_get_ptr_raw,
+    molt_bound_method_new, molt_function_get_code, molt_function_get_globals, molt_iter,
+    molt_iter_next, obj_eq, obj_from_bits, object_class_bits, object_field_get_ptr_raw,
     object_set_class_bits, object_type_id, profile_hit_unchecked, property_get_bits,
     raise_exception, runtime_state, seq_vec_ref, staticmethod_func_bits, string_bytes, string_len,
     string_obj_to_owned, type_name, type_of_bits,
@@ -66,7 +67,21 @@ impl AttrNameCacheKey {
 
 #[cfg(test)]
 mod tests {
-    use super::{ATTR_NAME_INLINE_CAP, AttrNameCacheKey};
+    use super::{
+        ATTR_NAME_INLINE_CAP, AttrNameCacheKey, clear_attr_tls_caches, descriptor_cache_lookup,
+        descriptor_cache_store,
+    };
+    use crate::{MoltObject, alloc_string, dec_ref_bits, obj_from_bits};
+    use std::sync::atomic::Ordering;
+
+    fn heap_refcount(bits: u64) -> u32 {
+        let ptr = obj_from_bits(bits).as_ptr().expect("expected heap bits");
+        unsafe {
+            (*crate::object::header_from_obj_ptr(ptr))
+                .ref_count
+                .load(Ordering::Acquire)
+        }
+    }
 
     #[test]
     fn attr_name_cache_key_inlines_common_attr_names() {
@@ -83,6 +98,68 @@ mod tests {
 
         assert!(matches!(key, AttrNameCacheKey::Heap(_)));
         assert_eq!(key.as_slice(), bytes.as_slice());
+    }
+
+    #[test]
+    fn descriptor_cache_store_owns_released_heap_bits() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            clear_attr_tls_caches(_py);
+
+            let class_ptr = alloc_string(_py, b"descriptor-cache-class-owner");
+            assert!(!class_ptr.is_null());
+            let attr_ptr = alloc_string(_py, b"cached_attr");
+            assert!(!attr_ptr.is_null());
+            let first_ptr = alloc_string(_py, b"first-cached-value");
+            assert!(!first_ptr.is_null());
+            let second_ptr = alloc_string(_py, b"second-cached-value");
+            assert!(!second_ptr.is_null());
+
+            let class_bits = MoltObject::from_ptr(class_ptr).bits();
+            let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
+            let first_bits = MoltObject::from_ptr(first_ptr).bits();
+            let second_bits = MoltObject::from_ptr(second_ptr).bits();
+
+            let class_before = heap_refcount(class_bits);
+            let first_before = heap_refcount(first_bits);
+            let second_before = heap_refcount(second_bits);
+
+            descriptor_cache_store(_py, class_bits, attr_bits, 1, None, Some(first_bits));
+            assert_eq!(heap_refcount(class_bits), class_before + 1);
+            assert_eq!(heap_refcount(first_bits), first_before + 1);
+            assert_eq!(heap_refcount(second_bits), second_before);
+            let cached = descriptor_cache_lookup(_py, class_bits, attr_bits, 1)
+                .expect("descriptor cache should contain first value");
+            assert_eq!(cached.class_attr_bits, Some(first_bits));
+            assert_eq!(heap_refcount(class_bits), class_before + 2);
+            assert_eq!(heap_refcount(first_bits), first_before + 2);
+            cached.release(_py);
+            assert_eq!(heap_refcount(class_bits), class_before + 1);
+            assert_eq!(heap_refcount(first_bits), first_before + 1);
+
+            descriptor_cache_store(_py, class_bits, attr_bits, 2, None, Some(second_bits));
+            assert_eq!(heap_refcount(class_bits), class_before + 1);
+            assert_eq!(heap_refcount(first_bits), first_before);
+            assert_eq!(heap_refcount(second_bits), second_before + 1);
+            let cached = descriptor_cache_lookup(_py, class_bits, attr_bits, 2)
+                .expect("descriptor cache should contain replacement value");
+            assert_eq!(cached.class_attr_bits, Some(second_bits));
+            assert_eq!(heap_refcount(class_bits), class_before + 2);
+            assert_eq!(heap_refcount(second_bits), second_before + 2);
+            cached.release(_py);
+            assert_eq!(heap_refcount(class_bits), class_before + 1);
+            assert_eq!(heap_refcount(second_bits), second_before + 1);
+
+            clear_attr_tls_caches(_py);
+            assert_eq!(heap_refcount(class_bits), class_before);
+            assert_eq!(heap_refcount(first_bits), first_before);
+            assert_eq!(heap_refcount(second_bits), second_before);
+
+            dec_ref_bits(_py, second_bits);
+            dec_ref_bits(_py, first_bits);
+            dec_ref_bits(_py, attr_bits);
+            dec_ref_bits(_py, class_bits);
+        });
     }
 }
 
@@ -172,13 +249,71 @@ fn debug_class_layout_match(class_name: &str) -> bool {
     }
 }
 
-#[derive(Clone)]
 pub(crate) struct DescriptorCacheEntry {
     pub(crate) class_bits: u64,
     pub(crate) attr_name: Vec<u8>,
     pub(crate) version: u64,
     pub(crate) data_desc_bits: Option<u64>,
     pub(crate) class_attr_bits: Option<u64>,
+}
+
+impl DescriptorCacheEntry {
+    fn retain_from_entry(_py: &PyToken<'_>, entry: &Self) -> Self {
+        Self::retain(
+            _py,
+            entry.class_bits,
+            entry.attr_name.clone(),
+            entry.version,
+            entry.data_desc_bits,
+            entry.class_attr_bits,
+        )
+    }
+
+    fn retain(
+        _py: &PyToken<'_>,
+        class_bits: u64,
+        attr_name: Vec<u8>,
+        version: u64,
+        data_desc_bits: Option<u64>,
+        class_attr_bits: Option<u64>,
+    ) -> Self {
+        if class_bits != 0 {
+            inc_ref_bits(_py, class_bits);
+        }
+        if let Some(bits) = data_desc_bits
+            && bits != 0
+        {
+            inc_ref_bits(_py, bits);
+        }
+        if let Some(bits) = class_attr_bits
+            && bits != 0
+        {
+            inc_ref_bits(_py, bits);
+        }
+        Self {
+            class_bits,
+            attr_name,
+            version,
+            data_desc_bits,
+            class_attr_bits,
+        }
+    }
+
+    pub(crate) fn release(self, _py: &PyToken<'_>) {
+        if self.class_bits != 0 {
+            dec_ref_bits(_py, self.class_bits);
+        }
+        if let Some(bits) = self.data_desc_bits
+            && bits != 0
+        {
+            dec_ref_bits(_py, bits);
+        }
+        if let Some(bits) = self.class_attr_bits
+            && bits != 0
+        {
+            dec_ref_bits(_py, bits);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,19 +435,7 @@ pub(crate) fn clear_attr_tls_caches(_py: &PyToken<'_>) {
     });
     let _ = DESCRIPTOR_CACHE_TLS.try_with(|cell| {
         if let Some(entry) = cell.borrow_mut().take() {
-            if entry.class_bits != 0 {
-                dec_ref_bits(_py, entry.class_bits);
-            }
-            if let Some(bits) = entry.data_desc_bits
-                && bits != 0
-            {
-                dec_ref_bits(_py, bits);
-            }
-            if let Some(bits) = entry.class_attr_bits
-                && bits != 0
-            {
-                dec_ref_bits(_py, bits);
-            }
+            entry.release(_py);
         }
     });
     let _ = FIELD_OFFSET_IC_TLS.try_with(|cell| {
@@ -625,7 +748,7 @@ pub(crate) fn clear_attribute_error_if_pending(_py: &PyToken<'_>) -> bool {
     if !exception_pending(_py) {
         return false;
     }
-    let exc_bits = molt_exception_last();
+    let exc_bits = molt_exception_last_pending();
     let is_attr = exception_is_attribute_error(_py, exc_bits);
     if is_attr {
         clear_exception(_py);
@@ -1111,6 +1234,61 @@ pub(crate) unsafe fn class_field_offset(
     }
 }
 
+unsafe fn slots_value_declares_attr(_py: &PyToken<'_>, slots_bits: u64, attr_bits: u64) -> bool {
+    unsafe {
+        let slots_obj = obj_from_bits(slots_bits);
+        let Some(slots_ptr) = slots_obj.as_ptr() else {
+            return false;
+        };
+        match object_type_id(slots_ptr) {
+            TYPE_ID_STRING => obj_eq(_py, slots_obj, obj_from_bits(attr_bits)),
+            TYPE_ID_TUPLE | TYPE_ID_LIST => seq_vec_ref(slots_ptr)
+                .iter()
+                .copied()
+                .any(|slot_bits| obj_eq(_py, obj_from_bits(slot_bits), obj_from_bits(attr_bits))),
+            _ => false,
+        }
+    }
+}
+
+pub(crate) unsafe fn class_own_slot_field_offset(
+    _py: &PyToken<'_>,
+    class_ptr: *mut u8,
+    attr_bits: u64,
+) -> Option<usize> {
+    unsafe {
+        crate::gil_assert();
+        if class_ptr.is_null() || object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+        let dict_bits = class_dict_bits(class_ptr);
+        let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
+        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+            return None;
+        }
+        let slots_name_bits =
+            intern_static_name(_py, &runtime_state(_py).interned.slots_name, b"__slots__");
+        let slots_bits = dict_get_in_place(_py, dict_ptr, slots_name_bits)?;
+        if !slots_value_declares_attr(_py, slots_bits, attr_bits) {
+            return None;
+        }
+        let fields_bits = intern_static_name(
+            _py,
+            &runtime_state(_py).interned.field_offsets_name,
+            b"__molt_field_offsets__",
+        );
+        let offsets_bits = dict_get_in_place(_py, dict_ptr, fields_bits)?;
+        let offsets_ptr = obj_from_bits(offsets_bits).as_ptr()?;
+        if object_type_id(offsets_ptr) != TYPE_ID_DICT {
+            return None;
+        }
+        let offset_bits = dict_get_in_place(_py, offsets_ptr, attr_bits)?;
+        obj_from_bits(offset_bits)
+            .as_int()
+            .and_then(|val| if val >= 0 { Some(val as usize) } else { None })
+    }
+}
+
 /// Design A (#86 — single field-ownership authority): release every inline typed
 /// attribute field of a heap `TYPE_ID_OBJECT` instance when it is freed.
 ///
@@ -1248,6 +1426,7 @@ pub(crate) unsafe fn is_iterator_bits(_py: &PyToken<'_>, bits: u64) -> bool {
 }
 
 pub(crate) fn descriptor_cache_lookup(
+    _py: &PyToken<'_>,
     class_bits: u64,
     attr_bits: u64,
     version: u64,
@@ -1263,11 +1442,12 @@ pub(crate) fn descriptor_cache_lookup(
                     && entry.version == version
                     && entry.attr_name == attr_bytes
             })
-            .cloned()
+            .map(|entry| DescriptorCacheEntry::retain_from_entry(_py, entry))
     })
 }
 
 pub(crate) fn descriptor_cache_store(
+    _py: &PyToken<'_>,
     class_bits: u64,
     attr_bits: u64,
     version: u64,
@@ -1278,15 +1458,18 @@ pub(crate) fn descriptor_cache_store(
     let Some(attr_name) = string_obj_to_owned(obj_from_bits(attr_bits)) else {
         return;
     };
-    let entry = DescriptorCacheEntry {
+    let entry = DescriptorCacheEntry::retain(
+        _py,
         class_bits,
-        attr_name: attr_name.into_bytes(),
+        attr_name.into_bytes(),
         version,
         data_desc_bits,
         class_attr_bits,
-    };
+    );
     DESCRIPTOR_CACHE_TLS.with(|cell| {
-        *cell.borrow_mut() = Some(entry);
+        if let Some(old_entry) = cell.borrow_mut().replace(entry) {
+            old_entry.release(_py);
+        }
     });
 }
 
@@ -1413,7 +1596,12 @@ pub(crate) unsafe fn descriptor_bind(
             inc_ref_bits(_py, val_bits);
             return Some(val_bits);
         };
-        match object_type_id(val_ptr) {
+        // Descriptor binding is the canonical boundary where class-dict/cache
+        // descriptor values can run arbitrary user code through property getters
+        // or `__get__`. Own the descriptor for this full operation so class
+        // mutation during the hook cannot invalidate the borrowed lookup source.
+        inc_ref_bits(_py, val_bits);
+        let result = match object_type_id(val_ptr) {
             TYPE_ID_FUNCTION => {
                 let fn_ptr = crate::function_fn_ptr(val_ptr);
                 if let Some(inst_ptr) = instance_ptr {
@@ -1432,11 +1620,12 @@ pub(crate) unsafe fn descriptor_bind(
                             || fn_ptr == object_delattr_ptr)
                     {
                         inc_ref_bits(_py, val_bits);
-                        return Some(val_bits);
+                        Some(val_bits)
+                    } else {
+                        let inst_bits = instance_bits_for_call(inst_ptr);
+                        let bound_bits = molt_bound_method_new(val_bits, inst_bits);
+                        Some(bound_bits)
                     }
-                    let inst_bits = instance_bits_for_call(inst_ptr);
-                    let bound_bits = molt_bound_method_new(val_bits, inst_bits);
-                    Some(bound_bits)
                 } else {
                     inc_ref_bits(_py, val_bits);
                     Some(val_bits)
@@ -1446,10 +1635,11 @@ pub(crate) unsafe fn descriptor_bind(
                 let func_bits = classmethod_func_bits(val_ptr);
                 if owner_ptr.is_null() {
                     inc_ref_bits(_py, func_bits);
-                    return Some(func_bits);
+                    Some(func_bits)
+                } else {
+                    let class_bits = MoltObject::from_ptr(owner_ptr).bits();
+                    Some(molt_bound_method_new(func_bits, class_bits))
                 }
-                let class_bits = MoltObject::from_ptr(owner_ptr).bits();
-                Some(molt_bound_method_new(func_bits, class_bits))
             }
             TYPE_ID_STATICMETHOD => {
                 let func_bits = staticmethod_func_bits(val_ptr);
@@ -1460,15 +1650,20 @@ pub(crate) unsafe fn descriptor_bind(
                 if let Some(inst_ptr) = instance_ptr {
                     let get_bits = property_get_bits(val_ptr);
                     if obj_from_bits(get_bits).is_none() {
-                        return raise_exception(_py, "AttributeError", "unreadable property");
+                        raise_exception(_py, "AttributeError", "unreadable property")
+                    } else {
+                        let inst_bits = instance_bits_for_call(inst_ptr);
+                        let value_bits = call_function_obj1(_py, get_bits, inst_bits);
+                        if exception_pending(_py) {
+                            if clear_attribute_error_if_pending(_py) {
+                                None
+                            } else {
+                                Some(MoltObject::none().bits())
+                            }
+                        } else {
+                            Some(value_bits)
+                        }
                     }
-                    let inst_bits = instance_bits_for_call(inst_ptr);
-                    let value_bits = call_function_obj1(_py, get_bits, inst_bits);
-                    if exception_pending(_py) {
-                        let _ = clear_attribute_error_if_pending(_py);
-                        return None;
-                    }
-                    Some(value_bits)
                 } else {
                     inc_ref_bits(_py, val_bits);
                     Some(val_bits)
@@ -1489,15 +1684,22 @@ pub(crate) unsafe fn descriptor_bind(
                     };
                     let res = call_callable3(_py, method_bits, self_bits, inst_bits, owner_bits);
                     if exception_pending(_py) {
-                        let _ = clear_attribute_error_if_pending(_py);
-                        return None;
+                        if clear_attribute_error_if_pending(_py) {
+                            None
+                        } else {
+                            Some(MoltObject::none().bits())
+                        }
+                    } else {
+                        Some(res)
                     }
-                    return Some(res);
+                } else {
+                    inc_ref_bits(_py, val_bits);
+                    Some(val_bits)
                 }
-                inc_ref_bits(_py, val_bits);
-                Some(val_bits)
             }
-        }
+        };
+        dec_ref_bits(_py, val_bits);
+        result
     }
 }
 
@@ -1550,6 +1752,7 @@ pub(crate) unsafe fn class_slots_info(
         let mut allows_dict = false;
         let attr_obj = obj_from_bits(attr_bits);
         let dict_obj = obj_from_bits(dict_name_bits);
+        let object_class_bits = builtin_classes(_py).object;
         let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
             Cow::Borrowed(mro.as_slice())
         } else {
@@ -1570,6 +1773,13 @@ pub(crate) unsafe fn class_slots_info(
                 continue;
             }
             let Some(slots_bits) = dict_get_in_place(_py, dict_ptr, slots_name_bits) else {
+                // A user-defined base class with no `__slots__` contributes an
+                // instance `__dict__` that subclasses inherit even when the
+                // subclass declares slots. Builtin roots such as `object` do not
+                // imply a managed dict.
+                if class_bits != object_class_bits && !is_builtin_class_bits(_py, class_bits) {
+                    allows_dict = true;
+                }
                 continue;
             };
             let slots_obj = obj_from_bits(slots_bits);
@@ -1777,22 +1987,8 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
         }
         layout_size = layout_size.saturating_sub(reserved_tail);
 
-        let entries = dict_order(offsets_ptr).clone();
-        for pair in entries.chunks(2) {
-            if pair.len() != 2 {
-                continue;
-            }
-            if let Some(offset) = obj_from_bits(pair[1]).as_int()
-                && offset >= 0
-            {
-                let end = (offset as usize).saturating_add(std::mem::size_of::<u64>());
-                if end > layout_size {
-                    layout_size = end;
-                }
-            }
-        }
-
         let mut updated = false;
+        let mut occupied_offsets: Vec<usize> = Vec::new();
         let mro: Cow<'_, [u64]> = if let Some(mro) = class_mro_ref(class_ptr) {
             Cow::Borrowed(mro.as_slice())
         } else {
@@ -1834,14 +2030,34 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
                 }
                 dict_set_in_place(_py, offsets_ptr, key_bits, val_bits);
                 if let Some(offset) = obj_from_bits(val_bits).as_int() {
-                    let end = offset.saturating_add(8) as usize;
+                    let offset = offset.max(0) as usize;
+                    let end = offset.saturating_add(std::mem::size_of::<u64>());
                     if end > layout_size {
                         layout_size = end;
                     }
+                    occupied_offsets.push(offset);
                 }
                 updated = true;
             }
         }
+
+        let entries = dict_order(offsets_ptr).clone();
+        for pair in entries.chunks(2) {
+            if pair.len() != 2 {
+                continue;
+            }
+            if let Some(offset) = obj_from_bits(pair[1]).as_int()
+                && offset >= 0
+            {
+                let offset = offset as usize;
+                occupied_offsets.push(offset);
+                let end = offset.saturating_add(std::mem::size_of::<u64>());
+                if end > layout_size {
+                    layout_size = end;
+                }
+            }
+        }
+
         for slot_bits in slot_names {
             let slot_obj = obj_from_bits(slot_bits);
             if obj_eq(_py, slot_obj, obj_from_bits(dict_name_bits))
@@ -1849,13 +2065,41 @@ pub(crate) unsafe fn apply_class_slots_layout(_py: &PyToken<'_>, class_ptr: *mut
             {
                 continue;
             }
-            if dict_get_in_place(_py, offsets_ptr, slot_bits).is_some() {
-                continue;
+            let mut existing_offset = dict_get_in_place(_py, offsets_ptr, slot_bits)
+                .and_then(|bits| obj_from_bits(bits).as_int())
+                .and_then(|offset| {
+                    if offset >= 0 {
+                        Some(offset as usize)
+                    } else {
+                        None
+                    }
+                });
+            if let Some(offset) = existing_offset
+                && occupied_offsets
+                    .iter()
+                    .filter(|&&seen| seen == offset)
+                    .count()
+                    > 1
+            {
+                existing_offset = None;
             }
-            let offset_bits = MoltObject::from_int(layout_size as i64).bits();
-            dict_set_in_place(_py, offsets_ptr, slot_bits, offset_bits);
-            layout_size += 8;
-            updated = true;
+            let offset = if let Some(offset) = existing_offset {
+                offset
+            } else {
+                while occupied_offsets.contains(&layout_size) {
+                    layout_size = layout_size.saturating_add(std::mem::size_of::<u64>());
+                }
+                let offset = layout_size;
+                let offset_bits = MoltObject::from_int(offset as i64).bits();
+                dict_set_in_place(_py, offsets_ptr, slot_bits, offset_bits);
+                updated = true;
+                offset
+            };
+            occupied_offsets.push(offset);
+            let end = offset.saturating_add(std::mem::size_of::<u64>());
+            if end > layout_size {
+                layout_size = end;
+            }
         }
         layout_size = layout_size.saturating_add(reserved_tail);
         if layout_size != original_layout_size {
@@ -1903,7 +2147,6 @@ pub(crate) unsafe fn object_attr_lookup_raw(
     unsafe {
         crate::gil_assert();
         let class_bits = object_class_bits(obj_ptr);
-        let mut cached_attr_bits: Option<u64> = None;
         let mut class_ptr_opt: Option<*mut u8> = None;
         if class_bits == 0 {
             let await_name_bits =
@@ -1924,22 +2167,38 @@ pub(crate) unsafe fn object_attr_lookup_raw(
             && object_type_id(class_ptr) == TYPE_ID_TYPE
         {
             class_ptr_opt = Some(class_ptr);
+            if let Some(offset) = class_own_slot_field_offset(_py, class_ptr, attr_bits) {
+                let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
+                if is_missing_bits(_py, bits) {
+                    dec_ref_bits(_py, bits);
+                    return None;
+                }
+                return Some(bits);
+            }
             let class_version = class_layout_version_bits(class_ptr);
-            if let Some(entry) = descriptor_cache_lookup(class_bits, attr_bits, class_version) {
+            let mut descriptor_cache_hit = false;
+            if let Some(entry) = descriptor_cache_lookup(_py, class_bits, attr_bits, class_version)
+            {
+                descriptor_cache_hit = true;
                 if let Some(bits) = entry.data_desc_bits {
-                    if let Some(bound) = descriptor_bind(_py, bits, class_ptr, Some(obj_ptr)) {
+                    let bound = descriptor_bind(_py, bits, class_ptr, Some(obj_ptr));
+                    let pending = exception_pending(_py);
+                    entry.release(_py);
+                    if let Some(bound) = bound {
                         return Some(bound);
                     }
-                    if exception_pending(_py) {
+                    if pending {
                         return None;
                     }
+                } else {
+                    entry.release(_py);
                 }
-                cached_attr_bits = entry.class_attr_bits;
             }
-            if cached_attr_bits.is_none() {
+            if !descriptor_cache_hit {
                 if let Some(val_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits) {
                     if descriptor_is_data(_py, val_bits) {
                         descriptor_cache_store(
+                            _py,
                             class_bits,
                             attr_bits,
                             class_version,
@@ -1954,17 +2213,18 @@ pub(crate) unsafe fn object_attr_lookup_raw(
                         if exception_pending(_py) {
                             return None;
                         }
+                    } else {
+                        descriptor_cache_store(
+                            _py,
+                            class_bits,
+                            attr_bits,
+                            class_version,
+                            None,
+                            Some(val_bits),
+                        );
                     }
-                    cached_attr_bits = Some(val_bits);
-                    descriptor_cache_store(
-                        class_bits,
-                        attr_bits,
-                        class_version,
-                        None,
-                        Some(val_bits),
-                    );
                 } else {
-                    descriptor_cache_store(class_bits, attr_bits, class_version, None, None);
+                    descriptor_cache_store(_py, class_bits, attr_bits, class_version, None, None);
                 }
             }
             // --- Field-offset IC fast path (CPython 3.12 LOAD_ATTR_INSTANCE_VALUE) ---
@@ -2092,16 +2352,52 @@ pub(crate) unsafe fn object_attr_lookup_raw(
             inc_ref_bits(_py, val);
             return Some(val);
         }
-        // Use black_box to prevent LLVM from caching stale values across
-        // re-entrant calls through inc_ref_bits/dec_ref_bits above.
-        let cached_attr_bits = std::hint::black_box(cached_attr_bits);
         let class_ptr_opt = std::hint::black_box(class_ptr_opt);
-        if let (Some(val_bits), Some(class_ptr)) = (cached_attr_bits, class_ptr_opt) {
-            if let Some(bound) = descriptor_bind(_py, val_bits, class_ptr, Some(obj_ptr)) {
-                return Some(bound);
-            }
-            if exception_pending(_py) {
-                return None;
+        if let Some(class_ptr) = class_ptr_opt {
+            let class_version = class_layout_version_bits(class_ptr);
+            if let Some(entry) = descriptor_cache_lookup(_py, class_bits, attr_bits, class_version)
+            {
+                if entry.data_desc_bits.is_none()
+                    && let Some(val_bits) = entry.class_attr_bits
+                {
+                    let bound = descriptor_bind(_py, val_bits, class_ptr, Some(obj_ptr));
+                    let pending = exception_pending(_py);
+                    entry.release(_py);
+                    if let Some(bound) = bound {
+                        return Some(bound);
+                    }
+                    if pending {
+                        return None;
+                    }
+                } else {
+                    entry.release(_py);
+                }
+            } else if let Some(val_bits) = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits) {
+                if descriptor_is_data(_py, val_bits) {
+                    descriptor_cache_store(
+                        _py,
+                        class_bits,
+                        attr_bits,
+                        class_version,
+                        Some(val_bits),
+                        None,
+                    );
+                    return None;
+                }
+                descriptor_cache_store(
+                    _py,
+                    class_bits,
+                    attr_bits,
+                    class_version,
+                    None,
+                    Some(val_bits),
+                );
+                if let Some(bound) = descriptor_bind(_py, val_bits, class_ptr, Some(obj_ptr)) {
+                    return Some(bound);
+                }
+                if exception_pending(_py) {
+                    return None;
+                }
             }
         }
         None
@@ -2175,11 +2471,14 @@ pub(crate) unsafe fn object_method_ic_resolve(
         let class_version = class_layout_version_bits(class_ptr);
         let class_attr_bits = {
             let mut resolved: Option<u64> = None;
-            if let Some(entry) = descriptor_cache_lookup(class_bits, attr_bits, class_version) {
+            if let Some(entry) = descriptor_cache_lookup(_py, class_bits, attr_bits, class_version)
+            {
                 if entry.data_desc_bits.is_some() {
+                    entry.release(_py);
                     return None;
                 }
                 resolved = entry.class_attr_bits;
+                entry.release(_py);
             }
             match resolved {
                 Some(bits) => bits,
@@ -2187,6 +2486,7 @@ pub(crate) unsafe fn object_method_ic_resolve(
                     let val_bits = class_attr_lookup_raw_mro(_py, class_ptr, attr_bits)?;
                     if descriptor_is_data(_py, val_bits) {
                         descriptor_cache_store(
+                            _py,
                             class_bits,
                             attr_bits,
                             class_version,
@@ -2196,6 +2496,7 @@ pub(crate) unsafe fn object_method_ic_resolve(
                         return None;
                     }
                     descriptor_cache_store(
+                        _py,
                         class_bits,
                         attr_bits,
                         class_version,
@@ -2223,8 +2524,8 @@ pub(crate) unsafe fn object_method_ic_resolve(
         // conservative (`true`) and keep the cheap per-call shadow check.
         let has_field_offset = class_field_offset(_py, class_ptr, attr_bits).is_some();
         let allows_instance_dict = match class_slots_info(_py, class_ptr, attr_bits) {
-            // A class declaring __slots__ permits an instance __dict__ only when
-            // `__dict__` itself is among the slots.
+            // A slots class permits an instance dict when it declares
+            // `__dict__` or inherits a dict-bearing user class.
             Some(info) => info.allows_dict,
             // No __slots__ anywhere in the MRO => instances carry a __dict__.
             None => true,
@@ -2395,8 +2696,27 @@ pub(crate) unsafe fn dataclass_attr_lookup_raw(
             return None;
         }
         let slots = (*desc_ptr).slots;
+        let allows_dict = (*desc_ptr).allows_dict;
         let attr_name = string_obj_to_owned(obj_from_bits(attr_bits));
         let class_bits = (*desc_ptr).class_bits;
+        if class_bits != 0
+            && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
+            && object_type_id(class_ptr) == TYPE_ID_TYPE
+            && class_own_slot_field_offset(_py, class_ptr, attr_bits).is_some()
+            && let Some(name) = attr_name.as_deref()
+            && let Some(&index) = (*desc_ptr).field_name_to_index.get(name)
+        {
+            let fields = dataclass_fields_ref(obj_ptr);
+            if index < fields.len() {
+                let val_bits = fields[index];
+                if is_missing_bits(_py, val_bits) {
+                    return None;
+                }
+                inc_ref_bits(_py, val_bits);
+                return Some(val_bits);
+            }
+            return None;
+        }
         if class_bits != 0
             && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
             && object_type_id(class_ptr) == TYPE_ID_TYPE
@@ -2426,7 +2746,7 @@ pub(crate) unsafe fn dataclass_attr_lookup_raw(
         let dict_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.dict_name, b"__dict__");
         if obj_eq(_py, obj_from_bits(attr_bits), obj_from_bits(dict_name_bits)) {
-            if !slots {
+            if allows_dict {
                 let mut dict_bits = dataclass_dict_bits(obj_ptr);
                 if dict_bits == 0 {
                     let dict_ptr = alloc_dict_with_pairs(_py, &[]);
@@ -2436,7 +2756,8 @@ pub(crate) unsafe fn dataclass_attr_lookup_raw(
                     }
                 }
                 if dict_bits != 0 {
-                    if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                    if !slots
+                        && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                         && object_type_id(dict_ptr) == TYPE_ID_DICT
                     {
                         let fields = dataclass_fields_ref(obj_ptr);
@@ -2485,6 +2806,16 @@ pub(crate) unsafe fn dataclass_attr_lookup_raw(
                     inc_ref_bits(_py, val_bits);
                     return Some(val_bits);
                 }
+            }
+        }
+        if slots && allows_dict {
+            let dict_bits = dataclass_dict_bits(obj_ptr);
+            if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
+                && object_type_id(dict_ptr) == TYPE_ID_DICT
+                && let Some(val) = dict_get_in_place(_py, dict_ptr, attr_bits)
+            {
+                inc_ref_bits(_py, val);
+                return Some(val);
             }
         }
         if class_bits != 0

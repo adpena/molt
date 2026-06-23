@@ -13014,6 +13014,7 @@ BASE_IMPORTS = """\
     firstlinenoBits,
     linetableBits,
     varnamesBits,
+    namesBits,
     argcountBits,
     posonlyargcountBits,
     kwonlyargcountBits,
@@ -13050,6 +13051,17 @@ BASE_IMPORTS = """\
         boxPtr({ type: 'str', value: 'TypeError' }),
         exceptionArgs(
           boxPtr({ type: 'str', value: 'code varnames must be tuple or None' }),
+        ),
+      );
+      return raiseException(exc);
+    }
+    if (isNone(namesBits)) {
+      namesBits = tupleFromArray([]);
+    } else if (!getTuple(namesBits)) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'TypeError' }),
+        exceptionArgs(
+          boxPtr({ type: 'str', value: 'code names must be tuple or None' }),
         ),
       );
       return raiseException(exc);
@@ -13103,6 +13115,7 @@ BASE_IMPORTS = """\
       firstlineno,
       linetableBits,
       varnamesBits,
+      namesBits,
       argcount,
       posonlyargcount,
       kwonlyargcount,
@@ -13312,6 +13325,7 @@ BASE_IMPORTS = """\
       nameBits,
       boxInt(1),
       boxNone(),
+      tupleFromArray([]),
       tupleFromArray([]),
       boxInt(0),
       boxInt(0),
