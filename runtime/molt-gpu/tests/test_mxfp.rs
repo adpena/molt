@@ -73,15 +73,46 @@ fn test_mxfp_block_count_for_logical_elements() {
 
 #[test]
 fn test_mxfp_storage_bytes_include_padded_block_exponents() {
+    assert_eq!(DType::MxFP8.checked_storage_bytes_for_numel(0), Some(0));
     assert_eq!(DType::MxFP8.storage_bytes_for_numel(0), 0);
     assert_eq!(DType::MxFP8.storage_bytes_for_numel(1), 33);
     assert_eq!(DType::MxFP8.storage_bytes_for_numel(32), 33);
     assert_eq!(DType::MxFP8.storage_bytes_for_numel(33), 66);
 
+    assert_eq!(DType::MxFP4.checked_storage_bytes_for_numel(1), Some(17));
     assert_eq!(DType::MxFP4.storage_bytes_for_numel(1), 17);
     assert_eq!(DType::MxFP4.storage_bytes_for_numel(32), 17);
     assert_eq!(DType::MxFP4.storage_bytes_for_numel(33), 34);
+    assert_eq!(
+        DType::Float32.checked_storage_bytes_for_numel(33),
+        Some(132)
+    );
     assert_eq!(DType::Float32.storage_bytes_for_numel(33), 132);
+}
+
+#[test]
+fn test_storage_bytes_overflow_is_explicit() {
+    assert_eq!(
+        DType::Float64.checked_storage_bytes_for_numel(usize::MAX),
+        None
+    );
+
+    let max_mxfp8_blocks = usize::MAX / DType::MxFP8.mxfp_block_bytes();
+    let max_mxfp8_numel = max_mxfp8_blocks * DType::MxFP8.mxfp_block_size();
+    assert_eq!(
+        DType::MxFP8.checked_storage_bytes_for_numel(max_mxfp8_numel),
+        Some(max_mxfp8_blocks * DType::MxFP8.mxfp_block_bytes())
+    );
+    assert_eq!(
+        DType::MxFP8.checked_storage_bytes_for_numel(max_mxfp8_numel + 1),
+        None
+    );
+}
+
+#[test]
+#[should_panic(expected = "dtype storage byte size overflow")]
+fn test_storage_bytes_panics_on_overflow() {
+    let _ = DType::Float64.storage_bytes_for_numel(usize::MAX);
 }
 
 #[test]

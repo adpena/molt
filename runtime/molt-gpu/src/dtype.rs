@@ -156,12 +156,22 @@ impl DType {
     /// padded block storage footprint, including one E8M0 exponent byte per
     /// 32-element block. Use this for buffer allocation and capacity checks;
     /// `size_bytes()` remains the scalar addressable lane width.
-    pub fn storage_bytes_for_numel(self, numel: usize) -> usize {
+    pub fn checked_storage_bytes_for_numel(self, numel: usize) -> Option<usize> {
         if self.is_mxfp() {
-            self.mxfp_block_count(numel) * self.mxfp_block_bytes()
+            self.mxfp_block_count(numel)
+                .checked_mul(self.mxfp_block_bytes())
         } else {
-            numel * self.size_bytes()
+            numel.checked_mul(self.size_bytes())
         }
+    }
+
+    /// Exact storage bytes required for `numel` logical elements.
+    ///
+    /// Panics on overflow. Allocation paths that need fallible diagnostics
+    /// should use `checked_storage_bytes_for_numel` and surface a typed error.
+    pub fn storage_bytes_for_numel(self, numel: usize) -> usize {
+        self.checked_storage_bytes_for_numel(numel)
+            .expect("dtype storage byte size overflow")
     }
 
     /// MSL type name for this dtype.
