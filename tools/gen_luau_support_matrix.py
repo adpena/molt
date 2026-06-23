@@ -82,11 +82,12 @@ TARGET_LIMITED_OPS = {
 }
 
 CAPABILITY_OPS = {
-    "file_open",
-    "file_read",
-    "file_write",
-    "file_close",
-    "file_flush",
+    "file_open": "Roblox/Luau filesystem capability is unavailable.",
+    "file_read": "Roblox/Luau filesystem capability is unavailable.",
+    "file_write": "Roblox/Luau filesystem capability is unavailable.",
+    "file_close": "Roblox/Luau filesystem capability is unavailable.",
+    "file_flush": "Roblox/Luau filesystem capability is unavailable.",
+    "invoke_ffi": "Roblox/Luau FFI capability is unavailable.",
 }
 
 IMPLEMENTED_WITH_MALFORMED_IR_ERRORS = {
@@ -297,7 +298,7 @@ def _classify(op: str, body: str) -> Row:
         return Row(
             op,
             "runtime-capability-error",
-            "Roblox/Luau filesystem capability is unavailable.",
+            CAPABILITY_OPS[op],
         )
 
     semantic_markers = (
