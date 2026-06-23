@@ -49,11 +49,11 @@
 #   - [[result_validity]] - per-OpCode/per-result validity facts for result slots
 #                  that are not initialized on every outgoing edge
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
-#   - canonicalize_commutative_reorder / canonicalize_swapped_comparison /
-#                  canonicalize_binary_rules - ordered algebraic facts consumed
-#                  by canonicalize.rs. They live here so operand rewrites do not
-#                  carry backend-local hand-sets beside the generated opcode
-#                  oracle.
+#   - canonicalize_literal_opcodes / canonicalize_commutative_reorder /
+#                  canonicalize_swapped_comparison / canonicalize_binary_rules -
+#                  ordered algebraic facts consumed by canonicalize.rs. They
+#                  live here so operand rewrites do not carry backend-local
+#                  hand-sets beside the generated opcode oracle.
 #   - [[explicit_release_operand]] - per-OpCode Python lifetime release facts
 #                  for ops that explicitly release one or all operand roots
 #                  (`DecRef` all operands, `DeleteVar` old slot operand 1).
@@ -313,6 +313,11 @@ i64_zero_divisor_guard_opcodes = [
     "Div",
     "FloorDiv",
     "Mod",
+]
+
+canonicalize_literal_opcodes = [
+    { opcode = "ConstInt", literal = "int" },
+    { opcode = "ConstBool", literal = "bool" },
 ]
 
 alias_memory_inert_opcodes = [

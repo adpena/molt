@@ -24,8 +24,9 @@ use super::PassStats;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     CanonicalizeBinaryAction, CanonicalizeBinaryPredicate, CanonicalizeBinaryRule,
-    CanonicalizeBinaryTypeGuard, CanonicalizeCommutativeDomain, CanonicalizeOperandSide,
-    opcode_canonicalize_binary_rules_table, opcode_canonicalize_commutative_domain_table,
+    CanonicalizeBinaryTypeGuard, CanonicalizeCommutativeDomain, CanonicalizeLiteralKind,
+    CanonicalizeOperandSide, opcode_canonicalize_binary_rules_table,
+    opcode_canonicalize_commutative_domain_table, opcode_canonicalize_literal_kind_table,
     opcode_swapped_comparison_for_canonicalize_table,
 };
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
@@ -46,22 +47,22 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
     for block in func.blocks.values() {
         for op in &block.ops {
-            match op.opcode {
-                OpCode::ConstInt => {
+            match opcode_canonicalize_literal_kind_table(op.opcode) {
+                Some(CanonicalizeLiteralKind::Int) => {
                     if let Some(AttrValue::Int(v)) = op.attrs.get("value") {
                         for &res in &op.results {
                             int_consts.insert(res, *v);
                         }
                     }
                 }
-                OpCode::ConstBool => {
+                Some(CanonicalizeLiteralKind::Bool) => {
                     if let Some(AttrValue::Bool(v)) = op.attrs.get("value") {
                         for &res in &op.results {
                             bool_consts.insert(res, *v);
                         }
                     }
                 }
-                _ => {}
+                None => {}
             }
         }
     }
