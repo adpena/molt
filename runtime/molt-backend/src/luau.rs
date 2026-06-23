@@ -10670,6 +10670,45 @@ mod tests {
     }
 
     #[test]
+    fn test_compile_checked_lowers_checked_add_helper() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "checked_add_test".to_string(),
+                params: vec!["a".to_string(), "b".to_string()],
+                param_types: Some(vec!["int".to_string(), "int".to_string()]),
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "checked_add".to_string(),
+                        args: Some(vec!["a".to_string(), "b".to_string()]),
+                        var: Some("sum".to_string()),
+                        out: Some("overflow".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["sum".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("checked_add should lower without stub markers");
+
+        assert!(source.contains("local function molt_checked_i64_add"));
+        assert!(source.contains("return a + b, false"));
+        assert!(
+            source.contains("local sum: number, overflow: boolean = molt_checked_i64_add(a, b)")
+        );
+        assert!(!source.contains("[unsupported op: checked_add]"));
+    }
+
+    #[test]
     fn test_compile_via_ir_rejects_unsupported_output() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
