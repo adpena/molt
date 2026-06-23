@@ -39,7 +39,11 @@ before splitting `molt-runtime` into focused modules.
   adapters and ABI entrypoints in `runtime/molt-runtime/src/provenance/`
   (`handles.rs`, `pointer_registry.rs`).
 - Notes: sharded pointer registry (read/write locks) for NaN-boxed pointers;
-  handle resolve is centralized in `provenance/handles.rs`.
+  handle resolve is centralized in `provenance/handles.rs`. Rust-owned opaque
+  handles are minted only with `opaque_handle_bits`, which stores the raw Rust
+  pointer in the registry and returns an immediate-int handle id. Pointer-tagged
+  `MoltObject` bits are reserved for real Molt heap objects so refcount and
+  finalizer paths never cast opaque host allocations as Molt headers.
 
 ### Async Runtime
 - Owner: runtime
