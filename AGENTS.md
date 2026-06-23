@@ -328,10 +328,17 @@ PowerShell host startup, external-process launch, stale Git/app background
 processes, Store-package sandbox ACL setup, non-ASCII profile paths, and
 multi-agent/tool-discovery retry storms. A fresh 2026-06-22 review of OpenAI
 Windows docs plus `openai/codex` Windows issues also shows a systemic
-Windows Desktop + WSL risk pattern: config home, runtime platform, plugin cache,
-SQLite state, shell startup, browser/computer-use helpers, MCP enumeration, and
-large thread resume can each infer a different environment model. Treat these
-as host control-plane risks while working in this repo:
+Windows Desktop + WSL risk pattern: config home, runtime platform, project-root
+serialization, plugin cache, SQLite state, shell startup, bundled helper
+architecture, sandbox ACL setup, browser/computer-use helpers, MCP enumeration,
+and large thread resume can each infer a different environment model. A
+2026-06-23 refresh adds concrete regressions where WSL workspaces were rewritten
+as invalid `C:\home\...` paths after updates or host crashes, WSL mode launched
+Windows app-server/PowerShell instead of a Linux runner, WSL-without-distro and
+Windows ARM64 + Linux x64 helper mismatches entered startup crash loops, and
+plugin caches under `/mnt/c/...` or sandbox ACL failures caused severe stalls or
+broken child-process networking. Treat these as host control-plane risks while
+working in this repo:
 
 - Before any long-running, recovery, Windows, macOS, WSL, or multi-agent turn,
   determine the actual execution environment. Record host OS, shell, `cwd`,
@@ -360,6 +367,27 @@ as host control-plane risks while working in this repo:
   `/home/<user>/...` rather than `/mnt/c/...`. Do not mix Windows Desktop,
   WSL app-server, Windows `CODEX_HOME`, `/mnt/c` workspaces, WindowsApps
   aliases, and WSL/Linux tools in one command lane.
+- Before trusting any Windows + WSL thread, verify the runtime tuple with a
+  bounded probe: selected project root, actual `cwd`, shell family, `pwd`,
+  `uname -a` when WSL is expected, and `git rev-parse --show-toplevel`. Treat
+  `C:\home\...`, `shell=powershell` in an intended WSL thread, Windows
+  `codex.exe` app-server paths launched from WSL, or repo/cache paths under
+  `/mnt/c/...` as a failed environment handshake. Stop broad scans and switch to
+  one coherent native lane instead of trying to repair the repo from a confused
+  control plane.
+- Do not enable or keep Codex WSL mode merely because WSL is installed. If WSL
+  is needed, first verify `wsl -l -v` shows the intended distro, the distro
+  starts cleanly, and `uname -m` matches an available helper architecture. On
+  Windows ARM64, treat Linux `aarch64` WSL with x64-only helper symptoms as a
+  crash-loop risk; prefer Windows-native Codex or a fully verified WSL-native
+  CLI lane until the helper architecture is known good.
+- After a host crash, Codex update, or app restart, do not immediately resume a
+  huge stale thread or launch multi-agent work. Reopen with a small bounded
+  environment probe, confirm the project association and working directory are
+  still valid, and only then continue long-running work. If desktop chats vanish
+  or a WSL project reports "working directory missing" while the Linux path
+  exists, preserve state evidence and avoid rewriting Codex session/project
+  state as a first response.
 - On Windows, treat `C:\Windows\System32\bash.exe`, WindowsApps `python.exe` /
   `python3.exe`, and Windows-side Node/npm shims visible from WSL as unstable
   boundary shims. Prefer `uv run --python 3.12 ...`, `py -3.12 ...`, or an
@@ -384,6 +412,13 @@ as host control-plane risks while working in this repo:
   cause Desktop to enumerate MCP tools/status during thread resume, goal checks,
   or crash recovery. Enable only the minimum MCP/plugin set needed for the
   current task, and disable speculative helpers before resuming a large thread.
+- Treat plugin-cache and MCP startup load as crash-adjacent control-plane
+  pressure on Windows, especially when WSL mode routes through `/mnt/c`. If
+  simple prompts take tens of seconds, app startup gets hot, or thread resume
+  stalls before repo commands run, capture plugin-cache size/count and MCP
+  registration state, then reduce optional registrations before adding agents.
+  Do not bulk-delete plugin caches or state databases without a reversible
+  backup and explicit recovery intent.
 - Keep Codex worktree and local-environment state boring and explicit.
   Worktrees inherit checked-in files by default, so ignored toolchains, caches,
   credentials, or setup files must come from checked-in setup scripts or an
@@ -412,6 +447,14 @@ as host control-plane risks while working in this repo:
   app-owned directories, `%APPDATA%\Codex`, `%LOCALAPPDATA%\Codex`, or
   `%USERPROFILE%\.codex` unless the user explicitly asks for Codex app repair
   and the session/auth data has been backed up or deliberately preserved.
+- If Codex child processes lose DNS/networking while the same command works in
+  normal PowerShell, treat it as a Windows sandbox/control-plane incident before
+  blaming project dependencies. Inspect
+  `%USERPROFILE%\.codex\.sandbox\setup_error.json` and
+  `%USERPROFILE%\.codex\.sandbox\sandbox.log` for ACL/setup failures such as
+  `SetNamedSecurityInfoW failed: 5`; preserve the evidence, avoid repeated
+  dependency installs, and never try to fix it by editing `WindowsApps` package
+  files or weakening repo security.
 - Keep Molt build/test/bench artifact roots short, explicit, and preferably
   ASCII-only on Windows. Use repo-local canonical roots or configured external
   artifact roots rather than Codex app profile/cache/runtime directories; public
@@ -444,11 +487,17 @@ as host control-plane risks while working in this repo:
   `https://developers.openai.com/codex/app/troubleshooting`,
   `https://developers.openai.com/codex/windows`,
   `https://developers.openai.com/codex/changelog`,
+  `https://github.com/openai/codex/issues/16169`,
+  `https://github.com/openai/codex/issues/18821`,
+  `https://github.com/openai/codex/issues/20967`,
   `https://github.com/openai/codex/issues/21761`,
   `https://github.com/openai/codex/issues/21147`,
+  `https://github.com/openai/codex/issues/26323`,
   `https://github.com/openai/codex/issues/21693`,
   `https://github.com/openai/codex/issues/23251`,
   `https://github.com/openai/codex/issues/25799`,
+  `https://github.com/openai/codex/issues/28094`,
+  `https://github.com/openai/codex/issues/28172`,
   `https://github.com/openai/codex/issues/28074`,
   `https://github.com/openai/codex/issues/28302`,
   `https://github.com/openai/codex/issues/25216`,
