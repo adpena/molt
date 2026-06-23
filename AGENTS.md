@@ -368,6 +368,13 @@ working in this repo:
   searches without tight globs, and set conservative output budgets for any
   command that can print thousands of lines. If a command is noisy, redirect it
   to a canonical log file and inspect targeted excerpts.
+- When sanitizing subprocess environments on Windows, preserve toolchain
+  discovery roots as first-class control-plane state: `ProgramFiles`,
+  `ProgramFiles(x86)`, `ProgramW6432`, `CommonProgramFiles*`, `ProgramData`,
+  `LOCALAPPDATA`, `SystemRoot`/`windir`, Windows SDK variables, MSVC variables,
+  `INCLUDE`, `LIB`, and `PATH`. Stripping these can make LLVM/clang lose
+  Windows SDK/UCRT/MSVC discovery and fail native links with missing headers
+  such as `stdio.h` even though the same command works in the parent shell.
 - Prefer one active long-running proof lane per resource family on Windows.
   Avoid launching many concurrent Codex subagents/session threads or repeated
   tool-discovery loops from the Windows desktop app. If discoverable-tool calls
