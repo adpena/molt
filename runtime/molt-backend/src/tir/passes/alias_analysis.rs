@@ -69,8 +69,9 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    AliasSlotObservation, opcode_alias_slot_observation_table, opcode_is_alias_heap_barrier_table,
-    opcode_is_alias_memory_inert_table, opcode_is_alias_rc_barrier_table,
+    AliasMemoryRegionClass, AliasSlotObservation, opcode_alias_memory_region_table,
+    opcode_alias_slot_observation_table, opcode_is_alias_heap_barrier_table,
+    opcode_is_alias_rc_barrier_table,
 };
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -1015,88 +1016,36 @@ impl AliasAnalysisResult {
     /// The memory region a memory-touching op reads or writes, used for
     /// may-alias disambiguation (see [`MemRegion`]).
     pub fn region_of(&self, op: &TirOp) -> MemRegion {
-        match op.opcode {
-            OpCode::LoadAttr | OpCode::StoreAttr => {
-                // A typed-slot field op (`store`/`store_init`/`load`/
-                // `guarded_field_*`) names one fixed byte `offset` of one object's
-                // own instance layout. An opaque attribute spelling (`get_attr*`,
-                // `set_attr*`, or any op missing the offset proof) stays
-                // `GenericHeap`.
-                if let Some((target, offset)) = typed_slot_obj_offset(op) {
-                    let root = self.aliases.root(target);
-                    // A proven-non-escaping object's slots get a per-object
-                    // `StackObject` region (strictly more precise than a
-                    // class-shared `TypedField`: distinct stack objects never
-                    // alias even at the same class+offset). This needs only the
-                    // allocation root, NOT the class identity.
-                    if self.is_stack_object(root) {
-                        return MemRegion::StackObject { root };
-                    }
-                    // Otherwise, if the op carries its own proven class identity
-                    // (the `_class` attr the frontend stamps — a runtime
-                    // version-guard for `guarded_field_*`, static type inference
-                    // for the plain forms), it names a `TypedField` region
-                    // disjoint from every OTHER class+offset, from container
-                    // elements, and from module-dict slots (S5-1.5).
-                    if let Some(class) = typed_slot_class(op) {
-                        return MemRegion::TypedField { class, offset };
-                    }
-                }
-                MemRegion::GenericHeap
+        match opcode_alias_memory_region_table(op.opcode) {
+            AliasMemoryRegionClass::TypedSlotAttr => self.typed_slot_region(op),
+            AliasMemoryRegionClass::CopyRefinement => Self::copy_region(op),
+            AliasMemoryRegionClass::ContainerElement => MemRegion::ContainerElement,
+            AliasMemoryRegionClass::ModuleDict => MemRegion::ModuleDict,
+            AliasMemoryRegionClass::ScalarRegister => MemRegion::ScalarRegister,
+            AliasMemoryRegionClass::GenericHeap => MemRegion::GenericHeap,
+        }
+    }
+
+    fn typed_slot_region(&self, op: &TirOp) -> MemRegion {
+        if let Some((target, offset)) = typed_slot_obj_offset(op) {
+            let root = self.aliases.root(target);
+            if self.is_stack_object(root) {
+                return MemRegion::StackObject { root };
             }
-            // A `Copy` is overloaded: a pure SSA move (the result names the same
-            // value as the operand — no heap footprint), an inert structural /
-            // debug-metadata marker (a source-line / trace / unbound-cell
-            // sentinel the lift carries as a `Copy`), OR the opaque
-            // `_original_kind` passthrough carrier for an unmapped SimpleIR op
-            // (which MAY have arbitrary heap effects). The first two write no heap
-            // memory and are `ScalarRegister`; only the last is a conservative
-            // `GenericHeap` clobber.
-            //
-            // Classifying the inert markers as `GenericHeap` (the pre-S5-2d
-            // default) bumped the memory version between a constructor's field
-            // stores and the field loads — the frontend emits a `line` /
-            // `trace_exit` marker between nearly every statement, so a `p = P(..)`
-            // followed by a `p.x` read always had a marker-`Copy` clobber between
-            // the store and the load. That starved MemGVN store-to-load forwarding
-            // (the load's reaching def became the marker's `GenericHeap` version,
-            // not the store) and, downstream, SROA field promotion — exactly the
-            // spurious-clobber bug already fixed for `CheckException` /
-            // `ExceptionPending` (see `opcode_touches_memory`).
-            //
-            // FAIL-CLOSED (memory axis → `GenericHeap`): a `Copy` is heap-inert
-            // ONLY when it is an EXPLICIT no-heap-footprint pure move
-            // (`copy_kind_is_explicit_no_heap_move`) or an EXPLICIT inert marker
-            // (`copy_kind_is_memory_inert`). An unknown / unmapped passthrough
-            // carrier (e.g. `list_append`, or a fresh-value op) has unknown or
-            // heap-mutating effects and MUST stay `GenericHeap` — we do NOT use the
-            // fail-closed *alias* view here (`copy_is_known_local_alias` treats
-            // unknowns as aliases, which is correct for drops/leak-safety but would
-            // wrongly mark a heap-mutating op as scalar for MemGVN). The two axes
-            // fail closed in OPPOSITE directions.
-            OpCode::Copy => {
-                if copy_kind_is_explicit_no_heap_move(copy_original_kind(op))
-                    || copy_kind_is_memory_inert(op)
-                {
-                    MemRegion::ScalarRegister
-                } else {
-                    MemRegion::GenericHeap
-                }
+            if let Some(class) = typed_slot_class(op) {
+                return MemRegion::TypedField { class, offset };
             }
-            OpCode::Index | OpCode::StoreIndex | OpCode::DelIndex => MemRegion::ContainerElement,
-            OpCode::ModuleCacheGet
-            | OpCode::ModuleCacheSet
-            | OpCode::ModuleCacheDel
-            | OpCode::ModuleGetAttr
-            | OpCode::ModuleImportFrom
-            | OpCode::ModuleGetGlobal
-            | OpCode::ModuleGetName
-            | OpCode::ModuleSetAttr
-            | OpCode::ModuleDelGlobal
-            | OpCode::ModuleDelGlobalIfPresent => MemRegion::ModuleDict,
-            // Pure register computations have no heap footprint.
-            _ if !opcode_touches_memory(op.opcode) => MemRegion::ScalarRegister,
-            _ => MemRegion::GenericHeap,
+        }
+        MemRegion::GenericHeap
+    }
+
+    fn copy_region(op: &TirOp) -> MemRegion {
+        if copy_kind_is_explicit_no_heap_move(copy_original_kind(op))
+            || copy_kind_is_memory_inert(op)
+        {
+            MemRegion::ScalarRegister
+        } else {
+            MemRegion::GenericHeap
         }
     }
 
@@ -1135,14 +1084,6 @@ impl AliasAnalysisResult {
     pub fn is_transparent_alias_op(&self, op: &TirOp) -> bool {
         transparent_alias_root(op, &self.aliases).is_some()
     }
-}
-
-/// True if an opcode reads or writes heap memory (anything that is not a pure
-/// register computation / constant / control-flow marker). Used to classify
-/// `ScalarRegister` vs `GenericHeap` regions.
-#[inline]
-fn opcode_touches_memory(opcode: OpCode) -> bool {
-    !opcode_is_alias_memory_inert_table(opcode)
 }
 
 // ===========================================================================

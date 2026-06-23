@@ -142,10 +142,21 @@ _OPCODE_FACT_SETS = (
     "alias_rc_barrier_opcodes",
     "alias_heap_barrier_opcodes",
     "alias_memory_inert_opcodes",
+    "alias_region_typed_slot_opcodes",
+    "alias_region_copy_refinement_opcodes",
+    "alias_region_container_element_opcodes",
+    "alias_region_module_dict_opcodes",
     "alias_slot_direct_observer_opcodes",
     "alias_slot_typed_store_opcodes",
     "alias_slot_transparent_alias_opcodes",
     "alias_slot_never_observer_opcodes",
+)
+_ALIAS_MEMORY_REGION_SETS = (
+    "alias_region_typed_slot_opcodes",
+    "alias_region_copy_refinement_opcodes",
+    "alias_region_container_element_opcodes",
+    "alias_region_module_dict_opcodes",
+    "alias_memory_inert_opcodes",
 )
 _ALIAS_SLOT_OBSERVATION_SETS = (
     "alias_slot_direct_observer_opcodes",
@@ -257,6 +268,7 @@ def load_table() -> dict:
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
+    _validate_alias_memory_region_sets(data)
     _validate_alias_slot_observation_sets(data)
 
     kinds = data.get("kind", [])
@@ -550,6 +562,18 @@ def _validate_alias_slot_observation_sets(data: dict) -> None:
             if opcode in owners:
                 raise OpKindTableError(
                     f"alias slot observation opcode {opcode!r} appears in both "
+                    f"{owners[opcode]} and {key}"
+                )
+            owners[opcode] = key
+
+
+def _validate_alias_memory_region_sets(data: dict) -> None:
+    owners: dict[str, str] = {}
+    for key in _ALIAS_MEMORY_REGION_SETS:
+        for opcode in data.get(key, []):
+            if opcode in owners:
+                raise OpKindTableError(
+                    f"alias memory-region opcode {opcode!r} appears in both "
                     f"{owners[opcode]} and {key}"
                 )
             owners[opcode] = key
@@ -1105,7 +1129,6 @@ def _render_rs_unformatted(data: dict) -> str:
 
     alias_rc_barriers = list(data.get("alias_rc_barrier_opcodes", []))
     alias_heap_barriers = list(data.get("alias_heap_barrier_opcodes", []))
-    alias_memory_inert = list(data.get("alias_memory_inert_opcodes", []))
     out.append(
         "/// Whether an opcode is an alias-analysis refcount barrier. EXHAUSTIVE\n"
         "/// over OpCode; the conservative barrier set lives in op_kinds.toml.\n"
@@ -1126,17 +1149,8 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, alias_heap_barriers))
     out.append("    }\n}\n\n")
 
-    out.append(
-        "/// Whether an opcode is known not to read or write alias-visible heap\n"
-        "/// memory for alias-analysis MemRegion classification. EXHAUSTIVE over\n"
-        "/// OpCode; false is the conservative heap-touching default.\n"
-        "#[inline]\n"
-        "pub(crate) fn opcode_is_alias_memory_inert_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, alias_memory_inert))
-    out.append("    }\n}\n\n")
-
+    out.append(_render_alias_memory_region(opcodes, data))
+    out.append("\n")
     out.append(_render_alias_slot_observation(opcodes, data))
     out.append("\n")
 
@@ -1338,6 +1352,51 @@ _ALIAS_SLOT_OBSERVATION_VARIANTS = {
     "alias_slot_transparent_alias_opcodes": "AliasSlotObservation::TransparentAlias",
     "alias_slot_never_observer_opcodes": "AliasSlotObservation::NeverObserver",
 }
+
+
+_ALIAS_MEMORY_REGION_VARIANTS = {
+    "alias_region_typed_slot_opcodes": "AliasMemoryRegionClass::TypedSlotAttr",
+    "alias_region_copy_refinement_opcodes": "AliasMemoryRegionClass::CopyRefinement",
+    "alias_region_container_element_opcodes": "AliasMemoryRegionClass::ContainerElement",
+    "alias_region_module_dict_opcodes": "AliasMemoryRegionClass::ModuleDict",
+    "alias_memory_inert_opcodes": "AliasMemoryRegionClass::ScalarRegister",
+}
+
+
+def _render_alias_memory_region(opcodes: list[dict], data: dict) -> str:
+    class_by_opcode: dict[str, str] = {}
+    for key, variant in _ALIAS_MEMORY_REGION_VARIANTS.items():
+        for opcode in data.get(key, []):
+            class_by_opcode[opcode] = variant
+
+    out: list[str] = []
+    out.append(
+        "/// Alias-analysis memory-region class for an opcode before live\n"
+        "/// operand/attribute refinements. Omitted opcodes conservatively map to\n"
+        "/// GenericHeap.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) enum AliasMemoryRegionClass {\n"
+        "    TypedSlotAttr,\n"
+        "    CopyRefinement,\n"
+        "    ContainerElement,\n"
+        "    ModuleDict,\n"
+        "    ScalarRegister,\n"
+        "    GenericHeap,\n"
+        "}\n\n"
+        "/// Memory-region opcode class for alias_analysis.rs. EXHAUSTIVE over\n"
+        "/// OpCode; unlisted opcodes conservatively touch the generic heap.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_alias_memory_region_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> AliasMemoryRegionClass {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        variant = class_by_opcode.get(name, "AliasMemoryRegionClass::GenericHeap")
+        out.append(f"        OpCode::{name} => {variant},\n")
+    out.append("    }\n}\n")
+    return "".join(out)
 
 
 def _render_alias_slot_observation(opcodes: list[dict], data: dict) -> str:
