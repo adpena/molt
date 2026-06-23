@@ -9,8 +9,8 @@
 - `compile-error`: `1`
 - `implemented-exact`: `294`
 - `implemented-target-limited`: `47`
-- `not-admitted`: `55`
-- `runtime-capability-error`: `5`
+- `not-admitted`: `54`
+- `runtime-capability-error`: `6`
 - `total`: `402`
 
 ## Matrix
@@ -233,7 +233,7 @@
 | `int_from_str_of_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `intarray_from_seq` | `implemented-target-limited` | Modeled as a copied dense Luau integer table for vector consumers. |
 | `invert` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `invoke_ffi` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `invoke_ffi` | `runtime-capability-error` | Roblox/Luau FFI capability is unavailable. |
 | `is` | `implemented-target-limited` | Non-None identity currently lowers through equality on Luau values. |
 | `is_callable` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `is_native_awaitable` | `implemented-target-limited` | Luau has no Molt native poll-function object representation; target values are non-native awaitables. |

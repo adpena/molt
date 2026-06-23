@@ -4264,10 +4264,20 @@ impl LuauBackend {
             // ================================================================
             // Serialization stubs
             // ================================================================
-            "json_parse" | "msgpack_parse" | "cbor_parse" | "invoke_ffi" => {
+            "json_parse" | "msgpack_parse" | "cbor_parse" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
+                }
+            }
+            "invoke_ffi" => {
+                let diagnostic =
+                    "{__type=\"RuntimeError\", __msg=\"Luau target does not support FFI\"}";
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out}: any = error({diagnostic})"));
+                } else {
+                    self.emit_line(&format!("error({diagnostic})"));
                 }
             }
 
@@ -12234,6 +12244,39 @@ mod tests {
         assert!(
             !source.contains("[bridge_unavailable]"),
             "bridge_unavailable must not leave a semantic stub marker, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_invoke_ffi_to_luau_capability_error() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "invoke_ffi_capability_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "invoke_ffi".to_string(),
+                    out: Some("v0".to_string()),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("invoke_ffi should lower to a Luau target capability error");
+        assert!(
+            source.contains(
+                "local v0: any = error({__type=\"RuntimeError\", __msg=\"Luau target does not support FFI\"})"
+            ),
+            "invoke_ffi should be an explicit target capability error, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[invoke_ffi]") && !source.contains("[unsupported op: invoke_ffi]"),
+            "invoke_ffi must not leave semantic stub markers, got:\n{source}"
         );
     }
 
