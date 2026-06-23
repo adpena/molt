@@ -42,6 +42,7 @@ TARGET_LIMITED_OPS = {
     "object_new": "Modeled as Luau table object for the admitted subset.",
     "module_new": "Modeled as Luau table object for the admitted subset.",
     "builtin_type": "Modeled as named Luau type metadata for the admitted subset.",
+    "call_async": "Executes the known poll target directly for the admitted synchronous Luau subset.",
     "class_new": "Modeled as Luau table/metatable object for the admitted subset.",
     "class_apply_set_name": "__set_name__ hooks dispatch over Luau class-table snapshots for the admitted subset.",
     "classmethod_new": "Modeled as Luau descriptor metadata for the admitted subset.",
