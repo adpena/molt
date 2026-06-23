@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `294`
-- `implemented-target-limited`: `47`
-- `not-admitted`: `54`
+- `implemented-target-limited`: `49`
+- `not-admitted`: `52`
 - `runtime-capability-error`: `6`
 - `total`: `402`
 
@@ -404,8 +404,8 @@
 | `taq_ingest_line` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `task_register_token_owned` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `thread_submit` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
-| `trace_enter_slot` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
-| `trace_exit` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `trace_enter_slot` | `implemented-target-limited` | Luau checked output does not materialize Molt tracing frame-stack state. |
+| `trace_exit` | `implemented-target-limited` | Luau checked output does not materialize Molt tracing frame-stack state. |
 | `trunc` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `try_end` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `try_start` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |

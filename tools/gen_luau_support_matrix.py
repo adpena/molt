@@ -79,6 +79,8 @@ TARGET_LIMITED_OPS = {
     "dict_popitem": "Luau table iteration order is not CPython insertion order.",
     "set_pop": "Luau table iteration order is not CPython set pop order.",
     "sys_executable": "Luau has no executable path surface; materializes an empty string.",
+    "trace_enter_slot": "Luau checked output does not materialize Molt tracing frame-stack state.",
+    "trace_exit": "Luau checked output does not materialize Molt tracing frame-stack state.",
 }
 
 CAPABILITY_OPS = {
