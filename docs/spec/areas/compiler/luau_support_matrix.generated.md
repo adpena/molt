@@ -7,9 +7,9 @@
 ## Summary
 
 - `compile-error`: `1`
-- `implemented-exact`: `307`
-- `implemented-target-limited`: `27`
-- `not-admitted`: `62`
+- `implemented-exact`: `295`
+- `implemented-target-limited`: `42`
+- `not-admitted`: `59`
 - `runtime-capability-error`: `5`
 - `total`: `402`
 
@@ -60,7 +60,7 @@
 | `call_guarded` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `call_indirect` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `call_internal` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `call_method` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `call_method` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable dispatch for the admitted subset. |
 | `callargs_expand_kwstar` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `callargs_expand_star` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `callargs_new` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -89,7 +89,7 @@
 | `class_new` | `implemented-target-limited` | Modeled as Luau table/metatable object for the admitted subset. |
 | `class_set_base` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `class_set_layout_version` | `implemented-target-limited` | Modeled as Luau class-table layout metadata for the admitted subset. |
-| `classmethod_new` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `classmethod_new` | `implemented-target-limited` | Modeled as Luau descriptor metadata for the admitted subset. |
 | `closure_load` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `closure_store` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `code_new` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -122,9 +122,9 @@
 | `dataclass_set` | `implemented-target-limited` | Modeled as Luau field assignment for the admitted subset. |
 | `dataclass_set_class` | `implemented-target-limited` | Modeled as Luau field assignment for the admitted subset. |
 | `dec_ref` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `del_attr_generic_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `del_attr_generic_ptr` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `del_attr_name` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `del_attr_generic_obj` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable deletion for the admitted subset. |
+| `del_attr_generic_ptr` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable deletion for the admitted subset. |
+| `del_attr_name` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable deletion for the admitted subset. |
 | `del_index` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `del_item` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `dict_clear` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -201,11 +201,11 @@
 | `ge` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `gen_locals_register` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `get_attr` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `get_attr_generic_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `get_attr_generic_ptr` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `get_attr_name` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `get_attr_name_default` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `get_attr_special_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `get_attr_generic_obj` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable lookup for the admitted subset. |
+| `get_attr_generic_ptr` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable lookup for the admitted subset. |
+| `get_attr_name` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable lookup for the admitted subset. |
+| `get_attr_name_default` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable lookup for the admitted subset. |
+| `get_attr_special_obj` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable lookup for the admitted subset. |
 | `get_item` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `getargv` | `implemented-target-limited` | Luau has no process argv surface; materializes an empty argv list. |
 | `getframe` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
@@ -321,7 +321,7 @@
 | `promise_new` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `promise_set_exception` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `promise_set_result` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
-| `property_new` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `property_new` | `implemented-target-limited` | Modeled as Luau descriptor metadata for the admitted subset. |
 | `raise` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `range_new` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `release` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -335,9 +335,9 @@
 | `set_add` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `set_add_probe` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `set_attr` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `set_attr_generic_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `set_attr_generic_ptr` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `set_attr_name` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `set_attr_generic_obj` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable assignment for the admitted subset. |
+| `set_attr_generic_ptr` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable assignment for the admitted subset. |
+| `set_attr_name` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable assignment for the admitted subset. |
 | `set_clear` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `set_discard` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `set_item` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -353,7 +353,7 @@
 | `state_switch` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `state_transition` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `state_yield` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
-| `staticmethod_new` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `staticmethod_new` | `implemented-target-limited` | Modeled as Luau descriptor metadata for the admitted subset. |
 | `store` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `store_index` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `store_init` | `implemented-exact` | Lowered without checked-output stub markers. |

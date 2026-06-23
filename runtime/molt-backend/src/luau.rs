@@ -493,6 +493,10 @@ impl LuauBackend {
                 "local function molt_isinstance(obj: any, classinfo: any): boolean\n\tif type(classinfo) == \"table\" and classinfo.__molt_is_type ~= true then\n\t\tfor i = 1, #classinfo do\n\t\t\tif molt_isinstance(obj, classinfo[i]) then return true end\n\t\tend\n\t\treturn false\n\tend\n\treturn molt_issubclass(molt_type_of(obj), classinfo)\nend\n",
             ),
             (
+                "molt_get_attr",
+                "local function molt_class_lookup(cls: any, attr: any): any\n\tlocal current = cls\n\tlocal seen = {}\n\twhile type(current) == \"table\" and seen[current] ~= true do\n\t\tseen[current] = true\n\t\tlocal raw = rawget(current, attr)\n\t\tif raw ~= nil then return raw end\n\t\tlocal mt = getmetatable(current)\n\t\tif type(mt) ~= \"table\" or type(mt.__index) ~= \"table\" then return nil end\n\t\tcurrent = mt.__index\n\tend\n\treturn nil\nend\n\nlocal function molt_bind_attr(obj: any, owner: any, raw: any): any\n\tif type(raw) == \"table\" then\n\t\tlocal kind = raw.__molt_descriptor_kind\n\t\tif kind == \"staticmethod\" then return raw.__func end\n\t\tif kind == \"classmethod\" then\n\t\t\tlocal func = raw.__func\n\t\t\treturn function(...) return func(owner, ...) end\n\t\tend\n\t\tif kind == \"property\" then\n\t\t\tif obj == owner then return raw end\n\t\t\tlocal fget = raw.__get\n\t\t\tif fget == nil then error({__type=\"AttributeError\", __msg=\"unreadable attribute\"}) end\n\t\t\treturn fget(obj)\n\t\tend\n\tend\n\tif type(raw) == \"function\" and type(owner) == \"table\" and obj ~= owner then\n\t\treturn function(...) return raw(obj, ...) end\n\tend\n\treturn raw\nend\n\nlocal function molt_get_attr(obj: any, attr: any): any\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type == true then\n\t\tlocal raw = molt_class_lookup(obj, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, obj, raw) end\n\t\treturn nil\n\tend\n\tlocal own = rawget(obj, attr)\n\tif own ~= nil then return own end\n\tlocal cls = getmetatable(obj)\n\tif type(cls) == \"table\" then\n\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, cls, raw) end\n\tend\n\treturn obj[attr]\nend\n\nlocal function molt_get_attr_default(obj: any, attr: any, default: any): any\n\tlocal value = molt_get_attr(obj, attr)\n\tif value ~= nil then return value end\n\treturn default\nend\n\nlocal function molt_set_attr(obj: any, attr: any, value: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fset = raw.__set\n\t\t\t\tif fset == nil then error({__type=\"AttributeError\", __msg=\"can't set attribute\"}) end\n\t\t\t\tfset(obj, value)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = value\n\treturn nil\nend\n\nlocal function molt_del_attr(obj: any, attr: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fdel = raw.__del\n\t\t\t\tif fdel == nil then error({__type=\"AttributeError\", __msg=\"can't delete attribute\"}) end\n\t\t\t\tfdel(obj)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = nil\n\treturn nil\nend\n",
+            ),
+            (
                 "molt_guard_type",
                 "local function molt_guard_type(val: any, expected: any): any\n\tif type(expected) ~= \"number\" then error({__type=\"TypeError\", __msg=\"guard type tag must be int\"}) end\n\treturn val\nend\n",
             ),
@@ -623,6 +627,10 @@ impl LuauBackend {
             || used_call("molt_isinstance");
         let needs_type_of = used_call("molt_type_of") || used_call("molt_isinstance");
         let needs_issubclass = used_call("molt_issubclass") || used_call("molt_isinstance");
+        let needs_get_attr = used_call("molt_get_attr")
+            || used_call("molt_get_attr_default")
+            || used_call("molt_set_attr")
+            || used_call("molt_del_attr");
         if needs_str_group {
             self.output.push_str("local molt_repr\n");
         }
@@ -642,6 +650,8 @@ impl LuauBackend {
                 needs_issubclass
             } else if *name == "molt_isinstance" {
                 used_call("molt_isinstance")
+            } else if *name == "molt_get_attr" {
+                needs_get_attr
             } else if *name == "molt_print" {
                 needs_print
             } else {
@@ -2227,9 +2237,15 @@ impl LuauBackend {
                         }
                     } else if let Some(ref out_name) = op.out {
                         let out = sanitize_ident(out_name);
-                        self.emit_line(&format!("local {out} = {obj}:{method}({call_args})"));
+                        let escaped = escape_luau_string(method_name);
+                        self.emit_line(&format!(
+                            "local {out}; do local __method = molt_get_attr({obj}, \"{escaped}\"); {out} = if __method then __method({call_args}) else nil end end"
+                        ));
                     } else {
-                        self.emit_line(&format!("{obj}:{method}({call_args})"));
+                        let escaped = escape_luau_string(method_name);
+                        self.emit_line(&format!(
+                            "do local __method = molt_get_attr({obj}, \"{escaped}\"); if __method then __method({call_args}) end end"
+                        ));
                     }
                 }
             }
@@ -2960,7 +2976,10 @@ impl LuauBackend {
                             "local {out} = if molt_func_attrs[{obj}] then molt_func_attrs[{obj}].{attr} else nil"
                         ));
                     } else {
-                        self.emit_line(&format!("local {out} = {obj}.{attr}"));
+                        let escaped = escape_luau_string(raw_attr);
+                        self.emit_line(&format!(
+                            "local {out} = molt_get_attr({obj}, \"{escaped}\")"
+                        ));
                     }
                 }
             }
@@ -2970,9 +2989,7 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);
                     let attr_name = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "local {out} = if type({obj}) == \"table\" then {obj}[{attr_name}] else nil"
-                    ));
+                    self.emit_line(&format!("local {out} = molt_get_attr({obj}, {attr_name})"));
                 } else {
                     self.emit_line(&format!("local {out} = nil"));
                 }
@@ -2989,13 +3006,13 @@ impl LuauBackend {
                         "nil".to_string()
                     };
                     self.emit_line(&format!(
-                        "local {out}; if type({obj}) == \"table\" and {obj}[{attr_name}] ~= nil then {out} = {obj}[{attr_name}] else {out} = {default} end"
+                        "local {out} = molt_get_attr_default({obj}, {attr_name}, {default})"
                     ));
                 } else if let Some(obj) = args.first() {
                     let obj = sanitize_ident(obj);
-                    let attr = sanitize_ident(op.s_value.as_deref().unwrap_or("unknown"));
+                    let attr = escape_luau_string(op.s_value.as_deref().unwrap_or("unknown"));
                     self.emit_line(&format!(
-                        "local {out}; if {obj}.{attr} ~= nil then {out} = {obj}.{attr} else {out} = nil end"
+                        "local {out} = molt_get_attr_default({obj}, \"{attr}\", nil)"
                     ));
                 } else {
                     self.emit_line(&format!("local {out} = nil"));
@@ -3024,9 +3041,7 @@ impl LuauBackend {
                     let obj = sanitize_ident(&args[0]);
                     let attr_name = sanitize_ident(&args[1]);
                     let value = sanitize_ident(&args[2]);
-                    self.emit_line(&format!(
-                        "if type({obj}) == \"table\" then {obj}[{attr_name}] = {value} end"
-                    ));
+                    self.emit_line(&format!("molt_set_attr({obj}, {attr_name}, {value})"));
                 }
             }
             "set_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" => {
@@ -3048,11 +3063,11 @@ impl LuauBackend {
                     }
                     // All other dunders — no-op.
                 } else {
-                    let attr = sanitize_ident(attr);
+                    let escaped = escape_luau_string(attr);
                     if args.len() >= 2 {
                         let obj = sanitize_ident(&args[0]);
                         let value = sanitize_ident(&args[1]);
-                        self.emit_line(&format!("{obj}.{attr} = {value}"));
+                        self.emit_line(&format!("molt_set_attr({obj}, \"{escaped}\", {value})"));
                     }
                 }
             }
@@ -3061,18 +3076,16 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);
                     let attr_name = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "if type({obj}) == \"table\" then {obj}[{attr_name}] = nil end"
-                    ));
+                    self.emit_line(&format!("molt_del_attr({obj}, {attr_name})"));
                 }
             }
             "del_attr_generic_obj" | "del_attr_generic_ptr" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let attr = op.s_value.as_deref().unwrap_or("unknown");
-                let attr = sanitize_ident(attr);
+                let attr = escape_luau_string(attr);
                 if let Some(obj) = args.first() {
                     let obj = sanitize_ident(obj);
-                    self.emit_line(&format!("{obj}.{attr} = nil"));
+                    self.emit_line(&format!("molt_del_attr({obj}, \"{attr}\")"));
                 }
             }
 
@@ -3353,6 +3366,15 @@ impl LuauBackend {
                         }
                         "molt_issubclass" => {
                             "function(a, ...) return molt_issubclass(a[1], a[2]) end"
+                        }
+                        "molt_classmethod_new" => {
+                            "function(a, ...) return {__molt_descriptor_kind=\"classmethod\", __func=a[1]} end"
+                        }
+                        "molt_staticmethod_new" => {
+                            "function(a, ...) return {__molt_descriptor_kind=\"staticmethod\", __func=a[1]} end"
+                        }
+                        "molt_property_new" => {
+                            "function(a, ...) return {__molt_descriptor_kind=\"property\", __get=a[1], __set=a[2], __del=a[3]} end"
                         }
                         "molt_hash_builtin" => "function(a, ...) return molt_hash(a[1]) end",
                         "molt_ord" => "function(a, ...) return molt_ord(a[1]) end",
@@ -4091,7 +4113,45 @@ impl LuauBackend {
             "classmethod_new" | "staticmethod_new" | "property_new" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
+                    let args = op.args.as_deref().unwrap_or(&[]);
+                    match op.kind.as_str() {
+                        "classmethod_new" => {
+                            let func = args
+                                .first()
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            self.emit_line(&format!(
+                                "local {out} = {{__molt_descriptor_kind=\"classmethod\", __func={func}}}"
+                            ));
+                        }
+                        "staticmethod_new" => {
+                            let func = args
+                                .first()
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            self.emit_line(&format!(
+                                "local {out} = {{__molt_descriptor_kind=\"staticmethod\", __func={func}}}"
+                            ));
+                        }
+                        "property_new" => {
+                            let get = args
+                                .first()
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            let set = args
+                                .get(1)
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            let del = args
+                                .get(2)
+                                .map(|arg| sanitize_ident(arg))
+                                .unwrap_or_else(|| "nil".to_string());
+                            self.emit_line(&format!(
+                                "local {out} = {{__molt_descriptor_kind=\"property\", __get={get}, __set={set}, __del={del}}}"
+                            ));
+                        }
+                        _ => unreachable!(),
+                    }
                 }
             }
 
@@ -11513,6 +11573,274 @@ mod tests {
                 && !source.contains("[unsupported op: issubclass]")
                 && !source.contains("[unsupported op: builtin_type]"),
             "type-check ops must not leave checked-output markers, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_descriptor_attribute_authority() {
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "descriptor_attribute_test".to_string(),
+                    params: vec![],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            out: Some("method_func".to_string()),
+                            s_value: Some("descriptor_method".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            out: Some("class_func".to_string()),
+                            s_value: Some("descriptor_class".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            out: Some("static_func".to_string()),
+                            s_value: Some("descriptor_static".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            out: Some("get_func".to_string()),
+                            s_value: Some("descriptor_get".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            out: Some("set_func".to_string()),
+                            s_value: Some("descriptor_set".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            out: Some("del_func".to_string()),
+                            s_value: Some("descriptor_del".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "class_new".to_string(),
+                            out: Some("cls".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "object_new".to_string(),
+                            out: Some("obj".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "object_set_class".to_string(),
+                            args: Some(vec!["obj".to_string(), "cls".to_string()]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "classmethod_new".to_string(),
+                            out: Some("cm_desc".to_string()),
+                            args: Some(vec!["class_func".to_string()]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "staticmethod_new".to_string(),
+                            out: Some("sm_desc".to_string()),
+                            args: Some(vec!["static_func".to_string()]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "property_new".to_string(),
+                            out: Some("prop_desc".to_string()),
+                            args: Some(vec![
+                                "get_func".to_string(),
+                                "set_func".to_string(),
+                                "del_func".to_string(),
+                            ]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "set_attr_generic_obj".to_string(),
+                            args: Some(vec!["cls".to_string(), "method_func".to_string()]),
+                            s_value: Some("method".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "set_attr_generic_obj".to_string(),
+                            args: Some(vec!["cls".to_string(), "cm_desc".to_string()]),
+                            s_value: Some("cm".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "set_attr_generic_obj".to_string(),
+                            args: Some(vec!["cls".to_string(), "sm_desc".to_string()]),
+                            s_value: Some("sm".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "set_attr_generic_obj".to_string(),
+                            args: Some(vec!["cls".to_string(), "prop_desc".to_string()]),
+                            s_value: Some("value".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "get_attr_generic_obj".to_string(),
+                            out: Some("cm_bound".to_string()),
+                            args: Some(vec!["obj".to_string()]),
+                            s_value: Some("cm".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "get_attr_generic_obj".to_string(),
+                            out: Some("sm_func".to_string()),
+                            args: Some(vec!["cls".to_string()]),
+                            s_value: Some("sm".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "get_attr_generic_obj".to_string(),
+                            out: Some("prop_value".to_string()),
+                            args: Some(vec!["obj".to_string()]),
+                            s_value: Some("value".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "const".to_string(),
+                            out: Some("new_value".to_string()),
+                            value: Some(7),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "set_attr_generic_obj".to_string(),
+                            args: Some(vec!["obj".to_string(), "new_value".to_string()]),
+                            s_value: Some("value".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "del_attr_generic_obj".to_string(),
+                            args: Some(vec!["obj".to_string()]),
+                            s_value: Some("value".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "call_method".to_string(),
+                            out: Some("method_result".to_string()),
+                            args: Some(vec!["obj".to_string()]),
+                            s_value: Some("method".to_string()),
+                            ..OpIR::default()
+                        },
+                    ],
+                },
+                FunctionIR {
+                    name: "descriptor_method".to_string(),
+                    params: vec!["self".to_string()],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                },
+                FunctionIR {
+                    name: "descriptor_class".to_string(),
+                    params: vec!["cls".to_string()],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                },
+                FunctionIR {
+                    name: "descriptor_static".to_string(),
+                    params: vec![],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                },
+                FunctionIR {
+                    name: "descriptor_get".to_string(),
+                    params: vec!["self".to_string()],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                },
+                FunctionIR {
+                    name: "descriptor_set".to_string(),
+                    params: vec!["self".to_string(), "value".to_string()],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                },
+                FunctionIR {
+                    name: "descriptor_del".to_string(),
+                    params: vec!["self".to_string()],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                },
+            ],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("descriptor ops should lower through Luau attribute authority");
+        assert!(
+            source.contains("local function molt_get_attr")
+                && source.contains("local function molt_set_attr")
+                && source.contains("local function molt_del_attr"),
+            "descriptor-aware attribute helpers should be emitted, got:\n{source}"
+        );
+        assert!(
+            source.contains(
+                "local cm_desc = {__molt_descriptor_kind=\"classmethod\", __func=class_func}"
+            ) && source.contains(
+                "local sm_desc = {__molt_descriptor_kind=\"staticmethod\", __func=static_func}"
+            ) && source.contains(
+                "local prop_desc = {__molt_descriptor_kind=\"property\", __get=get_func, __set=set_func, __del=del_func}"
+            ),
+            "descriptor constructors should use one table shape, got:\n{source}"
+        );
+        assert!(
+            source.contains("molt_set_attr(cls, \"cm\", cm_desc)")
+                && source.contains("local cm_bound = molt_get_attr(obj, \"cm\")")
+                && source.contains("local sm_func = molt_get_attr(cls, \"sm\")")
+                && source.contains("local prop_value = molt_get_attr(obj, \"value\")")
+                && source.contains("molt_set_attr(obj, \"value\", new_value)")
+                && source.contains("molt_del_attr(obj, \"value\")")
+                && source.contains(
+                    "local method_result; do local __method = molt_get_attr(obj, \"method\");"
+                ),
+            "attribute get/set/delete and method call should route through descriptor authority, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[classmethod_new]")
+                && !source.contains("[staticmethod_new]")
+                && !source.contains("[property_new]")
+                && !source.contains("[unsupported op: classmethod_new]")
+                && !source.contains("[unsupported op: staticmethod_new]")
+                && !source.contains("[unsupported op: property_new]"),
+            "descriptor ops must not leave checked-output markers, got:\n{source}"
         );
     }
 
