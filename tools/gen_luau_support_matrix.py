@@ -71,6 +71,7 @@ TARGET_LIMITED_OPS = {
     "is_native_awaitable": "Luau has no Molt native poll-function object representation; target values are non-native awaitables.",
     "isinstance": "Uses Luau type metadata and metatable inheritance for the admitted subset.",
     "issubclass": "Uses Luau type metadata and metatable inheritance for the admitted subset.",
+    "loop_break_if_exception": "Luau exceptions unwind with error(), so no sentinel-driven loop break is materialized.",
     "property_new": "Modeled as Luau descriptor metadata for the admitted subset.",
     "set_attr_generic_obj": "Uses descriptor-aware Luau table/metatable assignment for the admitted subset.",
     "set_attr_generic_ptr": "Uses descriptor-aware Luau table/metatable assignment for the admitted subset.",
