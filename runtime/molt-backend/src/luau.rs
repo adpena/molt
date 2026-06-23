@@ -502,7 +502,11 @@ impl LuauBackend {
             ),
             (
                 "molt_matmul",
-                "local function molt_matmul(a: any, b: any): any\n\tlocal lhs = molt_get_attr(a, \"__matmul__\")\n\tif lhs ~= nil then\n\t\tlocal result = lhs(b)\n\t\tif result ~= molt_not_implemented then return result end\n\tend\n\tlocal rhs = molt_get_attr(b, \"__rmatmul__\")\n\tif rhs ~= nil then\n\t\tlocal result = rhs(a)\n\t\tif result ~= molt_not_implemented then return result end\n\tend\n\terror({__type=\"TypeError\", __msg=\"unsupported operand type(s) for @: '\" .. type(a) .. \"' and '\" .. type(b) .. \"'\"})\nend\n",
+                "local function molt_matmul_impl(a: any, b: any, op: string): any\n\tlocal lhs = molt_get_attr(a, \"__matmul__\")\n\tif lhs ~= nil then\n\t\tlocal result = lhs(b)\n\t\tif result ~= molt_not_implemented then return result end\n\tend\n\tlocal rhs = molt_get_attr(b, \"__rmatmul__\")\n\tif rhs ~= nil then\n\t\tlocal result = rhs(a)\n\t\tif result ~= molt_not_implemented then return result end\n\tend\n\terror({__type=\"TypeError\", __msg=\"unsupported operand type(s) for \" .. op .. \": '\" .. type(a) .. \"' and '\" .. type(b) .. \"'\"})\nend\n\nlocal function molt_matmul(a: any, b: any): any\n\treturn molt_matmul_impl(a, b, \"@\")\nend\n",
+            ),
+            (
+                "molt_inplace_matmul",
+                "local function molt_inplace_matmul(a: any, b: any): any\n\tlocal lhs = molt_get_attr(a, \"__imatmul__\")\n\tif lhs ~= nil then\n\t\tlocal result = lhs(b)\n\t\tif result ~= molt_not_implemented then return result end\n\tend\n\treturn molt_matmul_impl(a, b, \"@=\")\nend\n",
             ),
             (
                 "molt_guard_type",
@@ -635,14 +639,15 @@ impl LuauBackend {
             || used_call("molt_isinstance");
         let needs_type_of = used_call("molt_type_of") || used_call("molt_isinstance");
         let needs_issubclass = used_call("molt_issubclass") || used_call("molt_isinstance");
-        let needs_not_implemented = used("molt_not_implemented") || used_call("molt_matmul");
+        let needs_matmul_group = used_call("molt_matmul") || used_call("molt_inplace_matmul");
+        let needs_not_implemented = used("molt_not_implemented") || needs_matmul_group;
         let needs_get_attr = used_call("molt_get_attr")
             || used_call("molt_get_attr_default")
             || used_call("molt_has_attr")
             || used_call("molt_set_attr")
             || used_call("molt_del_attr")
             || used_call("molt_class_apply_set_name")
-            || used_call("molt_matmul");
+            || needs_matmul_group;
         if needs_str_group {
             self.output.push_str("local molt_repr\n");
         }
@@ -668,6 +673,10 @@ impl LuauBackend {
                 used_call("molt_isinstance")
             } else if *name == "molt_get_attr" {
                 needs_get_attr
+            } else if *name == "molt_matmul" {
+                needs_matmul_group
+            } else if *name == "molt_inplace_matmul" {
+                used_call("molt_inplace_matmul")
             } else if *name == "molt_print" {
                 needs_print
             } else {
@@ -1624,13 +1633,18 @@ impl LuauBackend {
                     ));
                 }
             }
-            "matmul" => {
+            "matmul" | "inplace_matmul" => {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if args.len() >= 2 {
                     let lhs = sanitize_ident(&args[0]);
                     let rhs = sanitize_ident(&args[1]);
-                    self.emit_line(&format!("local {out} = molt_matmul({lhs}, {rhs})"));
+                    let helper = if op.kind == "inplace_matmul" {
+                        "molt_inplace_matmul"
+                    } else {
+                        "molt_matmul"
+                    };
+                    self.emit_line(&format!("local {out} = {helper}({lhs}, {rhs})"));
                 }
             }
             "round" => {
@@ -11796,6 +11810,41 @@ mod tests {
         assert!(
             !source.contains("[unsupported op: matmul]"),
             "matmul NotImplemented path must not leave checked-output markers, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "inplace_matmul_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![OpIR {
+                    kind: "inplace_matmul".to_string(),
+                    out: Some("v0".to_string()),
+                    args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+                    ..OpIR::default()
+                }],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("inplace matmul should lower through Luau dunder helper");
+        assert!(
+            source.contains("local function molt_inplace_matmul")
+                && source.contains("local v0 = molt_inplace_matmul(lhs, rhs)")
+                && source.contains("molt_get_attr(a, \"__imatmul__\")")
+                && source.contains("return molt_matmul_impl(a, b, \"@=\")"),
+            "inplace matmul should try __imatmul__ before binary fallback, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[unsupported op: inplace_matmul]"),
+            "inplace matmul must not leave checked-output markers, got:\n{source}"
         );
     }
 
