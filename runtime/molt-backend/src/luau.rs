@@ -477,8 +477,20 @@ impl LuauBackend {
                 "local function molt_bool(x: any): boolean\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" and next(x) == nil then return false end\n\treturn true\nend\n",
             ),
             (
+                "molt_builtin_type",
+                "local function molt_builtin_type(tag: any): {[string]: any}\n\tif type(tag) ~= \"number\" then error({__type=\"TypeError\", __msg=\"builtin type tag must be int\"}) end\n\tlocal name = nil\n\tif tag == 1 then name = \"int\"\n\telseif tag == 2 then name = \"float\"\n\telseif tag == 3 then name = \"bool\"\n\telseif tag == 5 then name = \"str\"\n\telseif tag == 6 then name = \"bytes\"\n\telseif tag == 7 then name = \"bytearray\"\n\telseif tag == 8 then name = \"list\"\n\telseif tag == 9 then name = \"tuple\"\n\telseif tag == 10 then name = \"dict\"\n\telseif tag == 11 then name = \"range\"\n\telseif tag == 12 then name = \"slice\"\n\telseif tag == 15 then name = \"memoryview\"\n\telseif tag == 17 then name = \"set\"\n\telseif tag == 18 then name = \"frozenset\"\n\telseif tag == 100 then name = \"object\"\n\telseif tag == 101 then name = \"type\"\n\telseif tag == 102 then name = \"BaseException\"\n\telseif tag == 103 then name = \"Exception\"\n\telseif tag == 226 then name = \"classmethod\"\n\telseif tag == 227 then name = \"staticmethod\"\n\telseif tag == 228 then name = \"property\"\n\telseif tag == 229 then name = \"super\"\n\telse error({__type=\"TypeError\", __msg=\"unknown builtin type tag\"}) end\n\treturn {__name__ = name, __molt_builtin_type_tag = tag, __molt_is_type = true}\nend\n",
+            ),
+            (
                 "molt_type_of",
-                "local function molt_type_of(x: any): {[string]: any}\n\tif type(x) == \"table\" and x.__type then return {__name__ = x.__type} end\n\tlocal t = type(x)\n\tif t == \"nil\" then return {__name__ = \"NoneType\"} end\n\tif t == \"number\" then return {__name__ = \"int\"} end\n\tif t == \"string\" then return {__name__ = \"str\"} end\n\tif t == \"boolean\" then return {__name__ = \"bool\"} end\n\tif t == \"function\" then return {__name__ = \"function\"} end\n\treturn {__name__ = t}\nend\n",
+                "local function molt_type_of(x: any): {[string]: any}\n\tif type(x) == \"table\" and x.__type then return {__name__ = x.__type, __molt_is_type = true} end\n\tif type(x) == \"table\" then\n\t\tif x.__molt_is_type then return molt_builtin_type(101) end\n\t\tlocal mt = getmetatable(x)\n\t\tif type(mt) == \"table\" and mt.__molt_is_type then return mt end\n\tend\n\tlocal t = type(x)\n\tif t == \"nil\" then return {__name__ = \"NoneType\", __molt_is_type = true} end\n\tif t == \"number\" then return molt_builtin_type(1) end\n\tif t == \"string\" then return molt_builtin_type(5) end\n\tif t == \"boolean\" then return molt_builtin_type(3) end\n\tif t == \"function\" then return {__name__ = \"function\", __molt_is_type = true} end\n\treturn {__name__ = t, __molt_is_type = true}\nend\n",
+            ),
+            (
+                "molt_issubclass",
+                "local function molt_issubclass(sub: any, classinfo: any): boolean\n\tif type(classinfo) == \"table\" and classinfo.__molt_is_type ~= true then\n\t\tfor i = 1, #classinfo do\n\t\t\tif molt_issubclass(sub, classinfo[i]) then return true end\n\t\tend\n\t\treturn false\n\tend\n\tif type(sub) ~= \"table\" or sub.__molt_is_type ~= true then error({__type=\"TypeError\", __msg=\"issubclass() arg 1 must be a class\"}) end\n\tif type(classinfo) ~= \"table\" or classinfo.__molt_is_type ~= true then error({__type=\"TypeError\", __msg=\"issubclass() arg 2 must be a class or tuple of classes\"}) end\n\tlocal class_tag = classinfo.__molt_builtin_type_tag\n\tlocal sub_tag = sub.__molt_builtin_type_tag\n\tif class_tag == 100 then return true end\n\tif sub == classinfo then return true end\n\tif sub_tag ~= nil and class_tag ~= nil then\n\t\tif sub_tag == class_tag then return true end\n\t\tif sub_tag == 3 and class_tag == 1 then return true end\n\t\tif sub_tag == 103 and class_tag == 102 then return true end\n\t\treturn false\n\tend\n\tlocal current = sub\n\tlocal seen = {}\n\twhile type(current) == \"table\" and current.__molt_is_type == true do\n\t\tif current == classinfo then return true end\n\t\tif seen[current] then return false end\n\t\tseen[current] = true\n\t\tlocal mt = getmetatable(current)\n\t\tif type(mt) ~= \"table\" or type(mt.__index) ~= \"table\" then return false end\n\t\tcurrent = mt.__index\n\tend\n\treturn false\nend\n",
+            ),
+            (
+                "molt_isinstance",
+                "local function molt_isinstance(obj: any, classinfo: any): boolean\n\tif type(classinfo) == \"table\" and classinfo.__molt_is_type ~= true then\n\t\tfor i = 1, #classinfo do\n\t\t\tif molt_isinstance(obj, classinfo[i]) then return true end\n\t\tend\n\t\treturn false\n\tend\n\treturn molt_issubclass(molt_type_of(obj), classinfo)\nend\n",
             ),
             (
                 "molt_guard_type",
@@ -606,6 +618,11 @@ impl LuauBackend {
             || used_call("molt_ord_at")
             || used_call("molt_str_codepoint_len")
             || used_call("molt_str_byte_offset");
+        let needs_builtin_type = used_call("molt_builtin_type")
+            || used_call("molt_type_of")
+            || used_call("molt_isinstance");
+        let needs_type_of = used_call("molt_type_of") || used_call("molt_isinstance");
+        let needs_issubclass = used_call("molt_issubclass") || used_call("molt_isinstance");
         if needs_str_group {
             self.output.push_str("local molt_repr\n");
         }
@@ -617,6 +634,14 @@ impl LuauBackend {
                 "molt_str_codepoint_len" | "molt_str_byte_offset" | "molt_ord" | "molt_ord_at"
             ) {
                 needs_ord_group
+            } else if *name == "molt_builtin_type" {
+                needs_builtin_type
+            } else if *name == "molt_type_of" {
+                needs_type_of
+            } else if *name == "molt_issubclass" {
+                needs_issubclass
+            } else if *name == "molt_isinstance" {
+                used_call("molt_isinstance")
             } else if *name == "molt_print" {
                 needs_print
             } else {
@@ -3155,18 +3180,14 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);
                     let cls = sanitize_ident(&args[1]);
-                    // Use molt_exception_match for exception objects (table with __type
-                    // or string errors), fall back to type comparison for others.
-                    self.emit_line(&format!(
-                        "local {out} = if type({cls}) == \"string\" then \
-                         molt_exception_match({obj}, {cls}) else \
-                         (type({obj}) == \"table\" and type({cls}) == \"table\") or \
-                         (type({obj}) == \"number\" and ({cls} == \"int\" or {cls} == \"float\")) or \
-                         (type({obj}) == \"string\" and ({cls} == \"str\" or {cls} == \"string\")) or \
-                         (type({obj}) == \"boolean\" and {cls} == \"bool\")"
-                    ));
+                    let helper = if op.kind == "isinstance" {
+                        "molt_isinstance"
+                    } else {
+                        "molt_issubclass"
+                    };
+                    self.emit_line(&format!("local {out} = {helper}({obj}, {cls})"));
                 } else {
-                    self.emit_line(&format!("local {out} = true -- [stub: {}]", op.kind));
+                    self.emit_line(&format!("local {out} = molt_isinstance(nil, nil)"));
                 }
             }
             "exception_match_builtin" => {
@@ -3377,13 +3398,22 @@ impl LuauBackend {
             }
             "class_new" => {
                 let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = {{}}"));
+                self.emit_line(&format!("local {out} = {{__molt_is_type = true}}"));
                 // Self-referential __index enables Luau's inline caching
                 self.emit_line(&format!("{out}.__index = {out}"));
             }
-            "module_new" | "object_new" | "builtin_type" => {
+            "module_new" | "object_new" => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = {{}}"));
+            }
+            "builtin_type" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let tag = args
+                    .first()
+                    .map(|value| sanitize_ident(value))
+                    .unwrap_or_else(|| "nil".to_string());
+                self.emit_line(&format!("local {out} = molt_builtin_type({tag})"));
             }
             "bound_method_new" => {
                 let out = self.out_var(op);
@@ -11373,31 +11403,116 @@ mod tests {
     }
 
     #[test]
-    fn test_compile_checked_rejects_stub_marker() {
-        // isinstance with only one arg falls through to stub path
+    fn test_compile_checked_lowers_type_check_helpers() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
-                name: "stub_test".to_string(),
+                name: "type_check_test".to_string(),
                 params: vec![],
                 param_types: None,
                 source_file: None,
                 is_extern: false,
-                ops: vec![OpIR {
-                    kind: "isinstance".to_string(),
-                    out: Some("v0".to_string()),
-                    args: Some(vec!["v1".to_string()]),
-                    ..OpIR::default()
-                }],
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("int_tag".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "builtin_type".to_string(),
+                        out: Some("int_cls".to_string()),
+                        args: Some(vec!["int_tag".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("bool_tag".to_string()),
+                        value: Some(3),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "builtin_type".to_string(),
+                        out: Some("bool_cls".to_string()),
+                        args: Some(vec!["bool_tag".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_bool".to_string(),
+                        out: Some("flag".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "isinstance".to_string(),
+                        out: Some("is_int".to_string()),
+                        args: Some(vec!["flag".to_string(), "int_cls".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "issubclass".to_string(),
+                        out: Some("bool_is_int".to_string()),
+                        args: Some(vec!["bool_cls".to_string(), "int_cls".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "class_new".to_string(),
+                        out: Some("base_cls".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "class_new".to_string(),
+                        out: Some("derived_cls".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "class_set_base".to_string(),
+                        args: Some(vec!["derived_cls".to_string(), "base_cls".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "object_new".to_string(),
+                        out: Some("obj".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "object_set_class".to_string(),
+                        args: Some(vec!["obj".to_string(), "derived_cls".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "isinstance".to_string(),
+                        out: Some("obj_is_base".to_string()),
+                        args: Some(vec!["obj".to_string(), "base_cls".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
             }],
             profile: None,
         };
         let mut backend = LuauBackend::new();
-        let err = backend
+        let source = backend
             .compile_checked(&ir)
-            .expect_err("compile_checked must reject stub markers");
+            .expect("type-check ops should lower through Luau helper authority");
         assert!(
-            err.contains("semantic stub marker"),
-            "error should mention semantic stub marker, got: {err}"
+            source.contains("local function molt_builtin_type")
+                && source.contains("local function molt_issubclass")
+                && source.contains("local function molt_isinstance"),
+            "type-check helper authority should be emitted, got:\n{source}"
+        );
+        assert!(
+            source.contains("local int_cls = molt_builtin_type(int_tag)")
+                && source.contains("local is_int = molt_isinstance(flag, int_cls)")
+                && source.contains("local bool_is_int = molt_issubclass(bool_cls, int_cls)")
+                && source.contains("local base_cls = {__molt_is_type = true}")
+                && source.contains("local obj_is_base = molt_isinstance(obj, base_cls)"),
+            "type-check ops should use named builtin/class metadata, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[stub: isinstance]")
+                && !source.contains("[unsupported op: isinstance]")
+                && !source.contains("[unsupported op: issubclass]")
+                && !source.contains("[unsupported op: builtin_type]"),
+            "type-check ops must not leave checked-output markers, got:\n{source}"
         );
     }
 

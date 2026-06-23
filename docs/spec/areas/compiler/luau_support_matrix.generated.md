@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `307`
-- `implemented-target-limited`: `25`
-- `not-admitted`: `64`
+- `implemented-target-limited`: `27`
+- `not-admitted`: `62`
 - `runtime-capability-error`: `5`
 - `total`: `402`
 
@@ -46,7 +46,7 @@
 | `build_dict` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `build_list` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `builtin_func` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `builtin_type` | `implemented-target-limited` | Modeled as Luau table object for the admitted subset. |
+| `builtin_type` | `implemented-target-limited` | Modeled as named Luau type metadata for the admitted subset. |
 | `bxor` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `bytearray_fill_range` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `bytearray_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -237,8 +237,8 @@
 | `is` | `implemented-target-limited` | Non-None identity currently lowers through equality on Luau values. |
 | `is_callable` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `is_native_awaitable` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
-| `isinstance` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
-| `issubclass` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `isinstance` | `implemented-target-limited` | Uses Luau type metadata and metatable inheritance for the admitted subset. |
+| `issubclass` | `implemented-target-limited` | Uses Luau type metadata and metatable inheritance for the admitted subset. |
 | `iter` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `iter_next` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `iter_next_unboxed` | `implemented-exact` | Lowered without checked-output stub markers. |
