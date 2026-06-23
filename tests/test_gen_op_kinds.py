@@ -536,12 +536,12 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
     assert "match op.opcode" not in body
 
 
-def test_alias_memory_inert_delegates_to_generated_table() -> None:
-    """Scalar-register MemRegion classification is a generated opcode fact.
+def test_alias_memory_region_delegates_to_generated_table() -> None:
+    """MemRegion opcode classification is a generated opcode fact.
 
-    The positive table names opcodes proven not to touch alias-visible heap
-    memory. Omission remains conservative: the consumer treats unknown/opcode
-    additions as heap-touching until explicitly listed here.
+    The table owns the opcode-to-region class. Alias analysis may still refine
+    typed slots and Copy with live operands/attrs, but it must not carry a
+    private opcode dispatch beside the registry.
     """
     gen = _gen()
     data = gen.load_table()
@@ -550,7 +550,7 @@ def test_alias_memory_inert_delegates_to_generated_table() -> None:
         ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
     ).read_text(encoding="utf-8")
 
-    expected = {
+    expected_scalar = {
         "Add",
         "And",
         "BitAnd",
@@ -597,17 +597,43 @@ def test_alias_memory_inert_delegates_to_generated_table() -> None:
         "TypeGuard",
         "UnboxVal",
     }
-    assert set(data["alias_memory_inert_opcodes"]) == expected
+    expected_typed_slot = {"LoadAttr", "StoreAttr"}
+    expected_copy = {"Copy"}
+    expected_container = {"DelIndex", "Index", "StoreIndex"}
+    expected_module = {
+        "ModuleCacheDel",
+        "ModuleCacheGet",
+        "ModuleCacheSet",
+        "ModuleDelGlobal",
+        "ModuleDelGlobalIfPresent",
+        "ModuleGetAttr",
+        "ModuleGetGlobal",
+        "ModuleGetName",
+        "ModuleImportFrom",
+        "ModuleSetAttr",
+    }
+    assert set(data["alias_memory_inert_opcodes"]) == expected_scalar
+    assert set(data["alias_region_typed_slot_opcodes"]) == expected_typed_slot
+    assert set(data["alias_region_copy_refinement_opcodes"]) == expected_copy
+    assert set(data["alias_region_container_element_opcodes"]) == expected_container
+    assert set(data["alias_region_module_dict_opcodes"]) == expected_module
 
-    block = rendered.split("fn opcode_is_alias_memory_inert_table")[1].split(
+    block = rendered.split("fn opcode_alias_memory_region_table")[1].split(
         "fn opcode_alias_slot_observation_table"
     )[0]
-    for opcode in expected:
-        assert f"OpCode::{opcode} => true," in block
-    for opcode in {"Alloc", "Copy", "LoadAttr", "StoreAttr", "Call", "Yield"}:
-        assert f"OpCode::{opcode} => false," in block
+    for opcode in expected_scalar:
+        assert f"OpCode::{opcode} => AliasMemoryRegionClass::ScalarRegister," in block
+    for opcode in expected_typed_slot:
+        assert f"OpCode::{opcode} => AliasMemoryRegionClass::TypedSlotAttr," in block
+    assert "OpCode::Copy => AliasMemoryRegionClass::CopyRefinement," in block
+    for opcode in expected_container:
+        assert f"OpCode::{opcode} => AliasMemoryRegionClass::ContainerElement," in block
+    for opcode in expected_module:
+        assert f"OpCode::{opcode} => AliasMemoryRegionClass::ModuleDict," in block
+    for opcode in {"Alloc", "Call", "Yield"}:
+        assert f"OpCode::{opcode} => AliasMemoryRegionClass::GenericHeap," in block
 
-    start = alias.index("fn opcode_touches_memory(")
+    start = alias.index("pub fn region_of(")
     brace = alias.index("{", start)
     depth = 0
     end = brace
@@ -620,9 +646,9 @@ def test_alias_memory_inert_delegates_to_generated_table() -> None:
                 end = i + 1
                 break
     body = alias[start:end]
-    assert "opcode_is_alias_memory_inert_table" in body
-    assert "matches!" not in body
-    assert "OpCode::Add" not in body
+    assert "opcode_alias_memory_region_table" in body
+    assert "match op.opcode" not in body
+    assert "OpCode::" not in body
 
 
 def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
@@ -637,6 +663,15 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
         assert "StoreIndx" in str(e)
     else:
         raise AssertionError("unknown opcode fact-set member was accepted")
+
+    region_overlap = json.loads(json.dumps(data))
+    region_overlap["alias_region_module_dict_opcodes"].append("LoadAttr")
+    try:
+        gen._validate_alias_memory_region_sets(region_overlap)
+    except gen.OpKindTableError as e:
+        assert "LoadAttr" in str(e)
+    else:
+        raise AssertionError("overlapping alias memory-region class was accepted")
 
     overlap = json.loads(json.dumps(data))
     overlap["alias_slot_never_observer_opcodes"].append("LoadAttr")
