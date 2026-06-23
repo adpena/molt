@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `294`
-- `implemented-target-limited`: `50`
-- `not-admitted`: `51`
+- `implemented-target-limited`: `53`
+- `not-admitted`: `48`
 - `runtime-capability-error`: `6`
 - `total`: `402`
 
@@ -93,8 +93,8 @@
 | `closure_load` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `closure_store` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `code_new` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `code_slot_set` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
-| `code_slots_init` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `code_slot_set` | `implemented-target-limited` | Luau checked output does not materialize Molt Python code-object slot storage. |
+| `code_slots_init` | `implemented-target-limited` | Luau checked output does not materialize Molt Python code-object slot storage. |
 | `compare` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `complex_from_obj` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `const` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -189,7 +189,7 @@
 | `fn_ptr_code_set` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `for_iter` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `for_range` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `frame_locals_set` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `frame_locals_set` | `implemented-target-limited` | Luau checked output has no Python frame locals mirror; getframe materializes None. |
 | `frozenset_add` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `frozenset_new` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `func_new` | `implemented-exact` | Lowered without checked-output stub markers. |
