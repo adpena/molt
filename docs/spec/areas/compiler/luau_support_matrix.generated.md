@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `294`
-- `implemented-target-limited`: `49`
-- `not-admitted`: `52`
+- `implemented-target-limited`: `50`
+- `not-admitted`: `51`
 - `runtime-capability-error`: `6`
 - `total`: `402`
 
@@ -267,7 +267,7 @@
 | `load_local` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `load_var` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `loop_break` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `loop_break_if_exception` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `loop_break_if_exception` | `implemented-target-limited` | Luau exceptions unwind with error(), so no sentinel-driven loop break is materialized. |
 | `loop_break_if_false` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `loop_break_if_true` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `loop_carry_init` | `implemented-exact` | Lowered without checked-output stub markers. |

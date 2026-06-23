@@ -1974,7 +1974,6 @@ impl LuauBackend {
                 // sentinel-driven spin to break.  The op is therefore a no-op
                 // here: the unwinding `error()` already exited the loop and is
                 // caught by the enclosing `pcall` for the active try/except.
-                self.emit_line("-- [loop_break_if_exception] no-op: Lua error() already unwinds");
             }
             "loop_break_if_false" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -11041,6 +11040,63 @@ mod tests {
                 && !source.contains("[unsupported op: trace_enter_slot]")
                 && !source.contains("[unsupported op: trace_exit]"),
             "trace markers must not leave semantic stub markers, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_loop_exception_break_as_luau_noop() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "loop_exception_break_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "loop_start".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "loop_break_if_exception".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "loop_break".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "loop_end".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("ok".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["ok".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("exception-break markers should lower as Luau no-ops");
+
+        assert!(
+            source.contains("loop_exception_break_test"),
+            "compiled loop exception-break function should be emitted, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[loop_break_if_exception]")
+                && !source.contains("[unsupported op: loop_break_if_exception]"),
+            "loop exception-break markers must not leave semantic stub markers, got:\n{source}"
         );
     }
 
