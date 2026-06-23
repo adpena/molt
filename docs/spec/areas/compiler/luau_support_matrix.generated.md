@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `294`
-- `implemented-target-limited`: `43`
-- `not-admitted`: `59`
+- `implemented-target-limited`: `44`
+- `not-admitted`: `58`
 - `runtime-capability-error`: `5`
 - `total`: `402`
 
@@ -83,7 +83,7 @@
 | `check_exception` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `checked_add` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `chr` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `class_apply_set_name` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `class_apply_set_name` | `implemented-target-limited` | __set_name__ hooks dispatch over Luau class-table snapshots for the admitted subset. |
 | `class_layout_version` | `implemented-target-limited` | Modeled as Luau class-table layout metadata for the admitted subset. |
 | `class_merge_layout` | `implemented-target-limited` | Maintains Luau class-table layout metadata for the admitted subset. |
 | `class_new` | `implemented-target-limited` | Modeled as Luau table/metatable object for the admitted subset. |
