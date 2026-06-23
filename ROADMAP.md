@@ -24,6 +24,12 @@ Recently closed: ordinary non-exception class `__new__` override parity now
 routes custom, inherited, builtin, dynamic, and otherwise opaque `__new__`
 resolution through runtime `type.__call__`; frontend constructor allocation
 folds are eligible only when class analysis proves default `object.__new__`.
+Runtime intrinsic default metadata is now manifest-owned and registered into
+function `__defaults__`; `operator.length_hint(obj, default=0)` uses that
+metadata and preserves CPython's `__len__`-before-`__length_hint__` precedence.
+Deforestation fusion eligibility has also moved from a private pass-local
+purity table into the generated op-kind registry through
+`fusion_barrier_opcodes`.
 
 1. Close the ownership-correctness front before claiming broader compatibility:
    native DropInsertion activation, finalizer ordering, standalone `__del__`

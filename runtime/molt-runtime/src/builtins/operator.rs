@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use molt_obj_model::MoltObject;
 use num_traits::{Signed, ToPrimitive};
 
+use crate::builtins::exceptions::{molt_exception_kind, molt_exception_last_pending};
 use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint};
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_class_obj, alloc_dict_with_pairs,
@@ -1227,6 +1228,21 @@ pub extern "C" fn molt_operator_countof(container_bits: u64, value_bits: u64) ->
 pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
+        let len_bits = molt_len(obj_bits);
+        if !exception_pending(_py) {
+            return len_bits;
+        }
+        let exc_bits = molt_exception_last_pending();
+        let kind_bits = molt_exception_kind(exc_bits);
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits));
+        dec_ref_bits(_py, kind_bits);
+        if kind.as_deref() != Some("TypeError") {
+            dec_ref_bits(_py, exc_bits);
+            return MoltObject::none().bits();
+        }
+        crate::molt_exception_clear();
+        dec_ref_bits(_py, exc_bits);
+
         if let Some(ptr) = obj.as_ptr() {
             let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__length_hint__") else {
                 return MoltObject::none().bits();
@@ -1283,12 +1299,7 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
-        let len_bits = molt_len(obj_bits);
-        if exception_pending(_py) {
-            crate::molt_exception_clear();
-            return default_bits;
-        }
-        len_bits
+        default_bits
     })
 }
 

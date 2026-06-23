@@ -7,10 +7,10 @@ import argparse
 from collections import OrderedDict
 import difflib
 import importlib.util
-import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 
 try:
     import tomllib  # Python 3.11+
@@ -28,8 +28,7 @@ OUT_RS = ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs"
 OUT_RS_RESOLVERS_DIR = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
 LEAF_RESOLVER_REGISTRIES = {
     "stringprep": {
-        "output": ROOT
-        / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
+        "output": ROOT / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
         "crate_path": "molt_runtime_stringprep",
         "symbol_path_prefix": "molt_runtime_stringprep::stringprep",
         "function_path_prefix": "crate::stringprep",
@@ -48,7 +47,9 @@ def _load_harness_memory_guard():
     if _HARNESS_MEMORY_GUARD is None:
         try:
             from tools import harness_memory_guard
-        except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+        except (
+            ModuleNotFoundError
+        ):  # pragma: no cover - direct script import from tools/
             import harness_memory_guard  # type: ignore
         _HARNESS_MEMORY_GUARD = harness_memory_guard
     return _HARNESS_MEMORY_GUARD
@@ -86,6 +87,29 @@ _feature_gate_for_symbol = _FEATURE_GATES_MODULE.feature_gate_for_symbol
 _DEF_RE = re.compile(
     r"^def\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\((?P<params>.*)\)\s*->\s*(?P<ret>[^:]+):\s*\.\.\.\s*$"
 )
+
+
+class IntrinsicEntry:
+    __slots__ = ("name", "symbol", "arity", "defaults")
+
+    def __init__(
+        self,
+        name: str,
+        symbol: str,
+        arity: int,
+        defaults: tuple[str, ...] = (),
+    ) -> None:
+        self.name = name
+        self.symbol = symbol
+        self.arity = arity
+        self.defaults = defaults
+
+    def __iter__(self):
+        # Keep existing tuple-style tests and helper comprehensions working
+        # while generated metadata gains Python-call default information.
+        yield self.name
+        yield self.symbol
+        yield self.arity
 
 
 def _strip_manifest_header(text: str) -> str:
@@ -151,12 +175,61 @@ def _split_params(raw: str) -> list[str]:
     return [p for p in out if p and p != "*"]
 
 
-def _load_manifest() -> tuple[str, list[tuple[str, str, int]]]:
+def _param_default_expr(param: str) -> str | None:
+    depth = 0
+    for i, ch in enumerate(param):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "=" and depth == 0:
+            return param[i + 1 :].strip()
+    return None
+
+
+def _rust_intrinsic_default(default_expr: str, intrinsic_name: str) -> str | None:
+    if default_expr == "...":
+        return None
+    if default_expr == "None":
+        return "IntrinsicDefaultValue::None"
+    if default_expr == "True":
+        return "IntrinsicDefaultValue::Bool(true)"
+    if default_expr == "False":
+        return "IntrinsicDefaultValue::Bool(false)"
+    if re.fullmatch(r"-?\d+", default_expr):
+        return f"IntrinsicDefaultValue::Int({int(default_expr)})"
+    raise RuntimeError(
+        f"unsupported concrete default for {intrinsic_name}: {default_expr!r}"
+    )
+
+
+def _parse_intrinsic_defaults(name: str, params: list[str]) -> tuple[str, ...]:
+    parsed: list[str | None] = []
+    for param in params:
+        default_expr = _param_default_expr(param)
+        parsed.append(
+            None
+            if default_expr is None
+            else _rust_intrinsic_default(default_expr, name)
+        )
+    concrete_positions = [idx for idx, value in enumerate(parsed) if value is not None]
+    if not concrete_positions:
+        return ()
+    first = concrete_positions[0]
+    expected = list(range(first, len(parsed)))
+    if concrete_positions != expected:
+        raise RuntimeError(
+            f"concrete defaults for {name} must form a trailing positional suffix"
+        )
+    return tuple(value for value in parsed[first:] if value is not None)
+
+
+def _load_manifest() -> tuple[str, list[IntrinsicEntry]]:
     if not MANIFEST.exists():
         raise FileNotFoundError(f"manifest missing: {MANIFEST}")
     raw = MANIFEST.read_text()
     defs = _iter_defs(raw)
-    entries: list[tuple[str, str, int]] = []
+    entries: list[IntrinsicEntry] = []
     seen: set[str] = set()
     for item in defs:
         m = _DEF_RE.match(item)
@@ -168,11 +241,18 @@ def _load_manifest() -> tuple[str, list[tuple[str, str, int]]]:
         seen.add(name)
         params = _split_params(m.group("params"))
         arity = len(params)
-        entries.append((name, name, arity))
+        entries.append(
+            IntrinsicEntry(
+                name=name,
+                symbol=name,
+                arity=arity,
+                defaults=_parse_intrinsic_defaults(name, params),
+            )
+        )
     return raw, entries
 
 
-def _validate_symbols(entries: list[tuple[str, str, int]]) -> None:
+def _validate_symbols(entries: list[IntrinsicEntry]) -> None:
     runtime_root = ROOT / "runtime"
     src_roots = sorted(path for path in runtime_root.glob("*/src") if path.is_dir())
     rs_files = [rs for src_root in src_roots for rs in src_root.rglob("*.rs")]
@@ -180,7 +260,7 @@ def _validate_symbols(entries: list[tuple[str, str, int]]) -> None:
     # Single-pass: extract all function names defined in the corpus — O(n+m)
     # instead of O(n*m) regex searches per symbol
     defined_fns = set(re.findall(r"\bfn\s+(\w+)", corpus))
-    missing = [sym for _name, sym, _arity in entries if sym not in defined_fns]
+    missing = [entry.symbol for entry in entries if entry.symbol not in defined_fns]
     if missing:
         missing_list = ", ".join(sorted(set(missing)))
         raise RuntimeError(f"missing intrinsic symbols in runtime: {missing_list}")
@@ -487,9 +567,19 @@ def _write_rust_if_changed(path: Path, text: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.read_text() == text:
         return False
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp.rs")
+    tmp: Path | None = None
     try:
-        tmp.write_text(text)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="\n",
+            suffix=".rs",
+            prefix=f"{path.stem}_",
+            dir=path.parent,
+            delete=False,
+        ) as tmp_file:
+            tmp = Path(tmp_file.name)
+            tmp_file.write(text)
         _rustfmt(tmp)
         formatted = tmp.read_text()
         if path.exists() and path.read_text() == formatted:
@@ -502,7 +592,8 @@ def _write_rust_if_changed(path: Path, text: str) -> bool:
         tmp.replace(path)
         return True
     finally:
-        tmp.unlink(missing_ok=True)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def _record_check_diff(path: Path, current: str, expected: str) -> None:
@@ -533,8 +624,7 @@ def _resolver_file_name(module_name: str) -> str:
 
 def _append_resolver_arm(lines: list[str], symbol: str) -> None:
     first_line = (
-        f'        "{symbol}" => '
-        "Some(crate::builtins::functions::runtime_fn_addr(\n"
+        f'        "{symbol}" => Some(crate::builtins::functions::runtime_fn_addr(\n'
     )
     if len(first_line.rstrip("\n")) <= 98:
         lines.append(first_line)
@@ -660,7 +750,9 @@ def _write_resolver_modules(
     mod_lines.append("pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
     for mod_name in module_symbols:
         resolver_mod = _resolver_module_name(mod_name)
-        mod_lines.append(f"    if let Some(v) = {resolver_mod}::resolve_symbol(symbol) {{\n")
+        mod_lines.append(
+            f"    if let Some(v) = {resolver_mod}::resolve_symbol(symbol) {{\n"
+        )
         mod_lines.append("        return Some(v);\n")
         mod_lines.append("    }\n")
     mod_lines.append("    None\n")
@@ -697,18 +789,18 @@ def _write_resolver_modules(
         lines.append("    }\n")
         lines.append("}\n")
         _write_rust_if_changed(
-            OUT_RS_RESOLVERS_DIR / _resolver_file_name(mod_name),
-            "".join(lines)
+            OUT_RS_RESOLVERS_DIR / _resolver_file_name(mod_name), "".join(lines)
         )
 
 
-def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
+def _write_generated_rs(entries: list[IntrinsicEntry]) -> None:
     builtin_symbols, internal_prefixes, stdlib_modules = _load_categories()
 
     # Classify every unique symbol into a module bucket
     module_symbols: OrderedDict[str, list[str]] = OrderedDict()
     seen_symbols: set[str] = set()
-    for _name, symbol, _arity in entries:
+    for entry in entries:
+        symbol = entry.symbol
         if symbol in seen_symbols:
             continue
         seen_symbols.add(symbol)
@@ -726,17 +818,26 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
     lines.append("\n")
     lines.append("pub(crate) use generated_resolvers::resolve_symbol;\n\n")
     lines.append("#[derive(Clone, Copy)]\n")
+    lines.append("pub(crate) enum IntrinsicDefaultValue {\n")
+    lines.append("    None,\n")
+    lines.append("    Bool(bool),\n")
+    lines.append("    Int(i64),\n")
+    lines.append("}\n\n")
+    lines.append("#[derive(Clone, Copy)]\n")
     lines.append("pub(crate) struct IntrinsicSpec {\n")
     lines.append("    pub name: &'static str,\n")
     lines.append("    pub symbol: &'static str,\n")
     lines.append("    pub arity: u8,\n")
+    lines.append("    pub defaults: &'static [IntrinsicDefaultValue],\n")
     lines.append("}\n\n")
     lines.append("pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[\n")
-    for name, symbol, arity in entries:
+    for entry in entries:
         lines.append("    IntrinsicSpec {\n")
-        lines.append(f'        name: "{name}",\n')
-        lines.append(f'        symbol: "{symbol}",\n')
-        lines.append(f"        arity: {arity},\n")
+        lines.append(f'        name: "{entry.name}",\n')
+        lines.append(f'        symbol: "{entry.symbol}",\n')
+        lines.append(f"        arity: {entry.arity},\n")
+        defaults = ", ".join(entry.defaults)
+        lines.append(f"        defaults: &[{defaults}],\n")
         lines.append("    },\n")
     lines.append("];\n")
 

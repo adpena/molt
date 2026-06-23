@@ -32,8 +32,12 @@ backends — Cranelift/LLVM/wasm/luau — benefit, not just LLVM).
 - **TIR opcodes** (tir/ops.rs): `AllocTask`, `StateSwitch` (:119), `StateYield` (:121), `Yield`
   (:126), `YieldFrom` (:127), `GetIter`, `IterNext`, `IterNextUnboxed`, `ForIter`.
 - **Why deforestation doesn't fuse def-yield**: it matches `GetIter→ForIter→CallBuiltin(fusable)`
-  with a PURE loop body (deforestation.rs:103-134 `is_impure` rejects Call/StateYield/ClosureLoad/
-  ClosureStore/…). A coroutine consumer loop calls `IterNext` (Call-class) → impure → never fused.
+  with a loop body that has no generated fusion barriers (`op_kinds.toml`
+  `fusion_barrier_opcodes` via `opcode_is_fusion_barrier_table`). That fact is
+  distinct from `side_effecting`/`may_throw`: fusion preserves per-element
+  evaluation order, but opaque calls, closure state, coroutine state, imports,
+  raises, and yields still block fusion. A coroutine consumer loop calls
+  `IterNext`/state machinery through barrier-class ops and is never fused.
   The frontend `sum/any/all(simple genexpr)` fast-path (`_try_emit_inline_sum_genexpr` :14006,
   called :23177) inlines BEFORE coroutine-ization — but only for those builtins, only same-module.
 - **NO TIR function inliner; NO mem2reg/SROA** (pass list passes/mod.rs:156-229: range_devirt,
