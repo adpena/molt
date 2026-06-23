@@ -494,7 +494,7 @@ impl LuauBackend {
             ),
             (
                 "molt_get_attr",
-                "local function molt_class_lookup(cls: any, attr: any): any\n\tlocal current = cls\n\tlocal seen = {}\n\twhile type(current) == \"table\" and seen[current] ~= true do\n\t\tseen[current] = true\n\t\tlocal raw = rawget(current, attr)\n\t\tif raw ~= nil then return raw end\n\t\tlocal mt = getmetatable(current)\n\t\tif type(mt) ~= \"table\" or type(mt.__index) ~= \"table\" then return nil end\n\t\tcurrent = mt.__index\n\tend\n\treturn nil\nend\n\nlocal function molt_bind_attr(obj: any, owner: any, raw: any): any\n\tif type(raw) == \"table\" then\n\t\tlocal kind = raw.__molt_descriptor_kind\n\t\tif kind == \"staticmethod\" then return raw.__func end\n\t\tif kind == \"classmethod\" then\n\t\t\tlocal func = raw.__func\n\t\t\treturn function(...) return func(owner, ...) end\n\t\tend\n\t\tif kind == \"property\" then\n\t\t\tif obj == owner then return raw end\n\t\t\tlocal fget = raw.__get\n\t\t\tif fget == nil then error({__type=\"AttributeError\", __msg=\"unreadable attribute\"}) end\n\t\t\treturn fget(obj)\n\t\tend\n\tend\n\tif type(raw) == \"function\" and type(owner) == \"table\" and obj ~= owner then\n\t\treturn function(...) return raw(obj, ...) end\n\tend\n\treturn raw\nend\n\nlocal function molt_get_attr(obj: any, attr: any): any\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type == true then\n\t\tlocal raw = molt_class_lookup(obj, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, obj, raw) end\n\t\treturn nil\n\tend\n\tlocal own = rawget(obj, attr)\n\tif own ~= nil then return own end\n\tlocal cls = getmetatable(obj)\n\tif type(cls) == \"table\" then\n\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, cls, raw) end\n\tend\n\treturn obj[attr]\nend\n\nlocal function molt_get_attr_default(obj: any, attr: any, default: any): any\n\tlocal value = molt_get_attr(obj, attr)\n\tif value ~= nil then return value end\n\treturn default\nend\n\nlocal function molt_set_attr(obj: any, attr: any, value: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fset = raw.__set\n\t\t\t\tif fset == nil then error({__type=\"AttributeError\", __msg=\"can't set attribute\"}) end\n\t\t\t\tfset(obj, value)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = value\n\treturn nil\nend\n\nlocal function molt_del_attr(obj: any, attr: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fdel = raw.__del\n\t\t\t\tif fdel == nil then error({__type=\"AttributeError\", __msg=\"can't delete attribute\"}) end\n\t\t\t\tfdel(obj)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = nil\n\treturn nil\nend\n",
+                "local function molt_class_lookup(cls: any, attr: any): any\n\tlocal current = cls\n\tlocal seen = {}\n\twhile type(current) == \"table\" and seen[current] ~= true do\n\t\tseen[current] = true\n\t\tlocal raw = rawget(current, attr)\n\t\tif raw ~= nil then return raw end\n\t\tlocal mt = getmetatable(current)\n\t\tif type(mt) ~= \"table\" or type(mt.__index) ~= \"table\" then return nil end\n\t\tcurrent = mt.__index\n\tend\n\treturn nil\nend\n\nlocal function molt_bind_attr(obj: any, owner: any, raw: any): any\n\tif type(raw) == \"table\" then\n\t\tlocal kind = raw.__molt_descriptor_kind\n\t\tif kind == \"staticmethod\" then return raw.__func end\n\t\tif kind == \"classmethod\" then\n\t\t\tlocal func = raw.__func\n\t\t\treturn function(...) return func(owner, ...) end\n\t\tend\n\t\tif kind == \"property\" then\n\t\t\tif obj == owner then return raw end\n\t\t\tlocal fget = raw.__get\n\t\t\tif fget == nil then error({__type=\"AttributeError\", __msg=\"unreadable attribute\"}) end\n\t\t\treturn fget(obj)\n\t\tend\n\tend\n\tif type(raw) == \"function\" and type(owner) == \"table\" and obj ~= owner then\n\t\treturn function(...) return raw(obj, ...) end\n\tend\n\treturn raw\nend\n\nlocal function molt_get_attr(obj: any, attr: any): any\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type == true then\n\t\tlocal raw = molt_class_lookup(obj, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, obj, raw) end\n\t\treturn nil\n\tend\n\tlocal own = rawget(obj, attr)\n\tif own ~= nil then return own end\n\tlocal cls = getmetatable(obj)\n\tif type(cls) == \"table\" then\n\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, cls, raw) end\n\tend\n\treturn obj[attr]\nend\n\nlocal function molt_get_attr_default(obj: any, attr: any, default: any): any\n\tlocal value = molt_get_attr(obj, attr)\n\tif value ~= nil then return value end\n\treturn default\nend\n\nlocal function molt_has_attr(obj: any, attr: any): boolean\n\tlocal ok, value = pcall(function() return molt_get_attr(obj, attr) end)\n\tif ok then return value ~= nil end\n\tif type(value) == \"table\" and value.__type == \"AttributeError\" then return false end\n\terror(value)\nend\n\nlocal function molt_set_attr(obj: any, attr: any, value: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fset = raw.__set\n\t\t\t\tif fset == nil then error({__type=\"AttributeError\", __msg=\"can't set attribute\"}) end\n\t\t\t\tfset(obj, value)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = value\n\treturn nil\nend\n\nlocal function molt_del_attr(obj: any, attr: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fdel = raw.__del\n\t\t\t\tif fdel == nil then error({__type=\"AttributeError\", __msg=\"can't delete attribute\"}) end\n\t\t\t\tfdel(obj)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = nil\n\treturn nil\nend\n",
             ),
             (
                 "molt_guard_type",
@@ -629,6 +629,7 @@ impl LuauBackend {
         let needs_issubclass = used_call("molt_issubclass") || used_call("molt_isinstance");
         let needs_get_attr = used_call("molt_get_attr")
             || used_call("molt_get_attr_default")
+            || used_call("molt_has_attr")
             || used_call("molt_set_attr")
             || used_call("molt_del_attr");
         if needs_str_group {
@@ -3024,13 +3025,11 @@ impl LuauBackend {
                 if args.len() >= 2 {
                     let obj = sanitize_ident(&args[0]);
                     let attr_name = sanitize_ident(&args[1]);
-                    self.emit_line(&format!(
-                        "local {out} = (type({obj}) == \"table\" and {obj}[{attr_name}] ~= nil)"
-                    ));
+                    self.emit_line(&format!("local {out} = molt_has_attr({obj}, {attr_name})"));
                 } else if let Some(obj) = args.first() {
                     let obj = sanitize_ident(obj);
-                    let attr = sanitize_ident(op.s_value.as_deref().unwrap_or("unknown"));
-                    self.emit_line(&format!("local {out} = ({obj}.{attr} ~= nil)"));
+                    let attr = escape_luau_string(op.s_value.as_deref().unwrap_or("unknown"));
+                    self.emit_line(&format!("local {out} = molt_has_attr({obj}, \"{attr}\")"));
                 } else {
                     self.emit_line(&format!("local {out} = false"));
                 }
@@ -3389,7 +3388,16 @@ impl LuauBackend {
                             "function(a, ...) return molt_next(table.unpack(a)) end"
                         }
                         "molt_getattr_builtin" => {
-                            "function(a, ...) return molt_getattr(table.unpack(a)) end"
+                            "function(a, ...) local value = molt_get_attr(a[1], a[2]); if value ~= nil then return value end; if a[3] ~= nil then return a[3] end; error({__type=\"AttributeError\", __msg=tostring(a[2])}) end"
+                        }
+                        "molt_set_attr_name" => {
+                            "function(a, ...) return molt_set_attr(a[1], a[2], a[3]) end"
+                        }
+                        "molt_del_attr_name" => {
+                            "function(a, ...) return molt_del_attr(a[1], a[2]) end"
+                        }
+                        "molt_has_attr_name" => {
+                            "function(a, ...) return molt_has_attr(a[1], a[2]) end"
                         }
                         "molt_divmod_builtin" => {
                             "function(a, ...) return molt_divmod(a[1], a[2]) end"
@@ -3408,9 +3416,6 @@ impl LuauBackend {
                         | "molt_function_set_builtin"
                         | "molt_function_set_defaults"
                         | "molt_open_builtin"
-                        | "molt_set_attr_name"
-                        | "molt_del_attr_name"
-                        | "molt_has_attr_name"
                         | "molt_aiter"
                         | "molt_anext_builtin" => "nil",
                         _ => "nil",
@@ -11706,6 +11711,18 @@ mod tests {
                             ..OpIR::default()
                         },
                         OpIR {
+                            kind: "const_str".to_string(),
+                            out: Some("value_name".to_string()),
+                            s_value: Some("value".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "has_attr_name".to_string(),
+                            out: Some("has_value".to_string()),
+                            args: Some(vec!["obj".to_string(), "value_name".to_string()]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
                             kind: "const".to_string(),
                             out: Some("new_value".to_string()),
                             value: Some(7),
@@ -11728,6 +11745,30 @@ mod tests {
                             out: Some("method_result".to_string()),
                             args: Some(vec!["obj".to_string()]),
                             s_value: Some("method".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "builtin_func".to_string(),
+                            out: Some("getattr_builtin".to_string()),
+                            s_value: Some("molt_getattr_builtin".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "builtin_func".to_string(),
+                            out: Some("setattr_builtin".to_string()),
+                            s_value: Some("molt_set_attr_name".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "builtin_func".to_string(),
+                            out: Some("delattr_builtin".to_string()),
+                            s_value: Some("molt_del_attr_name".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "builtin_func".to_string(),
+                            out: Some("hasattr_builtin".to_string()),
+                            s_value: Some("molt_has_attr_name".to_string()),
                             ..OpIR::default()
                         },
                     ],
@@ -11807,6 +11848,7 @@ mod tests {
             .expect("descriptor ops should lower through Luau attribute authority");
         assert!(
             source.contains("local function molt_get_attr")
+                && source.contains("local function molt_has_attr")
                 && source.contains("local function molt_set_attr")
                 && source.contains("local function molt_del_attr"),
             "descriptor-aware attribute helpers should be emitted, got:\n{source}"
@@ -11826,12 +11868,22 @@ mod tests {
                 && source.contains("local cm_bound = molt_get_attr(obj, \"cm\")")
                 && source.contains("local sm_func = molt_get_attr(cls, \"sm\")")
                 && source.contains("local prop_value = molt_get_attr(obj, \"value\")")
+                && source.contains("local has_value = molt_has_attr(obj, value_name)")
                 && source.contains("molt_set_attr(obj, \"value\", new_value)")
                 && source.contains("molt_del_attr(obj, \"value\")")
                 && source.contains(
                     "local method_result; do local __method = molt_get_attr(obj, \"method\");"
                 ),
             "attribute get/set/delete and method call should route through descriptor authority, got:\n{source}"
+        );
+        assert!(
+            source.contains("local getattr_builtin = function(a, ...)")
+                && source.contains("local value = molt_get_attr(a[1], a[2])")
+                && source.contains("local setattr_builtin = function(a, ...) return molt_set_attr(a[1], a[2], a[3]) end")
+                && source.contains("local delattr_builtin = function(a, ...) return molt_del_attr(a[1], a[2]) end")
+                && source.contains("local hasattr_builtin = function(a, ...) return molt_has_attr(a[1], a[2]) end")
+                && !source.contains("molt_getattr(table.unpack(a))"),
+            "attribute builtins should route through descriptor helpers, got:\n{source}"
         );
         assert!(
             !source.contains("[classmethod_new]")
