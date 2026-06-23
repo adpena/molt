@@ -4173,16 +4173,21 @@ impl LuauBackend {
             // ================================================================
             // Closure/code internals
             // ================================================================
-            "code_slot_set"
-            | "code_slots_init"
-            | "fn_ptr_code_set"
+            "fn_ptr_code_set"
             | "asyncgen_locals_register"
             | "gen_locals_register"
-            | "function_closure_bits"
-            | "frame_locals_set" => {
+            | "function_closure_bits" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [internal: {}]", op.kind));
+                }
+            }
+            "code_slot_set" | "code_slots_init" | "frame_locals_set" => {
+                if let Some(ref out_name) = op.out
+                    && out_name != "none"
+                {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
             "trace_enter_slot" | "trace_exit" => {
@@ -10668,7 +10673,7 @@ mod tests {
             "local v0 = nil -- [async: spawn]",
             "local v0 = nil -- [file: file_open]",
             "local v0 = nil -- [context: context_enter]",
-            "local v0 = nil -- [internal: frame_locals_set]",
+            "local v0 = nil -- [internal: function_closure_bits]",
             "local v0 = true -- [stub: isinstance]",
             "-- [class op: class_merge_layout]",
             "local v0 = nil -- [bridge_unavailable]",
@@ -11097,6 +11102,77 @@ mod tests {
             !source.contains("[loop_break_if_exception]")
                 && !source.contains("[unsupported op: loop_break_if_exception]"),
             "loop exception-break markers must not leave semantic stub markers, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_code_and_frame_metadata_as_luau_noops() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "code_frame_metadata_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "code_slots_init".to_string(),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("code".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "code_slot_set".to_string(),
+                        value: Some(1),
+                        args: Some(vec!["code".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_none".to_string(),
+                        out: Some("locals".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "frame_locals_set".to_string(),
+                        args: Some(vec!["locals".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("ok".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["ok".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("code/frame metadata should lower as Luau no-ops");
+
+        assert!(
+            source.contains("code_frame_metadata_test"),
+            "compiled code/frame metadata function should be emitted, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[internal: code_slots_init]")
+                && !source.contains("[internal: code_slot_set]")
+                && !source.contains("[internal: frame_locals_set]")
+                && !source.contains("[unsupported op: code_slots_init]")
+                && !source.contains("[unsupported op: code_slot_set]")
+                && !source.contains("[unsupported op: frame_locals_set]"),
+            "code/frame metadata must not leave semantic stub markers, got:\n{source}"
         );
     }
 
@@ -12300,7 +12376,7 @@ mod tests {
                 source_file: None,
                 is_extern: false,
                 ops: vec![OpIR {
-                    kind: "frame_locals_set".to_string(),
+                    kind: "function_closure_bits".to_string(),
                     out: Some("v0".to_string()),
                     ..OpIR::default()
                 }],
