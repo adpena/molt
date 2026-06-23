@@ -327,6 +327,15 @@ PROOF_LANE_RULES = (
         ),
         reason="frontend lowering changes should prove midend/frontend pass contracts",
     ),
+    ProofLaneRule(
+        lane="molt_gpu_targeted",
+        proof_role="implementer",
+        shared_target_root="target",
+        priority="P1",
+        path_prefixes=("runtime/molt-gpu/src/", "runtime/molt-gpu/tests/"),
+        commands=("cargo test -p molt-gpu",),
+        reason="GPU primitive/runtime changes need focused crate-level Rust validation",
+    ),
 )
 
 
