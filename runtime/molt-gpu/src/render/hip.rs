@@ -214,6 +214,7 @@ impl HipRenderer {
 
 impl Renderer for HipRenderer {
     fn render(&self, kernel: &FusedKernel) -> String {
+        kernel.assert_no_mxfp_dtypes("HIP renderer");
         let mut out = String::with_capacity(4096);
 
         writeln!(out, "#include <hip/hip_runtime.h>").unwrap();

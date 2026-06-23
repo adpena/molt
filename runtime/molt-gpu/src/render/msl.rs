@@ -184,6 +184,7 @@ impl MslRenderer {
 
 impl Renderer for MslRenderer {
     fn render(&self, kernel: &FusedKernel) -> String {
+        kernel.assert_no_mxfp_dtypes("MSL renderer");
         let mut out = String::with_capacity(4096);
 
         // Include headers. Enable fast math for transcendentals (exp2, log2, sin, sqrt)

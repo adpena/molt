@@ -14,6 +14,8 @@ use molt_gpu::render::cuda::CudaRenderer;
 use molt_gpu::render::glsl::GlslRenderer;
 use molt_gpu::render::hip::HipRenderer;
 use molt_gpu::render::msl::MslRenderer;
+#[cfg(feature = "metal4")]
+use molt_gpu::render::msl4::{Metal4Support, Msl4Renderer};
 use molt_gpu::render::opencl::OpenClRenderer;
 use molt_gpu::render::wgsl::WgslRenderer;
 use molt_gpu::render::{
@@ -182,6 +184,41 @@ fn make_exp2_mul_kernel(n: usize) -> FusedKernel {
         ],
         grid: [n as u32, 1, 1],
         local: [256, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    }
+}
+
+fn make_mxfp_storage_kernel() -> FusedKernel {
+    FusedKernel {
+        body: KernelBody::Compute,
+        ops: vec![FusedOp::elementwise(
+            PrimitiveOp::Add,
+            vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+            DType::MxFP8,
+        )],
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: ShapeTracker::contiguous(&[4]),
+                dtype: DType::MxFP8,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st: ShapeTracker::contiguous(&[4]),
+                dtype: DType::MxFP8,
+                access: BufferAccess::Read,
+            },
+            BufferBinding {
+                buf_id: 2,
+                st: ShapeTracker::contiguous(&[4]),
+                dtype: DType::MxFP8,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [4, 1, 1],
+        local: [4, 1, 1],
         spec: None,
         vectorize_width: 1,
     }
@@ -891,6 +928,48 @@ fn test_cross_renderers_render_attention_core_masked_sdpa_row_chain() {
         }
     }
 }
+
+macro_rules! assert_renderer_rejects_mxfp_storage {
+    ($test_name:ident, $renderer:expr) => {
+        #[test]
+        #[should_panic(expected = "MXFP requires explicit block/exponent storage lowering")]
+        fn $test_name() {
+            let kernel = make_mxfp_storage_kernel();
+            let renderer = $renderer;
+            renderer.render(&kernel);
+        }
+    };
+}
+
+assert_renderer_rejects_mxfp_storage!(
+    test_msl_renderer_rejects_mxfp_until_block_storage_lowering_exists,
+    MslRenderer
+);
+#[cfg(feature = "metal4")]
+assert_renderer_rejects_mxfp_storage!(
+    test_msl4_renderer_rejects_mxfp_until_block_storage_lowering_exists,
+    Msl4Renderer::with_support(Metal4Support::None)
+);
+assert_renderer_rejects_mxfp_storage!(
+    test_wgsl_renderer_rejects_mxfp_until_block_storage_lowering_exists,
+    WgslRenderer::new()
+);
+assert_renderer_rejects_mxfp_storage!(
+    test_glsl_renderer_rejects_mxfp_until_block_storage_lowering_exists,
+    GlslRenderer
+);
+assert_renderer_rejects_mxfp_storage!(
+    test_cuda_renderer_rejects_mxfp_until_block_storage_lowering_exists,
+    CudaRenderer
+);
+assert_renderer_rejects_mxfp_storage!(
+    test_hip_renderer_rejects_mxfp_until_block_storage_lowering_exists,
+    HipRenderer
+);
+assert_renderer_rejects_mxfp_storage!(
+    test_opencl_renderer_rejects_mxfp_until_block_storage_lowering_exists,
+    OpenClRenderer { has_fp64: false }
+);
 
 #[test]
 fn test_cross_renderers_name_parameters_by_binding_slot_not_storage_id() {
