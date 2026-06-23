@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::function::TirFunction;
+use super::op_kinds_generated::opcode_is_exception_transfer_edge_table;
 use super::ops::{AttrValue, OpCode};
 
 // ---------------------------------------------------------------------------
@@ -117,7 +118,7 @@ pub fn exception_successors(
 /// attr. Its label is structural metadata for pairing/lowering, not a branch to
 /// the handler.
 pub fn is_exception_transfer_edge(opcode: OpCode) -> bool {
-    matches!(opcode, OpCode::CheckException | OpCode::TryStart)
+    opcode_is_exception_transfer_edge_table(opcode)
 }
 
 /// All CFG successors of `block` under the given edge policy.

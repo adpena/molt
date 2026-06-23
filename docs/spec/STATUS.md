@@ -173,6 +173,11 @@ the implementation. For forward-looking priorities, use
   reordering, comparison swaps, and ordered binary algebraic folds use adjacent
   generated canonicalize tables. `canonicalize.rs` owns only live operand/type
   checks and rewrites, not private opcode lists.
+- Exception label metadata is registry-owned: `exception_label_attr_opcodes`
+  identifies ops whose `value` attr carries a SimpleIR exception label id, and
+  `exception_transfer_edge_opcodes` is the generated subset that contributes
+  implicit CFG transfer edges. Inliner, generator fusion, lower-to-simple, and
+  dominator construction consume those generated tables.
 - `molt-gpu` schedules `Movement` operands as zero-copy views over source
   storage and schedules `Contiguous` DAG operands as first-class
   `KernelBody::MaterializeCopy` producers with fresh storage identity.

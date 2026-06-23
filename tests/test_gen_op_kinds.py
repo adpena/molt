@@ -616,6 +616,57 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
         assert "OpCode::Div | OpCode::FloorDiv | OpCode::Mod" not in body
 
 
+def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
+    """Exception label attrs and CFG transfer edges have one opcode authority."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    sources = {
+        "inliner": (ROOT / "runtime/molt-backend/src/tir/passes/inliner.rs").read_text(
+            encoding="utf-8"
+        ),
+        "generator_fusion": (
+            ROOT / "runtime/molt-backend/src/tir/passes/generator_fusion.rs"
+        ).read_text(encoding="utf-8"),
+        "lower_to_simple": (
+            ROOT / "runtime/molt-backend/src/tir/lower_to_simple.rs"
+        ).read_text(encoding="utf-8"),
+        "dominators": (ROOT / "runtime/molt-backend/src/tir/dominators.rs").read_text(
+            encoding="utf-8"
+        ),
+    }
+
+    label_attr = {"CheckException", "TryStart", "TryEnd"}
+    transfer_edge = {"CheckException", "TryStart"}
+    assert set(data["exception_label_attr_opcodes"]) == label_attr
+    assert set(data["exception_transfer_edge_opcodes"]) == transfer_edge
+
+    label_block = rendered.split("fn opcode_has_exception_label_attr_table")[1].split(
+        "fn opcode_is_exception_transfer_edge_table"
+    )[0]
+    transfer_block = rendered.split(
+        "fn opcode_is_exception_transfer_edge_table"
+    )[1].split("enum AliasTypedSlotRole")[0]
+    for opcode in label_attr:
+        assert f"OpCode::{opcode} => true," in label_block
+    assert "OpCode::ExceptionPending => false," in label_block
+    for opcode in transfer_edge:
+        assert f"OpCode::{opcode} => true," in transfer_block
+    assert "OpCode::TryEnd => false," in transfer_block
+
+    assert "opcode_has_exception_label_attr_table" in sources["inliner"]
+    assert "opcode_has_exception_label_attr_table" in sources["generator_fusion"]
+    assert "opcode_has_exception_label_attr_table" in sources["lower_to_simple"]
+    assert "opcode_is_exception_transfer_edge_table" in sources["dominators"]
+
+    stale_literal = "OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd"
+    for source in sources.values():
+        assert stale_literal not in source
+    assert "matches!(opcode, OpCode::CheckException | OpCode::TryStart)" not in sources[
+        "dominators"
+    ]
+
+
 def test_alias_slot_observation_delegates_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
