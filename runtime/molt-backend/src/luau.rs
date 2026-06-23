@@ -4092,7 +4092,7 @@ impl LuauBackend {
             "getframe" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
-                    self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
             "bridge_unavailable" => {
@@ -10933,8 +10933,24 @@ mod tests {
                         ..OpIR::default()
                     },
                     OpIR {
+                        kind: "const".to_string(),
+                        out: Some("depth".to_string()),
+                        value: Some(0),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "getframe".to_string(),
+                        out: Some("frame".to_string()),
+                        args: Some(vec!["depth".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
                         kind: "tuple_new".to_string(),
-                        args: Some(vec!["argv".to_string(), "executable".to_string()]),
+                        args: Some(vec![
+                            "argv".to_string(),
+                            "executable".to_string(),
+                            "frame".to_string(),
+                        ]),
                         out: Some("facts".to_string()),
                         ..OpIR::default()
                     },
@@ -10954,8 +10970,10 @@ mod tests {
 
         assert!(source.contains("local argv = {}"));
         assert!(source.contains("local executable = \"\""));
+        assert!(source.contains("local frame = nil"));
         assert!(!source.contains("-- [getargv]"));
         assert!(!source.contains("-- [sys_executable]"));
+        assert!(!source.contains("-- [getframe]"));
     }
 
     #[test]

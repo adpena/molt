@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `294`
-- `implemented-target-limited`: `46`
-- `not-admitted`: `56`
+- `implemented-target-limited`: `47`
+- `not-admitted`: `55`
 - `runtime-capability-error`: `5`
 - `total`: `402`
 
@@ -208,7 +208,7 @@
 | `get_attr_special_obj` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable lookup for the admitted subset. |
 | `get_item` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `getargv` | `implemented-target-limited` | Luau has no process argv surface; materializes an empty argv list. |
-| `getframe` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `getframe` | `implemented-target-limited` | Luau has no Python frame-object introspection surface; materializes None for fallback-aware stdlib paths. |
 | `goto` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `gt` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `guard_tag` | `implemented-exact` | Lowered without checked-output stub markers. |
