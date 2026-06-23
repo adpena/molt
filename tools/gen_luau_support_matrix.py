@@ -66,6 +66,7 @@ TARGET_LIMITED_OPS = {
     "getargv": "Luau has no process argv surface; materializes an empty argv list.",
     "has_attr_name": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
     "id": "Uses string identity representation, not CPython object address identity.",
+    "intarray_from_seq": "Modeled as a copied dense Luau integer table for vector consumers.",
     "is_native_awaitable": "Luau has no Molt native poll-function object representation; target values are non-native awaitables.",
     "isinstance": "Uses Luau type metadata and metatable inheritance for the admitted subset.",
     "issubclass": "Uses Luau type metadata and metatable inheritance for the admitted subset.",
