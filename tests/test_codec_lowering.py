@@ -933,6 +933,18 @@ e ^= b
         assert ops, f"expected at least one {kind} op"
 
 
+def test_matmul_and_inplace_matmul_lower_to_distinct_wire_ops() -> None:
+    src = """
+a = 1
+b = 2
+c = a @ b
+a @= b
+"""
+    ir = compile_to_tir(src)
+    assert _ops_by_kind(ir, "matmul")
+    assert _ops_by_kind(ir, "inplace_matmul")
+
+
 def test_direct_call_result_hints_do_not_poison_fast_int() -> None:
     src = """
 def f(x):

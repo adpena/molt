@@ -7,11 +7,11 @@
 ## Summary
 
 - `compile-error`: `0`
-- `implemented-exact`: `295`
+- `implemented-exact`: `296`
 - `implemented-target-limited`: `54`
 - `not-admitted`: `47`
 - `runtime-capability-error`: `6`
-- `total`: `402`
+- `total`: `403`
 
 ## Matrix
 
@@ -227,6 +227,7 @@
 | `inplace_bit_and` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `inplace_bit_or` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `inplace_bit_xor` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `inplace_matmul` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `inplace_mul` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `inplace_sub` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `int_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
