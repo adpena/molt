@@ -123,6 +123,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "child on interruption",
     ),
     AllowedRawSubprocessUse(
+        "tools/agent_coordination.py",
+        "git_status_paths",
+        "run",
+        "bounded git status metadata probe used only to recommend focused proof "
+        "lanes before agents start long-running work",
+    ),
+    AllowedRawSubprocessUse(
         "tools/check_correspondence.py",
         "_find_repo_root",
         "check_output",
