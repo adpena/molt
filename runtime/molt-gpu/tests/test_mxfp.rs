@@ -59,6 +59,32 @@ fn test_mxfp_block_bytes() {
 }
 
 #[test]
+fn test_mxfp_block_count_for_logical_elements() {
+    assert_eq!(DType::MxFP8.mxfp_block_count(0), 0);
+    assert_eq!(DType::MxFP8.mxfp_block_count(1), 1);
+    assert_eq!(DType::MxFP8.mxfp_block_count(32), 1);
+    assert_eq!(DType::MxFP8.mxfp_block_count(33), 2);
+
+    assert_eq!(DType::MxFP4.mxfp_block_count(31), 1);
+    assert_eq!(DType::MxFP4.mxfp_block_count(32), 1);
+    assert_eq!(DType::MxFP4.mxfp_block_count(64), 2);
+    assert_eq!(DType::Float32.mxfp_block_count(64), 0);
+}
+
+#[test]
+fn test_mxfp_storage_bytes_include_padded_block_exponents() {
+    assert_eq!(DType::MxFP8.storage_bytes_for_numel(0), 0);
+    assert_eq!(DType::MxFP8.storage_bytes_for_numel(1), 33);
+    assert_eq!(DType::MxFP8.storage_bytes_for_numel(32), 33);
+    assert_eq!(DType::MxFP8.storage_bytes_for_numel(33), 66);
+
+    assert_eq!(DType::MxFP4.storage_bytes_for_numel(1), 17);
+    assert_eq!(DType::MxFP4.storage_bytes_for_numel(32), 17);
+    assert_eq!(DType::MxFP4.storage_bytes_for_numel(33), 34);
+    assert_eq!(DType::Float32.storage_bytes_for_numel(33), 132);
+}
+
+#[test]
 fn test_mxfp_msl_type() {
     assert_eq!(DType::MxFP8.msl_type(), "uchar");
     assert_eq!(DType::MxFP4.msl_type(), "uchar");
