@@ -196,6 +196,110 @@ def test_agent_coordination_check_returns_nonzero_on_collision(tmp_path: Path) -
     )
 
 
+def test_proof_plan_recommends_focused_lanes_for_explicit_paths(tmp_path: Path) -> None:
+    payload = agent_coordination.proof_plan_payload(
+        agent_coordination.parse_args(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "proof-plan",
+                "tools/agent_coordination.py",
+                "tests/differential/basic/imported_generator_lowering.py",
+                "runtime/molt-backend/src/tir/type_refine.rs",
+            ]
+        )
+    )
+
+    lanes = {item["lane"]: item for item in payload["recommendations"]}
+    assert payload["source"] == "explicit"
+    assert lanes["focused_differential"]["priority"] == "P0"
+    assert (
+        "tests/molt_diff.py tests/differential/basic/imported_generator_lowering.py"
+        in lanes["focused_differential"]["commands"][0]
+    )
+    assert lanes["agent_coordination"]["proof_role"] == "implementer"
+    assert lanes["tir_type_refine"]["commands"] == [
+        "cargo test -p molt-backend type_refine -- --nocapture"
+    ]
+
+
+def test_proof_plan_file_rules_do_not_match_same_prefix_siblings(
+    tmp_path: Path,
+) -> None:
+    payload = agent_coordination.proof_plan_payload(
+        agent_coordination.parse_args(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "proof-plan",
+                "tools/agent_coordination.py.bak",
+                "src/molt/frontend/visitors/calls.py",
+            ]
+        )
+    )
+
+    lanes = {item["lane"]: item for item in payload["recommendations"]}
+    assert "agent_coordination" not in lanes
+    assert lanes["frontend_targeted"]["covered_paths"] == [
+        "src/molt/frontend/visitors/calls.py"
+    ]
+
+
+def test_proof_plan_normalize_preserves_dot_directories(tmp_path: Path) -> None:
+    assert (
+        agent_coordination.normalize_repo_path(
+            "./.github/workflows/ci.yml",
+            tmp_path,
+        )
+        == ".github/workflows/ci.yml"
+    )
+
+
+def test_proof_plan_uses_git_status_when_paths_are_omitted(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        agent_coordination,
+        "git_status_paths",
+        lambda repo_root: [
+            "tools/check_subprocess_guard_coverage.py",
+            "tests/differential/basic/example.py",
+        ],
+    )
+
+    payload = agent_coordination.proof_plan_payload(
+        agent_coordination.parse_args(
+            ["--repo-root", str(tmp_path), "proof-plan", "--json"]
+        )
+    )
+
+    assert payload["source"] == "git-status"
+    assert payload["input_paths"] == [
+        "tools/check_subprocess_guard_coverage.py",
+        "tests/differential/basic/example.py",
+    ]
+    assert [item["lane"] for item in payload["recommendations"]] == [
+        "focused_differential",
+        "subprocess_guard_coverage",
+    ]
+
+
+def test_proof_plan_clean_status_does_not_invent_broad_work(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(agent_coordination, "git_status_paths", lambda repo_root: [])
+
+    payload = agent_coordination.proof_plan_payload(
+        agent_coordination.parse_args(["--repo-root", str(tmp_path), "proof-plan"])
+    )
+
+    assert payload["source"] == "git-status"
+    assert payload["input_paths"] == []
+    assert payload["recommendations"] == []
+
+
 def test_codex_stall_launch_uses_memory_guard_by_default(tmp_path: Path) -> None:
     args = agent_coordination.parse_args(
         [

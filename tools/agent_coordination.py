@@ -38,6 +38,17 @@ VALID_ROLES = (
 
 
 @dataclass(frozen=True)
+class ProofLaneRule:
+    lane: str
+    proof_role: str
+    shared_target_root: str
+    priority: str
+    path_prefixes: tuple[str, ...]
+    commands: tuple[str, ...]
+    reason: str
+
+
+@dataclass(frozen=True)
 class CoordinationRecord:
     task: str
     path: Path
@@ -241,6 +252,84 @@ class CodexStallTelemetry:
             }
 
 
+PROOF_LANE_RULES = (
+    ProofLaneRule(
+        lane="agent_coordination",
+        proof_role="implementer",
+        shared_target_root="target",
+        priority="P1",
+        path_prefixes=(
+            "tools/agent_coordination.py",
+            "tests/test_agent_coordination.py",
+            "docs/ops/MULTI_AGENT_COORDINATION.md",
+            "AGENTS.md",
+        ),
+        commands=(
+            "uv run --python 3.12 python -m pytest -q tests/test_agent_coordination.py -p no:cacheprovider",
+            "uv run --python 3.12 python tools/check_subprocess_guard_coverage.py",
+        ),
+        reason="coordination changes need focused protocol coverage plus subprocess-custody audit",
+    ),
+    ProofLaneRule(
+        lane="subprocess_guard_coverage",
+        proof_role="implementer",
+        shared_target_root="target",
+        priority="P1",
+        path_prefixes=("tools/check_subprocess_guard_coverage.py",),
+        commands=(
+            "uv run --python 3.12 python tools/check_subprocess_guard_coverage.py",
+        ),
+        reason="raw subprocess/signal policy changes must keep the static custody audit green",
+    ),
+    ProofLaneRule(
+        lane="tir_type_refine",
+        proof_role="implementer",
+        shared_target_root="target",
+        priority="P1",
+        path_prefixes=("runtime/molt-backend/src/tir/type_refine.rs",),
+        commands=("cargo test -p molt-backend type_refine -- --nocapture",),
+        reason="TIR type facts require direct solver regressions before broader differential proof",
+    ),
+    ProofLaneRule(
+        lane="luau_backend",
+        proof_role="implementer",
+        shared_target_root="target",
+        priority="P1",
+        path_prefixes=(
+            "runtime/molt-backend/src/luau.rs",
+            "tools/gen_luau_support_matrix.py",
+            "tests/tools/test_gen_luau_support_matrix.py",
+            "docs/spec/areas/compiler/luau_support_matrix.generated.md",
+        ),
+        commands=(
+            "uv run --python 3.12 python -m pytest -q tests/tools/test_gen_luau_support_matrix.py -p no:cacheprovider",
+            "cargo test -p molt-backend --features luau-backend test_compile_checked_lowers_call_async_poll_target_directly -- --nocapture",
+        ),
+        reason="Luau support claims need generated matrix coverage plus feature-enabled backend tests",
+    ),
+    ProofLaneRule(
+        lane="molt_backend_targeted",
+        proof_role="implementer",
+        shared_target_root="target",
+        priority="P2",
+        path_prefixes=("runtime/molt-backend/src/",),
+        commands=("cargo test -p molt-backend",),
+        reason="backend code changes need at least package-level Rust validation after focused tests",
+    ),
+    ProofLaneRule(
+        lane="frontend_targeted",
+        proof_role="implementer",
+        shared_target_root="target",
+        priority="P2",
+        path_prefixes=("src/molt/frontend/",),
+        commands=(
+            "uv run --python 3.12 python -m pytest -q tests/test_frontend_midend_passes.py -p no:cacheprovider",
+        ),
+        reason="frontend lowering changes should prove midend/frontend pass contracts",
+    ),
+)
+
+
 def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -413,6 +502,168 @@ def environment_snapshot(
         "ci": env.get("CI", ""),
         "repo_root": str(repo_root),
     }
+
+
+def normalize_repo_path(path: str | Path, repo_root: Path) -> str:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        try:
+            return candidate.resolve().relative_to(repo_root.resolve()).as_posix()
+        except ValueError:
+            return candidate.as_posix()
+    normalized = candidate.as_posix()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def git_status_paths(repo_root: Path) -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain=v1", "-z"],
+            cwd=str(repo_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+
+    entries = proc.stdout.split(b"\0")
+    paths: list[str] = []
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if not entry:
+            continue
+        text = entry.decode("utf-8", errors="surrogateescape")
+        if len(text) < 4:
+            continue
+        status = text[:2]
+        path = text[3:]
+        if status.startswith("R") or status.endswith("R"):
+            if i < len(entries) and entries[i]:
+                path = entries[i].decode("utf-8", errors="surrogateescape")
+                i += 1
+        paths.append(normalize_repo_path(path, repo_root))
+    return sorted(dict.fromkeys(paths))
+
+
+def rule_matches_path(rule: ProofLaneRule, path: str) -> bool:
+    for prefix in rule.path_prefixes:
+        if prefix.endswith("/"):
+            if path.startswith(prefix):
+                return True
+        elif path == prefix:
+            return True
+    return False
+
+
+def differential_test_paths(paths: Sequence[str]) -> list[str]:
+    return sorted(
+        {
+            path
+            for path in paths
+            if path.startswith("tests/differential/") and path.endswith(".py")
+        }
+    )
+
+
+def proof_recommendations(
+    paths: Sequence[str],
+    repo_root: Path,
+) -> list[dict[str, Any]]:
+    normalized = [normalize_repo_path(path, repo_root) for path in paths]
+    recommendations: list[dict[str, Any]] = []
+    diff_paths = differential_test_paths(normalized)
+    if diff_paths:
+        recommendations.append(
+            {
+                "lane": "focused_differential",
+                "proof_role": "reducer",
+                "shared_target_root": "target",
+                "priority": "P0",
+                "reason": "changed differential fixtures should be run directly before broad sweeps",
+                "covered_paths": diff_paths,
+                "commands": [
+                    "uv run --python 3.12 python tests/molt_diff.py "
+                    + " ".join(diff_paths)
+                ],
+            }
+        )
+
+    for rule in PROOF_LANE_RULES:
+        covered = sorted({path for path in normalized if rule_matches_path(rule, path)})
+        if not covered:
+            continue
+        recommendations.append(
+            {
+                "lane": rule.lane,
+                "proof_role": rule.proof_role,
+                "shared_target_root": rule.shared_target_root,
+                "priority": rule.priority,
+                "reason": rule.reason,
+                "covered_paths": covered,
+                "commands": list(rule.commands),
+            }
+        )
+    return recommendations
+
+
+def proof_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
+    repo_root = args.repo_root.resolve()
+    paths = [normalize_repo_path(path, repo_root) for path in args.paths]
+    source = "explicit"
+    if not paths:
+        paths = git_status_paths(repo_root)
+        source = "git-status"
+    recommendations = proof_recommendations(paths, repo_root)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "repo_root": str(repo_root),
+        "source": source,
+        "input_paths": paths,
+        "recommendations": recommendations,
+        "coordination": {
+            "before_long_lane": "uv run --python 3.12 python tools/agent_coordination.py check",
+            "init_template": "uv run --python 3.12 python tools/agent_coordination.py init <task> --role <role> --lane <lane>",
+        },
+    }
+
+
+def print_text_proof_plan(payload: dict[str, Any]) -> None:
+    print(
+        "proof plan: {count} recommendation(s) from {source} path source".format(
+            count=len(payload["recommendations"]),
+            source=payload["source"],
+        )
+    )
+    if not payload["input_paths"]:
+        print("- no changed or explicit paths; no focused proof lane recommended")
+        return
+    print("paths:")
+    for path in payload["input_paths"]:
+        print(f"- {path}")
+    for item in payload["recommendations"]:
+        print(
+            "\n[{priority}] {lane}: role={role} target={target}".format(
+                priority=item["priority"],
+                lane=item["lane"],
+                role=item["proof_role"],
+                target=item["shared_target_root"],
+            )
+        )
+        print(f"reason: {item['reason']}")
+        print("covered:")
+        for path in item["covered_paths"]:
+            print(f"- {path}")
+        print("commands:")
+        for command in item["commands"]:
+            print(f"- {command}")
 
 
 def validate_task_name(task: str) -> str:
@@ -980,6 +1231,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     check = sub.add_parser("check", help="fail on broad-lane coordination collisions")
     check.add_argument("--json", action="store_true")
 
+    proof_plan = sub.add_parser(
+        "proof-plan",
+        help="recommend focused proof lanes for explicit paths or current git changes",
+    )
+    proof_plan.add_argument(
+        "paths",
+        nargs="*",
+        help="repo-relative paths; defaults to current git status when omitted",
+    )
+    proof_plan.add_argument("--json", action="store_true")
+
     env = sub.add_parser("env", help="print local agent environment facts")
     env.add_argument("--json", action="store_true")
 
@@ -1064,6 +1326,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "codex-stall":
         return run_codex_stall_diagnostic(args)
+
+    if args.command == "proof-plan":
+        payload = proof_plan_payload(args)
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print_text_proof_plan(payload)
+        return 0
 
     payload = summary_payload(repo_root)
     if args.json:

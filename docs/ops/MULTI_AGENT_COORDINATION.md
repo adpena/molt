@@ -84,11 +84,16 @@ surface before long proof work.
 ```bash
 uv run --python 3.12 python tools/agent_coordination.py scan
 uv run --python 3.12 python tools/agent_coordination.py check
+uv run --python 3.12 python tools/agent_coordination.py proof-plan
 ```
 
 - `scan` lists current task records and any broad-lane collisions.
 - `check` returns nonzero when two active broad-sweep coordinators claim the
   same proof lane on the same shared target root.
+- `proof-plan [paths...]` recommends focused proof lanes from explicit paths or
+  from current `git status` when paths are omitted. Run it before long proof
+  work so agents pick targeted differential, conformance, backend, or custody
+  checks before broad sweeps.
 - `env` prints local OS/Python/shell facts so agents choose macOS, Linux, WSL,
   or Windows-safe commands before running long proof lanes.
 - `codex-stall -- <command>` runs a proof command through
