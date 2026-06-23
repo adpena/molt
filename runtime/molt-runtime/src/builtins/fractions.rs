@@ -6,8 +6,8 @@
 
 use crate::object::ops::string_obj_to_owned;
 use crate::{
-    MoltObject, PyToken, alloc_string, alloc_tuple, bits_from_ptr, dec_ref_bits,
-    int_bits_from_bigint, int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception,
+    MoltObject, PyToken, alloc_string, alloc_tuple, dec_ref_bits, int_bits_from_bigint,
+    int_bits_from_i64, obj_from_bits, opaque_handle_bits, ptr_from_bits, raise_exception,
     release_ptr, to_bigint, to_f64, to_i64,
 };
 use num_bigint::BigInt;
@@ -314,7 +314,7 @@ fn fraction_handle_from_bits(bits: u64) -> Option<&'static mut FractionHandle> {
 }
 
 fn fraction_bits(handle: FractionHandle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
 fn fraction_from_obj_bits(_py: &PyToken<'_>, bits: u64) -> Result<FractionHandle, u64> {

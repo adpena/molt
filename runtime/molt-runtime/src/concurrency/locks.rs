@@ -14,17 +14,8 @@ use crate::{
     GilReleaseGuard, attr_name_bits_from_bytes, call_callable0, call_callable1, dec_ref_bits,
     exception_pending, inc_ref_bits, is_truthy, missing_bits, molt_getattr_builtin,
     molt_is_callable, monotonic_now_secs, obj_from_bits, ptr_from_bits, raise_exception,
-    release_ptr, to_f64,
+    opaque_handle_bits, release_ptr, to_f64,
 };
-
-fn raw_handle_bits(ptr: *mut u8) -> u64 {
-    let addr = molt_obj_model::register_ptr(ptr);
-    debug_assert!(
-        addr <= ((1_u64 << 46) - 1),
-        "raw runtime handle address exceeds Molt immediate int range"
-    );
-    MoltObject::from_int(addr as i64).bits()
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 struct MoltLock {
@@ -1177,7 +1168,7 @@ pub unsafe extern "C" fn molt_lock_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lock = Arc::new(MoltLock::new());
         let raw = Arc::into_raw(lock) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -1256,7 +1247,7 @@ pub unsafe extern "C" fn molt_rlock_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lock = Arc::new(MoltRLock::new());
         let raw = Arc::into_raw(lock) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -1378,7 +1369,7 @@ pub unsafe extern "C" fn molt_condition_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let condition = Arc::new(MoltCondition::new());
         let raw = Arc::into_raw(condition) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -1537,7 +1528,7 @@ pub unsafe extern "C" fn molt_event_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let event = Arc::new(MoltEvent::new());
         let raw = Arc::into_raw(event) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -1628,7 +1619,7 @@ pub unsafe extern "C" fn molt_semaphore_new(value_bits: u64, bounded_bits: u64) 
         let bounded = is_truthy(_py, obj_from_bits(bounded_bits));
         let sem = Arc::new(MoltSemaphore::new(value, bounded));
         let raw = Arc::into_raw(sem) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -1712,7 +1703,7 @@ pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) 
         };
         let barrier = Arc::new(MoltBarrier::new(parties as u64, timeout));
         let raw = Arc::into_raw(barrier) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -1819,7 +1810,7 @@ pub unsafe extern "C" fn molt_local_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let local = Arc::new(MoltLocal::new());
         let raw = Arc::into_raw(local) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -1873,7 +1864,7 @@ pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
         };
         let queue = Arc::new(MoltQueue::new(maxsize, QueueKind::Fifo));
         let raw = Arc::into_raw(queue) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -1886,7 +1877,7 @@ pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
         };
         let queue = Arc::new(MoltQueue::new(maxsize, QueueKind::Lifo));
         let raw = Arc::into_raw(queue) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -1899,7 +1890,7 @@ pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
         };
         let queue = Arc::new(MoltQueue::new(maxsize, QueueKind::Priority));
         let raw = Arc::into_raw(queue) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -2774,7 +2765,7 @@ pub unsafe extern "C" fn molt_lock_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lock = Rc::new(MoltLock::new());
         let raw = Rc::into_raw(lock) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -2852,7 +2843,7 @@ pub unsafe extern "C" fn molt_rlock_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lock = Rc::new(MoltRLock::new());
         let raw = Rc::into_raw(lock) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -2973,7 +2964,7 @@ pub unsafe extern "C" fn molt_condition_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let condition = Rc::new(MoltCondition::new());
         let raw = Rc::into_raw(condition) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -3139,7 +3130,7 @@ pub unsafe extern "C" fn molt_event_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let event = Rc::new(MoltEvent::new());
         let raw = Rc::into_raw(event) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -3237,7 +3228,7 @@ pub unsafe extern "C" fn molt_semaphore_new(value_bits: u64, bounded_bits: u64) 
         let bounded = is_truthy(_py, obj_from_bits(bounded_bits));
         let sem = Rc::new(MoltSemaphore::new(value, bounded));
         let raw = Rc::into_raw(sem) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -3334,7 +3325,7 @@ pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) 
         };
         let barrier = Rc::new(MoltBarrier::new(parties as u64, timeout));
         let raw = Rc::into_raw(barrier) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -3472,7 +3463,7 @@ pub unsafe extern "C" fn molt_local_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let local = Rc::new(MoltLocal::new());
         let raw = Rc::into_raw(local) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -3524,7 +3515,7 @@ pub unsafe extern "C" fn molt_queue_new(maxsize_bits: u64) -> u64 {
         };
         let queue = Rc::new(MoltQueue::new(maxsize, QueueKindWasm::Fifo));
         let raw = Rc::into_raw(queue) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -3537,7 +3528,7 @@ pub unsafe extern "C" fn molt_queue_lifo_new(maxsize_bits: u64) -> u64 {
         };
         let queue = Rc::new(MoltQueue::new(maxsize, QueueKindWasm::Lifo));
         let raw = Rc::into_raw(queue) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 
@@ -3550,7 +3541,7 @@ pub unsafe extern "C" fn molt_queue_priority_new(maxsize_bits: u64) -> u64 {
         };
         let queue = Rc::new(MoltQueue::new(maxsize, QueueKindWasm::Priority));
         let raw = Rc::into_raw(queue) as *mut u8;
-        raw_handle_bits(raw)
+        opaque_handle_bits(raw)
     })
 }
 

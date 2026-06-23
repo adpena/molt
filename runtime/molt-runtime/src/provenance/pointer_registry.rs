@@ -1,3 +1,14 @@
+use crate::MoltObject;
+
+pub(crate) fn opaque_handle_bits(ptr: *mut u8) -> u64 {
+    let addr = molt_obj_model::register_ptr(ptr);
+    debug_assert!(
+        addr <= ((1_u64 << 46) - 1),
+        "opaque runtime handle address exceeds Molt immediate int range"
+    );
+    MoltObject::from_int(addr as i64).bits()
+}
+
 pub(crate) fn resolve_ptr(addr: u64) -> Option<*mut u8> {
     molt_obj_model::resolve_ptr(addr)
 }

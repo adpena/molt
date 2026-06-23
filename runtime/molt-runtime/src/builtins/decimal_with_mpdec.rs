@@ -7,8 +7,8 @@ use molt_obj_model::MoltObject;
 
 use crate::object::ops::{format_obj_str, is_truthy, string_obj_to_owned};
 use crate::{
-    PyToken, alloc_string, alloc_tuple, bits_from_ptr, dec_ref_bits, int_bits_from_i64,
-    obj_from_bits, ptr_from_bits, raise_exception, release_ptr,
+    PyToken, alloc_string, alloc_tuple, dec_ref_bits, int_bits_from_i64, obj_from_bits,
+    opaque_handle_bits, ptr_from_bits, raise_exception, release_ptr,
 };
 
 #[allow(non_camel_case_types)]
@@ -319,7 +319,7 @@ fn decimal_handle_from_str(
         return Err(bits);
     }
     let handle = Box::new(DecimalHandle { dec });
-    Ok(bits_from_ptr(Box::into_raw(handle) as *mut u8))
+    Ok(opaque_handle_bits(Box::into_raw(handle) as *mut u8))
 }
 
 fn decimal_to_string(
@@ -445,7 +445,7 @@ pub extern "C" fn molt_decimal_context_new() -> u64 {
             capitals: 1,
             refs: 1,
         });
-        bits_from_ptr(Box::into_raw(handle) as *mut u8)
+        opaque_handle_bits(Box::into_raw(handle) as *mut u8)
     })
 }
 
@@ -454,7 +454,7 @@ pub extern "C" fn molt_decimal_context_get_current() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = ensure_current_context();
         context_inc(ptr);
-        bits_from_ptr(ptr as *mut u8)
+        opaque_handle_bits(ptr as *mut u8)
     })
 }
 
@@ -474,7 +474,7 @@ pub extern "C" fn molt_decimal_context_set_current(ctx_bits: u64) -> u64 {
         if !old_ptr.is_null() {
             context_inc(old_ptr);
             context_dec(old_ptr);
-            return bits_from_ptr(old_ptr as *mut u8);
+            return opaque_handle_bits(old_ptr as *mut u8);
         }
         MoltObject::none().bits()
     })
@@ -493,7 +493,7 @@ pub extern "C" fn molt_decimal_context_copy(ctx_bits: u64) -> u64 {
             capitals: ctx.capitals,
             refs: 1,
         });
-        bits_from_ptr(Box::into_raw(handle) as *mut u8)
+        opaque_handle_bits(Box::into_raw(handle) as *mut u8)
     })
 }
 
@@ -730,7 +730,7 @@ pub extern "C" fn molt_decimal_clone(value_bits: u64) -> u64 {
             return bits;
         }
         let boxed = Box::new(DecimalHandle { dec: result });
-        bits_from_ptr(Box::into_raw(boxed) as *mut u8)
+        opaque_handle_bits(Box::into_raw(boxed) as *mut u8)
     })
 }
 
@@ -834,7 +834,7 @@ pub extern "C" fn molt_decimal_div(ctx_bits: u64, a_bits: u64, b_bits: u64) -> u
             return bits;
         }
         let boxed = Box::new(DecimalHandle { dec: result });
-        bits_from_ptr(Box::into_raw(boxed) as *mut u8)
+        opaque_handle_bits(Box::into_raw(boxed) as *mut u8)
     })
 }
 
@@ -865,7 +865,7 @@ pub extern "C" fn molt_decimal_quantize(ctx_bits: u64, a_bits: u64, exp_bits: u6
             return bits;
         }
         let boxed = Box::new(DecimalHandle { dec: result });
-        bits_from_ptr(Box::into_raw(boxed) as *mut u8)
+        opaque_handle_bits(Box::into_raw(boxed) as *mut u8)
     })
 }
 
@@ -896,7 +896,7 @@ pub extern "C" fn molt_decimal_compare(ctx_bits: u64, a_bits: u64, b_bits: u64) 
             return bits;
         }
         let boxed = Box::new(DecimalHandle { dec: result });
-        bits_from_ptr(Box::into_raw(boxed) as *mut u8)
+        opaque_handle_bits(Box::into_raw(boxed) as *mut u8)
     })
 }
 
@@ -919,7 +919,7 @@ pub extern "C" fn molt_decimal_compare_total(a_bits: u64, b_bits: u64) -> u64 {
             mpd_compare_total(result, a.dec, b.dec);
         }
         let boxed = Box::new(DecimalHandle { dec: result });
-        bits_from_ptr(Box::into_raw(boxed) as *mut u8)
+        opaque_handle_bits(Box::into_raw(boxed) as *mut u8)
     })
 }
 
@@ -947,7 +947,7 @@ pub extern "C" fn molt_decimal_normalize(ctx_bits: u64, a_bits: u64) -> u64 {
             return bits;
         }
         let boxed = Box::new(DecimalHandle { dec: result });
-        bits_from_ptr(Box::into_raw(boxed) as *mut u8)
+        opaque_handle_bits(Box::into_raw(boxed) as *mut u8)
     })
 }
 
@@ -975,6 +975,6 @@ pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
             return bits;
         }
         let boxed = Box::new(DecimalHandle { dec: result });
-        bits_from_ptr(Box::into_raw(boxed) as *mut u8)
+        opaque_handle_bits(Box::into_raw(boxed) as *mut u8)
     })
 }
