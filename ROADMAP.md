@@ -20,6 +20,11 @@ roadmap claim drifts.
 
 ## Current Priorities
 
+Recently closed: ordinary non-exception class `__new__` override parity now
+routes custom, inherited, builtin, dynamic, and otherwise opaque `__new__`
+resolution through runtime `type.__call__`; frontend constructor allocation
+folds are eligible only when class analysis proves default `object.__new__`.
+
 1. Close the ownership-correctness front before claiming broader compatibility:
    native DropInsertion activation, finalizer ordering, standalone `__del__`
    exception isolation, and ExceptionRegion Phase 1.

@@ -1582,6 +1582,33 @@ value = Point(3)
     assert alloc.get("type_hint") == "Point"
 
 
+def test_custom_new_classes_do_not_use_static_constructor_allocation() -> None:
+    source = """
+class Base:
+    def __new__(cls, value):
+        obj = super().__new__(cls)
+        obj.value = value
+        return obj
+
+class Inherited(Base):
+    pass
+
+class Overridden(Base):
+    def __new__(cls, value):
+        return Base.__new__(cls, value)
+
+inherited = Inherited(3)
+overridden = Overridden(4)
+"""
+    gen = SimpleTIRGenerator(module_name="__main__")
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    ops = next(func["ops"] for func in ir["functions"] if func["name"] == "molt_main")
+
+    assert all(op.get("kind") != "object_new_bound" for op in ops)
+    assert any(op.get("kind") == "call_bind" for op in ops)
+
+
 def test_guarded_setattr_init_uses_frontend_wire_spelling() -> None:
     gen = SimpleTIRGenerator()
     gen.classes["Point"] = {"fields": {"x": 24}, "layout_version": 7}

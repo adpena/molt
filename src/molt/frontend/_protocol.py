@@ -177,6 +177,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, class_name: str, class_info: ClassInfo
     ) -> tuple[bool, bool]: ...
 
+    def _class_resolves_default_object_new(
+        self, class_name: str, class_info: ClassInfo
+    ) -> bool: ...
+
     def _resolve_method_info(
         self, class_name: str, method: str
     ) -> tuple[MethodInfo | None, str | None]: ...

@@ -87,8 +87,20 @@ pub(crate) unsafe fn resolved_constructor_init_policy(
 
 #[cfg(test)]
 mod tests {
-    use super::callable_matches_runtime_symbol;
+    use super::{
+        InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
+    };
     use crate::builtins::methods::{object_method_bits, type_method_bits};
+    use crate::object::builders::alloc_function_obj;
+    use crate::{MoltObject, dec_ref_bits};
+
+    extern "C" fn custom_new_policy_probe(_cls_bits: u64) -> i64 {
+        0
+    }
+
+    extern "C" fn custom_init_policy_probe(_self_bits: u64) -> i64 {
+        0
+    }
 
     #[test]
     fn object_builtin_methods_match_runtime_symbols() {
@@ -111,6 +123,63 @@ mod tests {
             assert!(unsafe {
                 callable_matches_runtime_symbol(call_bits, fn_addr!(crate::molt_type_call))
             });
+        });
+    }
+
+    #[test]
+    fn constructor_policy_rejects_args_for_default_object_constructor() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let new_bits = object_method_bits(_py, "__new__");
+            let init_bits = object_method_bits(_py, "__init__");
+            assert_eq!(
+                unsafe { resolved_constructor_init_policy(new_bits, init_bits) },
+                InitArgPolicy::RejectConstructorArgs
+            );
+        });
+    }
+
+    #[test]
+    fn constructor_policy_skips_object_init_for_custom_new() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let new_ptr = alloc_function_obj(
+                _py,
+                custom_new_policy_probe as *const () as usize as u64,
+                1,
+            );
+            assert!(!new_ptr.is_null());
+            let new_bits = MoltObject::from_ptr(new_ptr).bits();
+            let init_bits = object_method_bits(_py, "__init__");
+            assert_eq!(
+                unsafe { resolved_constructor_init_policy(Some(new_bits), init_bits) },
+                InitArgPolicy::SkipObjectInit
+            );
+            dec_ref_bits(_py, new_bits);
+        });
+    }
+
+    #[test]
+    fn constructor_policy_forwards_args_to_custom_init_even_with_custom_new() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let new_ptr = alloc_function_obj(
+                _py,
+                custom_new_policy_probe as *const () as usize as u64,
+                1,
+            );
+            let init_ptr = alloc_function_obj(
+                _py,
+                custom_init_policy_probe as *const () as usize as u64,
+                1,
+            );
+            assert!(!new_ptr.is_null());
+            assert!(!init_ptr.is_null());
+            let new_bits = MoltObject::from_ptr(new_ptr).bits();
+            let init_bits = MoltObject::from_ptr(init_ptr).bits();
+            assert_eq!(
+                unsafe { resolved_constructor_init_policy(Some(new_bits), Some(init_bits)) },
+                InitArgPolicy::ForwardArgs
+            );
+            dec_ref_bits(_py, init_bits);
+            dec_ref_bits(_py, new_bits);
         });
     }
 }

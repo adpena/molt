@@ -26,6 +26,16 @@ the implementation. For forward-looking priorities, use
   because it owns tuple scalarization and representation-plan specialization.
 - Standalone binary workflows are a first-class product requirement.
 - Differential testing against CPython is a core validation path.
+- Ordinary class construction keeps runtime `type.__call__` as the semantic
+  authority whenever class analysis sees custom, inherited, builtin, dynamic, or
+  opaque `__new__` resolution. The frontend static constructor allocation fold
+  is eligible only for classes whose MRO proves default `object.__new__`.
+  Runtime constructor policy covers default-object argument rejection,
+  custom-`__new__` plus object-`__init__` skip behavior, and custom-init
+  forwarding. Focused evidence lives in
+  `tests/test_frontend_midend_passes.py`,
+  `runtime/molt-runtime/src/call/type_policy.rs`, and
+  `tests/differential/basic/type_call_constructor_policy.py`.
 - Build target semantics are explicit for Python `3.12`, `3.13`, and `3.14`:
   `molt build --python-version`, `[tool.molt.build] python-version`, and
   `project.requires-python` resolve the target version before parsing, module
@@ -230,6 +240,14 @@ the implementation. For forward-looking priorities, use
   `CheckedAdd` transform. Guarded evidence:
   `test_compile_checked_lowers_checked_add_helper`; generated matrix status:
   `implemented-exact`.
+- Luau `matmul` and `inplace_matmul` now lower through checked descriptor
+  helpers instead of unsupported-output stubs. `molt_matmul` dispatches
+  `__matmul__` / `__rmatmul__`; `molt_inplace_matmul` tries `__imatmul__`
+  first and falls back to the same binary protocol with the `@=` TypeError
+  spelling. Guarded evidence:
+  `test_compile_checked_lowers_matmul_dunder_dispatch`,
+  `test_compile_checked_lowers_inplace_matmul_dunder_dispatch`, and generated
+  matrix statuses `implemented-exact`.
 - Native, WASM, LLVM, and Luau backend-facing lowering now run through the TIR
   pipeline; the old environment-variable opt-out has been removed so SimpleIR
   transport metadata cannot bypass typed-IR validation.
