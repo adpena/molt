@@ -147,6 +147,7 @@ _OPCODE_FACT_SETS = (
     "alias_slot_direct_observer_opcodes",
     "alias_slot_typed_store_opcodes",
     "alias_slot_never_observer_opcodes",
+    "fusion_barrier_opcodes",
 )
 _ALIAS_TYPED_SLOT_ROLE_SETS = (
     "alias_typed_slot_load_opcodes",
@@ -1224,6 +1225,23 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, alias_heap_barriers))
+    out.append("    }\n}\n\n")
+
+    fusion_barriers = list(data.get("fusion_barrier_opcodes", []))
+    out.append(
+        "/// Whether an opcode makes a comprehension/generator body ineligible for\n"
+        "/// deforestation iterator-chain fusion (`sum`/`list`/`map`/`filter`/`any`/\n"
+        "/// `all`/`min`/`max` over a `for` loop). This is a DISTINCT fact from\n"
+        "/// `opcode_is_side_effecting`: fusion preserves per-element evaluation order\n"
+        "/// and count, so allocation/attribute-read/may-throw ops are deliberately\n"
+        "/// NOT barriers. The barrier set lives in op_kinds.toml. EXHAUSTIVE over\n"
+        "/// OpCode — a new variant fails to compile until it is classified, closing\n"
+        "/// the prior default-false drift trap in deforestation's hand-written set.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_is_fusion_barrier_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, fusion_barriers))
     out.append("    }\n}\n\n")
 
     out.append(_render_alias_typed_slot_role(opcodes, data))

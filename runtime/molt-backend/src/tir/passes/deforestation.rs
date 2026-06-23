@@ -22,14 +22,17 @@
 //! 3. `any(genexpr)` / `all(genexpr)` → early-exit loop
 //! 4. `min(genexpr)` / `max(genexpr)` → tracking loop
 //!
-//! Purity requirement: only fuses when the loop body is provably pure
-//! (no side effects, no exceptions beyond what the unfused version would raise).
+//! Fusion-barrier requirement: only fuses when the loop body has no cross-
+//! iteration/control-state barriers. The barrier classifier is generated from
+//! `op_kinds.toml` and is deliberately distinct from the side-effecting and
+//! may-throw classifiers because fusion preserves per-element evaluation order.
 
 use std::collections::HashMap;
 
 use super::PassStats;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_is_fusion_barrier_table;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
@@ -100,37 +103,16 @@ struct IteratorChain {
     source_iterable: ValueId,
 }
 
-/// Returns `true` if the given opcode is impure (has side effects or may raise).
+/// Returns `true` when an opcode blocks iterator-chain fusion.
 ///
-/// Only fuses when the loop body consists entirely of pure operations.
-fn is_impure(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            | OpCode::StoreAttr
-            | OpCode::StoreIndex
-            | OpCode::DelAttr
-            | OpCode::DelIndex
-            | OpCode::StateSwitch
-            | OpCode::StateTransition
-            | OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            | OpCode::ClosureLoad
-            | OpCode::ClosureStore
-            | OpCode::Raise
-            | OpCode::Yield
-            | OpCode::YieldFrom
-            | OpCode::Import
-            | OpCode::ImportFrom
-    )
+/// The canonical, exhaustive table lives in `op_kinds.toml`.
+fn is_fusion_barrier(opcode: OpCode) -> bool {
+    opcode_is_fusion_barrier_table(opcode)
 }
 
-/// Check whether every op in a slice is pure (no side effects).
-fn is_pure_body(ops: &[TirOp]) -> bool {
-    ops.iter().all(|op| !is_impure(op.opcode))
+/// Check whether every op in a slice is eligible for iterator-chain fusion.
+fn is_fusable_body(ops: &[TirOp]) -> bool {
+    ops.iter().all(|op| !is_fusion_barrier(op.opcode))
 }
 
 /// Detect and fuse iterator/generator chains into single loops.
@@ -287,7 +269,7 @@ fn find_fusable_chains(
                 Some(b) => b,
                 None => continue,
             };
-            if !is_pure_body(&body_block.ops) {
+            if !is_fusable_body(&body_block.ops) {
                 continue;
             }
 
@@ -1422,43 +1404,43 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 7: is_pure_body unit tests
+    // Test 7: is_fusable_body unit tests
     // -----------------------------------------------------------------------
     #[test]
-    fn purity_check_pure_ops() {
+    fn fusion_check_fusable_ops() {
         let ops = vec![
             make_op(OpCode::Add, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]),
             make_op(OpCode::Mul, vec![ValueId(2), ValueId(0)], vec![ValueId(3)]),
             make_op(OpCode::Gt, vec![ValueId(3), ValueId(1)], vec![ValueId(4)]),
         ];
-        assert!(is_pure_body(&ops));
+        assert!(is_fusable_body(&ops));
     }
 
     #[test]
-    fn purity_check_impure_call() {
+    fn fusion_check_barrier_call() {
         let ops = vec![make_op(OpCode::Call, vec![ValueId(0)], vec![ValueId(1)])];
-        assert!(!is_pure_body(&ops));
+        assert!(!is_fusable_body(&ops));
     }
 
     #[test]
-    fn purity_check_impure_store_attr() {
+    fn fusion_check_barrier_store_attr() {
         let ops = vec![make_op(
             OpCode::StoreAttr,
             vec![ValueId(0), ValueId(1)],
             vec![],
         )];
-        assert!(!is_pure_body(&ops));
+        assert!(!is_fusable_body(&ops));
     }
 
     #[test]
-    fn purity_check_impure_yield() {
+    fn fusion_check_barrier_yield() {
         let ops = vec![make_op(OpCode::Yield, vec![ValueId(0)], vec![ValueId(1)])];
-        assert!(!is_pure_body(&ops));
+        assert!(!is_fusable_body(&ops));
     }
 
     #[test]
-    fn purity_check_empty_is_pure() {
-        assert!(is_pure_body(&[]));
+    fn fusion_check_empty_is_fusable() {
+        assert!(is_fusable_body(&[]));
     }
 
     // ===================================================================

@@ -1757,6 +1757,21 @@ unsafe fn protect_callargs_aliased_return(
     unsafe { protect_callargs_aliased_return_with_extra(_py, result, args_ptr, &[]) }
 }
 
+unsafe fn protect_bound_args_or_callargs_aliased_return(
+    _py: &PyToken<'_>,
+    result: u64,
+    args_ptr: *mut CallArgs,
+    bound_args: &[u64],
+) -> u64 {
+    unsafe {
+        if bound_args.contains(&result) {
+            inc_ref_bits(_py, result);
+            return result;
+        }
+        protect_callargs_aliased_return(_py, result, args_ptr)
+    }
+}
+
 /// Protect a call result from cleanup of builder-owned values plus any
 /// additional synthesized owned arguments passed outside the builder.
 ///
@@ -4030,7 +4045,12 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             {
                 if let Some(bound_args) = bind_builtin_open(_py, args) {
                     let result = call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
-                    return protect_callargs_aliased_return(_py, result, args_ptr);
+                    return protect_bound_args_or_callargs_aliased_return(
+                        _py,
+                        result,
+                        args_ptr,
+                        bound_args.as_slice(),
+                    );
                 }
                 return MoltObject::none().bits();
             }
@@ -4045,7 +4065,12 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             if fn_ptr == fn_addr!(molt_open_builtin) {
                 if let Some(bound_args) = bind_builtin_open(_py, args) {
                     let result = call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
-                    return protect_callargs_aliased_return(_py, result, args_ptr);
+                    return protect_bound_args_or_callargs_aliased_return(
+                        _py,
+                        result,
+                        args_ptr,
+                        bound_args.as_slice(),
+                    );
                 }
                 return MoltObject::none().bits();
             }
@@ -4071,7 +4096,12 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             } else {
                 if let Some(bound_args) = bind_builtin_call(_py, func_bits, func_ptr, args) {
                     let result = call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
-                    return protect_callargs_aliased_return(_py, result, args_ptr);
+                    return protect_bound_args_or_callargs_aliased_return(
+                        _py,
+                        result,
+                        args_ptr,
+                        bound_args.as_slice(),
+                    );
                 }
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
@@ -4467,7 +4497,12 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
                 return obj_bits;
             }
             let result = call_function_obj_bound_vec(_py, func_bits, final_args.as_slice());
-            protect_callargs_aliased_return(_py, result, args_ptr)
+            protect_bound_args_or_callargs_aliased_return(
+                _py,
+                result,
+                args_ptr,
+                final_args.as_slice(),
+            )
         }
     })
 }
@@ -6325,7 +6360,7 @@ mod tests {
         protect_callargs_aliased_return_with_extra, trace_call_type_builder_enabled_raw,
         try_call_bind_ic_fast,
     };
-    use crate::object::builders::{alloc_function_obj, alloc_list};
+    use crate::object::builders::{alloc_function_obj, alloc_list, alloc_tuple};
     use crate::{
         TYPE_ID_OBJECT, dec_ref_bits, obj_from_bits, object_type_id, ptr_from_bits, runtime_state,
     };
@@ -6341,6 +6376,10 @@ mod tests {
 
     extern "C" fn compiled_identity_returns_arg(arg_bits: u64) -> i64 {
         arg_bits as i64
+    }
+
+    extern "C" fn compiled_second_arg_returns_arg(_first_bits: u64, second_bits: u64) -> i64 {
+        second_bits as i64
     }
 
     #[test]
@@ -6416,6 +6455,72 @@ mod tests {
             assert_eq!(
                 rc, 1,
                 "call_bind must promote argument aliases before dropping CallArgs"
+            );
+
+            dec_ref_bits(_py, result_bits);
+            dec_ref_bits(_py, func_bits);
+        });
+    }
+
+    #[test]
+    fn call_bind_builtin_default_padded_argv_promotes_aliased_return() {
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr = alloc_function_obj(
+                _py,
+                compiled_second_arg_returns_arg as *const () as usize as u64,
+                2,
+            );
+            assert!(!func_ptr.is_null());
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+
+            let default_ptr = alloc_list(_py, &[MoltObject::from_int(17).bits()]);
+            assert!(!default_ptr.is_null());
+            let default_bits = MoltObject::from_ptr(default_ptr).bits();
+            let defaults_ptr = alloc_tuple(_py, &[default_bits]);
+            assert!(!defaults_ptr.is_null());
+            let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
+            let defaults_name = intern_metadata_name(_py, b"__defaults__");
+            unsafe {
+                crate::call::class_init::function_set_attr_bits(
+                    _py,
+                    func_ptr,
+                    defaults_name,
+                    defaults_bits,
+                );
+            }
+            dec_ref_bits(_py, defaults_bits);
+            dec_ref_bits(_py, default_bits);
+
+            let before_call = unsafe {
+                (*crate::object::header_from_obj_ptr(default_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+            assert_eq!(
+                before_call, 1,
+                "function __defaults__ tuple should be the only default owner before call"
+            );
+
+            let builder_bits = super::molt_callargs_new(1, 0);
+            assert!(!obj_from_bits(builder_bits).is_none());
+            let _ = unsafe {
+                super::molt_callargs_push_pos(builder_bits, MoltObject::from_int(5).bits())
+            };
+
+            let result_bits = super::molt_call_bind(func_bits, builder_bits);
+            assert_eq!(result_bits, default_bits);
+            let result_ptr = obj_from_bits(result_bits)
+                .as_ptr()
+                .expect("live default result");
+            assert_eq!(result_ptr, default_ptr);
+            let after_call = unsafe {
+                (*crate::object::header_from_obj_ptr(result_ptr))
+                    .ref_count
+                    .load(Ordering::Relaxed)
+            };
+            assert_eq!(
+                after_call, 2,
+                "call_bind must promote returns aliasing default-padded argv"
             );
 
             dec_ref_bits(_py, result_bits);
