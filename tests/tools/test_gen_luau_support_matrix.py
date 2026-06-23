@@ -45,10 +45,16 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "object_set_class" => {
                 self.emit_line("setmetatable(obj, class)");
             }
-            "class_set_layout_version"
-            | "class_apply_set_name"
-            | "class_layout_version"
-            | "class_merge_layout" => {
+            "class_layout_version" => {
+                self.emit_line("local out = if type(cls.__molt_layout_version) == \"number\" then cls.__molt_layout_version else 0");
+            }
+            "class_set_layout_version" => {
+                self.emit_line("cls.__molt_layout_version = version");
+            }
+            "class_merge_layout" => {
+                self.emit_line("cls.__molt_layout_size__ = size");
+            }
+            "class_apply_set_name" => {
                 self.emit_line(&format!("-- [class op: {}]", op.kind));
             }
             "call_internal" => {
@@ -85,10 +91,10 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert "missing target labels fail closed" in rows["br_if"].note
     assert rows["bridge_unavailable"].status == "implemented-exact"
     assert rows["object_set_class"].status == "implemented-exact"
-    assert rows["class_set_layout_version"].status == "not-admitted"
+    assert rows["class_set_layout_version"].status == "implemented-target-limited"
     assert rows["class_apply_set_name"].status == "not-admitted"
-    assert rows["class_layout_version"].status == "not-admitted"
-    assert rows["class_merge_layout"].status == "not-admitted"
+    assert rows["class_layout_version"].status == "implemented-target-limited"
+    assert rows["class_merge_layout"].status == "implemented-target-limited"
     assert rows["call_internal"].status == "implemented-exact"
     assert "molt_abs_builtin" not in rows
     assert rows["vec_sum_*"].status == "implemented-exact"
