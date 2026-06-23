@@ -118,6 +118,7 @@ def _sample_suite_result(module, suite_id: str = "replay_smoke"):
             ref_verified=None,
             git_clean=None,
             git_status_porcelain=None,
+            git_ignored_artifacts=None,
             suite_root_overridden=False,
             verification="local_path",
         ),
@@ -658,8 +659,7 @@ def test_bench_friends_daemon_failure_writes_custody_artifacts(
             "status": "daemon_crash",
             "detail": "backend_daemon_empty_response",
             "message": (
-                "Backend daemon compile failed: "
-                "backend daemon returned empty response"
+                "Backend daemon compile failed: backend daemon returned empty response"
             ),
             "returncode": 1,
             "timed_out": False,
@@ -721,9 +721,7 @@ def test_bench_friends_daemon_failure_writes_custody_artifacts(
     assert payload["custody_artifacts"]["summary_md"] == str(
         (output_root / "summary.md").resolve()
     )
-    cleanup_sidecar = Path(
-        payload["custody_artifacts"]["backend_daemon_cleanup_jsonl"]
-    )
+    cleanup_sidecar = Path(payload["custody_artifacts"]["backend_daemon_cleanup_jsonl"])
     assert cleanup_sidecar.name == "backend_daemon_cleanup.jsonl"
     assert cleanup_sidecar.parent.name == "memory_guard"
     details = payload["molt_failure_details"]
@@ -732,9 +730,7 @@ def test_bench_friends_daemon_failure_writes_custody_artifacts(
     assert details["records"][0]["detail"] == "backend_daemon_empty_response"
     detail_sidecar = Path(payload["custody_artifacts"]["molt_failure_details_jsonl"])
     assert detail_sidecar.exists()
-    assert "backend_daemon_empty_response" in detail_sidecar.read_text(
-        encoding="utf-8"
-    )
+    assert "backend_daemon_empty_response" in detail_sidecar.read_text(encoding="utf-8")
     summary = (output_root / "summary.md").read_text(encoding="utf-8")
     assert "## Custody Artifacts" in summary
     assert "## Molt Failure Details" in summary
@@ -973,6 +969,7 @@ def test_bench_friends_dynamic_runner_keys_are_manifest_authority() -> None:
             {},
         )
 
+
 def test_bench_friends_token_resolution_exposes_platform_pathsep() -> None:
     module = _load_tool_module()
 
@@ -1192,6 +1189,125 @@ def test_bench_friends_git_suite_records_clean_ref_custody(tmp_path: Path) -> No
     assert suite["source_custody"]["expected_ref"] == commit
     assert suite["source_custody"]["ref_verified"] is True
     assert suite["source_custody"]["git_clean"] is True
+    assert suite["source_custody"]["verification"] == "post_run_git_ref_and_clean_tree"
+
+
+def test_bench_friends_git_suite_rejects_post_run_dirty_checkout(
+    tmp_path: Path,
+) -> None:
+    origin = tmp_path / "origin_post_dirty"
+    commit = _init_git_repo(origin)
+    manifest = tmp_path / "manifest.toml"
+    output_root = tmp_path / "out_post_dirty"
+    manifest.write_text(
+        textwrap.dedent(
+            f"""
+            schema_version = 1
+
+            [[suite]]
+            id = "post_dirty_git"
+            enabled = true
+            friend = "local"
+            source = "git"
+            repo_url = "{origin.as_posix()}"
+            repo_ref = "{commit}"
+            semantic_mode = "runs_unmodified"
+            repeat = 1
+            timeout_sec = 30
+
+            [suite.runners.cpython]
+            run_cmd = ["{{python}}", "-c", "from pathlib import Path; Path('runner_dirty.py').write_text('dirty\\\\n', encoding='utf-8')"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    res = _run_tool(
+        "--manifest",
+        str(manifest),
+        "--output-root",
+        str(output_root),
+        "--repos-root",
+        str(tmp_path / "repos"),
+    )
+    assert res.returncode == 1
+
+    payload = json.loads((output_root / "results.json").read_text(encoding="utf-8"))
+    suite = payload["suites"][0]
+    assert suite["status"] == "failed"
+    assert "post-run source custody check failed" in suite["reason"]
+    assert "runner_dirty.py" in suite["reason"]
+    assert suite["runners"]["cpython"]["status"] == "ok"
+    assert suite["source_custody"]["git_clean"] is False
+    assert "runner_dirty.py" in suite["source_custody"]["git_status_porcelain"]
+    assert suite["source_custody"]["verification"] == "post_run_git_ref_and_clean_tree"
+
+
+def test_bench_friends_git_suite_rejects_post_run_ignored_artifacts(
+    tmp_path: Path,
+) -> None:
+    origin = tmp_path / "origin_post_ignored"
+    commit = _init_git_repo(origin)
+    (origin / ".gitignore").write_text("build/\n", encoding="utf-8")
+    _git(origin, "add", ".gitignore")
+    _git(
+        origin,
+        "-c",
+        "user.email=molt@example.invalid",
+        "-c",
+        "user.name=Molt Test",
+        "commit",
+        "-m",
+        "ignore build artifacts",
+    )
+    commit = _git(origin, "rev-parse", "HEAD").stdout.strip()
+    manifest = tmp_path / "manifest.toml"
+    output_root = tmp_path / "out_post_ignored"
+    manifest.write_text(
+        textwrap.dedent(
+            f"""
+            schema_version = 1
+
+            [[suite]]
+            id = "post_ignored_git"
+            enabled = true
+            friend = "local"
+            source = "git"
+            repo_url = "{origin.as_posix()}"
+            repo_ref = "{commit}"
+            semantic_mode = "runs_unmodified"
+            repeat = 1
+            timeout_sec = 30
+
+            [suite.runners.cpython]
+            run_cmd = ["{{python}}", "-c", "from pathlib import Path; Path('build').mkdir(); Path('build/cache.db').write_text('cache\\\\n', encoding='utf-8')"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    res = _run_tool(
+        "--manifest",
+        str(manifest),
+        "--output-root",
+        str(output_root),
+        "--repos-root",
+        str(tmp_path / "repos"),
+    )
+    assert res.returncode == 1
+
+    payload = json.loads((output_root / "results.json").read_text(encoding="utf-8"))
+    suite = payload["suites"][0]
+    assert suite["status"] == "failed"
+    assert "post-run source custody check failed" in suite["reason"]
+    assert "ignored artifacts" in suite["reason"]
+    assert "build/cache.db" in suite["reason"]
+    assert suite["runners"]["cpython"]["status"] == "ok"
+    assert suite["source_custody"]["git_clean"] is False
+    assert "build/cache.db" in suite["source_custody"]["git_ignored_artifacts"]
+    assert suite["source_custody"]["verification"] == "post_run_git_ref_and_clean_tree"
 
 
 def test_bench_friends_git_suite_rejects_dirty_override_checkout(

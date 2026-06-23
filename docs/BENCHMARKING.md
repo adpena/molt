@@ -471,12 +471,14 @@ support.
 For `source = "git"` suites, `tools/bench_friends.py` now records source
 custody in `results.json`: requested ref, resolved commit, checked-out `HEAD`,
 ref verification, clean-tree status, and whether `--suite-root` overrode the
-manifest checkout path. A mismatch, dirty checkout, or ignored checkout artifact
-is a hard failure. Runners that declare `json_stdout = true` must emit valid
-JSON; the harness preserves the raw payloads and folds per-workload `elapsed_s`
-values into runner `structured_median_s` fields plus flattened suite metrics
-only for runners with `role = "workload"`. Custody and scan roles remain
-suite-failing when non-green, but never feed speedup math.
+manifest checkout path. Git custody is checked both before admission and after
+suite execution; a mismatch, dirty checkout, ignored checkout artifact, or
+runner-created source-tree artifact is a hard failure. Runners that declare
+`json_stdout = true` must emit valid JSON; the harness preserves the raw
+payloads and folds per-workload `elapsed_s` values into runner
+`structured_median_s` fields plus flattened suite metrics only for runners with
+`role = "workload"`. Custody and scan roles remain suite-failing when non-green,
+but never feed speedup math.
 
 Artifacts:
 - machine-readable: `results.json`
