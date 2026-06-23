@@ -25,20 +25,21 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   lane. It is enabled and pinned to upstream commit
   `a83710396c991272241e40da94489747c2393851`. The `tinygrad` runner executes
   upstream `test/test_tiny.py` with `CHECK_OOB=0 DEV=CPU TYPED=1` through an
-  isolated `uv --with typeguard` environment plus runner-local
+  isolated `uv --no-project --with typeguard` environment plus runner-local
   `PYTHONPATH={suite_root}` and `PYTHONDONTWRITEBYTECODE=1` so source custody
-  stays clean; the CPython runner uses the same isolated `typeguard` dependency
-  and bytecode-write ban while staying on
+  stays clean; the CPython runner uses the same isolated no-project `typeguard`
+  dependency and bytecode-write ban while staying on
   `tools/tinygrad_off_shelf_adapter.py`, which is only a public-API workload
   driver. Suite-wide `XDG_CACHE_HOME` and `CACHEDB` point under the run
   `output_root` so upstream tinygrad cache writes cannot dirty the pinned source
   checkout. The Molt runner is executable by default with the full-stdlib
   static-package command. Earlier local evidence reached the backend daemon and
-  then trips the process RSS guard (`molt-backend --daemon` at 12.005 GB after
+  then tripped the process RSS guard (`molt-backend --daemon` at 12.005 GB after
   435.5s; summary `tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`),
-  proving the blocker is backend compile memory rather than manifest skip or
-  CLI profile propagation. Native TIR optimization now consumes uncached user
-  functions in bounded op/count batches and applies each batch immediately; the
+  proving the blocker at that point was backend compile memory rather than
+  manifest skip or CLI profile propagation. Native TIR optimization now
+  consumes uncached user functions in bounded op/count batches and applies each
+  batch immediately; the
   next runner proof reached that bounded path and reduced the single-backend
   peak before exposing aggregate process-tree RSS from overlapping daemon plus
   hidden one-shot fallback. The
@@ -79,8 +80,12 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   from pinned upstream matcher sources, admits it as an explicit static package
   beside `tinygrad`, and configures the adapter to install its `exec_static`
   function as the package-scoped `tinygrad.uop.upat.exec` global. Unknown
-  matcher strings still fail closed. A fresh guarded Molt runner result with
-  this wired registry is the next required evidence. A pinned
+  matcher strings still fail closed. Fresh 2026-06-23 guarded evidence
+  (`bench/results/friends/20260623T131504Z-tinygrad-molt-fixed-env/`) now
+  materializes the static registry, preserves clean pinned source custody,
+  builds and links the Molt native binary under the sanitized Windows harness
+  environment, and fails at runtime with `TypeError: 'str' object is not
+  callable` from `<molt-builtin>` line 12. A pinned
   source-custody CPython probe of `attention_core` with `UPAT_COMPILE=0`
   returned 1 before Molt was involved: upstream tinygrad's interpreted matcher
   raised `NameError: name 'do_substitute' is not defined` from

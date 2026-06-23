@@ -44,6 +44,9 @@ _PASSTHROUGH_ENV_KEYS = {
     "CC",
     "COMSPEC",
     "CFLAGS",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
     "CXX",
     "CXXFLAGS",
     "DevEnvDir",
@@ -62,11 +65,16 @@ _PASSTHROUGH_ENV_KEYS = {
     "LIB",
     "LIBRARY_PATH",
     "LIBPATH",
+    "LOCALAPPDATA",
     "NETFXSDKDir",
     "PATH",
     "PATHEXT",
     "Platform",
     "PROCESSOR_ARCHITECTURE",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
     "REQUESTS_CA_BUNDLE",
     "SDKROOT",
     "SHELL",
@@ -447,6 +455,75 @@ def _resolve_tokenized(parts: list[str], tokens: dict[str, str]) -> list[str]:
 
 def _resolve_env(raw_env: dict[str, str], tokens: dict[str, str]) -> dict[str, str]:
     return {key: value.format_map(tokens) for key, value in raw_env.items()}
+
+
+_FILE_ENV_PATH_KEYS = {
+    "CACHEDB",
+    "MOLT_GUARD_PROFILE_LOG",
+}
+_FILE_ENV_PATH_SUFFIXES = (
+    "_DB",
+    "_FILE",
+    "_JSON",
+    "_LOG",
+    "_SQLITE",
+    "_SQLITE3",
+)
+_DIR_ENV_PATH_KEYS = {
+    "MOLT_CACHE",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+    "UV_CACHE_DIR",
+    "XDG_CACHE_HOME",
+}
+_DIR_ENV_PATH_SUFFIXES = (
+    "_DIR",
+    "_DIRS",
+    "_HOME",
+    "_ROOT",
+    "_ROOTS",
+)
+
+
+def _path_is_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _materialize_output_env_paths(env: dict[str, str], *, output_root: Path) -> None:
+    """Create output-root env path custody before a suite process starts."""
+    output_root = output_root.resolve()
+    for key, value in env.items():
+        if not value:
+            continue
+        normalized_key = key.upper()
+        is_file_path = normalized_key in _FILE_ENV_PATH_KEYS or normalized_key.endswith(
+            _FILE_ENV_PATH_SUFFIXES
+        )
+        is_dir_path = normalized_key in _DIR_ENV_PATH_KEYS or normalized_key.endswith(
+            _DIR_ENV_PATH_SUFFIXES
+        )
+        if not is_file_path and not is_dir_path:
+            continue
+        candidates = (
+            [part for part in value.split(os.pathsep) if part]
+            if is_dir_path
+            else [value]
+        )
+        for candidate in candidates:
+            candidate_path = Path(candidate)
+            if not candidate_path.is_absolute():
+                candidate_path = (REPO_ROOT / candidate_path).resolve()
+            if not _path_is_under(candidate_path, output_root):
+                continue
+            if is_file_path:
+                candidate_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                candidate_path.mkdir(parents=True, exist_ok=True)
 
 
 def _parse_stdout_json(stdout: str) -> tuple[Any | None, str | None]:
@@ -1120,6 +1197,8 @@ def _run_runner(
 
     env = suite_env.copy()
     env.update(_resolve_env(runner.env, tokens))
+    if not dry_run and (output_root := tokens.get("output_root")):
+        _materialize_output_env_paths(env, output_root=Path(output_root))
     result = RunnerResult(name=runner.name, role=runner.role, status="ok")
 
     if runner.build_cmd:
@@ -2354,6 +2433,11 @@ def main() -> int:
                             }
                             suite_env = run_env.copy()
                             suite_env.update(_resolve_env(suite.env, tokens))
+                            if not args.dry_run:
+                                _materialize_output_env_paths(
+                                    suite_env,
+                                    output_root=output_root,
+                                )
                             prep_ok, prep_reason = _run_prepare_steps(
                                 suite,
                                 suite_workdir=suite_workdir,

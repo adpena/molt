@@ -331,17 +331,18 @@ The manifest pins `tinygrad_off_the_shelf` to immutable upstream commit
 `a83710396c991272241e40da94489747c2393851` and enables the suite for the real
 CPython adapter plus upstream-owned tinygrad contract. The `tinygrad` runner
 executes `CHECK_OOB=0 DEV=CPU TYPED=1 python test/test_tiny.py` through
-`uv run --isolated --with typeguard` because the pinned upstream package imports
-its typeguard hook at module import time; runner-local `PYTHONPATH={suite_root}`
-and `PYTHONDONTWRITEBYTECODE=1` let `test/test_tiny.py` import the checked-out
-package without installing or modifying it, so source custody stays clean.
+`uv run --isolated --no-project --with typeguard` because the pinned upstream
+package imports its typeguard hook at module import time; runner-local
+`PYTHONPATH={suite_root}` and `PYTHONDONTWRITEBYTECODE=1` let
+`test/test_tiny.py` import the checked-out package without installing or
+modifying it, so source custody stays clean.
 Suite-wide `XDG_CACHE_HOME` and `CACHEDB` resolve under the run `output_root`,
 so upstream tinygrad cache writes are evidence artifacts rather than pinned
 checkout mutations. The
 CPython runner executes
 `tools/tinygrad_off_shelf_adapter.py` against the checked-out upstream package
-through the same isolated `typeguard` dependency and bytecode-write ban; the
-adapter is only a public-API workload driver. The Molt runner is executable by
+through the same isolated no-project `typeguard` dependency and bytecode-write
+ban; the adapter is only a public-API workload driver. The Molt runner is executable by
 default and uses the project interpreter token
 (`{project_python} -m molt.cli run`) while forwarding the required full-stdlib
 build profile with `--build-arg=--stdlib-profile --build-arg=full`; do not
@@ -350,7 +351,7 @@ replace it with ambient `molt` from `PATH` or a micro-profile build.
 commands such as `uv run --python {python}`; Molt CLI runners use
 `{project_python}` so repo-installed dependencies are present under
 `PYTHONNOUSERSITE=1`. Earlier guarded evidence reached
-`molt-backend --daemon` and then trips the process RSS guard at 12.005 GB after
+`molt-backend --daemon` and then tripped the process RSS guard at 12.005 GB after
 435.5s (`tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`), proving
 that blocker was backend-daemon compile memory before adapter workload execution.
 Native TIR optimization now processes uncached user functions in bounded
@@ -419,9 +420,13 @@ under the run output root, admits that module beside upstream `tinygrad` in the
 Molt static-package lane, and configures
 `tools/tinygrad_off_shelf_adapter.py` to install the registry as the
 package-scoped `tinygrad.uop.upat.exec` global. Unknown matcher source strings
-still fail closed through the generated registry. The next required evidence is
-a fresh guarded `tinygrad_off_the_shelf` Molt runner result with this wired
-registry, not an `UPAT_COMPILE=0` bypass. A
+still fail closed through the generated registry. Fresh 2026-06-23 guarded
+evidence (`bench/results/friends/20260623T131504Z-tinygrad-molt-fixed-env/`)
+now materializes the static registry, preserves clean pinned source custody,
+builds and links the Molt native binary under the sanitized Windows harness
+environment, and fails at runtime with `TypeError: 'str' object is not
+callable` from `<molt-builtin>` line 12. Do not treat `UPAT_COMPILE=0` as a
+completion bypass. A
 source-custody CPython probe of the pinned `attention_core` workload with
 `UPAT_COMPILE=0` also returned 1 before Molt was involved: it got past
 `upat_compile` but failed in upstream tinygrad's interpreted matcher with

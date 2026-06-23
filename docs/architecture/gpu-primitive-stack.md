@@ -379,9 +379,9 @@ is covered through the `where_promotion` friend-suite adapter workload, and
 movement custody is covered through `movement_views`; both exercise the
 user-facing shim instead of private helpers. The friend-suite manifest also
 contains an upstream-owned `tinygrad` runner for `test/test_tiny.py` at the
-pinned tinygrad commit, using an isolated `typeguard` dependency environment so
-non-synthetic compatibility gates come from tinygrad itself rather than from
-expanding Molt-side adapter tests. The Molt lane prepares a generated
+pinned tinygrad commit, using an isolated no-project `typeguard` dependency
+environment so non-synthetic compatibility gates come from tinygrad itself
+rather than from expanding Molt-side adapter tests. The Molt lane prepares a generated
 `_molt_tinygrad_upat_static_exec_registry` module from pinned upstream UPat
 matcher sources, admits it beside `tinygrad` as an explicit static package, and
 installs its fail-closed `exec_static` function as the package-scoped
