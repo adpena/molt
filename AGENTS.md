@@ -351,6 +351,14 @@ working in this repo:
   JSON, or repeated error streams into the Codex prompt. Write large evidence
   under canonical roots (`logs/`, `tmp/`, `bench/results/`) and summarize the
   bounded relevant lines in chat.
+- During a suspected Codex/Desktop stall around a long Molt proof lane, wrap
+  the proof command with the privacy-preserving stream timing diagnostic:
+  `uv run --python 3.12 python tools/agent_coordination.py codex-stall -- <proof-command>`.
+  It writes `logs/agents/codex_stall/*.json`, records first-output gaps,
+  stream-idle spans, byte counts, and return code, and deliberately stores no
+  child stdout/stderr text or Codex state. The wrapper launches through
+  `tools/memory_guard.py` by default; use `--no-memory-guard` only for a
+  non-proof probe or an already guarded direct child.
 - Keep tool output bounded. Avoid broad noisy scans such as repo-wide TODO/HACK
   searches without tight globs, and set conservative output budgets for any
   command that can print thousands of lines. If a command is noisy, redirect it
@@ -419,6 +427,14 @@ working in this repo:
   registration state, then reduce optional registrations before adding agents.
   Do not bulk-delete plugin caches or state databases without a reversible
   backup and explicit recovery intent.
+- Treat repeated `codex_core_plugins::manifest` warnings during
+  `built_tools.load_discoverable_tools` as crash-adjacent on Windows, even when
+  the log level says WARN. For `interface.defaultPrompt` violations such as
+  `maximum of 3 prompts is supported`, preserve the exact plugin path and
+  manifest warning as evidence, stop adding proof-lane load, and reduce
+  optional plugin registrations only through normal operator-controlled config
+  after active Molt work is quiescent. Do not hand-edit cached plugin manifests,
+  plugin caches, or Codex state as a first response.
 - Keep Codex worktree and local-environment state boring and explicit.
   Worktrees inherit checked-in files by default, so ignored toolchains, caches,
   credentials, or setup files must come from checked-in setup scripts or an
@@ -429,9 +445,10 @@ working in this repo:
 - Treat Codex crash code `3221225786` (`0xC000013A`) on Windows as
   `STATUS_CONTROL_C_EXIT`: usually an interrupted or torn-down process, not
   proof that the last WARN line in the dialog is the root cause. Preserve the
-  exact crash text, collect nearby Codex logs, inspect Event Viewer when useful,
-  and correlate with running commands, MCP enumeration, WSL mode, rollout
-  resume, and state DB activity before changing code or deleting state.
+  exact crash text, including `state_db`, plugin-manifest, or MCP warnings,
+  collect nearby Codex logs, inspect Event Viewer when useful, and correlate
+  with running commands, MCP enumeration, WSL mode, rollout resume, plugin
+  loading, and state DB activity before changing code or deleting state.
 - Treat `state db discrepancy during read_repair_rollout_path: upsert_needed`
   near a Codex crash as a rollout-state resume/repair symptom, not proof that
   the repository, Git index, or current command caused the crash. After reload,

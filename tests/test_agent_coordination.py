@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sys
 
 from tools import agent_coordination
 
@@ -193,3 +194,91 @@ def test_agent_coordination_check_returns_nonzero_on_collision(tmp_path: Path) -
     assert (
         agent_coordination.main(["--repo-root", str(tmp_path), "check", "--json"]) == 2
     )
+
+
+def test_codex_stall_launch_uses_memory_guard_by_default(tmp_path: Path) -> None:
+    args = agent_coordination.parse_args(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "codex-stall",
+            "--",
+            "python",
+            "-c",
+            "pass",
+        ]
+    )
+
+    launch = agent_coordination.codex_stall_launch_command(
+        args,
+        ["python", "-c", "pass"],
+    )
+
+    assert launch[:2] == [sys.executable, str(tmp_path / "tools" / "memory_guard.py")]
+    assert launch[-4:] == ["--", "python", "-c", "pass"]
+
+
+def test_codex_stall_telemetry_records_first_output_and_idle_spans(
+    monkeypatch,
+) -> None:
+    monotonic_values = iter([1.25, 1.60])
+    monkeypatch.setattr(
+        agent_coordination.time,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+    telemetry = agent_coordination.CodexStallTelemetry(
+        idle_threshold_sec=0.1,
+        max_spans=10,
+        started_monotonic=1.0,
+    )
+
+    telemetry.observe("stdout", 5)
+    telemetry.observe("stdout", 3)
+
+    streams = telemetry.finish(0.75)
+    stdout = streams["stdout"]
+    assert stdout["byte_count"] == 8
+    assert stdout["first_output_gap_sec"] == 0.25
+    assert stdout["max_idle_gap_sec"] == 0.35
+    assert [span["kind"] for span in stdout["idle_spans"]] == [
+        "first_output_gap",
+        "between_outputs",
+        "terminal_idle",
+    ]
+
+
+def test_codex_stall_report_omits_child_output_and_argv_by_default(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "logs" / "agents" / "codex_stall" / "privacy.json"
+
+    rc = agent_coordination.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "codex-stall",
+            "--no-memory-guard",
+            "--no-live-notices",
+            "--idle-threshold-sec",
+            "0.001",
+            "--poll-sec",
+            "0.001",
+            "--out",
+            str(report),
+            "--",
+            sys.executable,
+            "-c",
+            "print('codex-secret-output')",
+        ]
+    )
+
+    assert rc == 0
+    report_text = report.read_text(encoding="utf-8")
+    assert "codex-secret-output" not in report_text
+    payload = json.loads(report_text)
+    assert payload["privacy"]["records_child_output_text"] is False
+    assert payload["privacy"]["records_codex_state"] is False
+    assert payload["command"]["argv_recorded"] is False
+    assert "argv" not in payload["command"]
+    assert payload["streams"]["combined"]["byte_count"] > 0

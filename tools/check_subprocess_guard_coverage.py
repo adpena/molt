@@ -114,6 +114,15 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git metadata probe; wasm build/run phases use MOLT_BENCH guard",
     ),
     AllowedRawSubprocessUse(
+        "tools/agent_coordination.py",
+        "run_codex_stall_diagnostic",
+        "Popen",
+        "interactive Codex stall diagnostic launches tools/memory_guard.py by "
+        "default, mirrors child streams live, writes only timing/byte-count "
+        "metadata under canonical artifact roots, and force-closes the direct "
+        "child on interruption",
+    ),
+    AllowedRawSubprocessUse(
         "tools/check_correspondence.py",
         "_find_repo_root",
         "check_output",
@@ -211,6 +220,20 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "run_guarded",
         "Popen",
         "lowest-level guarded subprocess implementation",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "_pid_exited_or_unobservable",
+        "os.kill",
+        "memory guard pid-existence probe with signal 0 after a scoped "
+        "termination attempt; not signal authority",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard.py",
+        "_process_group_exited_or_unobservable",
+        "os.killpg",
+        "memory guard process-group existence probe with signal 0 after a "
+        "scoped termination attempt; not signal authority",
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard.py",
@@ -448,6 +471,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "run_completed_command",
         "run",
         "shared subprocess guard helper's explicit unguarded branch for opt-out call sites",
+    ),
+    AllowedRawSubprocessUse(
+        "src/molt/cli.py",
+        "_reexec_cli_with_hash_seed",
+        "run",
+        "Windows deterministic-PYTHONHASHSEED self-reexec path; POSIX uses "
+        "execvpe and the restarted process preserves the same CLI custody path",
     ),
     AllowedRawSubprocessUse(
         "src/molt/cli.py",
