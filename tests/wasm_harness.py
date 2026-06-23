@@ -9726,43 +9726,53 @@ BASE_IMPORTS = """\
     if (!isIntLike(bucketSizeBits)) {
       throw new Error('TypeError: TAQ ingest expects integer bucket size');
     }
-    const bucketSize = Number(unboxIntLike(bucketSizeBits));
-    if (bucketSize === 0) {
+    const bucketSize = unboxIntLike(bucketSizeBits);
+    if (bucketSize === 0n) {
       throw new Error('ZeroDivisionError: integer division or modulo by zero');
     }
     const fields = line.split('|');
-    if (fields.length <= 4) return boxNone();
+    if (fields.length <= 4) {
+      throw new Error('IndexError: list index out of range');
+    }
     const tsRaw = fields[0];
     const symRaw = fields[2];
     const volRaw = fields[4];
-    if (symRaw === 'END' || symRaw === 'ENDP') {
-      return boxNone();
+    if (tsRaw === 'END' || volRaw === 'ENDP') {
+      return boxBool(false);
     }
-    if (
-      tsRaw.trim().length === 0 ||
-      symRaw.trim().length === 0 ||
-      volRaw.trim().length === 0
-    ) {
-      return boxNone();
+    const parseI64Field = (raw) => {
+      const trimmed = raw.trim();
+      if (!/^[+-]?\\d+$/.test(trimmed)) {
+        throw new Error(`ValueError: invalid literal for int() with base 10: '${trimmed}'`);
+      }
+      const value = BigInt(trimmed);
+      const min = -(1n << 63n);
+      const max = (1n << 63n) - 1n;
+      if (value < min || value > max) {
+        throw new Error(`ValueError: invalid literal for int() with base 10: '${trimmed}'`);
+      }
+      return value;
+    };
+    const divEuclid = (a, b) => {
+      let q = a / b;
+      const r = a % b;
+      if (r < 0n) q += b > 0n ? -1n : 1n;
+      return q;
+    };
+    const ts = parseI64Field(tsRaw);
+    const vol = parseI64Field(volRaw);
+    const keyBits = boxPtr({ type: 'str', value: symRaw });
+    let seriesBits = dictGetValue(dict, keyBits);
+    if (seriesBits === null) {
+      seriesBits = boxPtr({ type: 'list', items: [] });
+      dictSetValue(dict, keyBits, seriesBits);
     }
-    const ts = Number.parseInt(tsRaw, 10);
-    const vol = Number.parseInt(volRaw, 10);
-    if (!Number.isFinite(ts) || !Number.isFinite(vol)) {
-      throw new Error('ValueError: invalid literal for int() with base 10');
-    }
-    const groupTs = ts - (ts % bucketSize);
-    const keyBits = boxPtr({ type: 'str', value: `${groupTs}|${symRaw}` });
-    let bucketBits = dictGetValue(dict, keyBits);
-    if (bucketBits === null) {
-      bucketBits = boxPtr({ type: 'list', items: [] });
-      dictSetValue(dict, keyBits, bucketBits);
-    }
-    const bucket = getList(bucketBits);
-    if (!bucket) {
+    const series = getList(seriesBits);
+    if (!series) {
       throw new Error('TypeError: TAQ ingest bucket must be list');
     }
-    bucket.items.push(tupleFromArray([boxInt(ts), boxInt(vol)]));
-    return boxNone();
+    series.items.push(tupleFromArray([boxIntOrBigint(divEuclid(ts, bucketSize)), boxIntOrBigint(vol)]));
+    return boxBool(true);
   },
   dict_pop: (dictBits, keyBits, defaultBits, hasDefaultBits) => {
     const dict = getDict(dictBits);

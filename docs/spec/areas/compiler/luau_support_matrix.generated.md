@@ -6,8 +6,8 @@
 
 ## Summary
 
-- `compile-error`: `4`
-- `implemented-exact`: `363`
+- `compile-error`: `1`
+- `implemented-exact`: `366`
 - `implemented-target-limited`: `20`
 - `not-admitted`: `24`
 - `runtime-capability-error`: `5`
@@ -405,9 +405,9 @@
 | `string_split_field` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_split_field_eq` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_split_field_len` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `string_split_sep_dict_inc` | `compile-error` | Checked Luau emission rejects unsupported markers. |
+| `string_split_sep_dict_inc` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_split_validate` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `string_split_ws_dict_inc` | `compile-error` | Checked Luau emission rejects unsupported markers. |
+| `string_split_ws_dict_inc` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_splitlines` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_startswith` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `string_startswith_slice` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -419,7 +419,7 @@
 | `super_new` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `sys` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `sys_executable` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
-| `taq_ingest_line` | `compile-error` | Checked Luau emission rejects unsupported markers. |
+| `taq_ingest_line` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `time` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `trunc` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `try_end` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
