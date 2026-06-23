@@ -49,6 +49,15 @@ def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
     assert "molt_operator_length_hint" in generated
     assert "defaults: &[IntrinsicDefaultValue::Int(0)]," in generated
 
+    registry = (ROOT / "runtime/molt-runtime/src/intrinsics/registry.rs").read_text()
+    assert "fn attach_function_defaults" in registry
+    assert "b\"__defaults__\"" in registry
+    assert "function_set_attr_bits(_py, ptr, defaults_name, defaults_bits)" in registry
+    assert (
+        registry.count("build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults)")
+        == 2
+    ), "eager and lazy intrinsic registration must attach manifest defaults"
+
 
 def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
     module = _load_gen_intrinsics_module()

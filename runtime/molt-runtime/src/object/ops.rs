@@ -1477,25 +1477,35 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
                     let call_bits = attr_lookup_ptr(_py, ptr, name_bits);
                     dec_ref_bits(_py, name_bits);
                     if let Some(call_bits) = call_bits {
+                        exception_stack_push();
                         let res_bits = call_callable0(_py, call_bits);
                         dec_ref_bits(_py, call_bits);
                         if exception_pending(_py) {
+                            exception_stack_pop(_py);
                             return MoltObject::none().bits();
                         }
+                        exception_stack_pop(_py);
                         let res_obj = obj_from_bits(res_bits);
                         if let Some(i) = to_i64(res_obj) {
                             if i < 0 {
+                                if res_obj.as_ptr().is_some() {
+                                    dec_ref_bits(_py, res_bits);
+                                }
                                 return raise_exception::<_>(
                                     _py,
                                     "ValueError",
                                     "__len__() should return >= 0",
                                 );
                             }
+                            if res_obj.as_ptr().is_some() {
+                                dec_ref_bits(_py, res_bits);
+                            }
                             return MoltObject::from_int(i).bits();
                         }
                         if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
                             let big = bigint_ref(big_ptr);
                             if big.is_negative() {
+                                dec_ref_bits(_py, res_bits);
                                 return raise_exception::<_>(
                                     _py,
                                     "ValueError",
@@ -1503,6 +1513,7 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
                                 );
                             }
                             let Some(len) = big.to_usize() else {
+                                dec_ref_bits(_py, res_bits);
                                 return raise_exception::<_>(
                                     _py,
                                     "OverflowError",
@@ -1510,17 +1521,20 @@ pub extern "C" fn molt_len(val: u64) -> u64 {
                                 );
                             };
                             if len > i64::MAX as usize {
+                                dec_ref_bits(_py, res_bits);
                                 return raise_exception::<_>(
                                     _py,
                                     "OverflowError",
                                     "cannot fit 'int' into an index-sized integer",
                                 );
                             }
+                            dec_ref_bits(_py, res_bits);
                             return MoltObject::from_int(len as i64).bits();
                         }
                         let res_type = class_name_for_error(type_of_bits(_py, res_bits));
                         let msg =
                             format!("'{}' object cannot be interpreted as an integer", res_type);
+                        dec_ref_bits(_py, res_bits);
                         return raise_exception::<_>(_py, "TypeError", &msg);
                     }
                 }

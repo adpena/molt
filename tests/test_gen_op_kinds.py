@@ -501,6 +501,73 @@ def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
         assert "matches!" not in body
 
 
+def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
+    """Iterator-chain fusion barriers belong to the op-kind registry.
+
+    Deforestation may wrap the generated predicate for readability, but it must
+    not grow a second handwritten opcode list that can drift from
+    `fusion_barrier_opcodes`.
+    """
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    deforestation = (
+        ROOT / "runtime/molt-backend/src/tir/passes/deforestation.rs"
+    ).read_text(encoding="utf-8")
+
+    expected = {
+        "Call",
+        "CallBuiltin",
+        "CallMethod",
+        "ChanRecvYield",
+        "ChanSendYield",
+        "ClosureLoad",
+        "ClosureStore",
+        "DelAttr",
+        "DelIndex",
+        "Import",
+        "ImportFrom",
+        "Raise",
+        "StateSwitch",
+        "StateTransition",
+        "StateYield",
+        "StoreAttr",
+        "StoreIndex",
+        "Yield",
+        "YieldFrom",
+    }
+    assert set(data["fusion_barrier_opcodes"]) == expected
+
+    table_block = rendered.split("fn opcode_is_fusion_barrier_table")[1].split(
+        "enum AliasTypedSlotRole"
+    )[0]
+    for opcode in expected:
+        assert f"OpCode::{opcode} => true," in table_block
+    for opcode in {"BuildList", "Index", "LoadAttr", "ObjectNewBound"}:
+        assert f"OpCode::{opcode} => false," in table_block
+
+    assert (
+        "use crate::tir::op_kinds_generated::opcode_is_fusion_barrier_table;"
+        in deforestation
+    )
+    start = deforestation.index("fn is_fusion_barrier(")
+    brace = deforestation.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(deforestation)):
+        if deforestation[i] == "{":
+            depth += 1
+        elif deforestation[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = deforestation[start:end]
+    assert "opcode_is_fusion_barrier_table(opcode)" in body
+    assert "matches!" not in body
+    assert "OpCode::" not in body
+
+
 def test_alias_slot_observation_delegates_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
