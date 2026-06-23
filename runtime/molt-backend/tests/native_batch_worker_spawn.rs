@@ -400,15 +400,49 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
         "failing batch job must be copied for replay"
     );
     let copied_job = std::fs::read_to_string(&copied_job_path).expect("read copied batch job");
+    let copied_job_json: serde_json::Value =
+        serde_json::from_str(&copied_job).expect("parse copied batch job");
+    let replay_module_context_path = copied_job_json
+        .get("module_context_path")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .expect("copied replay job module_context_path");
     assert!(
-        copied_job.contains(&module_context_path.display().to_string()),
+        replay_module_context_path == module_context_path,
         "copied replay job must reference the preserved module context: {copied_job}"
     );
-    let manifest = std::fs::read_to_string(&manifest_path).expect("read failure manifest");
     assert!(
-        manifest.contains("--native-batch-job-file")
-            && manifest.contains(&copied_job_path.display().to_string())
-            && manifest.contains("replay.o"),
+        replay_module_context_path.exists(),
+        "copied replay job module context path must exist"
+    );
+    let manifest = std::fs::read_to_string(&manifest_path).expect("read failure manifest");
+    let manifest_json: serde_json::Value =
+        serde_json::from_str(&manifest).expect("parse failure manifest");
+    let manifest_copied_job_path = manifest_json
+        .get("copied_job_path")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .expect("failure manifest copied_job_path");
+    let replay_argv = manifest_json
+        .pointer("/replay/argv")
+        .and_then(serde_json::Value::as_array)
+        .expect("failure manifest replay argv");
+    let replay_args: Vec<_> = replay_argv
+        .iter()
+        .map(|value| value.as_str().expect("replay argv entries are strings"))
+        .collect();
+    let replay_flag_index = replay_args
+        .iter()
+        .position(|arg| *arg == "--native-batch-job-file")
+        .expect("replay command references native batch job file");
+    let replay_job_path = replay_args
+        .get(replay_flag_index + 1)
+        .map(PathBuf::from)
+        .expect("replay command has native batch job file argument");
+    assert!(
+        manifest_copied_job_path == copied_job_path
+            && replay_job_path == copied_job_path
+            && replay_args.iter().any(|arg| arg.ends_with("replay.o")),
         "failure manifest must describe a replayable worker command: {manifest}"
     );
 

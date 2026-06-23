@@ -162,6 +162,12 @@ the implementation. For forward-looking priorities, use
   from side-effecting/may-throw facts: fusion preserves per-element evaluation
   order, so allocation, attribute reads, indexing, and arithmetic that may throw
   are not barriers unless they alter cross-iteration/control state or suspend.
+- Raw-i64 division-family exception custody is also registry-owned:
+  `i64_zero_divisor_guard_opcodes` generates the exhaustive
+  `opcode_requires_i64_zero_divisor_guard_table` classifier consumed by LIR
+  lowering and `check_exception_elim`, so boxed-dispatch retention and
+  nonzero-divisor exception elimination share one authority for `div`,
+  `floordiv`, and `mod`.
 - `molt-gpu` schedules `Movement` operands as zero-copy views over source
   storage and schedules `Contiguous` DAG operands as first-class
   `KernelBody::MaterializeCopy` producers with fresh storage identity.
