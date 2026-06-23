@@ -148,6 +148,7 @@ _OPCODE_FACT_SETS = (
     "alias_slot_typed_store_opcodes",
     "alias_slot_never_observer_opcodes",
     "fusion_barrier_opcodes",
+    "i64_zero_divisor_guard_opcodes",
 )
 _ALIAS_TYPED_SLOT_ROLE_SETS = (
     "alias_typed_slot_load_opcodes",
@@ -1242,6 +1243,20 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, fusion_barriers))
+    out.append("    }\n}\n\n")
+
+    i64_zero_divisor_guards = list(data.get("i64_zero_divisor_guard_opcodes", []))
+    out.append(
+        "/// Whether a binary opcode needs a proven nonzero RHS before raw i64\n"
+        "/// division/remainder lowering may be used, or before CheckException may\n"
+        "/// be eliminated after it. This is the shared authority for lower_to_lir.rs\n"
+        "/// and check_exception_elim.rs. EXHAUSTIVE over OpCode so a new division\n"
+        "/// family opcode cannot silently skip the zero-divisor proof requirement.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, i64_zero_divisor_guards))
     out.append("    }\n}\n\n")
 
     out.append(_render_alias_typed_slot_role(opcodes, data))

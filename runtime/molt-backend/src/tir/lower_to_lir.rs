@@ -10,6 +10,7 @@ use super::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use super::type_refine::{extract_type_map, refine_types};
 use super::types::TirType;
 use super::values::{TirValue, ValueId};
+use crate::tir::op_kinds_generated::opcode_requires_i64_zero_divisor_guard_table;
 use crate::representation_plan::Repr;
 
 /// The proven per-`ValueId` representation override (the value-keyed source of
@@ -219,7 +220,7 @@ fn lower_op(
     // which raises correctly. This is the WASM analogue of the native inline
     // zero-guard and the LLVM `emit_i64_divrem_zero_guarded` fast/slow split —
     // decided HERE, where the value-range proof lives, not in the emitter.
-    if matches!(op.opcode, OpCode::Div | OpCode::FloorDiv | OpCode::Mod) && op.operands.len() >= 2 {
+    if opcode_requires_i64_zero_divisor_guard_table(op.opcode) && op.operands.len() >= 2 {
         let divisor = op.operands[1];
         let divisor_nonzero = inline_proof.is_some_and(|vr| vr.range_of(divisor).proves_nonzero());
         if !divisor_nonzero {
