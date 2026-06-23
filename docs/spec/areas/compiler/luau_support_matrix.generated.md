@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `294`
-- `implemented-target-limited`: `44`
-- `not-admitted`: `58`
+- `implemented-target-limited`: `45`
+- `not-admitted`: `57`
 - `runtime-capability-error`: `5`
 - `total`: `402`
 
@@ -236,7 +236,7 @@
 | `invoke_ffi` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `is` | `implemented-target-limited` | Non-None identity currently lowers through equality on Luau values. |
 | `is_callable` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `is_native_awaitable` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `is_native_awaitable` | `implemented-target-limited` | Luau has no Molt native poll-function object representation; target values are non-native awaitables. |
 | `isinstance` | `implemented-target-limited` | Uses Luau type metadata and metatable inheritance for the admitted subset. |
 | `issubclass` | `implemented-target-limited` | Uses Luau type metadata and metatable inheritance for the admitted subset. |
 | `iter` | `implemented-exact` | Lowered without checked-output stub markers. |
