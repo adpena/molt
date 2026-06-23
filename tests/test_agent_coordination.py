@@ -300,6 +300,31 @@ def test_proof_plan_clean_status_does_not_invent_broad_work(
     assert payload["recommendations"] == []
 
 
+def test_proof_plan_recommends_gpu_crate_lane(tmp_path: Path) -> None:
+    payload = agent_coordination.proof_plan_payload(
+        agent_coordination.parse_args(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "proof-plan",
+                "runtime/molt-gpu/src/dtype.rs",
+            ]
+        )
+    )
+
+    assert payload["recommendations"] == [
+        {
+            "lane": "molt_gpu_targeted",
+            "proof_role": "implementer",
+            "shared_target_root": "target",
+            "priority": "P1",
+            "reason": "GPU primitive/runtime changes need focused crate-level Rust validation",
+            "covered_paths": ["runtime/molt-gpu/src/dtype.rs"],
+            "commands": ["cargo test -p molt-gpu"],
+        }
+    ]
+
+
 def test_codex_stall_launch_uses_memory_guard_by_default(tmp_path: Path) -> None:
     args = agent_coordination.parse_args(
         [
