@@ -136,6 +136,46 @@ def render_registry_module(records: list[MatcherRecord]) -> str:
     return "".join(lines)
 
 
+def _compile_loaded_tinygrad_pattern_matchers() -> int:
+    from tinygrad.uop.ops import PatternMatcher  # noqa: PLC0415
+    from tinygrad.uop.upat import upat_compile  # noqa: PLC0415
+
+    compiled = 0
+    seen_matchers: set[int] = set()
+    for module_name, module in sorted(sys.modules.items()):
+        if module is None or not (
+            module_name == "tinygrad" or module_name.startswith("tinygrad.")
+        ):
+            continue
+        namespace = getattr(module, "__dict__", None)
+        if namespace is None:
+            continue
+        for attr_name, value in sorted(namespace.items()):
+            if not isinstance(value, PatternMatcher):
+                continue
+            matcher_id = id(value)
+            if matcher_id in seen_matchers:
+                continue
+            seen_matchers.add(matcher_id)
+            patterns = getattr(value, "patterns", None)
+            if patterns is None:
+                raise RuntimeError(
+                    "MOLT_COMPAT_ERROR: loaded tinygrad PatternMatcher "
+                    f"{module_name}.{attr_name} has no patterns authority"
+                )
+            for pattern_index, entry in enumerate(tuple(patterns)):
+                if not isinstance(entry, tuple) or len(entry) != 2:
+                    raise RuntimeError(
+                        "MOLT_COMPAT_ERROR: loaded tinygrad PatternMatcher "
+                        f"{module_name}.{attr_name} pattern {pattern_index} "
+                        "is not a (UPat, function) pair"
+                    )
+                pattern, fxn = entry
+                upat_compile(pattern, fxn)
+                compiled += 1
+    return compiled
+
+
 def _capture_tinygrad_upat_matchers(
     *,
     suite_root: Path,
@@ -149,7 +189,6 @@ def _capture_tinygrad_upat_matchers(
     sys.path.insert(0, str(repo_root))
     previous_dont_write_bytecode = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
-    original_exec = builtins.exec
     records: list[MatcherRecord] = []
 
     def capture_exec(source: object, globals=None, locals=None, *args, **kwargs):
@@ -159,12 +198,19 @@ def _capture_tinygrad_upat_matchers(
                 sorted(key for key in (globals or {}).keys() if key != "__builtins__")
             )
             records.append(MatcherRecord(source=source, globals_keys=keys))
-        return original_exec(source, globals, locals, *args, **kwargs)
+        return original_upat_exec(source, globals, locals, *args, **kwargs)
 
-    builtins.exec = capture_exec
+    from tools import tinygrad_off_shelf_adapter as adapter
+
+    with redirect_stdout(io.StringIO()):
+        adapter._import_tinygrad()
+    from tinygrad.uop import upat as tinygrad_upat  # noqa: PLC0415
+
+    upat_namespace = vars(tinygrad_upat)
+    had_upat_exec = "exec" in upat_namespace
+    original_upat_exec = upat_namespace.get("exec", builtins.exec)
+    upat_namespace["exec"] = capture_exec
     try:
-        from tools import tinygrad_off_shelf_adapter as adapter
-
         with redirect_stdout(io.StringIO()):
             rc = adapter.main(
                 [
@@ -177,8 +223,13 @@ def _capture_tinygrad_upat_matchers(
                     "--json",
                 ]
             )
+            _compile_loaded_tinygrad_pattern_matchers()
     finally:
-        builtins.exec = original_exec
+        if had_upat_exec:
+            upat_namespace["exec"] = original_upat_exec
+        else:
+            with suppress(KeyError):
+                del upat_namespace["exec"]
         sys.dont_write_bytecode = previous_dont_write_bytecode
         for path_entry in (str(repo_root), str(suite_root)):
             with suppress(ValueError):

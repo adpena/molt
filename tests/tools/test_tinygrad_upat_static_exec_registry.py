@@ -88,6 +88,36 @@ def test_manifest_output_deduplicates_matcher_records(tmp_path: Path) -> None:
     assert f"_factory_{record.sha256[:16]}" in generated
 
 
+def test_capture_sweeps_loaded_tinygrad_pattern_matchers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = _load_tool()
+    calls: list[tuple[object, object]] = []
+
+    class FakePatternMatcher:
+        def __init__(self) -> None:
+            self.patterns = [("pattern", "fxn")]
+
+    tinygrad = ModuleType("tinygrad")
+    uop = ModuleType("tinygrad.uop")
+    ops = ModuleType("tinygrad.uop.ops")
+    upat = ModuleType("tinygrad.uop.upat")
+    loaded = ModuleType("tinygrad.loaded")
+    matcher = FakePatternMatcher()
+    loaded.matcher = matcher
+    ops.PatternMatcher = FakePatternMatcher
+    upat.upat_compile = lambda pattern, fxn: calls.append((pattern, fxn))
+
+    monkeypatch.setitem(sys.modules, "tinygrad", tinygrad)
+    monkeypatch.setitem(sys.modules, "tinygrad.uop", uop)
+    monkeypatch.setitem(sys.modules, "tinygrad.uop.ops", ops)
+    monkeypatch.setitem(sys.modules, "tinygrad.uop.upat", upat)
+    monkeypatch.setitem(sys.modules, "tinygrad.loaded", loaded)
+
+    assert tool._compile_loaded_tinygrad_pattern_matchers() == 1
+    assert calls == [("pattern", "fxn")]
+
+
 def test_cli_fails_closed_when_capture_produces_no_records(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

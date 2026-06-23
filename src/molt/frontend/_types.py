@@ -920,6 +920,97 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
 
 _INTRINSIC_ARITY_CACHE: dict[str, int] | None = None
 _INTRINSIC_SYMBOL_CACHE: dict[str, str] | None = None
+_INTRINSIC_DEFAULTS_CACHE: dict[str, tuple[object, ...]] | None = None
+
+
+def _intrinsic_signature_paths() -> list[Path]:
+    return [
+        Path(__file__).resolve().parent.parent / "_intrinsics.pyi",
+        Path(__file__).resolve().parents[3]
+        / "runtime"
+        / "molt-runtime"
+        / "src"
+        / "intrinsics"
+        / "manifest.pyi",
+    ]
+
+
+def _split_intrinsic_params(params_str: str) -> list[str]:
+    if not params_str:
+        return []
+    depth = 0
+    parts: list[str] = []
+    current = ""
+    for ch in params_str:
+        if ch in "([{":
+            depth += 1
+            current += ch
+        elif ch in ")]}":
+            depth -= 1
+            current += ch
+        elif ch == "," and depth == 0:
+            parts.append(current.strip())
+            current = ""
+        else:
+            current += ch
+    if current.strip():
+        parts.append(current.strip())
+    return [p for p in parts if p and not p.startswith("*")]
+
+
+def _intrinsic_param_default_expr(param: str) -> str | None:
+    depth = 0
+    for idx, ch in enumerate(param):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "=" and depth == 0:
+            return param[idx + 1 :].strip()
+    return None
+
+
+def _intrinsic_literal_default(default_expr: str, intrinsic_name: str) -> object | None:
+    if default_expr == "...":
+        return Ellipsis
+    if default_expr == "None":
+        return None
+    if default_expr == "True":
+        return True
+    if default_expr == "False":
+        return False
+    if default_expr.lstrip("-").isdigit():
+        return int(default_expr)
+    raise RuntimeError(
+        f"unsupported concrete default for {intrinsic_name}: {default_expr!r}"
+    )
+
+
+def _iter_intrinsic_signatures() -> Iterable[tuple[str, list[str]]]:
+    import re as _re
+
+    sig_re = _re.compile(r"^def\s+(\w+)\(([^)]*)\)")
+    for pyi_path in _intrinsic_signature_paths():
+        if not pyi_path.exists():
+            continue
+        text = pyi_path.read_text()
+        collapsed: list[str] = []
+        buf = ""
+        for line in text.splitlines():
+            if buf:
+                buf += " " + line.strip()
+                if ")" in buf:
+                    collapsed.append(buf)
+                    buf = ""
+            elif line.startswith("def "):
+                if ")" in line:
+                    collapsed.append(line)
+                else:
+                    buf = line.strip()
+        for line in collapsed:
+            match = sig_re.match(line)
+            if match:
+                yield match.group(1), _split_intrinsic_params(match.group(2).strip())
 
 
 def _ensure_intrinsic_arity_cache() -> dict[str, int]:
@@ -935,68 +1026,43 @@ def _ensure_intrinsic_arity_cache() -> dict[str, int]:
             if spec.vararg is not None:
                 arity += 1
             cache[spec.runtime] = arity
-        # Augment with _intrinsics.pyi signatures.
-        import re as _re
-
-        # Parse both _intrinsics.pyi and the manifest for comprehensive coverage.
-        for pyi_path in [
-            Path(__file__).resolve().parent.parent / "_intrinsics.pyi",
-            Path(__file__).resolve().parents[2]
-            / "runtime"
-            / "molt-runtime"
-            / "src"
-            / "intrinsics"
-            / "manifest.pyi",
-        ]:
-            if not pyi_path.exists():
-                continue
-            text = pyi_path.read_text()
-            # Collapse multi-line defs into single lines
-            collapsed = []
-            buf = ""
-            for line in text.splitlines():
-                if buf:
-                    buf += " " + line.strip()
-                    if ")" in buf:
-                        collapsed.append(buf)
-                        buf = ""
-                elif line.startswith("def "):
-                    if ")" in line:
-                        collapsed.append(line)
-                    else:
-                        buf = line.strip()
-            _sig_re = _re.compile(r"^def\s+(\w+)\(([^)]*)\)")
-            for line in collapsed:
-                m = _sig_re.match(line)
-                if m:
-                    name = m.group(1)
-                    params_str = m.group(2).strip()
-                    if not params_str:
-                        cache.setdefault(name, 0)
-                    else:
-                        # Split params on commas, but ignore commas inside brackets
-                        # (e.g., tuple[Any, ...] should not be split).
-                        depth = 0
-                        parts = []
-                        current = ""
-                        for ch in params_str:
-                            if ch in "([{":
-                                depth += 1
-                                current += ch
-                            elif ch in ")]}":
-                                depth -= 1
-                                current += ch
-                            elif ch == "," and depth == 0:
-                                parts.append(current.strip())
-                                current = ""
-                            else:
-                                current += ch
-                        if current.strip():
-                            parts.append(current.strip())
-                        count = len([p for p in parts if p and not p.startswith("*")])
-                        cache.setdefault(name, count)
+        for name, params in _iter_intrinsic_signatures():
+            cache.setdefault(name, len(params))
         _INTRINSIC_ARITY_CACHE = cache
     return _INTRINSIC_ARITY_CACHE
+
+
+def _ensure_intrinsic_defaults_cache() -> dict[str, tuple[object, ...]]:
+    """Return runtime-name -> trailing concrete default tuple for intrinsics."""
+    global _INTRINSIC_DEFAULTS_CACHE
+    if _INTRINSIC_DEFAULTS_CACHE is None:
+        cache: dict[str, tuple[object, ...]] = {}
+        for name, params in _iter_intrinsic_signatures():
+            parsed: list[object | None] = []
+            has_default: list[bool] = []
+            for param in params:
+                default_expr = _intrinsic_param_default_expr(param)
+                if default_expr is None:
+                    parsed.append(None)
+                    has_default.append(False)
+                    continue
+                value = _intrinsic_literal_default(default_expr, name)
+                if value is Ellipsis:
+                    parsed.append(None)
+                    has_default.append(False)
+                    continue
+                parsed.append(value)
+                has_default.append(True)
+            if not any(has_default):
+                continue
+            first = has_default.index(True)
+            if not all(has_default[first:]):
+                raise RuntimeError(
+                    f"concrete defaults for {name} must form a trailing positional suffix"
+                )
+            cache.setdefault(name, tuple(parsed[first:]))
+        _INTRINSIC_DEFAULTS_CACHE = cache
+    return _INTRINSIC_DEFAULTS_CACHE
 
 
 def _ensure_intrinsic_symbol_cache() -> dict[str, str]:
@@ -1033,6 +1099,15 @@ def _canonical_intrinsic_runtime_name(runtime_name: str) -> str:
 def _intrinsic_arity_exact(runtime_name: str) -> int | None:
     """Return the parameter count for *runtime_name*, or ``None`` if unknown."""
     return _ensure_intrinsic_arity_cache().get(runtime_name)
+
+
+def _intrinsic_defaults_exact(runtime_name: str) -> tuple[object, ...]:
+    """Return concrete trailing defaults for *runtime_name*, if any."""
+    defaults = _ensure_intrinsic_defaults_cache()
+    return defaults.get(
+        runtime_name,
+        defaults.get(_canonical_intrinsic_runtime_name(runtime_name), ()),
+    )
 
 
 def _intrinsic_arity(runtime_name: str) -> int:
@@ -1476,10 +1551,13 @@ __all__ = [
     "BUILTIN_FUNC_SPECS",
     "_INTRINSIC_ARITY_CACHE",
     "_INTRINSIC_SYMBOL_CACHE",
+    "_INTRINSIC_DEFAULTS_CACHE",
     "_ensure_intrinsic_arity_cache",
     "_ensure_intrinsic_symbol_cache",
+    "_ensure_intrinsic_defaults_cache",
     "_canonical_intrinsic_runtime_name",
     "_intrinsic_arity_exact",
+    "_intrinsic_defaults_exact",
     "_intrinsic_arity",
     "MOLT_REEXPORT_FUNCTIONS",
     "MOLT_DIRECT_CALLS",

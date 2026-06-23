@@ -5,9 +5,9 @@
 
 use crate::object::ops::string_obj_to_owned;
 use crate::{
-    MoltObject, PyToken, alloc_bytes, alloc_list, alloc_string, dec_ref_bits,
-    int_bits_from_bigint, int_bits_from_i64, obj_from_bits, opaque_handle_bits, ptr_from_bits,
-    raise_exception, release_ptr, to_i64,
+    MoltObject, PyToken, alloc_bytes, alloc_list, alloc_string, dec_ref_bits, int_bits_from_bigint,
+    int_bits_from_i64, obj_from_bits, opaque_handle_bits, ptr_from_bits, raise_exception,
+    release_ptr, to_i64,
 };
 use num_bigint::BigInt;
 use std::net::{Ipv4Addr, Ipv6Addr};

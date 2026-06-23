@@ -1550,6 +1550,8 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
     assert suite.semantic_mode == "runs_unmodified"
     assert suite.env == {
         "CACHEDB": "{output_root}/tinygrad_cache/tinygrad/cache.db",
+        "DEV": "PYTHON",
+        "PYTHONDONTWRITEBYTECODE": "1",
         "XDG_CACHE_HOME": "{output_root}/tinygrad_cache",
     }
     assert suite.prepare_cmds == [
