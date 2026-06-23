@@ -27158,7 +27158,6 @@ class SimpleTIRGenerator(
                 value=max_rounds,
             )
             degraded = True
-            enable_idempotence_probe = False
             self._record_midend_policy_outcome(
                 policy=policy,
                 spent_ms=spent_midend_ms(),

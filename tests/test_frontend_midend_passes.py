@@ -2450,6 +2450,7 @@ def test_midend_budget_ms_override_is_telemetry_only(
     assert outcome["degraded"] is False
     assert outcome.get("degrade_events", []) == []
 
+
 def test_collect_type_facts_reads_python_sources_as_utf8(tmp_path: Path) -> None:
     path = tmp_path / "typed_utf8_source.py"
     path.write_text("# source sentinel: ā\nvalue: int = 1\n", encoding="utf-8")
