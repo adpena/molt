@@ -33,6 +33,7 @@ the source of truth.
 ## Product And Proof
 
 - Compatibility corpus manifest: [COMPATIBILITY_CORPUS_MANIFEST.md](COMPATIBILITY_CORPUS_MANIFEST.md)
+- Ordinary class constructor and `__new__` parity status: [spec/STATUS.md](spec/STATUS.md)
 - Standalone binary proof workflow: [proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 - Benchmarking guide: [BENCHMARKING.md](BENCHMARKING.md)
 - Detailed benchmark report: [benchmarks/bench_summary.md](benchmarks/bench_summary.md)
