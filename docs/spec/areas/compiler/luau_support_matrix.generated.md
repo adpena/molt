@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `294`
-- `implemented-target-limited`: `53`
-- `not-admitted`: `48`
+- `implemented-target-limited`: `54`
+- `not-admitted`: `47`
 - `runtime-capability-error`: `6`
 - `total`: `402`
 
@@ -54,7 +54,7 @@
 | `bytes_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `bytes_from_str` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `call` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `call_async` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `call_async` | `implemented-target-limited` | Executes the known poll target directly for the admitted synchronous Luau subset. |
 | `call_bind` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `call_func` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `call_guarded` | `implemented-exact` | Lowered without checked-output stub markers. |

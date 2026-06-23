@@ -2254,8 +2254,30 @@ impl LuauBackend {
                     }
                 }
             }
-            "call_async" | "block_on" | "spawn" => {
-                // Async primitives — emit as synchronous call stub.
+            "call_async" => {
+                // Luau has no Molt scheduler object model here, but CALL_ASYNC
+                // already carries the concrete poll target in s_value. Execute
+                // that target directly for the admitted synchronous subset.
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let func_ref = sanitize_ident(
+                    op.s_value
+                        .as_deref()
+                        .expect("call_async expects poll target in s_value"),
+                );
+                let call_args = args
+                    .iter()
+                    .map(|a| sanitize_ident(a))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = {func_ref}({call_args})"));
+                } else {
+                    self.emit_line(&format!("{func_ref}({call_args})"));
+                }
+            }
+            "block_on" | "spawn" => {
+                // Scheduler ownership is not represented in checked Luau yet.
                 let args = op.args.as_deref().unwrap_or(&[]);
                 if !args.is_empty() {
                     let func_ref = sanitize_ident(&args[0]);
@@ -11738,6 +11760,54 @@ mod tests {
         assert!(
             err.contains("semantic stub marker"),
             "error should mention semantic stub marker, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_call_async_poll_target_directly() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "call_async_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("payload".to_string()),
+                        value: Some(5),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_async".to_string(),
+                        s_value: Some("poll_target".to_string()),
+                        args: Some(vec!["payload".to_string()]),
+                        out: Some("awaited".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["awaited".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("call_async with a known poll target should lower directly");
+
+        assert!(
+            source.contains("local awaited = poll_target(payload)"),
+            "call_async should invoke the s_value poll target directly, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[async: call_async]")
+                && !source.contains("[unsupported op: call_async]"),
+            "call_async must not leave async stub markers, got:\n{source}"
         );
     }
 

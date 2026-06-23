@@ -32,7 +32,10 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "matmul" => {
                 self.emit_line("local out = nil -- [unsupported op: matmul]");
             }
-            "call_async" | "spawn" => {
+            "call_async" => {
+                self.emit_line("local out = poll_target(payload)");
+            }
+            "spawn" => {
                 self.emit_line("local out = nil -- [async: spawn]");
             }
             "br_if" => {
@@ -109,7 +112,7 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["add"].status == "implemented-exact"
     assert rows["inplace_add"].status == "implemented-exact"
     assert rows["matmul"].status == "compile-error"
-    assert rows["call_async"].status == "not-admitted"
+    assert rows["call_async"].status == "implemented-target-limited"
     assert rows["spawn"].status == "not-admitted"
     assert rows["br_if"].status == "implemented-exact"
     assert "missing target labels fail closed" in rows["br_if"].note
