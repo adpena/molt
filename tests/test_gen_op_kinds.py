@@ -536,6 +536,95 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
     assert "match op.opcode" not in body
 
 
+def test_alias_memory_inert_delegates_to_generated_table() -> None:
+    """Scalar-register MemRegion classification is a generated opcode fact.
+
+    The positive table names opcodes proven not to touch alias-visible heap
+    memory. Omission remains conservative: the consumer treats unknown/opcode
+    additions as heap-touching until explicitly listed here.
+    """
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    alias = (
+        ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
+    ).read_text(encoding="utf-8")
+
+    expected = {
+        "Add",
+        "And",
+        "BitAnd",
+        "BitNot",
+        "BitOr",
+        "BitXor",
+        "Bool",
+        "BoxVal",
+        "BuildSlice",
+        "CheckException",
+        "CheckedAdd",
+        "ConstBigInt",
+        "ConstBool",
+        "ConstBytes",
+        "ConstFloat",
+        "ConstInt",
+        "ConstNone",
+        "ConstStr",
+        "Div",
+        "Eq",
+        "ExceptionPending",
+        "FloorDiv",
+        "FunctionDefaultsVersion",
+        "Ge",
+        "Gt",
+        "InplaceAdd",
+        "InplaceMul",
+        "InplaceSub",
+        "Is",
+        "IsNot",
+        "Le",
+        "Lt",
+        "Mod",
+        "Mul",
+        "Ne",
+        "Neg",
+        "Not",
+        "Or",
+        "Pos",
+        "Pow",
+        "Shl",
+        "Shr",
+        "Sub",
+        "TypeGuard",
+        "UnboxVal",
+    }
+    assert set(data["alias_memory_inert_opcodes"]) == expected
+
+    block = rendered.split("fn opcode_is_alias_memory_inert_table")[1].split(
+        "fn opcode_alias_slot_observation_table"
+    )[0]
+    for opcode in expected:
+        assert f"OpCode::{opcode} => true," in block
+    for opcode in {"Alloc", "Copy", "LoadAttr", "StoreAttr", "Call", "Yield"}:
+        assert f"OpCode::{opcode} => false," in block
+
+    start = alias.index("fn opcode_touches_memory(")
+    brace = alias.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(alias)):
+        if alias[i] == "{":
+            depth += 1
+        elif alias[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = alias[start:end]
+    assert "opcode_is_alias_memory_inert_table" in body
+    assert "matches!" not in body
+    assert "OpCode::Add" not in body
+
+
 def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
     gen = _gen()
     data = gen.load_table()

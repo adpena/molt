@@ -141,6 +141,7 @@ _CLASSIFIER_SETS = (
 _OPCODE_FACT_SETS = (
     "alias_rc_barrier_opcodes",
     "alias_heap_barrier_opcodes",
+    "alias_memory_inert_opcodes",
     "alias_slot_direct_observer_opcodes",
     "alias_slot_typed_store_opcodes",
     "alias_slot_transparent_alias_opcodes",
@@ -1104,6 +1105,7 @@ def _render_rs_unformatted(data: dict) -> str:
 
     alias_rc_barriers = list(data.get("alias_rc_barrier_opcodes", []))
     alias_heap_barriers = list(data.get("alias_heap_barrier_opcodes", []))
+    alias_memory_inert = list(data.get("alias_memory_inert_opcodes", []))
     out.append(
         "/// Whether an opcode is an alias-analysis refcount barrier. EXHAUSTIVE\n"
         "/// over OpCode; the conservative barrier set lives in op_kinds.toml.\n"
@@ -1122,6 +1124,17 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, alias_heap_barriers))
+    out.append("    }\n}\n\n")
+
+    out.append(
+        "/// Whether an opcode is known not to read or write alias-visible heap\n"
+        "/// memory for alias-analysis MemRegion classification. EXHAUSTIVE over\n"
+        "/// OpCode; false is the conservative heap-touching default.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_is_alias_memory_inert_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, alias_memory_inert))
     out.append("    }\n}\n\n")
 
     out.append(_render_alias_slot_observation(opcodes, data))

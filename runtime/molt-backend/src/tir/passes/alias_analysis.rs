@@ -70,7 +70,7 @@ use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     AliasSlotObservation, opcode_alias_slot_observation_table, opcode_is_alias_heap_barrier_table,
-    opcode_is_alias_rc_barrier_table,
+    opcode_is_alias_memory_inert_table, opcode_is_alias_rc_barrier_table,
 };
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -1140,82 +1140,9 @@ impl AliasAnalysisResult {
 /// True if an opcode reads or writes heap memory (anything that is not a pure
 /// register computation / constant / control-flow marker). Used to classify
 /// `ScalarRegister` vs `GenericHeap` regions.
+#[inline]
 fn opcode_touches_memory(opcode: OpCode) -> bool {
-    !matches!(
-        opcode,
-        // Pure arithmetic / comparison / bitwise / boolean computations.
-        // CheckedAdd is a pure 2-result register computation (raw i64 sum +
-        // overflow flag) — no heap footprint.
-        OpCode::Add
-            | OpCode::CheckedAdd
-            | OpCode::Sub
-            | OpCode::Mul
-            | OpCode::InplaceAdd
-            | OpCode::InplaceSub
-            | OpCode::InplaceMul
-            | OpCode::Div
-            | OpCode::FloorDiv
-            | OpCode::Mod
-            | OpCode::Pow
-            | OpCode::Neg
-            | OpCode::Pos
-            | OpCode::Eq
-            | OpCode::Ne
-            | OpCode::Lt
-            | OpCode::Le
-            | OpCode::Gt
-            | OpCode::Ge
-            | OpCode::Is
-            | OpCode::IsNot
-            | OpCode::BitAnd
-            | OpCode::BitOr
-            | OpCode::BitXor
-            | OpCode::BitNot
-            | OpCode::Shl
-            | OpCode::Shr
-            | OpCode::And
-            | OpCode::Or
-            | OpCode::Not
-            | OpCode::Bool
-            // Box/unbox/typeguard: pure representation transforms.
-            | OpCode::BoxVal
-            | OpCode::UnboxVal
-            | OpCode::TypeGuard
-            // Constant materialization. ConstBigInt allocates, but the
-            // allocation is FRESH immutable memory invisible to any existing
-            // pointer — it can neither clobber nor be clobbered (same
-            // reasoning as ConstStr).
-            | OpCode::ConstInt
-            | OpCode::ConstBigInt
-            | OpCode::ConstFloat
-            | OpCode::ConstStr
-            | OpCode::ConstBool
-            | OpCode::ConstNone
-            | OpCode::ConstBytes
-            // Slice from primitive bounds.
-            | OpCode::BuildSlice
-            // Runtime-flag reads (no heap footprint, but side-effecting
-            // elsewhere). `CheckException` reads the pending-exception flag and
-            // conditionally transfers to a handler — it never writes heap
-            // memory. Its control-flow effect is modeled by the CFG's exception
-            // edges (which MemorySSA's phi placement follows), and
-            // `may_observe_slot` already returns `false` for it. Classifying it
-            // as memory-touching made it a spurious `GenericHeap` clobber that
-            // bumped the memory version between every adjacent field access in
-            // exception-bearing bodies (it is emitted after nearly every op),
-            // starving store-to-load forwarding for no soundness gain.
-            | OpCode::ExceptionPending
-            | OpCode::CheckException
-            // Reads the function object's defaults version stamp slot. It never
-            // WRITES heap memory, so it is not a clobber; its ordering against a
-            // `__defaults__` mutation (always an opaque, side-effecting CALL) is
-            // preserved by its own `side_effecting`/`Impure` classification,
-            // which independently bars GVN-CSE and LICM hoisting. Treating it as
-            // memory-touching would make it a spurious `GenericHeap` clobber
-            // that starves store-to-load forwarding for no soundness gain
-            // (identical reasoning to `ExceptionPending`).
-            | OpCode::FunctionDefaultsVersion
-    )
+    !opcode_is_alias_memory_inert_table(opcode)
 }
 
 // ===========================================================================
