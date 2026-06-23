@@ -40,6 +40,15 @@ RUNNER_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 MAX_FAILURE_DETAIL_RECORDS = 32
 MAX_FAILURE_MESSAGE_CHARS = 4000
 
+
+def _emit_progress(message: str) -> None:
+    stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    # Windows PowerShell surfaces native stderr as noisy error records even when
+    # the child exits successfully. Keep heartbeat lines calm there.
+    stream = sys.stdout if os.name == "nt" else sys.stderr
+    print(f"bench_friends: {stamp} {message}", file=stream, flush=True)
+
+
 _PASSTHROUGH_ENV_KEYS = {
     "CC",
     "COMSPEC",
@@ -705,14 +714,22 @@ def _run_command(
     limits: harness_memory_guard.HarnessMemoryLimits,
     parse_stdout_json: bool = False,
     molt_failure_phase: str | None = None,
+    progress_label: str | None = None,
 ) -> PhaseResult:
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
     if dry_run:
+        if progress_label is not None:
+            _emit_progress(
+                f"start {progress_label} dry_run=true timeout_s={timeout_sec} "
+                f"stdout={stdout_path} stderr={stderr_path}"
+            )
         stdout_path.write_text(
             f"[dry-run] cwd={cwd}\n$ {' '.join(cmd)}\n", encoding="utf-8"
         )
         stderr_path.write_text("", encoding="utf-8")
+        if progress_label is not None:
+            _emit_progress(f"finish {progress_label} status=ok elapsed_s=0.000")
         return PhaseResult(
             cmd=cmd,
             returncode=0,
@@ -723,6 +740,11 @@ def _run_command(
         )
 
     start = dt.datetime.now(dt.timezone.utc)
+    if progress_label is not None:
+        _emit_progress(
+            f"start {progress_label} timeout_s={timeout_sec} argv_count={len(cmd)} "
+            f"stdout={stdout_path} stderr={stderr_path}"
+        )
     timed_out = False
     guard_elapsed_s: float | None = None
     diagnostics: dict[str, Any] = {}
@@ -797,7 +819,7 @@ def _run_command(
             stdout_path=stdout_path,
             stderr_path=stderr_path,
         )
-    return PhaseResult(
+    phase_result = PhaseResult(
         cmd=cmd,
         returncode=rc,
         elapsed_s=elapsed,
@@ -809,6 +831,14 @@ def _run_command(
         molt_failure=molt_failure,
         **diagnostics,
     )
+    if progress_label is not None:
+        status = "ok" if phase_result.ok else "failed"
+        timeout_suffix = " timed_out=true" if timed_out else ""
+        _emit_progress(
+            f"finish {progress_label} status={status} rc={rc} "
+            f"elapsed_s={elapsed:.3f}{timeout_suffix}"
+        )
+    return phase_result
 
 
 def _base_run_env() -> dict[str, str]:
@@ -1163,6 +1193,7 @@ def _run_prepare_steps(
             stderr_path=err,
             dry_run=dry_run,
             limits=limits,
+            progress_label=f"suite={suite.id} phase=prepare step={idx}/{len(suite.prepare_cmds)}",
         )
         if not phase.ok:
             return False, f"prepare step {idx} failed"
@@ -1213,6 +1244,7 @@ def _run_runner(
             dry_run=dry_run,
             limits=limits,
             molt_failure_phase="build" if runner.name == "molt" else None,
+            progress_label=f"suite={suite.id} runner={runner.name} phase=build",
         )
         result.build = build
         if not build.ok:
@@ -1236,6 +1268,10 @@ def _run_runner(
             limits=limits,
             parse_stdout_json=runner.json_stdout,
             molt_failure_phase="run" if runner.name == "molt" else None,
+            progress_label=(
+                f"suite={suite.id} runner={runner.name} "
+                f"phase=run repeat={run_idx}/{suite.repeat}"
+            ),
         )
         result.runs.append(phase)
         if not phase.ok:
