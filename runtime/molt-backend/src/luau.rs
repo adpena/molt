@@ -4274,11 +4274,51 @@ impl LuauBackend {
             // ================================================================
             // Memoryview / complex / bytearray stubs
             // ================================================================
-            "memoryview_new" | "memoryview_tobytes" | "memoryview_cast" | "intarray_from_seq"
-            | "complex_from_obj" => {
+            "memoryview_new" | "memoryview_tobytes" | "memoryview_cast" | "complex_from_obj" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
+                }
+            }
+            "intarray_from_seq" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(seq) = args.first() {
+                    let seq = sanitize_ident(seq);
+                    self.emit_line(&format!("local {out}"));
+                    self.emit_line("do");
+                    self.push_indent();
+                    self.emit_line(&format!("local __seq = {seq}"));
+                    self.emit_line("if type(__seq) == \"table\" then");
+                    self.push_indent();
+                    self.emit_line("local __arr = {}");
+                    self.emit_line("local __ok = true");
+                    self.emit_line("for __i = 1, #__seq do");
+                    self.push_indent();
+                    self.emit_line("local __v = __seq[__i]");
+                    self.emit_line("if type(__v) == \"number\" and math.floor(__v) == __v then");
+                    self.push_indent();
+                    self.emit_line("__arr[__i] = __v");
+                    self.pop_indent();
+                    self.emit_line("else");
+                    self.push_indent();
+                    self.emit_line("__ok = false");
+                    self.emit_line("break");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line(&format!("{out} = if __ok then __arr else nil"));
+                    self.pop_indent();
+                    self.emit_line("else");
+                    self.push_indent();
+                    self.emit_line(&format!("{out} = nil"));
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("end");
+                } else {
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
 
@@ -11138,6 +11178,65 @@ mod tests {
             source.contains("local sum: number, overflow: boolean = molt_checked_i64_add(a, b)")
         );
         assert!(!source.contains("[unsupported op: checked_add]"));
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_intarray_from_seq_dense_integer_table() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "intarray_from_seq_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("one".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("two".to_string()),
+                        value: Some(2),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "list_new".to_string(),
+                        out: Some("seq".to_string()),
+                        args: Some(vec!["one".to_string(), "two".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "intarray_from_seq".to_string(),
+                        out: Some("arr".to_string()),
+                        args: Some(vec!["seq".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("intarray_from_seq should lower to a dense Luau integer table");
+        assert!(
+            source.contains("local arr\n")
+                && source.contains("\tdo\n")
+                && source.contains("local __seq = seq")
+                && source.contains("local __arr = {}")
+                && source.contains("math.floor(__v) == __v")
+                && source.contains("arr = if __ok then __arr else nil")
+                && source.contains("arr = nil"),
+            "intarray_from_seq should copy integer tables and fail closed, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[intarray_from_seq]")
+                && !source.contains("[unsupported op: intarray_from_seq]"),
+            "intarray_from_seq must not leave checked-output markers, got:\n{source}"
+        );
     }
 
     #[test]

@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `294`
-- `implemented-target-limited`: `45`
-- `not-admitted`: `57`
+- `implemented-target-limited`: `46`
+- `not-admitted`: `56`
 - `runtime-capability-error`: `5`
 - `total`: `402`
 
@@ -231,7 +231,7 @@
 | `inplace_sub` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `int_from_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `int_from_str_of_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `intarray_from_seq` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `intarray_from_seq` | `implemented-target-limited` | Modeled as a copied dense Luau integer table for vector consumers. |
 | `invert` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `invoke_ffi` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `is` | `implemented-target-limited` | Non-None identity currently lowers through equality on Luau values. |
