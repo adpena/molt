@@ -35,6 +35,10 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "call_async" | "spawn" => {
                 self.emit_line("local out = nil -- [async: spawn]");
             }
+            "br_if" => {
+                self.emit_line("if cond then goto label_1 end");
+                self.emit_line("error(\"[unsupported op: br_if cond missing target label]\")");
+            }
             "is" => {
                 // Python non-None identity maps to equality in Luau.
                 self.emit_line("local out = (a == b)");
@@ -50,6 +54,8 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["matmul"].status == "compile-error"
     assert rows["call_async"].status == "not-admitted"
     assert rows["spawn"].status == "not-admitted"
+    assert rows["br_if"].status == "implemented-exact"
+    assert "missing target labels fail closed" in rows["br_if"].note
     assert rows["is"].status == "implemented-target-limited"
 
 

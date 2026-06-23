@@ -10709,6 +10709,77 @@ mod tests {
     }
 
     #[test]
+    fn test_compile_checked_lowers_labeled_branch_ops() {
+        let branch_function = |name: &str, kind: &str, label: i64, flag_value: i64| FunctionIR {
+            name: name.to_string(),
+            params: Vec::new(),
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            ops: vec![
+                OpIR {
+                    kind: "const_bool".to_string(),
+                    value: Some(flag_value),
+                    out: Some("flag".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: kind.to_string(),
+                    value: Some(label),
+                    args: Some(vec!["flag".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(0),
+                    out: Some("zero".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["zero".to_string()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "label".to_string(),
+                    value: Some(label),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "const".to_string(),
+                    value: Some(1),
+                    out: Some("one".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["one".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+        };
+        let ir = SimpleIR {
+            functions: vec![
+                branch_function("br_if_test", "br_if", 7, 1),
+                branch_function("branch_test", "branch", 8, 1),
+                branch_function("branch_false_test", "branch_false", 9, 0),
+            ],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("labeled branch ops should lower without unsupported markers");
+
+        assert!(source.contains("br_if_test = function()"));
+        assert!(source.contains("branch_test = function()"));
+        assert!(source.contains("branch_false_test = function()"));
+        assert!(!source.contains("[unsupported op: br_if"));
+        assert!(!source.contains("[unsupported op: branch "));
+        assert!(!source.contains("[unsupported op: branch_false"));
+    }
+
+    #[test]
     fn test_compile_via_ir_rejects_unsupported_output() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
