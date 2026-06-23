@@ -687,7 +687,8 @@ roadmap claim drifts.
   codegen: per-function TIR pipeline, `run_module_pipeline`, and fail-closed
   SimpleIR back-conversion. Keep the generated Luau support matrix current and
   use it to prioritize post-E1 runtime, surface, and CPython-vs-Luau feature-gap
-  closure.
+  closure. `checked_add` is now listed as `implemented-exact` and guarded by
+  checked helper emission.
 - Keep the canonical local validation matrix green across:
   - `molt validate --suite smoke`
   - `molt validate`

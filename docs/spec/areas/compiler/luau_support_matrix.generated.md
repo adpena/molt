@@ -7,11 +7,11 @@
 ## Summary
 
 - `compile-error`: `7`
-- `implemented-exact`: `353`
+- `implemented-exact`: `360`
 - `implemented-target-limited`: `20`
-- `not-admitted`: `23`
+- `not-admitted`: `24`
 - `runtime-capability-error`: `5`
-- `total`: `408`
+- `total`: `416`
 
 ## Matrix
 
@@ -78,6 +78,7 @@
 | `callargs_push_pos` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `cbor_parse` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `check_exception` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `checked_add` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `chr` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `class_new` | `implemented-target-limited` | Modeled as Luau table/metatable object for the admitted subset. |
 | `class_set_base` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -134,6 +135,7 @@
 | `eq` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_class` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_clear` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `exception_finally_pending_observer` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_kind` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_last` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `exception_last_pending` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -171,6 +173,8 @@
 | `getframe` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `goto` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `gt` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `guard_tag` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `guard_type` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `guarded_field_get` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `guarded_field_init` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `guarded_field_set` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -225,6 +229,7 @@
 | `load_local` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `load_var` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `loop_break` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `loop_break_if_exception` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `loop_break_if_false` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `loop_break_if_true` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `loop_carry_init` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -252,6 +257,7 @@
 | `module_get_global` | `implemented-target-limited` | Dynamic module lookup depends on Luau module cache entries. |
 | `module_get_name` | `implemented-target-limited` | Dynamic module lookup depends on Luau module cache entries. |
 | `module_import` | `implemented-target-limited` | Only known module bridges are materialized in Luau. |
+| `module_import_from` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `module_import_star` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `module_new` | `implemented-target-limited` | Modeled as Luau table object for the admitted subset. |
 | `module_set_attr` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -317,6 +323,7 @@
 | `ord` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `ord_at` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `os` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `pcall_failure_jump` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `pcall_handler_end` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `pcall_wrap_begin` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `pcall_wrap_end` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -341,6 +348,7 @@
 | `round` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `rshift` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `set_add` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `set_add_probe` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `set_attr` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `set_attr_generic_obj` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `set_attr_generic_ptr` | `implemented-exact` | Lowered without checked-output stub markers. |
