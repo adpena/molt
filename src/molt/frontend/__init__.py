@@ -24837,12 +24837,14 @@ class SimpleTIRGenerator(
         users_by_value: dict[str, set[int]] = {}
         removable_guard_producer_kinds = {
             "BUILTIN_TYPE",
+            "CLASS_LAYOUT_VERSION",
             "CLASS_VERSION",
             "CONST",
             "CONST_BOOL",
             "CONST_STR",
             "MISSING",
         }
+        guard_consumer_skip_kinds = {"CHECK_EXCEPTION", "LINE"}
         for op_index, op in enumerate(ops):
             for arg in op.args:
                 if isinstance(arg, MoltValue):
@@ -24866,7 +24868,15 @@ class SimpleTIRGenerator(
                 and use_counts.get(op.result.name, 0) == 0
                 and idx + 1 < len(ops)
             ):
-                next_op = ops[idx + 1]
+                next_idx = idx + 1
+                while (
+                    next_idx < len(ops)
+                    and ops[next_idx].kind in guard_consumer_skip_kinds
+                ):
+                    next_idx += 1
+                if next_idx >= len(ops):
+                    continue
+                next_op = ops[next_idx]
                 dict_operand_index = fused_dict_operand_index.get(next_op.kind)
                 guarded = op.args[0]
                 if (

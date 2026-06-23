@@ -1236,7 +1236,7 @@ pub unsafe extern "C" fn molt_process_spawn(
                 .process_registry
                 .attach_wait_thread(registry_id, wait_thread);
             let handle = Box::new(MoltProcessHandle { state });
-            bits_from_ptr(Box::into_raw(handle) as *mut u8)
+            opaque_handle_bits(Box::into_raw(handle) as *mut u8)
         })
     }
 }
@@ -1633,7 +1633,7 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
                 .process_registry
                 .attach_wait_thread(registry_id, wait_thread);
             let handle = Box::new(MoltProcessHandle { state });
-            bits_from_ptr(Box::into_raw(handle) as *mut u8)
+            opaque_handle_bits(Box::into_raw(handle) as *mut u8)
         })
     }
 }
@@ -1880,7 +1880,7 @@ pub unsafe extern "C" fn molt_process_spawn(
                 }
                 return raise_exception::<_>(_py, "RuntimeError", "stdin stream creation failed");
             }
-            bits_from_ptr(stream_ptr)
+            opaque_handle_bits(stream_ptr)
         } else {
             0
         };
@@ -1942,7 +1942,7 @@ pub unsafe extern "C" fn molt_process_spawn(
         runtime_state(_py)
             .process_registry
             .insert_wasm_handle(handle, PtrSlot(handle_ptr));
-        bits_from_ptr(handle_ptr)
+        opaque_handle_bits(handle_ptr)
     })
 }
 

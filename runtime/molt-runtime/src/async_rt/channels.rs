@@ -23,9 +23,9 @@ use crate::libc_compat as libc;
 #[cfg(target_arch = "wasm32")]
 use crate::string_obj_to_owned;
 use crate::{
-    GilReleaseGuard, MoltObject, PyToken, alloc_bytes, alloc_tuple, bits_from_ptr, dec_ref_bits,
-    inc_ref_bits, obj_from_bits, pending_bits_i64, ptr_from_bits, raise_exception, release_ptr,
-    runtime_state, to_i64, usize_from_bits,
+    GilReleaseGuard, MoltObject, PyToken, alloc_bytes, alloc_tuple, dec_ref_bits, inc_ref_bits,
+    obj_from_bits, opaque_handle_bits, pending_bits_i64, ptr_from_bits, raise_exception,
+    release_ptr, runtime_state, to_i64, usize_from_bits,
 };
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::{
@@ -203,7 +203,7 @@ fn new_stream_box(
 }
 
 pub(crate) fn stream_new_with_byte_budget(capacity: usize, max_queued_bytes: usize) -> u64 {
-    bits_from_ptr(Box::into_raw(new_stream_box(
+    opaque_handle_bits(Box::into_raw(new_stream_box(
         capacity,
         max_queued_bytes,
         None,
@@ -305,7 +305,7 @@ pub(crate) fn stream_enqueue_bytes_blocking(stream: &MoltStream, bytes: Vec<u8>)
 
 #[inline]
 fn chan_handle_from_ptr(ptr: *mut u8) -> ChanHandle {
-    bits_from_ptr(ptr)
+    opaque_handle_bits(ptr)
 }
 
 #[inline]
@@ -678,7 +678,7 @@ pub unsafe extern "C" fn molt_stream_reader_new(stream_bits: u64) -> u64 {
             scan_cursor: 0,
             eof: false,
         });
-        bits_from_ptr(Box::into_raw(reader) as *mut u8)
+        opaque_handle_bits(Box::into_raw(reader) as *mut u8)
     })
 }
 
@@ -1067,8 +1067,8 @@ pub unsafe extern "C" fn molt_ws_pair(
         });
         // SAFETY: caller contract guarantees writable output pointers.
         unsafe {
-            *out_left = bits_from_ptr(Box::into_raw(left) as *mut u8);
-            *out_right = bits_from_ptr(Box::into_raw(right) as *mut u8);
+            *out_left = opaque_handle_bits(Box::into_raw(left) as *mut u8);
+            *out_right = opaque_handle_bits(Box::into_raw(right) as *mut u8);
         }
         0
     })
@@ -2335,7 +2335,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_connect_new(
             name
         };
         match tls_client_connect_native(&host, port_raw as u16, &server_name) {
-            Ok(stream_ptr) => bits_from_ptr(stream_ptr),
+            Ok(stream_ptr) => opaque_handle_bits(stream_ptr),
             Err(err) => raise_os_error::<u64>(_py, err, "connect"),
         }
     })
@@ -2398,7 +2398,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_client_from_fd_new(
         if stream_ptr.is_null() {
             return raise_exception::<u64>(_py, "OSError", "asyncio TLS start_tls upgrade failed");
         }
-        bits_from_ptr(stream_ptr)
+        opaque_handle_bits(stream_ptr)
     })
 }
 
@@ -2537,7 +2537,7 @@ pub unsafe extern "C" fn molt_asyncio_tls_server_from_fd_new(
         if stream_ptr.is_null() {
             return raise_exception::<u64>(_py, "OSError", "asyncio TLS server upgrade failed");
         }
-        bits_from_ptr(stream_ptr)
+        opaque_handle_bits(stream_ptr)
     })
 }
 
@@ -2591,7 +2591,7 @@ pub unsafe extern "C" fn molt_ws_connect(
                 return 7;
             }
             // SAFETY: caller guarantees `out` is writable when non-null.
-            unsafe { *out = bits_from_ptr(ws_ptr) };
+            unsafe { *out = opaque_handle_bits(ws_ptr) };
             return 0;
         }
         // SAFETY: hook_ptr was stored into WS_CONNECT_HOOK by the host via
@@ -2605,7 +2605,7 @@ pub unsafe extern "C" fn molt_ws_connect(
             return 7;
         }
         // SAFETY: caller guarantees `out` is writable when non-null.
-        unsafe { *out = bits_from_ptr(ws_ptr) };
+        unsafe { *out = opaque_handle_bits(ws_ptr) };
         0
     })
 }
@@ -2803,7 +2803,7 @@ pub unsafe extern "C" fn molt_ws_connect(
                 }
                 return 7;
             }
-            *out = bits_from_ptr(ws_ptr);
+            *out = opaque_handle_bits(ws_ptr);
             0
         })
     }

@@ -5,9 +5,9 @@
 
 use crate::object::ops::string_obj_to_owned;
 use crate::{
-    MoltObject, PyToken, alloc_bytes, alloc_list, alloc_string, bits_from_ptr, dec_ref_bits,
-    int_bits_from_bigint, int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception,
-    release_ptr, to_i64,
+    MoltObject, PyToken, alloc_bytes, alloc_list, alloc_string, dec_ref_bits,
+    int_bits_from_bigint, int_bits_from_i64, obj_from_bits, opaque_handle_bits, ptr_from_bits,
+    raise_exception, release_ptr, to_i64,
 };
 use num_bigint::BigInt;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -186,15 +186,15 @@ fn ipv4_network_handle_from_bits(bits: u64) -> Option<&'static mut Ipv4NetworkHa
 }
 
 fn ipv4_bits(handle: Ipv4Handle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
 fn ipv6_bits(handle: Ipv6Handle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
 fn ipv4_network_bits(handle: Ipv4NetworkHandle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
 // Parse address from string or integer bits.

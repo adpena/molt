@@ -1422,7 +1422,7 @@ pub unsafe extern "C" fn molt_socket_reader_new(sock_bits: u64) -> u64 {
             scan_cursor: 0,
             eof: false,
         });
-        bits_from_ptr(Box::into_raw(reader) as *mut u8)
+        opaque_handle_bits(Box::into_raw(reader) as *mut u8)
     })
 }
 
@@ -2453,7 +2453,7 @@ pub extern "C" fn molt_socket_new(
         });
         let socket_ptr = Box::into_raw(socket) as *mut u8;
         socket_register_fd(socket_ptr);
-        bits_from_ptr(socket_ptr)
+        opaque_handle_bits(socket_ptr)
     })
 }
 
@@ -2918,7 +2918,7 @@ pub unsafe extern "C" fn molt_socket_accept(sock_bits: u64) -> u64 {
                 });
                 let socket_ptr = Box::into_raw(socket) as *mut u8;
                 socket_register_fd(socket_ptr);
-                let handle_bits = bits_from_ptr(socket_ptr);
+                let handle_bits = opaque_handle_bits(socket_ptr);
                 let tuple_ptr = alloc_tuple(_py, &[handle_bits, addr_bits]);
                 if tuple_ptr.is_null() {
                     return MoltObject::none().bits();

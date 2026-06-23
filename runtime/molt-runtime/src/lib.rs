@@ -726,7 +726,9 @@ pub use crate::object::{
     MoltHeader, bump_type_version, global_type_version, molt_dec_ref, molt_inc_ref,
 };
 #[allow(unused_imports)]
-pub(crate) use crate::provenance::{release_ptr, reset_ptr_registry, resolve_ptr};
+pub(crate) use crate::provenance::{
+    opaque_handle_bits, release_ptr, reset_ptr_registry, resolve_ptr,
+};
 pub(crate) use crate::state::cache::{
     InternedNames, MethodCache, RuntimeStaticNames, intern_runtime_static_name, intern_static_name,
     runtime_static_name_slot,
