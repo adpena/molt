@@ -501,6 +501,10 @@ impl LuauBackend {
                 "local function molt_class_apply_set_name(cls: any): nil\n\tif type(cls) ~= \"table\" or cls.__molt_is_type ~= true then return nil end\n\tlocal entries = {}\n\tlocal count = 0\n\tfor name, value in pairs(cls) do\n\t\tif name ~= \"__index\" and name ~= \"__molt_is_type\" and (type(name) ~= \"string\" or string.sub(name, 1, 7) ~= \"__molt_\") then\n\t\t\tcount += 1\n\t\t\tentries[count] = {name, value}\n\t\tend\n\tend\n\tfor i = 1, count do\n\t\tlocal entry = entries[i]\n\t\tlocal name = entry[1]\n\t\tlocal value = entry[2]\n\t\tlocal hook = molt_get_attr(value, \"__set_name__\")\n\t\tif hook ~= nil then hook(cls, name) end\n\tend\n\treturn nil\nend\n",
             ),
             (
+                "molt_matmul",
+                "local function molt_matmul(a: any, b: any): any\n\tlocal lhs = molt_get_attr(a, \"__matmul__\")\n\tif lhs ~= nil then\n\t\tlocal result = lhs(b)\n\t\tif result ~= molt_not_implemented then return result end\n\tend\n\tlocal rhs = molt_get_attr(b, \"__rmatmul__\")\n\tif rhs ~= nil then\n\t\tlocal result = rhs(a)\n\t\tif result ~= molt_not_implemented then return result end\n\tend\n\terror({__type=\"TypeError\", __msg=\"unsupported operand type(s) for @: '\" .. type(a) .. \"' and '\" .. type(b) .. \"'\"})\nend\n",
+            ),
+            (
                 "molt_guard_type",
                 "local function molt_guard_type(val: any, expected: any): any\n\tif type(expected) ~= \"number\" then error({__type=\"TypeError\", __msg=\"guard type tag must be int\"}) end\n\treturn val\nend\n",
             ),
@@ -631,14 +635,20 @@ impl LuauBackend {
             || used_call("molt_isinstance");
         let needs_type_of = used_call("molt_type_of") || used_call("molt_isinstance");
         let needs_issubclass = used_call("molt_issubclass") || used_call("molt_isinstance");
+        let needs_not_implemented = used("molt_not_implemented") || used_call("molt_matmul");
         let needs_get_attr = used_call("molt_get_attr")
             || used_call("molt_get_attr_default")
             || used_call("molt_has_attr")
             || used_call("molt_set_attr")
             || used_call("molt_del_attr")
-            || used_call("molt_class_apply_set_name");
+            || used_call("molt_class_apply_set_name")
+            || used_call("molt_matmul");
         if needs_str_group {
             self.output.push_str("local molt_repr\n");
+        }
+        if needs_not_implemented {
+            self.output
+                .push_str("local molt_not_implemented = {__molt_not_implemented = true}\n");
         }
         for (name, source) in helpers {
             let emit = if matches!(*name, "molt_str" | "molt_repr") {
@@ -1373,7 +1383,11 @@ impl LuauBackend {
                 let s = op.s_value.as_deref().unwrap_or("0");
                 self.emit_line(&format!("local {out} = tonumber(\"{s}\") or 0"));
             }
-            "const_not_implemented" | "const_ellipsis" => {
+            "const_not_implemented" => {
+                let out = self.out_var(op);
+                self.emit_line(&format!("local {out} = molt_not_implemented"));
+            }
+            "const_ellipsis" => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = nil -- {}", op.kind));
             }
@@ -1612,7 +1626,12 @@ impl LuauBackend {
             }
             "matmul" => {
                 let out = self.out_var(op);
-                self.emit_line(&format!("local {out} = nil -- [unsupported op: matmul]"));
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let lhs = sanitize_ident(&args[0]);
+                    let rhs = sanitize_ident(&args[1]);
+                    self.emit_line(&format!("local {out} = molt_matmul({lhs}, {rhs})"));
+                }
             }
             "round" => {
                 let out = self.out_var(op);
@@ -11688,7 +11707,7 @@ mod tests {
                 source_file: None,
                 is_extern: false,
                 ops: vec![OpIR {
-                    kind: "matmul".to_string(),
+                    kind: "unknown_luau_op".to_string(),
                     out: Some("v0".to_string()),
                     args: Some(vec!["v1".to_string(), "v2".to_string()]),
                     ..OpIR::default()
@@ -11701,11 +11720,11 @@ mod tests {
             .compile_via_ir(&ir)
             .expect_err("preview/IR path must reject unsupported output");
         assert!(err.contains("unsupported marker"));
-        assert!(err.contains("[unsupported op: matmul]"));
+        assert!(err.contains("[unsupported op: unknown_luau_op]"));
     }
 
     #[test]
-    fn test_compile_checked_rejects_unsupported_matmul() {
+    fn test_compile_checked_lowers_matmul_dunder_dispatch() {
         let ir = SimpleIR {
             functions: vec![FunctionIR {
                 name: "matmul_test".to_string(),
@@ -11723,16 +11742,60 @@ mod tests {
             profile: None,
         };
         let mut backend = LuauBackend::new();
-        let err = backend
+        let source = backend
             .compile_checked(&ir)
-            .expect_err("compile_checked must reject unsupported matmul");
+            .expect("matmul should lower through Luau dunder helper");
         assert!(
-            err.contains("unsupported marker"),
-            "error should mention unsupported marker, got: {err}"
+            source.contains("local function molt_matmul")
+                && source.contains("local v0 = molt_matmul(v1, v2)")
+                && source.contains("molt_get_attr(a, \"__matmul__\")")
+                && source.contains("molt_get_attr(b, \"__rmatmul__\")"),
+            "matmul should share Luau descriptor lookup authority, got:\n{source}"
         );
         assert!(
-            err.contains("[unsupported op: matmul]"),
-            "error should mention matmul op, got: {err}"
+            !source.contains("[unsupported op: matmul]"),
+            "matmul must not leave checked-output markers, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_matmul_not_implemented_reflection() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "matmul_not_implemented_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const_not_implemented".to_string(),
+                        out: Some("not_impl".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "matmul".to_string(),
+                        out: Some("v0".to_string()),
+                        args: Some(vec!["lhs".to_string(), "rhs".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("NotImplemented-aware matmul should lower without markers");
+        assert!(
+            source.contains("local molt_not_implemented = {__molt_not_implemented = true}")
+                && source.contains("local not_impl = molt_not_implemented")
+                && source.contains("if result ~= molt_not_implemented then return result end"),
+            "matmul should use a concrete NotImplemented sentinel, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[unsupported op: matmul]"),
+            "matmul NotImplemented path must not leave checked-output markers, got:\n{source}"
         );
     }
 
@@ -12685,7 +12748,7 @@ mod tests {
 
     #[test]
     fn test_default_luau_dispatch_uses_checked_path() {
-        // Verify that both compile_via_ir and compile_checked reject the same ops.
+        // Verify that both compile_via_ir and compile_checked reject the same unknown ops.
         // This ensures no fail-open path exists.
         let ir = SimpleIR {
             functions: vec![FunctionIR {
@@ -12695,7 +12758,7 @@ mod tests {
                 source_file: None,
                 is_extern: false,
                 ops: vec![OpIR {
-                    kind: "matmul".to_string(),
+                    kind: "unknown_luau_op".to_string(),
                     out: Some("v0".to_string()),
                     args: Some(vec!["v1".to_string(), "v2".to_string()]),
                     ..OpIR::default()
@@ -12707,10 +12770,10 @@ mod tests {
         let mut backend_checked = LuauBackend::new();
         let err_ir = backend_ir
             .compile_via_ir(&ir)
-            .expect_err("compile_via_ir must reject unsupported ops");
+            .expect_err("compile_via_ir must reject unknown ops");
         let err_checked = backend_checked
             .compile_checked(&ir)
-            .expect_err("compile_checked must reject unsupported ops");
+            .expect_err("compile_checked must reject unknown ops");
         assert_eq!(
             err_ir, err_checked,
             "compile_via_ir and compile_checked must produce identical errors"
