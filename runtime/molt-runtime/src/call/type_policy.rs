@@ -87,9 +87,7 @@ pub(crate) unsafe fn resolved_constructor_init_policy(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
-    };
+    use super::{InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy};
     use crate::builtins::methods::{object_method_bits, type_method_bits};
     use crate::object::builders::alloc_function_obj;
     use crate::{MoltObject, dec_ref_bits};
@@ -141,11 +139,8 @@ mod tests {
     #[test]
     fn constructor_policy_skips_object_init_for_custom_new() {
         crate::with_gil_entry_nopanic!(_py, {
-            let new_ptr = alloc_function_obj(
-                _py,
-                custom_new_policy_probe as *const () as usize as u64,
-                1,
-            );
+            let new_ptr =
+                alloc_function_obj(_py, custom_new_policy_probe as *const () as usize as u64, 1);
             assert!(!new_ptr.is_null());
             let new_bits = MoltObject::from_ptr(new_ptr).bits();
             let init_bits = object_method_bits(_py, "__init__");
@@ -160,11 +155,8 @@ mod tests {
     #[test]
     fn constructor_policy_forwards_args_to_custom_init_even_with_custom_new() {
         crate::with_gil_entry_nopanic!(_py, {
-            let new_ptr = alloc_function_obj(
-                _py,
-                custom_new_policy_probe as *const () as usize as u64,
-                1,
-            );
+            let new_ptr =
+                alloc_function_obj(_py, custom_new_policy_probe as *const () as usize as u64, 1);
             let init_ptr = alloc_function_obj(
                 _py,
                 custom_init_policy_probe as *const () as usize as u64,

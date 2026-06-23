@@ -850,6 +850,39 @@ def test_function_metadata_uses_runtime_helper_instead_of_attr_storm() -> None:
     )
 
 
+def test_frontend_intrinsic_function_objects_carry_manifest_defaults() -> None:
+    source = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "length_hint = _require_intrinsic('molt_operator_length_hint')\n"
+    )
+    gen = SimpleTIRGenerator(module_name="intrinsic_defaults_probe")
+    gen.visit(ast.parse(source))
+
+    ops = [op for func in gen.funcs_map.values() for op in func["ops"]]
+    builtin_index = next(
+        idx
+        for idx, op in enumerate(ops)
+        if op.kind == "BUILTIN_FUNC" and op.args == ["molt_operator_length_hint", 2]
+    )
+    func_var = ops[builtin_index].result
+    tuple_vars = {
+        op.result.name
+        for op in ops[builtin_index + 1 :]
+        if op.kind == "TUPLE_NEW"
+        and len(op.args) == 1
+        and isinstance(op.args[0], MoltValue)
+    }
+
+    assert any(
+        op.kind == "SETATTR_GENERIC_OBJ"
+        and op.args[0] == func_var
+        and op.args[1] == "__defaults__"
+        and isinstance(op.args[2], MoltValue)
+        and op.args[2].name in tuple_vars
+        for op in ops[builtin_index + 1 :]
+    )
+
+
 def test_non_phi_or_with_call_avoids_list_cell_result_plumbing() -> None:
     source = (
         "def left():\n"
