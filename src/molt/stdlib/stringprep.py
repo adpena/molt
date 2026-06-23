@@ -11,6 +11,7 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _stringprep_in_table = _require_intrinsic("molt_stringprep_in_table")
+_stringprep_map_table_b2 = _require_intrinsic("molt_stringprep_map_table_b2")
 _stringprep_map_table_b3 = _require_intrinsic("molt_stringprep_map_table_b3")
 
 
@@ -30,20 +31,8 @@ def map_table_b3(code):
 
 
 def map_table_b2(a):
-    """Table B.2: NFKC case folding.
-
-    NOTE: Requires UCD 3.2.0 NFKC normalization. Currently falls back to
-    map_table_b3 without NFKC normalization, which is correct for ASCII
-    labels but may differ for complex Unicode inputs.
-    """
-    # Full implementation requires:
-    #   al = map_table_b3(a)
-    #   b = unicodedata_3_2_0.normalize("NFKC", al)
-    #   bl = "".join([map_table_b3(ch) for ch in b])
-    #   c = unicodedata_3_2_0.normalize("NFKC", bl)
-    #   return c if b != c else al
-    # For now, return b3 result (correct for the common case)
-    return map_table_b3(a)
+    """Table B.2: NFKC case folding."""
+    return _stringprep_map_table_b2(a)
 
 
 def in_table_c11(code):

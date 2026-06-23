@@ -1,9 +1,9 @@
 # Parallel-Build Architecture: maximizing dev velocity + incremental throughput
 
-Status: live routing doc / partially landed (refreshed 2026-06-12).
+Status: live routing doc / partially landed (refreshed 2026-06-20).
 The live codebase and executable Cargo metadata remain authoritative.
 
-## Live State Snapshot (2026-06-12)
+## Live State Snapshot (2026-06-20)
 
 - The build-iteration profile fix from this document has already landed in the
   root `Cargo.toml`: `release-fast` uses thin LTO with high codegen-unit
@@ -15,10 +15,12 @@ The live codebase and executable Cargo metadata remain authoritative.
   `-regex`, `-path`, `-itertools`, `-difflib`, `-logging`, `-http`, `-xml`,
   `-ipaddress`, `-zoneinfo`, `-stringprep`, and `-tk`. Guarded
   `cargo metadata --no-deps` reports these as workspace packages.
-- `molt-runtime-stringprep` is now a completed leaf-ownership example:
-  the in-facade fallback module was deleted, `molt_stringprep_*` is a
-  `stdlib_stringprep` link-affecting gate, and checks pass with the feature
-  both enabled and disabled.
+- `molt-runtime-stringprep`, the `html` / `unicodedata` portions of
+  `molt-runtime-text`, and `molt-runtime-zoneinfo` are completed leaf-ownership
+  examples: their in-facade fallback modules are deleted, `molt_stringprep_*`,
+  `molt_html_*`, `molt_unicodedata_*`, and `molt_zoneinfo_*` resolver arms are
+  link-affecting feature gates, and feature-on/feature-off checks prove the
+  facade no longer carries duplicate authorities for those domains.
 - The extraction is not complete. `molt-runtime` is still the facade plus a
   large implementation owner, `runtime/molt-backend/src/native_backend/function_compiler.rs`
   remains a ~28K-line codegen lock, and `src/molt/frontend/__init__.py` remains
@@ -33,6 +35,13 @@ The live codebase and executable Cargo metadata remain authoritative.
   parallel batch at a time, then applied and cache-written before the next batch
   is materialized. This is the current backend compile-memory response for the
   enabled off-the-shelf tinygrad runner.
+- The generated runtime intrinsic resolver is no longer one monolithic Rust
+  source file. `runtime/molt-runtime/src/intrinsics/generated.rs` keeps the
+  parser-facing `INTRINSICS` manifest table and re-exports a thin resolver, while
+  `runtime/molt-runtime/src/intrinsics/generated_resolvers/` owns one generated
+  resolver module per intrinsic category. This reduces resolver edit
+  invalidation and makes the future per-leaf-crate registry cut mechanical
+  instead of duplicating resolver authority.
 - The next throughput work is therefore extraction/composition, not another
   profile-only LTO fix.
 
@@ -49,9 +58,12 @@ The live codebase and executable Cargo metadata remain authoritative.
    centered on `function_compiler.rs`; frontend F1 split files, but F2 semantic
    authority split is still active work.
 3. **Shared-cache policy is still more important than raw local target size.**
-   Per-worktree `target/` roots isolate agents correctly, but the system still
-   needs more shared, deterministic cache surfaces so the Nth agent does not
-   rebuild what the first agent already proved.
+   The current throughput bootstrap derives one canonical artifact root through
+   `RunContext`/`tools/throughput_env.sh`, prefers a healthy external root when
+   configured, and shares `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
+   `MOLT_CACHE`, and `.sccache` under that root. Isolation comes from
+   `MOLT_SESSION_ID`, daemon/socket identity, and lock custody rather than each
+   agent inventing a private target tree.
 
 ## Prioritized levers (highest leverage first)
 
@@ -85,12 +97,19 @@ Hard constraints / watch-items:
   duplicate authority is part of the extraction work. Cyclic deps are illegal in
   cargo — design the layering as a DAG (core ← text/num/collections ←
   exceptions/iter ← facade).
-- **`intrinsics/generated.rs` (24K lines) is a hub**: `resolve_core_symbol`
-  address-takes every intrinsic, creating an artificial all-to-one dependency that
-  also defeats `-dead_strip` (see the binary-size baton). Generate **per-crate
-  intrinsic sub-registries** composed by a thin top-level resolver. This
-  simultaneously: (i) breaks the build hub, (ii) advances the per-app intrinsic
-  tree-shaking / <2MB binary-size goal. Two top priorities solved by one refactor.
+- The generated resolver hub is split at source-file granularity:
+  `generated.rs` remains the manifest table, and generated per-category resolver
+  modules own the address-taking match arms. The generator emits rustfmt-stable
+  resolver files and skips exact-content no-op writes before invoking rustfmt,
+  lazy-loads formatting custody only for changed Rust files, and prevents
+  repeated generation from dirtying mtimes or triggering needless Cargo
+  rebuilds. `molt-runtime-stringprep` now owns the first generated per-crate
+  intrinsic sub-registry, with the `molt-runtime` category resolver reduced to a
+  feature-gated facade delegate. The remaining structural target is moving the
+  other category resolvers into **per-crate intrinsic sub-registries** composed
+  by a thin facade resolver. This simultaneously: (i) finishes breaking the
+  build hub, (ii) advances the per-app intrinsic tree-shaking / <2MB binary-size
+  goal. Two top priorities solved by one refactor.
 - Do it as a real structural arc (one cohesive crate at a time, each landing
   green), not a half-split that leaves two sources of truth.
 
@@ -112,8 +131,10 @@ should extend the measurement to crate extraction and cache-hit rebuild cases.
 - **`sccache`**: caches compiled rlibs across sessions AND worktrees. The repo
   already has `MOLT_USE_SCCACHE` + `_run_cargo_with_sccache_retry`; make it
   default-on for dev. This is enormous for the **multi-agent worktree model** —
-  today each `.claude/worktrees/agent-*` has its own `target/` and recompiles the
-  whole world; sccache lets the Nth agent reuse the 1st's artifacts.
+  today any agent that misses the canonical throughput env can fall back to a
+  private `target/` and recompile the whole world; `tools/new-agent-task.sh`
+  writes `logs/agents/<task>/env.sh` so each lane can source the same
+  shared-root policy before building.
 - **Fast linker**: `release-fast`/fat-LTO link of a 344K-line crate is link-bound.
   `-C link-arg=-fuse-ld=lld` (mac) / `mold` (Linux). Currently opt-in only in
   `.cargo/config.toml`; flip on for dev profiles (keep the portable baseline for CI).
@@ -130,9 +151,10 @@ prefer additive features resolved once.
 ### 5. Multi-agent worktree throughput
 The heavy worktree-per-agent model (currently many `worktree-agent-*`) maximally
 benefits from #1 (agents editing different leaf crates don't serialize on the
-monolith) + #3 (shared sccache). Consider a shared read-only `CARGO_HOME`/registry
-cache + a shared sccache dir across worktrees (the session-scoped `target/` stays
-per-agent for isolation; the *cache* is shared).
+monolith) + #3 (shared canonical artifact roots and sccache). Keep
+`CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `.sccache`, and
+`tmp/` under the chosen artifact root; keep per-agent separation in
+`MOLT_SESSION_ID`, daemon sockets, logs, and worktree ownership.
 
 ## Sequencing (each step lands green; no half-states)
 1. **Structural runtime composition:** continue turning `molt-runtime` into a
@@ -142,14 +164,16 @@ per-agent for isolation; the *cache* is shared).
 2. **Backend-native extraction:** create the `molt-backend-native` crate only
    when `native_backend/*` plus `llvm_backend/*` can move as one authority over
    native lowering. Keep TIR/passes/representation facts in backend core.
-3. **Intrinsic registry:** per-crate intrinsic sub-registries + thin composing
-   resolver (co-designed with the binary-size per-app resolver work).
+3. **Intrinsic registry:** the generated resolver source split has landed and
+   the `stringprep` resolver is now leaf-owned; continue moving remaining
+   categories to per-crate intrinsic sub-registries + thin composing facade
+   resolvers, co-designed with the binary-size per-app resolver work.
 4. **Frontend F2:** replace the F1 move-only mixin split with semantic authority
    surfaces so frontend changes stop serializing through one shared class/state
    owner.
 
 ## Cross-cutting wins
-- Decomposition (#1) + per-crate intrinsic registries (#3-structural) ALSO advance
+- Decomposition (#1) + split/per-crate intrinsic registries (#3-structural) ALSO advance
   the **<2MB binary-size** goal (precise per-app dead-strip) and the **typed-IR /
   backend-coherence** work (clearer crate contracts). One structural arc, three
   roadmap goals.

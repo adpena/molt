@@ -27,8 +27,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
     local_inc_ref_obj: FuncRef,
 ) -> OpFlow {
     // Reconstruct the original op-local closure (captures bool_primary_vars +
@@ -45,9 +43,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        int_primary_vars: &BTreeSet<String>,
-                                       float_primary_vars: &BTreeSet<String>,
-                                       box_int_mask_var: Variable,
-                                       box_int_tag_var: Variable|
+                                       float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -61,8 +57,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             float_primary_vars,
             bool_primary_vars,
             nbc,
-            box_int_mask_var,
-            box_int_tag_var,
         )
     };
     match op.kind.as_str() {
@@ -78,8 +72,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
@@ -202,8 +194,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let Some(attr_name) = op.s_value.as_ref() else {
@@ -259,8 +249,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let Some(attr_name) = op.s_value.as_ref() else {
@@ -311,8 +299,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
@@ -325,8 +311,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -359,8 +343,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
@@ -373,8 +355,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr name not found");
             let default = var_get_boxed_overflow_safe(
@@ -387,8 +367,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[2],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr default not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -419,8 +397,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
@@ -433,8 +409,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr name not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -463,8 +437,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
@@ -477,8 +449,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr name not found");
             let val = var_get_boxed_overflow_safe(
@@ -491,8 +461,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[2],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -521,8 +489,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let val = var_get_boxed_overflow_safe(
@@ -535,8 +501,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr value not found");
             let Some(attr_name) = op.s_value.as_ref() else {
@@ -599,8 +563,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let val = var_get_boxed_overflow_safe(
@@ -613,8 +575,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr value not found");
             let Some(attr_name) = op.s_value.as_ref() else {
@@ -663,8 +623,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let Some(attr_name) = op.s_value.as_ref() else {
@@ -721,8 +679,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let Some(attr_name) = op.s_value.as_ref() else {
@@ -771,8 +727,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .unwrap_or_else(|| panic!("Attr object not found in {} op {}", func_name, op_idx));
             let name = var_get_boxed_overflow_safe(
@@ -785,8 +739,6 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Attr name not found");
             let callee = SimpleBackend::import_func_id_split(

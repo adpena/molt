@@ -27,7 +27,9 @@ def test_run_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
 
     def fake_guarded_completed_process(cmd, **kwargs):
         calls.append({"cmd": list(cmd), **kwargs})
-        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="err\n", elapsed_s=0.125)
+        return SimpleNamespace(
+            returncode=0, stdout="ok\n", stderr="err\n", elapsed_s=0.125
+        )
 
     monkeypatch.setattr(
         module.harness_memory_guard,

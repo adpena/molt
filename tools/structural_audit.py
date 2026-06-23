@@ -36,7 +36,7 @@ import argparse
 import json
 import re
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 ROOT_DEFAULT = Path(__file__).resolve().parents[1]
@@ -48,9 +48,18 @@ BOARD_PATH_REL = "docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md"
 # Directory segments that are never source-of-truth: VCS, build outputs,
 # vendored trybuild fixtures, virtualenvs, agent worktrees, recovery scratch.
 _EXCLUDE_SEGMENTS = {
-    ".git", "target", "target-oswalk-impl", "trybuild", "node_modules",
-    ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache",
-    "worktrees", ".claude",
+    ".git",
+    "target",
+    "target-oswalk-impl",
+    "trybuild",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    "worktrees",
+    ".claude",
 }
 _EXCLUDE_PREFIXES = (".worktree_recovery_", "wt_")
 # memory/recovery holds preserved WIP patches, not live source.
@@ -169,9 +178,20 @@ _MATCHES_MACRO_RE = re.compile(r"\bmatches!\s*\(")
 # is a latent UAF/miscompile; in a loop/gvn/numeric pass it is merely a missed
 # optimization. Weighted so the board surfaces the dangerous ones first.
 _CRITICAL_FILE_HINTS = (
-    "alias_analysis", "escape_analysis", "drop_insertion", "refcount",
-    "effects", "exception", "ownership", "lower_to_lir", "function_compiler",
-    "llvm_backend", "wasm.rs", "callable", "ic", "inline",
+    "alias_analysis",
+    "escape_analysis",
+    "drop_insertion",
+    "refcount",
+    "effects",
+    "exception",
+    "ownership",
+    "lower_to_lir",
+    "function_compiler",
+    "llvm_backend",
+    "wasm.rs",
+    "callable",
+    "ic",
+    "inline",
 )
 
 # A default arm that FAILS LOUD is the correct fail-closed dispatch pattern
@@ -184,7 +204,9 @@ _FAILLOUD_RE = re.compile(
 # lowering dispatch, not a semantic classification — excluded from the drift
 # surface (it cannot encode a wrong *fact*, only route a missing *lowering*,
 # and the missing-lowering case is caught by backend_support_audit instead).
-_EMITTER_RE = re.compile(r"\bself\.|builder|\.build_|emit_|into_(int|float|pointer)_value")
+_EMITTER_RE = re.compile(
+    r"\bself\.|builder|\.build_|emit_|into_(int|float|pointer)_value"
+)
 # An "optimistic" default token asserts the *absence* of a hazard (no-alias,
 # no-escape, precise-type, pure) for an UNKNOWN opcode — the shape that turns a
 # new opcode into a silent miscompile. Conservative tokens (true/GlobalEscape/
@@ -303,18 +325,20 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
                 sev = "medium"
             else:
                 sev = "low"
-            findings.append(Finding(
-                probe="semantic_fallthrough",
-                severity=sev,
-                title=f"hand-classified `match` over {opcode_arms} opcodes (silent default)",
-                location=f"{rel}:{line}",
-                detail=f"scrutinee `{scrutinee.strip()[:50]}`; default `{default_txt}`",
-                suggested_action="if this encodes op semantics, migrate into "
-                                 "op_kinds.toml ([[opcode]] row / classifier set) "
-                                 "and read the generated predicate",
-                class_retired="hand-maintained-opcode-fact",
-                metric=opcode_arms + (50 if critical else 0),
-            ))
+            findings.append(
+                Finding(
+                    probe="semantic_fallthrough",
+                    severity=sev,
+                    title=f"hand-classified `match` over {opcode_arms} opcodes (silent default)",
+                    location=f"{rel}:{line}",
+                    detail=f"scrutinee `{scrutinee.strip()[:50]}`; default `{default_txt}`",
+                    suggested_action="if this encodes op semantics, migrate into "
+                    "op_kinds.toml ([[opcode]] row / classifier set) "
+                    "and read the generated predicate",
+                    class_retired="hand-maintained-opcode-fact",
+                    metric=opcode_arms + (50 if critical else 0),
+                )
+            )
 
         # (b) matches!(x, OpCode::A | OpCode::B | ..) — implicit-false hand-set.
         for mm in _MATCHES_MACRO_RE.finditer(text):
@@ -327,18 +351,20 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
                 continue  # 1-2 opcode guards are legitimate structural checks
             line = text.count("\n", 0, mm.start()) + 1
             sev = "medium" if critical else "low"
-            findings.append(Finding(
-                probe="semantic_fallthrough",
-                severity=sev,
-                title=f"`matches!` hand-set of {len(arms)} opcodes (implicit-false default)",
-                location=f"{rel}:{line}",
-                detail=f"set: {', '.join(sorted(a.split('::')[1] for a in arms))[:80]}",
-                suggested_action="if this encodes a semantic property, add a "
-                                 "classifier set to op_kinds.toml and query the "
-                                 "generated predicate instead of a literal list",
-                class_retired="missed-fact-on-new-opcode",
-                metric=len(arms),
-            ))
+            findings.append(
+                Finding(
+                    probe="semantic_fallthrough",
+                    severity=sev,
+                    title=f"`matches!` hand-set of {len(arms)} opcodes (implicit-false default)",
+                    location=f"{rel}:{line}",
+                    detail=f"set: {', '.join(sorted(a.split('::')[1] for a in arms))[:80]}",
+                    suggested_action="if this encodes a semantic property, add a "
+                    "classifier set to op_kinds.toml and query the "
+                    "generated predicate instead of a literal list",
+                    class_retired="missed-fact-on-new-opcode",
+                    metric=len(arms),
+                )
+            )
     return findings
 
 
@@ -356,18 +382,26 @@ def probe_god_files(root: Path, ceiling: int = 4000) -> list[Finding]:
             if n < lang_ceiling:
                 continue
             rel = path.relative_to(root).as_posix()
-            sev = "high" if n >= lang_ceiling * 3 else "medium" if n >= lang_ceiling * 1.5 else "low"
-            findings.append(Finding(
-                probe="god_file",
-                severity=sev,
-                title=f"{n} lines (ceiling {lang_ceiling})",
-                location=rel,
-                detail=f"{n} lines — {n // lang_ceiling}× the {suffix} decomposition ceiling",
-                suggested_action="extract cohesive submodules along legible seams "
-                                 "(Lattner: one responsibility per file)",
-                class_retired="god-object-extension-fear",
-                metric=n,
-            ))
+            sev = (
+                "high"
+                if n >= lang_ceiling * 3
+                else "medium"
+                if n >= lang_ceiling * 1.5
+                else "low"
+            )
+            findings.append(
+                Finding(
+                    probe="god_file",
+                    severity=sev,
+                    title=f"{n} lines (ceiling {lang_ceiling})",
+                    location=rel,
+                    detail=f"{n} lines — {n // lang_ceiling}× the {suffix} decomposition ceiling",
+                    suggested_action="extract cohesive submodules along legible seams "
+                    "(Lattner: one responsibility per file)",
+                    class_retired="god-object-extension-fear",
+                    metric=n,
+                )
+            )
     return findings
 
 
@@ -396,17 +430,19 @@ def probe_debt_markers(root: Path) -> list[Finding]:
             continue
         rel = path.relative_to(root).as_posix()
         sev = "medium" if count >= 15 else "low"
-        findings.append(Finding(
-            probe="debt_marker",
-            severity=sev,
-            title=f"{count} debt/workaround markers",
-            location=rel,
-            detail="TODO/FIXME/HACK/XXX/WORKAROUND/unimplemented!/'for now'",
-            suggested_action="resolve in place (zero-workaround policy) or convert "
-                             "to a tracked task with a structural fix",
-            class_retired="accumulating-technical-debt",
-            metric=count,
-        ))
+        findings.append(
+            Finding(
+                probe="debt_marker",
+                severity=sev,
+                title=f"{count} debt/workaround markers",
+                location=rel,
+                detail="TODO/FIXME/HACK/XXX/WORKAROUND/unimplemented!/'for now'",
+                suggested_action="resolve in place (zero-workaround policy) or convert "
+                "to a tracked task with a structural fix",
+                class_retired="accumulating-technical-debt",
+                metric=count,
+            )
+        )
     return findings
 
 
@@ -429,13 +465,20 @@ def probe_duplicate_authorities(root: Path) -> list[Finding]:
     opcode/kind) by property and flags properties spread across ≥2 files."""
     by_keyword: dict[str, list[str]] = {}
     keyword_map = {
-        "may_throw": "may_throw", "side_effect": "side_effecting",
-        "is_pure": "purity", "mints_fresh": "fresh_value_ownership",
-        "is_inert": "inert_marker", "no_heap_move": "no_heap_move",
-        "is_barrier": "barrier", "operand_consume": "operand_consume",
-        "consumes_operand": "operand_consume", "is_inlinab": "inlinability",
-        "may_alias": "aliasing", "may_escape": "escape_analysis",
-        "opcode_escapes": "escape_analysis", "is_leaf_call": "leaf",
+        "may_throw": "may_throw",
+        "side_effect": "side_effecting",
+        "is_pure": "purity",
+        "mints_fresh": "fresh_value_ownership",
+        "is_inert": "inert_marker",
+        "no_heap_move": "no_heap_move",
+        "is_barrier": "barrier",
+        "operand_consume": "operand_consume",
+        "consumes_operand": "operand_consume",
+        "is_inlinab": "inlinability",
+        "may_alias": "aliasing",
+        "may_escape": "escape_analysis",
+        "opcode_escapes": "escape_analysis",
+        "is_leaf_call": "leaf",
     }
     for path in _iter_source_files(root, (".rs",)):
         if _is_generated(path):
@@ -448,7 +491,7 @@ def probe_duplicate_authorities(root: Path) -> list[Finding]:
         for m in _PREDICATE_RE.finditer(text):
             fn = m.group(1)
             # require opcode/kind context in the function body window
-            window = text[m.end(): m.end() + 800]
+            window = text[m.end() : m.end() + 800]
             if not _OPCODE_CONTEXT_RE.search(window):
                 continue
             for needle, prop in keyword_map.items():
@@ -461,17 +504,19 @@ def probe_duplicate_authorities(root: Path) -> list[Finding]:
         files = {s.split(":")[0] for s in sites}
         if len(files) < 2:
             continue
-        findings.append(Finding(
-            probe="duplicate_authority",
-            severity="medium" if len(files) >= 3 else "low",
-            title=f"property `{prop}` classified in {len(files)} files",
-            location="; ".join(sorted(files)),
-            detail="sites: " + " | ".join(sites[:6]),
-            suggested_action=f"make op_kinds.toml the sole authority for `{prop}` "
-                             "and have every site read the generated predicate",
-            class_retired="duplicate-semantic-authority-drift",
-            metric=len(files),
-        ))
+        findings.append(
+            Finding(
+                probe="duplicate_authority",
+                severity="medium" if len(files) >= 3 else "low",
+                title=f"property `{prop}` classified in {len(files)} files",
+                location="; ".join(sorted(files)),
+                detail="sites: " + " | ".join(sites[:6]),
+                suggested_action=f"make op_kinds.toml the sole authority for `{prop}` "
+                "and have every site read the generated predicate",
+                class_retired="duplicate-semantic-authority-drift",
+                metric=len(files),
+            )
+        )
     return findings
 
 
@@ -520,22 +565,28 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
         return findings
     variants = _count_enum_variants(ops_rs.read_text(errors="replace"), "OpCode")
     toml_text = toml_path.read_text(errors="replace")
-    opcode_rows = set(re.findall(r'^\s*opcode\s*=\s*"([A-Za-z0-9_]+)"', toml_text, re.MULTILINE))
+    opcode_rows = set(
+        re.findall(r'^\s*opcode\s*=\s*"([A-Za-z0-9_]+)"', toml_text, re.MULTILINE)
+    )
     # Fallback: rows may key by [[opcode]] then name field; also accept name=.
     if not opcode_rows:
-        opcode_rows = set(re.findall(r'^\s*name\s*=\s*"([A-Za-z0-9_]+)"', toml_text, re.MULTILINE))
-    findings.append(Finding(
-        probe="registry_reconciliation",
-        severity="info",
-        title=f"OpCode variants={len(variants)} · [[opcode]] rows≈{len(opcode_rows)}",
-        location="runtime/molt-backend/src/tir/{ops.rs,op_kinds.toml}",
-        detail="effect oracle is an exhaustive (no-wildcard) match — coverage is "
-               "rustc-enforced; this line is parser confidence only, not a gate",
-        suggested_action="no action unless a NEW non-exhaustive opcode classifier "
-                         "appears (probe semantic_fallthrough catches those)",
-        class_retired="",
-        metric=0,
-    ))
+        opcode_rows = set(
+            re.findall(r'^\s*name\s*=\s*"([A-Za-z0-9_]+)"', toml_text, re.MULTILINE)
+        )
+    findings.append(
+        Finding(
+            probe="registry_reconciliation",
+            severity="info",
+            title=f"OpCode variants={len(variants)} · [[opcode]] rows≈{len(opcode_rows)}",
+            location="runtime/molt-backend/src/tir/{ops.rs,op_kinds.toml}",
+            detail="effect oracle is an exhaustive (no-wildcard) match — coverage is "
+            "rustc-enforced; this line is parser confidence only, not a gate",
+            suggested_action="no action unless a NEW non-exhaustive opcode classifier "
+            "appears (probe semantic_fallthrough catches those)",
+            class_retired="",
+            metric=0,
+        )
+    )
     return findings
 
 
@@ -558,6 +609,7 @@ def run_all(root: Path) -> list[Finding]:
 
 # --- ratchet metrics (the --check gate) -----------------------------------
 
+
 def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     """Aggregate scalars that may only improve (decrease). CI fails on regress.
 
@@ -574,7 +626,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         # the hand-maintained-opcode-fact surface (match classifiers w/ silent default)
         "hand_classified_matches": float(len(match_cls)),
         # the high-priority subset: critical file AND large (≥6-opcode) hand-list
-        "critical_hand_classifications": float(sum(1 for f in match_cls if f.severity == "high")),
+        "critical_hand_classifications": float(
+            sum(1 for f in match_cls if f.severity == "high")
+        ),
         # hand-maintained opcode SETS via matches! (≥3 opcodes) in any file
         "handset_classifications": float(len(handsets)),
         "debt_markers_total": float(sum(int(f.metric) for f in debt)),
@@ -606,20 +660,28 @@ _DELETION_PLAYBOOK = {
 # must name its own limitations + the missing instruments). This encodes the
 # binding discovery-vs-authority rule.
 _TOOLING_GAPS = [
-    ("RULE: discovery may be heuristic; authority may not",
-     "this tool's regex discovery RANKS candidates only; it asserts no semantic "
-     "correctness. The authoritative gate stays tools/gen_op_kinds.py --check "
-     "(consumes the generated registry). A future version should parse the Rust "
-     "AST / consume compiler-emitted facts for any claim that gates behavior."),
-    ("MISSING: fact-by-benchmark attribution",
-     "MISSING-FACT-by-benchmark impact needs tools/call_fact_coverage.py (built) "
-     "+ tools/perf_causality.py (not built) joined to #76 hot profiles."),
-    ("MISSING: pass-delta ledger",
-     "tools/pass_delta_dashboard.py (not built) — which pass loses Repr / adds "
-     "boxing / increases generic calls / RC events. Needed to attribute drift."),
-    ("MISSING: fact graph",
-     "runtime/.../fact_graph.rs + tools/fact_graph_dump.py (not built) — per-value "
-     "provenance (producer/consumer/invalidator) to explain 'why is this boxed?'."),
+    (
+        "RULE: discovery may be heuristic; authority may not",
+        "this tool's regex discovery RANKS candidates only; it asserts no semantic "
+        "correctness. The authoritative gate stays tools/gen_op_kinds.py --check "
+        "(consumes the generated registry). A future version should parse the Rust "
+        "AST / consume compiler-emitted facts for any claim that gates behavior.",
+    ),
+    (
+        "MISSING: fact-by-benchmark attribution",
+        "MISSING-FACT-by-benchmark impact needs tools/call_fact_coverage.py (built) "
+        "+ tools/perf_causality.py (not built) joined to #76 hot profiles.",
+    ),
+    (
+        "MISSING: pass-delta ledger",
+        "tools/pass_delta_dashboard.py (not built) — which pass loses Repr / adds "
+        "boxing / increases generic calls / RC events. Needed to attribute drift.",
+    ),
+    (
+        "MISSING: fact graph",
+        "runtime/.../fact_graph.rs + tools/fact_graph_dump.py (not built) — per-value "
+        "provenance (producer/consumer/invalidator) to explain 'why is this boxed?'.",
+    ),
 ]
 
 
@@ -633,7 +695,7 @@ def _deletion_candidates(findings: list[Finding]) -> list[tuple[str, str, str, s
             continue
         repl, gate = _DELETION_PLAYBOOK[f.probe]
         out.append((f.location, f.title, repl, gate))
-    out.sort(key=lambda t: (0 if "duplicate" in t[1] else 1))
+    out.sort(key=lambda t: 0 if "duplicate" in t[1] else 1)
     return out
 
 
@@ -675,7 +737,9 @@ def format_board(findings: list[Finding], metrics: dict[str, float]) -> str:
 
     # TOP DELETION CANDIDATES — with replacement authority + equivalence gate.
     dels = _deletion_candidates(findings)
-    lines.append(f"## TOP DELETION CANDIDATES ({len(dels)}) — replace, don't just delete")
+    lines.append(
+        f"## TOP DELETION CANDIDATES ({len(dels)}) — replace, don't just delete"
+    )
     lines.append("")
     lines.append("| where | what | replacement authority | equivalence gate |")
     lines.append("| --- | --- | --- | --- |")
@@ -692,10 +756,12 @@ def format_board(findings: list[Finding], metrics: dict[str, float]) -> str:
     for title, detail in _TOOLING_GAPS:
         lines.append(f"- **{title}** — {detail}")
     lines.append("")
-    lines.append("> MISSING-FACT-by-benchmark board lives in "
-                 "`call_fact_coverage.py` (representation census) + doc 46 — "
-                 "structural_audit does not have benchmark profiles, so it does "
-                 "not claim that board (no overclaiming).")
+    lines.append(
+        "> MISSING-FACT-by-benchmark board lives in "
+        "`call_fact_coverage.py` (representation census) + doc 46 — "
+        "structural_audit does not have benchmark profiles, so it does "
+        "not claim that board (no overclaiming)."
+    )
     lines.append("")
 
     # Full ranked findings by probe (the raw detail).
@@ -711,25 +777,45 @@ def format_board(findings: list[Finding], metrics: dict[str, float]) -> str:
         lines.append("| --- | --- | --- | --- |")
         for f in items[:40]:
             where = f.location if len(f.location) < 70 else f.location[:67] + "…"
-            lines.append(f"| {f.severity} | {f.title} | `{where}` | {f.suggested_action[:80]} |")
+            lines.append(
+                f"| {f.severity} | {f.title} | `{where}` | {f.suggested_action[:80]} |"
+            )
         if len(items) > 40:
-            lines.append(f"| … | _{len(items) - 40} more_ | | run `--json` for full list |")
+            lines.append(
+                f"| … | _{len(items) - 40} more_ | | run `--json` for full list |"
+            )
         lines.append("")
     return "\n".join(lines).rstrip("\n")
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--root", type=Path, default=ROOT_DEFAULT,
-                    help="repo root to audit (default: this tool's repo)")
-    ap.add_argument("--json", action="store_true", help="emit machine-readable findings")
-    ap.add_argument("--check", action="store_true",
-                    help="exit 1 if any ratchet metric regressed vs baseline")
-    ap.add_argument("--update-baseline", action="store_true",
-                    help="re-pin tools/structural_audit_baseline.json to current metrics")
-    ap.add_argument("--write-board", action="store_true",
-                    help="regenerate docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--root",
+        type=Path,
+        default=ROOT_DEFAULT,
+        help="repo root to audit (default: this tool's repo)",
+    )
+    ap.add_argument(
+        "--json", action="store_true", help="emit machine-readable findings"
+    )
+    ap.add_argument(
+        "--check",
+        action="store_true",
+        help="exit 1 if any ratchet metric regressed vs baseline",
+    )
+    ap.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="re-pin tools/structural_audit_baseline.json to current metrics",
+    )
+    ap.add_argument(
+        "--write-board",
+        action="store_true",
+        help="regenerate docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md",
+    )
     args = ap.parse_args(argv)
 
     root: Path = args.root.resolve()
@@ -749,15 +835,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.json:
-        print(json.dumps({
-            "metrics": metrics,
-            "findings": [asdict(f) for f in findings],
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "metrics": metrics,
+                    "findings": [asdict(f) for f in findings],
+                },
+                indent=2,
+            )
+        )
         return 0
 
     if args.check:
         if not baseline_path.is_file():
-            print(f"ERROR: no baseline at {baseline_path}; run --update-baseline", file=sys.stderr)
+            print(
+                f"ERROR: no baseline at {baseline_path}; run --update-baseline",
+                file=sys.stderr,
+            )
             return 2
         baseline = json.loads(baseline_path.read_text())
         regressions = []
@@ -767,15 +861,23 @@ def main(argv: list[str] | None = None) -> int:
             if cur > base:
                 regressions.append((key, base, cur))
         if regressions:
-            print("STRUCTURAL RATCHET REGRESSED — new structural debt added:", file=sys.stderr)
+            print(
+                "STRUCTURAL RATCHET REGRESSED — new structural debt added:",
+                file=sys.stderr,
+            )
             for key, base, cur in regressions:
                 print(f"  {key}: {base} -> {cur}  (must not increase)", file=sys.stderr)
-            print("Resolve the debt, or if intentional, justify and "
-                  "re-pin with --update-baseline.", file=sys.stderr)
+            print(
+                "Resolve the debt, or if intentional, justify and "
+                "re-pin with --update-baseline.",
+                file=sys.stderr,
+            )
             return 1
         improved = [k for k in _RATCHET_DOWN if metrics.get(k, 0) < baseline.get(k, 0)]
-        print(f"structural ratchet OK ({len(findings)} findings; "
-              f"{len(improved)} metric(s) improved)")
+        print(
+            f"structural ratchet OK ({len(findings)} findings; "
+            f"{len(improved)} metric(s) improved)"
+        )
         return 0
 
     # default: human board to stdout

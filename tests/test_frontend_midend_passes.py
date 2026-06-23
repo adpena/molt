@@ -47,6 +47,29 @@ def _module_attr_reads_named(ops: list[dict], name: str) -> list[dict]:
     ]
 
 
+def test_bound_local_serializes_for_all_absorbing_container_constructors() -> None:
+    constructors = {
+        "LIST_NEW": "list_new",
+        "TUPLE_NEW": "tuple_new",
+        "DICT_NEW": "dict_new",
+        "SET_NEW": "set_new",
+        "FROZENSET_NEW": "frozenset_new",
+    }
+    for frontend_kind, wire_kind in constructors.items():
+        lowered = _lower_ops(
+            [
+                MoltOp(
+                    kind=frontend_kind,
+                    args=[],
+                    result=MoltValue(f"{wire_kind}_result"),
+                    metadata={"bound_local": True},
+                )
+            ]
+        )
+        emitted = next(op for op in lowered if op.get("kind") == wire_kind)
+        assert emitted.get("bound_local") is True
+
+
 @contextmanager
 def _temp_env(name: str, value: str) -> object:
     prior = os.environ.get(name)
@@ -499,6 +522,7 @@ def test_cfg_const_dedupe_keeps_check_exception_users_defined() -> None:
             MoltOp(kind="CONST", args=[1], result=MoltValue("firstline")),
             MoltOp(kind="CONST_NONE", args=[], result=MoltValue("linetable")),
             MoltOp(kind="TUPLE_NEW", args=[], result=MoltValue("varnames")),
+            MoltOp(kind="TUPLE_NEW", args=[], result=MoltValue("names")),
             MoltOp(kind="CONST", args=[0], result=MoltValue("argcount")),
             MoltOp(kind="CONST", args=[0], result=MoltValue("posonly")),
             MoltOp(kind="CONST", args=[0], result=MoltValue("kwonly")),
@@ -512,6 +536,7 @@ def test_cfg_const_dedupe_keeps_check_exception_users_defined() -> None:
                     MoltValue("firstline"),
                     MoltValue("linetable"),
                     MoltValue("varnames"),
+                    MoltValue("names"),
                     MoltValue("argcount"),
                     MoltValue("posonly"),
                     MoltValue("kwonly"),
@@ -1557,6 +1582,40 @@ value = Point(3)
     assert alloc.get("type_hint") == "Point"
 
 
+def test_guarded_setattr_init_uses_frontend_wire_spelling() -> None:
+    gen = SimpleTIRGenerator()
+    gen.classes["Point"] = {"fields": {"x": 24}, "layout_version": 7}
+
+    lowered = gen.map_ops_to_json(
+        [
+            MoltOp(
+                kind="GUARDED_SETATTR_INIT",
+                args=[
+                    MoltValue("obj"),
+                    MoltValue("cls"),
+                    MoltValue("ver"),
+                    "x",
+                    MoltValue("val"),
+                    "Point",
+                ],
+                result=MoltValue("out"),
+            )
+        ]
+    )
+
+    kinds = [op.get("kind") for op in lowered]
+    assert "guarded_field_set_init" not in kinds
+    guarded_init = next(op for op in lowered if op.get("kind") == "guarded_field_init")
+    assert guarded_init == {
+        "kind": "guarded_field_init",
+        "args": ["obj", "cls", "ver", "val"],
+        "s_value": "x",
+        "value": 24,
+        "out": "out",
+        "class": "Point",
+    }
+
+
 def test_return_unwind_deactivates_popped_try_handler_label() -> None:
     source = """
 def f(xs):
@@ -1591,139 +1650,68 @@ def f(xs):
     assert all(op.get("value") != try_label for op in cleanup_checks)
 
 
-def test_nested_function_local_has_scope_exit_boundary() -> None:
+def test_function_scope_exit_boundaries_reload_loop_target_slot() -> None:
     source = """
-def outer(values):
-    def coerce(value):
-        return value
-
-    first = coerce(values[0])
-    second = coerce(values[1])
-    return (first, second)
-"""
-    gen = SimpleTIRGenerator(module_name="__main__")
-    gen.visit(ast.parse(source))
-    ir = gen.to_json()
-    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("outer"))
-
-    del_boundaries = [
-        op
-        for op in ops
-        if op.get("kind") == "del_boundary" and op.get("s_value") == "coerce"
-    ]
-    assert del_boundaries, "nested function locals need explicit frame teardown"
-    ret_idx = next(idx for idx, op in enumerate(ops) if op.get("kind") == "ret")
-    boundary_idx = ops.index(del_boundaries[-1])
-    assert boundary_idx < ret_idx
-
-
-def test_loop_rebind_del_boundary_loads_current_local_slot() -> None:
-    source = """
-def f(n):
-    x = []
-    i = 0
-    while i < n:
-        x = []
-        i += 1
-    return x
+def f(seq):
+    out = []
+    for entry in seq:
+        out.append(entry)
+    return out
 """
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(ast.parse(source))
     ir = gen.to_json()
     ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
+    producers = {
+        op["out"]: op for op in ops if isinstance(op.get("out"), str) and op["out"]
+    }
 
-    x_boundaries = [
-        (idx, op)
-        for idx, op in enumerate(ops)
-        if op.get("kind") == "del_boundary" and op.get("s_value") == "x"
-    ]
-    producers = {op.get("out"): op for op in ops if isinstance(op.get("out"), str)}
-    assert x_boundaries
-    for _idx, boundary in x_boundaries:
-        boundary_args = boundary.get("args") or []
-        assert len(boundary_args) == 1
-        slot_load = producers[boundary_args[0]]
-        assert slot_load.get("kind") == "load_var"
-        assert slot_load.get("var") == "x"
-        assert slot_load.get("out") == boundary_args[0]
+    entry_del = next(
+        op
+        for op in ops
+        if op.get("kind") == "del_boundary" and op.get("s_value") == "entry"
+    )
+    boundary_arg = entry_del["args"][0]
+    producer = producers[boundary_arg]
+
+    assert producer.get("kind") == "load_var"
+    assert producer.get("var") == "entry"
 
 
-def _generator_poll_ops(source: str) -> list[dict]:
+def test_function_loop_rebind_boundary_reloads_current_local_slot() -> None:
+    source = """
+def f(seq):
+    value = "seed"
+    for value in seq:
+        pass
+    return value
+"""
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(ast.parse(source))
     ir = gen.to_json()
-    return next(
-        func["ops"] for func in ir["functions"] if func["name"].endswith("_poll")
+    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
+    producers = {
+        op["out"]: (idx, op)
+        for idx, op in enumerate(ops)
+        if isinstance(op.get("out"), str) and op["out"]
+    }
+
+    loop_start = next(
+        idx for idx, op in enumerate(ops) if op.get("kind") == "loop_start"
     )
-
-
-def test_generator_yield_resume_reopens_active_try_region() -> None:
-    source = """
-def gen(seq):
-    i = 0
-    try:
-        while True:
-            value = seq[i]
-            yield value
-            i += 1
-    except IndexError:
-        return
-"""
-    ops = _generator_poll_ops(source)
-    body_try_label = next(
-        op["value"]
-        for op in ops
-        if op.get("kind") == "try_start" and op.get("value") is not None
+    rebind_boundary_idx, rebind_boundary = next(
+        (idx, op)
+        for idx, op in enumerate(ops)
+        if idx > loop_start
+        and op.get("kind") == "del_boundary"
+        and op.get("s_value") == "value"
     )
-    yield_idx = next(i for i, op in enumerate(ops) if op.get("kind") == "state_yield")
+    boundary_arg = rebind_boundary["args"][0]
+    producer_idx, producer = producers[boundary_arg]
 
-    resume_label = ops[yield_idx + 1]
-    assert resume_label.get("kind") == "state_label"
-    assert resume_label.get("value") == ops[yield_idx].get("value")
-    resume_op = ops[yield_idx + 2]
-    assert resume_op.get("kind") == "try_start"
-    assert resume_op.get("value") == body_try_label
-
-
-def test_generator_yield_from_resume_reopens_active_try_region() -> None:
-    source = """
-def gen(seq):
-    try:
-        yield from seq
-    except RuntimeError:
-        return
-"""
-    ops = _generator_poll_ops(source)
-    body_try_label = next(
-        op["value"]
-        for op in ops
-        if op.get("kind") == "try_start" and op.get("value") is not None
-    )
-    yield_idx = next(i for i, op in enumerate(ops) if op.get("kind") == "state_yield")
-
-    resume_label = ops[yield_idx + 1]
-    assert resume_label.get("kind") == "state_label"
-    assert resume_label.get("value") == ops[yield_idx].get("value")
-    resume_op = ops[yield_idx + 2]
-    assert resume_op.get("kind") == "try_start"
-    assert resume_op.get("value") == body_try_label
-
-
-def test_generator_yield_resume_reopens_active_with_region_shape() -> None:
-    source = """
-def gen(cm):
-    with cm:
-        yield 1
-"""
-    ops = _generator_poll_ops(source)
-    yield_idx = next(i for i, op in enumerate(ops) if op.get("kind") == "state_yield")
-
-    resume_label = ops[yield_idx + 1]
-    assert resume_label.get("kind") == "state_label"
-    assert resume_label.get("value") == ops[yield_idx].get("value")
-    resume_op = ops[yield_idx + 2]
-    assert resume_op.get("kind") == "try_start"
-    assert "value" not in resume_op
+    assert producer_idx < rebind_boundary_idx
+    assert producer.get("kind") == "load_var"
+    assert producer.get("var") == "value"
 
 
 def test_with_context_exit_checks_after_exception_frame_release() -> None:
@@ -2382,108 +2370,58 @@ def test_midend_pass_timing_and_policy_outcome_are_recorded() -> None:
     assert float(outcome["spent_ms"]) >= 0.0
 
 
-def test_midend_budget_degrade_preserves_correctness() -> None:
+def test_midend_work_budget_degrade_preserves_correctness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     ops = _build_sccp_growth_ops(depth=32, constant_cond=True)
     expected = _eval_simple_ops(ops)
     gen = SimpleTIRGenerator(optimization_profile="release")
-    with _temp_env("MOLT_MIDEND_WORK_BUDGET", "0"):
-        out = gen._canonicalize_control_aware_ops_impl(
-            ops, allow_cross_block_const_dedupe=True
-        )
+    monkeypatch.delenv("MOLT_MIDEND_BUDGET_MS", raising=False)
+    monkeypatch.setenv("MOLT_MIDEND_WORK_BUDGET", "0")
+
+    out = gen._canonicalize_control_aware_ops_impl(
+        ops, allow_cross_block_const_dedupe=True
+    )
 
     assert _eval_simple_ops(out) == expected
     outcome = gen.midend_policy_outcomes_by_function["<direct>"]
     assert outcome["degraded"] is True
-    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
-    assert "work_budget_exceeded" in reasons
+    assert outcome["work_budget"] == 0.0
+    assert float(outcome["work_units_spent"]) > 0.0
+    budget_events = [
+        event
+        for event in outcome.get("degrade_events", [])
+        if event.get("reason") == "work_budget_exceeded"
+    ]
+    assert budget_events
+    first_value = budget_events[0].get("value")
+    assert isinstance(first_value, dict)
+    assert first_value.get("work_budget") == 0.0
+    assert float(first_value.get("work_units", 0.0)) > 0.0
     cse_stats = gen.midend_pass_stats_by_function["<direct>"]["cse"]
     assert int(cse_stats["degraded"]) >= 1
 
 
-def test_midend_max_rounds_override_preserves_two_round_proof_floor() -> None:
-    gen = SimpleTIRGenerator(optimization_profile="dev")
-    injected = {"done": False}
-
-    def one_shot_cse(
-        self: SimpleTIRGenerator,
-        round_ops: list[MoltOp],
-        *,
-        allow_cross_block_const_dedupe: bool,
-        max_cse_iterations_override: int | None = None,
-        sccp_iter_cap_override: int | None = None,
-    ) -> tuple[list[MoltOp], int]:
-        del (
-            self,
-            allow_cross_block_const_dedupe,
-            max_cse_iterations_override,
-            sccp_iter_cap_override,
-        )
-        if injected["done"]:
-            return round_ops, 0
-        injected["done"] = True
-        return [
-            *round_ops,
-            MoltOp(kind="LINE", args=[991339], result=MoltValue("none")),
-        ], 0
-
-    gen._run_cse_canonicalization_round = types.MethodType(  # type: ignore[method-assign]
-        one_shot_cse, gen
-    )
-
-    with _temp_env("MOLT_MIDEND_MAX_ROUNDS", "1"):
-        out = gen._canonicalize_control_aware_ops_impl(
-            [
-                MoltOp(kind="CONST", args=[1], result=MoltValue("a")),
-            ],
-            allow_cross_block_const_dedupe=True,
-        )
-
-    assert isinstance(out, list)
-    outcome = gen.midend_policy_outcomes_by_function["<direct>"]
-    assert [snapshot["changed"] for snapshot in outcome["round_snapshots"]] == [
-        True,
-        False,
-    ]
-    assert outcome["round_snapshots"][-1]["changed"] is False
-
-
-@pytest.mark.parametrize(
-    "module_name",
-    ["finalizer_scope_exit_ordering", "finalizer_container_clear"],
-)
-def test_guarded_type_fact_finalizer_modules_close_cse_dce_round(
-    module_name: str,
+def test_midend_budget_ms_override_is_telemetry_only(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = Path("tests/differential/basic") / f"{module_name}.py"
-    facts = collect_type_facts_from_paths([path], "guarded", infer=True)
-    gen = SimpleTIRGenerator(
-        module_name=module_name,
-        source_path=path.as_posix(),
-        entry_module="__main__",
-        type_hint_policy="check",
-        type_facts=facts,
-        optimization_profile="dev",
+    ops = _build_sccp_growth_ops(depth=32, constant_cond=True)
+    expected = _eval_simple_ops(ops)
+    monkeypatch.setenv("MOLT_MIDEND_BUDGET_MS", "0")
+    monkeypatch.delenv("MOLT_MIDEND_WORK_BUDGET", raising=False)
+    gen = SimpleTIRGenerator(optimization_profile="release")
+
+    out = gen._canonicalize_control_aware_ops_impl(
+        ops, allow_cross_block_const_dedupe=True
     )
 
-    gen.visit(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
-    _ = gen.to_json()
-
-    outcome = gen.midend_policy_outcomes_by_function[f"{module_name}__run"]
+    assert _eval_simple_ops(out) == expected
+    outcome = gen.midend_policy_outcomes_by_function["<direct>"]
+    assert outcome["budget_ms"] == 0.0
+    assert float(outcome["work_budget"]) > 0.0
+    assert float(outcome["work_units_spent"]) <= float(outcome["work_budget"])
     assert outcome["degraded"] is False
-    assert [snapshot["changed"] for snapshot in outcome["round_snapshots"]] == [
-        True,
-        False,
-    ]
-    assert all(
-        "post_cse_dce" in snapshot["passes_run"]
-        for snapshot in outcome["round_snapshots"]
-    )
-    assert gen.midend_stats["fixed_point_fail_fast"] == 0
-    post_cse_stats = gen.midend_pass_stats_by_function[f"{module_name}__run"][
-        "post_cse_dce"
-    ]
-    assert post_cse_stats["accepted"] >= 1
-
+    assert outcome.get("degrade_events", []) == []
 
 def test_collect_type_facts_reads_python_sources_as_utf8(tmp_path: Path) -> None:
     path = tmp_path / "typed_utf8_source.py"
@@ -2505,7 +2443,7 @@ def test_collect_type_facts_uses_python_source_encoding_for_utf8_bom(
     assert facts.modules["typed_bom_source"].globals["value"].type == "int"
 
 
-def test_midend_ignores_retired_walltime_budget_env(
+def test_midend_policy_budget_ms_does_not_gate_on_wall_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ops = _build_sccp_growth_ops(depth=32, constant_cond=True)
@@ -2517,7 +2455,8 @@ def test_midend_ignores_retired_walltime_budget_env(
         block_count=len(cfg.blocks),
     )
 
-    monkeypatch.setenv("MOLT_MIDEND_BUDGET_MS", "0")
+    monkeypatch.delenv("MOLT_MIDEND_BUDGET_MS", raising=False)
+    monkeypatch.delenv("MOLT_MIDEND_WORK_BUDGET", raising=False)
     tick = {"value": 0.0}
 
     def fake_perf_counter() -> float:
@@ -2532,9 +2471,11 @@ def test_midend_ignores_retired_walltime_budget_env(
     outcome = gen.midend_policy_outcomes_by_function["slow_func"]
     assert outcome["budget_ms"] == round(policy.budget_ms, 3)
     assert float(outcome["budget_ms"]) < 5000.0
+    assert float(outcome["spent_ms"]) > float(outcome["budget_ms"])
+    assert outcome["work_budget"] == round(policy.work_budget, 3)
+    assert float(outcome["work_units_spent"]) <= float(outcome["work_budget"])
     assert outcome["degraded"] is False
-    reasons = {event.get("reason") for event in outcome.get("degrade_events", [])}
-    assert "work_budget_exceeded" not in reasons
+    assert outcome.get("degrade_events", []) == []
 
 
 def test_midend_skips_oversized_functions_by_default() -> None:

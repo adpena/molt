@@ -519,15 +519,10 @@ pub(crate) fn copy_kind_mints_fresh_owned_ref(kind: &str) -> bool {
         return true;
     }
     copy_kind_mints_fresh_owned_ref_table(kind)
-    // NOTE: the variadic builders `list_int_new` / `frozenset_new` are
-    // deliberately OMITTED from the table. They are not simple single-call
-    // passthroughs (they take a count/size in `op.value` and may stream follow-up
-    // element ops), are rare, and are not yet lowered by the LLVM `Copy` arm.
-    // Omitting them is fail-closed-safe: the drop pass treats them as transparent
-    // aliases (their fresh +1 leaks rather than being released — never a UAF),
-    // and the backend gate leaves the (pre-existing) passthrough untouched.
-    // Promoting them is a follow-up that must land WITH their explicit LLVM
-    // lowering.
+    // NOTE: staged variadic builders must only appear here after their backend
+    // lowering consumes the ownership fact. `frozenset_new` is now in the table
+    // with explicit LLVM lowering; `list_int_new` remains outside this generated
+    // authority until its streamed-element shape has the same backend contract.
 }
 
 pub(crate) fn copy_kind_is_exception_creation_ref(kind: &str) -> bool {
@@ -864,7 +859,10 @@ fn typed_slot_class(op: &TirOp) -> Option<String> {
 /// Superset obligation vs the old `refcount_elim::is_barrier`: every opcode in
 /// that list ({Call, CallMethod, CallBuiltin, StoreAttr, StoreIndex, StateSwitch,
 /// StateTransition, StateYield, ClosureLoad, ClosureStore, ChanSendYield,
-/// ChanRecvYield}) is present here. Verified in `tests::rc_barrier_is_superset_*`.
+/// ChanRecvYield}) is present here. Exception-control transfer is also a
+/// barrier: `Raise` does not fall through, and `CheckException` / `TryStart`
+/// carry implicit handler edges whose payload retains are consumed only on that
+/// exceptional path. Verified in `tests::rc_barrier_is_superset_*`.
 fn opcode_is_rc_barrier(opcode: OpCode) -> bool {
     opcode_is_alias_rc_barrier_table(opcode)
 }
@@ -1484,6 +1482,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn exception_control_transfer_ops_are_rc_barriers() {
+        for opcode in [OpCode::Raise, OpCode::CheckException, OpCode::TryStart] {
+            assert!(
+                opcode_is_rc_barrier(opcode),
+                "{opcode:?} must stop IncRef/DecRef pairing across exceptional control transfer"
+            );
+        }
+        assert!(
+            !opcode_is_rc_barrier(OpCode::TryEnd),
+            "TryEnd is structural region-close metadata, not a transfer into the handler"
+        );
+    }
+
     /// `is_barrier_for ⊇ reuse_analysis::is_aliasing_op` for every (opcode, val):
     /// both the opcode branch and the operand-uses-val branch.
     #[test]
@@ -1775,23 +1787,29 @@ mod tests {
             Some("int_from_obj"),
             Some("float_from_obj"),
             Some("contains"),
+            Some("classmethod_new"),
+            Some("code_new"),
             Some("dataclass_new"),
             Some("dataclass_new_values"),
             Some("str_from_obj"),
             Some("iter"),
             Some("aiter"),
             Some("enumerate"),
+            Some("func_new"),
+            Some("func_new_closure"),
             Some("dict_keys"),
             Some("dict_values"),
             Some("dict_items"),
             Some("dict_from_obj"),
             Some("object_new"),
+            Some("property_new"),
             Some("complex_from_obj"),
             Some("list_new"),
             Some("list_pop"),
             Some("dict_new"),
             Some("tuple_new"),
             Some("string_join"),
+            Some("staticmethod_new"),
             Some("vec_sum_i64"),
         ];
         // FAIL-CLOSED: an unrecognized future kind classifies as TransparentAlias
@@ -2117,6 +2135,22 @@ mod tests {
                 "{kind} on operand[0]=obj is a TypedField"
             );
         }
+
+        let rejected = with_field_attrs(
+            op_kind(
+                OpCode::StoreAttr,
+                vec![ValueId(0), ValueId(1), ValueId(2), ValueId(3)],
+                vec![],
+                "guarded_field_set_init",
+            ),
+            32,
+            Some("Account"),
+        );
+        assert_eq!(
+            res.region_of(&rejected),
+            MemRegion::GenericHeap,
+            "removed guarded-field init spelling must not remain a typed-slot alias"
+        );
     }
 
     #[test]

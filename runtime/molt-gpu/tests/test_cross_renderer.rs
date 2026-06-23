@@ -235,6 +235,302 @@ fn make_fused_softmax_kernel(n: usize, reduce_size: usize) -> FusedKernel {
     }
 }
 
+fn make_attention_core_masked_sdpa_row_chain_kernels() -> Vec<(&'static str, FusedKernel)> {
+    let n_keys = 4;
+    let head_dim = 2;
+    let scale = 1.0 / (head_dim as f64).sqrt();
+
+    vec![
+        (
+            "qk_reduce_sum_scale",
+            FusedKernel {
+                body: Default::default(),
+                ops: vec![
+                    FusedOp::elementwise(
+                        PrimitiveOp::Mul,
+                        vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                        DType::Float32,
+                    ),
+                    FusedOp::reduction(
+                        PrimitiveOp::ReduceSum,
+                        vec![FusedSrc::Op(0)],
+                        DType::Float32,
+                        ReductionDomain::from_axis(&[n_keys, head_dim], 1),
+                    ),
+                    FusedOp::elementwise(
+                        PrimitiveOp::Mul,
+                        vec![
+                            FusedSrc::Op(1),
+                            FusedSrc::Const {
+                                val: scale,
+                                dtype: DType::Float32,
+                            },
+                        ],
+                        DType::Float32,
+                    ),
+                ],
+                bufs: vec![
+                    BufferBinding {
+                        buf_id: 0,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: 1,
+                        st: ShapeTracker::contiguous(&[n_keys, head_dim]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Read,
+                    },
+                    BufferBinding {
+                        buf_id: 2,
+                        st: ShapeTracker::contiguous(&[n_keys, head_dim]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Read,
+                    },
+                ],
+                grid: [n_keys as u32, 1, 1],
+                local: [n_keys as u32, 1, 1],
+                spec: None,
+                vectorize_width: 1,
+            },
+        ),
+        (
+            "mask_where",
+            FusedKernel {
+                body: Default::default(),
+                ops: vec![FusedOp::elementwise(
+                    PrimitiveOp::Where,
+                    vec![
+                        FusedSrc::Buf(1),
+                        FusedSrc::Buf(2),
+                        FusedSrc::Const {
+                            val: -1.0e9,
+                            dtype: DType::Float32,
+                        },
+                    ],
+                    DType::Float32,
+                )],
+                bufs: vec![
+                    BufferBinding {
+                        buf_id: 0,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: 1,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Bool,
+                        access: BufferAccess::Read,
+                    },
+                    BufferBinding {
+                        buf_id: 2,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Read,
+                    },
+                ],
+                grid: [n_keys as u32, 1, 1],
+                local: [n_keys as u32, 1, 1],
+                spec: None,
+                vectorize_width: 1,
+            },
+        ),
+        (
+            "row_reduce_max",
+            FusedKernel {
+                body: Default::default(),
+                ops: vec![FusedOp::reduction(
+                    PrimitiveOp::ReduceMax,
+                    vec![FusedSrc::Buf(1)],
+                    DType::Float32,
+                    ReductionDomain::from_axis(&[n_keys], 0),
+                )],
+                bufs: vec![
+                    BufferBinding {
+                        buf_id: 0,
+                        st: ShapeTracker::contiguous(&[1]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: 1,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Read,
+                    },
+                ],
+                grid: [1, 1, 1],
+                local: [1, 1, 1],
+                spec: None,
+                vectorize_width: 1,
+            },
+        ),
+        (
+            "subtract_log2e_exp2",
+            FusedKernel {
+                body: Default::default(),
+                ops: vec![
+                    FusedOp::elementwise(
+                        PrimitiveOp::Sub,
+                        vec![
+                            FusedSrc::Buf(1),
+                            FusedSrc::Const {
+                                val: 2.0,
+                                dtype: DType::Float32,
+                            },
+                        ],
+                        DType::Float32,
+                    ),
+                    FusedOp::elementwise(
+                        PrimitiveOp::Mul,
+                        vec![
+                            FusedSrc::Op(0),
+                            FusedSrc::Const {
+                                val: std::f64::consts::LOG2_E,
+                                dtype: DType::Float32,
+                            },
+                        ],
+                        DType::Float32,
+                    ),
+                    FusedOp::elementwise(PrimitiveOp::Exp2, vec![FusedSrc::Op(1)], DType::Float32),
+                ],
+                bufs: vec![
+                    BufferBinding {
+                        buf_id: 0,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: 1,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Read,
+                    },
+                ],
+                grid: [n_keys as u32, 1, 1],
+                local: [n_keys as u32, 1, 1],
+                spec: None,
+                vectorize_width: 1,
+            },
+        ),
+        (
+            "row_reduce_sum",
+            FusedKernel {
+                body: Default::default(),
+                ops: vec![FusedOp::reduction(
+                    PrimitiveOp::ReduceSum,
+                    vec![FusedSrc::Buf(1)],
+                    DType::Float32,
+                    ReductionDomain::from_axis(&[n_keys], 0),
+                )],
+                bufs: vec![
+                    BufferBinding {
+                        buf_id: 0,
+                        st: ShapeTracker::contiguous(&[1]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: 1,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Read,
+                    },
+                ],
+                grid: [1, 1, 1],
+                local: [1, 1, 1],
+                spec: None,
+                vectorize_width: 1,
+            },
+        ),
+        (
+            "reciprocal_probs",
+            FusedKernel {
+                body: Default::default(),
+                ops: vec![
+                    FusedOp::elementwise(
+                        PrimitiveOp::Reciprocal,
+                        vec![FusedSrc::Const {
+                            val: 3.0,
+                            dtype: DType::Float32,
+                        }],
+                        DType::Float32,
+                    ),
+                    FusedOp::elementwise(
+                        PrimitiveOp::Mul,
+                        vec![FusedSrc::Buf(1), FusedSrc::Op(0)],
+                        DType::Float32,
+                    ),
+                ],
+                bufs: vec![
+                    BufferBinding {
+                        buf_id: 0,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: 1,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Read,
+                    },
+                ],
+                grid: [n_keys as u32, 1, 1],
+                local: [n_keys as u32, 1, 1],
+                spec: None,
+                vectorize_width: 1,
+            },
+        ),
+        (
+            "value_projection_reduce_sum",
+            FusedKernel {
+                body: Default::default(),
+                ops: vec![
+                    FusedOp::elementwise(
+                        PrimitiveOp::Mul,
+                        vec![FusedSrc::Buf(1), FusedSrc::Buf(2)],
+                        DType::Float32,
+                    ),
+                    FusedOp::reduction(
+                        PrimitiveOp::ReduceSum,
+                        vec![FusedSrc::Op(0)],
+                        DType::Float32,
+                        ReductionDomain::from_axis(&[n_keys], 0),
+                    ),
+                ],
+                bufs: vec![
+                    BufferBinding {
+                        buf_id: 0,
+                        st: ShapeTracker::contiguous(&[1]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Write,
+                    },
+                    BufferBinding {
+                        buf_id: 1,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Read,
+                    },
+                    BufferBinding {
+                        buf_id: 2,
+                        st: ShapeTracker::contiguous(&[n_keys]),
+                        dtype: DType::Float32,
+                        access: BufferAccess::Read,
+                    },
+                ],
+                grid: [1, 1, 1],
+                local: [1, 1, 1],
+                spec: None,
+                vectorize_width: 1,
+            },
+        ),
+    ]
+}
+
 fn make_reduce_uses_nonlast_prefix_source_kernel(n: usize, reduce_size: usize) -> FusedKernel {
     FusedKernel {
         body: KernelBody::Compute,
@@ -486,6 +782,112 @@ fn test_cross_all_renderers_produce_output() {
                 source.len(),
                 kernel_name,
             );
+        }
+    }
+}
+
+#[test]
+fn test_cross_renderers_render_attention_core_masked_sdpa_row_chain() {
+    let kernels = make_attention_core_masked_sdpa_row_chain_kernels();
+
+    for (stage_name, kernel) in &kernels {
+        for (renderer_name, renderer) in all_renderers() {
+            let source = renderer.render(kernel);
+            assert!(
+                !source.is_empty(),
+                "{} renderer produced empty output for {} stage",
+                renderer_name,
+                stage_name,
+            );
+
+            match *stage_name {
+                "qk_reduce_sum_scale" => {
+                    assert!(
+                        source.contains("acc") && source.contains("v0") && source.contains('*'),
+                        "{} must render QK Mul -> ReduceSum(axis=1) for {}:\n{}",
+                        renderer_name,
+                        stage_name,
+                        source,
+                    );
+                    assert!(
+                        source.contains("0.707106"),
+                        "{} must render the post-QK scale multiply for {}:\n{}",
+                        renderer_name,
+                        stage_name,
+                        source,
+                    );
+                }
+                "mask_where" => {
+                    let has_where = if renderer_name == "WGSL" {
+                        source.contains("select(")
+                    } else {
+                        source.contains(" ? ")
+                    };
+                    assert!(
+                        has_where && source.contains("-1000000000"),
+                        "{} must render Where(mask, scaled, -1e9) for {}:\n{}",
+                        renderer_name,
+                        stage_name,
+                        source,
+                    );
+                }
+                "row_reduce_max" => {
+                    assert!(
+                        source.contains("acc") && source.contains("max"),
+                        "{} must render ReduceMax(axis=0) for {}:\n{}",
+                        renderer_name,
+                        stage_name,
+                        source,
+                    );
+                }
+                "subtract_log2e_exp2" => {
+                    let exp2_token = match renderer_name {
+                        "CUDA" | "HIP" => "exp2f(",
+                        _ => "exp2(",
+                    };
+                    assert!(
+                        source.contains('-')
+                            && source.contains("1.442695")
+                            && source.contains(exp2_token),
+                        "{} must render Sub -> Mul(LOG2_E) -> Exp2 for {}:\n{}",
+                        renderer_name,
+                        stage_name,
+                        source,
+                    );
+                }
+                "row_reduce_sum" => {
+                    assert!(
+                        source.contains("acc")
+                            && (source.contains("acc +") || source.contains("acc +=")),
+                        "{} must render ReduceSum(axis=0) for {}:\n{}",
+                        renderer_name,
+                        stage_name,
+                        source,
+                    );
+                }
+                "reciprocal_probs" => {
+                    assert!(
+                        (source.contains("1.0")
+                            || source.contains("1.0f")
+                            || source.contains("f32(1.0)"))
+                            && source.contains('*'),
+                        "{} must render Reciprocal -> Mul probabilities for {}:\n{}",
+                        renderer_name,
+                        stage_name,
+                        source,
+                    );
+                }
+                "value_projection_reduce_sum" => {
+                    assert!(
+                        source.contains("acc") && source.contains("v0") && source.contains('*'),
+                        "{} must render probs/value Mul -> ReduceSum(axis=0) for {}:\n{}",
+                        renderer_name,
+                        stage_name,
+                        source,
+                    );
+                }
+                _ => unreachable!("unexpected SDPA stage {stage_name}"),
+            }
         }
     }
 }

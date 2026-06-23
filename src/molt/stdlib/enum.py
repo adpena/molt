@@ -146,9 +146,7 @@ class EnumType(type):
                 and not _is_descriptor(value)
                 and not callable(value)
             ]
-        members: list[tuple[str, Any]] = [
-            (key, namespace[key]) for key in member_names
-        ]
+        members: list[tuple[str, Any]] = [(key, namespace[key]) for key in member_names]
         # Members must not remain as plain class attributes; they are replaced
         # by the member objects below (and aliases by their canonical member).
         body = dict(namespace)
@@ -439,9 +437,7 @@ def unique(enumeration: type) -> type:
         alias_details = ", ".join(
             f"{alias} -> {canonical}" for (alias, canonical) in duplicates
         )
-        raise ValueError(
-            f"duplicate values found in {enumeration!r}: {alias_details}"
-        )
+        raise ValueError(f"duplicate values found in {enumeration!r}: {alias_details}")
     return enumeration
 
 

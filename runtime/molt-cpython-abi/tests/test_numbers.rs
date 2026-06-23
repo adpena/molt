@@ -66,14 +66,13 @@ fn test_pylong_from_ssize_t() {
 }
 
 #[test]
-fn test_pylong_from_longlong() {
+fn test_pylong_from_longlong_non_inline_requires_runtime_hook() {
     init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLongLong(i64::MAX) };
-    assert!(!py.is_null());
-    let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLongLong(py) };
-    // MoltObject may truncate large ints depending on NaN-boxing; verify non-crash at least
-    let _ = val;
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+    assert!(
+        py.is_null(),
+        "heap BigInt construction requires registered runtime hooks"
+    );
 }
 
 #[test]
@@ -84,6 +83,16 @@ fn test_pylong_from_unsigned_long() {
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLong(py) };
     assert_eq!(val, 100);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
+}
+
+#[test]
+fn test_pylong_from_unsigned_longlong_non_inline_requires_runtime_hook() {
+    init();
+    let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromUnsignedLongLong(u64::MAX) };
+    assert!(
+        py.is_null(),
+        "heap unsigned BigInt construction requires registered runtime hooks"
+    );
 }
 
 // ---------------------------------------------------------------------------

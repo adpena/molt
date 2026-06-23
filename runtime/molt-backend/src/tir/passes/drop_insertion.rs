@@ -28,14 +28,14 @@
 //!   whose single `+1` is needed elsewhere too) is RETAINED on that edge. Without
 //!   it, the phi's drop releases the caller's borrow → UAF (the loop-accumulator
 //!   `x = base; while …: x = x + base` and the if-arm `x = a if c else …`).
-//! * **Outgoing side (§3 `incoming_arg_roots` exclusion).** A value PASSED as a
-//!   branch arg into a phi must NOT also be edge-dropped at the join: its
-//!   ownership moved into the block arg, which is released by the phi's own
-//!   last-use drop. Liveness reports the forwarded value dead-in to the join (its
-//!   successor-side identity is the distinct block-arg SSA value), so the
-//!   edge-dying rule would otherwise drop it there AND at the phi's last use →
-//!   double-free (the inliner-produced multi-block `x = a + a; return x + a`
-//!   chain — `invalid object header before dec_ref`).
+//! * **Outgoing side (§3 transfer exclusion).** A value PASSED as a branch arg
+//!   into a phi must NOT also be edge-dropped at the join OR in a descendant
+//!   block while the phi remains live: its ownership moved into the block arg,
+//!   which is released by the phi's own last-use drop. Liveness reports the
+//!   forwarded value dead-in to the join (its successor-side identity is the
+//!   distinct block-arg SSA value), so the edge-dying rule would otherwise drop it
+//!   there, or later when the old source root appears dead, AND at the phi's last
+//!   use → double-free.
 //!
 //! ## Ownership model (design 20 §1)
 //!
@@ -124,12 +124,19 @@
 //!    as "dominating" that op's handler, but the exception edge leaves before
 //!    the def → use-before-def in codegen. (Observed otherwise as the LLVM
 //!    verifier "Instruction does not dominate all uses!" abort.)
-//! 3. **Conditionally-valid iterator results** — an `IterNextUnboxed` value
-//!    result (from the generated result-validity table) is valid ONLY on the not-done branch;
-//!    its slot is uninitialized garbage on the exhaustion edge. It is NEVER
+//! 3. **Python lifetime release boundaries** — a root released by `DelBoundary` /
+//!    `DeleteVar` / pre-existing `DecRef`, statement finalizer release, or
+//!    `store_var` scope cleanup is path-authoritative and is never edge-dropped
+//!    at a join. The OpsOnly edge-dying form has one block-entry drop for all
+//!    incoming paths; adding it beside a path-conditioned Python rebind/delete or
+//!    later scope-exit boundary can release the same local owner twice.
+//! 4. **Conditionally-valid iterator results** — an `IterNextUnboxed` value
+//!    result (from the generated result-validity table) is valid ONLY on the
+//!    not-done branch; its slot carries a non-owned `None` sentinel on the
+//!    exhaustion edge. It is NEVER
 //!    edge-dropped (and never IncRef'd onto a phi edge); the body straight-line
 //!    rule releases it on the valid path.
-//! 4. **State-machine gate** — the pass bails on full-function RC insertion for
+//! 5. **State-machine gate** — the pass bails on full-function RC insertion for
 //!    functions with generator/async `StateSwitch` / `StateTransition` /
 //!    `StateYield` control flow (a `_poll` dispatcher re-enters
 //!    `state_resume_*` blocks carrying none of the normal-flow values), in
@@ -137,7 +144,7 @@
 //!    own idempotency marker so the handler-safe CreationRef/MatchRef releases
 //!    can still be inserted before the full-function bail without pretending
 //!    native's whole value-tracking RC substrate has been retired.
-//! 5. **Backend conditioning** — drop insertion is wired into the shared
+//! 6. **Backend conditioning** — drop insertion is wired into the shared
 //!    pipeline for LLVM / WASM / native Cranelift / Luau. Native suppresses its
 //!    legacy value-tracking RC substrate on `drop_inserted` functions, so TIR
 //!    drops are the single RC authority for activated functions; Luau consumes
@@ -151,7 +158,7 @@
 //! `<artifact_root>/drop/<func>.txt`, including a `BAILED:` line for functions
 //! the activation gate skipped. The instrument every optimization lands with.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
@@ -161,10 +168,12 @@ use crate::tir::passes::liveness::{TirLiveness, TirLivenessResult};
 use crate::tir::values::{TirValue, ValueId};
 
 use super::PassStats;
+#[cfg(test)]
+use super::ownership_lattice_min::original_kind;
 use super::ownership_lattice_min::{
-    StatementReleasePlan, copy_no_heap_move_alias, exception_creation_ref_values,
-    op_consumed_operand_root, op_result_absorbs_operand_ownership, terminator_branch_args,
-    terminator_uses_root,
+    OwnershipLattice, PythonLifetimeFacts, StatementReleasePlan, copy_transparent_alias,
+    exception_creation_ref_values, op_consumed_operand_root, op_result_absorbs_operand_ownership,
+    terminator_branch_args, terminator_uses_root,
 };
 
 /// The function-level attr the pass sets (round-tripped to the native backend as
@@ -178,6 +187,59 @@ pub const DROP_INSERTED_ATTR: &str = "drop_inserted";
 /// ownership: handlers/state machines still need the legacy native value tracker
 /// until shared DropInsertion covers their complete lifetime graph.
 pub const EXCEPTION_REGION_DROPS_INSERTED_ATTR: &str = "exception_region_drops_inserted";
+
+fn drop_inner_stage_audit_enabled(func: &TirFunction) -> bool {
+    let enabled = std::env::var("MOLT_DROP_STAGE_AUDIT").as_deref() == Ok("1")
+        || std::env::var("MOLT_MODULE_STAGE_AUDIT").as_deref() == Ok("1")
+        || std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1");
+    if !enabled {
+        return false;
+    }
+    match std::env::var("MOLT_DROP_STAGE_AUDIT_FUNC") {
+        Ok(filter) if !filter.trim().is_empty() => func.name.contains(filter.trim()),
+        _ => true,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_drop_inner_stage_audit(
+    func: &TirFunction,
+    stage: &str,
+    plans: Option<usize>,
+    edge_splits: Option<usize>,
+    roots: Option<usize>,
+    blocks_seen: Option<usize>,
+    elapsed_ms: u128,
+) {
+    if !drop_inner_stage_audit_enabled(func) {
+        return;
+    }
+    let blocks = func.blocks.len();
+    let ops = func
+        .blocks
+        .values()
+        .fold(0usize, |count, block| count.saturating_add(block.ops.len()));
+    eprintln!(
+        "[molt-drop-inner-audit] stage={stage} function={} blocks={} ops={} plans={} edge_splits={} roots={} blocks_seen={} elapsed_ms={} peak_rss_mib={}",
+        func.name,
+        blocks,
+        ops,
+        plans
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        edge_splits
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        roots
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        blocks_seen
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        elapsed_ms,
+        crate::process_diagnostics::process_peak_rss_mib_label(),
+    );
+}
 
 #[inline]
 pub(crate) fn attr_is_true(func: &TirFunction, name: &str) -> bool {
@@ -193,6 +255,42 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>) -> TirOp {
         attrs: AttrDict::new(),
         source_span: None,
     }
+}
+
+fn sorted_values(values: &[ValueId]) -> Vec<ValueId> {
+    let mut ordered = values.to_vec();
+    ordered.sort_unstable_by_key(|value| value.0);
+    ordered
+}
+
+fn sorted_unique_values(values: &[ValueId]) -> Vec<ValueId> {
+    let mut ordered = sorted_values(values);
+    ordered.dedup();
+    ordered
+}
+
+fn ordered_unique_after_op_values<F>(values: &[ValueId], op: &TirOp, canon: &F) -> Vec<ValueId>
+where
+    F: Fn(ValueId) -> ValueId,
+{
+    let mut remaining: HashSet<ValueId> = values.iter().copied().collect();
+    let mut ordered = Vec::with_capacity(remaining.len());
+    for &operand in &op.operands {
+        let root = canon(operand);
+        if remaining.remove(&root) {
+            ordered.push(root);
+        }
+    }
+    for &result in &op.results {
+        let root = canon(result);
+        if remaining.remove(&root) {
+            ordered.push(root);
+        }
+    }
+    let mut rest: Vec<ValueId> = remaining.into_iter().collect();
+    rest.sort_unstable_by_key(|value| value.0);
+    ordered.extend(rest);
+    ordered
 }
 
 #[derive(Debug, Default)]
@@ -234,12 +332,14 @@ fn value_definitions(func: &TirFunction) -> HashMap<ValueId, ValueDefinition> {
     defs
 }
 
-#[cfg(test)]
-fn original_kind(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("_original_kind") {
-        Some(AttrValue::Str(kind)) => Some(kind.as_str()),
-        _ => None,
+fn explicit_release_values(op: &TirOp) -> Vec<ValueId> {
+    if op.opcode == OpCode::DecRef {
+        return op.operands.to_vec();
     }
+    if op.opcode == OpCode::DeleteVar {
+        return op.operands.get(1).copied().into_iter().collect();
+    }
+    Vec::new()
 }
 
 fn insert_exception_creation_drops_at_raise(func: &mut TirFunction) -> usize {
@@ -303,10 +403,30 @@ fn insert_exception_region_match_drops(
     func: &mut TirFunction,
     am: &mut AnalysisManager,
 ) -> ExceptionRegionDropInsertion {
+    let audit_start = std::time::Instant::now();
+    emit_drop_inner_stage_audit(
+        func,
+        "exception-region-before-analysis",
+        None,
+        None,
+        None,
+        None,
+        audit_start.elapsed().as_millis(),
+    );
     let release_to_matches = am
         .get::<crate::tir::exception_regions::ExceptionRegions>(func)
-        .release_to_matches
+        .release_to_match_facts
         .clone();
+    let release_fact_count: usize = release_to_matches.values().map(Vec::len).sum();
+    emit_drop_inner_stage_audit(
+        func,
+        "exception-region-after-analysis",
+        None,
+        None,
+        Some(release_fact_count),
+        Some(release_to_matches.len()),
+        audit_start.elapsed().as_millis(),
+    );
     if release_to_matches.is_empty() {
         return ExceptionRegionDropInsertion::default();
     }
@@ -322,8 +442,26 @@ fn insert_exception_region_match_drops(
     );
     let defs = value_definitions(func);
     let mut result = ExceptionRegionDropInsertion::default();
+    emit_drop_inner_stage_audit(
+        func,
+        "exception-region-after-dominators",
+        None,
+        None,
+        Some(defs.len()),
+        Some(idoms.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
-    for (position, values) in release_to_matches {
+    for (position, release_facts) in release_to_matches {
+        emit_drop_inner_stage_audit(
+            func,
+            "exception-region-position-start",
+            None,
+            None,
+            Some(release_facts.len()),
+            Some(position.block.0 as usize),
+            audit_start.elapsed().as_millis(),
+        );
         let (original_args, pop_op, prefix_source_ops, tail_source_ops, tail_source_terminator) = {
             let Some(block) = func.blocks.get(&position.block) else {
                 continue;
@@ -344,25 +482,77 @@ fn insert_exception_region_match_drops(
                 block.terminator.clone(),
             )
         };
-        let mut values: Vec<ValueId> = values
-            .into_iter()
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-        values.sort_unstable_by_key(|value| value.0);
 
-        let mut global_values = Vec::new();
-        let mut path_values = Vec::new();
-        for value in values {
-            let Some(&def) = defs.get(&value) else {
+        let mut incoming_arcs: Vec<(BlockId, ArcDescriptor, Vec<ValueId>)> = pred_map_term
+            .get(&position.block)
+            .into_iter()
+            .flat_map(|preds| preds.iter().copied())
+            .flat_map(|pred| {
+                func.blocks
+                    .get(&pred)
+                    .map(|pred_block| {
+                        terminator_arcs(&pred_block.terminator)
+                            .into_iter()
+                            .filter(move |arc| arc.target == position.block)
+                            .map(move |arc| (pred, arc.descriptor, arc.args))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        incoming_arcs.sort_by_key(|(pred, _, _)| pred.0);
+        emit_drop_inner_stage_audit(
+            func,
+            "exception-region-after-incoming-arcs",
+            None,
+            None,
+            Some(incoming_arcs.len()),
+            Some(position.block.0 as usize),
+            audit_start.elapsed().as_millis(),
+        );
+
+        let all_incoming_preds: BTreeSet<BlockId> =
+            incoming_arcs.iter().map(|(pred, _, _)| *pred).collect();
+        let mut value_entry_preds: BTreeMap<ValueId, BTreeSet<BlockId>> = BTreeMap::new();
+        let mut direct_values = BTreeSet::new();
+        for fact in release_facts {
+            let Some(&def) = defs.get(&fact.value) else {
                 continue;
             };
-            if definition_available_before_position(def, position, &idoms) {
-                global_values.push(value);
-            } else {
-                path_values.push(value);
+            if fact.entry_predecessors.is_empty() {
+                if definition_available_before_position(def, position, &idoms) {
+                    direct_values.insert(fact.value);
+                }
+                continue;
             }
+            value_entry_preds
+                .entry(fact.value)
+                .or_default()
+                .extend(fact.entry_predecessors.iter().copied());
         }
+
+        let mut global_values: Vec<ValueId> = value_entry_preds
+            .iter()
+            .filter_map(|(&value, preds)| {
+                let def = *defs.get(&value)?;
+                (!all_incoming_preds.is_empty()
+                    && preds.is_superset(&all_incoming_preds)
+                    && definition_available_before_position(def, position, &idoms))
+                .then_some(value)
+            })
+            .collect();
+        global_values.extend(direct_values.iter().copied());
+        global_values.sort_unstable_by_key(|value| value.0);
+        global_values.dedup();
+
+        let global_set: BTreeSet<ValueId> = global_values.iter().copied().collect();
+        let mut path_values: Vec<ValueId> = value_entry_preds
+            .keys()
+            .copied()
+            .filter(|value| !global_set.contains(value))
+            .collect();
+        path_values.sort_unstable_by_key(|value| value.0);
+
         if path_values.is_empty() {
             let Some(block) = func.blocks.get_mut(&position.block) else {
                 continue;
@@ -381,26 +571,53 @@ fn insert_exception_region_match_drops(
             continue;
         }
 
-        let incoming_arcs: Vec<(BlockId, ArcDescriptor, Vec<ValueId>)> = pred_map_term
-            .get(&position.block)
-            .into_iter()
-            .flat_map(|preds| preds.iter().copied())
-            .flat_map(|pred| {
-                func.blocks
-                    .get(&pred)
-                    .map(|pred_block| {
-                        terminator_arcs(&pred_block.terminator)
-                            .into_iter()
-                            .filter(move |arc| arc.target == position.block)
-                            .map(move |arc| (pred, arc.descriptor, arc.args))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            })
-            .collect();
         if incoming_arcs.is_empty() {
             continue;
         }
+
+        let mut split_plans = Vec::new();
+        for (pred, arc, args) in &incoming_arcs {
+            let mut edge_values = global_values.clone();
+            let mut edge_specific = Vec::new();
+            for value in &path_values {
+                let Some(preds) = value_entry_preds.get(value) else {
+                    continue;
+                };
+                if !preds.contains(pred) {
+                    continue;
+                }
+                let Some(&def) = defs.get(value) else {
+                    continue;
+                };
+                if definition_available_on_edge(def, *pred, &idoms) {
+                    edge_specific.push(*value);
+                }
+            }
+            if edge_specific.is_empty() {
+                continue;
+            }
+            edge_values.extend(edge_specific);
+            edge_values.sort_unstable_by_key(|value| value.0);
+            edge_values.dedup();
+            split_plans.push((*pred, *arc, args.clone(), edge_values));
+        }
+        if split_plans.is_empty() {
+            continue;
+        }
+        emit_drop_inner_stage_audit(
+            func,
+            "exception-region-before-split",
+            None,
+            Some(split_plans.len()),
+            Some(
+                split_plans
+                    .iter()
+                    .map(|(_, _, _, values)| values.len())
+                    .sum(),
+            ),
+            Some(position.block.0 as usize),
+            audit_start.elapsed().as_millis(),
+        );
 
         let mut tail_arg_remap: HashMap<ValueId, ValueId> = HashMap::new();
         let after_args: Vec<TirValue> = original_args
@@ -417,7 +634,7 @@ fn insert_exception_region_match_drops(
             .collect();
         let mut tail_value_remap = tail_arg_remap.clone();
         for op in &prefix_source_ops {
-            if let Some(alias) = copy_no_heap_move_alias(op)
+            if let Some(alias) = copy_transparent_alias(op)
                 && let Some(mapped_operand) = tail_value_remap.get(&alias.source).copied()
             {
                 tail_value_remap.insert(alias.result, mapped_operand);
@@ -459,22 +676,7 @@ fn insert_exception_region_match_drops(
             };
         }
 
-        for (pred, arc, args) in incoming_arcs {
-            let mut edge_values = global_values.clone();
-            for value in &path_values {
-                let Some(&def) = defs.get(value) else {
-                    continue;
-                };
-                if definition_available_on_edge(def, pred, &idoms) {
-                    edge_values.push(*value);
-                }
-            }
-            if edge_values.len() == global_values.len() {
-                continue;
-            }
-            edge_values.sort_unstable_by_key(|value| value.0);
-            edge_values.dedup();
-
+        for (pred, arc, args, edge_values) in split_plans {
             let split_block = func.fresh_block();
             let mut ops = Vec::with_capacity(1 + edge_values.len());
             ops.push(pop_op.clone());
@@ -498,10 +700,37 @@ fn insert_exception_region_match_drops(
                 retarget_arc(&mut pred_block.terminator, &arc, split_block);
             }
         }
+        emit_drop_inner_stage_audit(
+            func,
+            "exception-region-before-remap",
+            None,
+            None,
+            Some(tail_value_remap.len()),
+            Some(after_block.0 as usize),
+            audit_start.elapsed().as_millis(),
+        );
         remap_uses_dominated_by_split_continuation(func, after_block, &tail_value_remap);
+        emit_drop_inner_stage_audit(
+            func,
+            "exception-region-after-remap",
+            None,
+            None,
+            Some(tail_value_remap.len()),
+            Some(after_block.0 as usize),
+            audit_start.elapsed().as_millis(),
+        );
         result.cfg_changed = true;
     }
 
+    emit_drop_inner_stage_audit(
+        func,
+        "exception-region-complete",
+        None,
+        None,
+        Some(result.dec_refs_added),
+        None,
+        audit_start.elapsed().as_millis(),
+    );
     result
 }
 
@@ -518,29 +747,10 @@ fn is_suspension_point(opcode: OpCode) -> bool {
     )
 }
 
-/// The successor blocks of `term` (de-dup not required; callers union into sets).
-fn terminator_successor_blocks(term: &Terminator) -> Vec<BlockId> {
-    match term {
-        Terminator::Branch { target, .. } => vec![*target],
-        Terminator::CondBranch {
-            then_block,
-            else_block,
-            ..
-        } => vec![*then_block, *else_block],
-        Terminator::Switch { cases, default, .. }
-        | Terminator::StateDispatch { cases, default, .. } => {
-            let mut out: Vec<BlockId> = cases.iter().map(|(_, b, _)| *b).collect();
-            out.push(*default);
-            out
-        }
-        Terminator::Return { .. } | Terminator::Unreachable => vec![],
-    }
-}
-
 /// A stable identifier for ONE outgoing arc of a terminator, so the mixed-
 /// ownership-phi retain can retarget exactly that arc when splitting a critical
 /// edge (two arcs to the same block with different args must be distinguishable).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ArcDescriptor {
     /// The single arc of an unconditional `Branch`.
     Branch,
@@ -848,6 +1058,36 @@ struct EdgeSplit {
     target: BlockId,
     args: Vec<ValueId>,
     retains: Vec<ValueId>,
+    releases: Vec<ValueId>,
+}
+
+fn push_edge_split(
+    splits: &mut Vec<EdgeSplit>,
+    pred: BlockId,
+    arc: ArcDescriptor,
+    target: BlockId,
+    args: Vec<ValueId>,
+    retains: Vec<ValueId>,
+    releases: Vec<ValueId>,
+) {
+    if let Some(existing) = splits
+        .iter_mut()
+        .find(|split| split.pred == pred && split.arc == arc)
+    {
+        debug_assert_eq!(existing.target, target);
+        debug_assert_eq!(existing.args, args);
+        existing.retains.extend(retains);
+        existing.releases.extend(releases);
+        return;
+    }
+    splits.push(EdgeSplit {
+        pred,
+        arc,
+        target,
+        args,
+        retains,
+        releases,
+    });
 }
 
 struct ExceptionArc {
@@ -926,6 +1166,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     if attr_is_true(func, DROP_INSERTED_ATTR) {
         return stats;
     }
+    let audit_start = std::time::Instant::now();
+    emit_drop_inner_stage_audit(
+        func,
+        "start",
+        None,
+        None,
+        None,
+        None,
+        audit_start.elapsed().as_millis(),
+    );
     let exception_region_drops_already_inserted =
         attr_is_true(func, EXCEPTION_REGION_DROPS_INSERTED_ATTR);
     let exception_creation_drops = if exception_region_drops_already_inserted {
@@ -983,8 +1233,26 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
         return stats;
     }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-pre-bail-slice",
+        None,
+        None,
+        Some(pre_bail_drops),
+        None,
+        audit_start.elapsed().as_millis(),
+    );
 
     let live: TirLivenessResult = am.get::<TirLiveness>(func).clone();
+    emit_drop_inner_stage_audit(
+        func,
+        "after-liveness",
+        None,
+        None,
+        Some(live.raw_scalars.len()),
+        live.live_in.len().checked_add(live.live_out.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // Alias-root canonicalization (design 20 §1.2) and root-only ownership facts
     // are stable across the DelBoundary normalization below: DelBoundary carries
@@ -1001,46 +1269,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     );
     let canon = |v: ValueId| -> ValueId { drop_eligibility.root(v) };
 
-    // Conditionally-valid iterator value results (design §2.8). The VALUE result
-    // of an `IterNextUnboxed` (results[0]) holds a valid owned reference ONLY on
-    // the not-done branch: `molt_iter_next_unboxed` writes the value-out slot
-    // exclusively when it returns `done=false`, and leaves that slot UNINITIALIZED
-    // (stale stack garbage) on the `done=true` exhaustion path (verified in the
-    // runtime — every `return done_true` skips `*value_out = …`). Such a value
-    // must NEVER be dropped on a die-EDGE: the edge-dying rule (§3) would place a
-    // `DecRef` of it at the exhaustion successor's entry, where it is a stale
-    // pointer → use-after-free / segfault (the adversarial-review P0 #2(b): the
-    // yielded element `9` double-/garbage-dropped on the loop-exit path of a
-    // `list(gen)` / `"".join(gen)` / `for v in gen:` consumer). On the not-done
-    // (body) path the value is valid and is released by the ordinary straight-line
-    // last-use rule, which only ever runs in body blocks the done-edge can't reach.
-    // The fact is sourced from `[[result_validity]]` through OwnershipLattice,
-    // not from a DropInsertion-owned opcode hand list.
-    // Non-owning, NON-aliased `Copy` result roots (the over-release-class
-    // keystone). The root fact is sourced from OwnershipRootFacts, not from a
-    // DropInsertion-owned classifier scan.
-    // An `OpCode::Copy` result falls into exactly one of three drop classes:
-    //   1. FreshValue (`slice`, `int_from_obj`, container constructors, `iter`,
-    //      …): a brand-new `+1`. DROP it independently. (Stays droppable.)
-    //   2. EXPLICIT transparent alias (`copy`/`copy_var`/`guard_tag`/…,
-    //      a no-heap move): its result is operand 0's reference. The alias
-    //      union-find folds it into operand 0's group (so its ROOT is operand 0,
-    //      never itself) and the group is released ONCE through the root —
-    //      `droppable`'s `r == v` rail already declines the non-root member, so
-    //      it is naturally non-droppable here.
-    //   3. EVERYTHING ELSE (an UNKNOWN / unmapped value-producing carrier with its
-    //      OWN alias root — `copy_is_known_local_alias` is FALSE so the union-find
-    //      does NOT fold it — or an inert marker): the backend lowers it as a
-    //      no-incref bit-passthrough of operand 0 (returns operand 0's bits without
-    //      a `+1`). Because the union-find leaves it as its own root, `droppable`'s
-    //      `r == v` rail would (wrongly) admit it → dropping its result is a
-    //      DOUBLE-FREE of operand 0's object. EXCLUDE it explicitly.
-    // FAIL-CLOSED: class 3 is excluded from droppability (leak at worst — the
-    // sanctioned direction, never a UAF). This is the precise drop-side half of the
-    // lowering-truth alias contract that `alias_analysis::copy_is_known_local_alias`
-    // mandates (its docstring: "the drop pass separately fails closed to 'do NOT
-    // release'"). OwnershipRootFacts owns that fail-closed root set; the
-    // MemGVN-precise union-find half lives in `alias_analysis`.
+    emit_drop_inner_stage_audit(
+        func,
+        "after-value-classification",
+        None,
+        None,
+        Some(ownership_root_facts.non_owning_copy_result_roots().len()),
+        None,
+        audit_start.elapsed().as_millis(),
+    );
+
     // Alias-root canonicalization (design 20 §1.2 — `Copy`/`TypeGuard` are
     // borrowed aliases, holding NO new reference). Ownership — and therefore the
     // drop obligation — is per alias ROOT, not per SSA value. The drop pass
@@ -1065,6 +1303,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // return 0.) FAIL-CLOSED: for an owned-result load this only defers the drop a
     // few ops (harmless); for the borrow/handle case it is required for soundness.
     let borrows = crate::tir::passes::alias_analysis::build_borrow_provenance(func, &aliases);
+    emit_drop_inner_stage_audit(
+        func,
+        "after-alias-borrow",
+        None,
+        None,
+        None,
+        None,
+        audit_start.elapsed().as_millis(),
+    );
 
     // A root is droppable iff DropEligibility says it is heap-carrying,
     // function-owned per OwnershipRootFacts, and its own alias root. The raw
@@ -1124,27 +1371,50 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         stats.values_changed += normalized;
     }
 
-    // Ownership-lattice fact surface. DropInsertion owns placement; the lattice
-    // owns semantic result facts such as conditionally-valid results and
-    // finalizer-sensitive boundaries. Compute it after DelBoundary normalization
-    // so statement-boundary op indices match the mutated function.
-    let ownership_lattice = super::ownership_lattice_min::OwnershipLattice::compute_with_root_facts(
-        func,
-        &aliases,
-        ownership_root_facts.clone(),
-    );
-    let python_lifetime_facts =
-        super::ownership_lattice_min::PythonLifetimeFacts::compute(func, &aliases);
-    let is_conditionally_valid_result_or_alias =
-        |v: ValueId| -> bool { ownership_lattice.is_conditionally_valid_result_root(canon(v)) };
-
+    let ownership_lattice =
+        OwnershipLattice::compute_with_root_facts(func, &aliases, ownership_root_facts.clone());
+    let python_lifetime_facts = PythonLifetimeFacts::compute(func, &aliases);
     let statement_release_plan = StatementReleasePlan::compute(
         &ownership_lattice,
         &python_lifetime_facts,
         &drop_eligibility,
     );
+    let explicit_release_blocks: HashMap<ValueId, HashSet<BlockId>> = func
+        .blocks
+        .iter()
+        .flat_map(|(&bid, block)| {
+            block.ops.iter().flat_map(move |op| {
+                explicit_release_values(op)
+                    .into_iter()
+                    .map(canon)
+                    .map(move |root| (root, bid))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .fold(HashMap::new(), |mut acc, (root, bid)| {
+            acc.entry(root).or_default().insert(bid);
+            acc
+        });
     let boundary_release_roots =
         python_lifetime_facts.boundary_release_roots(&drop_eligibility, &ownership_lattice);
+    let python_lifetime_roots: HashSet<ValueId> = boundary_release_roots
+        .iter()
+        .chain(explicit_release_blocks.keys())
+        .copied()
+        .collect();
+    emit_drop_inner_stage_audit(
+        func,
+        "after-boundary-root-planning",
+        None,
+        None,
+        Some(
+            boundary_release_roots
+                .len()
+                .saturating_add(explicit_release_blocks.len()),
+        ),
+        None,
+        audit_start.elapsed().as_millis(),
+    );
 
     let pred_map_term = crate::tir::dominators::build_pred_map_with(
         func,
@@ -1169,6 +1439,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
         m
     };
+    emit_drop_inner_stage_audit(
+        func,
+        "after-dominators-def-block",
+        None,
+        None,
+        Some(def_block.len()),
+        Some(idoms.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // The plan: per block, a list of (insert_after_op_index OR at-entry, value)
     // DecRef placements, plus per-block at-entry edge-dying drops, plus
@@ -1188,11 +1467,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         before_op: HashMap<usize, Vec<ValueId>>,
         /// IncRef(v) to insert immediately BEFORE an exception-transfer op, with
         /// an exactly paired normal-fallthrough DecRef in `after_exception_op`.
-        /// This models a borrowed value passed as a `CheckException` edge
+        /// This models a borrowed value passed as an exception-transfer edge
         /// payload into an owned handler block arg: on the exceptional path the
         /// handler arg owns the retained +1; on the normal path the retain is
-        /// released immediately after the check. Unlike `before_op`, duplicate
-        /// entries are load-bearing and are not deduplicated during insertion.
+        /// released immediately after the transfer op. Unlike `before_op`,
+        /// duplicate entries are load-bearing and are not deduplicated during
+        /// insertion.
         before_exception_op: HashMap<usize, Vec<ValueId>>,
         /// Normal-fallthrough release for `before_exception_op` retains.
         after_exception_op: HashMap<usize, Vec<ValueId>>,
@@ -1207,6 +1487,28 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         before_term_incref: Vec<ValueId>,
     }
     let mut plans: HashMap<BlockId, BlockPlan> = HashMap::new();
+    let planned_insertion_count = |plans: &HashMap<BlockId, BlockPlan>| -> usize {
+        plans
+            .values()
+            .map(|plan| {
+                plan.after_op.values().map(Vec::len).sum::<usize>()
+                    + plan.at_entry.len()
+                    + plan.before_term.len()
+                    + plan.before_op.values().map(Vec::len).sum::<usize>()
+                    + plan
+                        .before_exception_op
+                        .values()
+                        .map(Vec::len)
+                        .sum::<usize>()
+                    + plan
+                        .after_exception_op
+                        .values()
+                        .map(Vec::len)
+                        .sum::<usize>()
+                    + plan.before_term_incref.len()
+            })
+            .sum()
+    };
 
     // Predecessor map (terminator-only edges) for edge-dying placement.
     let pred_map = crate::tir::dominators::build_pred_map_with(
@@ -1222,6 +1524,707 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let reachable = crate::tir::dominators::reachable_blocks_with(
         func,
         crate::tir::dominators::CfgEdgePolicy::Full,
+    );
+    // Critical-edge splits to materialize.  One split block is the edge-local RC
+    // authority for a concrete outgoing terminator arc: it may hold IncRefs for
+    // borrowed values entering owned phis and/or DecRefs for path-specific Python
+    // lifetime releases.  Collected here, applied after the op rebuild so block-id
+    // allocation does not disturb in-place op insertion.
+    let mut edge_splits: Vec<EdgeSplit> = Vec::new();
+
+    // Per-edge: the roots live INTO the successor's body (so we can test clean-
+    // transfer condition (c) without re-deriving liveness).
+    //
+    // A root is "live into a successor body" iff some live-in value of a successor
+    // `S` aliases it AND that value is not one of `S`'s own block args (block args
+    // are killed at `S`'s entry — they are the phi we may be feeding, not a body
+    // use). This is the precise "consumed elsewhere than via a phi we feed" test.
+    let edge_body_live_roots: HashMap<(BlockId, ArcDescriptor), HashSet<ValueId>> = {
+        let mut m: HashMap<(BlockId, ArcDescriptor), HashSet<ValueId>> = HashMap::new();
+        for &bid in &block_ids {
+            if !reachable.contains(&bid) {
+                continue;
+            }
+            let block = &func.blocks[&bid];
+            for arc in terminator_arcs(&block.terminator) {
+                if !reachable.contains(&arc.target) {
+                    continue;
+                }
+                let mut roots: HashSet<ValueId> = HashSet::new();
+                let succ_args: HashSet<ValueId> = func
+                    .blocks
+                    .get(&arc.target)
+                    .map(|s| s.args.iter().map(|a| a.id).collect())
+                    .unwrap_or_default();
+                if let Some(set) = live.live_in.get(&arc.target) {
+                    for &m in set {
+                        if !succ_args.contains(&m) {
+                            roots.insert(canon(m));
+                        }
+                    }
+                }
+                m.insert((bid, arc.descriptor), roots);
+            }
+        }
+        m
+    };
+    emit_drop_inner_stage_audit(
+        func,
+        "after-edge-body-live-roots",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(edge_body_live_roots.values().map(HashSet::len).sum()),
+        Some(edge_body_live_roots.len()),
+        audit_start.elapsed().as_millis(),
+    );
+
+    // A branch argument can transfer an owned root into a successor block arg
+    // (phi). The immediate successor-entry drop is already guarded by
+    // `incoming_arg_roots` in §3. The same transfer remains active through
+    // descendant blocks while the phi is live there: the source root is no longer
+    // the release authority, and dropping it on a later die-edge would double-free
+    // the object when the phi itself is released.
+    let block_mentions_value = |bid: BlockId, value: ValueId| -> bool {
+        func.blocks.get(&bid).is_some_and(|block| {
+            block.ops.iter().any(|op| op.operands.contains(&value))
+                || terminator_mentions_value(&block.terminator, value)
+        })
+    };
+    let transferred_phi_edges_by_root: HashMap<ValueId, Vec<(ValueId, BlockId)>> = {
+        let mut by_root: HashMap<ValueId, Vec<(ValueId, BlockId)>> = HashMap::new();
+        for &pred in &block_ids {
+            if !reachable.contains(&pred) {
+                continue;
+            }
+            let Some(pred_block) = func.blocks.get(&pred) else {
+                continue;
+            };
+            for arc in terminator_arcs(&pred_block.terminator) {
+                if !reachable.contains(&arc.target) {
+                    continue;
+                }
+                let Some(target_block) = func.blocks.get(&arc.target) else {
+                    continue;
+                };
+                for (pos, &arg) in arc.args.iter().enumerate() {
+                    if live.is_raw_scalar(arg)
+                        || drop_eligibility.is_conditionally_valid_result_root(arg)
+                    {
+                        continue;
+                    }
+                    let root = canon(arg);
+                    let Some(phi) = target_block.args.get(pos) else {
+                        continue;
+                    };
+                    if root == phi.id
+                        || ownership_lattice.is_conditionally_valid_result_root(root)
+                        || !drop_eligibility.is_droppable(root)
+                    {
+                        continue;
+                    }
+                    by_root.entry(root).or_default().push((phi.id, arc.target));
+                }
+            }
+        }
+        by_root
+    };
+    emit_drop_inner_stage_audit(
+        func,
+        "after-transferred-phi-edges",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(transferred_phi_edges_by_root.values().map(Vec::len).sum()),
+        Some(transferred_phi_edges_by_root.len()),
+        audit_start.elapsed().as_millis(),
+    );
+    let transferred_phi_args_by_root: HashMap<ValueId, HashSet<ValueId>> =
+        transferred_phi_edges_by_root
+            .iter()
+            .map(|(&root, transfers)| {
+                (
+                    root,
+                    transfers
+                        .iter()
+                        .map(|(phi, _)| *phi)
+                        .collect::<HashSet<_>>(),
+                )
+            })
+            .collect();
+    let transferred_phi_live_blocks_by_root: HashMap<ValueId, HashSet<BlockId>> = {
+        let mut by_root: HashMap<ValueId, HashSet<BlockId>> = HashMap::new();
+        for (&root, transfers) in &transferred_phi_edges_by_root {
+            for &(phi, transfer_target) in transfers {
+                let mut after_transfer: HashSet<BlockId> = HashSet::new();
+                let mut forward_stack = vec![transfer_target];
+                while let Some(cur) = forward_stack.pop() {
+                    if !reachable.contains(&cur) || !after_transfer.insert(cur) {
+                        continue;
+                    }
+                    let Some(block) = func.blocks.get(&cur) else {
+                        continue;
+                    };
+                    for arc in terminator_arcs(&block.terminator) {
+                        forward_stack.push(arc.target);
+                    }
+                }
+
+                let mut reaches_phi_mention: HashSet<BlockId> = HashSet::new();
+                let mut reverse_stack: Vec<BlockId> = after_transfer
+                    .iter()
+                    .copied()
+                    .filter(|&bid| block_mentions_value(bid, phi))
+                    .collect();
+                while let Some(cur) = reverse_stack.pop() {
+                    if !after_transfer.contains(&cur) || !reaches_phi_mention.insert(cur) {
+                        continue;
+                    }
+                    if let Some(preds) = pred_map.get(&cur) {
+                        reverse_stack.extend(preds.iter().copied());
+                    }
+                }
+                by_root.entry(root).or_default().extend(reaches_phi_mention);
+            }
+        }
+        by_root
+    };
+    emit_drop_inner_stage_audit(
+        func,
+        "after-transferred-phi-live-blocks",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(
+            transferred_phi_live_blocks_by_root
+                .values()
+                .map(HashSet::len)
+                .sum(),
+        ),
+        Some(transferred_phi_live_blocks_by_root.len()),
+        audit_start.elapsed().as_millis(),
+    );
+    // Python local cleanup roots are born at `store_var` source roots, but the
+    // actual owner can move through block args as control flow joins. Track that
+    // origin transitive closure so a cleanup `DecRef(phi)` is recognized as the
+    // release authority for the original store-var source root.
+    let python_origin_roots_by_carrier_root: HashMap<ValueId, HashSet<ValueId>> = {
+        let mut origins: HashMap<ValueId, HashSet<ValueId>> = HashMap::new();
+        for &root in &python_lifetime_roots {
+            origins.entry(root).or_default().insert(root);
+        }
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for &pred in &block_ids {
+                if !reachable.contains(&pred) {
+                    continue;
+                }
+                let Some(pred_block) = func.blocks.get(&pred) else {
+                    continue;
+                };
+                for arc in terminator_arcs(&pred_block.terminator) {
+                    if !reachable.contains(&arc.target) {
+                        continue;
+                    }
+                    let Some(target_block) = func.blocks.get(&arc.target) else {
+                        continue;
+                    };
+                    let mut transferred_current_roots: HashSet<ValueId> = HashSet::new();
+                    for (pos, &arg) in arc.args.iter().enumerate() {
+                        if live.is_raw_scalar(arg)
+                            || drop_eligibility.is_conditionally_valid_result_root(arg)
+                        {
+                            continue;
+                        }
+                        let current_root = canon(arg);
+                        let Some(source_roots) = origins.get(&current_root).cloned() else {
+                            continue;
+                        };
+                        let Some(phi) = target_block.args.get(pos) else {
+                            continue;
+                        };
+                        if !drop_eligibility.is_droppable(phi.id) {
+                            continue;
+                        }
+                        if edge_body_live_roots
+                            .get(&(pred, arc.descriptor))
+                            .is_some_and(|roots| roots.contains(&current_root))
+                        {
+                            continue;
+                        }
+                        if !transferred_current_roots.insert(current_root) {
+                            continue;
+                        }
+                        let entry = origins.entry(phi.id).or_default();
+                        for source_root in source_roots {
+                            if entry.insert(source_root) {
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        origins
+    };
+    emit_drop_inner_stage_audit(
+        func,
+        "after-python-origin-roots",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(
+            python_origin_roots_by_carrier_root
+                .values()
+                .map(HashSet::len)
+                .sum(),
+        ),
+        Some(python_origin_roots_by_carrier_root.len()),
+        audit_start.elapsed().as_millis(),
+    );
+
+    // A source Python root can stop being the current cleanup carrier after it
+    // clean-transfers through block args. Project the direct phi-live map back
+    // onto each source origin so return-boundary planning does not release the
+    // stale source root when a live carrier will be released downstream.
+    let python_origin_transferred_phi_live_blocks_by_root: HashMap<ValueId, HashSet<BlockId>> = {
+        let mut by_root = transferred_phi_live_blocks_by_root.clone();
+        for (&carrier_root, source_roots) in &python_origin_roots_by_carrier_root {
+            let Some(blocks) = transferred_phi_live_blocks_by_root.get(&carrier_root) else {
+                continue;
+            };
+            for &source_root in source_roots {
+                if !python_lifetime_roots.contains(&source_root) {
+                    continue;
+                }
+                by_root
+                    .entry(source_root)
+                    .or_default()
+                    .extend(blocks.iter().copied());
+            }
+        }
+        by_root
+    };
+    emit_drop_inner_stage_audit(
+        func,
+        "after-python-origin-transferred-phi-live-blocks",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(
+            python_origin_transferred_phi_live_blocks_by_root
+                .values()
+                .map(HashSet::len)
+                .sum(),
+        ),
+        Some(python_origin_transferred_phi_live_blocks_by_root.len()),
+        audit_start.elapsed().as_millis(),
+    );
+    let transferred_phi_live_on_block = |root: ValueId, bid: BlockId| -> bool {
+        python_origin_transferred_phi_live_blocks_by_root
+            .get(&root)
+            .is_some_and(|blocks| blocks.contains(&bid))
+    };
+
+    let python_origin_release_blocks: HashMap<ValueId, HashSet<BlockId>> = {
+        let mut by_root = explicit_release_blocks.clone();
+        for (&bid, block) in &func.blocks {
+            for op in &block.ops {
+                for value in explicit_release_values(op) {
+                    let release_root = canon(value);
+                    if let Some(source_roots) =
+                        python_origin_roots_by_carrier_root.get(&release_root)
+                    {
+                        for &source_root in source_roots {
+                            if python_lifetime_roots.contains(&source_root) {
+                                by_root.entry(source_root).or_default().insert(bid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        by_root
+    };
+
+    let boundary_roots_handled_before_return: HashMap<BlockId, HashSet<ValueId>> = {
+        let mut handled: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
+        let mut transferred_value_roots: HashMap<ValueId, HashSet<ValueId>> = HashMap::new();
+        let mut incoming: HashMap<
+            (BlockId, ValueId),
+            Vec<(BlockId, ArcDescriptor, Vec<ValueId>, bool)>,
+        > = HashMap::new();
+        let mut boundary_roots: Vec<ValueId> = boundary_release_roots.iter().copied().collect();
+        boundary_roots.sort_unstable_by_key(|v| v.0);
+        for &pred in &block_ids {
+            if !reachable.contains(&pred) {
+                continue;
+            }
+            let Some(pred_block) = func.blocks.get(&pred) else {
+                continue;
+            };
+            for arc in terminator_arcs(&pred_block.terminator) {
+                if !reachable.contains(&arc.target) {
+                    continue;
+                }
+                let Some(target_block) = func.blocks.get(&arc.target) else {
+                    continue;
+                };
+                let mut transferred_on_arc: HashSet<ValueId> = HashSet::new();
+                for (pos, &arg) in arc.args.iter().enumerate() {
+                    if live.is_raw_scalar(arg)
+                        || drop_eligibility.is_conditionally_valid_result_root(arg)
+                    {
+                        continue;
+                    }
+                    let current_root = canon(arg);
+                    let Some(source_roots) = python_origin_roots_by_carrier_root.get(&current_root)
+                    else {
+                        continue;
+                    };
+                    let body_live = edge_body_live_roots
+                        .get(&(pred, arc.descriptor))
+                        .is_some_and(|s| s.contains(&current_root));
+                    if body_live || !transferred_on_arc.insert(current_root) {
+                        continue;
+                    }
+                    let Some(phi) = target_block.args.get(pos) else {
+                        continue;
+                    };
+                    if drop_eligibility.is_droppable(phi.id) {
+                        transferred_value_roots.entry(phi.id).or_default().extend(
+                            source_roots
+                                .iter()
+                                .copied()
+                                .filter(|root| python_lifetime_roots.contains(root)),
+                        );
+                    }
+                }
+                if !matches!(target_block.terminator, Terminator::Return { .. }) {
+                    continue;
+                }
+                for &root in &boundary_roots {
+                    if ownership_lattice.is_conditionally_valid_result_root(root)
+                        || terminator_uses_root(&target_block.terminator, root, &canon)
+                    {
+                        continue;
+                    }
+                    match def_block.get(&root) {
+                        Some(&dblk)
+                            if crate::tir::dominators::dominates(dblk, arc.target, &idoms) => {}
+                        _ => continue,
+                    }
+                    let body_live = edge_body_live_roots
+                        .get(&(pred, arc.descriptor))
+                        .is_some_and(|s| s.contains(&root));
+                    if transferred_phi_live_on_block(root, pred) {
+                        handled.entry(arc.target).or_default().insert(root);
+                        continue;
+                    }
+                    let transfers_root = !body_live
+                        && arc.args.iter().enumerate().any(|(pos, &arg)| {
+                            if live.is_raw_scalar(arg)
+                                || drop_eligibility.is_conditionally_valid_result_root(arg)
+                            {
+                                return false;
+                            }
+                            let current_root = canon(arg);
+                            if !python_origin_roots_by_carrier_root
+                                .get(&current_root)
+                                .is_some_and(|roots| roots.contains(&root))
+                            {
+                                return false;
+                            }
+                            target_block
+                                .args
+                                .get(pos)
+                                .is_some_and(|phi| drop_eligibility.is_droppable(phi.id))
+                        });
+                    incoming.entry((arc.target, root)).or_default().push((
+                        pred,
+                        arc.descriptor,
+                        arc.args.clone(),
+                        transfers_root,
+                    ));
+                }
+            }
+        }
+        for ((target, root), arcs) in incoming {
+            let any_transferred = arcs.iter().any(|(_, _, _, transferred)| *transferred);
+            if !any_transferred {
+                continue;
+            }
+            handled.entry(target).or_default().insert(root);
+            if arcs.iter().all(|(_, _, _, transferred)| *transferred) {
+                continue;
+            }
+            for (pred, arc, args, transferred) in arcs {
+                if transferred {
+                    continue;
+                }
+                push_edge_split(
+                    &mut edge_splits,
+                    pred,
+                    arc,
+                    target,
+                    args,
+                    vec![],
+                    vec![root],
+                );
+            }
+        }
+        let mut explicit_roots: Vec<ValueId> = python_lifetime_roots
+            .iter()
+            .copied()
+            .filter(|root| explicit_release_blocks.contains_key(root))
+            .collect();
+        explicit_roots.sort_unstable_by_key(|root| root.0);
+        let mut explicit_released_entry_roots: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
+        let explicit_release_dominates_block = |root: ValueId, block: BlockId| -> bool {
+            python_origin_release_blocks
+                .get(&root)
+                .is_some_and(|blocks| {
+                    blocks.iter().any(|&release_block| {
+                        release_block == block
+                            || crate::tir::dominators::dominates(release_block, block, &idoms)
+                    })
+                })
+        };
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for &root in &explicit_roots {
+                let Some(&root_def) = def_block.get(&root) else {
+                    continue;
+                };
+                let mut incoming_by_target: BTreeMap<
+                    BlockId,
+                    Vec<(BlockId, ArcDescriptor, Vec<ValueId>, bool)>,
+                > = BTreeMap::new();
+                for &pred in &block_ids {
+                    if !reachable.contains(&pred) {
+                        continue;
+                    }
+                    if !crate::tir::dominators::dominates(root_def, pred, &idoms) {
+                        continue;
+                    }
+                    let released_before_edge = explicit_released_entry_roots
+                        .get(&pred)
+                        .is_some_and(|roots| roots.contains(&root))
+                        || explicit_release_dominates_block(root, pred);
+                    let Some(pred_block) = func.blocks.get(&pred) else {
+                        continue;
+                    };
+                    for arc in terminator_arcs(&pred_block.terminator) {
+                        if !reachable.contains(&arc.target) {
+                            continue;
+                        }
+                        if explicit_released_entry_roots
+                            .get(&arc.target)
+                            .is_some_and(|roots| roots.contains(&root))
+                        {
+                            continue;
+                        }
+                        let Some(target_block) = func.blocks.get(&arc.target) else {
+                            continue;
+                        };
+                        if matches!(target_block.terminator, Terminator::Return { .. }) {
+                            continue;
+                        }
+                        if edge_body_live_roots
+                            .get(&(pred, arc.descriptor))
+                            .is_some_and(|roots| roots.contains(&root))
+                        {
+                            continue;
+                        }
+                        if transferred_phi_live_on_block(root, pred) {
+                            continue;
+                        }
+                        let transfers_root = arc.args.iter().enumerate().any(|(pos, &arg)| {
+                            if live.is_raw_scalar(arg)
+                                || drop_eligibility.is_conditionally_valid_result_root(arg)
+                            {
+                                return false;
+                            }
+                            let current_root = canon(arg);
+                            python_origin_roots_by_carrier_root
+                                .get(&current_root)
+                                .is_some_and(|roots| roots.contains(&root))
+                                && target_block
+                                    .args
+                                    .get(pos)
+                                    .is_some_and(|phi| drop_eligibility.is_droppable(phi.id))
+                        });
+                        if transfers_root {
+                            continue;
+                        }
+                        incoming_by_target.entry(arc.target).or_default().push((
+                            pred,
+                            arc.descriptor,
+                            arc.args,
+                            released_before_edge,
+                        ));
+                    }
+                }
+                for (target, arcs) in incoming_by_target {
+                    let any_released = arcs.iter().any(|(_, _, _, released)| *released);
+                    let any_unreleased = arcs.iter().any(|(_, _, _, released)| !*released);
+                    if !(any_released && any_unreleased) {
+                        continue;
+                    }
+                    for (pred, arc, args, released) in arcs {
+                        if released {
+                            continue;
+                        }
+                        push_edge_split(
+                            &mut edge_splits,
+                            pred,
+                            arc,
+                            target,
+                            args,
+                            vec![],
+                            vec![root],
+                        );
+                    }
+                    explicit_released_entry_roots
+                        .entry(target)
+                        .or_default()
+                        .insert(root);
+                    handled.entry(target).or_default().insert(root);
+                    changed = true;
+                }
+            }
+        }
+        for root in explicit_roots {
+            let Some(&root_def) = def_block.get(&root) else {
+                continue;
+            };
+            for &pred in &block_ids {
+                if !reachable.contains(&pred) {
+                    continue;
+                }
+                if !crate::tir::dominators::dominates(root_def, pred, &idoms) {
+                    continue;
+                }
+                let released_before_edge = explicit_released_entry_roots
+                    .get(&pred)
+                    .is_some_and(|roots| roots.contains(&root))
+                    || explicit_release_dominates_block(root, pred);
+                if released_before_edge {
+                    continue;
+                }
+                let Some(pred_block) = func.blocks.get(&pred) else {
+                    continue;
+                };
+                for arc in terminator_arcs(&pred_block.terminator) {
+                    if !reachable.contains(&arc.target) {
+                        continue;
+                    }
+                    let Some(target_block) = func.blocks.get(&arc.target) else {
+                        continue;
+                    };
+                    if !matches!(target_block.terminator, Terminator::Return { .. }) {
+                        continue;
+                    }
+                    if terminator_uses_root(&target_block.terminator, root, &canon)
+                        || edge_body_live_roots
+                            .get(&(pred, arc.descriptor))
+                            .is_some_and(|roots| roots.contains(&root))
+                    {
+                        continue;
+                    }
+                    if transferred_phi_live_on_block(root, pred) {
+                        handled.entry(arc.target).or_default().insert(root);
+                        continue;
+                    }
+                    let transfers_root = arc.args.iter().enumerate().any(|(pos, &arg)| {
+                        if live.is_raw_scalar(arg)
+                            || drop_eligibility.is_conditionally_valid_result_root(arg)
+                        {
+                            return false;
+                        }
+                        let current_root = canon(arg);
+                        python_origin_roots_by_carrier_root
+                            .get(&current_root)
+                            .is_some_and(|roots| roots.contains(&root))
+                            && target_block
+                                .args
+                                .get(pos)
+                                .is_some_and(|phi| drop_eligibility.is_droppable(phi.id))
+                    });
+                    if transfers_root {
+                        handled.entry(arc.target).or_default().insert(root);
+                        continue;
+                    }
+                    push_edge_split(
+                        &mut edge_splits,
+                        pred,
+                        arc.descriptor,
+                        arc.target,
+                        arc.args.clone(),
+                        vec![],
+                        vec![root],
+                    );
+                    handled.entry(arc.target).or_default().insert(root);
+                }
+            }
+        }
+        for &bid in &block_ids {
+            if !reachable.contains(&bid) {
+                continue;
+            }
+            let Some(block) = func.blocks.get(&bid) else {
+                continue;
+            };
+            if !matches!(block.terminator, Terminator::Return { .. }) {
+                continue;
+            }
+            for op in &block.ops {
+                if !matches!(op.opcode, OpCode::DecRef | OpCode::DelBoundary) {
+                    continue;
+                }
+                let Some(&release_value) = op.operands.first() else {
+                    continue;
+                };
+                let release_root = canon(release_value);
+                let Some(roots) = transferred_value_roots
+                    .get(&release_value)
+                    .or_else(|| transferred_value_roots.get(&release_root))
+                    .or_else(|| python_origin_roots_by_carrier_root.get(&release_root))
+                else {
+                    continue;
+                };
+                let release_def_dominates = def_block
+                    .get(&release_value)
+                    .is_some_and(|&dblk| crate::tir::dominators::dominates(dblk, bid, &idoms));
+                if !release_def_dominates {
+                    continue;
+                }
+                for &root in roots {
+                    if terminator_uses_root(&block.terminator, root, &canon) {
+                        continue;
+                    }
+                    match def_block.get(&root) {
+                        Some(&dblk) if crate::tir::dominators::dominates(dblk, bid, &idoms) => {
+                            handled.entry(bid).or_default().insert(root);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        handled
+    };
+    emit_drop_inner_stage_audit(
+        func,
+        "after-boundary-roots-before-return",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(
+            boundary_roots_handled_before_return
+                .values()
+                .map(HashSet::len)
+                .sum(),
+        ),
+        Some(boundary_roots_handled_before_return.len()),
+        audit_start.elapsed().as_millis(),
     );
 
     // ── 0b. FinalizerSensitive release deferral (#58, the ordering keystone) ──
@@ -1374,6 +2377,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // Deterministic finalizer order: ValueId ascending == creation order ==
     // CPython's observed frame-teardown DEL order (finalizer_matrix `many`).
     deferred_return_placements.sort_unstable_by_key(|&(b, v)| (b.0, v.0));
+    emit_drop_inner_stage_audit(
+        func,
+        "after-finalizer-deferral",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(deferred.len()),
+        Some(deferred_return_placements.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     for &bid in &block_ids {
         if !reachable.contains(&bid) {
@@ -1404,6 +2416,26 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             .into_iter()
             .map(canon)
             .collect();
+        // `DeleteVar(missing, old)` is the executable Python `del name` /
+        // slot-overwrite boundary. The op stores the missing sentinel into the
+        // slot; the old occupant's slot-owned reference must release
+        // immediately after that store, not at later SSA last-use and not by a
+        // hidden runtime side effect.
+        let mut delete_var_release_after_op: HashMap<usize, Vec<ValueId>> = HashMap::new();
+        for (idx, op) in block.ops.iter().enumerate() {
+            if op.opcode != OpCode::DeleteVar {
+                continue;
+            }
+            if let Some(&old_slot_value) = op.operands.get(1) {
+                let root = canon(old_slot_value);
+                if drop_eligibility.is_droppable(root) {
+                    delete_var_release_after_op
+                        .entry(idx)
+                        .or_default()
+                        .push(root);
+                }
+            }
+        }
         // Last op-use index per ROOT (max over all aliases). A use of operand `v`
         // at index `idx` is a last-use candidate for `canon(v)` AND for every
         // source-object root `v` borrows from (interior-borrow keepalive): the
@@ -1498,8 +2530,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         // immediately AFTER its defining op, so that is where its drop belongs.
         // We apply the SAME guards as the §1 last-use path (droppable / not
         // branch-transferred / not live-out / not terminator-consumed) plus the
-        // conditionally-valid-iterator exclusion (§2.8): the value result of an
-        // `IterNextUnboxed` is uninitialized stack garbage on the exhaustion path
+        // conditionally-owned-iterator exclusion (§2.8): the value result of an
+        // `IterNextUnboxed` is a non-owned `None` sentinel on the exhaustion path
         // and must never be dropped unconditionally. A result that IS used was
         // already handled by §1 (its root is in `last_use`); checking `last_use`
         // membership in ROOT space avoids any double-drop.
@@ -1525,7 +2557,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 }
                 // Conditionally-valid iterator value result: never drop it (it is
                 // stale garbage on the iterator-exhaustion path).
-                if is_conditionally_valid_result_or_alias(result) {
+                if drop_eligibility.is_conditionally_valid_result_root(result) {
                     continue;
                 }
                 // Transferred via branch arg (root space) → successor owns it.
@@ -1562,7 +2594,16 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             let mut roots: Vec<ValueId> = boundary_release_roots.iter().copied().collect();
             roots.sort_unstable_by_key(|v| v.0);
             for root in roots {
+                if ownership_lattice.is_conditionally_valid_result_root(root) {
+                    continue;
+                }
                 if terminator_uses_root(&block.terminator, root, &canon) {
+                    continue;
+                }
+                if boundary_roots_handled_before_return
+                    .get(&bid)
+                    .is_some_and(|roots| roots.contains(&root))
+                {
                     continue;
                 }
                 match def_block.get(&root) {
@@ -1582,24 +2623,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     .extend(roots.iter().copied());
             }
         }
-
-        // `DeleteVar` is the Python local-slot deletion boundary. The op stores
-        // the missing sentinel as the slot's new value; the old occupant's
-        // reference must be released immediately after that store, before later
-        // side effects can observe finalizer timing. `PythonLifetimeFacts`
-        // prevents the generic last-use and finalizer deferral paths from placing
-        // a second release.
-        for (idx, op) in block.ops.iter().enumerate() {
-            if op.opcode != OpCode::DeleteVar {
-                continue;
-            }
-            let Some(&old_slot_value) = op.operands.get(1) else {
-                continue;
-            };
-            let root = canon(old_slot_value);
-            if drop_eligibility.is_droppable(root) {
-                plan.after_op.entry(idx).or_default().push(root);
-            }
+        for (idx, roots) in delete_var_release_after_op {
+            plan.after_op.entry(idx).or_default().extend(roots);
         }
 
         // ── 2. Suspension-point IncRef ───────────────────────────────────────
@@ -1679,7 +2704,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     continue;
                 }
                 let root = canon(v);
-                if is_conditionally_valid_result_or_alias(v) {
+                if drop_eligibility.is_conditionally_valid_result_root(v) {
                     continue;
                 }
                 if drop_eligibility.is_droppable(root) {
@@ -1702,6 +2727,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
         plans.insert(bid, plan);
     }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-block-plan-build",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(planned_insertion_count(&plans)),
+        Some(reachable.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // ── 3. Edge-dying drops at successor entry (design §2.5 OpsOnly form) ─────
     // A value V is dropped at the START of block B when:
@@ -1827,19 +2861,29 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 .get(&bid)
                 .is_some_and(|set| set.iter().any(|&m| canon(m) == root))
         };
+        let transferred_phi_live_at = |root: ValueId| -> bool {
+            let Some(phis) = transferred_phi_args_by_root.get(&root) else {
+                return false;
+            };
+            let live_in = live
+                .live_in
+                .get(&bid)
+                .is_some_and(|set| set.iter().any(|v| phis.contains(v)));
+            let live_out = live
+                .live_out
+                .get(&bid)
+                .is_some_and(|set| set.iter().any(|v| phis.contains(v)));
+            let mentioned_here = phis.iter().any(|&phi| block_mentions_value(bid, phi));
+            let after_transfer_reaches_phi = transferred_phi_live_blocks_by_root
+                .get(&root)
+                .is_some_and(|blocks| blocks.contains(&bid));
+            live_in || live_out || mentioned_here || after_transfer_reaches_phi
+        };
         // Roots already scheduled to drop at this block's entry (dedup by root,
         // not raw value — two aliases of the same group must drop once).
         let mut entry_root_seen: HashSet<ValueId> = HashSet::new();
         for v in candidates {
             if !drop_eligibility.is_droppable(v) {
-                continue;
-            }
-            let root = canon(v);
-            if deferred.contains(&root)
-                || boundary_release_roots.contains(&root)
-                || statement_release_plan.contains_released_root(root)
-                || python_lifetime_facts.has_explicit_release_boundary(root)
-            {
                 continue;
             }
             // Conditionally-valid iterator value result (§2.8): NEVER drop it on a
@@ -1852,7 +2896,23 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             // itself unless a later `Copy` of it widened the group; in that case
             // the whole group is conditionally-valid and equally unsafe to
             // edge-drop.)
-            if is_conditionally_valid_result_or_alias(v) {
+            if drop_eligibility.is_conditionally_valid_result_root(v)
+                || ownership_lattice.is_conditionally_valid_result_root(canon(v))
+            {
+                continue;
+            }
+            let root = canon(v);
+            // Python lifetime boundaries are path-conditioned release
+            // authorities. The single at-entry edge-dying form would run on every
+            // path into `bid`, so pairing it with a body-only statement/rebind
+            // boundary or a later scope-exit boundary can release the same local
+            // owner twice. Fail closed by leaving such roots to the Python
+            // boundary planners rather than synthesizing a join-entry drop from
+            // SSA liveness alone.
+            if boundary_release_roots.contains(&root)
+                || explicit_release_blocks.contains_key(&root)
+                || statement_release_plan.contains_released_root(root)
+            {
                 continue;
             }
             if block_args.contains(&v) || block_args.iter().any(|&a| canon(a) == root) {
@@ -1863,6 +2923,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             // moves into the block arg, it does not die here. Dropping it would
             // double-free the phi's object.
             if incoming_arg_roots.contains(&root) {
+                continue;
+            }
+            // A prior edge may have transferred this source root into a phi in an
+            // ancestor/join block. While that phi is live through this block, the
+            // phi remains the release authority. Dropping the old source root here
+            // would release the same owned object once under the pre-transfer name
+            // and once under the phi name.
+            if transferred_phi_live_at(root) {
                 continue;
             }
             // Dead on entry to B (root-level — no alias member live-in).
@@ -1908,6 +2976,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 .push(v);
         }
     }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-edge-dying",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(planned_insertion_count(&plans)),
+        Some(reachable.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // ── 4. Loop-carried phi drops before the back-edge (design §2.7) ─────────
     // A header block arg (phi) `p` whose back-edge passes a NEW value leaves the
@@ -1985,46 +3062,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // Owned phis bail with the function (state-machine / exception-handler gate at
     // the top of `run`), so this never runs over `_poll` / handler CFGs.
 
-    // Per-block: the values that block forwards as branch args, with multiplicity
-    // by alias root, plus the set of roots live INTO any successor's body (so we
-    // can test clean-transfer condition (c) without re-deriving liveness).
-    //
-    // A root is "live into a successor body" iff some live-in value of a successor
-    // `S` aliases it AND that value is not one of `S`'s own block args (block args
-    // are killed at `S`'s entry — they are the phi we may be feeding, not a body
-    // use). This is the precise "consumed elsewhere than via a phi we feed" test.
-    let succ_body_live_roots: HashMap<BlockId, HashSet<ValueId>> = {
-        let mut m: HashMap<BlockId, HashSet<ValueId>> = HashMap::new();
-        for &bid in &block_ids {
-            if !reachable.contains(&bid) {
-                continue;
-            }
-            let block = &func.blocks[&bid];
-            let mut roots: HashSet<ValueId> = HashSet::new();
-            for succ in terminator_successor_blocks(&block.terminator) {
-                let succ_args: HashSet<ValueId> = func
-                    .blocks
-                    .get(&succ)
-                    .map(|s| s.args.iter().map(|a| a.id).collect())
-                    .unwrap_or_default();
-                if let Some(set) = live.live_in.get(&succ) {
-                    for &m in set {
-                        if !succ_args.contains(&m) {
-                            roots.insert(canon(m));
-                        }
-                    }
-                }
-            }
-            m.insert(bid, roots);
-        }
-        m
-    };
-
-    // Critical-edge splits to materialize: (pred, arc_descriptor, retained_values,
-    // forwarded_args_for_that_arc, target). Collected here, applied after the op
-    // rebuild so block-id allocation doesn't disturb the in-place op insertion.
-    let mut edge_splits: Vec<EdgeSplit> = Vec::new();
-
     for &bid in &block_ids {
         if !reachable.contains(&bid) {
             continue;
@@ -2033,18 +3070,6 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         // Examine each outgoing arc of this block's terminator.
         let term = func.blocks[&bid].terminator.clone();
         let arcs = terminator_arcs(&term);
-        // Count, per (target, arg-root), how many of THIS block's arcs forward an
-        // alias of that root to that target — for the placement ambiguity test and
-        // for clean-transfer condition (c) (forwarded to >1 phi).
-        // Also count total forwards of each root across ALL arcs of this block.
-        let mut root_forward_count: HashMap<ValueId, usize> = HashMap::new();
-        for arc in &arcs {
-            for &v in &arc.args {
-                if !drop_eligibility.is_raw_scalar_root(canon(v)) {
-                    *root_forward_count.entry(canon(v)).or_default() += 1;
-                }
-            }
-        }
         for arc in &arcs {
             let Some(succ_block) = func.blocks.get(&arc.target) else {
                 continue;
@@ -2057,6 +3082,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             let arcs_to_target = arcs.iter().filter(|a| a.target == arc.target).count();
             // Compute the retains for THIS arc.
             let mut arc_retains: Vec<ValueId> = Vec::new();
+            let mut transferred_roots: HashSet<ValueId> = HashSet::new();
             for (pos, &v) in arc.args.iter().enumerate() {
                 let Some(phi) = succ_block.args.get(pos) else {
                     continue;
@@ -2098,17 +3124,20 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // to the borrowed branch is unsafe (it would IncRef a possibly
                 // uninitialized slot). So SKIP iter-cond values entirely (they are
                 // handled by the body straight-line rule on the valid path).
-                if is_conditionally_valid_result_or_alias(v) {
+                if drop_eligibility.is_conditionally_valid_result_root(v)
+                    || ownership_lattice.is_conditionally_valid_result_root(root)
+                {
                     continue;
                 }
                 let clean_transfer = function_owned
-                    // (c) sole downstream owner: this root is forwarded by exactly
-                    //     one arc of this block AND is not live into any successor
-                    //     body. Otherwise its single +1 is shared → retain.
-                    && root_forward_count.get(&root).copied().unwrap_or(0) == 1
-                    && !succ_body_live_roots
-                        .get(&bid)
-                        .is_some_and(|s| s.contains(&root));
+                    // (c) sole downstream owner on THIS executed arc: if the root is
+                    //     not live into the successor body, its original +1 may move
+                    //     into exactly one owned phi. Additional owned phis on the
+                    //     same arc need one retain each.
+                    && !edge_body_live_roots
+                        .get(&(bid, arc.descriptor))
+                        .is_some_and(|s| s.contains(&root))
+                    && transferred_roots.insert(root);
                 if clean_transfer {
                     continue;
                 }
@@ -2140,16 +3169,27 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // Critical / ambiguous edge: split it. The new block carries the
                 // IncRefs then an unconditional Branch to the target with the same
                 // args this arc forwarded.
-                edge_splits.push(EdgeSplit {
-                    pred: bid,
-                    arc: arc.descriptor,
-                    target: arc.target,
-                    args: arc.args.clone(),
-                    retains: arc_retains,
-                });
+                push_edge_split(
+                    &mut edge_splits,
+                    bid,
+                    arc.descriptor,
+                    arc.target,
+                    arc.args.clone(),
+                    arc_retains,
+                    vec![],
+                );
             }
         }
     }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-mixed-phi-retain",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(planned_insertion_count(&plans)),
+        Some(reachable.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // ── 0b placements: deferred FinalizerSensitive releases at each Return ───
     // Merged AFTER §1–§5 so they always append to (never overwrite) the
@@ -2171,55 +3211,60 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             .before_term
             .push(v);
     }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-deferred-placement-merge",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(planned_insertion_count(&plans)),
+        Some(reachable.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // ── Apply the plans ──────────────────────────────────────────────────────
     let mut inserted = stats.ops_added;
-    for (&bid, plan) in &plans {
+    let mut plan_block_ids: Vec<BlockId> = plans.keys().copied().collect();
+    plan_block_ids.sort_unstable_by_key(|bid| bid.0);
+    for bid in plan_block_ids {
+        let Some(plan) = plans.get(&bid) else {
+            continue;
+        };
         let Some(block) = func.blocks.get_mut(&bid) else {
             continue;
         };
         // Rebuild the op vector inserting before_op (IncRef) / after_op (DecRef).
         let mut new_ops: Vec<TirOp> = Vec::with_capacity(block.ops.len() + 8);
         // at_entry DecRefs first.
-        let mut entry_seen: HashSet<ValueId> = HashSet::new();
-        for &v in &plan.at_entry {
-            if entry_seen.insert(v) {
-                new_ops.push(make_op(OpCode::DecRef, vec![v]));
-                inserted += 1;
-            }
+        for v in sorted_unique_values(&plan.at_entry) {
+            new_ops.push(make_op(OpCode::DecRef, vec![v]));
+            inserted += 1;
         }
         for (idx, op) in block.ops.iter().enumerate() {
             // before_op IncRefs (suspension).
             if let Some(vals) = plan.before_op.get(&idx) {
-                let mut seen: HashSet<ValueId> = HashSet::new();
-                for &v in vals {
-                    if seen.insert(v) {
-                        new_ops.push(make_op(OpCode::IncRef, vec![v]));
-                        inserted += 1;
-                    }
+                for v in sorted_unique_values(vals) {
+                    new_ops.push(make_op(OpCode::IncRef, vec![v]));
+                    inserted += 1;
                 }
             }
             if let Some(vals) = plan.before_exception_op.get(&idx) {
-                for &v in vals {
+                for v in sorted_values(vals) {
                     new_ops.push(make_op(OpCode::IncRef, vec![v]));
                     inserted += 1;
                 }
             }
             new_ops.push(op.clone());
             if let Some(vals) = plan.after_exception_op.get(&idx) {
-                for &v in vals {
+                for v in sorted_values(vals) {
                     new_ops.push(make_op(OpCode::DecRef, vec![v]));
                     inserted += 1;
                 }
             }
             // after_op DecRefs (straight-line last use).
             if let Some(vals) = plan.after_op.get(&idx) {
-                let mut seen: HashSet<ValueId> = HashSet::new();
-                for &v in vals {
-                    if seen.insert(v) {
-                        new_ops.push(make_op(OpCode::DecRef, vec![v]));
-                        inserted += 1;
-                    }
+                for v in ordered_unique_after_op_values(vals, op, &canon) {
+                    new_ops.push(make_op(OpCode::DecRef, vec![v]));
+                    inserted += 1;
                 }
             }
         }
@@ -2228,27 +3273,30 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         // `+1` here, just before the terminator, on the unambiguous single arc.
         // Placed BEFORE the before_term DecRefs so a value both retained-for-a-phi
         // and dropped-on-another-arc is incref'd before the drop (net correct).
-        let mut term_inc_seen: HashSet<ValueId> = HashSet::new();
-        for &v in &plan.before_term_incref {
-            if term_inc_seen.insert(v) {
-                new_ops.push(make_op(OpCode::IncRef, vec![v]));
-                inserted += 1;
-            }
+        for v in sorted_values(&plan.before_term_incref) {
+            new_ops.push(make_op(OpCode::IncRef, vec![v]));
+            inserted += 1;
         }
         // before_term DecRefs — the §0b deferred FinalizerSensitive releases
         // at Return boundaries (and the documented loop-carried anchor /
         // future edge-split upgrade). Insertion order is preserved: §0b
         // pre-sorted by ValueId so multi-instance `__del__` order matches
         // CPython's creation-order frame teardown.
-        let mut term_seen: HashSet<ValueId> = HashSet::new();
-        for &v in &plan.before_term {
-            if term_seen.insert(v) {
-                new_ops.push(make_op(OpCode::DecRef, vec![v]));
-                inserted += 1;
-            }
+        for v in sorted_unique_values(&plan.before_term) {
+            new_ops.push(make_op(OpCode::DecRef, vec![v]));
+            inserted += 1;
         }
         block.ops = new_ops;
     }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-plan-apply",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(inserted),
+        Some(func.blocks.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // ── Apply critical-edge splits (§5 ambiguous-arc retains) ─────────────────
     // Each split inserts a fresh block on ONE arc: it holds the retained-value
@@ -2257,13 +3305,14 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // block (and that arc's args cleared — the new block now supplies them).
     for split in &edge_splits {
         let new_bid = func.fresh_block();
-        let mut ops: Vec<TirOp> = Vec::with_capacity(split.retains.len());
-        let mut seen: HashSet<ValueId> = HashSet::new();
-        for &v in &split.retains {
-            if seen.insert(v) {
-                ops.push(make_op(OpCode::IncRef, vec![v]));
-                inserted += 1;
-            }
+        let mut ops: Vec<TirOp> = Vec::with_capacity(split.retains.len() + split.releases.len());
+        for v in sorted_values(&split.retains) {
+            ops.push(make_op(OpCode::IncRef, vec![v]));
+            inserted += 1;
+        }
+        for v in sorted_unique_values(&split.releases) {
+            ops.push(make_op(OpCode::DecRef, vec![v]));
+            inserted += 1;
         }
         func.blocks.insert(
             new_bid,
@@ -2281,6 +3330,15 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
             retarget_arc(&mut pred.terminator, &split.arc, new_bid);
         }
     }
+    emit_drop_inner_stage_audit(
+        func,
+        "after-edge-split-apply",
+        Some(plans.len()),
+        Some(edge_splits.len()),
+        Some(inserted),
+        Some(func.blocks.len()),
+        audit_start.elapsed().as_millis(),
+    );
 
     // Full-function drop authority is a semantic fact, not a mutation count.
     // A function with zero inserted DecRefs can still have borrowed parameters
@@ -2288,11 +3346,9 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // release at scope exit. Mark every non-bailed function that reaches this
     // point so native has exactly one RC authority even when the correct TIR
     // edit is the empty edit.
-    if !attr_is_true(func, DROP_INSERTED_ATTR) {
-        func.attrs
-            .insert(DROP_INSERTED_ATTR.to_string(), AttrValue::Bool(true));
-        stats.attrs_changed += 1;
-    }
+    func.attrs
+        .insert(DROP_INSERTED_ATTR.to_string(), AttrValue::Bool(true));
+    stats.facts_changed += 1;
     if debug_this {
         let mut out = format!("[DROP] {} inserted={} blocks:\n", func.name, inserted);
         if !deferred.is_empty() {
@@ -2358,6 +3414,37 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     }
     stats.ops_added = inserted;
     stats
+}
+
+fn terminator_mentions_value(term: &Terminator, value: ValueId) -> bool {
+    match term {
+        Terminator::Branch { args, .. } => args.contains(&value),
+        Terminator::CondBranch {
+            cond,
+            then_args,
+            else_args,
+            ..
+        } => *cond == value || then_args.contains(&value) || else_args.contains(&value),
+        Terminator::Switch {
+            value: cond,
+            cases,
+            default_args,
+            ..
+        } => {
+            *cond == value
+                || cases.iter().any(|(_, _, args)| args.contains(&value))
+                || default_args.contains(&value)
+        }
+        Terminator::StateDispatch {
+            cases,
+            default_args,
+            ..
+        } => {
+            cases.iter().any(|(_, _, args)| args.contains(&value)) || default_args.contains(&value)
+        }
+        Terminator::Return { values } => values.contains(&value),
+        Terminator::Unreachable => false,
+    }
 }
 
 #[cfg(test)]
@@ -2450,6 +3537,12 @@ mod tests {
         let mut copy = op(OpCode::Copy, operands, results);
         copy.attrs
             .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+        copy
+    }
+
+    fn original_store_var(var: &str, operand: ValueId, result: ValueId) -> TirOp {
+        let mut copy = original_copy_with_operands("store_var", vec![operand], vec![result]);
+        copy.attrs.insert("_var".into(), AttrValue::Str(var.into()));
         copy
     }
 
@@ -2680,6 +3773,62 @@ mod tests {
     }
 
     #[test]
+    fn try_start_edge_borrowed_payload_retains_for_owned_handler_arg() {
+        let mut func = TirFunction::new(
+            "try_start_edge_borrowed_payload".into(),
+            vec![TirType::DynBox],
+            TirType::None,
+        );
+        let handler = func.fresh_block();
+        let handler_arg = func.fresh_value();
+        func.value_types.insert(handler_arg, TirType::DynBox);
+        func.label_id_map.insert(handler.0, 4);
+
+        let param = func.blocks[&func.entry_block].args[0].id;
+        let mut start = op(OpCode::TryStart, vec![param], vec![]);
+        start.attrs.insert("value".into(), AttrValue::Int(4));
+        {
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops = vec![start];
+            entry.terminator = Terminator::Return { values: vec![] };
+        }
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::Call, vec![handler_arg], vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        let stats = run(&mut func, &mut am);
+
+        assert_eq!(
+            stats.ops_added, 3,
+            "try_start borrowed payload retain+normal release plus handler arg release"
+        );
+        let entry_ops = &func.blocks[&func.entry_block].ops;
+        let start_idx = entry_ops
+            .iter()
+            .position(|op| op.opcode == OpCode::TryStart)
+            .expect("try_start survives");
+        assert_eq!(entry_ops[start_idx - 1].opcode, OpCode::IncRef);
+        assert_eq!(entry_ops[start_idx - 1].operands, vec![param]);
+        assert_eq!(entry_ops[start_idx + 1].opcode, OpCode::DecRef);
+        assert_eq!(entry_ops[start_idx + 1].operands, vec![param]);
+
+        let handler_ops = &func.blocks[&handler].ops;
+        assert_eq!(handler_ops[0].opcode, OpCode::Call);
+        assert_eq!(handler_ops[1].opcode, OpCode::DecRef);
+        assert_eq!(handler_ops[1].operands, vec![handler_arg]);
+    }
+
+    #[test]
     fn exception_creation_ref_release_is_path_local_for_alternative_raises() {
         let mut func = TirFunction::new("raise_creation_diamond".into(), vec![], TirType::None);
         let then_raise = func.fresh_block();
@@ -2738,10 +3887,8 @@ mod tests {
         func.label_id_map.insert(handler.0, 4);
 
         func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(4)];
-        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
-            target: handler,
-            args: vec![],
-        };
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator =
+            Terminator::Return { values: vec![] };
         func.blocks.insert(
             handler,
             TirBlock {
@@ -3265,6 +4412,863 @@ mod tests {
     }
 
     #[test]
+    fn store_var_boundary_transferred_to_cleanup_block_arg_releases_once() {
+        let mut func = TirFunction::new(
+            "store_var_cleanup_join_transfers_owner".into(),
+            vec![],
+            TirType::None,
+        );
+        let class_obj = func.fresh_value();
+        let stored = func.fresh_value();
+        let cleanup_arg = func.fresh_value();
+        for v in [class_obj, stored, cleanup_arg] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        let cleanup = func.fresh_block();
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_call_bind(class_obj));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![class_obj],
+                vec![stored],
+            ));
+            b.terminator = Terminator::Branch {
+                target: cleanup,
+                args: vec![stored],
+            };
+        }
+        func.blocks.insert(
+            cleanup,
+            TirBlock {
+                id: cleanup,
+                args: vec![TirValue {
+                    id: cleanup_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::DelBoundary, vec![cleanup_arg], vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let entry_drops: Vec<ValueId> = func.blocks[&entry]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert!(
+            !entry_drops.contains(&class_obj),
+            "store_var transfers the single owner to the cleanup block arg; the source root must not be dropped on the predecessor"
+        );
+
+        let cleanup_drops: Vec<ValueId> = func.blocks[&cleanup]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            cleanup_drops,
+            vec![cleanup_arg],
+            "cleanup block arg is the release authority; original store_var root must not receive a second return-boundary DecRef"
+        );
+    }
+
+    #[test]
+    fn store_var_transfer_phi_live_in_descendant_blocks_old_root_drop() {
+        let mut func = TirFunction::new(
+            "store_var_transfer_phi_live_in_descendant".into(),
+            vec![],
+            TirType::None,
+        );
+        let join = func.fresh_block();
+        let then_block = func.fresh_block();
+        let else_block = func.fresh_block();
+        let ret = func.fresh_block();
+        let list = func.fresh_value();
+        let stored = func.fresh_value();
+        let phi = func.fresh_value();
+        let cond = func.fresh_value();
+        for v in [list, stored, phi] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops
+                .push(original_copy_with_operands("list_new", vec![], vec![list]));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![list],
+                vec![stored],
+            ));
+            b.terminator = Terminator::Branch {
+                target: join,
+                args: vec![stored],
+            };
+        }
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: phi,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block,
+                    then_args: vec![],
+                    else_block,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            then_block,
+            TirBlock {
+                id: then_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.blocks.insert(
+            else_block,
+            TirBlock {
+                id: else_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: ret,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            ret,
+            TirBlock {
+                id: ret,
+                args: vec![],
+                ops: vec![op(OpCode::DelBoundary, vec![phi], vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        crate::tir::verify::verify_function(&func)
+            .expect("drop insertion must preserve SSA after descendant phi-transfer exclusion");
+
+        let entry_increfs: Vec<ValueId> = func.blocks[&entry]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::IncRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert!(
+            entry_increfs.is_empty(),
+            "clean transfer into the phi must not retain a second owner: {entry_increfs:?}"
+        );
+
+        let else_drops: Vec<ValueId> = func.blocks[&else_block]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert!(
+            !else_drops.contains(&list),
+            "the source root was transferred into the live phi; descendant edge-dying must not release it"
+        );
+
+        let ret_drops: Vec<ValueId> = func.blocks[&ret]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            ret_drops,
+            vec![phi],
+            "the phi remains the release authority on the descendant return path"
+        );
+    }
+
+    #[test]
+    fn store_var_scope_root_survives_loop_exit_to_return_boundary() {
+        let mut func = TirFunction::new(
+            "store_var_scope_root_survives_loop_exit".into(),
+            vec![],
+            TirType::None,
+        );
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let owner = func.fresh_value();
+        let stored = func.fresh_value();
+        let alias = func.fresh_value();
+        let cond = func.fresh_value();
+        let call_result = func.fresh_value();
+        for v in [owner, stored, alias, call_result] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_call_bind(owner));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![owner],
+                vec![stored],
+            ));
+            b.ops.push(original_copy_with_operands(
+                "copy_var",
+                vec![owner],
+                vec![alias],
+            ));
+            b.terminator = Terminator::Branch {
+                target: header,
+                args: vec![],
+            };
+        }
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![],
+                ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![op(OpCode::Call, vec![alias], vec![call_result])],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let exit_drops: Vec<ValueId> = func.blocks[&exit]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            exit_drops,
+            vec![owner],
+            "a Python-bound store_var root is released at the scope-exit return boundary only; edge-dying must not pre-release it on the loop exit"
+        );
+    }
+
+    #[test]
+    fn store_var_boundary_mixed_return_paths_split_non_transfer_release() {
+        let mut func =
+            TirFunction::new("store_var_mixed_return_paths".into(), vec![], TirType::None);
+        let then_block = func.fresh_block();
+        let else_block = func.fresh_block();
+        let ret = func.fresh_block();
+        let class_obj = func.fresh_value();
+        let stored = func.fresh_value();
+        let fallback = func.fresh_value();
+        let selected = func.fresh_value();
+        let cond = func.fresh_value();
+        for v in [class_obj, stored, fallback, selected] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_call_bind(class_obj));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![class_obj],
+                vec![stored],
+            ));
+            b.ops.push(finalizer_object(fallback));
+            b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+            b.terminator = Terminator::CondBranch {
+                cond,
+                then_block,
+                then_args: vec![],
+                else_block,
+                else_args: vec![],
+            };
+        }
+        func.blocks.insert(
+            then_block,
+            TirBlock {
+                id: then_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: ret,
+                    args: vec![stored],
+                },
+            },
+        );
+        func.blocks.insert(
+            else_block,
+            TirBlock {
+                id: else_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: ret,
+                    args: vec![fallback],
+                },
+            },
+        );
+        func.blocks.insert(
+            ret,
+            TirBlock {
+                id: ret,
+                args: vec![TirValue {
+                    id: selected,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::DelBoundary, vec![selected], vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ret_drops: Vec<ValueId> = func.blocks[&ret]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            ret_drops,
+            vec![selected],
+            "return block drops the selected phi only; the original store_var root is path-specific"
+        );
+
+        let split_releases_class_obj = func.blocks.iter().any(|(&bid, block)| {
+            bid != entry
+                && bid != then_block
+                && bid != else_block
+                && bid != ret
+                && block
+                    .ops
+                    .iter()
+                    .any(|op| op.opcode == OpCode::DecRef && op.operands == vec![class_obj])
+                && matches!(
+                    &block.terminator,
+                    Terminator::Branch { target, args }
+                        if *target == ret && args == &vec![fallback]
+                )
+        });
+        assert!(
+            split_releases_class_obj,
+            "the non-transfer edge must release the original store_var root in an edge split"
+        );
+    }
+
+    #[test]
+    fn store_var_rebind_epoch_closes_old_scope_cleanup_candidate() {
+        let mut func = TirFunction::new(
+            "store_var_rebind_epoch_cleanup".into(),
+            vec![],
+            TirType::None,
+        );
+        let rebind = func.fresh_block();
+        let keep = func.fresh_block();
+        let join = func.fresh_block();
+        let cleanup = func.fresh_block();
+        let old_owner = func.fresh_value();
+        let old_stored = func.fresh_value();
+        let new_owner = func.fresh_value();
+        let new_stored = func.fresh_value();
+        let rebind_current = func.fresh_value();
+        let keep_current = func.fresh_value();
+        let current_phi = func.fresh_value();
+        let cleanup_phi = func.fresh_value();
+        let cond = func.fresh_value();
+        let old_len = func.fresh_value();
+        for v in [
+            old_owner,
+            old_stored,
+            new_owner,
+            new_stored,
+            rebind_current,
+            keep_current,
+            current_phi,
+            cleanup_phi,
+        ] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+        func.value_types.insert(old_len, TirType::I64);
+
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(original_copy_with_operands(
+                "list_new",
+                vec![],
+                vec![old_owner],
+            ));
+            b.ops
+                .push(original_store_var("or_clause", old_owner, old_stored));
+            b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+            b.terminator = Terminator::CondBranch {
+                cond,
+                then_block: rebind,
+                then_args: vec![old_stored],
+                else_block: keep,
+                else_args: vec![old_stored],
+            };
+        }
+        func.blocks.insert(
+            rebind,
+            TirBlock {
+                id: rebind,
+                args: vec![TirValue {
+                    id: rebind_current,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![
+                    original_copy_with_operands("len", vec![rebind_current], vec![old_len]),
+                    original_copy_with_operands("list_new", vec![], vec![new_owner]),
+                    original_store_var("or_clause", new_owner, new_stored),
+                ],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![new_stored],
+                },
+            },
+        );
+        func.blocks.insert(
+            keep,
+            TirBlock {
+                id: keep,
+                args: vec![TirValue {
+                    id: keep_current,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![keep_current],
+                },
+            },
+        );
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: current_phi,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: cleanup,
+                    args: vec![current_phi],
+                },
+            },
+        );
+        func.blocks.insert(
+            cleanup,
+            TirBlock {
+                id: cleanup,
+                args: vec![TirValue {
+                    id: cleanup_phi,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::DelBoundary, vec![cleanup_phi], vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        crate::tir::verify::verify_function(&func)
+            .expect("drop insertion must preserve SSA through store_var rebind cleanup");
+
+        let old_direct_drops: Vec<(BlockId, usize)> = func
+            .blocks
+            .iter()
+            .flat_map(|(&bid, block)| {
+                block.ops.iter().enumerate().filter_map(move |(idx, op)| {
+                    (op.opcode == OpCode::DecRef && op.operands == vec![old_owner])
+                        .then_some((bid, idx))
+                })
+            })
+            .collect();
+        assert_eq!(
+            old_direct_drops,
+            Vec::<(BlockId, usize)>::new(),
+            "once the old source owner transfers into local block args, cleanup must release the current epoch carrier, not the original root: {old_direct_drops:?}"
+        );
+
+        let rebind_current_drops: Vec<ValueId> = func.blocks[&rebind]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            rebind_current_drops,
+            vec![rebind_current],
+            "the rebind path must close the previous carried local epoch exactly once"
+        );
+
+        let cleanup_drops: Vec<ValueId> = func.blocks[&cleanup]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            cleanup_drops,
+            vec![cleanup_phi],
+            "scope cleanup must release the current local epoch only"
+        );
+        assert!(
+            !cleanup_drops.contains(&old_owner) && !cleanup_drops.contains(&new_owner),
+            "producer roots transferred into the current cleanup phi must not be dropped again"
+        );
+    }
+
+    #[test]
+    fn store_var_origin_carrier_live_to_return_cleanup_suppresses_source_release() {
+        let mut func = TirFunction::new(
+            "store_var_origin_carrier_live_to_return_cleanup".into(),
+            vec![],
+            TirType::None,
+        );
+        let carrier_a_block = func.fresh_block();
+        let carrier_b_block = func.fresh_block();
+        let return_pred = func.fresh_block();
+        let ret = func.fresh_block();
+        let owner = func.fresh_value();
+        let stored = func.fresh_value();
+        let carrier_a = func.fresh_value();
+        let carrier_b = func.fresh_value();
+        let use_result = func.fresh_value();
+        for value in [owner, stored, carrier_a, carrier_b, use_result] {
+            func.value_types.insert(value, TirType::DynBox);
+        }
+
+        let entry = func.entry_block;
+        {
+            let block = func.blocks.get_mut(&entry).unwrap();
+            block.ops.push(original_copy_with_operands(
+                "object_new",
+                vec![],
+                vec![owner],
+            ));
+            block.ops.push(original_store_var("args", owner, stored));
+            block.terminator = Terminator::Branch {
+                target: carrier_a_block,
+                args: vec![stored],
+            };
+        }
+        func.blocks.insert(
+            carrier_a_block,
+            TirBlock {
+                id: carrier_a_block,
+                args: vec![TirValue {
+                    id: carrier_a,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: carrier_b_block,
+                    args: vec![carrier_a],
+                },
+            },
+        );
+        func.blocks.insert(
+            carrier_b_block,
+            TirBlock {
+                id: carrier_b_block,
+                args: vec![TirValue {
+                    id: carrier_b,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: return_pred,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            return_pred,
+            TirBlock {
+                id: return_pred,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: ret,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            ret,
+            TirBlock {
+                id: ret,
+                args: vec![],
+                ops: vec![op(OpCode::Call, vec![carrier_b], vec![use_result])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+        crate::tir::verify::verify_function(&func)
+            .expect("origin-carrier return cleanup must preserve SSA");
+
+        let source_drops: Vec<(BlockId, ValueId)> = func
+            .blocks
+            .iter()
+            .flat_map(|(&bid, block)| {
+                block.ops.iter().filter_map(move |op| {
+                    let &operand = op.operands.first()?;
+                    (op.opcode == OpCode::DecRef && (operand == owner || operand == stored))
+                        .then_some((bid, operand))
+                })
+            })
+            .collect();
+        assert_eq!(
+            source_drops,
+            Vec::<(BlockId, ValueId)>::new(),
+            "once a store_var source has moved into a live return-cleanup carrier, the source root is no longer an edge or return release authority"
+        );
+
+        let ret_drops: Vec<ValueId> = func.blocks[&ret]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert!(
+            ret_drops.contains(&carrier_b),
+            "the live carrier remains the cleanup authority at return; got {ret_drops:?}"
+        );
+    }
+
+    #[test]
+    fn owned_root_forwarded_to_three_owned_phis_gets_two_retains() {
+        let mut func = TirFunction::new(
+            "owned_root_three_phi_retain_multiplicity".into(),
+            vec![],
+            TirType::None,
+        );
+        let join = func.fresh_block();
+        let owner = func.fresh_value();
+        let a = func.fresh_value();
+        let b = func.fresh_value();
+        let c = func.fresh_value();
+        for v in [owner, a, b, c] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let block = func.blocks.get_mut(&entry).unwrap();
+            block.ops.push(finalizer_call_bind(owner));
+            block.terminator = Terminator::Branch {
+                target: join,
+                args: vec![owner, owner, owner],
+            };
+        }
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![
+                    TirValue {
+                        id: a,
+                        ty: TirType::DynBox,
+                    },
+                    TirValue {
+                        id: b,
+                        ty: TirType::DynBox,
+                    },
+                    TirValue {
+                        id: c,
+                        ty: TirType::DynBox,
+                    },
+                ],
+                ops: vec![
+                    op(OpCode::DelBoundary, vec![a], vec![]),
+                    op(OpCode::DelBoundary, vec![b], vec![]),
+                    op(OpCode::DelBoundary, vec![c], vec![]),
+                ],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let entry_increfs: Vec<ValueId> = func.blocks[&entry]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::IncRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            entry_increfs,
+            vec![owner, owner],
+            "one original owner transfers to the first phi; the other two owned phis need retained references"
+        );
+    }
+
+    #[test]
+    fn store_var_boundary_transferred_through_loop_phi_releases_phi_once() {
+        let mut func = TirFunction::new(
+            "store_var_loop_phi_transfers_owner".into(),
+            vec![],
+            TirType::None,
+        );
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let set_owner = func.fresh_value();
+        let stored = func.fresh_value();
+        let current_phi = func.fresh_value();
+        let next_owner = func.fresh_value();
+        let next_stored = func.fresh_value();
+        let cond = func.fresh_value();
+        for v in [set_owner, stored, current_phi, next_owner, next_stored] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(original_copy_with_operands(
+                "set_new",
+                vec![],
+                vec![set_owner],
+            ));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![set_owner],
+                vec![stored],
+            ));
+            b.terminator = Terminator::Branch {
+                target: header,
+                args: vec![stored],
+            };
+        }
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: current_phi,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: exit,
+                    then_args: vec![],
+                    else_block: body,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    original_copy_with_operands("set_new", vec![], vec![next_owner]),
+                    original_copy_with_operands("store_var", vec![next_owner], vec![next_stored]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![next_stored],
+                },
+            },
+        );
+        let mut exit_boundary = op(OpCode::DelBoundary, vec![current_phi], vec![]);
+        exit_boundary
+            .attrs
+            .insert("s_value".into(), AttrValue::Str("inherited".into()));
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![exit_boundary],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let exit_drops: Vec<ValueId> = func.blocks[&exit]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            exit_drops,
+            vec![current_phi],
+            "the set_new owner moved into the loop phi; the phi boundary is the sole release authority"
+        );
+        assert!(
+            !exit_drops.contains(&set_owner),
+            "the original producer root must not be return-boundary dropped after a clean phi transfer"
+        );
+        assert!(
+            !exit_drops.contains(&next_owner),
+            "the backedge producer root must also transfer into the loop phi instead of dropping beside it at return"
+        );
+    }
+
+    #[test]
     fn result_carrying_store_var_later_container_absorb_keeps_owner_to_return_boundary() {
         let mut func = TirFunction::new(
             "finalizer_scope_store_result_later_absorb".into(),
@@ -3387,6 +5391,84 @@ mod tests {
             dropped,
             vec![(list_idx + 1, item), (marker_idx + 1, list)],
             "Copy-preserved list_new must release the producer temp at the absorption boundary"
+        );
+    }
+
+    #[test]
+    fn copy_class_def_descriptor_temp_releases_at_class_construction_boundary() {
+        let mut func = TirFunction::new(
+            "finalizer_scope_copy_class_def".into(),
+            vec![],
+            TirType::None,
+        );
+        let name = func.fresh_value();
+        let descriptor = func.fresh_value();
+        let class_obj = func.fresh_value();
+        for v in [name, descriptor, class_obj] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(name));
+            b.ops.push(finalizer_object(descriptor));
+            b.ops.push(original_copy_with_operands(
+                "class_def",
+                vec![name, descriptor],
+                vec![class_obj],
+            ));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![class_obj],
+                vec![],
+            ));
+            b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            b.terminator = Terminator::Return { values: vec![] };
+        }
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let ops = &func.blocks[&entry].ops;
+        let class_def_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("class_def"))
+            .expect("class_def op must survive");
+        let store_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::Copy && original_kind(op) == Some("store_var"))
+            .expect("store_var op must survive");
+        let marker_idx = ops
+            .iter()
+            .position(|op| op.opcode == OpCode::WarnStderr)
+            .expect("marker op must survive");
+        let tracked_drops: Vec<(usize, ValueId)> = ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| op.opcode == OpCode::DecRef)
+            .filter_map(|(idx, op)| {
+                let dropped = op.operands[0];
+                [descriptor, class_obj]
+                    .contains(&dropped)
+                    .then_some((idx, dropped))
+            })
+            .collect();
+        let descriptor_drop_idx = tracked_drops
+            .iter()
+            .find_map(|(idx, dropped)| (*dropped == descriptor).then_some(*idx))
+            .expect("descriptor temp must be dropped");
+        let class_drop_idx = tracked_drops
+            .iter()
+            .find_map(|(idx, dropped)| (*dropped == class_obj).then_some(*idx))
+            .expect("class owner must be dropped");
+        assert!(
+            class_def_idx < descriptor_drop_idx && descriptor_drop_idx < store_idx,
+            "descriptor temp must release at the class construction boundary before the class owner is used"
+        );
+        assert_eq!(
+            class_drop_idx,
+            marker_idx + 1,
+            "class owner should remain live until the Python boundary"
         );
     }
 
@@ -4356,6 +6438,117 @@ mod tests {
         );
     }
 
+    /// `IterNextUnboxed` writes its value result only on the not-done edge. A
+    /// Python-bound local fed from that value may be released through the loop
+    /// phi that carries the previous valid element, but the raw value result
+    /// itself must not be scheduled for Return-boundary cleanup on the exhausted
+    /// edge. Regression for the dict-values/tinygrad UAF:
+    /// `DecRef(iter_value)` ran after `done == true`, where the value slot still
+    /// held the previous element's stale pointer.
+    #[test]
+    fn iter_next_unboxed_value_not_return_boundary_dropped_on_exhaustion_edge() {
+        let mut func = TirFunction::new(
+            "iter_next_unboxed_conditional_value_exit".into(),
+            vec![],
+            TirType::None,
+        );
+        let iter = func.fresh_value();
+        let initial_local = func.fresh_value();
+        let local_phi = func.fresh_value();
+        let iter_value = func.fresh_value();
+        let done = func.fresh_value();
+        let stored_local = func.fresh_value();
+        for value in [iter, initial_local, local_phi, iter_value, stored_local] {
+            func.value_types.insert(value, TirType::DynBox);
+        }
+        func.value_types.insert(done, TirType::Bool);
+
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(iter));
+            b.ops.push(finalizer_object(initial_local));
+            b.terminator = Terminator::Branch {
+                target: header,
+                args: vec![initial_local],
+            };
+        }
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: local_phi,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![op(
+                    OpCode::IterNextUnboxed,
+                    vec![iter],
+                    vec![iter_value, done],
+                )],
+                terminator: Terminator::CondBranch {
+                    cond: done,
+                    then_block: exit,
+                    then_args: vec![],
+                    else_block: body,
+                    else_args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![original_copy_with_operands(
+                    "store_var",
+                    vec![iter_value],
+                    vec![stored_local],
+                )],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![stored_local],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![op(OpCode::DelBoundary, vec![local_phi], vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let exit_drops: Vec<ValueId> = func.blocks[&exit]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            exit_drops
+                .iter()
+                .filter(|&&value| value == local_phi)
+                .count(),
+            1,
+            "the valid carried local owner must be released at the loop exit exactly once; exit_drops={exit_drops:?}"
+        );
+        assert!(
+            !exit_drops.contains(&iter_value),
+            "the conditionally valid iter value must not be dropped on the \
+             exhausted edge; exit_drops={exit_drops:?}",
+        );
+    }
+
     /// Straight-line temp: v1 = Call(a); v2 = Call(v1); Return(v2).
     /// v1 dies after op 2 → exactly one DecRef(v1). v2 is returned (transferred)
     /// → not dropped.
@@ -5280,6 +7473,357 @@ mod tests {
         );
     }
 
+    #[test]
+    fn explicit_del_boundary_root_not_edge_dropped_at_loop_exit() {
+        let mut func = TirFunction::new("explicit_boundary_loop".into(), vec![], TirType::None);
+        let header = func.fresh_block();
+        let body = func.fresh_block();
+        let exit = func.fresh_block();
+        let stale_release_root = func.fresh_value();
+        let current_seed = func.fresh_value();
+        let current_phi = func.fresh_value();
+        let cond = func.fresh_value();
+        let next_value = func.fresh_value();
+        let next_slot = func.fresh_value();
+        for v in [
+            stale_release_root,
+            current_seed,
+            current_phi,
+            next_value,
+            next_slot,
+        ] {
+            func.value_types.insert(v, TirType::Str);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(const_str(stale_release_root));
+            b.ops.push(const_str(current_seed));
+            b.terminator = Terminator::Branch {
+                target: header,
+                args: vec![current_seed],
+            };
+        }
+        func.blocks.insert(
+            header,
+            TirBlock {
+                id: header,
+                args: vec![TirValue {
+                    id: current_phi,
+                    ty: TirType::Str,
+                }],
+                ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+                terminator: Terminator::CondBranch {
+                    cond,
+                    then_block: body,
+                    then_args: vec![],
+                    else_block: exit,
+                    else_args: vec![],
+                },
+            },
+        );
+        let mut body_boundary = op(OpCode::DelBoundary, vec![stale_release_root], vec![]);
+        body_boundary
+            .attrs
+            .insert("s_value".into(), AttrValue::Str("value".into()));
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![
+                    body_boundary,
+                    const_str(next_value),
+                    original_copy_with_operands("store_var", vec![next_value], vec![next_slot]),
+                ],
+                terminator: Terminator::Branch {
+                    target: header,
+                    args: vec![next_slot],
+                },
+            },
+        );
+        let mut exit_boundary = op(OpCode::DelBoundary, vec![current_phi], vec![]);
+        exit_boundary
+            .attrs
+            .insert("s_value".into(), AttrValue::Str("value".into()));
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![exit_boundary],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.loop_roles.insert(header, LoopRole::LoopHeader);
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let body_drops: Vec<ValueId> = func.blocks[&body]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert!(
+            body_drops.contains(&stale_release_root),
+            "the explicit body boundary must remain the release authority; drops={body_drops:?}"
+        );
+        let exit_entry_drops: Vec<ValueId> = func.blocks[&exit]
+            .ops
+            .iter()
+            .take_while(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert!(
+            !exit_entry_drops.contains(&stale_release_root),
+            "a path-conditioned explicit release root must not also be edge-dropped at the loop exit; drops={exit_entry_drops:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_del_boundary_splits_shared_return_keep_path_release() {
+        let mut func = TirFunction::new("explicit_boundary_diamond".into(), vec![], TirType::None);
+        let del_path = func.fresh_block();
+        let keep_path = func.fresh_block();
+        let exit = func.fresh_block();
+        let owner = func.fresh_value();
+        let stored = func.fresh_value();
+        let cond = func.fresh_value();
+        for v in [owner, stored] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_call_bind(owner));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![owner],
+                vec![stored],
+            ));
+            b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+            b.terminator = Terminator::CondBranch {
+                cond,
+                then_block: del_path,
+                then_args: vec![],
+                else_block: keep_path,
+                else_args: vec![],
+            };
+        }
+        func.blocks.insert(
+            del_path,
+            TirBlock {
+                id: del_path,
+                args: vec![],
+                ops: vec![op(OpCode::DelBoundary, vec![stored], vec![])],
+                terminator: Terminator::Branch {
+                    target: exit,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            keep_path,
+            TirBlock {
+                id: keep_path,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: exit,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let del_drops: Vec<ValueId> = func.blocks[&del_path]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            del_drops,
+            vec![owner],
+            "the explicit del path must keep exactly its boundary release"
+        );
+        let exit_drops: Vec<ValueId> = func.blocks[&exit]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert!(
+            !exit_drops.contains(&owner),
+            "the shared return block cannot drop a root already released on another incoming path"
+        );
+        let keep_split_releases = func.blocks.iter().any(|(&bid, block)| {
+            bid != entry
+                && bid != del_path
+                && bid != keep_path
+                && bid != exit
+                && block
+                    .ops
+                    .iter()
+                    .any(|op| op.opcode == OpCode::DecRef && op.operands == vec![owner])
+                && matches!(
+                    &block.terminator,
+                    Terminator::Branch { target, args }
+                        if *target == exit && args.is_empty()
+                )
+        });
+        assert!(
+            keep_split_releases,
+            "the keep path must get an edge-local release for the owner skipped by the del path"
+        );
+    }
+
+    #[test]
+    fn explicit_del_boundary_join_before_return_splits_keep_edge() {
+        let mut func = TirFunction::new(
+            "explicit_boundary_join_before_return".into(),
+            vec![],
+            TirType::None,
+        );
+        let del_path = func.fresh_block();
+        let keep_path = func.fresh_block();
+        let join = func.fresh_block();
+        let exit = func.fresh_block();
+        let owner = func.fresh_value();
+        let stored = func.fresh_value();
+        let cond = func.fresh_value();
+        for v in [owner, stored] {
+            func.value_types.insert(v, TirType::DynBox);
+        }
+        func.value_types.insert(cond, TirType::Bool);
+
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(finalizer_call_bind(owner));
+            b.ops.push(original_copy_with_operands(
+                "store_var",
+                vec![owner],
+                vec![stored],
+            ));
+            b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+            b.terminator = Terminator::CondBranch {
+                cond,
+                then_block: del_path,
+                then_args: vec![],
+                else_block: keep_path,
+                else_args: vec![],
+            };
+        }
+        func.blocks.insert(
+            del_path,
+            TirBlock {
+                id: del_path,
+                args: vec![],
+                ops: vec![op(OpCode::DelBoundary, vec![stored], vec![])],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            keep_path,
+            TirBlock {
+                id: keep_path,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: exit,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let del_drops: Vec<ValueId> = func.blocks[&del_path]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::DecRef)
+            .map(|op| op.operands[0])
+            .collect();
+        assert_eq!(
+            del_drops,
+            vec![owner],
+            "the explicit del path must keep exactly its boundary release"
+        );
+        for (block_id, label) in [(join, "join"), (exit, "return")] {
+            let drops: Vec<ValueId> = func.blocks[&block_id]
+                .ops
+                .iter()
+                .filter(|op| op.opcode == OpCode::DecRef)
+                .map(|op| op.operands[0])
+                .collect();
+            assert!(
+                !drops.contains(&owner),
+                "the {label} block cannot drop a root already released on one incoming history: {drops:?}"
+            );
+        }
+        let keep_split_releases = func.blocks.iter().any(|(&bid, block)| {
+            bid != entry
+                && bid != del_path
+                && bid != keep_path
+                && bid != join
+                && bid != exit
+                && block
+                    .ops
+                    .iter()
+                    .any(|op| op.opcode == OpCode::DecRef && op.operands == vec![owner])
+                && matches!(
+                    &block.terminator,
+                    Terminator::Branch { target, args }
+                        if *target == join && args.is_empty()
+                )
+        });
+        assert!(
+            keep_split_releases,
+            "the keep path must release the owner before histories merge at the join"
+        );
+    }
+
     /// Mixed-ownership phi, INCOMING side (§5 retain). A loop accumulator phi is
     /// seeded on the loop-ENTRY edge with a transparent alias of a BORROWED
     /// parameter (`x = base`), and updated on the back-edge with a fresh owned
@@ -5501,6 +8045,93 @@ mod tests {
         assert_eq!(
             total_group_decrefs, 1,
             "the owned forwarded group must be released exactly once, not double-freed"
+        );
+    }
+
+    #[test]
+    fn phi_edge_clean_transfer_ignores_release_on_other_branch() {
+        let mut func = TirFunction::new("branch_or_phi".into(), vec![], TirType::None);
+        let then_block = func.fresh_block();
+        let else_block = func.fresh_block();
+        let join = func.fresh_block();
+        let source = func.fresh_value(); // fresh owned result used by both arms
+        let then_alias = func.fresh_value(); // transparent alias forwarded to the phi
+        let fallback = func.fresh_value();
+        let selected = func.fresh_value(); // `source or fallback` result on else arm
+        let phi = func.fresh_value();
+        for v in [source, then_alias, fallback, selected, phi] {
+            func.value_types.insert(v, TirType::Str);
+        }
+        let entry = func.entry_block;
+        {
+            let b = func.blocks.get_mut(&entry).unwrap();
+            b.ops.push(op(OpCode::Call, vec![], vec![source]));
+            b.terminator = Terminator::CondBranch {
+                cond: source,
+                then_block,
+                then_args: vec![],
+                else_block,
+                else_args: vec![],
+            };
+        }
+        func.blocks.insert(
+            then_block,
+            TirBlock {
+                id: then_block,
+                args: vec![],
+                ops: vec![{
+                    let mut o = op(OpCode::Copy, vec![source], vec![then_alias]);
+                    o.attrs
+                        .insert("_original_kind".into(), AttrValue::Str("copy_var".into()));
+                    o
+                }],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![then_alias],
+                },
+            },
+        );
+        func.blocks.insert(
+            else_block,
+            TirBlock {
+                id: else_block,
+                args: vec![],
+                ops: vec![
+                    const_str(fallback),
+                    op(OpCode::Or, vec![source, fallback], vec![selected]),
+                ],
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![selected],
+                },
+            },
+        );
+        func.blocks.insert(
+            join,
+            TirBlock {
+                id: join,
+                args: vec![TirValue {
+                    id: phi,
+                    ty: TirType::Str,
+                }],
+                ops: vec![op(OpCode::Call, vec![phi], vec![])],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let mut am = AnalysisManager::new();
+        run(&mut func, &mut am);
+
+        let then_increfs: Vec<ValueId> = func.blocks[&then_block]
+            .ops
+            .iter()
+            .filter(|o| o.opcode == OpCode::IncRef)
+            .flat_map(|o| o.operands.clone())
+            .collect();
+        assert!(
+            then_increfs.is_empty(),
+            "release planning is path-sensitive: an else-arm release must not \
+             force a retain on the clean-transfer then edge, got {then_increfs:?}"
         );
     }
 

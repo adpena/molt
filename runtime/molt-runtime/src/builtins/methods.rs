@@ -1,5 +1,6 @@
 use crate::PyToken;
 use crate::builtins::containers::tuple_method_bits;
+use crate::object::ops_hash::{molt_float_hash_method, molt_int_hash_method, molt_str_hash_method};
 use std::sync::atomic::AtomicU64;
 
 use crate::*;
@@ -30,6 +31,53 @@ pub(crate) fn builtin_func_bits(
             // Cached builtin callables are runtime singletons; treat them as immortal so
             // refcount churn in compiled code cannot free them out from under the caches.
             (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            let builtin_bits = builtin_classes(_py).builtin_function_or_method;
+            let old_bits = object_class_bits(ptr);
+            if old_bits != builtin_bits {
+                if old_bits != 0 {
+                    dec_ref_bits(_py, old_bits);
+                }
+                object_set_class_bits(_py, ptr, builtin_bits);
+                inc_ref_bits(_py, builtin_bits);
+            }
+        }
+        MoltObject::from_ptr(ptr).bits()
+    })
+}
+
+/// Create and cache a builtin whose Rust ABI is not directly positional-callable.
+///
+/// These functions still have a fixed runtime trampoline arity, but their public
+/// Python signature requires the binder to collect or normalize arguments first
+/// (for example set/frozenset multi-operand methods that receive
+/// `(self, others_tuple)`). Marking the function with a bind kind lets call ICs
+/// keep caching the resolved method while routing every hit through the binder.
+pub(crate) fn builtin_func_bits_with_bind_kind(
+    _py: &PyToken<'_>,
+    slot: &AtomicU64,
+    fn_ptr: u64,
+    arity: u64,
+    bind_kind: i64,
+) -> u64 {
+    init_atomic_bits(_py, slot, || {
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity);
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            (*header_from_obj_ptr(ptr)).flags |= crate::object::HEADER_FLAG_IMMORTAL;
+            let bind_kind_name = intern_static_name(
+                _py,
+                &runtime_state(_py).interned.molt_bind_kind,
+                b"__molt_bind_kind__",
+            );
+            function_set_attr_bits(
+                _py,
+                ptr,
+                bind_kind_name,
+                MoltObject::from_int(bind_kind).bits(),
+            );
+            crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
             let builtin_bits = builtin_classes(_py).builtin_function_or_method;
             let old_bits = object_class_bits(ptr);
             if old_bits != builtin_bits {
@@ -306,6 +354,12 @@ pub(crate) fn string_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             &runtime_state(_py).method_cache.str_add,
             fn_addr!(molt_str_add_method),
             2,
+        )),
+        "__hash__" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.str_hash,
+            fn_addr!(molt_str_hash_method),
+            1,
         )),
         "__getitem__" => Some(builtin_func_bits(
             _py,
@@ -1517,6 +1571,12 @@ pub(crate) fn int_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
             fn_addr!(molt_int_new),
             3,
         )),
+        "__hash__" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.int_hash,
+            fn_addr!(molt_int_hash_method),
+            1,
+        )),
         "__int__" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.int_int,
@@ -1591,6 +1651,28 @@ pub(crate) fn int_class_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64
 
 pub(crate) fn float_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
+        "__new__" => {
+            let zero = MoltObject::from_float(0.0).bits();
+            Some(builtin_func_bits_with_defaults_tuple(
+                _py,
+                &runtime_state(_py).method_cache.float_new,
+                fn_addr!(molt_float_new),
+                2,
+                &[zero],
+            ))
+        }
+        "__hash__" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.float_hash,
+            fn_addr!(molt_float_hash_method),
+            1,
+        )),
+        "__float__" => Some(builtin_func_bits(
+            _py,
+            &runtime_state(_py).method_cache.float_float,
+            fn_addr!(molt_float_float),
+            1,
+        )),
         "as_integer_ratio" => Some(builtin_func_bits(
             _py,
             &runtime_state(_py).method_cache.float_as_integer_ratio,

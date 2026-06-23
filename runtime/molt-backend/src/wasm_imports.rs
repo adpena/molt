@@ -232,7 +232,7 @@ pub(crate) const IMPORT_REGISTRY: &[(&str, u32)] = &[
     ("context_unwind", 2),
     ("context_unwind_to", 3),
     // ── INTERNAL: Code objects and tracing ──
-    ("code_new", 28),
+    ("code_new", 35),
     ("code_slot_set", 3),
     ("code_slots_init", 2),
     ("frame_locals_set", 2),

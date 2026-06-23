@@ -231,12 +231,12 @@ pub extern "C" fn molt_dataclass_new(
 }
 
 /// # Safety
-/// `values_ptr` must point to `len` contiguous NaN-boxed values when `len > 0`.
+/// `values_ptr_bits` must encode `len` contiguous NaN-boxed values when `len > 0`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_dataclass_new_from_values(
     name_bits: u64,
     field_names_bits: u64,
-    values_ptr: *const u64,
+    values_ptr_bits: u64,
     len: u64,
     flags_bits: u64,
 ) -> u64 {
@@ -245,6 +245,7 @@ pub unsafe extern "C" fn molt_dataclass_new_from_values(
             let Ok(len) = usize::try_from(len) else {
                 return raise_exception::<_>(_py, "MemoryError", "dataclass is too large");
             };
+            let values_ptr = values_ptr_bits as usize as *const u64;
             if len > 0 && values_ptr.is_null() {
                 return raise_exception::<_>(
                     _py,
@@ -293,6 +294,7 @@ fn dataclass_new_from_value_slice(
     let eq = (flags & 0x2) != 0;
     let repr = (flags & 0x4) != 0;
     let slots = (flags & 0x8) != 0;
+    let allows_dict = !slots;
     let mut field_name_to_index = HashMap::with_capacity(field_names.len());
     for (idx, field_name) in field_names.iter().enumerate() {
         field_name_to_index.insert(field_name.clone(), idx);
@@ -305,6 +307,7 @@ fn dataclass_new_from_value_slice(
         eq,
         repr,
         slots,
+        allows_dict,
         class_bits: 0,
         field_flags: Vec::new(),
         hash_mode: 0,
@@ -513,6 +516,17 @@ pub(crate) unsafe fn dataclass_set_class_raw(
                 if let Some(class_ptr) = class_obj.as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
                 {
+                    (*desc_ptr).allows_dict = if (*desc_ptr).slots {
+                        let dict_name_bits = intern_static_name(
+                            _py,
+                            &runtime_state(_py).interned.dict_name,
+                            b"__dict__",
+                        );
+                        crate::builtins::attr::class_slots_info(_py, class_ptr, dict_name_bits)
+                            .is_some_and(|info| info.allows_dict)
+                    } else {
+                        true
+                    };
                     let flags_name =
                         attr_name_bits_from_bytes(_py, b"__molt_dataclass_field_flags__");
                     if let Some(flags_name) = flags_name {

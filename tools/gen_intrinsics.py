@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import argparse
 from collections import OrderedDict
+import difflib
 import importlib.util
+import os
 from pathlib import Path
 import re
 import sys
@@ -18,18 +21,37 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-try:
-    from tools import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    import harness_memory_guard  # type: ignore
-
 MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 CATEGORIES_TOML = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
 OUT_PYI = ROOT / "src/molt/_intrinsics.pyi"
 OUT_RS = ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs"
+OUT_RS_RESOLVERS_DIR = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
+LEAF_RESOLVER_REGISTRIES = {
+    "stringprep": {
+        "output": ROOT
+        / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
+        "crate_path": "molt_runtime_stringprep",
+        "symbol_path_prefix": "molt_runtime_stringprep::stringprep",
+        "function_path_prefix": "crate::stringprep",
+    },
+}
 OUT_BACKEND_OVERRIDES_RS = (
     ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs"
 )
+_HARNESS_MEMORY_GUARD = None
+_CHECK_MODE = False
+_CHECK_DIFFS: list[str] = []
+
+
+def _load_harness_memory_guard():
+    global _HARNESS_MEMORY_GUARD
+    if _HARNESS_MEMORY_GUARD is None:
+        try:
+            from tools import harness_memory_guard
+        except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
+            import harness_memory_guard  # type: ignore
+        _HARNESS_MEMORY_GUARD = harness_memory_guard
+    return _HARNESS_MEMORY_GUARD
 
 
 # The symbol-prefix -> Cargo-feature gate mapping is the single source of truth
@@ -348,7 +370,6 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_fcntl_", "fcntl"),
     ("molt_zoneinfo_", "zoneinfo"),
     ("molt_graphlib_", "graphlib"),
-    ("molt_stringprep_", "stringprep"),
     ("molt_punycode_", "punycode"),
     ("molt_this_", "this"),
     ("molt_wsgiref_", "wsgiref"),
@@ -437,7 +458,7 @@ def _classify_symbol(
 
 
 def _rustfmt(path: Path) -> None:
-    result = harness_memory_guard.guarded_completed_process(
+    result = _load_harness_memory_guard().guarded_completed_process(
         ["rustfmt", str(path)],
         prefix="MOLT_GENERATOR",
         cwd=ROOT,
@@ -445,7 +466,240 @@ def _rustfmt(path: Path) -> None:
         text=True,
         timeout=60.0,
     )
-    result.check_returncode()
+    if result.returncode != 0:
+        raise RuntimeError(
+            "rustfmt failed for "
+            f"{path}:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+
+def _write_text_if_changed(path: Path, text: str) -> bool:
+    if path.exists() and path.read_text() == text:
+        return False
+    if _CHECK_MODE:
+        _record_check_diff(path, path.read_text() if path.exists() else "", text)
+        return True
+    path.write_text(text)
+    return True
+
+
+def _write_rust_if_changed(path: Path, text: str) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.read_text() == text:
+        return False
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp.rs")
+    try:
+        tmp.write_text(text)
+        _rustfmt(tmp)
+        formatted = tmp.read_text()
+        if path.exists() and path.read_text() == formatted:
+            return False
+        if _CHECK_MODE:
+            _record_check_diff(
+                path, path.read_text() if path.exists() else "", formatted
+            )
+            return True
+        tmp.replace(path)
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _record_check_diff(path: Path, current: str, expected: str) -> None:
+    try:
+        label = str(path.relative_to(ROOT))
+    except ValueError:
+        label = str(path)
+    _CHECK_DIFFS.extend(
+        difflib.unified_diff(
+            current.splitlines(keepends=True),
+            expected.splitlines(keepends=True),
+            fromfile=label,
+            tofile=f"{label} (generated)",
+        )
+    )
+
+
+def _resolver_module_name(module_name: str) -> str:
+    ident = re.sub(r"[^A-Za-z0-9_]", "_", module_name)
+    if not ident or ident[0].isdigit():
+        ident = f"module_{ident}"
+    return f"{ident}_resolver"
+
+
+def _resolver_file_name(module_name: str) -> str:
+    return f"{_resolver_module_name(module_name)}.rs"
+
+
+def _append_resolver_arm(lines: list[str], symbol: str) -> None:
+    first_line = (
+        f'        "{symbol}" => '
+        "Some(crate::builtins::functions::runtime_fn_addr(\n"
+    )
+    if len(first_line.rstrip("\n")) <= 98:
+        lines.append(first_line)
+        lines.append(f'            "crate::{symbol}",\n')
+        lines.append(f"            crate::{symbol} as *const (),\n")
+        lines.append("        )),\n")
+        return
+
+    lines.append(f'        "{symbol}" => {{\n')
+    lines.append("            Some(crate::builtins::functions::runtime_fn_addr(\n")
+    lines.append(f'                "crate::{symbol}",\n')
+    lines.append(f"                crate::{symbol} as *const (),\n")
+    lines.append("            ))\n")
+    lines.append("        }\n")
+
+
+def _append_leaf_resolver_arm(
+    lines: list[str],
+    symbol: str,
+    *,
+    symbol_path_prefix: str,
+    function_path_prefix: str,
+) -> None:
+    lines.append(f'        "{symbol}" => Some(runtime_fn_addr(\n')
+    lines.append(f'            "{symbol_path_prefix}::{symbol}",\n')
+    lines.append(f"            {function_path_prefix}::{symbol} as *const (),\n")
+    lines.append("        )),\n")
+
+
+def _write_leaf_resolver_module(
+    mod_name: str,
+    symbols: list[str],
+    leaf: dict[str, object],
+) -> None:
+    output = leaf["output"]
+    if not isinstance(output, Path):
+        raise TypeError(f"leaf resolver output for {mod_name} must be a Path")
+    symbol_path_prefix = str(leaf["symbol_path_prefix"])
+    function_path_prefix = str(leaf["function_path_prefix"])
+    lines: list[str] = []
+    lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
+    lines.append("#[inline(never)]\n")
+    lines.append("#[cold]\n")
+    lines.append("pub fn resolve_symbol_with(\n")
+    lines.append("    symbol: &str,\n")
+    lines.append("    runtime_fn_addr: fn(&str, *const ()) -> u64,\n")
+    lines.append(") -> Option<u64> {\n")
+    lines.append("    match symbol {\n")
+    for sym in symbols:
+        _append_leaf_resolver_arm(
+            lines,
+            sym,
+            symbol_path_prefix=symbol_path_prefix,
+            function_path_prefix=function_path_prefix,
+        )
+    lines.append("        _ => None,\n")
+    lines.append("    }\n")
+    lines.append("}\n")
+    _write_rust_if_changed(output, "".join(lines))
+
+
+def _write_leaf_facade_resolver_module(
+    mod_name: str,
+    leaf: dict[str, object],
+    feature: str,
+) -> None:
+    crate_path = str(leaf["crate_path"])
+    lines: list[str] = []
+    lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
+    lines.append("#[inline(never)]\n")
+    lines.append("#[cold]\n")
+    lines.append("pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
+    lines.append(f'    #[cfg(feature = "{feature}")]\n')
+    lines.append("    {\n")
+    lines.append(f"        {crate_path}::intrinsics_generated::resolve_symbol_with(\n")
+    lines.append("            symbol,\n")
+    lines.append("            crate::builtins::functions::runtime_fn_addr,\n")
+    lines.append("        )\n")
+    lines.append("    }\n")
+    lines.append(f'    #[cfg(not(feature = "{feature}"))]\n')
+    lines.append("    {\n")
+    lines.append("        let _ = symbol;\n")
+    lines.append("        None\n")
+    lines.append("    }\n")
+    lines.append("}\n")
+    _write_rust_if_changed(
+        OUT_RS_RESOLVERS_DIR / _resolver_file_name(mod_name),
+        "".join(lines),
+    )
+
+
+def _leaf_resolver_feature_gate(mod_name: str, symbols: list[str]) -> str:
+    gates = {_feature_gate_for_symbol(sym) for sym in symbols}
+    if len(gates) == 1 and None not in gates:
+        gate = next(iter(gates))
+        assert gate is not None
+        return gate
+    rendered = ", ".join(
+        "<none>" if gate is None else gate
+        for gate in sorted(gates, key=lambda value: "" if value is None else value)
+    )
+    raise RuntimeError(
+        f"leaf resolver {mod_name!r} must map to one runtime feature gate; "
+        f"found: {rendered or '<empty>'}"
+    )
+
+
+def _write_resolver_modules(
+    module_symbols: OrderedDict[str, list[str]],
+) -> None:
+    OUT_RS_RESOLVERS_DIR.mkdir(parents=True, exist_ok=True)
+
+    module_file_names = {_resolver_file_name(mod_name) for mod_name in module_symbols}
+    for stale in OUT_RS_RESOLVERS_DIR.glob("*_resolver.rs"):
+        if stale.name != "mod.rs" and stale.name not in module_file_names:
+            stale.unlink()
+
+    mod_lines: list[str] = []
+    mod_lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
+    for mod_name in module_symbols:
+        mod_lines.append(f"mod {_resolver_module_name(mod_name)};\n")
+    mod_lines.append("\n")
+    mod_lines.append("pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
+    for mod_name in module_symbols:
+        resolver_mod = _resolver_module_name(mod_name)
+        mod_lines.append(f"    if let Some(v) = {resolver_mod}::resolve_symbol(symbol) {{\n")
+        mod_lines.append("        return Some(v);\n")
+        mod_lines.append("    }\n")
+    mod_lines.append("    None\n")
+    mod_lines.append("}\n")
+    _write_rust_if_changed(OUT_RS_RESOLVERS_DIR / "mod.rs", "".join(mod_lines))
+
+    for mod_name, symbols in module_symbols.items():
+        leaf = LEAF_RESOLVER_REGISTRIES.get(mod_name)
+        if leaf is not None:
+            feature = _leaf_resolver_feature_gate(mod_name, symbols)
+            _write_leaf_resolver_module(mod_name, symbols, leaf)
+            _write_leaf_facade_resolver_module(mod_name, leaf, feature)
+            continue
+
+        lines: list[str] = []
+        lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
+        lines.append("#[inline(never)]\n")
+        lines.append("#[cold]\n")
+
+        # Collect feature gates, preserving symbol order.
+        gated: dict[str | None, list[str]] = {}
+        for sym in symbols:
+            gate = _feature_gate_for_symbol(sym)
+            gated.setdefault(gate, []).append(sym)
+
+        lines.append("pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
+        lines.append("    match symbol {\n")
+        for gate, syms in gated.items():
+            for sym in syms:
+                if gate:
+                    lines.append(f'        #[cfg(feature = "{gate}")]\n')
+                _append_resolver_arm(lines, sym)
+        lines.append("        _ => None,\n")
+        lines.append("    }\n")
+        lines.append("}\n")
+        _write_rust_if_changed(
+            OUT_RS_RESOLVERS_DIR / _resolver_file_name(mod_name),
+            "".join(lines)
+        )
 
 
 def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
@@ -463,17 +717,14 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
         )
         module_symbols.setdefault(mod, []).append(symbol)
 
-    # Ensure "core" comes first
-    if "core" in module_symbols:
-        ordered: OrderedDict[str, list[str]] = OrderedDict()
-        ordered["core"] = module_symbols.pop("core")
-        ordered.update(sorted(module_symbols.items()))
-        module_symbols = ordered
-    else:
-        module_symbols = OrderedDict(sorted(module_symbols.items()))
+    module_symbols = OrderedDict(sorted(module_symbols.items()))
 
     lines: list[str] = []
     lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
+    lines.append('#[path = "generated_resolvers/mod.rs"]\n')
+    lines.append("mod generated_resolvers;\n")
+    lines.append("\n")
+    lines.append("pub(crate) use generated_resolvers::resolve_symbol;\n\n")
     lines.append("#[derive(Clone, Copy)]\n")
     lines.append("pub(crate) struct IntrinsicSpec {\n")
     lines.append("    pub name: &'static str,\n")
@@ -487,52 +738,10 @@ def _write_generated_rs(entries: list[tuple[str, str, int]]) -> None:
         lines.append(f'        symbol: "{symbol}",\n')
         lines.append(f"        arity: {arity},\n")
         lines.append("    },\n")
-    lines.append("];\n\n")
+    lines.append("];\n")
 
-    # -- Dispatcher --------------------------------------------------------
-    lines.append("pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
-    lines.append(
-        "    // Try per-module resolvers. Each is #[inline(never)] + #[cold]\n"
-    )
-    lines.append("    // so --gc-sections can strip unreferenced module resolvers.\n")
-    for mod_name in module_symbols:
-        fn_name = f"resolve_{mod_name}_symbol"
-        lines.append(f"    if let Some(v) = {fn_name}(symbol) {{\n")
-        lines.append("        return Some(v);\n")
-        lines.append("    }\n")
-    lines.append("    None\n")
-    lines.append("}\n\n")
-
-    # -- Per-module resolvers ----------------------------------------------
-    for mod_name, symbols in module_symbols.items():
-        fn_name = f"resolve_{mod_name}_symbol"
-        lines.append("#[inline(never)]\n")
-        lines.append("#[cold]\n")
-
-        # Collect feature gates, preserving symbol order
-        gated: dict[str | None, list[str]] = {}
-        for sym in symbols:
-            gate = _feature_gate_for_symbol(sym)
-            gated.setdefault(gate, []).append(sym)
-
-        lines.append(f"fn {fn_name}(symbol: &str) -> Option<u64> {{\n")
-        lines.append("    match symbol {\n")
-        for gate, syms in gated.items():
-            for sym in syms:
-                if gate:
-                    lines.append(f'        #[cfg(feature = "{gate}")]\n')
-                lines.append(f'        "{sym}" => {{\n')
-                lines.append("            Some(crate::builtins::functions::runtime_fn_addr(\n")
-                lines.append(f'                "crate::{sym}",\n')
-                lines.append(f"                crate::{sym} as *const (),\n")
-                lines.append("            ))\n")
-                lines.append("        }\n")
-        lines.append("        _ => None,\n")
-        lines.append("    }\n")
-        lines.append("}\n\n")
-
-    OUT_RS.write_text("".join(lines))
-    _rustfmt(OUT_RS)
+    _write_rust_if_changed(OUT_RS, "".join(lines))
+    _write_resolver_modules(module_symbols)
 
 
 def _write_pyi(raw_manifest: str) -> None:
@@ -541,19 +750,37 @@ def _write_pyi(raw_manifest: str) -> None:
         "# @generated by tools/gen_intrinsics.py from "
         "runtime/molt-runtime/src/intrinsics/manifest.pyi\n"
     )
-    OUT_PYI.write_text(header + body)
+    _write_text_if_changed(OUT_PYI, header + body)
 
 
 def _remove_backend_overrides_rs() -> None:
+    if _CHECK_MODE and OUT_BACKEND_OVERRIDES_RS.exists():
+        _record_check_diff(
+            OUT_BACKEND_OVERRIDES_RS, OUT_BACKEND_OVERRIDES_RS.read_text(), ""
+        )
+        return
     OUT_BACKEND_OVERRIDES_RS.unlink(missing_ok=True)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="check without writing")
+    args = parser.parse_args(argv)
+
+    global _CHECK_MODE, _CHECK_DIFFS
+    _CHECK_MODE = args.check
+    _CHECK_DIFFS = []
+
     raw, entries = _load_manifest()
     _validate_symbols(entries)
     _write_generated_rs(entries)
     _write_pyi(raw)
     _remove_backend_overrides_rs()
+    if args.check:
+        if _CHECK_DIFFS:
+            sys.stderr.writelines(_CHECK_DIFFS)
+            return 1
+        print("intrinsics registry: in sync")
     return 0
 
 

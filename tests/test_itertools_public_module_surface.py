@@ -25,6 +25,7 @@ builtins._molt_intrinsics = {{
     "molt_itertools_chain_from_iterable": _host_itertools.chain.from_iterable,
     "molt_itertools_islice": lambda iterable, start, stop, step: _host_itertools.islice(iterable, start, None if stop is _HOST_MISSING else stop, None if step is _HOST_MISSING else step),
     "molt_itertools_repeat": _host_itertools.repeat,
+    "molt_itertools_repeat_type": lambda: _host_itertools.repeat,
     "molt_itertools_count": _host_itertools.count,
     "molt_itertools_accumulate": lambda iterable, func, initial: _host_itertools.accumulate(iterable, func, initial=None if initial is _HOST_MISSING else initial),
     "molt_itertools_batched": lambda iterable, n, strict=False: _host_itertools.batched(iterable, n, strict=strict),
@@ -78,13 +79,15 @@ checks = {{
         and list(itertools.chain.from_iterable([[1], [2, 3]])) == [1, 2, 3]
         and list(itertools.islice([0, 1, 2, 3], 1, 4, 2)) == [1, 3]
         and list(itertools.repeat("x", 2)) == ["x", "x"]
+        and isinstance(itertools.repeat("x", 1), itertools.repeat)
+        and type(itertools.repeat("x", 1)) is itertools.repeat
         and list(itertools.pairwise([1, 2, 3])) == [(1, 2), (2, 3)]
     ),
     "private_handles_hidden": (
         "_MOLT_CHAIN" not in itertools.__dict__
         and "_MOLT_CHAIN_FROM_ITERABLE" not in itertools.__dict__
         and "_MOLT_ISLICE" not in itertools.__dict__
-        and "_MOLT_REPEAT" not in itertools.__dict__
+        and "_MOLT_REPEAT_TYPE" not in itertools.__dict__
         and "_MOLT_KWD_MARK" not in itertools.__dict__
         and "_MISSING" not in itertools.__dict__
         and "molt_itertools_chain" not in itertools.__dict__

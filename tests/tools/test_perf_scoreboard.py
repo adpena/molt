@@ -561,8 +561,11 @@ def test_warm_ci_empty_is_all_none() -> None:
 def test_classify_red_stable_requires_quiescent_stable_and_ci_below() -> None:
     # The TRUE warm-red: quiescent + stable + repeat CI entirely below 1.0.
     c = _warm_cell(
-        0.60, stable=True, repeat_stability="STABLE_BELOW",
-        repeat_ci=(0.58, 0.62), repeat_passes=5,
+        0.60,
+        stable=True,
+        repeat_stability="STABLE_BELOW",
+        repeat_ci=(0.58, 0.62),
+        repeat_passes=5,
     )
     cls, reason = ps.classify_cell(c, quiescent=True)
     assert cls == ps.CLASS_RED_STABLE
@@ -573,8 +576,11 @@ def test_classify_red_noisy_when_not_quiescent() -> None:
     # Same numbers but the machine was NOT quiet -> demoted to RED_NOISY, and the
     # reason NAMES contamination (this is exactly the "0.66 under load" artifact).
     c = _warm_cell(
-        0.66, stable=True, repeat_stability="STABLE_BELOW",
-        repeat_ci=(0.62, 0.70), repeat_passes=5,
+        0.66,
+        stable=True,
+        repeat_stability="STABLE_BELOW",
+        repeat_ci=(0.62, 0.70),
+        repeat_passes=5,
     )
     cls, reason = ps.classify_cell(c, quiescent=False)
     assert cls == ps.CLASS_RED_NOISY
@@ -583,8 +589,11 @@ def test_classify_red_noisy_when_not_quiescent() -> None:
 
 def test_classify_red_noisy_when_unstable() -> None:
     c = _warm_cell(
-        0.60, stable=False, repeat_stability="STABLE_BELOW",
-        repeat_ci=(0.58, 0.62), repeat_passes=5,
+        0.60,
+        stable=False,
+        repeat_stability="STABLE_BELOW",
+        repeat_ci=(0.58, 0.62),
+        repeat_passes=5,
     )
     cls, reason = ps.classify_cell(c, quiescent=True)
     assert cls == ps.CLASS_RED_NOISY
@@ -607,8 +616,11 @@ def test_classify_ci_governs_over_point_estimate() -> None:
     # a real GREEN. This proves the repeat CI — not a lone point sample — decides
     # the side of the floor (the council's whole reason for --repeat).
     c = _warm_cell(
-        0.98, stable=True, repeat_stability="STABLE_ABOVE",
-        repeat_ci=(1.01, 1.10), repeat_passes=5,
+        0.98,
+        stable=True,
+        repeat_stability="STABLE_ABOVE",
+        repeat_ci=(1.01, 1.10),
+        repeat_passes=5,
     )
     cls, _ = ps.classify_cell(c, quiescent=True)
     assert cls == ps.CLASS_GREEN
@@ -619,8 +631,11 @@ def test_classify_ci_governs_over_point_estimate() -> None:
 
 def test_classify_tie_when_ci_straddles() -> None:
     c = _warm_cell(
-        0.95, stable=True, repeat_stability="STRADDLES",
-        repeat_ci=(0.85, 1.15), repeat_passes=5,
+        0.95,
+        stable=True,
+        repeat_stability="STRADDLES",
+        repeat_ci=(0.85, 1.15),
+        repeat_passes=5,
     )
     cls, reason = ps.classify_cell(c, quiescent=True)
     assert cls == ps.CLASS_TIE
@@ -639,8 +654,11 @@ def test_classify_tie_when_warm_exactly_one_single_pass() -> None:
 
 def test_classify_green_stable_quiescent() -> None:
     c = _warm_cell(
-        2.50, stable=True, repeat_stability="STABLE_ABOVE",
-        repeat_ci=(2.40, 2.60), repeat_passes=5,
+        2.50,
+        stable=True,
+        repeat_stability="STABLE_ABOVE",
+        repeat_ci=(2.40, 2.60),
+        repeat_passes=5,
     )
     cls, _ = ps.classify_cell(c, quiescent=True)
     assert cls == ps.CLASS_GREEN
@@ -693,8 +711,11 @@ def test_dimensional_win_on_tie_with_material_rss_drop() -> None:
 
 def test_dimensional_win_on_straddle_with_binary_shrink() -> None:
     c = _warm_cell(
-        0.97, stable=True, repeat_stability="STRADDLES",
-        repeat_ci=(0.90, 1.05), repeat_passes=5,
+        0.97,
+        stable=True,
+        repeat_stability="STRADDLES",
+        repeat_ci=(0.90, 1.05),
+        repeat_passes=5,
     )
     c.binary_size_kib = 1800.0
     baseline = {"binary_size_kib": 2400.0}  # 25% smaller
@@ -749,10 +770,20 @@ def test_classify_infra_when_no_warm_number() -> None:
 
 
 def test_apply_classification_sets_state_on_every_cell() -> None:
-    red = _warm_cell(0.60, stable=True, repeat_stability="STABLE_BELOW",
-                     repeat_ci=(0.58, 0.62), repeat_passes=5)
-    green = _warm_cell(2.0, stable=True, repeat_stability="STABLE_ABOVE",
-                       repeat_ci=(1.9, 2.1), repeat_passes=5)
+    red = _warm_cell(
+        0.60,
+        stable=True,
+        repeat_stability="STABLE_BELOW",
+        repeat_ci=(0.58, 0.62),
+        repeat_passes=5,
+    )
+    green = _warm_cell(
+        2.0,
+        stable=True,
+        repeat_stability="STABLE_ABOVE",
+        repeat_ci=(1.9, 2.1),
+        repeat_passes=5,
+    )
     green.benchmark = "tests/benchmarks/bench_y.py"
     cells = [red, green]
     ps.apply_classification(cells, quiescent=True)
@@ -762,8 +793,13 @@ def test_apply_classification_sets_state_on_every_cell() -> None:
 
 
 def test_apply_classification_contaminated_demotes_all_reds() -> None:
-    red = _warm_cell(0.60, stable=True, repeat_stability="STABLE_BELOW",
-                     repeat_ci=(0.58, 0.62), repeat_passes=5)
+    red = _warm_cell(
+        0.60,
+        stable=True,
+        repeat_stability="STABLE_BELOW",
+        repeat_ci=(0.58, 0.62),
+        repeat_passes=5,
+    )
     ps.apply_classification([red], quiescent=False)
     assert red.classification == ps.CLASS_RED_NOISY
     assert red.measured_quiescent is False
@@ -775,10 +811,20 @@ def test_apply_classification_asymmetry_red_noisy_but_green_survives() -> None:
     # can only have made the win look smaller — it is a conservative green). This
     # is the board-level twin of the asymmetry rule, exercised the way
     # --rebuild-summary re-applies it from a stored non-quiescent board.
-    red = _warm_cell(0.60, stable=True, repeat_stability="STABLE_BELOW",
-                     repeat_ci=(0.58, 0.62), repeat_passes=5)
-    green = _warm_cell(10.5, stable=True, repeat_stability="STABLE_ABOVE",
-                       repeat_ci=(9.9, 10.9), repeat_passes=3)
+    red = _warm_cell(
+        0.60,
+        stable=True,
+        repeat_stability="STABLE_BELOW",
+        repeat_ci=(0.58, 0.62),
+        repeat_passes=5,
+    )
+    green = _warm_cell(
+        10.5,
+        stable=True,
+        repeat_stability="STABLE_ABOVE",
+        repeat_ci=(9.9, 10.9),
+        repeat_passes=3,
+    )
     green.benchmark = "tests/benchmarks/bench_sum.py"
     ps.apply_classification([red, green], quiescent=False)
     assert red.classification == ps.CLASS_RED_NOISY
@@ -808,7 +854,8 @@ def test_gather_quiescence_quiet_when_idle(monkeypatch) -> None:
 
 def test_gather_quiescence_not_quiet_when_build_active(monkeypatch) -> None:
     monkeypatch.setattr(
-        ps, "_list_build_processes",
+        ps,
+        "_list_build_processes",
         lambda: [{"pid": 4242, "cmd": "cargo build -p molt-backend"}],
     )
     monkeypatch.setattr(ps, "_loadavg_1m", lambda: 2.0)
@@ -836,7 +883,8 @@ def test_gather_quiescence_not_quiet_when_load_over_threshold(monkeypatch) -> No
 def test_gather_quiescence_probe_failure_cannot_certify(monkeypatch) -> None:
     # If pgrep is unavailable we must NOT certify quiet (fail-closed authority).
     monkeypatch.setattr(
-        ps, "_list_build_processes",
+        ps,
+        "_list_build_processes",
         lambda: [{"pid": -1, "cmd": "pgrep-unavailable", "probe_failed": True}],
     )
     monkeypatch.setattr(ps, "_loadavg_1m", lambda: 1.0)
@@ -865,16 +913,26 @@ def test_require_quiescent_forces_nonauthoritative(monkeypatch) -> None:
     # even on a clean origin/main tree.
     monkeypatch.setattr(ps, "_git_output", lambda args: _fake_git(args))
     monkeypatch.setattr(
-        ps, "_benchmark_tool_identity",
-        lambda: {"ondisk_blob_sha": "b", "modified_vs_head": "false",
-                 "last_commit_sha": "c"},
+        ps,
+        "_benchmark_tool_identity",
+        lambda: {
+            "ondisk_blob_sha": "b",
+            "modified_vs_head": "false",
+            "last_commit_sha": "c",
+        },
     )
     monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
     noisy = {
-        "quiet": False, "reasons": ["1 active build process(es): 1:cargo"],
-        "active_molt_processes": [], "active_cargo_or_rustc_processes": [{"pid": 1}],
-        "loadavg_1m": 12.0, "ncpu": 18, "runnable_signal": 5,
-        "loadavg_threshold": 9.0, "thermal_ok": True, "thermal_note": None,
+        "quiet": False,
+        "reasons": ["1 active build process(es): 1:cargo"],
+        "active_molt_processes": [],
+        "active_cargo_or_rustc_processes": [{"pid": 1}],
+        "loadavg_1m": 12.0,
+        "ncpu": 18,
+        "runnable_signal": 5,
+        "loadavg_threshold": 9.0,
+        "thermal_ok": True,
+        "thermal_note": None,
     }
     prov = ps.gather_provenance(None, quiescence=noisy, require_quiescent=True)
     assert prov["authoritative"] is False
@@ -898,8 +956,7 @@ def test_safe_run_json_uses_benchmark_memory_guard(monkeypatch) -> None:
             returncode=0,
             stdout="child-output\n",
             stderr=(
-                'SAFE_RUN {"status":"ok","exit":0,'
-                '"elapsed_s":0.125,"peak_rss_mib":9}\n'
+                'SAFE_RUN {"status":"ok","exit":0,"elapsed_s":0.125,"peak_rss_mib":9}\n'
             ),
             timed_out=False,
         )
@@ -923,6 +980,9 @@ def test_safe_run_json_uses_benchmark_memory_guard(monkeypatch) -> None:
     assert outcome.elapsed_s == 0.125
     assert outcome.peak_rss_mib == 9.0
     assert outcome.stdout == "child-output\n"
+    assert outcome.stdout_tail == "child-output\n"
+    assert outcome.stderr_tail is not None
+    assert "SAFE_RUN" in outcome.stderr_tail
     assert len(calls) == 1
     call = calls[0]
     assert call["prefix"] == "MOLT_BENCH"
@@ -1031,7 +1091,10 @@ def test_capture_cycle_profile_documents_unavailable_sampler(monkeypatch) -> Non
     # signal and never a crash (Rule 1's fallback).
     monkeypatch.setattr(ps, "_resolve_sampler", lambda: None)
     out = ps.capture_cycle_profile(
-        ["/tmp/nonexistent-bin"], env={}, rss_mb=512, timeout_s=5,
+        ["/tmp/nonexistent-bin"],
+        env={},
+        rss_mb=512,
+        timeout_s=5,
     )
     assert out["available"] is False
     assert out["top_symbols"] == []
@@ -1044,24 +1107,41 @@ def test_capture_cycle_profile_documents_unavailable_sampler(monkeypatch) -> Non
 def test_print_provenance_emits_all_new_fields(capsys, monkeypatch) -> None:
     monkeypatch.setattr(ps, "_git_output", lambda args: _fake_git(args))
     monkeypatch.setattr(
-        ps, "_benchmark_tool_identity",
-        lambda: {"ondisk_blob_sha": "toolsha", "modified_vs_head": "false",
-                 "last_commit_sha": "c"},
+        ps,
+        "_benchmark_tool_identity",
+        lambda: {
+            "ondisk_blob_sha": "toolsha",
+            "modified_vs_head": "false",
+            "last_commit_sha": "c",
+        },
     )
     monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "deadbeef")
     q = {
-        "quiet": True, "reasons": [],
-        "active_molt_processes": [], "active_cargo_or_rustc_processes": [],
-        "loadavg_1m": 2.5, "ncpu": 18, "runnable_signal": 1,
-        "loadavg_threshold": 9.0, "thermal_ok": True, "thermal_note": "ok",
+        "quiet": True,
+        "reasons": [],
+        "active_molt_processes": [],
+        "active_cargo_or_rustc_processes": [],
+        "loadavg_1m": 2.5,
+        "ncpu": 18,
+        "runnable_signal": 1,
+        "loadavg_threshold": 9.0,
+        "thermal_ok": True,
+        "thermal_note": "ok",
     }
     prov = ps.gather_provenance(None, quiescence=q, require_quiescent=True)
     ps._print_provenance(prov)
     out = capsys.readouterr().out
     for field in (
-        "origin_sha", "candidate_sha", "dirty_tree", "stdlib_cache_key",
-        "backend_binary_identity", "active_molt_processes",
-        "active_cargo_or_rustc_processes", "loadavg_1m", "ncpu", "runnable_signal",
+        "origin_sha",
+        "candidate_sha",
+        "dirty_tree",
+        "stdlib_cache_key",
+        "backend_binary_identity",
+        "active_molt_processes",
+        "active_cargo_or_rustc_processes",
+        "loadavg_1m",
+        "ncpu",
+        "runnable_signal",
     ):
         assert field in out
 
@@ -1169,8 +1249,7 @@ def test_inner_repeat_refuses_missing_guard() -> None:
 
 def test_inner_repeat_refuses_main_with_required_args() -> None:
     src = (
-        "def main(x) -> None:\n    print(x)\n"
-        '\nif __name__ == "__main__":\n    main()\n'
+        'def main(x) -> None:\n    print(x)\n\nif __name__ == "__main__":\n    main()\n'
     )
     plan = ir.analyze(src, inner_loops=10)
     assert plan.ok is False
@@ -1291,8 +1370,11 @@ def test_capture_hot_only_refuses_on_oom_with_leak_reason(monkeypatch) -> None:
 
     def _fake_size(cmd, *, env, rss_mb, timeout_s, label):
         return ps.RunOutcome(
-            ok=False, elapsed_s=2.9, peak_rss_mib=float(rss_mb),
-            status="oom", exit_code=137,
+            ok=False,
+            elapsed_s=2.9,
+            peak_rss_mib=float(rss_mb),
+            status="oom",
+            exit_code=137,
         )
 
     monkeypatch.setattr(ps, "_safe_run_json", _fake_size)
@@ -1308,6 +1390,38 @@ def test_capture_hot_only_refuses_on_oom_with_leak_reason(monkeypatch) -> None:
     assert out.get("leak_suspected") is True
     assert "LEAK" in out["refused_reason"]
     assert "LOWER --inner-repeat" in out["refused_reason"]
+    assert out["size_status"] == "oom"
+    assert out["size_exit_code"] == 137
+
+
+def test_capture_hot_only_refusal_preserves_size_failure_tails(monkeypatch) -> None:
+    monkeypatch.setattr(ps, "_resolve_sampler", lambda: "/usr/bin/sample")
+
+    def _fake_size(cmd, *, env, rss_mb, timeout_s, label):
+        return ps.RunOutcome(
+            ok=False,
+            elapsed_s=1.0,
+            peak_rss_mib=64.0,
+            status="nonzero",
+            exit_code=2,
+            stdout_tail="partial stdout\n",
+            stderr_tail="traceback tail\n",
+        )
+
+    monkeypatch.setattr(ps, "_safe_run_json", _fake_size)
+    out = ps.capture_hot_only_profile(
+        Path("/tmp/whatever-bin"),
+        run_args=[],
+        env={},
+        rss_mb=2048,
+        inner_loops=40,
+    )
+    assert out["available"] is False
+    assert out["refused"] is True
+    assert out["size_status"] == "nonzero"
+    assert out["size_exit_code"] == 2
+    assert out["size_stdout_tail"] == "partial stdout\n"
+    assert out["size_stderr_tail"] == "traceback tail\n"
 
 
 def test_capture_hot_only_refuses_when_runtime_too_short(monkeypatch) -> None:
@@ -1317,7 +1431,11 @@ def test_capture_hot_only_refuses_when_runtime_too_short(monkeypatch) -> None:
 
     def _fake_short(cmd, *, env, rss_mb, timeout_s, label):
         return ps.RunOutcome(
-            ok=True, elapsed_s=0.4, peak_rss_mib=100.0, status="ok", exit_code=0,
+            ok=True,
+            elapsed_s=0.4,
+            peak_rss_mib=100.0,
+            status="ok",
+            exit_code=0,
         )
 
     monkeypatch.setattr(ps, "_safe_run_json", _fake_short)

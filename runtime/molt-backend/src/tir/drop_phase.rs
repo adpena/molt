@@ -60,19 +60,73 @@ use super::function::{TirFunction, TirModule};
 use super::ops::AttrValue;
 use super::passes::drop_insertion::DROP_INSERTED_ATTR;
 use super::target_info::TargetInfo;
+use std::time::Instant;
+
+fn drop_stage_audit_enabled() -> bool {
+    std::env::var("MOLT_DROP_STAGE_AUDIT").as_deref() == Ok("1")
+        || std::env::var("MOLT_MODULE_STAGE_AUDIT").as_deref() == Ok("1")
+        || std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1")
+}
+
+fn emit_drop_function_audit(
+    stage: &str,
+    func: &TirFunction,
+    index: Option<usize>,
+    total: Option<usize>,
+    changed: Option<bool>,
+    elapsed_ms: Option<u128>,
+) {
+    if !drop_stage_audit_enabled() {
+        return;
+    }
+    if let Ok(filter) = std::env::var("MOLT_DROP_STAGE_AUDIT_FUNC")
+        && !filter.trim().is_empty()
+        && !func.name.contains(filter.trim())
+    {
+        return;
+    }
+    let blocks = func.blocks.len();
+    let ops = func
+        .blocks
+        .values()
+        .fold(0usize, |count, block| count.saturating_add(block.ops.len()));
+    eprintln!(
+        "[molt-drop-stage-audit] stage={stage} function={} index={} total={} blocks={} ops={} value_types={} attrs={} changed={} elapsed_ms={} peak_rss_mib={}",
+        func.name,
+        index
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        total
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        blocks,
+        ops,
+        func.value_types.len(),
+        func.attrs.len(),
+        changed
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        elapsed_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        crate::process_diagnostics::process_peak_rss_mib_label(),
+    );
+}
 
 /// Run the RC drop phase on a single in-TIR function — the ONE per-function entry
 /// every terminal-phase caller funnels through (the TIR-module finalizer, the
 /// SimpleIR finalizer, and the LLVM `skip_ir_passes` branch). Returns `true` iff
-/// the phase changed the body (drops were inserted / elided) or changed an RC
-/// fact marker that must be back-converted for SimpleIR consumers.
-/// `drop_inserted` is the full-function RC authority marker that native codegen
-/// reads to suppress its competing automatic temp-RC, so an attribute-only
-/// `drop_inserted` change also counts even when no physical `DecRef`/`IncRef` op
-/// was inserted. `exception_region_drops_inserted` is only the handler-safe
-/// exception transport slice and must not suppress native legacy RC.
-/// A function with no droppable temporaries still needs back-conversion when the
-/// pass newly installs the full `drop_inserted` authority marker.
+/// the phase changed executable ops or semantic facts — i.e. the function now
+/// carries `DecRef`/`IncRef` ops and/or one of the drop fact markers that must be
+/// back-converted for SimpleIR consumers. `drop_inserted` is the full-function RC
+/// authority marker that native codegen reads to suppress its competing
+/// automatic temp-RC, so an attribute-only `drop_inserted` change counts even
+/// when no physical `DecRef`/`IncRef` op was inserted.
+/// `exception_region_drops_inserted` is only the handler-safe exception
+/// transport slice and must not suppress native legacy RC. A function with no
+/// droppable temporaries still reports `true` on activated targets when the
+/// full-function marker is newly stamped; that marker is the backend authority
+/// fact and must be preserved/back-converted.
 ///
 /// `debug_assert`s that the function is not ALREADY drop-inserted on entry: the
 /// only marker producers are this phase and the round-trip that preserves it, so
@@ -90,6 +144,7 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
          — drops were placed mid-transform or the finalizer ran twice",
         func.name,
     );
+    let audit_start = Instant::now();
     let had_drop_inserted = matches!(
         func.attrs.get(DROP_INSERTED_ATTR),
         Some(AttrValue::Bool(true))
@@ -110,8 +165,40 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
     // types their initial SimpleIR→TIR lift produced. Refining here makes the
     // invariant hold uniformly for every function (refinement is an idempotent
     // fixpoint, so re-refining the inlined/promoted bodies is a safe no-op).
+    emit_drop_function_audit(
+        "before-type-refine",
+        func,
+        None,
+        None,
+        None,
+        Some(audit_start.elapsed().as_millis()),
+    );
     super::type_refine::refine_types(func);
+    emit_drop_function_audit(
+        "after-type-refine",
+        func,
+        None,
+        None,
+        None,
+        Some(audit_start.elapsed().as_millis()),
+    );
+    emit_drop_function_audit(
+        "before-drop-pass",
+        func,
+        None,
+        None,
+        None,
+        Some(audit_start.elapsed().as_millis()),
+    );
     let stats = super::passes::run_drop_phase(func, tti);
+    emit_drop_function_audit(
+        "after-drop-pass",
+        func,
+        None,
+        None,
+        None,
+        Some(audit_start.elapsed().as_millis()),
+    );
     let changed: usize = stats
         .iter()
         .map(super::passes::PassStats::total_changes)
@@ -125,9 +212,18 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
             .get(super::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
         Some(AttrValue::Bool(true))
     );
-    changed > 0
+    let changed = changed > 0
         || had_drop_inserted != has_drop_inserted
-        || had_exception_region_drops != has_exception_region_drops
+        || had_exception_region_drops != has_exception_region_drops;
+    emit_drop_function_audit(
+        "after-change-count",
+        func,
+        None,
+        None,
+        Some(changed),
+        Some(audit_start.elapsed().as_millis()),
+    );
+    changed
 }
 
 /// Terminal drop phase over a [`TirModule`] in TIR form. Runs the drop phase on
@@ -137,8 +233,27 @@ pub fn finalize_function_drops(func: &mut TirFunction, tti: &TargetInfo) -> bool
 /// `module.functions`.
 pub fn finalize_module_drops(module: &mut TirModule, tti: &TargetInfo) -> Vec<String> {
     let mut changed = Vec::new();
-    for func in &mut module.functions {
-        if finalize_function_drops(func, tti) {
+    let total = module.functions.len();
+    let audit_start = Instant::now();
+    for (index, func) in module.functions.iter_mut().enumerate() {
+        emit_drop_function_audit(
+            "before-function",
+            func,
+            Some(index),
+            Some(total),
+            None,
+            Some(audit_start.elapsed().as_millis()),
+        );
+        let did_change = finalize_function_drops(func, tti);
+        emit_drop_function_audit(
+            "after-function",
+            func,
+            Some(index),
+            Some(total),
+            Some(did_change),
+            Some(audit_start.elapsed().as_millis()),
+        );
+        if did_change {
             changed.push(func.name.clone());
         }
     }
@@ -160,11 +275,31 @@ pub fn finalize_module_drops(module: &mut TirModule, tti: &TargetInfo) -> Vec<St
 /// This is the post-cache step: it runs AFTER the (cached) per-function pipeline,
 /// so the cache never stores drop-inserted ops keyed by the drop-free input hash.
 pub fn finalize_simple_ir_drops(functions: &mut [crate::ir::FunctionIR], tti: &TargetInfo) {
+    finalize_simple_ir_drops_with_tir_custody(
+        functions,
+        tti,
+        &mut std::collections::BTreeMap::new(),
+    );
+}
+
+/// Terminal drop phase over SimpleIR bodies, preferring already-optimized TIR
+/// functions when the caller has them. This is the batch/native custody path:
+/// per-function optimization produces typed TIR first, then SimpleIR only as a
+/// legacy backend carrier. Running terminal drops from the TIR custody map avoids
+/// re-lifting the expanded SimpleIR bridge form and keeps block-argument payloads
+/// in TIR until the final backend lowering.
+pub fn finalize_simple_ir_drops_with_tir_custody(
+    functions: &mut [crate::ir::FunctionIR],
+    tti: &TargetInfo,
+    optimized_tir_by_name: &mut std::collections::BTreeMap<String, TirFunction>,
+) {
     for func_ir in functions.iter_mut() {
         if func_ir.is_extern {
             continue;
         }
-        let mut tir_func = super::lower_from_simple::lower_to_tir(func_ir);
+        let mut tir_func = optimized_tir_by_name
+            .remove(&func_ir.name)
+            .unwrap_or_else(|| super::lower_from_simple::lower_to_tir(func_ir));
         // `finalize_function_drops` refines types before the drop pass (the drop
         // placement needs repr facts), so no separate refinement is needed here.
         // The function arriving here already went through the per-function pipeline
@@ -188,9 +323,11 @@ mod tests {
     use crate::ir::{FunctionIR, OpIR};
     use crate::tir::function::TirModule;
 
-    /// A function with no physical drops still reports a semantic marker change.
+    /// A function with no droppable heap temporaries still reports changed on an
+    /// activated target because the full-function `drop_inserted` authority fact
+    /// must survive the pass-manager snapshot/restore boundary.
     #[test]
-    fn module_finalizer_reports_drop_marker_change_for_trivial_function() {
+    fn module_finalizer_reports_marker_only_change_for_trivial_function() {
         // A trivial `return n` function: one param, returns it. No heap temps.
         let func_ir = FunctionIR {
             name: "trivial".into(),
@@ -212,7 +349,7 @@ mod tests {
             functions: vec![tir],
         };
         let changed = finalize_module_drops(&mut module, &TargetInfo::native_release_fast());
-        assert_eq!(changed, vec!["trivial".to_string()]);
+        assert_eq!(changed, vec!["trivial"]);
         assert!(matches!(
             module.functions[0].attrs.get(DROP_INSERTED_ATTR),
             Some(AttrValue::Bool(true))
@@ -242,6 +379,59 @@ mod tests {
         // Must not panic (no lift of the empty extern body).
         finalize_simple_ir_drops(&mut funcs, &TargetInfo::native_release_fast());
         assert!(funcs[0].ops.is_empty());
+    }
+
+    #[test]
+    fn simple_ir_finalizer_prefers_tir_custody() {
+        let mut funcs = vec![FunctionIR {
+            name: "custody".into(),
+            params: vec![],
+            ops: vec![OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            }],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }];
+
+        let mut tir = TirFunction::new("custody".into(), vec![], crate::tir::types::TirType::I64);
+        let value = tir.fresh_value();
+        tir.value_types
+            .insert(value, crate::tir::types::TirType::I64);
+        tir.blocks.get_mut(&tir.entry_block).unwrap().ops = vec![crate::tir::ops::TirOp {
+            dialect: crate::tir::ops::Dialect::Molt,
+            opcode: crate::tir::ops::OpCode::ConstInt,
+            operands: vec![],
+            results: vec![value],
+            attrs: {
+                let mut attrs = crate::tir::ops::AttrDict::new();
+                attrs.insert("value".into(), crate::tir::ops::AttrValue::Int(7));
+                attrs
+            },
+            source_span: None,
+        }];
+        tir.blocks.get_mut(&tir.entry_block).unwrap().terminator =
+            crate::tir::blocks::Terminator::Return {
+                values: vec![value],
+            };
+
+        let mut custody = std::collections::BTreeMap::new();
+        custody.insert("custody".into(), tir);
+        finalize_simple_ir_drops_with_tir_custody(
+            &mut funcs,
+            &TargetInfo::native_release_fast(),
+            &mut custody,
+        );
+
+        assert!(custody.is_empty());
+        assert!(
+            funcs[0]
+                .ops
+                .iter()
+                .any(|op| op.kind == "const" && op.value == Some(7)),
+            "finalizer must lower the TIR custody body, not the stale SimpleIR body"
+        );
     }
 
     #[test]
@@ -349,11 +539,21 @@ mod tests {
             .find(|op| op.kind == "list_new")
             .and_then(|op| op.out.clone())
             .expect("absorbing list_new result must keep an output name");
+        let roundtripped_list = optimized_ops
+            .iter()
+            .find(|op| op.kind == "list_new")
+            .expect("absorbing list_new must survive native per-function roundtrip");
         assert_eq!(
             roundtripped_call.defines_del,
             Some(true),
             "defines_del is a result-lifetime fact and must survive native's \
              optimize-roundtrip before terminal drop insertion"
+        );
+        assert_eq!(
+            roundtripped_list.bound_local,
+            Some(true),
+            "bound_local is the Python lifetime-boundary fact and must survive \
+             native's optimize-roundtrip before terminal drop insertion"
         );
 
         let mut funcs = vec![FunctionIR {

@@ -62,6 +62,7 @@ def test_write_updates_generated_compat_summary_block(
                 "- Total audited modules: `877`",
                 "- `intrinsic-backed`: `41`",
                 "- `intrinsic-partial`: `836`",
+                "- `policy-gate`: `1`",
                 "- `probe-only`: `0`",
                 "- `python-only`: `0`",
                 "",
@@ -93,6 +94,7 @@ def test_write_updates_generated_compat_summary_block(
     assert "Stdlib lowering audit" in updated
     assert "`877` modules audited" in updated
     assert "`41` intrinsic-backed" in updated
+    assert "`1` policy-gate" in updated
     assert "`836` intrinsic-partial" in updated
     assert "`66` modules with explicit availability notes" in updated
     assert "`41` WASI-blocked" in updated
@@ -135,6 +137,7 @@ def test_check_fails_when_generated_compat_summary_block_is_stale(
                 "- Total audited modules: `877`",
                 "- `intrinsic-backed`: `41`",
                 "- `intrinsic-partial`: `836`",
+                "- `policy-gate`: `1`",
                 "- `probe-only`: `0`",
                 "- `python-only`: `0`",
                 "",
@@ -199,6 +202,7 @@ def test_check_passes_after_write(
                 "- Total audited modules: `877`",
                 "- `intrinsic-backed`: `41`",
                 "- `intrinsic-partial`: `836`",
+                "- `policy-gate`: `1`",
                 "- `probe-only`: `0`",
                 "- `python-only`: `0`",
                 "",

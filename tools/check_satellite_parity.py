@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Fail-closed parity guard for the 28 runtime stdlib in-tree <-> satellite
+"""Fail-closed parity guard for runtime stdlib in-tree <-> satellite
 module pairs.
 
 Background (the P0 this guard exists to kill)
 ---------------------------------------------
-molt ships every feature-gated stdlib module in TWO physical copies:
+molt still has several feature-gated stdlib modules in TWO physical copies:
 
   * an IN-TREE copy under runtime/molt-runtime/src/builtins/<mod>.rs, gated
     `#[cfg(not(feature = "stdlib_X"))]`, which is the SOLE compiled source for
@@ -23,7 +23,7 @@ internals through an `extern "C"` FFI BRIDGE (`use crate::bridge::*` +
 Because there is no single source of truth, a behavioral fix landed in only one
 copy makes SHIPPED BEHAVIOR DIFFER BY BUILD TIER — exactly the silent-miscompile
 bug-class the decomposition program (docs/design/foundation/21) set out to kill.
-All 28 pairs had bidirectionally drifted before this guard existed; see
+All original pairs had bidirectionally drifted before this guard existed; see
 memory/recovery/baton_move_R_satellite_drift.md for the full inventory.
 
 What this guard does
@@ -64,6 +64,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -71,11 +72,12 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "runtime"
 INTREE_DIR = RUNTIME / "molt-runtime" / "src"
 
-# The 28 feature-gated in-tree <-> satellite module pairs. The key is a stable
+# The remaining feature-gated in-tree <-> satellite module pairs. The key is a stable
 # short name; values are the in-tree path (relative to molt-runtime/src) and the
 # satellite path (relative to runtime/). Derived from the
 # `#[cfg(not(feature = "stdlib_*"))]` gates in builtins/mod.rs and verified
-# against the on-disk crates.
+# against the on-disk crates. Leaf-owned modules with no in-tree fallback are
+# deliberately absent; adding them back would reintroduce a second authority.
 PAIRS: dict[str, tuple[str, str]] = {
     "functions_http": (
         "builtins/functions_http.rs",
@@ -114,18 +116,8 @@ PAIRS: dict[str, tuple[str, str]] = {
         "builtins/functions_email.rs",
         "molt-runtime-serial/src/email.rs",
     ),
-    "stringprep": (
-        "builtins/stringprep.rs",
-        "molt-runtime-stringprep/src/stringprep.rs",
-    ),
-    "html": ("builtins/html.rs", "molt-runtime-text/src/html.rs"),
-    "unicodedata_mod": (
-        "builtins/unicodedata_mod.rs",
-        "molt-runtime-text/src/unicodedata_mod.rs",
-    ),
     "xml_etree": ("builtins/xml_etree.rs", "molt-runtime-xml/src/xml_etree.rs"),
     "xml_sax": ("builtins/xml_sax.rs", "molt-runtime-xml/src/xml_sax.rs"),
-    "zoneinfo": ("builtins/zoneinfo.rs", "molt-runtime-zoneinfo/src/zoneinfo.rs"),
 }
 
 # decimal is architecturally different on the in-tree side: the in-tree
@@ -152,6 +144,8 @@ PREFIXES = [
     "bridge::",
     "molt_runtime_core::ffi::",
     "molt_runtime_core::",
+    "builtins::attr::",
+    "object::type_ids::",
     "crate::",
 ]
 TOKEN_TYPES = ["CoreGilToken", "PyToken<'_>", "PyToken<'a>", "PyToken"]
@@ -216,8 +210,46 @@ def _strip_trailing_comment(line: str) -> str:
     return line
 
 
+def _strip_cfg_test_items(lines: list[str]) -> list[str]:
+    """Drop Rust items guarded by `#[cfg(test)]`.
+
+    The satellite parity guard compares shipped runtime implementation, not test
+    code. Unit tests can differ between access layers without changing build-tier
+    behavior, and Cargo remains the authority for compiling/executing them.
+    """
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        if lines[i].strip() != "#[cfg(test)]":
+            out.append(lines[i])
+            i += 1
+            continue
+
+        i += 1
+        while i < n and lines[i].strip().startswith("#["):
+            i += 1
+        if i >= n:
+            break
+
+        depth = 0
+        saw_brace = False
+        while i < n:
+            line = lines[i]
+            for ch in line:
+                if ch == "{":
+                    depth += 1
+                    saw_brace = True
+                elif ch == "}":
+                    depth -= 1
+            i += 1
+            if (saw_brace and depth <= 0) or (not saw_brace and line.strip().endswith(";")):
+                break
+    return out
+
+
 def normalize(path: Path) -> list[str]:
     raw = path.read_text(encoding="utf-8").splitlines()
+    raw = _strip_cfg_test_items(raw)
     raw = _strip_use_blocks(raw)
     out: list[str] = []
     for line in raw:
@@ -235,6 +267,11 @@ def normalize(path: Path) -> list[str]:
             line = line.replace(p, "")
         for src, dst in RT_WRAPPER_EQUIVALENTS:
             line = line.replace(src, dst)
+        line = re.sub(
+            r"is_truthy\(_py,\s*obj_from_bits\(molt_is_callable\(([^)]*)\)\)\)",
+            r"molt_is_callable(\1)",
+            line,
+        )
         line = _strip_trailing_comment(line)
         s2 = line.strip()
         # Collapse a single-line `unsafe { EXPR }` / `unsafe { EXPR };` wrapper:

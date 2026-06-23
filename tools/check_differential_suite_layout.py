@@ -82,6 +82,10 @@ BASIC_LANE_PREFIX_ALLOWLIST = {
     # under scalar/control-flow forwarding — a str-builtin compiler test, no
     # `import string`.
     "tests/differential/basic/string_split_scalar_control.py",
+    # `string` token vs the `string` module: split-field int parsing and field
+    # deforestation over the `str.split()` builtin method — a compiler
+    # optimization test, no `import string`.
+    "tests/differential/basic/string_split_field_int_parse.py",
     # `stdlib` token: the module-attribute-access lowering mechanism exercised
     # across multiple modules (sys.platform / version_info) — a compiler
     # attribute-access test, not single-module stdlib semantics.

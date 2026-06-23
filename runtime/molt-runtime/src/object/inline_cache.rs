@@ -1,7 +1,8 @@
 //! Inline cache (IC) data structures for attribute access.
 //!
-//! An IC caches the result of an attribute lookup (type_id → slot offset) so
-//! that subsequent accesses to the same type can skip the hash-table lookup.
+//! An IC caches the result of an attribute lookup (class identity → slot
+//! offset) so that subsequent accesses to the same class can skip the
+//! hash-table lookup.
 //!
 //! # Correctness guarantee
 //! ICs are **best-effort**: a stale IC produces a cache *miss*, never a wrong
@@ -13,21 +14,22 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
-// InlineCache — 16 bytes, fits in half a cache line
+// InlineCache — 24 bytes, class-keyed to avoid TYPE_ID_OBJECT aliasing
 // ---------------------------------------------------------------------------
 
 /// A single inline-cache entry.
 ///
-/// Layout (16 bytes):
+/// Layout (24 bytes):
 /// ```text
-/// [cached_type_id: u32][cached_offset: u32][cached_version: u64]
+/// [cached_class_bits: u64][cached_offset: u32][padding][cached_version: u64]
 /// ```
 pub struct InlineCache {
-    /// `type_id` of the last successfully cached type, or `0` if empty.
-    cached_type_id: AtomicU32,
+    /// NaN-boxed class object identity of the last successfully cached type,
+    /// or `0` if empty.
+    cached_class_bits: AtomicU64,
     /// Slot offset into the object's attribute storage.
     cached_offset: AtomicU32,
-    /// Value of `GLOBAL_TYPE_VERSION` at the time this entry was written.
+    /// Class layout version at the time this entry was written.
     cached_version: AtomicU64,
 }
 
@@ -35,7 +37,7 @@ impl InlineCache {
     /// Create an empty (all-zero) cache entry.
     pub const fn new() -> Self {
         Self {
-            cached_type_id: AtomicU32::new(0),
+            cached_class_bits: AtomicU64::new(0),
             cached_offset: AtomicU32::new(0),
             cached_version: AtomicU64::new(0),
         }
@@ -44,23 +46,24 @@ impl InlineCache {
     /// Probe the cache.
     ///
     /// Returns `Some(offset)` when:
-    /// - `type_id` is non-zero,
-    /// - `type_id` matches the cached type, **and**
-    /// - `current_version` matches the cached version (entry is not stale).
+    /// - `class_bits` is non-zero,
+    /// - `class_bits` matches the cached class object, **and**
+    /// - `class_version` matches the cached layout version (entry is not
+    ///   stale).
     ///
     /// Returns `None` on any miss.
     #[inline(always)]
-    pub fn probe(&self, type_id: u32, current_version: u64) -> Option<u32> {
-        if type_id == 0 {
+    pub fn probe(&self, class_bits: u64, class_version: u64) -> Option<u32> {
+        if class_bits == 0 {
             return None;
         }
         // Read version first so that if a concurrent writer is halfway through
         // an `update`, a version mismatch will cause a miss rather than us
         // seeing a partially-written offset.
         let cached_ver = self.cached_version.load(Ordering::Relaxed);
-        let cached_id = self.cached_type_id.load(Ordering::Relaxed);
+        let cached_class_bits = self.cached_class_bits.load(Ordering::Relaxed);
 
-        if cached_id == type_id && cached_ver == current_version {
+        if cached_class_bits == class_bits && cached_ver == class_version {
             Some(self.cached_offset.load(Ordering::Relaxed))
         } else {
             None
@@ -69,22 +72,22 @@ impl InlineCache {
 
     /// Populate the cache after a miss.
     ///
-    /// Writes `type_id`, `offset`, and `current_version`.  Callers should
-    /// supply the *current* value of `global_type_version()`.
+    /// Writes `class_bits`, `offset`, and `class_version`. Callers must supply
+    /// the current version of the same class object represented by
+    /// `class_bits`.
     #[inline(always)]
-    pub fn update(&self, type_id: u32, offset: u32, current_version: u64) {
-        self.cached_type_id.store(type_id, Ordering::Relaxed);
+    pub fn update(&self, class_bits: u64, offset: u32, class_version: u64) {
+        self.cached_class_bits.store(class_bits, Ordering::Relaxed);
         self.cached_offset.store(offset, Ordering::Relaxed);
-        self.cached_version
-            .store(current_version, Ordering::Relaxed);
+        self.cached_version.store(class_version, Ordering::Relaxed);
     }
 
-    /// Invalidate this entry by clearing `cached_type_id`.
+    /// Invalidate this entry by clearing `cached_class_bits`.
     ///
     /// Any subsequent `probe` will return `None`.
     #[inline(always)]
     pub fn invalidate(&self) {
-        self.cached_type_id.store(0, Ordering::Relaxed);
+        self.cached_class_bits.store(0, Ordering::Relaxed);
     }
 }
 
@@ -156,55 +159,59 @@ pub fn global_ic_table() -> &'static InlineCacheTable {
 mod tests {
     use super::*;
 
-    /// A fresh IC must miss for any (non-zero) type_id.
+    const CLASS_A: u64 = 0x7ff8_0000_0000_0042;
+    const CLASS_B: u64 = 0x7ff8_0000_0000_0099;
+
+    /// A fresh IC must miss for any non-zero class identity.
     #[test]
     fn probe_miss_on_empty_cache() {
         let ic = InlineCache::new();
-        assert_eq!(ic.probe(42, 1), None);
+        assert_eq!(ic.probe(CLASS_A, 1), None);
     }
 
-    /// After `update`, a `probe` with the same type_id and version must hit.
+    /// After `update`, a `probe` with the same class identity and version must
+    /// hit.
     #[test]
     fn update_then_probe_hit() {
         let ic = InlineCache::new();
-        ic.update(42, 7, 5);
-        assert_eq!(ic.probe(42, 5), Some(7));
+        ic.update(CLASS_A, 7, 5);
+        assert_eq!(ic.probe(CLASS_A, 5), Some(7));
     }
 
     /// A probe must miss when the version has changed (stale entry).
     #[test]
     fn probe_miss_after_version_change() {
         let ic = InlineCache::new();
-        ic.update(42, 7, 5);
+        ic.update(CLASS_A, 7, 5);
         // Version advanced — entry is now stale.
-        assert_eq!(ic.probe(42, 6), None);
+        assert_eq!(ic.probe(CLASS_A, 6), None);
     }
 
-    /// A probe must miss when the type_id differs.
+    /// A probe must miss when the class identity differs, even when two
+    /// instances share the same low-level object representation.
     #[test]
-    fn probe_miss_after_type_id_change() {
+    fn probe_miss_after_class_identity_change() {
         let ic = InlineCache::new();
-        ic.update(42, 7, 5);
-        // Different type — miss.
-        assert_eq!(ic.probe(99, 5), None);
+        ic.update(CLASS_A, 7, 5);
+        assert_eq!(ic.probe(CLASS_B, 5), None);
     }
 
     /// After `invalidate`, any probe must miss.
     #[test]
     fn invalidate_clears_cache() {
         let ic = InlineCache::new();
-        ic.update(42, 7, 5);
+        ic.update(CLASS_A, 7, 5);
         ic.invalidate();
-        assert_eq!(ic.probe(42, 5), None);
+        assert_eq!(ic.probe(CLASS_A, 5), None);
     }
 
-    /// `probe` with type_id == 0 must always miss (0 is the sentinel for
+    /// `probe` with class_bits == 0 must always miss (0 is the sentinel for
     /// "empty").
     #[test]
-    fn probe_zero_type_id_always_misses() {
+    fn probe_zero_class_bits_always_misses() {
         let ic = InlineCache::new();
-        // Manually poke a non-zero version so we know the check is on type_id.
-        ic.update(1, 3, 1);
+        // Manually poke a non-zero version so we know the check is on class bits.
+        ic.update(CLASS_A, 3, 1);
         assert_eq!(ic.probe(0, 1), None);
     }
 
@@ -213,9 +220,9 @@ mod tests {
     fn global_table_entries_start_empty() {
         let table = global_ic_table();
         // Spot-check a few indices.
-        assert_eq!(table.get(0).probe(1, 1), None);
-        assert_eq!(table.get(100).probe(1, 1), None);
-        assert_eq!(table.get(IC_TABLE_CAPACITY - 1).probe(1, 1), None);
+        assert_eq!(table.get(0).probe(CLASS_A, 1), None);
+        assert_eq!(table.get(100).probe(CLASS_A, 1), None);
+        assert_eq!(table.get(IC_TABLE_CAPACITY - 1).probe(CLASS_A, 1), None);
     }
 
     /// Round-trip through the global table.
@@ -223,9 +230,9 @@ mod tests {
     fn global_table_update_and_probe() {
         let table = global_ic_table();
         let ic = table.get(256);
-        ic.update(55, 12, 3);
-        assert_eq!(ic.probe(55, 3), Some(12));
+        ic.update(CLASS_A, 12, 3);
+        assert_eq!(ic.probe(CLASS_A, 3), Some(12));
         ic.invalidate();
-        assert_eq!(ic.probe(55, 3), None);
+        assert_eq!(ic.probe(CLASS_A, 3), None);
     }
 }

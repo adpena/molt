@@ -21,11 +21,9 @@ del _MOLT_IMPORT_SMOKE_RUNTIME_READY
 
 import re
 import decimal
+import _decimal as _required_decimal_backend
 
-try:
-    import _decimal
-except ImportError:
-    _decimal = None
+del _required_decimal_backend
 
 
 def int_to_decimal(n):
@@ -95,16 +93,14 @@ def int_to_decimal(n):
 def int_to_decimal_string(n):
     """Asymptotically fast conversion of an 'int' to a decimal string."""
     w = n.bit_length()
-    if w > 450_000 and _decimal is not None:
-        # It is only usable with the C decimal implementation.
+    if w > 450_000:
+        # Very large values require the intrinsic-backed decimal implementation.
         # _pydecimal.py calls str() on very large integers, which in its
         # turn calls int_to_decimal_string(), causing very deep recursion.
         return str(int_to_decimal(n))
 
-    # Fallback algorithm for the case when the C decimal module isn't
-    # available.  This algorithm is asymptotically worse than the algorithm
-    # using the decimal module, but better than the quadratic time
-    # implementation in longobject.c.
+    # This algorithm is asymptotically worse than the decimal-backed algorithm,
+    # but better than the quadratic time implementation in longobject.c.
     def inner(n, w):
         if w <= 1000:
             return str(n)

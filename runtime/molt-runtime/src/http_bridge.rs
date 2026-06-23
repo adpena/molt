@@ -7,6 +7,7 @@
 use crate::audit::{AuditArgs, AuditDecision, AuditEvent, audit_emit};
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::*;
+use num_bigint::{BigInt, Sign};
 
 // ---------------------------------------------------------------------------
 // Exception / error handling
@@ -38,6 +39,17 @@ pub extern "C" fn __molt_http_exception_pending() -> i32 {
 pub extern "C" fn __molt_http_clear_exception() {
     crate::with_gil_entry_nopanic!(_py, {
         clear_exception(_py);
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_http_clear_attribute_error_if_pending() -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
+            1
+        } else {
+            0
+        }
     })
 }
 
@@ -199,6 +211,68 @@ pub extern "C" fn __molt_http_to_f64(bits: u64, out: *mut f64) -> i32 {
         }
         None => 0,
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_http_index_bigint_from_obj(
+    obj_bits: u64,
+    err_ptr: *const u8,
+    err_len: usize,
+    out_sign: *mut i32,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> i32 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let err =
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(err_ptr, err_len)) };
+        match crate::builtins::numbers::index_bigint_from_obj(_py, obj_bits, err) {
+            Some(value) => {
+                let (sign, bytes) = value.to_bytes_be();
+                let sign_i32 = match sign {
+                    Sign::Minus => -1i32,
+                    Sign::NoSign => 0i32,
+                    Sign::Plus => 1i32,
+                };
+                let boxed = bytes.into_boxed_slice();
+                let ok = crate::bridge_buffer::export_u8_box(boxed, out_ptr, out_len);
+                if ok == 0 {
+                    return 0;
+                }
+                unsafe {
+                    *out_sign = sign_i32;
+                }
+                1
+            }
+            None => 0,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_http_int_bits_from_bigint(
+    sign: i32,
+    data_ptr: *const u8,
+    data_len: usize,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let sign = match sign {
+            -1 => Sign::Minus,
+            0 => Sign::NoSign,
+            _ => Sign::Plus,
+        };
+        let bytes = if data_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(data_ptr, data_len) }
+        };
+        let value = BigInt::from_bytes_be(sign, bytes);
+        crate::builtins::numbers::int_bits_from_bigint(_py, value)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_http_molt_float_from_obj(val_bits: u64) -> u64 {
+    crate::molt_float_from_obj(val_bits)
 }
 
 // ---------------------------------------------------------------------------

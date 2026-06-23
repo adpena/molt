@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use molt_backend::wasm::{WasmBackend, WasmCompileOptions, WasmProfile};
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
-use wasmparser::{Parser, Payload, TypeRef};
+use wasmparser::{CompositeInnerType, Operator, Parser, Payload, TypeRef, ValType};
 
 fn empty_ir() -> SimpleIR {
     SimpleIR {
@@ -62,6 +62,62 @@ fn extract_func_imports(wasm: &[u8]) -> Vec<(String, u32)> {
     imports
 }
 
+fn extract_func_imports_with_indices(wasm: &[u8]) -> Vec<(u32, String, String, u32)> {
+    let mut imports = Vec::new();
+    let mut func_index = 0u32;
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::ImportSection(section) = payload.expect("valid payload") {
+            for import in section.into_imports() {
+                let import = import.expect("valid import");
+                if let TypeRef::Func(type_idx) = import.ty {
+                    imports.push((
+                        func_index,
+                        import.module.to_string(),
+                        import.name.to_string(),
+                        type_idx,
+                    ));
+                    func_index += 1;
+                }
+            }
+        }
+    }
+    imports
+}
+
+fn extract_func_type_signatures(wasm: &[u8]) -> Vec<(Vec<ValType>, Vec<ValType>)> {
+    let mut sigs = Vec::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::TypeSection(reader) = payload.expect("valid payload") {
+            for rec_group in reader.into_iter() {
+                let rec_group = rec_group.expect("valid rec group");
+                for sub_type in rec_group.into_types() {
+                    if let CompositeInnerType::Func(func_type) = &sub_type.composite_type.inner {
+                        sigs.push((func_type.params().to_vec(), func_type.results().to_vec()));
+                    }
+                }
+            }
+        }
+    }
+    sigs
+}
+
+fn direct_call_targets(wasm: &[u8]) -> BTreeSet<u32> {
+    let mut targets = BTreeSet::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::CodeSectionEntry(body) = payload.expect("valid payload") {
+            let mut reader = body.get_operators_reader().expect("operators reader");
+            while !reader.eof() {
+                if let Operator::Call { function_index } =
+                    reader.read().expect("valid wasm operator")
+                {
+                    targets.insert(function_index);
+                }
+            }
+        }
+    }
+    targets
+}
+
 fn count_types(wasm: &[u8]) -> u32 {
     let mut count = 0;
     for payload in Parser::new(0).parse_all(wasm) {
@@ -72,6 +128,43 @@ fn count_types(wasm: &[u8]) -> u32 {
         }
     }
     count
+}
+
+fn ir_with_code_new() -> SimpleIR {
+    let args = [
+        "filename",
+        "name",
+        "firstlineno",
+        "linetable",
+        "varnames",
+        "names",
+        "argcount",
+        "posonlyargcount",
+        "kwonlyargcount",
+    ];
+    SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_main".to_string(),
+            params: args.iter().map(|name| (*name).to_string()).collect(),
+            ops: vec![
+                OpIR {
+                    kind: "code_new".to_string(),
+                    args: Some(args.iter().map(|name| (*name).to_string()).collect()),
+                    out: Some("code".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    var: Some("code".to_string()),
+                    ..OpIR::default()
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    }
 }
 
 fn ir_with_direct_runtime_call(target: &str, arity: usize) -> SimpleIR {
@@ -261,6 +354,32 @@ fn auto_profile_registers_direct_runtime_call_targets_as_imports() {
     assert!(
         import_names.contains("gpu_rope_apply_contiguous"),
         "direct runtime call targets must be imported into wasm modules"
+    );
+}
+
+#[test]
+fn code_new_import_uses_arity_9_signature_and_is_called() {
+    let wasm = compile_with_profile(ir_with_code_new(), WasmProfile::Auto);
+    let imports = extract_func_imports_with_indices(&wasm);
+    let code_new_imports: Vec<_> = imports
+        .iter()
+        .filter(|(_, module, name, _)| module == "molt_runtime" && name == "code_new")
+        .collect();
+    assert_eq!(
+        code_new_imports.len(),
+        1,
+        "expected exactly one molt_runtime.code_new import, got {code_new_imports:?}"
+    );
+    let (code_new_func_index, _, _, code_new_type_index) = *code_new_imports[0];
+    let sigs = extract_func_type_signatures(&wasm);
+    assert_eq!(
+        sigs[code_new_type_index as usize],
+        (vec![ValType::I64; 9], vec![ValType::I64]),
+        "code_new import must use the canonical (i64 x9) -> i64 ABI"
+    );
+    assert!(
+        direct_call_targets(&wasm).contains(&code_new_func_index),
+        "generated wasm must directly call the code_new import"
     );
 }
 

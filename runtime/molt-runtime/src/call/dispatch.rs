@@ -2,12 +2,11 @@ use crate::call::type_policy::{InitArgPolicy, resolved_constructor_init_policy};
 use crate::{
     MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_DATACLASS, TYPE_ID_FUNCTION,
     TYPE_ID_GENERIC_ALIAS, TYPE_ID_OBJECT, TYPE_ID_TYPE, bound_method_func_bits,
-    call_builtin_type_if_needed, call_function_obj0, call_function_obj1, call_function_obj2,
-    call_function_obj3, class_attr_lookup_raw_mro, class_name_for_error, exception_pending,
-    exception_stack_baseline_get, exception_stack_baseline_set, function_arity,
-    generic_alias_origin_bits, intern_static_name, lookup_call_attr, molt_call_bind,
-    molt_callargs_new, molt_callargs_push_pos, obj_from_bits, object_type_id, raise_exception,
-    raise_not_callable, runtime_state, try_call_generator,
+    call_builtin_type_if_needed, call_function_obj_vec, class_attr_lookup_raw_mro,
+    class_name_for_error, exception_pending, exception_stack_baseline_get,
+    exception_stack_baseline_set, function_arity, generic_alias_origin_bits, intern_static_name,
+    lookup_call_attr, molt_call_bind, molt_callargs_new, molt_callargs_push_pos, obj_from_bits,
+    object_type_id, raise_exception, raise_not_callable, runtime_state, try_call_generator,
 };
 
 struct ExceptionBaselineGuard {
@@ -134,7 +133,7 @@ pub(crate) unsafe fn call_callable0(_py: &PyToken<'_>, call_bits: u64) -> u64 {
                 if let Some(bits) = try_call_generator(_py, call_bits, &[]) {
                     return bits;
                 }
-                call_function_obj0(_py, call_bits)
+                call_function_obj_vec(_py, call_bits, &[])
             }
             TYPE_ID_BOUND_METHOD => call_type_via_bind(_py, call_bits, &[]),
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[]),
@@ -165,7 +164,7 @@ pub(crate) unsafe fn call_callable1(_py: &PyToken<'_>, call_bits: u64, arg0_bits
                 if let Some(bits) = try_call_generator(_py, call_bits, &[arg0_bits]) {
                     return bits;
                 }
-                call_function_obj1(_py, call_bits, arg0_bits)
+                call_function_obj_vec(_py, call_bits, &[arg0_bits])
             }
             TYPE_ID_BOUND_METHOD => call_type_via_bind(_py, call_bits, &[arg0_bits]),
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[arg0_bits]),
@@ -231,7 +230,7 @@ pub(crate) unsafe fn call_callable2(
                 if let Some(bits) = try_call_generator(_py, call_bits, &[arg0_bits, arg1_bits]) {
                     return bits;
                 }
-                call_function_obj2(_py, call_bits, arg0_bits, arg1_bits)
+                call_function_obj_vec(_py, call_bits, &[arg0_bits, arg1_bits])
             }
             TYPE_ID_BOUND_METHOD => call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits]),
             TYPE_ID_TYPE => call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits]),
@@ -277,7 +276,7 @@ pub(crate) unsafe fn call_callable3(
                 {
                     return bits;
                 }
-                call_function_obj3(_py, call_bits, arg0_bits, arg1_bits, arg2_bits)
+                call_function_obj_vec(_py, call_bits, &[arg0_bits, arg1_bits, arg2_bits])
             }
             TYPE_ID_BOUND_METHOD => {
                 call_type_via_bind(_py, call_bits, &[arg0_bits, arg1_bits, arg2_bits])

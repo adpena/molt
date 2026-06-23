@@ -1022,6 +1022,86 @@ fn next_deque_handle() -> i64 {
 struct DequeState {
     data: VecDeque<u64>,
     maxlen: Option<usize>,
+    mutation_version: u64,
+}
+
+impl DequeState {
+    fn new(maxlen: Option<usize>) -> Self {
+        Self {
+            data: VecDeque::new(),
+            maxlen,
+            mutation_version: 0,
+        }
+    }
+
+    fn from_iterable_elements(_py: &CoreGilToken, elems: &[u64], maxlen: Option<usize>) -> Self {
+        let start = maxlen
+            .filter(|&ml| elems.len() > ml)
+            .map(|ml| elems.len() - ml)
+            .unwrap_or(0);
+        let mut data = VecDeque::with_capacity(elems.len().saturating_sub(start));
+        for &bits in &elems[start..] {
+            data.push_back(retain_handle_value(_py, bits));
+        }
+        Self {
+            data,
+            maxlen,
+            mutation_version: 0,
+        }
+    }
+
+    fn retain_snapshot(&self, _py: &CoreGilToken) -> Vec<u64> {
+        let mut snapshot = Vec::with_capacity(self.data.len());
+        for &bits in &self.data {
+            snapshot.push(retain_handle_value(_py, bits));
+        }
+        snapshot
+    }
+
+    fn retain_snapshot_with_version(&self, _py: &CoreGilToken) -> (Vec<u64>, u64) {
+        (self.retain_snapshot(_py), self.mutation_version)
+    }
+
+    fn mark_size_or_order_mutation(&mut self) {
+        self.mutation_version = self.mutation_version.wrapping_add(1);
+    }
+
+    fn clone_state(&self, _py: &CoreGilToken) -> Self {
+        Self {
+            data: self.retain_snapshot(_py).into(),
+            maxlen: self.maxlen,
+            mutation_version: 0,
+        }
+    }
+
+    fn release_all(&mut self, _py: &CoreGilToken) {
+        while let Some(bits) = self.data.pop_front() {
+            release_handle_value(_py, bits);
+        }
+    }
+}
+
+struct RetainedDequeSnapshot<'py> {
+    py: &'py CoreGilToken,
+    items: Vec<u64>,
+}
+
+impl<'py> RetainedDequeSnapshot<'py> {
+    fn new(py: &'py CoreGilToken, items: Vec<u64>) -> Self {
+        Self { py, items }
+    }
+
+    fn as_slice(&self) -> &[u64] {
+        &self.items
+    }
+}
+
+impl Drop for RetainedDequeSnapshot<'_> {
+    fn drop(&mut self) {
+        for bits in self.items.drain(..) {
+            release_handle_value(self.py, bits);
+        }
+    }
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -1033,6 +1113,26 @@ fn deque_handle_from_bits(_py: &CoreGilToken, handle_bits: u64) -> Option<i64> {
         return None;
     };
     Some(id)
+}
+
+fn retained_deque_snapshot_with_version(_py: &CoreGilToken, id: i64) -> (Vec<u64>, u64) {
+    collections_state()
+        .deque_registry
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|s| s.retain_snapshot_with_version(_py))
+        .unwrap_or_default()
+}
+
+fn deque_mutated_since(id: i64, expected_version: u64) -> bool {
+    collections_state()
+        .deque_registry
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|s| s.mutation_version != expected_version)
+        .unwrap_or(true)
 }
 
 /// Parse maxlen_bits into Option<usize>.
@@ -1092,13 +1192,11 @@ pub extern "C" fn molt_deque_new(maxlen_bits: u64) -> u64 {
             Err(()) => return MoltObject::none().bits(),
         };
         let id = next_deque_handle();
-        collections_state().deque_registry.lock().unwrap().insert(
-            id,
-            DequeState {
-                data: VecDeque::new(),
-                maxlen,
-            },
-        );
+        collections_state()
+            .deque_registry
+            .lock()
+            .unwrap()
+            .insert(id, DequeState::new(maxlen));
         MoltObject::from_int(id).bits()
     })
 }
@@ -1116,22 +1214,13 @@ pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64)
         let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
             return MoltObject::none().bits();
         };
-        let data: VecDeque<u64> = if let Some(ml) = maxlen {
-            // If bounded and iterable longer than maxlen, keep only the last maxlen elements.
-            if elems.len() > ml {
-                elems[elems.len() - ml..].iter().copied().collect()
-            } else {
-                elems.iter().copied().collect()
-            }
-        } else {
-            elems.iter().copied().collect()
-        };
+        let state = DequeState::from_iterable_elements(_py, elems, maxlen);
         let id = next_deque_handle();
         collections_state()
             .deque_registry
             .lock()
             .unwrap()
-            .insert(id, DequeState { data, maxlen });
+            .insert(id, state);
         MoltObject::from_int(id).bits()
     })
 }
@@ -1144,6 +1233,7 @@ pub extern "C" fn molt_deque_append(handle_bits: u64, item_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
+        let mut evicted = None;
         {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
@@ -1153,11 +1243,16 @@ pub extern "C" fn molt_deque_append(handle_bits: u64, item_bits: u64) -> u64 {
                         return MoltObject::none().bits();
                     }
                     if state.data.len() == ml {
-                        state.data.pop_front();
+                        evicted = state.data.pop_front();
                     }
                 }
-                state.data.push_back(item_bits);
+                let retained = retain_handle_value(_py, item_bits);
+                state.data.push_back(retained);
+                state.mark_size_or_order_mutation();
             }
+        }
+        if let Some(bits) = evicted {
+            release_handle_value(_py, bits);
         }
         MoltObject::none().bits()
     })
@@ -1171,6 +1266,7 @@ pub extern "C" fn molt_deque_appendleft(handle_bits: u64, item_bits: u64) -> u64
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
+        let mut evicted = None;
         {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
@@ -1179,11 +1275,16 @@ pub extern "C" fn molt_deque_appendleft(handle_bits: u64, item_bits: u64) -> u64
                         return MoltObject::none().bits();
                     }
                     if state.data.len() == ml {
-                        state.data.pop_back();
+                        evicted = state.data.pop_back();
                     }
                 }
-                state.data.push_front(item_bits);
+                let retained = retain_handle_value(_py, item_bits);
+                state.data.push_front(retained);
+                state.mark_size_or_order_mutation();
             }
+        }
+        if let Some(bits) = evicted {
+            release_handle_value(_py, bits);
         }
         MoltObject::none().bits()
     })
@@ -1202,7 +1303,13 @@ pub extern "C" fn molt_deque_pop(handle_bits: u64) -> u64 {
             .lock()
             .unwrap()
             .get_mut(&id)
-            .and_then(|s| s.data.pop_back());
+            .and_then(|s| {
+                let popped = s.data.pop_back();
+                if popped.is_some() {
+                    s.mark_size_or_order_mutation();
+                }
+                popped
+            });
         match result {
             Some(bits) => bits,
             None => raise_exception::<_>(_py, "IndexError", "pop from an empty deque"),
@@ -1223,7 +1330,13 @@ pub extern "C" fn molt_deque_popleft(handle_bits: u64) -> u64 {
             .lock()
             .unwrap()
             .get_mut(&id)
-            .and_then(|s| s.data.pop_front());
+            .and_then(|s| {
+                let popped = s.data.pop_front();
+                if popped.is_some() {
+                    s.mark_size_or_order_mutation();
+                }
+                popped
+            });
         match result {
             Some(bits) => bits,
             None => raise_exception::<_>(_py, "IndexError", "pop from an empty deque"),
@@ -1243,23 +1356,33 @@ pub extern "C" fn molt_deque_extend(handle_bits: u64, iterable_bits: u64) -> u64
         let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
             return MoltObject::none().bits();
         };
-        // Clone the elements to avoid holding the seq_vec_ref borrow across the mutation.
         let elems_owned: Vec<u64> = elems.clone();
+        let mut evicted = Vec::new();
         {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
+                let mut mutated = false;
                 for &item in &elems_owned {
                     if let Some(ml) = state.maxlen {
                         if ml == 0 {
                             continue;
                         }
-                        if state.data.len() == ml {
-                            state.data.pop_front();
+                        if state.data.len() == ml
+                            && let Some(bits) = state.data.pop_front()
+                        {
+                            evicted.push(bits);
                         }
                     }
-                    state.data.push_back(item);
+                    state.data.push_back(retain_handle_value(_py, item));
+                    mutated = true;
+                }
+                if mutated {
+                    state.mark_size_or_order_mutation();
                 }
             }
+        }
+        for bits in evicted {
+            release_handle_value(_py, bits);
         }
         MoltObject::none().bits()
     })
@@ -1280,22 +1403,33 @@ pub extern "C" fn molt_deque_extendleft(handle_bits: u64, iterable_bits: u64) ->
             return MoltObject::none().bits();
         };
         let elems_owned: Vec<u64> = elems.clone();
+        let mut evicted = Vec::new();
         {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
+                let mut mutated = false;
                 // Each element is prepended in order, which reverses the iterable.
                 for &item in &elems_owned {
                     if let Some(ml) = state.maxlen {
                         if ml == 0 {
                             continue;
                         }
-                        if state.data.len() == ml {
-                            state.data.pop_back();
+                        if state.data.len() == ml
+                            && let Some(bits) = state.data.pop_back()
+                        {
+                            evicted.push(bits);
                         }
                     }
-                    state.data.push_front(item);
+                    state.data.push_front(retain_handle_value(_py, item));
+                    mutated = true;
+                }
+                if mutated {
+                    state.mark_size_or_order_mutation();
                 }
             }
+        }
+        for bits in evicted {
+            release_handle_value(_py, bits);
         }
         MoltObject::none().bits()
     })
@@ -1333,6 +1467,7 @@ pub extern "C" fn molt_deque_rotate(handle_bits: u64, n_bits: u64) -> u64 {
                             state.data.rotate_left(steps);
                         }
                     }
+                    state.mark_size_or_order_mutation();
                 }
             }
         }
@@ -1381,7 +1516,7 @@ pub extern "C" fn molt_deque_getitem(handle_bits: u64, index_bits: u64) -> u64 {
             })
         };
         match result {
-            Some(bits) => bits,
+            Some(bits) => retain_handle_value(_py, bits),
             None => raise_exception::<_>(_py, "IndexError", "deque index out of range"),
         }
     })
@@ -1403,23 +1538,26 @@ pub extern "C" fn molt_deque_setitem(handle_bits: u64, index_bits: u64, value_bi
         let Some(index) = index_i64_with_overflow(_py, index_bits, &type_err, None) else {
             return MoltObject::none().bits();
         };
-        let ok = {
+        let replaced = {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if let Some(resolved) = resolve_index(index, state.data.len()) {
-                    state.data[resolved] = value_bits;
-                    true
+                    let retained = retain_handle_value(_py, value_bits);
+                    Some(std::mem::replace(&mut state.data[resolved], retained))
                 } else {
-                    false
+                    None
                 }
             } else {
-                false
+                None
             }
         };
-        if !ok {
-            return raise_exception::<_>(_py, "IndexError", "deque index out of range");
+        match replaced {
+            Some(old) => {
+                release_handle_value(_py, old);
+                MoltObject::none().bits()
+            }
+            None => raise_exception::<_>(_py, "IndexError", "deque index out of range"),
         }
-        MoltObject::none().bits()
     })
 }
 
@@ -1440,23 +1578,29 @@ pub extern "C" fn molt_deque_delitem(handle_bits: u64, index_bits: u64) -> u64 {
         let Some(index) = index_i64_with_overflow(_py, index_bits, &type_err, None) else {
             return MoltObject::none().bits();
         };
-        let ok = {
+        let removed = {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
                 if let Some(resolved) = resolve_index(index, state.data.len()) {
-                    state.data.remove(resolved);
-                    true
+                    let removed = state.data.remove(resolved);
+                    if removed.is_some() {
+                        state.mark_size_or_order_mutation();
+                    }
+                    removed
                 } else {
-                    false
+                    None
                 }
             } else {
-                false
+                None
             }
         };
-        if !ok {
-            return raise_exception::<_>(_py, "IndexError", "deque index out of range");
+        match removed {
+            Some(bits) => {
+                release_handle_value(_py, bits);
+                MoltObject::none().bits()
+            }
+            None => raise_exception::<_>(_py, "IndexError", "deque index out of range"),
         }
-        MoltObject::none().bits()
     })
 }
 
@@ -1470,17 +1614,16 @@ pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
         };
         // Snapshot the elements to avoid holding the lock during obj_eq calls,
         // which may re-enter the runtime.
-        let elements: Vec<u64> = collections_state()
-            .deque_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.data.iter().copied().collect())
-            .unwrap_or_default();
+        let (snapshot_items, mutation_version) = retained_deque_snapshot_with_version(_py, id);
+        let elements = RetainedDequeSnapshot::new(_py, snapshot_items);
         let target = obj_from_bits(item_bits);
-        for &elem_bits in &elements {
-            if obj_eq(_py, obj_from_bits(elem_bits), target) {
+        for &elem_bits in elements.as_slice() {
+            let matched = obj_eq(_py, obj_from_bits(elem_bits), target);
+            if matched {
                 return MoltObject::from_bool(true).bits();
+            }
+            if deque_mutated_since(id, mutation_version) {
+                return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
             }
         }
         MoltObject::from_bool(false).bits()
@@ -1495,17 +1638,16 @@ pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        let elements: Vec<u64> = collections_state()
-            .deque_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.data.iter().copied().collect())
-            .unwrap_or_default();
+        let (snapshot_items, mutation_version) = retained_deque_snapshot_with_version(_py, id);
+        let elements = RetainedDequeSnapshot::new(_py, snapshot_items);
         let target = obj_from_bits(item_bits);
         let mut count: i64 = 0;
-        for &elem_bits in &elements {
-            if obj_eq(_py, obj_from_bits(elem_bits), target) {
+        for &elem_bits in elements.as_slice() {
+            let matched = obj_eq(_py, obj_from_bits(elem_bits), target);
+            if deque_mutated_since(id, mutation_version) {
+                return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
+            }
+            if matched {
                 count += 1;
             }
         }
@@ -1536,14 +1678,9 @@ pub extern "C" fn molt_deque_index(
             return raise_exception::<_>(_py, "TypeError", "integer argument expected");
         };
         // Snapshot elements to avoid holding the lock during obj_eq.
-        let elements: Vec<u64> = collections_state()
-            .deque_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.data.iter().copied().collect())
-            .unwrap_or_default();
-        let len = elements.len() as i64;
+        let (snapshot_items, mutation_version) = retained_deque_snapshot_with_version(_py, id);
+        let elements = RetainedDequeSnapshot::new(_py, snapshot_items);
+        let len = elements.as_slice().len() as i64;
         // Resolve negative indices.
         let mut start = if start_raw < 0 {
             start_raw + len
@@ -1572,13 +1709,18 @@ pub extern "C" fn molt_deque_index(
         let start_usize = start as usize;
         let stop_usize = stop as usize;
         for (i, &elem_bits) in elements
+            .as_slice()
             .iter()
             .enumerate()
             .take(stop_usize)
             .skip(start_usize)
         {
-            if obj_eq(_py, obj_from_bits(elem_bits), target) {
+            let matched = obj_eq(_py, obj_from_bits(elem_bits), target);
+            if matched {
                 return MoltObject::from_int(i as i64).bits();
+            }
+            if deque_mutated_since(id, mutation_version) {
+                return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
             }
         }
         raise_exception::<_>(_py, "ValueError", "x is not in deque")
@@ -1615,7 +1757,10 @@ pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits
                         if resolved > len {
                             resolved = len;
                         }
-                        state.data.insert(resolved as usize, item_bits);
+                        state
+                            .data
+                            .insert(resolved as usize, retain_handle_value(_py, item_bits));
+                        state.mark_size_or_order_mutation();
                         Ok(())
                     }
                 } else {
@@ -1627,7 +1772,10 @@ pub extern "C" fn molt_deque_insert(handle_bits: u64, index_bits: u64, item_bits
                     if resolved > len {
                         resolved = len;
                     }
-                    state.data.insert(resolved as usize, item_bits);
+                    state
+                        .data
+                        .insert(resolved as usize, retain_handle_value(_py, item_bits));
+                    state.mark_size_or_order_mutation();
                     Ok(())
                 }
             } else {
@@ -1651,17 +1799,16 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         // Snapshot to find the index without holding the lock during obj_eq.
-        let elements: Vec<u64> = collections_state()
-            .deque_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.data.iter().copied().collect())
-            .unwrap_or_default();
+        let (snapshot_items, mutation_version) = retained_deque_snapshot_with_version(_py, id);
+        let elements = RetainedDequeSnapshot::new(_py, snapshot_items);
         let target = obj_from_bits(item_bits);
         let mut found_idx: Option<usize> = None;
-        for (i, &elem_bits) in elements.iter().enumerate() {
-            if obj_eq(_py, obj_from_bits(elem_bits), target) {
+        for (i, &elem_bits) in elements.as_slice().iter().enumerate() {
+            let matched = obj_eq(_py, obj_from_bits(elem_bits), target);
+            if deque_mutated_since(id, mutation_version) {
+                return raise_exception::<_>(_py, "IndexError", "deque mutated during iteration");
+            }
+            if matched {
                 found_idx = Some(i);
                 break;
             }
@@ -1669,12 +1816,20 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
         let Some(idx) = found_idx else {
             return raise_exception::<_>(_py, "ValueError", "deque.remove(x): x not in deque");
         };
-        {
+        let removed = {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
-                state.data.remove(idx);
+                let removed = state.data.remove(idx);
+                if removed.is_some() {
+                    state.mark_size_or_order_mutation();
+                }
+                removed
+            } else {
+                None
             }
         }
+        .unwrap_or_else(|| MoltObject::none().bits());
+        release_handle_value(_py, removed);
         MoltObject::none().bits()
     })
 }
@@ -1705,17 +1860,25 @@ pub extern "C" fn molt_deque_clear(handle_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        {
+        let removed: Vec<u64> = {
             let mut map = collections_state().deque_registry.lock().unwrap();
             if let Some(state) = map.get_mut(&id) {
-                state.data.clear();
+                if !state.data.is_empty() {
+                    state.mark_size_or_order_mutation();
+                }
+                state.data.drain(..).collect()
+            } else {
+                Vec::new()
             }
+        };
+        for bits in removed {
+            release_handle_value(_py, bits);
         }
         MoltObject::none().bits()
     })
 }
 
-/// Create a shallow copy. Uses VecDeque::clone() — no element-by-element copy.
+/// Create a shallow copy. The new deque owns retained references to the same elements.
 /// Returns a new handle with the same maxlen.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
@@ -1728,10 +1891,7 @@ pub extern "C" fn molt_deque_copy(handle_bits: u64) -> u64 {
             .lock()
             .unwrap()
             .get(&id)
-            .map(|s| DequeState {
-                data: s.data.clone(),
-                maxlen: s.maxlen,
-            });
+            .map(|s| s.clone_state(_py));
         let Some(new_state) = cloned else {
             return raise_exception::<_>(_py, "RuntimeError", "invalid deque handle");
         };
@@ -1772,11 +1932,13 @@ pub extern "C" fn molt_deque_drop(handle_bits: u64) -> u64 {
         let Some(id) = deque_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        collections_state()
-            .deque_registry
-            .lock()
-            .unwrap()
-            .remove(&id);
+        let removed = {
+            let mut map = collections_state().deque_registry.lock().unwrap();
+            map.remove(&id)
+        };
+        if let Some(mut state) = removed {
+            state.release_all(_py);
+        }
         MoltObject::none().bits()
     })
 }
@@ -1962,6 +2124,19 @@ struct DefaultDictState {
     factory_bits: u64,
 }
 
+fn retain_handle_value(_py: &CoreGilToken, bits: u64) -> u64 {
+    if obj_from_bits(bits).as_ptr().is_some() {
+        inc_ref_bits(_py, bits);
+    }
+    bits
+}
+
+fn release_handle_value(_py: &CoreGilToken, bits: u64) {
+    if obj_from_bits(bits).as_ptr().is_some() {
+        dec_ref_bits(_py, bits);
+    }
+}
+
 struct CollectionsRuntimeState {
     next_ordereddict_handle: AtomicI64,
     next_chainmap_handle: AtomicI64,
@@ -1994,14 +2169,25 @@ impl CollectionsRuntimeState {
     fn clear(&self, _py: &CoreGilToken) {
         self.ordereddict_registry.lock().unwrap().clear();
         self.chainmap_registry.lock().unwrap().clear();
-        self.deque_registry.lock().unwrap().clear();
+        let drained_deques: Vec<DequeState> = {
+            let mut deques = self.deque_registry.lock().unwrap();
+            deques.drain().map(|(_, state)| state).collect()
+        };
+        for mut state in drained_deques {
+            state.release_all(_py);
+        }
         {
             let mut counters = self.counter_registry.lock().unwrap();
             for (_, mut state) in counters.drain() {
                 state.clear(_py);
             }
         }
-        self.defaultdict_registry.lock().unwrap().clear();
+        {
+            let mut defaultdicts = self.defaultdict_registry.lock().unwrap();
+            for (_, state) in defaultdicts.drain() {
+                release_handle_value(_py, state.factory_bits);
+            }
+        }
     }
 }
 
@@ -2023,8 +2209,11 @@ unsafe extern "C" fn collections_runtime_state_drop(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
+    let _py = CoreGilToken::new();
     unsafe {
-        drop(Box::from_raw(ptr as *mut CollectionsRuntimeState));
+        let state = Box::from_raw(ptr as *mut CollectionsRuntimeState);
+        state.clear(&_py);
+        drop(state);
     }
 }
 
@@ -2891,6 +3080,7 @@ pub extern "C" fn molt_counter_drop(handle_bits: u64) -> u64 {
 pub extern "C" fn molt_defaultdict_new(factory_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let id = next_defaultdict_handle();
+        let factory_bits = retain_handle_value(_py, factory_bits);
         collections_state()
             .defaultdict_registry
             .lock()
@@ -2970,13 +3160,14 @@ pub extern "C" fn molt_defaultdict_factory(handle_bits: u64) -> u64 {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        collections_state()
+        let factory_bits = collections_state()
             .defaultdict_registry
             .lock()
             .unwrap()
             .get(&id)
             .map(|s| s.factory_bits)
-            .unwrap_or_else(|| MoltObject::none().bits())
+            .unwrap_or_else(|| MoltObject::none().bits());
+        retain_handle_value(_py, factory_bits)
     })
 }
 
@@ -2997,6 +3188,7 @@ pub extern "C" fn molt_defaultdict_copy(handle_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
         };
         let new_id = next_defaultdict_handle();
+        let factory_bits = retain_handle_value(_py, factory_bits);
         collections_state()
             .defaultdict_registry
             .lock()
@@ -3013,11 +3205,14 @@ pub extern "C" fn molt_defaultdict_drop(handle_bits: u64) -> u64 {
         let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
             return MoltObject::none().bits();
         };
-        collections_state()
+        let removed = collections_state()
             .defaultdict_registry
             .lock()
             .unwrap()
             .remove(&id);
+        if let Some(state) = removed {
+            release_handle_value(_py, state.factory_bits);
+        }
         MoltObject::none().bits()
     })
 }
@@ -3175,4 +3370,36 @@ pub extern "C" fn molt_namedtuple_validate_fields(
         }
         MoltObject::from_ptr(result_ptr).bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deque_size_order_mutation_invalidates_snapshot_index() {
+        let mut state = DequeState::new(None);
+        state.data.push_back(11);
+        state.data.push_back(22);
+
+        let snapshot_version = state.mutation_version;
+        let found_idx = 0;
+
+        state.data.clear();
+        state.mark_size_or_order_mutation();
+
+        assert_ne!(state.mutation_version, snapshot_version);
+        assert!(state.data.get(found_idx).is_none());
+    }
+
+    #[test]
+    fn deque_element_replacement_does_not_invalidate_equality_scan() {
+        let mut state = DequeState::new(None);
+        state.data.push_back(11);
+
+        let snapshot_version = state.mutation_version;
+        state.data[0] = 22;
+
+        assert_eq!(state.mutation_version, snapshot_version);
+    }
 }

@@ -885,12 +885,7 @@ fn emit_lir_op(ctx: &mut LirLowerCtx, op: &LirOp) {
         // runtime call keeps the function in the LIR fast lane rather than
         // bailing it (`Call(0)`) to the generic emitter — preserving the WASM
         // perf contract for drop-inserted functions. Neither op has a result.
-        OpCode::DelBoundary => {
-            panic!(
-                "DelBoundary must be consumed by the terminal drop phase before WASM lowering"
-            );
-        }
-        OpCode::DecRef => {
+        OpCode::DecRef | OpCode::DelBoundary => {
             if let Some(&operand) = tir_op.operands.first() {
                 emit_get_boxed_for_repr(ctx, operand);
                 ctx.emit_runtime_call("dec_ref_obj");
@@ -1739,32 +1734,44 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(
-        expected = "DelBoundary must be consumed by the terminal drop phase before WASM lowering"
-    )]
-    fn lir_fast_lane_rejects_unnormalized_del_boundary() {
-        let mut func = TirFunction::new("raw_del_boundary".into(), vec![], TirType::None);
-        let value = func.fresh_value();
+    fn lir_fast_lane_del_boundary_emits_named_dec_ref_runtime_call() {
+        let mut func = TirFunction::new("del_boundary_release".into(), vec![], TirType::None);
+        let owned = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
-            results: vec![value],
+            results: vec![owned],
             attrs: AttrDict::new(),
             source_span: None,
         });
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::DelBoundary,
-            operands: vec![value],
+            operands: vec![owned],
             results: vec![],
             attrs: AttrDict::new(),
             source_span: None,
         });
         entry.terminator = Terminator::Return { values: vec![] };
 
-        let _ = lower_tir_to_wasm(&func);
+        let output = lower_tir_to_wasm(&func);
+        assert!(
+            output.runtime_calls.contains(&"dec_ref_obj"),
+            "WASM LIR fast lane must consume DelBoundary through dec_ref_obj; got {:?}",
+            output.runtime_calls
+        );
+        let placeholders = output
+            .instructions
+            .iter()
+            .filter(|i| matches!(i, Instruction::Call(NAMED_RUNTIME_CALL_PLACEHOLDER)))
+            .count();
+        assert_eq!(
+            placeholders,
+            output.runtime_calls.len(),
+            "named-call placeholders must pair 1:1 with runtime_calls entries"
+        );
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use molt_obj_model::MoltObject;
 use molt_runtime_core::obj_from_bits;
 use molt_runtime_core::prelude::*;
+use num_bigint::BigInt;
+use num_traits::One;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -11,9 +13,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::bridge::{
     alloc_bytes, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string, alloc_tuple,
     attr_name_bits_from_bytes, bytes_like_slice, call_callable0, call_callable1, call_callable2,
-    call_class_init_with_args, clear_exception, dec_ref_bits, env_state_get, exception_kind_bits,
-    exception_pending, inc_ref_bits, is_truthy, maybe_ptr_from_bits, missing_bits,
-    molt_exception_last, molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next,
+    call_class_init_with_args, clear_attribute_error_if_pending, clear_exception, dec_ref_bits,
+    env_state_get, exception_kind_bits, exception_pending, inc_ref_bits, index_bigint_from_obj,
+    int_bits_from_bigint, is_truthy, maybe_ptr_from_bits, missing_bits, molt_exception_last,
+    molt_float_from_obj, molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next,
     molt_list_insert, object_type_id, raise_exception, seq_vec_ref, string_obj_to_owned, to_f64,
     to_i64,
 };
@@ -578,10 +581,7 @@ pub(crate) fn urllib_request_attr_optional(
     let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
     dec_ref_bits(_py, name_bits);
     if exception_pending(_py) {
-        if let Some(exc_name) = urllib_request_pending_exception_kind_name(_py)
-            && exc_name == "AttributeError"
-        {
-            clear_exception(_py);
+        if clear_attribute_error_if_pending(_py) {
             return Ok(None);
         }
         return Err(MoltObject::none().bits());
@@ -632,6 +632,189 @@ fn ctypes_is_scalar_ctype(
     let has_fields = ctypes_attr_present(_py, ctype_bits, b"_fields_")?;
     let has_length = ctypes_attr_present(_py, ctype_bits, b"_length")?;
     Ok(!has_fields && !has_length)
+}
+
+fn ctypes_attr_i64(
+    _py: &molt_runtime_core::CoreGilToken,
+    obj_bits: u64,
+    name: &[u8],
+) -> Result<Option<i64>, u64> {
+    let Some(bits) = urllib_request_attr_optional(_py, obj_bits, name)? else {
+        return Ok(None);
+    };
+    let out = to_i64(obj_from_bits(bits));
+    dec_ref_bits(_py, bits);
+    Ok(out)
+}
+
+fn ctypes_attr_bool(
+    _py: &molt_runtime_core::CoreGilToken,
+    obj_bits: u64,
+    name: &[u8],
+) -> Result<Option<bool>, u64> {
+    let Some(bits) = urllib_request_attr_optional(_py, obj_bits, name)? else {
+        return Ok(None);
+    };
+    let out = is_truthy(_py, obj_from_bits(bits));
+    dec_ref_bits(_py, bits);
+    Ok(Some(out))
+}
+
+fn ctypes_attr_string(
+    _py: &molt_runtime_core::CoreGilToken,
+    obj_bits: u64,
+    name: &[u8],
+) -> Result<Option<String>, u64> {
+    let Some(bits) = urllib_request_attr_optional(_py, obj_bits, name)? else {
+        return Ok(None);
+    };
+    let out = string_obj_to_owned(obj_from_bits(bits));
+    dec_ref_bits(_py, bits);
+    Ok(out)
+}
+
+fn ctypes_scalar_kind(
+    _py: &molt_runtime_core::CoreGilToken,
+    ctype_bits: u64,
+) -> Result<String, u64> {
+    Ok(ctypes_attr_string(_py, ctype_bits, b"_kind")?.unwrap_or_else(|| "int".to_string()))
+}
+
+fn ctypes_wrap_integer(
+    _py: &molt_runtime_core::CoreGilToken,
+    value_bits: u64,
+    bits: i64,
+    signed: bool,
+) -> Result<u64, u64> {
+    if bits <= 0 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "ctypes integer width must be positive",
+        ));
+    }
+    let Some(value) = index_bigint_from_obj(
+        _py,
+        value_bits,
+        "ctypes scalar value must be int-compatible",
+    ) else {
+        return Err(MoltObject::none().bits());
+    };
+    let width = bits as usize;
+    let modulus = BigInt::one() << width;
+    let mut wrapped = ((value % &modulus) + &modulus) % &modulus;
+    if signed {
+        let sign_bit = BigInt::one() << (width - 1);
+        if wrapped >= sign_bit {
+            wrapped -= modulus;
+        }
+    }
+    Ok(int_bits_from_bigint(_py, wrapped))
+}
+
+fn ctypes_coerce_char(_py: &molt_runtime_core::CoreGilToken, value_bits: u64) -> Result<u64, u64> {
+    if let Some(num) = to_i64(obj_from_bits(value_bits)) {
+        if !(0..=255).contains(&num) {
+            return Err(raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "one character bytes, bytearray, or an integer in range(256) expected",
+            ));
+        }
+        let ptr = alloc_bytes(_py, &[num as u8]);
+        if ptr.is_null() {
+            return Err(raise_exception::<u64>(
+                _py,
+                "MemoryError",
+                "allocation failed",
+            ));
+        }
+        return Ok(MoltObject::from_ptr(ptr).bits());
+    }
+    let Some(slice) = bytes_like_slice(value_bits) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "one character bytes, bytearray, or an integer in range(256) expected",
+        ));
+    };
+    if slice.len() != 1 {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "one character bytes, bytearray, or an integer in range(256) expected",
+        ));
+    }
+    let out = alloc_bytes(_py, slice);
+    if out.is_null() {
+        return Err(raise_exception::<u64>(
+            _py,
+            "MemoryError",
+            "allocation failed",
+        ));
+    }
+    Ok(MoltObject::from_ptr(out).bits())
+}
+
+fn ctypes_coerce_float(
+    _py: &molt_runtime_core::CoreGilToken,
+    value_bits: u64,
+    width: i64,
+) -> Result<u64, u64> {
+    let float_bits = molt_float_from_obj(value_bits);
+    if exception_pending(_py) {
+        if obj_from_bits(float_bits).as_ptr().is_some() {
+            dec_ref_bits(_py, float_bits);
+        }
+        return Err(float_bits);
+    }
+    let Some(value) = to_f64(obj_from_bits(float_bits)) else {
+        if obj_from_bits(float_bits).as_ptr().is_some() {
+            dec_ref_bits(_py, float_bits);
+        }
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "ctypes scalar value must be float-compatible",
+        ));
+    };
+    if obj_from_bits(float_bits).as_ptr().is_some() {
+        dec_ref_bits(_py, float_bits);
+    }
+    let out = if width == 32 {
+        (value as f32) as f64
+    } else {
+        value
+    };
+    Ok(MoltObject::from_float(out).bits())
+}
+
+fn ctypes_coerce_scalar_value(
+    _py: &molt_runtime_core::CoreGilToken,
+    ctype_bits: u64,
+    value_bits: u64,
+) -> Result<u64, u64> {
+    let kind = ctypes_scalar_kind(_py, ctype_bits)?;
+    match kind.as_str() {
+        "bool" => Ok(MoltObject::from_bool(is_truthy(_py, obj_from_bits(value_bits))).bits()),
+        "char" => ctypes_coerce_char(_py, value_bits),
+        "float" => {
+            let bits = ctypes_attr_i64(_py, ctype_bits, b"_bits")?.unwrap_or(64);
+            ctypes_coerce_float(_py, value_bits, bits)
+        }
+        "void_p" => {
+            if obj_from_bits(value_bits).is_none() {
+                Ok(MoltObject::none().bits())
+            } else {
+                ctypes_wrap_integer(_py, value_bits, 64, false)
+            }
+        }
+        _ => {
+            let bits = ctypes_attr_i64(_py, ctype_bits, b"_bits")?.unwrap_or(64);
+            let signed = ctypes_attr_bool(_py, ctype_bits, b"_signed")?.unwrap_or(true);
+            ctypes_wrap_integer(_py, value_bits, bits, signed)
+        }
+    }
 }
 
 fn ctypes_sizeof_bits(
@@ -695,22 +878,6 @@ pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> 
             );
         }
 
-        if let Some(inner_bits) = match urllib_request_attr_optional(_py, value_bits, b"value") {
-            Ok(bits) => bits,
-            Err(bits) => return bits,
-        } {
-            let out = match to_i64(obj_from_bits(inner_bits)) {
-                Some(num) => MoltObject::from_int(num).bits(),
-                None => raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "ctypes value.value must be int-compatible",
-                ),
-            };
-            dec_ref_bits(_py, inner_bits);
-            return out;
-        }
-
         let is_scalar = match ctypes_is_scalar_ctype(_py, ctype_bits) {
             Ok(value) => value,
             Err(bits) => return bits,
@@ -718,10 +885,8 @@ pub extern "C" fn molt_ctypes_coerce_value(ctype_bits: u64, value_bits: u64) -> 
         if !is_scalar {
             return value_bits;
         }
-        let Some(num) = to_i64(obj_from_bits(value_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "ctypes scalar value must be int");
-        };
-        MoltObject::from_int(num).bits()
+
+        ctypes_coerce_scalar_value(_py, ctype_bits, value_bits).unwrap_or_else(|bits| bits)
     })
 }
 
@@ -741,7 +906,24 @@ pub extern "C" fn molt_ctypes_default_value(ctype_bits: u64) -> u64 {
             Err(bits) => return bits,
         };
         if is_scalar {
-            return MoltObject::from_int(0).bits();
+            let kind = match ctypes_scalar_kind(_py, ctype_bits) {
+                Ok(value) => value,
+                Err(bits) => return bits,
+            };
+            return match kind.as_str() {
+                "bool" => MoltObject::from_bool(false).bits(),
+                "char" => {
+                    let ptr = alloc_bytes(_py, &[0]);
+                    if ptr.is_null() {
+                        raise_exception::<u64>(_py, "MemoryError", "allocation failed")
+                    } else {
+                        MoltObject::from_ptr(ptr).bits()
+                    }
+                }
+                "float" => MoltObject::from_float(0.0).bits(),
+                "void_p" => MoltObject::none().bits(),
+                _ => MoltObject::from_int(0).bits(),
+            };
         }
 
         let has_fields = match ctypes_attr_present(_py, ctype_bits, b"_fields_") {

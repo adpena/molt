@@ -12,21 +12,24 @@ use crate::builtins::attr::{
     attr_name_bits_from_bytes, clear_attribute_error_if_pending, module_attr_lookup,
 };
 use crate::builtins::classes::builtin_classes;
+use crate::builtins::exceptions::{
+    exception_kind_bits, exception_message_is_lazy, exception_msg_bits, molt_exception_last_pending,
+};
 use crate::builtins::io::{molt_sys_stderr, molt_sys_stdin, molt_sys_stdout};
 use crate::{
-    HashContext, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
-    TYPE_ID_TUPLE, alloc_bytes, alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string,
-    alloc_tuple, call_callable0, call_callable1, call_callable2, call_function_obj_vec,
-    class_mro_vec, class_name_for_error, clear_exception, dec_ref_bits, dict_del_in_place,
-    dict_get_in_place, dict_order, dict_set_in_place, exception_pending,
-    format_exception_with_traceback, format_obj_str, has_capability, inc_ref_bits,
-    init_atomic_bits, int_bits_from_i64, intern_static_name, is_missing_bits, is_truthy,
-    missing_bits, module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
-    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
-    molt_exception_last, molt_getattr_builtin, molt_int_from_obj, molt_is_callable, molt_iter,
-    molt_iter_next, obj_eq, obj_from_bits, object_type_id, raise_exception, runtime_state, seq_vec,
-    seq_vec_ref, set_add_in_place, string_bytes, string_len, string_obj_to_owned, to_i64,
-    type_name, type_of_bits,
+    HashContext, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET,
+    TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_bytes, alloc_dict_with_pairs, alloc_list,
+    alloc_module_obj, alloc_string, alloc_tuple, call_callable0, call_callable1, call_callable2,
+    call_function_obj_vec, class_mro_vec, class_name_for_error, clear_exception, dec_ref_bits,
+    dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, exception_pending,
+    format_exception_with_traceback, format_obj_str, frame_stack_active_globals_bits,
+    has_capability, inc_ref_bits, init_atomic_bits, int_bits_from_i64, intern_static_name,
+    is_missing_bits, is_truthy, missing_bits, module_dict_bits, module_name_bits, molt_call_bind,
+    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
+    molt_callargs_push_pos, molt_exception_kind, molt_exception_last, molt_getattr_builtin,
+    molt_int_from_obj, molt_is_callable, molt_iter, molt_iter_next, obj_eq, obj_from_bits,
+    object_type_id, raise_exception, runtime_state, seq_vec, seq_vec_ref, set_add_in_place,
+    string_bytes, string_len, string_obj_to_owned, to_i64, type_name, type_of_bits,
 };
 use unicode_ident::{is_xid_continue, is_xid_start};
 
@@ -170,61 +173,58 @@ fn trace_bad_module_name_arg(_py: &PyToken<'_>, where_: &str, bits: u64) {
     }
 }
 
+fn pending_import_exception_kind_and_message(_py: &PyToken<'_>) -> Option<(String, String)> {
+    if !exception_pending(_py) {
+        return None;
+    }
+    let exc_bits = molt_exception_last_pending();
+    let out = (|| {
+        let exc_ptr = obj_from_bits(exc_bits).as_ptr()?;
+        unsafe {
+            if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+                return None;
+            }
+            let kind_bits = exception_kind_bits(exc_ptr);
+            let msg_bits = exception_msg_bits(exc_ptr);
+            if exception_message_is_lazy(msg_bits) {
+                return None;
+            }
+            let kind = string_obj_to_owned(obj_from_bits(kind_bits))?;
+            let message = string_obj_to_owned(obj_from_bits(msg_bits))?;
+            Some((kind, message))
+        }
+    })();
+    if !obj_from_bits(exc_bits).is_none() {
+        dec_ref_bits(_py, exc_bits);
+    }
+    out
+}
+
 fn normalize_pending_import_exception(_py: &PyToken<'_>) {
     if !exception_pending(_py) {
         return;
     }
-    let exc_bits = molt_exception_last();
     let mut kind = "RuntimeError".to_string();
     let mut message = "module import failed".to_string();
-    if !obj_from_bits(exc_bits).is_none() {
-        let kind_bits = molt_exception_kind(exc_bits);
-        if let Some(name) = string_obj_to_owned(obj_from_bits(kind_bits)) {
-            kind = name;
-        }
-        message = format_obj_str(_py, obj_from_bits(exc_bits));
-        if message.starts_with("No module named ") {
-            kind = "ModuleNotFoundError".to_string();
-        }
-        dec_ref_bits(_py, exc_bits);
+    if let Some((pending_kind, pending_message)) = pending_import_exception_kind_and_message(_py) {
+        kind = pending_kind;
+        message = pending_message;
+    }
+    if message.starts_with("No module named ") {
+        kind = "ModuleNotFoundError".to_string();
     }
     clear_exception(_py);
     let _ = raise_exception::<u64>(_py, &kind, &message);
-}
-
-fn clear_pending_missing_import_exception(_py: &PyToken<'_>) -> bool {
-    if !exception_pending(_py) {
-        return false;
-    }
-    let exc_bits = molt_exception_last();
-    let mut clear = false;
-    if !obj_from_bits(exc_bits).is_none() {
-        let kind_bits = molt_exception_kind(exc_bits);
-        let kind = string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_default();
-        let message = format_obj_str(_py, obj_from_bits(exc_bits));
-        clear = (kind == "ImportError" || kind == "ModuleNotFoundError")
-            && message.starts_with("No module named ");
-        dec_ref_bits(_py, exc_bits);
-    }
-    if clear {
-        clear_exception(_py);
-    }
-    clear
 }
 
 fn clear_pending_missing_import_exception_for(_py: &PyToken<'_>, expected_name: &str) -> bool {
     if !exception_pending(_py) {
         return false;
     }
-    let exc_bits = molt_exception_last();
     let mut clear = false;
-    if !obj_from_bits(exc_bits).is_none() {
-        let kind_bits = molt_exception_kind(exc_bits);
-        let kind = string_obj_to_owned(obj_from_bits(kind_bits)).unwrap_or_default();
-        let message = format_obj_str(_py, obj_from_bits(exc_bits));
+    if let Some((kind, message)) = pending_import_exception_kind_and_message(_py) {
         clear = (kind == "ImportError" || kind == "ModuleNotFoundError")
             && message == format!("No module named '{expected_name}'");
-        dec_ref_bits(_py, exc_bits);
     }
     if clear {
         clear_exception(_py);
@@ -708,20 +708,6 @@ pub extern "C" fn molt_module_new(name_bits: u64) -> u64 {
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
-        unsafe {
-            let dict_bits = module_dict_bits(ptr);
-            let dict_obj = obj_from_bits(dict_bits);
-            if let Some(dict_ptr) = dict_obj.as_ptr()
-                && object_type_id(dict_ptr) == TYPE_ID_DICT
-            {
-                let key_ptr = alloc_string(_py, b"__name__");
-                if !key_ptr.is_null() {
-                    let key_bits = MoltObject::from_ptr(key_ptr).bits();
-                    dict_set_in_place(_py, dict_ptr, key_bits, name_bits);
-                    dec_ref_bits(_py, key_bits);
-                }
-            }
-        }
         crate::intrinsics::install_into_builtins(_py, ptr);
         MoltObject::from_ptr(ptr).bits()
     })
@@ -799,11 +785,12 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
                 return;
             }
             if exception_pending(_py) {
-                let exc_bits = molt_exception_last();
+                let exc_bits = molt_exception_last_pending();
                 let kind_bits = molt_exception_kind(exc_bits);
                 let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                     .unwrap_or_else(|| "<exc>".to_string());
                 eprintln!("import stage {stage} name={name} pending={kind}");
+                dec_ref_bits(_py, exc_bits);
             } else {
                 eprintln!("import stage {stage} name={name} pending=<none>");
             }
@@ -972,7 +959,7 @@ fn molt_module_import_inner(name_bits: u64) -> u64 {
         dec_ref_bits(_py, name_key_bits);
         if module_bits_are_module_like(result_bits)
             && exception_pending(_py)
-            && !clear_pending_missing_import_exception(_py)
+            && !clear_pending_missing_import_exception_for(_py, &name)
         {
             return MoltObject::none().bits();
         }
@@ -4286,6 +4273,28 @@ pub(crate) fn sys_modules_dict_ptr(_py: &PyToken<'_>, sys_bits: u64) -> Option<*
     }
 }
 
+fn sys_modules_set_canonical_name(
+    _py: &PyToken<'_>,
+    modules_ptr: *mut u8,
+    name: &str,
+    module_bits: u64,
+) -> Result<(), u64> {
+    let key_ptr = alloc_string(_py, name.as_bytes());
+    if key_ptr.is_null() {
+        return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
+    }
+    let key_bits = MoltObject::from_ptr(key_ptr).bits();
+    unsafe {
+        dict_set_in_place(_py, modules_ptr, key_bits, module_bits);
+    }
+    dec_ref_bits(_py, key_bits);
+    if exception_pending(_py) {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(())
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -4328,15 +4337,17 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                 return if let Some(sys_bits) = sys_bits_out
                     && let Some(modules_ptr) = sys_modules_dict_ptr(_py, sys_bits)
                 {
-                    unsafe {
-                        dict_set_in_place(_py, modules_ptr, name_bits, existing);
+                    if let Err(err) =
+                        sys_modules_set_canonical_name(_py, modules_ptr, &name, existing)
+                    {
+                        return err;
                     }
                     existing
                 } else {
                     existing
                 };
             }
-            if let Some(old) = guard.insert(name, module_bits) {
+            if let Some(old) = guard.insert(name.clone(), module_bits) {
                 dec_ref_bits(_py, old);
             }
             inc_ref_bits(_py, module_bits);
@@ -4366,8 +4377,10 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                     dec_ref_bits(_py, key_bits);
                 }
             } else {
-                unsafe {
-                    dict_set_in_place(_py, modules_ptr, name_bits, module_bits);
+                if let Err(err) =
+                    sys_modules_set_canonical_name(_py, modules_ptr, &name, module_bits)
+                {
+                    return err;
                 }
             }
         }
@@ -4381,11 +4394,12 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                     if std::env::var("MOLT_TRACE_SYS_MODULE").as_deref() == Ok("1")
                         && exception_pending(_py)
                     {
-                        let exc_bits = molt_exception_last();
+                        let exc_bits = molt_exception_last_pending();
                         let kind_bits = molt_exception_kind(exc_bits);
                         let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                             .unwrap_or_else(|| "<exc>".to_string());
                         eprintln!("sys module pending after argv/executable: {kind}");
+                        dec_ref_bits(_py, exc_bits);
                     }
                     if sys_populate_stdio(_py, sys_ptr).is_err() {
                         return raise_exception::<_>(_py, "MemoryError", "out of memory");
@@ -4396,11 +4410,12 @@ pub extern "C" fn molt_module_cache_set(name_bits: u64, module_bits: u64) -> u64
                     if std::env::var("MOLT_TRACE_SYS_MODULE").as_deref() == Ok("1")
                         && exception_pending(_py)
                     {
-                        let exc_bits = molt_exception_last();
+                        let exc_bits = molt_exception_last_pending();
                         let kind_bits = molt_exception_kind(exc_bits);
                         let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                             .unwrap_or_else(|| "<exc>".to_string());
                         eprintln!("sys module pending after stdio: {kind}");
+                        dec_ref_bits(_py, exc_bits);
                     }
                 }
             }
@@ -4458,7 +4473,7 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
         );
         if trace_import_failure {
             if exception_pending(_py) {
-                let exc_bits = molt_exception_last();
+                let exc_bits = molt_exception_last_pending();
                 let kind_bits = molt_exception_kind(exc_bits);
                 let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                     .unwrap_or_else(|| "<exc>".to_string());
@@ -4467,6 +4482,7 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
                     .map(|ptr| format_exception_with_traceback(_py, ptr))
                     .unwrap_or_else(|| "<no traceback>".to_string());
                 eprintln!("module init failed: {kind} while importing {name}: {detail}");
+                dec_ref_bits(_py, exc_bits);
             } else {
                 eprintln!("module cache cleared without pending exception: {name}");
             }
@@ -4487,28 +4503,72 @@ pub extern "C" fn molt_module_cache_del(name_bits: u64) -> u64 {
             let Some(sys_ptr) = sys_obj.as_ptr() else {
                 return MoltObject::none().bits();
             };
+            let saved_exc_bits = if exception_pending(_py) {
+                let bits = molt_exception_last_pending();
+                clear_exception(_py);
+                Some(bits)
+            } else {
+                None
+            };
             unsafe {
                 if object_type_id(sys_ptr) != TYPE_ID_MODULE {
+                    if let Some(saved_bits) = saved_exc_bits {
+                        let _ = crate::molt_exception_set_last(saved_bits);
+                        dec_ref_bits(_py, saved_bits);
+                    }
                     return MoltObject::none().bits();
                 }
                 let dict_bits = module_dict_bits(sys_ptr);
                 let dict_ptr = match obj_from_bits(dict_bits).as_ptr() {
                     Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-                    _ => return MoltObject::none().bits(),
+                    _ => {
+                        if let Some(saved_bits) = saved_exc_bits {
+                            let _ = crate::molt_exception_set_last(saved_bits);
+                            dec_ref_bits(_py, saved_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
                 };
                 let modules_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.modules_name, b"modules");
                 if obj_from_bits(modules_name_bits).is_none() {
+                    if let Some(saved_bits) = saved_exc_bits {
+                        let _ = crate::molt_exception_set_last(saved_bits);
+                        dec_ref_bits(_py, saved_bits);
+                    }
                     return MoltObject::none().bits();
                 }
                 let Some(modules_bits) = dict_get_in_place(_py, dict_ptr, modules_name_bits) else {
+                    if let Some(saved_bits) = saved_exc_bits {
+                        if exception_pending(_py) {
+                            clear_exception(_py);
+                        }
+                        let _ = crate::molt_exception_set_last(saved_bits);
+                        dec_ref_bits(_py, saved_bits);
+                    }
                     return MoltObject::none().bits();
                 };
                 let modules_ptr = match obj_from_bits(modules_bits).as_ptr() {
                     Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => ptr,
-                    _ => return MoltObject::none().bits(),
+                    _ => {
+                        if let Some(saved_bits) = saved_exc_bits {
+                            if exception_pending(_py) {
+                                clear_exception(_py);
+                            }
+                            let _ = crate::molt_exception_set_last(saved_bits);
+                            dec_ref_bits(_py, saved_bits);
+                        }
+                        return MoltObject::none().bits();
+                    }
                 };
                 dict_del_in_place(_py, modules_ptr, name_bits);
+            }
+            if let Some(saved_bits) = saved_exc_bits {
+                if exception_pending(_py) {
+                    clear_exception(_py);
+                }
+                let _ = crate::molt_exception_set_last(saved_bits);
+                dec_ref_bits(_py, saved_bits);
             }
         }
         MoltObject::none().bits()
@@ -4879,6 +4939,54 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
         let trace_name_match = trace_globals_all
             || trace_name == "_SYS_FLAGS_SEQUENCE_FIELDS"
             || trace_name == "_FlagsTuple";
+        let active_globals_bits = frame_stack_active_globals_bits();
+        if active_globals_bits != 0
+            && !obj_from_bits(active_globals_bits).is_none()
+            && let Some(active_globals_ptr) = obj_from_bits(active_globals_bits).as_ptr()
+            && unsafe { object_type_id(active_globals_ptr) } == TYPE_ID_DICT
+        {
+            unsafe {
+                if let Some(val) = dict_get_in_place(_py, active_globals_ptr, name_bits) {
+                    inc_ref_bits(_py, val);
+                    return val;
+                }
+            }
+            let builtins_bits = {
+                let cache = crate::builtins::exceptions::internals::module_cache(_py);
+                let guard = cache.lock().unwrap();
+                guard.get("builtins").copied()
+            };
+            if let Some(builtins_bits) = builtins_bits {
+                let builtins_ptr = match obj_from_bits(builtins_bits).as_ptr() {
+                    Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_MODULE => ptr,
+                    _ => std::ptr::null_mut(),
+                };
+                if !builtins_ptr.is_null() {
+                    let builtins_dict_bits = unsafe { module_dict_bits(builtins_ptr) };
+                    let builtins_dict_ptr = match obj_from_bits(builtins_dict_bits).as_ptr() {
+                        Some(ptr) if unsafe { object_type_id(ptr) } == TYPE_ID_DICT => ptr,
+                        _ => std::ptr::null_mut(),
+                    };
+                    if !builtins_dict_ptr.is_null()
+                        && let Some(val) =
+                            unsafe { dict_get_in_place(_py, builtins_dict_ptr, name_bits) }
+                    {
+                        inc_ref_bits(_py, val);
+                        return val;
+                    }
+                }
+            }
+            if trace_name == "exec" || trace_name == "eval" {
+                let msg = format!(
+                    "MOLT_COMPAT_ERROR: {trace_name}() is unsupported in compiled Molt binaries; \
+dynamic code execution is outside the verified subset. \
+Use static modules or pre-generated code paths instead."
+                );
+                return raise_exception::<_>(_py, "RuntimeError", &msg);
+            }
+            let msg = format!("name '{trace_name}' is not defined");
+            return raise_exception::<_>(_py, "NameError", &msg);
+        }
         if trace_globals && trace_name_match {
             eprintln!(
                 "molt module_get_global enter name={} module_bits=0x{:x} pending={}",
@@ -5576,6 +5684,46 @@ mod tests {
     }
 
     #[test]
+    fn restricted_source_rejects_function_definition_without_partial_success() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let namespace_ptr = alloc_dict_with_pairs(_py, &[]);
+                assert!(!namespace_ptr.is_null());
+                let namespace_bits = MoltObject::from_ptr(namespace_ptr).bits();
+                let source = "allowed = 1\n\ndef unsupported():\n    return allowed\n";
+
+                let result = runpy_exec_restricted_source(_py, namespace_ptr, source, "dynamic.py");
+
+                assert!(
+                    result.is_err(),
+                    "unsupported function body must fail closed"
+                );
+                assert!(
+                    exception_pending(_py),
+                    "unsupported function body must leave an exception for callers"
+                );
+                let (kind, message) = pending_import_exception_kind_and_message(_py)
+                    .expect("pending restricted-source exception");
+                assert_eq!(kind, "NotImplementedError");
+                assert!(message.contains("unsupported module statement"));
+                let unsupported_ptr = alloc_string(_py, b"unsupported");
+                assert!(!unsupported_ptr.is_null());
+                let unsupported_name = MoltObject::from_ptr(unsupported_ptr).bits();
+                assert!(
+                    dict_get_in_place(_py, namespace_ptr, unsupported_name).is_none(),
+                    "unsupported function definitions must not be materialized"
+                );
+                dec_ref_bits(_py, unsupported_name);
+                clear_exception(_py);
+                dec_ref_bits(_py, namespace_bits);
+            }
+        });
+    }
+
+    #[test]
     fn restricted_reference_eval_supports_module_attr_then_subscript() {
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
@@ -5629,6 +5777,46 @@ mod tests {
     }
 
     #[test]
+    fn raw_module_allocation_seeds_public_name_metadata() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let name_ptr = alloc_string(_py, b"synthetic_runtime_module");
+                assert!(!name_ptr.is_null());
+                let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                let module_ptr = alloc_module_obj(_py, name_bits);
+                assert!(!module_ptr.is_null());
+                dec_ref_bits(_py, name_bits);
+                let module_bits = MoltObject::from_ptr(module_ptr).bits();
+
+                let name_key_ptr = alloc_string(_py, b"__name__");
+                assert!(!name_key_ptr.is_null());
+                let name_key_bits = MoltObject::from_ptr(name_key_ptr).bits();
+                let found_name_bits =
+                    module_attr_lookup(_py, module_ptr, name_key_bits).expect("module __name__");
+                let found_name = string_obj_to_owned(obj_from_bits(found_name_bits));
+                assert_eq!(found_name.as_deref(), Some("synthetic_runtime_module"));
+                dec_ref_bits(_py, found_name_bits);
+                dec_ref_bits(_py, name_key_bits);
+
+                let missing_key_ptr = alloc_string(_py, b"tolist");
+                assert!(!missing_key_ptr.is_null());
+                let missing_key_bits = MoltObject::from_ptr(missing_key_ptr).bits();
+                let has_bits = crate::molt_has_attr_name(module_bits, missing_key_bits);
+                assert_eq!(has_bits, MoltObject::from_bool(false).bits());
+                assert!(
+                    !exception_pending(_py),
+                    "hasattr(module, missing) must clear AttributeError"
+                );
+                dec_ref_bits(_py, missing_key_bits);
+                dec_ref_bits(_py, module_bits);
+            }
+        });
+    }
+
+    #[test]
     fn sys_module_cache_set_does_not_leave_pending_exception() {
         let _guard = crate::TEST_MUTEX
             .lock()
@@ -5659,6 +5847,38 @@ mod tests {
 
             dec_ref_bits(_py, result_bits);
             dec_ref_bits(_py, module_bits);
+        });
+    }
+
+    #[test]
+    fn from_import_child_missing_clear_preserves_unrelated_pending_failure_in_handler() {
+        let _guard = crate::TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            crate::builtins::exceptions::exception_stack_push();
+            let raised_bits = raise_exception::<u64>(
+                _py,
+                "ModuleNotFoundError",
+                "No module named 'definitely_missing_dependency'",
+            );
+            assert!(obj_from_bits(raised_bits).is_none());
+            assert!(exception_pending(_py));
+
+            assert!(
+                !clear_pending_missing_import_exception_for(_py, "pkg.child"),
+                "a failed child body import must not be treated as absent child module"
+            );
+            assert!(
+                exception_pending(_py),
+                "unrelated import failure must remain pending for the caller's handler"
+            );
+
+            let (_kind, message) =
+                pending_import_exception_kind_and_message(_py).expect("pending import exception");
+            assert_eq!(message, "No module named 'definitely_missing_dependency'");
+            clear_exception(_py);
+            crate::builtins::exceptions::exception_stack_pop(_py);
         });
     }
 

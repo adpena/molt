@@ -142,6 +142,13 @@ Interpretation:
   kill time, reason, pids, command, and next-action custody. Tune with
   `MOLT_STALE_ORPHAN_SEC`, `MOLT_STALE_PYTEST_SEC`, or disable deliberately with
   `MOLT_STALE_ORPHAN_CLEANUP=0`.
+- Guarded command cleanup is child-session scoped. The workload is launched in
+  its own child process group/session, and timeout/RSS cleanup records the child
+  pid/pgid/sid, protected control-plane pgids, watched pids, SIGTERM/SIGKILL
+  actions, RSS peaks/limits, cwd, command, sanitized env deltas, and repro
+  payload. Harness profiles live under `logs/harness_memory_guard/commands.jsonl`
+  by default; direct `tools/memory_guard.py` incidents without `--summary-json`
+  write bounded summaries under `tmp/memory_guard/incidents/`.
 - `tools/dev.py bench` runs the pyproject-owned benchmark smoke lane by default
   and writes `bench/results/dev-bench-smoke.json`; pass explicit `molt bench`
   arguments when a custom native/WASM benchmark slice is needed. The outer
@@ -200,9 +207,11 @@ Rules:
 
 Use this workflow for high-velocity multi-agent iteration:
 
-1. `tools/throughput_env.sh --apply`
-2. `uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py --cache-report`
-3. `UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py --build-profile dev --jobs 2 <tests...>`
+1. `tools/new-agent-task.sh <task-name>` for each long-lived agent lane.
+2. `source logs/agents/<task-slug>/env.sh`
+3. `tools/throughput_env.sh --apply`
+4. `uv run --python 3.12 python3 -m molt.cli build --profile dev examples/hello.py --cache-report`
+5. `UV_NO_SYNC=1 uv run --python 3.12 python3 -u tests/molt_diff.py --build-profile dev --jobs 2 <tests...>`
 
 Key controls:
 - `--profile dev` defaults to Cargo `dev-fast` (override via `MOLT_DEV_CARGO_PROFILE`).
@@ -215,6 +224,10 @@ Key controls:
 - Cacheable daemon compiles use a probe-first request path: full IR is only encoded and sent after a daemon-declared cache miss.
 - Native runtime verification/build starts asynchronously after cache/setup and is joined at the native link boundary; `emit=obj` intentionally skips that overlap because it never links a binary.
 - Share `CARGO_TARGET_DIR` + `MOLT_CACHE` across agents when you want maximum reuse; lock/fingerprint state is under `<CARGO_TARGET_DIR>/.molt_state/` (or `MOLT_BUILD_STATE_DIR`), so explicit shared roots also share Cargo rebuild locks. Daemon sockets default to `MOLT_BACKEND_DAEMON_SOCKET_DIR` (local temp path).
+- Agent task scaffolds record the exact sourced environment in
+  `logs/agents/<task-slug>/env.sh`; source that file before build/test/bench
+  commands so artifact roots, cache roots, daemon socket roots, and session
+  identity stay reproducible across resumes.
 - Keep `MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR` for diff runs so Cargo artifacts are reused instead of split across ad-hoc roots.
 
 Build-throughput roadmap lanes are tracked in [ROADMAP.md](../ROADMAP.md) under the tooling throughput section (daemon hardening, function-level cache, batch diff compile server, smarter diff scheduling, and distributed cache strategy).

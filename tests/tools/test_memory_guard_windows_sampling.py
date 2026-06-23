@@ -413,12 +413,40 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
     }
     terminated: dict[str, object] = {}
 
-    def fake_terminate(root_pid, *, samples, watched, tracker, grace):  # noqa: ANN001
+    def fake_terminate(  # noqa: ANN001
+        root_pid,
+        *,
+        samples,
+        watched,
+        tracker,
+        grace,
+        reason,
+        sampler,
+        root_owned,
+    ):
         terminated["root_pid"] = root_pid
         terminated["samples"] = samples
         terminated["watched"] = set(watched)
         terminated["tracker"] = tracker
         terminated["grace"] = grace
+        terminated["reason"] = reason
+        terminated["sampler"] = sampler
+        terminated["root_owned"] = root_owned
+        return module.GuardTerminationReport(
+            reason=reason,
+            started_at="2026-06-17T00:00:00Z",
+            completed_at="2026-06-17T00:00:01Z",
+            root_pid=root_pid,
+            root_pgid=None,
+            root_sid=None,
+            grace_sec=grace,
+            watched_pids=tuple(sorted(watched)),
+            protected_pgids=(),
+            escaped_pids=(),
+            remaining_pgids=(),
+            remaining_pids=(),
+            actions=(),
+        )
 
     monkeypatch.setattr(module, "_current_protected_process_group_ids", lambda _s: set())
     monkeypatch.setattr(module, "terminate_watched_processes", fake_terminate)
@@ -430,9 +458,13 @@ def test_cleanup_tracked_orphans_windows_passes_live_descendants_to_terminator(
         grace=0.5,
     )
 
-    assert orphans == (101,)
+    assert orphans.process_groups == (101,)
+    assert len(orphans.termination_reports) == 1
     assert terminated["root_pid"] == 100
     assert terminated["samples"] == live
     assert terminated["watched"] == {101}
     assert terminated["tracker"] is tracker
     assert terminated["grace"] == 0.5
+    assert terminated["reason"] == "tracked_orphan_cleanup"
+    assert terminated["sampler"] is not None
+    assert terminated["root_owned"] is True

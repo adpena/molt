@@ -303,6 +303,7 @@ impl ObjectBridge {
             let h = crate::hooks::hooks_or_stubs();
             let tag_u8 = unsafe { (h.classify_heap)(bits) };
             match tag_u8 {
+                t if t == MoltTypeTag::Int as u8 => MoltTypeTag::Int,
                 t if t == MoltTypeTag::Str as u8 => MoltTypeTag::Str,
                 t if t == MoltTypeTag::Bytes as u8 => MoltTypeTag::Bytes,
                 t if t == MoltTypeTag::List as u8 => MoltTypeTag::List,

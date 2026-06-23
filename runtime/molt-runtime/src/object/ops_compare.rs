@@ -292,12 +292,162 @@ unsafe fn compare_sequence(
         for idx in first_diff..common {
             let l_bits = lhs[idx];
             let r_bits = rhs[idx];
-            if obj_eq(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
-                continue;
+            match compare_object_eq_bool(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
+                CompareBoolOutcome::True => continue,
+                CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
+                CompareBoolOutcome::Error => return CompareOutcome::Error,
             }
-            return compare_objects(_py, obj_from_bits(l_bits), obj_from_bits(r_bits));
+            return match compare_objects(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
+                CompareOutcome::NotComparable => {
+                    compare_type_error(_py, obj_from_bits(l_bits), obj_from_bits(r_bits), "<");
+                    CompareOutcome::Error
+                }
+                outcome => outcome,
+            };
         }
         CompareOutcome::Ordered(lhs.len().cmp(&rhs.len()))
+    }
+}
+
+unsafe fn compare_sequence_eq_bool(
+    _py: &PyToken<'_>,
+    lhs_ptr: *mut u8,
+    rhs_ptr: *mut u8,
+) -> CompareBoolOutcome {
+    unsafe {
+        if !crate::state::recursion::recursion_guard_enter_fast() {
+            raise_exception::<u64>(
+                _py,
+                "RecursionError",
+                "maximum recursion depth exceeded in comparison",
+            );
+            return CompareBoolOutcome::Error;
+        }
+        let lhs = seq_vec_ref(lhs_ptr);
+        let rhs = seq_vec_ref(rhs_ptr);
+        if lhs.len() != rhs.len() {
+            crate::state::recursion::recursion_guard_exit_fast();
+            return CompareBoolOutcome::False;
+        }
+        let first_diff = simd_find_first_mismatch(lhs, rhs);
+        for idx in first_diff..lhs.len() {
+            let l_bits = lhs[idx];
+            let r_bits = rhs[idx];
+            if l_bits == r_bits {
+                continue;
+            }
+            match compare_object_eq_bool(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
+                CompareBoolOutcome::True => {}
+                CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
+                    crate::state::recursion::recursion_guard_exit_fast();
+                    return CompareBoolOutcome::False;
+                }
+                CompareBoolOutcome::Error => {
+                    crate::state::recursion::recursion_guard_exit_fast();
+                    return CompareBoolOutcome::Error;
+                }
+            }
+        }
+        crate::state::recursion::recursion_guard_exit_fast();
+        CompareBoolOutcome::True
+    }
+}
+
+fn compare_builtin_eq_bool(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+) -> CompareBoolOutcome {
+    match compare_numbers_outcome(lhs, rhs) {
+        CompareOutcome::Ordered(ordering) => {
+            return if ordering == Ordering::Equal {
+                CompareBoolOutcome::True
+            } else {
+                CompareBoolOutcome::False
+            };
+        }
+        CompareOutcome::Unordered => return CompareBoolOutcome::False,
+        CompareOutcome::Error => return CompareBoolOutcome::Error,
+        CompareOutcome::NotComparable => {}
+    }
+    if lhs.is_none() || rhs.is_none() {
+        return if lhs.is_none() && rhs.is_none() {
+            CompareBoolOutcome::True
+        } else {
+            CompareBoolOutcome::False
+        };
+    }
+    let (Some(lhs_ptr), Some(rhs_ptr)) = (lhs.as_ptr(), rhs.as_ptr()) else {
+        return CompareBoolOutcome::NotComparable;
+    };
+    unsafe {
+        let ltype = object_type_id(lhs_ptr);
+        let rtype = object_type_id(rhs_ptr);
+        if (ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST)
+            || (ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE)
+        {
+            return compare_sequence_eq_bool(_py, lhs_ptr, rhs_ptr);
+        }
+        if ltype == TYPE_ID_STRING && rtype == TYPE_ID_STRING {
+            return if compare_string_bytes(lhs_ptr, rhs_ptr) == Ordering::Equal {
+                CompareBoolOutcome::True
+            } else {
+                CompareBoolOutcome::False
+            };
+        }
+        if (ltype == TYPE_ID_BYTES || ltype == TYPE_ID_BYTEARRAY)
+            && (rtype == TYPE_ID_BYTES || rtype == TYPE_ID_BYTEARRAY)
+        {
+            return if compare_bytes_like(lhs_ptr, rhs_ptr) == Ordering::Equal {
+                CompareBoolOutcome::True
+            } else {
+                CompareBoolOutcome::False
+            };
+        }
+        if (is_set_like_type(ltype) || is_set_view_type(ltype))
+            && (is_set_like_type(rtype) || is_set_view_type(rtype))
+        {
+            return if obj_eq(_py, lhs, rhs) {
+                CompareBoolOutcome::True
+            } else {
+                CompareBoolOutcome::False
+            };
+        }
+    }
+    CompareBoolOutcome::NotComparable
+}
+
+fn compare_object_eq_bool(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+) -> CompareBoolOutcome {
+    match compare_builtin_eq_bool(_py, lhs, rhs) {
+        CompareBoolOutcome::NotComparable => {}
+        outcome => return outcome,
+    }
+    if lhs.bits() == rhs.bits() {
+        return CompareBoolOutcome::True;
+    }
+    let eq_name_bits = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+    match rich_compare_value(_py, lhs, rhs, eq_name_bits, eq_name_bits) {
+        CompareValueOutcome::Value(bits) => {
+            let truthy = is_truthy(_py, obj_from_bits(bits));
+            dec_ref_bits(_py, bits);
+            if truthy {
+                CompareBoolOutcome::True
+            } else {
+                CompareBoolOutcome::False
+            }
+        }
+        CompareValueOutcome::Error => CompareBoolOutcome::Error,
+        CompareValueOutcome::NotComparable => {
+            if obj_eq(_py, lhs, rhs) {
+                CompareBoolOutcome::True
+            } else {
+                CompareBoolOutcome::False
+            }
+        }
     }
 }
 
@@ -339,12 +489,107 @@ fn ordering_matches(ordering: Ordering, op: CompareOp) -> bool {
     }
 }
 
+fn compare_op_symbol(op: CompareOp) -> &'static str {
+    match op {
+        CompareOp::Lt => "<",
+        CompareOp::Le => "<=",
+        CompareOp::Gt => ">",
+        CompareOp::Ge => ">=",
+    }
+}
+
+fn compare_op_method_names(_py: &PyToken<'_>, op: CompareOp) -> (u64, u64) {
+    match op {
+        CompareOp::Lt => (
+            intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__"),
+            intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__"),
+        ),
+        CompareOp::Le => (
+            intern_static_name(_py, &runtime_state(_py).interned.le_name, b"__le__"),
+            intern_static_name(_py, &runtime_state(_py).interned.ge_name, b"__ge__"),
+        ),
+        CompareOp::Gt => (
+            intern_static_name(_py, &runtime_state(_py).interned.gt_name, b"__gt__"),
+            intern_static_name(_py, &runtime_state(_py).interned.lt_name, b"__lt__"),
+        ),
+        CompareOp::Ge => (
+            intern_static_name(_py, &runtime_state(_py).interned.ge_name, b"__ge__"),
+            intern_static_name(_py, &runtime_state(_py).interned.le_name, b"__le__"),
+        ),
+    }
+}
+
+fn compare_object_bool_for_op(
+    _py: &PyToken<'_>,
+    lhs: MoltObject,
+    rhs: MoltObject,
+    op: CompareOp,
+) -> CompareBoolOutcome {
+    match compare_builtin_bool(_py, lhs, rhs, op) {
+        CompareBoolOutcome::NotComparable => {}
+        outcome => return outcome,
+    }
+    let (op_name_bits, reverse_name_bits) = compare_op_method_names(_py, op);
+    match rich_compare_bool(_py, lhs, rhs, op_name_bits, reverse_name_bits) {
+        CompareBoolOutcome::NotComparable => {
+            compare_type_error(_py, lhs, rhs, compare_op_symbol(op));
+            CompareBoolOutcome::Error
+        }
+        outcome => outcome,
+    }
+}
+
+unsafe fn compare_sequence_bool(
+    _py: &PyToken<'_>,
+    lhs_ptr: *mut u8,
+    rhs_ptr: *mut u8,
+    op: CompareOp,
+) -> CompareBoolOutcome {
+    unsafe {
+        let lhs = seq_vec_ref(lhs_ptr);
+        let rhs = seq_vec_ref(rhs_ptr);
+        let common = lhs.len().min(rhs.len());
+        let first_diff = simd_find_first_mismatch(lhs, rhs);
+        for idx in first_diff..common {
+            let l_bits = lhs[idx];
+            let r_bits = rhs[idx];
+            match compare_object_eq_bool(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
+                CompareBoolOutcome::True => continue,
+                CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
+                CompareBoolOutcome::Error => return CompareBoolOutcome::Error,
+            }
+            return compare_object_bool_for_op(
+                _py,
+                obj_from_bits(l_bits),
+                obj_from_bits(r_bits),
+                op,
+            );
+        }
+        if ordering_matches(lhs.len().cmp(&rhs.len()), op) {
+            CompareBoolOutcome::True
+        } else {
+            CompareBoolOutcome::False
+        }
+    }
+}
+
 pub(crate) fn compare_builtin_bool(
     _py: &PyToken<'_>,
     lhs: MoltObject,
     rhs: MoltObject,
     op: CompareOp,
 ) -> CompareBoolOutcome {
+    if let (Some(lhs_ptr), Some(rhs_ptr)) = (lhs.as_ptr(), rhs.as_ptr()) {
+        unsafe {
+            let ltype = object_type_id(lhs_ptr);
+            let rtype = object_type_id(rhs_ptr);
+            if (ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST)
+                || (ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE)
+            {
+                return compare_sequence_bool(_py, lhs_ptr, rhs_ptr, op);
+            }
+        }
+    }
     match compare_objects_builtin(_py, lhs, rhs) {
         CompareOutcome::Ordered(ordering) => {
             if ordering_matches(ordering, op) {
@@ -797,39 +1042,18 @@ pub extern "C" fn molt_ge(a: u64, b: u64) -> u64 {
     })
 }
 
-#[inline]
-fn trace_eq_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_EQ").is_ok())
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_eq(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if trace_eq_enabled() {
-            eprintln!("molt_eq: a=0x{:016x} b=0x{:016x}", a, b);
-        }
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        let ellipsis = ellipsis_bits(_py);
-        if a == ellipsis || b == ellipsis {
-            return MoltObject::from_bool(a == b).bits();
-        }
-        match compare_objects_builtin(_py, lhs, rhs) {
-            CompareOutcome::Ordered(ordering) => {
-                return MoltObject::from_bool(ordering == Ordering::Equal).bits();
+        match compare_object_eq_bool(_py, lhs, rhs) {
+            CompareBoolOutcome::True => MoltObject::from_bool(true).bits(),
+            CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
+                MoltObject::from_bool(false).bits()
             }
-            CompareOutcome::Unordered => return MoltObject::from_bool(false).bits(),
-            CompareOutcome::Error => return MoltObject::none().bits(),
-            CompareOutcome::NotComparable => {}
+            CompareBoolOutcome::Error => MoltObject::none().bits(),
         }
-        let eq_name_bits = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
-        match rich_compare_value(_py, lhs, rhs, eq_name_bits, eq_name_bits) {
-            CompareValueOutcome::Value(bits) => return bits,
-            CompareValueOutcome::Error => return MoltObject::none().bits(),
-            CompareValueOutcome::NotComparable => {}
-        }
-        MoltObject::from_bool(obj_eq(_py, lhs, rhs)).bits()
     })
 }
 
@@ -838,6 +1062,23 @@ pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
+        if let (Some(lhs_ptr), Some(rhs_ptr)) = (lhs.as_ptr(), rhs.as_ptr()) {
+            unsafe {
+                let ltype = object_type_id(lhs_ptr);
+                let rtype = object_type_id(rhs_ptr);
+                if (ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST)
+                    || (ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE)
+                {
+                    return match compare_object_eq_bool(_py, lhs, rhs) {
+                        CompareBoolOutcome::True => MoltObject::from_bool(false).bits(),
+                        CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
+                            MoltObject::from_bool(true).bits()
+                        }
+                        CompareBoolOutcome::Error => MoltObject::none().bits(),
+                    };
+                }
+            }
+        }
         match compare_objects_builtin(_py, lhs, rhs) {
             CompareOutcome::Ordered(ordering) => {
                 return MoltObject::from_bool(ordering != Ordering::Equal).bits();

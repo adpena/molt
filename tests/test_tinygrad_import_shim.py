@@ -186,6 +186,46 @@ def test_tinygrad_import_shim_compiles_in_native_molt(tmp_path: Path) -> None:
     ]
 
 
+def test_tinygrad_dflash_import_fails_closed_in_native_molt(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    src = tmp_path / "tinygrad_dflash_import_probe.py"
+    src.write_text(
+        "try:\n"
+        "    import tinygrad.dflash\n"
+        "    raise AssertionError('tinygrad.dflash import should fail closed')\n"
+        "except ImportError as exc:\n"
+        "    print(str(exc))\n",
+        encoding="utf-8",
+    )
+
+    run = run_native_test_process(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "run",
+            "--profile",
+            "dev",
+            str(src),
+        ],
+        cwd=root,
+        env=_native_molt_env(root, hermetic=True),
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+
+    combined = run.stdout + run.stderr
+    assert run.returncode != 0, combined
+    assert "Successfully built" in combined
+    assert "undefined symbol" not in combined
+    assert "molt_gpu_prim_device" not in combined
+    assert "ImportError: tinygrad.dflash is not available" in combined
+    assert "target-conditioned block-diffusion" in combined
+    assert "molt.gpu.dflash" in combined
+    assert "tinygrad.speculative" in combined
+
+
 def test_tinygrad_tensor_methods_cover_rope_style_surface() -> None:
     from tinygrad import Tensor, dtypes
 

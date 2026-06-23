@@ -68,15 +68,22 @@ This crate provides:
 	  `where_promotion` and `movement_views` to lock dtype promotion, ternary
 	  select behavior, and pad/shrink/flip/contiguous view movement through the
 	  public API. The suite's Molt runner is executable with the full-stdlib
-	  static-package command; current evidence reaches the backend daemon, then
-	  the memory guard terminates `molt-backend --daemon` at 12.005 GB RSS after
-	  435.5s before adapter workload execution. Native TIR optimization now
-	  consumes uncached user functions in bounded op/count batches and drops each
-	  batch after applying/cache-writing optimized ops; guarded follow-up reached
-	  `2602` uncached user functions in `41` bounded batches and moved the peak
-	  single backend process to 9.77 GB. The remaining Molt-side blocker is
-	  aggregate process-tree RSS from overlapping daemon plus one-shot
-	  fallback/codegen lifetimes before adapter workload execution.
+	  static-package command. Fresh 2026-06-20 evidence builds the adapter, fixes
+	  the post-JSON `argparse.Namespace` return-cleanup double drop. Direct
+	  rebuilt-binary evidence covered the then-four default public-API workloads.
+	  The current CPython adapter source now enumerates five default public-API
+	  workloads, including `attention_core`, and the pinned upstream CPython probe
+	  exits cleanly for all five. The official friend runner with clean pinned
+	  upstream custody now fails closed at `tinygrad/uop/upat.py:167` because
+	  upstream tinygrad calls
+	  `exec(code_str, globs, namespace)` in its lazy pattern compiler; unrestricted
+	  `exec()` remains outside Molt's verified AOT subset. The compile-time
+	  materialization primitive for this lane is
+	  `tools/tinygrad_upat_static_exec_registry.py`: it captures deterministic
+	  UPat matcher source strings from the pinned upstream checkout and emits a
+	  fail-closed static factory registry without runtime `exec`. The remaining
+	  blocker is wiring that registry into static package lowering/runtime
+	  dispatch.
 	  Movement-family view operations (`reshape`,
 	  `expand`, `permute`,
 	  zero-fill `pad`, `shrink`, `flip`, `contiguous`) now lower through GPU
@@ -104,7 +111,10 @@ This crate provides:
 
 The Python Tensor API is at `src/molt/stdlib/tinygrad/`. It includes the Tensor class,
 LazyBuffer, dtypes, TurboQuant (Remez-optimal quantization), DDTree (decision tree
-routing with additive log-probability scoring), and DFlash (flash attention).
+routing with additive log-probability scoring), and an intentional fail-closed
+`tinygrad.dflash` namespace reservation. Paper-faithful DFlash adapter semantics
+live under `src/molt/gpu/dflash/`; `tinygrad.dflash` must not drift into generic
+flash-attention or speculative-decoding behavior.
 
 ## Two-Lane Architecture
 

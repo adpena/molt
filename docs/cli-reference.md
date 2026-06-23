@@ -502,7 +502,8 @@ falls back to the host process version when a target is selected.
 | `MOLT_FRONTEND_PARALLEL_MODULES` | Enable parallel module compilation (`0` or `1`). |
 | `MOLT_FRONTEND_PARALLEL_MIN_MODULES` | Minimum module count to trigger parallelism. |
 | `MOLT_MIDEND_PROFILE` | Override midend optimization profile. |
-| `MOLT_MIDEND_WORK_BUDGET` | Deterministic midend work-unit budget override. |
+| `MOLT_MIDEND_BUDGET_MS` | Midend telemetry budget in milliseconds; never controls pass selection. |
+| `MOLT_MIDEND_WORK_BUDGET` | Deterministic midend work-unit budget override for pass degradation. |
 
 ### Diagnostics
 

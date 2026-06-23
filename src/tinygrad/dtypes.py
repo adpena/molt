@@ -6,7 +6,9 @@ class DType:
 
     __slots__ = ("name", "itemsize", "fmt", "code")
 
-    def __init__(self, name: str, itemsize: int, fmt: str, code: int | None = None) -> None:
+    def __init__(
+        self, name: str, itemsize: int, fmt: str, code: int | None = None
+    ) -> None:
         self.name = name
         self.itemsize = itemsize
         self.fmt = fmt

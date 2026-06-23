@@ -67,6 +67,24 @@ fn with_trusted_runtime<R>(f: impl FnOnce() -> R) -> R {
     out
 }
 
+#[test]
+fn importlib_missing_module_fallback_matches_requested_module_or_parent_only() {
+    assert_eq!(
+        missing_module_name_from_message("No module named 'pkg.child'"),
+        Some("pkg.child")
+    );
+    assert_eq!(
+        missing_module_name_from_message("No module named \"pkg\""),
+        Some("pkg")
+    );
+    assert!(missing_module_matches_import("pkg.child", "pkg.child"));
+    assert!(missing_module_matches_import("pkg", "pkg.child"));
+    assert!(!missing_module_matches_import(
+        "definitely_missing_dependency",
+        "pkg.child"
+    ));
+}
+
 fn bootstrap_module_file() -> String {
     if sys_platform_str().starts_with("win") {
         "C:\\repo\\src\\molt\\stdlib\\sys.py".to_string()
@@ -190,6 +208,112 @@ fn alloc_test_string_bits(_py: &PyToken<'_>, value: &str) -> u64 {
     let ptr = alloc_string(_py, value.as_bytes());
     assert!(!ptr.is_null(), "alloc string failed for {value:?}");
     MoltObject::from_ptr(ptr).bits()
+}
+
+fn assert_string_attr(
+    _py: &PyToken<'_>,
+    target_bits: u64,
+    slot: &AtomicU64,
+    name: &'static [u8],
+    expected: &str,
+) {
+    let attr_name = intern_static_name(_py, slot, name);
+    let attr_bits = getattr_optional_bits(_py, target_bits, attr_name)
+        .expect("attribute lookup should not raise")
+        .unwrap_or_else(|| panic!("missing attribute {}", String::from_utf8_lossy(name)));
+    assert_eq!(
+        string_obj_to_owned(obj_from_bits(attr_bits)).as_deref(),
+        Some(expected),
+        "attribute {}",
+        String::from_utf8_lossy(name)
+    );
+    if !obj_from_bits(attr_bits).is_none() {
+        dec_ref_bits(_py, attr_bits);
+    }
+}
+
+#[test]
+fn importlib_module_from_spec_impl_materializes_module_without_util_callback() {
+    let _guard = crate::TEST_MUTEX
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    crate::with_gil_entry_nopanic!(_py, {
+        let spec_holder_name_bits = alloc_test_string_bits(_py, "spec-holder");
+        let spec_bits = crate::molt_module_new(spec_holder_name_bits);
+        assert!(!obj_from_bits(spec_bits).is_none());
+
+        let module_name_bits = alloc_test_string_bits(_py, "pkg.helper");
+        let parent_bits = alloc_test_string_bits(_py, "pkg");
+        for (slot, name, value_bits) in [
+            (
+                runtime_static_name_slot(_py, b"name"),
+                b"name".as_slice(),
+                module_name_bits,
+            ),
+            (
+                runtime_static_name_slot(_py, b"loader"),
+                b"loader".as_slice(),
+                MoltObject::none().bits(),
+            ),
+            (
+                runtime_static_name_slot(_py, b"origin"),
+                b"origin".as_slice(),
+                MoltObject::none().bits(),
+            ),
+            (
+                runtime_static_name_slot(_py, b"parent"),
+                b"parent".as_slice(),
+                parent_bits,
+            ),
+            (
+                runtime_static_name_slot(_py, b"cached"),
+                b"cached".as_slice(),
+                MoltObject::none().bits(),
+            ),
+            (
+                runtime_static_name_slot(_py, b"submodule_search_locations"),
+                b"submodule_search_locations".as_slice(),
+                MoltObject::none().bits(),
+            ),
+        ] {
+            importlib_set_attr(_py, spec_bits, slot, name, value_bits)
+                .expect("spec attribute install should not raise");
+        }
+
+        let module_bits = importlib_ffi::importlib_module_from_spec_impl(_py, spec_bits);
+        assert!(!exception_pending(_py));
+        assert!(!obj_from_bits(module_bits).is_none());
+
+        let spec_attr_name =
+            intern_static_name(_py, runtime_static_name_slot(_py, b"__spec__"), b"__spec__");
+        let spec_attr_bits = getattr_optional_bits(_py, module_bits, spec_attr_name)
+            .expect("__spec__ lookup should not raise")
+            .expect("__spec__ must be installed");
+        assert_eq!(spec_attr_bits, spec_bits);
+        dec_ref_bits(_py, spec_attr_bits);
+
+        assert_string_attr(
+            _py,
+            module_bits,
+            runtime_static_name_slot(_py, b"__name__"),
+            b"__name__",
+            "pkg.helper",
+        );
+        assert_string_attr(
+            _py,
+            module_bits,
+            runtime_static_name_slot(_py, b"__package__"),
+            b"__package__",
+            "pkg",
+        );
+
+        dec_ref_bits(_py, module_bits);
+        dec_ref_bits(_py, parent_bits);
+        dec_ref_bits(_py, module_name_bits);
+        dec_ref_bits(_py, spec_bits);
+        dec_ref_bits(_py, spec_holder_name_bits);
+    });
 }
 
 fn call_extension_loader_boundary(_py: &PyToken<'_>, module_name: &str, path: &str) -> u64 {

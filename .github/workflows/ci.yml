@@ -58,6 +58,9 @@ jobs:
       - name: Check op-kind drift (frontend emitter vs registry; down-only baseline)
         run: uv run python3 tools/audit_op_kinds.py --check
 
+      - name: Check LLVM runtime ABI drift (preserved runtime calls)
+        run: uv run python3 tools/llvm_runtime_abi_audit.py --check
+
       - name: Check structural-debt ratchet (god-files/hand-classifications/debt; down-only)
         run: uv run python3 tools/structural_audit.py --check
 
@@ -67,7 +70,7 @@ jobs:
       - name: Run docs architecture tests
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
-            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py tests/test_check_suite_honesty.py tests/test_gen_op_kinds.py tests/test_gen_intrinsics.py tests/test_molt_dev.py tests/test_structural_audit.py tests/test_call_fact_coverage.py
+            uv run python3 -m pytest -q tests/test_update_status_blocks.py tests/test_bench_report.py tests/test_check_docs_architecture.py tests/test_compatibility_contract_docs.py tests/test_ecosystem_compat.py tests/test_check_suite_honesty.py tests/test_gen_op_kinds.py tests/test_gen_intrinsics.py tests/test_molt_dev.py tests/test_structural_audit.py tests/test_call_fact_coverage.py tests/test_llvm_runtime_abi_audit.py
 
       - name: Summarize guarded command hotspots
         if: always()

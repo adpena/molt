@@ -376,7 +376,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_itertools_pairwise",
         "molt_itertools_permutations",
         "molt_itertools_product",
-        "molt_itertools_repeat",
+        "molt_itertools_repeat_type",
         "molt_itertools_starmap",
         "molt_itertools_takewhile",
         "molt_itertools_tee",

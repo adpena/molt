@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from uuid import uuid4
 
 from tests.native_process_guard import run_native_test_process
 
@@ -34,8 +35,8 @@ def test_throughput_env_exports_short_backend_daemon_socket_dir() -> None:
     assert len(socket_dir) < 80
 
 
-def test_throughput_env_prefers_external_artifact_root(tmp_path: Path) -> None:
-    external_root = tmp_path / "ssd" / "Molt"
+def test_throughput_env_prefers_external_artifact_root() -> None:
+    external_root = Path("/tmp") / f"molt-throughput-env-{uuid4().hex}" / "Molt"
     env = dict(os.environ)
     for key in (
         "MOLT_EXT_ROOT",

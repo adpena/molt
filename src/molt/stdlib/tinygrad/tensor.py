@@ -232,7 +232,9 @@ class Tensor:
             numel *= s
         data = [_random.random() for _ in range(numel)]
         return tensor_from_lazy(
-            _lazy_load_from_values(_coerce_values_for_dtype(data, dt), dt, resolved_shape)
+            _lazy_load_from_values(
+                _coerce_values_for_dtype(data, dt), dt, resolved_shape
+            )
         )
 
     @staticmethod
@@ -381,7 +383,9 @@ class Tensor:
         true_t = Tensor._ensure_tensor(x, self.shape, true_dtype)
         false_t = Tensor._ensure_tensor(y, self.shape, false_dtype)
 
-        out_shape = _broadcast_shape(_broadcast_shape(self.shape, true_t.shape), false_t.shape)
+        out_shape = _broadcast_shape(
+            _broadcast_shape(self.shape, true_t.shape), false_t.shape
+        )
         cond_t = _cast_tensor_for_where(self, dtypes.bool_)._broadcast_to(out_shape)
         true_t = _cast_tensor_for_where(true_t, result_dtype)._broadcast_to(out_shape)
         false_t = _cast_tensor_for_where(false_t, result_dtype)._broadcast_to(out_shape)
@@ -399,7 +403,9 @@ class Tensor:
             out_shape,
         )
         if handle is not None:
-            return tensor_from_lazy(LazyBuffer(op, result_dtype, out_shape, handle=handle))
+            return tensor_from_lazy(
+                LazyBuffer(op, result_dtype, out_shape, handle=handle)
+            )
         _raise_if_any_handle_backed_runtime_failed(
             (cond_t.lazydata, true_t.lazydata, false_t.lazydata), "where"
         )
@@ -519,7 +525,9 @@ class Tensor:
             resolved[neg_idx] = self.numel() // known_product
         resolved = tuple(resolved)
 
-        op = LazyOp("RESHAPE", (self.lazydata,), arg=resolved, dtype=self.dtype, shape=resolved)
+        op = LazyOp(
+            "RESHAPE", (self.lazydata,), arg=resolved, dtype=self.dtype, shape=resolved
+        )
         handle = _try_runtime_reshape(self.lazydata, resolved)
         if handle is not None:
             return tensor_from_lazy(LazyBuffer(op, self.dtype, resolved, handle=handle))
@@ -532,12 +540,18 @@ class Tensor:
             order = tuple(order[0])
         order = tuple(int(axis) for axis in order)
         if sorted(order) != list(range(self.ndim)):
-            raise ValueError(f"permute order {order} is not a permutation of {self.ndim} axes")
+            raise ValueError(
+                f"permute order {order} is not a permutation of {self.ndim} axes"
+            )
         new_shape = tuple(self.shape[i] for i in order)
-        op = LazyOp("PERMUTE", (self.lazydata,), arg=order, dtype=self.dtype, shape=new_shape)
+        op = LazyOp(
+            "PERMUTE", (self.lazydata,), arg=order, dtype=self.dtype, shape=new_shape
+        )
         handle = _try_runtime_permute(self.lazydata, order)
         if handle is not None:
-            return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, handle=handle))
+            return tensor_from_lazy(
+                LazyBuffer(op, self.dtype, new_shape, handle=handle)
+            )
         _raise_if_handle_backed_runtime_failed(self.lazydata, "permute")
         flat = _realize_host_values(self.lazydata)
         result = _permute_data(flat, self.shape, order)
@@ -552,7 +566,9 @@ class Tensor:
         for old, new in zip(self.shape, resolved):
             if old != new and old != 1:
                 raise ValueError(f"cannot expand shape {self.shape} to {resolved}")
-        op = LazyOp("EXPAND", (self.lazydata,), arg=resolved, dtype=self.dtype, shape=resolved)
+        op = LazyOp(
+            "EXPAND", (self.lazydata,), arg=resolved, dtype=self.dtype, shape=resolved
+        )
         handle = _try_runtime_expand(self.lazydata, resolved)
         if handle is not None:
             return tensor_from_lazy(LazyBuffer(op, self.dtype, resolved, handle=handle))
@@ -564,7 +580,9 @@ class Tensor:
     def pad(self, padding, value: float = 0.0) -> "Tensor":
         """Pad tensor. padding is list of (before, after) pairs per dim."""
         padding = _normalize_pairs(padding, self.ndim, "pad")
-        new_shape = tuple(s + before + after for s, (before, after) in zip(self.shape, padding))
+        new_shape = tuple(
+            s + before + after for s, (before, after) in zip(self.shape, padding)
+        )
         op = LazyOp(
             "PAD",
             (self.lazydata,),
@@ -575,10 +593,14 @@ class Tensor:
         if value == 0.0:
             handle = _try_runtime_pad(self.lazydata, padding)
             if handle is not None:
-                return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, handle=handle))
+                return tensor_from_lazy(
+                    LazyBuffer(op, self.dtype, new_shape, handle=handle)
+                )
             _raise_if_handle_backed_runtime_failed(self.lazydata, "pad")
         elif self.lazydata.handle is not None:
-            raise RuntimeError("molt GPU runtime pad currently supports zero padding only")
+            raise RuntimeError(
+                "molt GPU runtime pad currently supports zero padding only"
+            )
 
         flat = _realize_host_values(self.lazydata)
         numel = 1
@@ -593,12 +615,18 @@ class Tensor:
         bounds = _normalize_pairs(bounds, self.ndim, "shrink")
         for dim, (start, end) in enumerate(bounds):
             if start > end or end > self.shape[dim]:
-                raise ValueError(f"invalid shrink bounds {bounds} for shape {self.shape}")
+                raise ValueError(
+                    f"invalid shrink bounds {bounds} for shape {self.shape}"
+                )
         new_shape = tuple(e - s for s, e in bounds)
-        op = LazyOp("SHRINK", (self.lazydata,), arg=bounds, dtype=self.dtype, shape=new_shape)
+        op = LazyOp(
+            "SHRINK", (self.lazydata,), arg=bounds, dtype=self.dtype, shape=new_shape
+        )
         handle = _try_runtime_shrink(self.lazydata, bounds)
         if handle is not None:
-            return tensor_from_lazy(LazyBuffer(op, self.dtype, new_shape, handle=handle))
+            return tensor_from_lazy(
+                LazyBuffer(op, self.dtype, new_shape, handle=handle)
+            )
         _raise_if_handle_backed_runtime_failed(self.lazydata, "shrink")
         flat = _realize_host_values(self.lazydata)
         result = _shrink_data(flat, self.shape, bounds)
@@ -610,10 +638,14 @@ class Tensor:
             axis += self.ndim
         if axis < 0 or axis >= self.ndim:
             raise ValueError(f"flip axis {axis} out of bounds for shape {self.shape}")
-        op = LazyOp("FLIP", (self.lazydata,), arg=axis, dtype=self.dtype, shape=self.shape)
+        op = LazyOp(
+            "FLIP", (self.lazydata,), arg=axis, dtype=self.dtype, shape=self.shape
+        )
         handle = _try_runtime_flip(self.lazydata, axis)
         if handle is not None:
-            return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape, handle=handle))
+            return tensor_from_lazy(
+                LazyBuffer(op, self.dtype, self.shape, handle=handle)
+            )
         _raise_if_handle_backed_runtime_failed(self.lazydata, "flip")
         flat = _realize_host_values(self.lazydata)
         result = _flip_data(flat, self.shape, axis)
@@ -624,11 +656,15 @@ class Tensor:
         op = LazyOp("CONTIGUOUS", (self.lazydata,), dtype=self.dtype, shape=self.shape)
         handle = _try_runtime_contiguous(self.lazydata)
         if handle is not None:
-            return tensor_from_lazy(LazyBuffer(op, self.dtype, self.shape, handle=handle))
+            return tensor_from_lazy(
+                LazyBuffer(op, self.dtype, self.shape, handle=handle)
+            )
         _raise_if_handle_backed_runtime_failed(self.lazydata, "contiguous")
         flat = _realize_host_values(self.lazydata)
         return tensor_from_lazy(
-            _lazy_load_from_values(_coerce_values_for_dtype(flat, self.dtype), self.dtype, self.shape)
+            _lazy_load_from_values(
+                _coerce_values_for_dtype(flat, self.dtype), self.dtype, self.shape
+            )
         )
 
     @property
@@ -803,7 +839,9 @@ class Tensor:
 
     def matmul(self, other: "Tensor") -> "Tensor":
         """Matrix multiplication. Supports 2D @ 2D."""
-        other_t = other if isinstance(other, Tensor) else Tensor(other, dtype=self.dtype)
+        other_t = (
+            other if isinstance(other, Tensor) else Tensor(other, dtype=self.dtype)
+        )
         if self.ndim == 2 and other_t.ndim == 2:
             m, k = self.shape
             k2, n = other_t.shape
@@ -816,9 +854,7 @@ class Tensor:
             if self.shape[0] != other_t.shape[0]:
                 raise ValueError("dot product length mismatch")
             return (self * other_t).sum(axis=0).reshape(1)
-        raise ValueError(
-            f"matmul not supported for ndim {self.ndim} @ {other_t.ndim}"
-        )
+        raise ValueError(f"matmul not supported for ndim {self.ndim} @ {other_t.ndim}")
 
     def __matmul__(self, other: "Tensor") -> "Tensor":
         return self.matmul(other)
@@ -1241,7 +1277,9 @@ class Tensor:
             dtype=out_dtype,
             shape=out_shape,
         )
-        handle = _try_runtime_binary(op_name, self.lazydata, other_t.lazydata, out_shape)
+        handle = _try_runtime_binary(
+            op_name, self.lazydata, other_t.lazydata, out_shape
+        )
         return tensor_from_lazy(LazyBuffer(op, out_dtype, out_shape, handle=handle))
 
     def _reduce(self, op_name: str, axis) -> "Tensor":
@@ -1284,7 +1322,9 @@ class Tensor:
         coerced = _coerce_values_for_dtype([val] * _numel(shape), dtype)
         op = LazyOp("CONST", (), arg=val, dtype=dtype, shape=shape)
         handle = _try_create_runtime_tensor(coerced, dtype, shape)
-        return tensor_from_lazy(LazyBuffer(op, dtype, shape, data=coerced, handle=handle))
+        return tensor_from_lazy(
+            LazyBuffer(op, dtype, shape, data=coerced, handle=handle)
+        )
 
     @staticmethod
     def _ensure_tensor(x, shape: tuple, dtype: DType) -> "Tensor":
@@ -1355,7 +1395,9 @@ def _where_operand_dtype(value) -> DType:
         return dtypes.float32
     if all(isinstance(item, bool) for item in flat):
         return dtypes.bool_
-    if all(isinstance(item, (bool, int)) and not isinstance(item, float) for item in flat):
+    if all(
+        isinstance(item, (bool, int)) and not isinstance(item, float) for item in flat
+    ):
         return dtypes.int32
     if all(isinstance(item, (bool, int, float)) for item in flat):
         return dtypes.float32
@@ -1408,7 +1450,9 @@ def _coerce_values_for_dtype(values: list, dtype: DType) -> list:
 
 def _pack_typed_values(values: list, dtype: DType) -> bytes:
     if dtype is dtypes.bfloat16:
-        raise RuntimeError("bfloat16 raw tensor packing requires runtime-owned bf16 packing")
+        raise RuntimeError(
+            "bfloat16 raw tensor packing requires runtime-owned bf16 packing"
+        )
     if dtype not in _RAW_STRUCT_DTYPES:
         raise RuntimeError(f"unsupported raw tensor dtype {dtype!r}")
     if not values:
@@ -1418,7 +1462,9 @@ def _pack_typed_values(values: list, dtype: DType) -> bytes:
 
 def _unpack_typed_values(raw: bytes | bytearray, dtype: DType) -> list:
     if dtype is dtypes.bfloat16:
-        raise RuntimeError("bfloat16 raw tensor readback requires runtime-owned bf16 unpacking")
+        raise RuntimeError(
+            "bfloat16 raw tensor readback requires runtime-owned bf16 unpacking"
+        )
     if dtype not in _RAW_STRUCT_DTYPES:
         raise RuntimeError(f"unsupported raw tensor dtype {dtype!r}")
     if len(raw) % dtype.itemsize != 0:
@@ -1447,7 +1493,9 @@ def _try_create_runtime_tensor(values: list, dtype: DType, shape: tuple) -> int 
     except RuntimeError:
         return None
     try:
-        return _runtime_handle_or_none(_gpu_create_raw(raw, len(raw), dtype.code, shape))
+        return _runtime_handle_or_none(
+            _gpu_create_raw(raw, len(raw), dtype.code, shape)
+        )
     except Exception:
         return None
 
@@ -1526,7 +1574,9 @@ def _try_runtime_ternary(
     ):
         return None
     try:
-        return _runtime_handle_or_none(_gpu_ternary(op_code, cond_handle, a_handle, b_handle))
+        return _runtime_handle_or_none(
+            _gpu_ternary(op_code, cond_handle, a_handle, b_handle)
+        )
     except Exception:
         return None
 
@@ -1553,7 +1603,9 @@ def _try_runtime_reduce(op_name: str, src: LazyBuffer, axis: int) -> int | None:
         return None
 
 
-def _try_runtime_reduce_all(op_name: str, src: LazyBuffer, out_shape: tuple) -> int | None:
+def _try_runtime_reduce_all(
+    op_name: str, src: LazyBuffer, out_shape: tuple
+) -> int | None:
     op_code = _REDUCE_OP_CODES.get(op_name)
     src_handle = _ensure_runtime_handle(src)
     if op_code is None or src_handle is None:

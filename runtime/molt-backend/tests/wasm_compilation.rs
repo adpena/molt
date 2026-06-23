@@ -997,6 +997,27 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
 }
 
 #[test]
+#[should_panic(expected = "wasm call_async target 'molt_async_sleep' in func 'molt_test_func'")]
+fn call_async_rejects_non_poll_table_target() {
+    let mut call_async = op("call_async");
+    call_async.s_value = Some("molt_async_sleep".to_string());
+    call_async.args = Some(vec!["p0".to_string(), "p1".to_string()]);
+    call_async.out = Some("v0".to_string());
+
+    compile_ir(SimpleIR {
+        functions: vec![FunctionIR {
+            name: "molt_test_func".to_string(),
+            params: vec!["p0".to_string(), "p1".to_string()],
+            ops: vec![call_async, ret_value("v0")],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+        }],
+        profile: None,
+    });
+}
+
+#[test]
 fn list_from_intrinsic_list_survives_tir_roundtrip() {
     let mut require_intrinsic = op("builtin_func");
     require_intrinsic.s_value = Some("molt_getargv".to_string());

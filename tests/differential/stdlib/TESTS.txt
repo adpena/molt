@@ -174,12 +174,14 @@ tests/differential/stdlib/asyncio_api_surface_modules.py
 tests/differential/stdlib/asyncio_as_completed_order.py
 tests/differential/stdlib/asyncio_as_completed_timeout_results.py
 tests/differential/stdlib/asyncio_barrier_basic.py
+tests/differential/stdlib/asyncio_basic.py
 tests/differential/stdlib/asyncio_bounded_semaphore_overrelease.py
 tests/differential/stdlib/asyncio_call_at_fifo_tiebreak.py
 tests/differential/stdlib/asyncio_call_later_call_at_context_closed.py
 tests/differential/stdlib/asyncio_call_later_cancel.py
 tests/differential/stdlib/asyncio_call_later_fifo_tiebreak.py
 tests/differential/stdlib/asyncio_call_soon_order.py
+tests/differential/stdlib/asyncio_cancel.py
 tests/differential/stdlib/asyncio_cancel_sleep.py
 tests/differential/stdlib/asyncio_cancel_try_finally.py
 tests/differential/stdlib/asyncio_child_watcher_capability_intrinsic.py
@@ -310,6 +312,7 @@ tests/differential/stdlib/asyncio_wrap_future_loop_binding.py
 tests/differential/stdlib/atexit_core_behaviors.py
 tests/differential/stdlib/atexit_exception_unraisable.py
 tests/differential/stdlib/atexit_unraisablehook_custom.py
+tests/differential/stdlib/binascii_simd_paths.py
 tests/differential/stdlib/bisect_api_surface.py
 tests/differential/stdlib/bisect_basic.py
 tests/differential/stdlib/bisect_custom_sequence.py
@@ -327,12 +330,17 @@ tests/differential/stdlib/codeop_basic.py
 tests/differential/stdlib/codeop_exhaustive_parity.py
 tests/differential/stdlib/collections_abc_async_buffer.py
 tests/differential/stdlib/collections_abc_basic.py
+tests/differential/stdlib/collections_abc_import.py
 tests/differential/stdlib/collections_basic.py
 tests/differential/stdlib/collections_counter.py
 tests/differential/stdlib/collections_counter_basic.py
+tests/differential/stdlib/collections_counter_string_index.py
 tests/differential/stdlib/collections_defaultdict_basic.py
+tests/differential/stdlib/collections_defaultdict_missing.py
 tests/differential/stdlib/collections_deque.py
+tests/differential/stdlib/collections_deque_rc_ownership.py
 tests/differential/stdlib/collections_deque_rotate.py
+tests/differential/stdlib/collections_parity.py
 tests/differential/stdlib/colorsys_basic.py
 tests/differential/stdlib/compileall_basic.py
 tests/differential/stdlib/concurrent_futures_cancel.py
@@ -1076,6 +1084,7 @@ tests/differential/stdlib/csv_dictreader_line_num_blank_rows.py
 tests/differential/stdlib/csv_dictreader_rest.py
 tests/differential/stdlib/csv_dictwriter_restval.py
 tests/differential/stdlib/csv_doublequote_escape.py
+tests/differential/stdlib/csv_embedded_newline_roundtrip.py
 tests/differential/stdlib/csv_embedded_nul_error.py
 tests/differential/stdlib/csv_escapechar_basic.py
 tests/differential/stdlib/csv_excel_tab.py
@@ -1083,6 +1092,7 @@ tests/differential/stdlib/csv_extrasaction.py
 tests/differential/stdlib/csv_extrasaction_raise.py
 tests/differential/stdlib/csv_extrasaction_validation.py
 tests/differential/stdlib/csv_field_size_limit_error.py
+tests/differential/stdlib/csv_get_dialect_unhashable.py
 tests/differential/stdlib/csv_large_field_size.py
 tests/differential/stdlib/csv_malformed_unterminated_quote.py
 tests/differential/stdlib/csv_newline_quoting.py
@@ -1156,6 +1166,7 @@ tests/differential/stdlib/email_utils_msgid.py
 tests/differential/stdlib/encodings_basic.py
 tests/differential/stdlib/encodings_custom_codec_search_intrinsic.py
 tests/differential/stdlib/encodings_quopri_codec_basic.py
+tests/differential/stdlib/enum_alias_fidelity.py
 tests/differential/stdlib/enum_basic.py
 tests/differential/stdlib/errno_basic.py
 tests/differential/stdlib/filecmp_basic.py
@@ -1170,6 +1181,7 @@ tests/differential/stdlib/frame_object_fields.py
 tests/differential/stdlib/ftplib_basic.py
 tests/differential/stdlib/functools_cache_basic.py
 tests/differential/stdlib/functools_cache_behavior.py
+tests/differential/stdlib/functools_coverage.py
 tests/differential/stdlib/functools_edges.py
 tests/differential/stdlib/functools_lru_cache.py
 tests/differential/stdlib/functools_lru_cache_basic_more.py
@@ -1197,6 +1209,7 @@ tests/differential/stdlib/glob_bytes_paths.py
 tests/differential/stdlib/glob_complex_patterns_realworld.py
 tests/differential/stdlib/glob_dirfd_capability_error.py
 tests/differential/stdlib/glob_dirfd_edge_cases.py
+tests/differential/stdlib/glob_iglob_lazy_semantics.py
 tests/differential/stdlib/glob_intrinsic_runtime.py
 tests/differential/stdlib/glob_non_utf8_bytes.py
 tests/differential/stdlib/glob_options_edges.py
@@ -1302,6 +1315,8 @@ tests/differential/stdlib/importlib_import_module_helper_dynamic.py
 tests/differential/stdlib/importlib_import_module_helper_submodule.py
 tests/differential/stdlib/importlib_import_module_relative_package_typeerror.py
 tests/differential/stdlib/importlib_invalidate_caches.py
+tests/differential/stdlib/importlib_load_module_transaction.py
+tests/differential/stdlib/importlib_loader_exec_module_transaction.py
 tests/differential/stdlib/importlib_metadata_basic.py
 tests/differential/stdlib/importlib_metadata_bulk_payload_intrinsic.py
 tests/differential/stdlib/importlib_metadata_dist_paths_intrinsic.py
@@ -1316,6 +1331,7 @@ tests/differential/stdlib/importlib_missing_module_shape.py
 tests/differential/stdlib/importlib_module_from_spec.py
 tests/differential/stdlib/importlib_module_reload.py
 tests/differential/stdlib/importlib_optional_import_intrinsic.py
+tests/differential/stdlib/importlib_public_api_validation.py
 tests/differential/stdlib/importlib_relative_import_from_package.py
 tests/differential/stdlib/importlib_reload_invalidate_intrinsic.py
 tests/differential/stdlib/importlib_reload_sys_modules_guard.py
@@ -1457,6 +1473,7 @@ tests/differential/stdlib/itertools_chain_from_iterable_errors.py
 tests/differential/stdlib/itertools_combinations_with_replacement_basic.py
 tests/differential/stdlib/itertools_compress_filterfalse_starmap.py
 tests/differential/stdlib/itertools_core.py
+tests/differential/stdlib/itertools_coverage.py
 tests/differential/stdlib/itertools_cycle_basic_more.py
 tests/differential/stdlib/itertools_cycle_empty.py
 tests/differential/stdlib/itertools_cycle_slice.py
@@ -1474,13 +1491,16 @@ tests/differential/stdlib/itertools_product_empty.py
 tests/differential/stdlib/itertools_product_permutations.py
 tests/differential/stdlib/itertools_repeat_count_basic.py
 tests/differential/stdlib/itertools_repeat_times_zero.py
+tests/differential/stdlib/itertools_runtime_state_slot_parity.py
 tests/differential/stdlib/itertools_takewhile_dropwhile_basic.py
 tests/differential/stdlib/itertools_tee_independence.py
 tests/differential/stdlib/itertools_tee_independence_basic.py
 tests/differential/stdlib/itertools_zip_longest.py
 tests/differential/stdlib/itertools_zip_longest_basic.py
+tests/differential/stdlib/json_byte_index_parser.py
 tests/differential/stdlib/json_bytes_bom_roundtrip.py
 tests/differential/stdlib/json_cls_kwargs_forwarding.py
+tests/differential/stdlib/json_coverage.py
 tests/differential/stdlib/json_decode_error_details.py
 tests/differential/stdlib/json_encoder_hooks.py
 tests/differential/stdlib/json_error_positions.py
@@ -1529,6 +1549,7 @@ tests/differential/stdlib/marshal_version_basic.py
 tests/differential/stdlib/math_basic_more.py
 tests/differential/stdlib/math_copysign_factorial.py
 tests/differential/stdlib/math_copysign_modf_frexp.py
+tests/differential/stdlib/math_coverage.py
 tests/differential/stdlib/math_domain_errors.py
 tests/differential/stdlib/math_edges.py
 tests/differential/stdlib/math_factorial_errors.py
@@ -1574,6 +1595,7 @@ tests/differential/stdlib/opcode_basic.py
 tests/differential/stdlib/opcode_tables_basic.py
 tests/differential/stdlib/operator_attrgetter_basic.py
 tests/differential/stdlib/operator_basic.py
+tests/differential/stdlib/operator_coverage.py
 tests/differential/stdlib/operator_full_surface.py
 tests/differential/stdlib/operator_getters.py
 tests/differential/stdlib/operator_getters_extended.py
@@ -1583,6 +1605,17 @@ tests/differential/stdlib/operator_methodcaller_basic.py
 tests/differential/stdlib/operator_methodcaller_kwargs.py
 tests/differential/stdlib/operator_truth_length_hint.py
 tests/differential/stdlib/os_access_chdir_cpu_count.py
+tests/differential/stdlib/os_dir_fd_error_badf.py
+tests/differential/stdlib/os_dir_fd_error_notdir.py
+tests/differential/stdlib/os_dir_fd_follow_symlinks_false.py
+tests/differential/stdlib/os_dir_fd_link.py
+tests/differential/stdlib/os_dir_fd_lstat.py
+tests/differential/stdlib/os_dir_fd_readlink.py
+tests/differential/stdlib/os_dir_fd_rename.py
+tests/differential/stdlib/os_dir_fd_replace.py
+tests/differential/stdlib/os_dir_fd_stat.py
+tests/differential/stdlib/os_dir_fd_symlink.py
+tests/differential/stdlib/os_dir_fd_utime.py
 tests/differential/stdlib/os_dup2_lseek_isatty.py
 tests/differential/stdlib/os_environ_basic.py
 tests/differential/stdlib/os_environ_intrinsic_ops.py
@@ -1598,7 +1631,9 @@ tests/differential/stdlib/os_pipe_basic.py
 tests/differential/stdlib/os_read_write_basic.py
 tests/differential/stdlib/os_read_write_errors.py
 tests/differential/stdlib/os_stat_rename_replace_intrinsic.py
+tests/differential/stdlib/os_supports_dir_fd.py
 tests/differential/stdlib/os_urandom_basic.py
+tests/differential/stdlib/os_utime_ns_only.py
 tests/differential/stdlib/os_walk_scandir.py
 tests/differential/stdlib/pathlib_basic_ops.py
 tests/differential/stdlib/pathlib_basic_str_and_parts.py
@@ -1642,6 +1677,7 @@ tests/differential/stdlib/posix_userdb_basic.py
 tests/differential/stdlib/pprint_basic.py
 tests/differential/stdlib/py_compile_basic.py
 tests/differential/stdlib/queue_basic.py
+tests/differential/stdlib/queue_concurrency.py
 tests/differential/stdlib/queue_lifo_priority.py
 tests/differential/stdlib/queue_priority_blocking.py
 tests/differential/stdlib/queue_private_module_surface.py
@@ -1674,6 +1710,7 @@ tests/differential/stdlib/re_lookbehind_length_error.py
 tests/differential/stdlib/re_match_metadata.py
 tests/differential/stdlib/re_named_backref_lookaround.py
 tests/differential/stdlib/re_negative_lookaround_runtime.py
+tests/differential/stdlib/re_parity.py
 tests/differential/stdlib/re_posix_class.py
 tests/differential/stdlib/re_split_maxsplit.py
 tests/differential/stdlib/re_subn_count_flags.py
@@ -1856,6 +1893,7 @@ tests/differential/stdlib/string_basic.py
 tests/differential/stdlib/string_format_errors.py
 tests/differential/stdlib/string_format_method.py
 tests/differential/stdlib/string_methods_loops.py
+tests/differential/stdlib/stringprep_semantics.py
 tests/differential/stdlib/struct_basic.py
 tests/differential/stdlib/struct_errors_basic.py
 tests/differential/stdlib/struct_layout_mutation.py
@@ -1901,6 +1939,7 @@ tests/differential/stdlib/sys_maxsize_byteorder.py
 tests/differential/stdlib/sys_metadata_intrinsics.py
 tests/differential/stdlib/sys_modules_main.py
 tests/differential/stdlib/sys_os_import_regression.py
+tests/differential/stdlib/sys_runtime_state.py
 tests/differential/stdlib/sys_setrecursionlimit.py
 tests/differential/stdlib/sys_stat_version_gate.py
 tests/differential/stdlib/sys_stdio_build_mode.py
@@ -1923,6 +1962,7 @@ tests/differential/stdlib/threading_condition_notify.py
 tests/differential/stdlib/threading_condition_rlock_restore.py
 tests/differential/stdlib/threading_condition_wait_for.py
 tests/differential/stdlib/threading_condition_wait_for_negative_timeout.py
+tests/differential/stdlib/threading_creation_join.py
 tests/differential/stdlib/threading_current_thread_ident.py
 tests/differential/stdlib/threading_daemon_basic.py
 tests/differential/stdlib/threading_enumerate_main_thread.py
@@ -1931,6 +1971,7 @@ tests/differential/stdlib/threading_excepthook_basic.py
 tests/differential/stdlib/threading_exception_propagation.py
 tests/differential/stdlib/threading_local_isolation.py
 tests/differential/stdlib/threading_lock_acquire_timeout.py
+tests/differential/stdlib/threading_locks.py
 tests/differential/stdlib/threading_negative_timeout_semantics.py
 tests/differential/stdlib/threading_primitives_basic.py
 tests/differential/stdlib/threading_rlock_local.py
@@ -1977,6 +2018,7 @@ tests/differential/stdlib/types_simplenamespace_parity.py
 tests/differential/stdlib/typing_annotated.py
 tests/differential/stdlib/typing_basic.py
 tests/differential/stdlib/typing_basic_surface.py
+tests/differential/stdlib/typing_final.py
 tests/differential/stdlib/typing_forwardref.py
 tests/differential/stdlib/typing_get_type_hints.py
 tests/differential/stdlib/typing_literal.py
@@ -1985,6 +2027,7 @@ tests/differential/stdlib/typing_paramspec_concatenate.py
 tests/differential/stdlib/typing_pep698_override.py
 tests/differential/stdlib/typing_pep702_deprecated.py
 tests/differential/stdlib/typing_protocol.py
+tests/differential/stdlib/typing_protocol_parity.py
 tests/differential/stdlib/typing_runtime_checkable_error.py
 tests/differential/stdlib/typing_typeddict.py
 tests/differential/stdlib/typing_typeddict_class_defaults.py

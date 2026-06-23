@@ -28,6 +28,11 @@ pub(crate) fn export_u8_box(bytes: Box<[u8]>, out_ptr: *mut *const u8, out_len: 
     export_box(bytes, out_ptr, out_len)
 }
 
+#[cfg(any(
+    feature = "stdlib_collections",
+    feature = "stdlib_regex",
+    feature = "stdlib_serial",
+))]
 pub(crate) fn export_u64_box(
     values: Box<[u64]>,
     out_ptr: *mut *const u64,
@@ -36,6 +41,7 @@ pub(crate) fn export_u64_box(
     export_box(values, out_ptr, out_len)
 }
 
+#[cfg(feature = "stdlib_compression")]
 pub(crate) fn export_u8_box_ptr(bytes: Box<[u8]>, out_len: *mut usize) -> *mut u8 {
     if out_len.is_null() {
         return std::ptr::null_mut();

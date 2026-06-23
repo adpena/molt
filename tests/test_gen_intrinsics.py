@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,7 +22,9 @@ def _load_gen_intrinsics_module():
 
 
 def test_backend_symbol_overrides_file_is_removed() -> None:
-    assert not (ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs").exists()
+    assert not (
+        ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs"
+    ).exists()
 
 
 def test_async_sleep_intrinsic_symbol_matches_public_name() -> None:
@@ -43,13 +46,96 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
         assert module._feature_gate_for_symbol(symbol) is None
 
     assert module._feature_gate_for_symbol("molt_http_client_execute") == "stdlib_net"
+    assert module._feature_gate_for_symbol("molt_html_escape") == "stdlib_text"
+    assert (
+        module._feature_gate_for_symbol("molt_unicodedata_category")
+        == "stdlib_text"
+    )
+    assert (
+        module._feature_gate_for_symbol("molt_zoneinfo_available_timezones")
+        == "stdlib_zoneinfo"
+    )
 
-    generated = (ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs").read_text()
-    ssl_block = generated.split("fn resolve_ssl_symbol", 1)[1].split(
+    generated = (
+        ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers/ssl_resolver.rs"
+    ).read_text()
+    ssl_block = generated.split("pub(super) fn resolve_symbol", 1)[1].split(
         "        _ => None,",
         1,
     )[0]
     assert '#[cfg(feature = "stdlib_net")]' not in ssl_block
+
+
+def test_generated_resolvers_are_split_from_manifest_table() -> None:
+    """Resolver address-taking is generated into per-module Rust files."""
+    generated_path = ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs"
+    resolver_root = (
+        ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
+    )
+    generated = generated_path.read_text()
+    resolver_mod = (resolver_root / "mod.rs").read_text()
+    core_resolver = (resolver_root / "core_resolver.rs").read_text()
+    ssl_resolver = (resolver_root / "ssl_resolver.rs").read_text()
+
+    assert '#[path = "generated_resolvers/mod.rs"]\nmod generated_resolvers;' in generated
+    assert "pub(crate) use generated_resolvers::resolve_symbol;" in generated
+    assert "IntrinsicSpec {" in generated
+    assert "fn resolve_core_symbol" not in generated
+    assert "mod core_resolver;" in resolver_mod
+    assert "pub(crate) fn resolve_symbol" in resolver_mod
+    assert "molt_capabilities_trusted" in core_resolver
+    assert "molt_ssl_context_new" not in core_resolver
+    assert "molt_ssl_context_new" in ssl_resolver
+
+    html_resolver = (resolver_root / "html_resolver.rs").read_text()
+    unicodedata_resolver = (resolver_root / "unicodedata_resolver.rs").read_text()
+    zoneinfo_resolver = (resolver_root / "zoneinfo_resolver.rs").read_text()
+    assert '#[cfg(feature = "stdlib_text")]' in html_resolver
+    assert '#[cfg(feature = "stdlib_text")]' in unicodedata_resolver
+    assert '#[cfg(feature = "stdlib_zoneinfo")]' in zoneinfo_resolver
+
+
+def test_stringprep_category_is_toml_owned() -> None:
+    module = _load_gen_intrinsics_module()
+    builtin_symbols, internal_prefixes, stdlib_modules = module._load_categories()
+
+    assert stdlib_modules["stringprep"] == ["molt_stringprep_"]
+    assert ("molt_stringprep_", "stringprep") not in module._EXTRA_PREFIX_MODULES
+    assert "feature" not in module.LEAF_RESOLVER_REGISTRIES["stringprep"]
+    assert (
+        module._classify_symbol(
+            "molt_stringprep_in_table",
+            builtin_symbols,
+            internal_prefixes,
+            stdlib_modules,
+        )
+        == "stringprep"
+    )
+    assert (
+        module._leaf_resolver_feature_gate("stringprep", ["molt_stringprep_in_table"])
+        == "stdlib_stringprep"
+    )
+
+
+def test_stringprep_resolver_is_leaf_owned() -> None:
+    resolver_root = (
+        ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
+    )
+    facade_resolver = (resolver_root / "stringprep_resolver.rs").read_text()
+    leaf_resolver = (
+        ROOT / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs"
+    ).read_text()
+
+    assert "molt_runtime_stringprep::intrinsics_generated::resolve_symbol_with" in (
+        facade_resolver
+    )
+    assert "crate::builtins::functions::runtime_fn_addr" in facade_resolver
+    assert "crate::molt_stringprep_in_table as *const ()" not in facade_resolver
+    assert "pub fn resolve_symbol_with" in leaf_resolver
+    assert "crate::stringprep::molt_stringprep_in_table as *const ()" in leaf_resolver
+    assert "molt_runtime_stringprep::stringprep::molt_stringprep_in_table" in (
+        leaf_resolver
+    )
 
 
 def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
@@ -68,9 +154,9 @@ def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
         )
 
     monkeypatch.setattr(
-        module.harness_memory_guard,
-        "guarded_completed_process",
-        fake_guarded_completed_process,
+        module,
+        "_HARNESS_MEMORY_GUARD",
+        SimpleNamespace(guarded_completed_process=fake_guarded_completed_process),
     )
 
     module._rustfmt(target)
@@ -85,3 +171,70 @@ def test_rustfmt_uses_shared_memory_guard(monkeypatch, tmp_path: Path) -> None:
             "timeout": 60.0,
         }
     ]
+
+
+def test_rustfmt_failure_reports_guarded_output(monkeypatch, tmp_path: Path) -> None:
+    module = _load_gen_intrinsics_module()
+    target = tmp_path / "generated.rs"
+    target.write_text("fn main( {\n", encoding="utf-8")
+
+    def fake_guarded_completed_process(_cmd, **_kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout="format stdout",
+            stderr="format stderr",
+        )
+
+    monkeypatch.setattr(
+        module,
+        "_HARNESS_MEMORY_GUARD",
+        SimpleNamespace(guarded_completed_process=fake_guarded_completed_process),
+    )
+
+    try:
+        module._rustfmt(target)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:  # pragma: no cover - explicit fail branch for pytest output clarity
+        raise AssertionError("rustfmt failure did not raise RuntimeError")
+
+    assert f"rustfmt failed for {target}" in message
+    assert "stdout:\nformat stdout" in message
+    assert "stderr:\nformat stderr" in message
+
+
+def test_write_rust_if_changed_skips_rustfmt_for_exact_match(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_gen_intrinsics_module()
+    target = tmp_path / "generated.rs"
+    text = "// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\nfn main() {}\n"
+    target.write_text(text, encoding="utf-8")
+    calls: list[Path] = []
+
+    monkeypatch.setattr(module, "_rustfmt", lambda path: calls.append(path))
+
+    assert module._write_rust_if_changed(target, text) is False
+    assert calls == []
+    assert target.read_text(encoding="utf-8") == text
+
+
+def test_resolver_cleanup_preserves_concurrent_temp_files(monkeypatch, tmp_path: Path) -> None:
+    module = _load_gen_intrinsics_module()
+    resolver_root = tmp_path / "generated_resolvers"
+    resolver_root.mkdir()
+    hidden_temp = resolver_root / ".ssl_resolver.rs.12345.tmp.rs"
+    hidden_temp.write_text("temp", encoding="utf-8")
+    stale_resolver = resolver_root / "removed_resolver.rs"
+    stale_resolver.write_text("stale", encoding="utf-8")
+
+    monkeypatch.setattr(module, "OUT_RS_RESOLVERS_DIR", resolver_root)
+    monkeypatch.setattr(module, "_rustfmt", lambda _path: None)
+
+    module._write_resolver_modules(
+        OrderedDict({"core": ["molt_capabilities_trusted"]})
+    )
+
+    assert hidden_temp.read_text(encoding="utf-8") == "temp"
+    assert not stale_resolver.exists()
+    assert (resolver_root / "core_resolver.rs").exists()
