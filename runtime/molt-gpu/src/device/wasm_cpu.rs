@@ -10,8 +10,8 @@ use core::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::device::{
-    Allocator, BufferHandle, CompiledProgram, Compiler, CpuKernelFn, DeviceBuffer, DeviceError,
-    Executor, ProgramHandle,
+    Allocator, BufferHandle, CompiledProgram, Compiler, CpuBuffer, CpuKernelFn, DeviceBuffer,
+    DeviceError, Executor, ProgramHandle,
 };
 
 /// WASM-compatible CPU reference device backend.
@@ -63,7 +63,7 @@ impl Default for WasmCpuDevice {
 
 impl Allocator for WasmCpuDevice {
     fn alloc(&self, size_bytes: usize) -> Result<DeviceBuffer, DeviceError> {
-        let buf = vec![0u8; size_bytes];
+        let buf = CpuBuffer::zeroed(size_bytes, 16);
         Ok(DeviceBuffer {
             handle: BufferHandle::Cpu(buf),
             size_bytes,
@@ -78,19 +78,7 @@ impl Allocator for WasmCpuDevice {
     fn copy_in(&self, buf: &DeviceBuffer, data: &[u8]) -> Result<(), DeviceError> {
         match &buf.handle {
             BufferHandle::Cpu(inner) => {
-                if data.len() > inner.len() {
-                    return Err(DeviceError::InvalidArgument(format!(
-                        "copy_in: data ({} bytes) exceeds buffer ({} bytes)",
-                        data.len(),
-                        inner.len()
-                    )));
-                }
-                // SAFETY: Interior mutability for the WASM single-threaded backend.
-                // The CPU backend uses this for testing only.
-                let inner_ptr = inner.as_ptr() as *mut u8;
-                unsafe {
-                    core::ptr::copy_nonoverlapping(data.as_ptr(), inner_ptr, data.len());
-                }
+                inner.copy_from(data)?;
                 Ok(())
             }
             #[cfg(target_os = "macos")]

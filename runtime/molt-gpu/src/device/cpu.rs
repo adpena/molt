@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::device::{
-    Allocator, BufferHandle, CompiledProgram, Compiler, CpuKernelFn, DeviceBuffer, DeviceError,
-    Executor, ProgramHandle,
+    Allocator, BufferHandle, CompiledProgram, Compiler, CpuBuffer, CpuKernelFn, DeviceBuffer,
+    DeviceError, Executor, ProgramHandle,
 };
 
 /// CPU reference device backend for correctness testing.
@@ -59,10 +59,10 @@ impl Allocator for CpuDevice {
         // All allocations are at least 16-byte aligned for SIMD (f32x4 loads).
         // Large buffers (>= 4096 bytes) are page-aligned (4096 bytes) for
         // optimal DMA transfer performance between CPU and GPU memory.
-        let buf = if size_bytes >= 4096 {
-            alloc_page_aligned(size_bytes)
+        let buf = if size_bytes >= CPU_PAGE_ALIGN {
+            alloc_page_aligned_zeroed(size_bytes)
         } else {
-            alloc_simd_aligned(size_bytes)
+            alloc_simd_aligned_zeroed(size_bytes)
         };
         Ok(DeviceBuffer {
             handle: BufferHandle::Cpu(buf),
@@ -78,20 +78,7 @@ impl Allocator for CpuDevice {
     fn copy_in(&self, buf: &DeviceBuffer, data: &[u8]) -> Result<(), DeviceError> {
         match &buf.handle {
             BufferHandle::Cpu(inner) => {
-                if data.len() > inner.len() {
-                    return Err(DeviceError::InvalidArgument(format!(
-                        "copy_in: data ({} bytes) exceeds buffer ({} bytes)",
-                        data.len(),
-                        inner.len()
-                    )));
-                }
-                // SAFETY: We need interior mutability. The CPU backend uses
-                // this for testing only. In production, Metal/WebGPU handle
-                // synchronization at the command buffer level.
-                let inner_ptr = inner.as_ptr() as *mut u8;
-                unsafe {
-                    std::ptr::copy_nonoverlapping(data.as_ptr(), inner_ptr, data.len());
-                }
+                inner.copy_from(data)?;
                 Ok(())
             }
             #[cfg(target_os = "macos")]
@@ -174,43 +161,24 @@ impl Executor for CpuDevice {
     }
 }
 
+const CPU_SIMD_ALIGN: usize = 16;
+const CPU_PAGE_ALIGN: usize = 4096;
+
 /// Allocate a 16-byte-aligned buffer of zeroed bytes.
 ///
 /// Uses the system allocator with explicit 16-byte alignment for SIMD
 /// operations (f32x4 loads require 16-byte alignment for optimal
 /// performance on all architectures).
-fn alloc_simd_aligned(size_bytes: usize) -> Vec<u8> {
-    if size_bytes == 0 {
-        return Vec::new();
-    }
-    let layout = std::alloc::Layout::from_size_align(size_bytes, 16)
-        .expect("invalid layout for SIMD-aligned allocation");
-    unsafe {
-        let ptr = std::alloc::alloc_zeroed(layout);
-        if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
-        }
-        Vec::from_raw_parts(ptr, size_bytes, size_bytes)
-    }
+fn alloc_simd_aligned_zeroed(size_bytes: usize) -> CpuBuffer {
+    CpuBuffer::zeroed(size_bytes, CPU_SIMD_ALIGN)
 }
 
 /// Allocate a page-aligned buffer of zeroed bytes.
 ///
 /// Uses the system allocator with explicit alignment to 4096 bytes,
 /// which is optimal for DMA transfers between CPU and GPU memory.
-fn alloc_page_aligned(size_bytes: usize) -> Vec<u8> {
-    // Round up to page boundary for the allocation layout.
-    let layout = std::alloc::Layout::from_size_align(size_bytes, 4096)
-        .expect("invalid layout for page-aligned allocation");
-    // SAFETY: Layout is valid (nonzero size, power-of-two alignment).
-    // We zero the memory and construct a Vec that owns the allocation.
-    unsafe {
-        let ptr = std::alloc::alloc_zeroed(layout);
-        if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
-        }
-        Vec::from_raw_parts(ptr, size_bytes, size_bytes)
-    }
+fn alloc_page_aligned_zeroed(size_bytes: usize) -> CpuBuffer {
+    CpuBuffer::zeroed(size_bytes, CPU_PAGE_ALIGN)
 }
 
 /// CPU kernel interpreter — executes a FusedKernel op-by-op on CPU.
@@ -253,9 +221,8 @@ pub mod interpret {
 
         // Reinterpret byte slices as f32 slices for direct access.
         // SAFETY: The caller guarantees buffers are f32 little-endian aligned.
-        // Vec<u8> from alloc_page_aligned is page-aligned (4096), so f32
-        // alignment (4) is satisfied. Standard Vec<u8> has alignment >= 1
-        // but f32::from_le_bytes is used as fallback below.
+        // CpuBuffer allocations are at least 16-byte aligned, so f32 alignment
+        // (4) is satisfied.
 
         // Cast byte buffers to f32 slices once, eliminating per-element
         // from_le_bytes in the hot inner loop. On little-endian platforms
@@ -624,8 +591,8 @@ pub mod interpret {
             0,
             "buffer not 4-byte aligned for f32 cast"
         );
-        // SAFETY: Buffers are allocated with alloc_simd_aligned (16-byte) or
-        // alloc_page_aligned (4096-byte), both satisfying f32 alignment (4-byte).
+        // SAFETY: CpuBuffer allocations are 16-byte or 4096-byte aligned,
+        // both satisfying f32 alignment (4-byte).
         // Length is always a multiple of 4 for Float32 buffers.
         unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const f32, buf.len() / 4) }
     }
@@ -1239,11 +1206,11 @@ pub mod interpret {
                             let buf = &bufs[*idx];
                             let offset = base * 4; // 4 bytes per f32
                                                    // Load 4 contiguous f32 values in one shot via pointer cast.
-                                                   // Buffers are allocated with 16-byte alignment (alloc_simd_aligned),
+                                                   // CpuBuffer allocations are at least 16-byte aligned,
                                                    // and base is always a multiple of 4 (chunk * 4), so offset is
                                                    // always 16-byte aligned. Use ptr::read for aligned access.
                             let ptr = buf[offset..].as_ptr() as *const [f32; 4];
-                            // SAFETY: Buffer is 16-byte aligned (alloc_simd_aligned/alloc_page_aligned),
+                            // SAFETY: Buffer is at least 16-byte aligned,
                             // offset is 16-byte aligned (base = chunk * 4, so offset = chunk * 16),
                             // and we verified offset + 16 <= buf.len() via simd_count calculation.
                             let arr = unsafe { std::ptr::read(ptr) };

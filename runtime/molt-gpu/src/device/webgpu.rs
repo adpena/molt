@@ -16,8 +16,8 @@ use wgpu::{
 };
 
 use crate::device::{
-    Allocator, BufferHandle, CompiledProgram, Compiler, DeviceBuffer, DeviceError, Executor,
-    ProgramHandle,
+    Allocator, BufferHandle, CompiledProgram, Compiler, CpuBuffer, DeviceBuffer, DeviceError,
+    Executor, ProgramHandle,
 };
 
 /// Compiled WebGPU pipeline with its bind group layout.
@@ -150,7 +150,7 @@ impl Allocator for WebGpuDevice {
         self.live_buffers.lock().unwrap().insert(id, buffer);
 
         Ok(DeviceBuffer {
-            handle: BufferHandle::Cpu(id.to_le_bytes().to_vec()),
+            handle: BufferHandle::Cpu(CpuBuffer::from_bytes(&id.to_le_bytes())),
             size_bytes,
         })
     }
