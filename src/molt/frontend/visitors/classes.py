@@ -275,6 +275,13 @@ class ClassDefVisitorMixin(_MixinBase):
         # lost fold is the correct trade for finalizer-dispatch parity.
         if self._class_defines_finalizer(class_name):
             return False
+        # `object_new_bound` and the inlined-init constructor fold are only
+        # equivalent to `type.__call__` when the MRO resolves `__new__` to
+        # default `object.__new__`.  Custom or opaque `__new__` must stay on the
+        # runtime class-call route so inherited overrides consume constructor
+        # args and decide whether `__init__` should run.
+        if not self._class_resolves_default_object_new(class_name, class_info):
+            return False
         return self._class_layout_stable(class_name)
 
     def _class_defines_finalizer(self, class_name: str) -> bool:
