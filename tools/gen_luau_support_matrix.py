@@ -63,6 +63,7 @@ TARGET_LIMITED_OPS = {
     "get_attr_name_default": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
     "get_attr_special_obj": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
     "getargv": "Luau has no process argv surface; materializes an empty argv list.",
+    "has_attr_name": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
     "id": "Uses string identity representation, not CPython object address identity.",
     "isinstance": "Uses Luau type metadata and metatable inheritance for the admitted subset.",
     "issubclass": "Uses Luau type metadata and metatable inheritance for the admitted subset.",
