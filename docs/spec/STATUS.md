@@ -153,7 +153,9 @@ the implementation. For forward-looking priorities, use
   first default-bearing intrinsic and preserves CPython precedence: the default
   is validated/normalized through the integer-index protocol before any length
   lookup, `__len__` wins over `__length_hint__`, and the normalized default is
-  used only when neither length surface applies.
+  used when neither length surface applies or `__length_hint__` itself raises
+  `TypeError`; non-`TypeError` failures and invalid non-int hint returns
+  propagate.
 - Deforestation fusion eligibility is generated from
   `runtime/molt-backend/src/tir/op_kinds.toml` as the exhaustive
   `fusion_barrier_opcodes` classifier. The classifier is intentionally distinct

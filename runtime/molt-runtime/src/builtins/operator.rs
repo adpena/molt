@@ -12,18 +12,18 @@ use crate::{
     bigint_ref, bigint_to_inline, builtin_classes, call_callable0, class_dict_bits,
     class_name_for_error, complex_bits, complex_from_obj_strict, complex_ptr_from_bits,
     dec_ref_bits, dict_set_in_place, exception_class_bits, exception_kind_bits, exception_pending,
-    exception_type_bits_from_name, inc_ref_bits, init_atomic_bits, int_bits_from_i128,
-    intern_static_name, is_truthy, issubclass_bits, molt_abs_builtin, molt_add, molt_bit_and,
-    molt_bit_or, molt_bit_xor, molt_class_set_base, molt_concat, molt_contains,
-    molt_delitem_method, molt_div, molt_eq, molt_floordiv, molt_ge, molt_getattr_builtin,
-    molt_getitem_method, molt_gt, molt_index, molt_inplace_add, molt_inplace_bit_and,
-    molt_inplace_bit_or, molt_inplace_bit_xor, molt_inplace_concat, molt_inplace_div,
-    molt_inplace_floordiv, molt_inplace_lshift, molt_inplace_matmul, molt_inplace_mod,
-    molt_inplace_mul, molt_inplace_pow, molt_inplace_rshift, molt_inplace_sub, molt_invert,
-    molt_is_truthy, molt_iter_checked, molt_iter_next, molt_le, molt_len, molt_lshift, molt_lt,
-    molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow, molt_rshift, molt_setitem_method, molt_sub,
-    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, raise_exception,
-    seq_vec_ref, string_obj_to_owned, to_bigint, to_i64, type_name, type_of_bits,
+    exception_stack_pop, exception_stack_push, exception_type_bits_from_name, inc_ref_bits,
+    init_atomic_bits, int_bits_from_i128, intern_static_name, is_truthy, issubclass_bits,
+    molt_abs_builtin, molt_add, molt_bit_and, molt_bit_or, molt_bit_xor, molt_class_set_base,
+    molt_concat, molt_contains, molt_delitem_method, molt_div, molt_eq, molt_floordiv, molt_ge,
+    molt_getattr_builtin, molt_getitem_method, molt_gt, molt_index, molt_inplace_add,
+    molt_inplace_bit_and, molt_inplace_bit_or, molt_inplace_bit_xor, molt_inplace_concat,
+    molt_inplace_div, molt_inplace_floordiv, molt_inplace_lshift, molt_inplace_matmul,
+    molt_inplace_mod, molt_inplace_mul, molt_inplace_pow, molt_inplace_rshift, molt_inplace_sub,
+    molt_invert, molt_is_truthy, molt_iter_checked, molt_iter_next, molt_le, molt_len, molt_lshift,
+    molt_lt, molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow, molt_rshift, molt_setitem_method,
+    molt_sub, obj_from_bits, object_class_bits, object_set_class_bits, object_type_id,
+    raise_exception, seq_vec_ref, string_obj_to_owned, to_bigint, to_i64, type_name, type_of_bits,
 };
 
 pub(crate) struct OperatorRuntimeState {
@@ -1302,17 +1302,21 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
             );
         };
         let default_bits = MoltObject::from_int(default_value).bits();
+        exception_stack_push();
         let len_bits = molt_len(obj_bits);
         if !exception_pending(_py) {
+            exception_stack_pop(_py);
             return len_bits;
         }
         let exc_bits = molt_exception_last_pending();
         if !exception_is_type_error(_py, exc_bits) {
+            exception_stack_pop(_py);
             dec_ref_bits(_py, exc_bits);
             return MoltObject::none().bits();
         }
         crate::molt_exception_clear();
         dec_ref_bits(_py, exc_bits);
+        exception_stack_pop(_py);
 
         if let Some(ptr) = obj.as_ptr() {
             let Some(name_bits) = attr_name_bits_from_bytes(_py, b"__length_hint__") else {
@@ -1321,28 +1325,43 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
             let call_bits = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, name_bits) };
             dec_ref_bits(_py, name_bits);
             if let Some(call_bits) = call_bits {
+                exception_stack_push();
                 let res_bits = unsafe { call_callable0(_py, call_bits) };
                 dec_ref_bits(_py, call_bits);
                 if exception_pending(_py) {
+                    let exc_bits = molt_exception_last_pending();
+                    if exception_is_type_error(_py, exc_bits) {
+                        crate::molt_exception_clear();
+                        dec_ref_bits(_py, exc_bits);
+                        exception_stack_pop(_py);
+                        return default_bits;
+                    }
+                    dec_ref_bits(_py, exc_bits);
+                    exception_stack_pop(_py);
                     return MoltObject::none().bits();
                 }
+                exception_stack_pop(_py);
                 let res_obj = obj_from_bits(res_bits);
-                if res_obj.is_none() {
-                    return default_bits;
-                }
                 if let Some(i) = to_i64(res_obj) {
                     if i < 0 {
+                        if res_obj.as_ptr().is_some() {
+                            dec_ref_bits(_py, res_bits);
+                        }
                         return raise_exception::<_>(
                             _py,
                             "ValueError",
                             "__length_hint__() should return >= 0",
                         );
                     }
+                    if res_obj.as_ptr().is_some() {
+                        dec_ref_bits(_py, res_bits);
+                    }
                     return MoltObject::from_int(i).bits();
                 }
                 if let Some(ptr) = bigint_ptr_from_bits(res_bits) {
                     let big = unsafe { bigint_ref(ptr) };
                     if big.is_negative() {
+                        dec_ref_bits(_py, res_bits);
                         return raise_exception::<_>(
                             _py,
                             "ValueError",
@@ -1350,6 +1369,7 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
                         );
                     }
                     let Some(len) = big.to_usize() else {
+                        dec_ref_bits(_py, res_bits);
                         return raise_exception::<_>(
                             _py,
                             "OverflowError",
@@ -1357,16 +1377,19 @@ pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) ->
                         );
                     };
                     if len > i64::MAX as usize {
+                        dec_ref_bits(_py, res_bits);
                         return raise_exception::<_>(
                             _py,
                             "OverflowError",
                             "cannot fit 'int' into an index-sized integer",
                         );
                     }
+                    dec_ref_bits(_py, res_bits);
                     return MoltObject::from_int(len as i64).bits();
                 }
                 let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                let msg = format!("__length_hint__ returned non-int (type {res_type})");
+                let msg = format!("__length_hint__ must be an integer, not {res_type}");
+                dec_ref_bits(_py, res_bits);
                 return raise_exception::<_>(_py, "TypeError", &msg);
             }
         }
