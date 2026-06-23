@@ -83,8 +83,13 @@ This crate provides:
 	  emits a fail-closed static factory registry without runtime `exec`, admits
 	  the generated `_molt_tinygrad_upat_static_exec_registry` module in the Molt
 	  static-package lane, and configures the adapter to install `exec_static` as
-	  the package-scoped `tinygrad.uop.upat.exec` global. The next blocker is
-	  fresh guarded runner evidence for the wired registry path.
+	  the package-scoped `tinygrad.uop.upat.exec` global. Fresh 2026-06-23
+	  guarded evidence
+	  (`bench/results/friends/20260623T131504Z-tinygrad-molt-fixed-env/`) gets
+	  through registry preparation, backend object emission, and native Windows
+	  linking with clean pinned source custody; the next blocker is isolating the
+	  runtime `TypeError: 'str' object is not callable` from `<molt-builtin>`
+	  line 12 in the wired-registry path.
 	  Movement-family view operations (`reshape`,
 	  `expand`, `permute`,
 	  zero-fill `pad`, `shrink`, `flip`, `contiguous`) now lower through GPU

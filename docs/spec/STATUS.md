@@ -846,13 +846,14 @@ the implementation. For forward-looking priorities, use
 	  benchmark lane (`tinygrad_off_the_shelf`, commit
 	  `a83710396c991272241e40da94489747c2393851`). Its upstream-owned
 	  `tinygrad` runner executes `CHECK_OOB=0 DEV=CPU TYPED=1 python
-	  test/test_tiny.py` through `uv run --isolated --with typeguard` plus
+	  test/test_tiny.py` through an isolated no-project
+	  `uv run --isolated --no-project --with typeguard` dependency lane plus
 	  runner-local `PYTHONPATH={suite_root}` so the pinned checkout stays clean;
 	  the CPython runner executes public API
 	  workloads through `tools/tinygrad_off_shelf_adapter.py`. The Molt runner is
 		  executable by default and uses the full-stdlib `{project_python} -m molt.cli run`
 		  static-package command; earlier guarded evidence reached `molt-backend --daemon`
-	  and then trips the guarded process RSS limit at 12.005 GB after 435.5s
+	  and then tripped the guarded process RSS limit at 12.005 GB after 435.5s
 	  (`tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`), proving
 		  that blocker was backend-daemon compile memory before adapter
 	  workload execution. Native TIR optimization now partitions uncached
@@ -932,8 +933,14 @@ the implementation. For forward-looking priorities, use
 		  matcher sources, admits it beside `tinygrad` in the Molt
 		  static-package lane, and configures the adapter to install
 		  `exec_static` as the package-scoped `tinygrad.uop.upat.exec` global.
-		  The next required proof is a fresh guarded runner result through this
-		  wired registry path. It remains the
+		  Fresh 2026-06-23 guarded evidence
+		  (`bench/results/friends/20260623T131504Z-tinygrad-molt-fixed-env/`)
+		  now gets through registry preparation, backend object emission, and
+		  native Windows linking under the sanitized friend harness environment
+		  with clean pinned source custody; the current blocker is runtime
+		  execution failing with `TypeError: 'str' object is not callable` from
+		  `<molt-builtin>` line 12. The next required proof must isolate that
+		  TypeError in the wired-registry runtime path. It remains the
 	  compatibility/perf case study for compiling and profiling unmodified
 	  tinygrad code. The friend-suite harness now records
 	  git source custody, fails dirty or wrong-ref checkouts, accepts per-suite

@@ -190,6 +190,47 @@ def test_project_python_prefers_active_virtualenv(monkeypatch, tmp_path: Path) -
     assert module._project_python() == str(python_path)
 
 
+def test_base_run_env_preserves_windows_toolchain_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_tool_module()
+    monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("ProgramW6432", r"C:\Program Files")
+    monkeypatch.setenv("CommonProgramFiles(x86)", r"C:\Program Files (x86)\Common Files")
+    monkeypatch.setenv("CommonProgramFiles", r"C:\Program Files\Common Files")
+    monkeypatch.setenv("CommonProgramW6432", r"C:\Program Files\Common Files")
+    monkeypatch.setenv("ProgramData", r"C:\ProgramData")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\tester\AppData\Local")
+
+    env = module._base_run_env()
+
+    assert _has_env_pair_casefold(env, "ProgramFiles(x86)", r"C:\Program Files (x86)")
+    assert _has_env_pair_casefold(env, "ProgramFiles", r"C:\Program Files")
+    assert _has_env_pair_casefold(env, "ProgramW6432", r"C:\Program Files")
+    assert _has_env_pair_casefold(
+        env,
+        "CommonProgramFiles(x86)",
+        r"C:\Program Files (x86)\Common Files",
+    )
+    assert _has_env_pair_casefold(
+        env,
+        "CommonProgramFiles",
+        r"C:\Program Files\Common Files",
+    )
+    assert _has_env_pair_casefold(
+        env,
+        "CommonProgramW6432",
+        r"C:\Program Files\Common Files",
+    )
+    assert _has_env_pair_casefold(env, "ProgramData", r"C:\ProgramData")
+    assert _has_env_pair_casefold(
+        env,
+        "LOCALAPPDATA",
+        r"C:\Users\tester\AppData\Local",
+    )
+
+
 def test_bench_friends_result_dict_round_trip_preserves_renderer_fields() -> None:
     module = _load_tool_module()
     suite = _sample_suite_result(module, "round_trip_smoke")
@@ -361,6 +402,75 @@ def test_bench_friends_local_suite_runs(tmp_path: Path) -> None:
     assert summary.exists()
     summary_text = summary.read_text(encoding="utf-8")
     assert "local_smoke" in summary_text
+
+
+def test_bench_friends_materializes_output_env_paths_before_prepare(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "manifest.toml"
+    output_root = tmp_path / "out"
+    suite_root = tmp_path / "suite"
+    suite_root.mkdir(parents=True, exist_ok=True)
+    probe = tmp_path / "prepare_probe.py"
+    probe.write_text(
+        textwrap.dedent(
+            """
+            import os
+            from pathlib import Path
+
+            cachedb = Path(os.environ["CACHEDB"])
+            cache_home = Path(os.environ["XDG_CACHE_HOME"])
+            generated_root = Path(os.environ["MOLT_MODULE_ROOTS"].split(os.pathsep)[-1])
+            assert cache_home.is_dir(), cache_home
+            assert cachedb.parent.is_dir(), cachedb.parent
+            assert generated_root.is_dir(), generated_root
+            assert not cachedb.exists(), cachedb
+            cachedb.write_text("ok\\n", encoding="utf-8")
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest.write_text(
+        textwrap.dedent(
+            f"""
+            schema_version = 1
+
+            [[suite]]
+            id = "env_path_smoke"
+            enabled = true
+            friend = "local"
+            source = "local"
+            local_path = "{suite_root.as_posix()}"
+            semantic_mode = "runs_unmodified"
+            repeat = 1
+            timeout_sec = 30
+            env = {{ CACHEDB = "{{output_root}}/cache/tinygrad/cache.db", XDG_CACHE_HOME = "{{output_root}}/cache", MOLT_MODULE_ROOTS = "{{suite_root}}{{pathsep}}{{output_root}}/generated_modules" }}
+            prepare_cmds = [
+              ["{{python}}", "{probe.as_posix()}"],
+            ]
+
+            [suite.runners.cpython]
+            run_cmd = ["{{python}}", "-c", "print('ok')"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    res = _run_tool(
+        "--manifest",
+        str(manifest),
+        "--output-root",
+        str(output_root),
+    )
+    assert res.returncode == 0, res.stderr
+    assert (output_root / "cache").is_dir()
+    assert (output_root / "cache" / "tinygrad").is_dir()
+    assert (output_root / "generated_modules").is_dir()
+    assert (output_root / "cache" / "tinygrad" / "cache.db").read_text(
+        encoding="utf-8"
+    ) == "ok\n"
 
 
 def test_bench_friends_include_disabled_with_dry_run(tmp_path: Path) -> None:
@@ -1471,10 +1581,11 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
     assert cpython.json_stdout is True
     assert molt.json_stdout is True
     assert cpython.run_cmd is not None
-    assert cpython.run_cmd[:7] == [
+    assert cpython.run_cmd[:8] == [
         "uv",
         "run",
         "--isolated",
+        "--no-project",
         "--python",
         "{python}",
         "--with",
@@ -1525,6 +1636,7 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
         "uv",
         "run",
         "--isolated",
+        "--no-project",
         "--python",
         "{python}",
         "--with",
