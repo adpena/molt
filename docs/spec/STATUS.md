@@ -150,9 +150,10 @@ the implementation. For forward-looking priorities, use
   defaults from `runtime/molt-runtime/src/intrinsics/manifest.pyi`, emits
   `IntrinsicSpec.defaults`, and runtime eager/lazy registration attaches
   matching `__defaults__` tuples. `operator.length_hint(obj, default=0)` is the
-  first default-bearing intrinsic and preserves CPython precedence: `__len__`
-  wins over `__length_hint__`, and the default is used only when neither length
-  surface applies.
+  first default-bearing intrinsic and preserves CPython precedence: the default
+  is validated/normalized through the integer-index protocol before any length
+  lookup, `__len__` wins over `__length_hint__`, and the normalized default is
+  used only when neither length surface applies.
 - Deforestation fusion eligibility is generated from
   `runtime/molt-backend/src/tir/op_kinds.toml` as the exhaustive
   `fusion_barrier_opcodes` classifier. The classifier is intentionally distinct

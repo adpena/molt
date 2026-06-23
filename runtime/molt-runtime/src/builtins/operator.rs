@@ -890,10 +890,14 @@ pub(crate) fn operator_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        molt_operator_attrgetter_type, molt_operator_itemgetter_type,
+        molt_operator_attrgetter_type, molt_operator_itemgetter_type, molt_operator_length_hint,
         molt_operator_methodcaller_type, operator_clear_runtime_state,
     };
-    use crate::{obj_from_bits, runtime_state};
+    use crate::builtins::exceptions::{molt_exception_kind, molt_exception_last_pending};
+    use crate::{
+        MoltObject, alloc_string, dec_ref_bits, exception_pending, obj_from_bits, runtime_state,
+        string_obj_to_owned, to_i64,
+    };
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -933,6 +937,38 @@ mod tests {
             for slot in state.operator.slots() {
                 assert_eq!(slot.load(Ordering::Acquire), 0);
             }
+        });
+    }
+
+    #[test]
+    fn operator_length_hint_validates_default_before_fallback() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let none_bits = MoltObject::none().bits();
+
+            let negative = molt_operator_length_hint(none_bits, MoltObject::from_int(-1).bits());
+            assert_eq!(to_i64(obj_from_bits(negative)), Some(-1));
+
+            let truthy = molt_operator_length_hint(none_bits, MoltObject::from_bool(true).bits());
+            assert_eq!(to_i64(obj_from_bits(truthy)), Some(1));
+
+            let invalid_ptr = alloc_string(_py, b"x");
+            assert!(!invalid_ptr.is_null());
+            let invalid_bits = MoltObject::from_ptr(invalid_ptr).bits();
+            let result = molt_operator_length_hint(none_bits, invalid_bits);
+            dec_ref_bits(_py, invalid_bits);
+
+            assert!(obj_from_bits(result).is_none());
+            assert!(exception_pending(_py));
+            let exc_bits = molt_exception_last_pending();
+            let kind_bits = molt_exception_kind(exc_bits);
+            assert_eq!(
+                string_obj_to_owned(obj_from_bits(kind_bits)).as_deref(),
+                Some("TypeError")
+            );
+            dec_ref_bits(_py, kind_bits);
+            dec_ref_bits(_py, exc_bits);
+            crate::molt_exception_clear();
         });
     }
 }
@@ -1228,6 +1264,21 @@ pub extern "C" fn molt_operator_countof(container_bits: u64, value_bits: u64) ->
 pub extern "C" fn molt_operator_length_hint(obj_bits: u64, default_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(obj_bits);
+        let default_err = format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(_py, obj_from_bits(default_bits))
+        );
+        let Some(default_value) = index_bigint_from_obj(_py, default_bits, &default_err) else {
+            return MoltObject::none().bits();
+        };
+        let Some(default_value) = default_value.to_i64() else {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "Python int too large to convert to C ssize_t",
+            );
+        };
+        let default_bits = MoltObject::from_int(default_value).bits();
         let len_bits = molt_len(obj_bits);
         if !exception_pending(_py) {
             return len_bits;
