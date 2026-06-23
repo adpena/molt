@@ -6,8 +6,8 @@
 
 ## Summary
 
-- `compile-error`: `1`
-- `implemented-exact`: `294`
+- `compile-error`: `0`
+- `implemented-exact`: `295`
 - `implemented-target-limited`: `54`
 - `not-admitted`: `47`
 - `runtime-capability-error`: `6`
@@ -279,7 +279,7 @@
 | `loop_start` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `lshift` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `lt` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `matmul` | `compile-error` | Checked Luau emission rejects unsupported markers. |
+| `matmul` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `memoryview_cast` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `memoryview_new` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `memoryview_tobytes` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
