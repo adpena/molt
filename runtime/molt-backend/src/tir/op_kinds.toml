@@ -73,6 +73,9 @@
 #                  fact: ops that make a comprehension/generator body ineligible
 #                  for iterator-chain fusion. A DISTINCT fact from side_effecting
 #                  (see its own comment below). Rendered exhaustively over OpCode.
+#   - i64_zero_divisor_guard_opcodes - opcode-only raw-i64 division-family fact.
+#                  These ops require a nonzero divisor proof before raw i64 LIR
+#                  can be used or before CheckException can be proven redundant.
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -297,6 +300,19 @@ fusion_barrier_opcodes = [
     "StoreIndex",
     "Yield",
     "YieldFrom",
+]
+
+# i64_zero_divisor_guard_opcodes: raw i64 lowering for these binary opcodes can
+# machine-trap on a zero RHS (`i64.div_s`/`i64.rem_s`) while Python semantics
+# require `ZeroDivisionError`. The same semantic fact is consumed by
+# lower_to_lir.rs (box unless value-range proves RHS nonzero) and
+# check_exception_elim.rs (only remove CheckException after these ops when the
+# divisor is proven nonzero). Generated exhaustively over OpCode so the two
+# consumers cannot drift.
+i64_zero_divisor_guard_opcodes = [
+    "Div",
+    "FloorDiv",
+    "Mod",
 ]
 
 alias_memory_inert_opcodes = [

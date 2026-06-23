@@ -3725,6 +3725,38 @@ mod tests {
 
     static ENV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
+    fn write_failing_relocatable_linker(tmp_dir: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(windows)]
+        let linker = tmp_dir.join("fail-linker.cmd");
+        #[cfg(not(windows))]
+        let linker = tmp_dir.join("fail-linker.sh");
+
+        #[cfg(windows)]
+        std::fs::write(
+            &linker,
+            b"@echo off\r\necho forced relocatable link failure 1>&2\r\nexit /b 1\r\n",
+        )
+        .expect("write failing linker script");
+
+        #[cfg(not(windows))]
+        {
+            std::fs::write(
+                &linker,
+                b"#!/bin/sh\necho forced relocatable link failure >&2\nexit 1\n",
+            )
+            .expect("write failing linker script");
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&linker)
+                .expect("stat failing linker script")
+                .permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&linker, permissions)
+                .expect("make failing linker script executable");
+        }
+
+        linker
+    }
+
     #[test]
     fn daemon_cache_get_bytes_updates_lru_without_cloning() {
         let mut cache = DaemonCache::new(None);
@@ -5057,8 +5089,12 @@ mod tests {
         let output = tmp_dir.join("output.o");
         std::fs::write(&input, b"object-bytes").expect("write input object");
 
-        merge_relocatable_objects(&output, std::slice::from_ref(&input), Some("false"))
-            .expect("copy single input object");
+        merge_relocatable_objects(
+            &output,
+            std::slice::from_ref(&input),
+            Some("linker-that-must-not-run"),
+        )
+        .expect("copy single input object");
 
         assert_eq!(
             std::fs::read(&output).expect("read merged output"),
@@ -5084,10 +5120,15 @@ mod tests {
         let output = tmp_dir.join("output.o");
         std::fs::write(&input_a, b"a").expect("write first input object");
         std::fs::write(&input_b, b"b").expect("write second input object");
+        let failing_linker = write_failing_relocatable_linker(&tmp_dir);
+        let failing_linker_arg = failing_linker.to_string_lossy();
 
-        let err =
-            merge_relocatable_objects(&output, &[input_a.clone(), input_b.clone()], Some("false"))
-                .expect_err("merge should fail with false linker");
+        let err = merge_relocatable_objects(
+            &output,
+            &[input_a.clone(), input_b.clone()],
+            Some(failing_linker_arg.as_ref()),
+        )
+        .expect_err("merge should fail with failing linker");
         let message = err.to_string();
         assert!(message.contains("relocatable link failed"), "{message}");
         assert!(!output.exists());
@@ -5102,11 +5143,6 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let prior_batch_size = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
         let prior_linker = std::env::var("MOLT_LINKER").ok();
-        unsafe {
-            std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1");
-            std::env::set_var("MOLT_LINKER", "false");
-        }
-
         let temp_root = std::env::temp_dir();
         let batch_prefix = format!("molt_batch_{}_", std::process::id());
         let before: std::collections::BTreeSet<_> = std::fs::read_dir(&temp_root)
@@ -5124,6 +5160,12 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let failing_linker = write_failing_relocatable_linker(&tmp_dir);
+        unsafe {
+            std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1");
+            std::env::set_var("MOLT_LINKER", failing_linker.as_os_str());
+        }
+
         let output = tmp_dir.join("output.o");
         let ir = SimpleIR {
             functions: vec![
@@ -5206,12 +5248,6 @@ mod tests {
         let prior_batch_size = std::env::var("MOLT_BACKEND_BATCH_SIZE").ok();
         let prior_op_budget = std::env::var("MOLT_BACKEND_BATCH_OP_BUDGET").ok();
         let prior_linker = std::env::var("MOLT_LINKER").ok();
-        unsafe {
-            std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "64");
-            std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", "1");
-            std::env::set_var("MOLT_LINKER", "false");
-        }
-
         let tmp_dir = std::env::temp_dir().join(format!(
             "molt-native-app-op-budget-{}-{}",
             std::process::id(),
@@ -5221,6 +5257,13 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
+        let failing_linker = write_failing_relocatable_linker(&tmp_dir);
+        unsafe {
+            std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "64");
+            std::env::set_var("MOLT_BACKEND_BATCH_OP_BUDGET", "1");
+            std::env::set_var("MOLT_LINKER", failing_linker.as_os_str());
+        }
+
         let output = tmp_dir.join("output.o");
         let ir = SimpleIR {
             functions: vec![
@@ -5861,7 +5904,7 @@ mod tests {
                 "ir": {
                     "functions": [
                         {"name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module", "value": 0}]},
-                        {"name": "demo__module", "params": [], "ops": [{"kind": "ret_void"}]},
+                        {"name": "demo__module", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
                         {"name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
                         {"name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
                         {"name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
@@ -5908,10 +5951,17 @@ mod tests {
                 FunctionIR {
                     name: "demo__module".to_string(),
                     params: vec![],
-                    ops: vec![OpIR {
-                        kind: "ret_void".to_string(),
-                        ..OpIR::default()
-                    }],
+                    ops: vec![
+                        OpIR {
+                            kind: "call_internal".to_string(),
+                            s_value: Some("molt_init_sys".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret_void".to_string(),
+                            ..OpIR::default()
+                        },
+                    ],
                     param_types: None,
                     source_file: None,
                     is_extern: false,

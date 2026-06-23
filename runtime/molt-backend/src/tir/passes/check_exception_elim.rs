@@ -35,6 +35,7 @@ use super::effects::op_may_throw;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_requires_i64_zero_divisor_guard_table;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -178,7 +179,7 @@ fn op_may_raise(
     const_ints: &HashMap<ValueId, i64>,
     op: &TirOp,
 ) -> bool {
-    if matches!(op.opcode, OpCode::Div | OpCode::FloorDiv | OpCode::Mod)
+    if opcode_requires_i64_zero_divisor_guard_table(op.opcode)
         && proven_nonzero_i64_divisor(value_types, const_ints, op)
     {
         return false;

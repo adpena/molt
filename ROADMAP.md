@@ -29,7 +29,9 @@ function `__defaults__`; `operator.length_hint(obj, default=0)` uses that
 metadata and preserves CPython's `__len__`-before-`__length_hint__` precedence.
 Deforestation fusion eligibility has also moved from a private pass-local
 purity table into the generated op-kind registry through
-`fusion_barrier_opcodes`.
+`fusion_barrier_opcodes`; raw-i64 zero-divisor guard eligibility now uses the
+same registry pattern through `i64_zero_divisor_guard_opcodes`, shared by LIR
+lowering and exception-check elimination.
 
 1. Close the ownership-correctness front before claiming broader compatibility:
    native DropInsertion activation, finalizer ordering, standalone `__del__`

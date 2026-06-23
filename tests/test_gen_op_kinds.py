@@ -568,6 +568,54 @@ def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
     assert "OpCode::" not in body
 
 
+def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
+    """Raw-i64 zero-divisor proof requirements have one opcode authority."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    lower_to_lir = (ROOT / "runtime/molt-backend/src/tir/lower_to_lir.rs").read_text(
+        encoding="utf-8"
+    )
+    check_exception = (
+        ROOT / "runtime/molt-backend/src/tir/passes/check_exception_elim.rs"
+    ).read_text(encoding="utf-8")
+
+    expected = {"Div", "FloorDiv", "Mod"}
+    assert set(data["i64_zero_divisor_guard_opcodes"]) == expected
+
+    table_block = rendered.split(
+        "fn opcode_requires_i64_zero_divisor_guard_table"
+    )[1].split("enum AliasTypedSlotRole")[0]
+    for opcode in expected:
+        assert f"OpCode::{opcode} => true," in table_block
+    for opcode in {"Add", "Mul", "Pow"}:
+        assert f"OpCode::{opcode} => false," in table_block
+
+    table_name = "opcode_requires_i64_zero_divisor_guard_table"
+    assert table_name in lower_to_lir
+    assert table_name in check_exception
+
+    for source, fn_name in (
+        (lower_to_lir, "fn lower_op("),
+        (check_exception, "fn op_may_raise("),
+    ):
+        start = source.index(fn_name)
+        brace = source.index("{", start)
+        depth = 0
+        end = brace
+        for i in range(brace, len(source)):
+            if source[i] == "{":
+                depth += 1
+            elif source[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        body = source[start:end]
+        assert table_name in body
+        assert "OpCode::Div | OpCode::FloorDiv | OpCode::Mod" not in body
+
+
 def test_alias_slot_observation_delegates_to_generated_table() -> None:
     gen = _gen()
     data = gen.load_table()
