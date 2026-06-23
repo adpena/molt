@@ -336,12 +336,14 @@ pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let mut code_bits = MoltObject::none().bits();
         let mut pushed = false;
+        let mut frame_func_ptr: *mut u8 = std::ptr::null_mut();
         let func_obj = obj_from_bits(func_bits);
         if let Some(func_ptr) = func_obj.as_ptr() {
             unsafe {
                 match object_type_id(func_ptr) {
                     TYPE_ID_FUNCTION => {
                         code_bits = ensure_function_code_bits(_py, func_ptr);
+                        frame_func_ptr = func_ptr;
                     }
                     TYPE_ID_BOUND_METHOD => {
                         let bound_func_bits = bound_method_func_bits(func_ptr);
@@ -349,6 +351,7 @@ pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
                             && object_type_id(bound_ptr) == TYPE_ID_FUNCTION
                         {
                             code_bits = ensure_function_code_bits(_py, bound_ptr);
+                            frame_func_ptr = bound_ptr;
                         }
                     }
                     _ => {}
@@ -358,7 +361,7 @@ pub extern "C" fn molt_trace_enter(func_bits: u64) -> u64 {
         if let Some(code_ptr) = obj_from_bits(code_bits).as_ptr() {
             unsafe {
                 if object_type_id(code_ptr) == TYPE_ID_CODE {
-                    frame_stack_push(_py, code_bits);
+                    frame_stack_push_function(_py, code_bits, frame_func_ptr);
                     pushed = true;
                 }
             }
@@ -504,12 +507,14 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
     if callee_bits != 0 {
         crate::with_gil_entry_nopanic!(_py, {
             let mut code_bits = MoltObject::none().bits();
+            let mut frame_func_ptr: *mut u8 = std::ptr::null_mut();
             let func_obj = obj_from_bits(callee_bits);
             if let Some(func_ptr) = func_obj.as_ptr() {
                 unsafe {
                     match object_type_id(func_ptr) {
                         TYPE_ID_FUNCTION => {
                             code_bits = ensure_function_code_bits(_py, func_ptr);
+                            frame_func_ptr = func_ptr;
                         }
                         TYPE_ID_BOUND_METHOD => {
                             let bound_func_bits = bound_method_func_bits(func_ptr);
@@ -517,13 +522,14 @@ pub unsafe extern "C" fn molt_guarded_call_obj(
                                 && object_type_id(bound_ptr) == TYPE_ID_FUNCTION
                             {
                                 code_bits = ensure_function_code_bits(_py, bound_ptr);
+                                frame_func_ptr = bound_ptr;
                             }
                         }
                         _ => {}
                     }
                 }
             }
-            frame_stack_push(_py, code_bits);
+            frame_stack_push_function(_py, code_bits, frame_func_ptr);
         });
     }
     let result: u64 = unsafe {
@@ -982,7 +988,7 @@ pub extern "C" fn molt_call_func_dispatch(
         // --- Step 2: Check if it's a plain function object ---
         let func_ptr = match maybe_ptr_from_bits(effective_func) {
             Some(ptr) if unsafe { object_type_id(ptr) == TYPE_ID_FUNCTION } => ptr,
-            _ => return molt_call_func_via_callargs(func_bits, effective_args),
+            _ => return molt_call_func_via_callargs(effective_func, effective_args),
         };
 
         // --- Step 3: Check for closure ---
@@ -990,13 +996,26 @@ pub extern "C" fn molt_call_func_dispatch(
         let has_closure = unsafe { function_closure_bits(func_ptr) } != 0;
         let has_trampoline = unsafe { function_trampoline_ptr(func_ptr) } != 0;
         if has_closure {
-            return molt_call_func_via_callargs(func_bits, effective_args);
+            return molt_call_func_via_callargs(effective_func, effective_args);
+        }
+        if unsafe { crate::call::bind::function_needs_full_binder(_py, func_ptr) } {
+            unsafe {
+                crate::call::bind::refresh_function_requires_binder_flag(_py, func_ptr);
+            }
+            return molt_call_func_via_callargs(effective_func, effective_args);
         }
         if has_trampoline {
-            return unsafe {
+            let result = unsafe {
                 crate::call::function::call_function_obj_trampoline(
                     _py,
                     effective_func,
+                    effective_args,
+                )
+            };
+            return unsafe {
+                crate::call::function::protect_borrowed_args_aliased_return(
+                    _py,
+                    result,
                     effective_args,
                 )
             };
@@ -1211,7 +1230,7 @@ pub extern "C" fn molt_call_func_dispatch(
         }
 
         // Arity mismatch we can't handle inline — fallback.
-        molt_call_func_via_callargs(func_bits, effective_args)
+        molt_call_func_via_callargs(effective_func, effective_args)
     })
 }
 
@@ -1228,12 +1247,17 @@ fn molt_call_func_direct(
     }
     if let Some(func_ptr) = obj_from_bits(callable_bits).as_ptr() {
         unsafe {
+            let mut frame_func_ptr: *mut u8 = std::ptr::null_mut();
             let code_bits = match object_type_id(func_ptr) {
-                TYPE_ID_FUNCTION => ensure_function_code_bits(_py, func_ptr),
+                TYPE_ID_FUNCTION => {
+                    frame_func_ptr = func_ptr;
+                    ensure_function_code_bits(_py, func_ptr)
+                }
                 TYPE_ID_BOUND_METHOD => {
                     let bf = bound_method_func_bits(func_ptr);
                     if let Some(bp) = obj_from_bits(bf).as_ptr() {
                         if object_type_id(bp) == TYPE_ID_FUNCTION {
+                            frame_func_ptr = bp;
                             ensure_function_code_bits(_py, bp)
                         } else {
                             MoltObject::none().bits()
@@ -1244,10 +1268,12 @@ fn molt_call_func_direct(
                 }
                 _ => MoltObject::none().bits(),
             };
-            frame_stack_push(_py, code_bits);
+            frame_stack_push_function(_py, code_bits, frame_func_ptr);
         }
     }
     let result = unsafe { molt_guarded_call_dispatch(fn_ptr, args.as_ptr(), args.len()) };
+    let result =
+        unsafe { crate::call::function::protect_borrowed_args_aliased_return(_py, result, args) };
     if obj_from_bits(callable_bits).as_ptr().is_some() {
         frame_stack_pop(_py);
     }
@@ -1353,7 +1379,11 @@ unsafe fn direct_call_3(fn_ptr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
 /// Probe the callable: if it's a non-closure function with matching arity,
 /// return Some(fn_ptr). Otherwise None.
 #[inline(always)]
-unsafe fn probe_simple_func(func_bits: u64, expected_arity: usize) -> Option<u64> {
+unsafe fn probe_simple_func(
+    _py: &crate::concurrency::PyToken<'_>,
+    func_bits: u64,
+    expected_arity: usize,
+) -> Option<u64> {
     unsafe {
         let obj = obj_from_bits(func_bits);
         let ptr = obj.as_ptr()?;
@@ -1366,6 +1396,12 @@ unsafe fn probe_simple_func(func_bits: u64, expected_arity: usize) -> Option<u64
         if function_closure_bits(ptr) != 0 {
             return None;
         }
+        if crate::call::bind::function_requires_binder_flag(ptr)
+            || crate::call::bind::function_needs_full_binder(_py, ptr)
+        {
+            crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
+            return None;
+        }
         if (function_arity(ptr) as usize) != expected_arity {
             return None;
         }
@@ -1373,12 +1409,33 @@ unsafe fn probe_simple_func(func_bits: u64, expected_arity: usize) -> Option<u64
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_function_requires_binder_fast(func_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let Some(ptr) = obj_from_bits(func_bits).as_ptr() else {
+                return 0;
+            };
+            if object_type_id(ptr) != TYPE_ID_FUNCTION {
+                return 0;
+            }
+            if crate::call::bind::function_requires_binder_flag(ptr)
+                || crate::call::bind::function_needs_full_binder(_py, ptr)
+            {
+                crate::call::bind::refresh_function_requires_binder_flag(_py, ptr);
+                return 1;
+            }
+            0
+        }
+    })
+}
+
 /// Fast 0-argument function call. No args — minimal dispatch.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            if let Some(fn_ptr) = probe_simple_func(func_bits, 0) {
+            if let Some(fn_ptr) = probe_simple_func(_py, func_bits, 0) {
                 if !recursion_guard_enter() {
                     return raise_exception::<u64>(
                         _py,
@@ -1401,9 +1458,14 @@ pub extern "C" fn molt_call_func_fast0(func_bits: u64) -> u64 {
 pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            if let Some(fn_ptr) = probe_simple_func(func_bits, 1) {
+            if let Some(fn_ptr) = probe_simple_func(_py, func_bits, 1) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
-                    return crate::call::function::call_function_obj1(_py, func_bits, a0);
+                    let result = crate::call::function::call_function_obj1(_py, func_bits, a0);
+                    return crate::call::function::protect_borrowed_args_aliased_return(
+                        _py,
+                        result,
+                        &[a0],
+                    );
                 }
                 let args = [a0];
                 return molt_call_func_direct(_py, fn_ptr, &args, 0, func_bits);
@@ -1419,9 +1481,14 @@ pub extern "C" fn molt_call_func_fast1(func_bits: u64, a0: u64) -> u64 {
 pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            if let Some(fn_ptr) = probe_simple_func(func_bits, 2) {
+            if let Some(fn_ptr) = probe_simple_func(_py, func_bits, 2) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
-                    return crate::call::function::call_function_obj2(_py, func_bits, a0, a1);
+                    let result = crate::call::function::call_function_obj2(_py, func_bits, a0, a1);
+                    return crate::call::function::protect_borrowed_args_aliased_return(
+                        _py,
+                        result,
+                        &[a0, a1],
+                    );
                 }
                 let args = [a0, a1];
                 return molt_call_func_direct(_py, fn_ptr, &args, 0, func_bits);
@@ -1437,9 +1504,15 @@ pub extern "C" fn molt_call_func_fast2(func_bits: u64, a0: u64, a1: u64) -> u64 
 pub extern "C" fn molt_call_func_fast3(func_bits: u64, a0: u64, a1: u64, a2: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            if let Some(fn_ptr) = probe_simple_func(func_bits, 3) {
+            if let Some(fn_ptr) = probe_simple_func(_py, func_bits, 3) {
                 if runtime_callable_target_ptr(fn_ptr).is_some() {
-                    return crate::call::function::call_function_obj3(_py, func_bits, a0, a1, a2);
+                    let result =
+                        crate::call::function::call_function_obj3(_py, func_bits, a0, a1, a2);
+                    return crate::call::function::protect_borrowed_args_aliased_return(
+                        _py,
+                        result,
+                        &[a0, a1, a2],
+                    );
                 }
                 let args = [a0, a1, a2];
                 return molt_call_func_direct(_py, fn_ptr, &args, 0, func_bits);
@@ -2996,6 +3069,24 @@ unsafe fn dir_default_collect(_py: &PyToken<'_>, obj_bits: u64) -> u64 {
             }
         }
 
+        if maybe_ptr_from_bits(obj_bits).is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_TYPE) {
+            for name in [
+                &b"__bases__"[..],
+                &b"__dict__"[..],
+                &b"__module__"[..],
+                &b"__mro__"[..],
+                &b"__name__"[..],
+                &b"__qualname__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+
         let builtins = builtin_classes(_py);
         let target_class_bits = if maybe_ptr_from_bits(obj_bits)
             .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_TYPE)
@@ -3409,6 +3500,26 @@ pub extern "C" fn molt_dir_builtin(obj_bits: u64) -> u64 {
             }
         }
 
+        if maybe_ptr_from_bits(obj_bits)
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
+        {
+            for name in [
+                &b"__bases__"[..],
+                &b"__dict__"[..],
+                &b"__module__"[..],
+                &b"__mro__"[..],
+                &b"__name__"[..],
+                &b"__qualname__"[..],
+            ] {
+                if !add_name(name) {
+                    for owned in extra_owned {
+                        dec_ref_bits(_py, owned);
+                    }
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+
         let builtins = builtin_classes(_py);
         let target_class_bits = if maybe_ptr_from_bits(obj_bits)
             .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TYPE })
@@ -3555,7 +3666,7 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                     return val;
                 }
                 if exception_pending(_py) {
-                    let exc_bits = molt_exception_last();
+                    let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
                     molt_exception_clear();
                     let _ = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);
@@ -3563,7 +3674,7 @@ pub extern "C" fn molt_object_getattribute(obj_bits: u64, name_bits: u64) -> u64
                 }
                 if type_id == TYPE_ID_DATACLASS {
                     let desc_ptr = dataclass_desc_ptr(obj_ptr);
-                    if !desc_ptr.is_null() && (*desc_ptr).slots {
+                    if !desc_ptr.is_null() && (*desc_ptr).slots && !(*desc_ptr).allows_dict {
                         let name = &(*desc_ptr).name;
                         let type_label = if name.is_empty() {
                             "dataclass"
@@ -3682,7 +3793,7 @@ pub extern "C" fn molt_type_getattribute(obj_bits: u64, name_bits: u64) -> u64 {
                     return val;
                 }
                 if exception_pending(_py) {
-                    let exc_bits = molt_exception_last();
+                    let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
                     molt_exception_clear();
                     let _ = molt_raise(exc_bits);
                     dec_ref_bits(_py, exc_bits);

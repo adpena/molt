@@ -24,28 +24,29 @@ fn trace_isinstance_enabled() -> bool {
 
 use crate::state::{RuntimeState, cache::clear_atomic_slots};
 use crate::{
-    HEADER_FLAG_SKIP_CLASS_DECREF, PyToken, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DATACLASS,
-    TYPE_ID_DICT, TYPE_ID_ELLIPSIS, TYPE_ID_GENERIC_ALIAS, TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED,
-    TYPE_ID_PROPERTY, TYPE_ID_RANGE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj,
-    alloc_classmethod_obj, alloc_dict_with_pairs, alloc_generic_alias, alloc_instance_for_class,
-    alloc_list, alloc_property_obj, alloc_staticmethod_obj, alloc_string, alloc_super_obj,
-    alloc_tuple, apply_class_slots_layout, attr_lookup_ptr_allow_missing,
-    attr_name_bits_from_bytes, builtin_classes, builtin_type_bits, call_callable0, call_callable1,
-    call_callable2, class_bases_bits, class_bases_vec, class_bump_layout_version, class_dict_bits,
-    class_layout_version_bits, class_mro_bits, class_mro_vec, class_name_for_error,
-    class_set_bases_bits, class_set_layout_version_bits, class_set_mro_bits,
-    class_set_qualname_bits, clear_exception, dataclass_set_class_raw, dec_ref_bits,
-    dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply,
-    dict_update_set_in_place, exception_pending, function_dict_bits, generic_alias_origin_bits,
-    header_from_obj_ptr, inc_ref_bits, init_atomic_bits, instance_dict_bits, intern_static_name,
-    is_builtin_class_bits, is_truthy, isinstance_runtime, issubclass_bits, issubclass_runtime,
-    maybe_ptr_from_bits, missing_bits, molt_alloc, molt_call_bind, molt_callargs_new,
-    molt_callargs_push_kw, molt_callargs_push_pos, molt_contains, molt_dict_from_obj,
-    molt_dict_get, molt_eq, molt_getattr_builtin, molt_hash_builtin, molt_index, molt_iter,
-    molt_iter_next, molt_len, molt_object_setattr, molt_repr_from_obj, molt_setitem_method,
-    molt_str_from_obj, molt_string_isidentifier, obj_eq, obj_from_bits, object_class_bits,
-    object_set_class_bits, object_type_id, property_del_bits, property_get_bits, property_set_bits,
-    raise_exception, raise_not_iterable, runtime_state, seq_vec_ref, string_obj_to_owned, to_i64,
+    ClassInfoProtocol, HEADER_FLAG_SKIP_CLASS_DECREF, PyToken, RuntimeClassInfo, TYPE_ID_BYTES,
+    TYPE_ID_COMPLEX, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_ELLIPSIS, TYPE_ID_GENERIC_ALIAS,
+    TYPE_ID_LIST, TYPE_ID_NOT_IMPLEMENTED, TYPE_ID_PROPERTY, TYPE_ID_RANGE, TYPE_ID_STRING,
+    TYPE_ID_TUPLE, TYPE_ID_TYPE, alloc_class_obj, alloc_classmethod_obj, alloc_dict_with_pairs,
+    alloc_generic_alias, alloc_instance_for_class, alloc_list, alloc_property_obj,
+    alloc_staticmethod_obj, alloc_string, alloc_super_obj, alloc_tuple, apply_class_slots_layout,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, builtin_classes, builtin_type_bits,
+    call_callable0, call_callable1, call_callable2, class_bases_bits, class_bases_vec,
+    class_bump_layout_version, class_dict_bits, class_layout_version_bits, class_mro_bits,
+    class_mro_vec, class_name_for_error, class_set_bases_bits, class_set_layout_version_bits,
+    class_set_mro_bits, class_set_qualname_bits, clear_exception, collect_runtime_classinfo,
+    dataclass_set_class_raw, dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order,
+    dict_set_in_place, dict_update_apply, dict_update_set_in_place, exception_pending,
+    function_dict_bits, generic_alias_origin_bits, header_from_obj_ptr, inc_ref_bits,
+    init_atomic_bits, instance_dict_bits, intern_static_name, is_builtin_class_bits, is_truthy,
+    isinstance_runtime, issubclass_bits, issubclass_runtime, maybe_ptr_from_bits, missing_bits,
+    molt_alloc, molt_call_bind, molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos,
+    molt_contains, molt_dict_from_obj, molt_dict_get, molt_eq, molt_getattr_builtin,
+    molt_hash_builtin, molt_index, molt_iter, molt_iter_next, molt_len, molt_object_setattr,
+    molt_repr_from_obj, molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_eq,
+    obj_from_bits, object_class_bits, object_set_class_bits, object_type_id, property_del_bits,
+    property_get_bits, property_set_bits, raise_exception, raise_not_iterable,
+    runtime_classinfo_protocol_match, runtime_state, seq_vec_ref, string_obj_to_owned, to_i64,
     tuple_from_iter_bits, type_name, type_of_bits,
 };
 
@@ -503,10 +504,26 @@ pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
             }
         }
         let mut classes = Vec::new();
-        collect_classinfo_issubclass(_py, class_bits, &mut classes);
-        for class_bits in classes {
-            if issubclass_runtime(_py, sub_bits, class_bits) {
-                return MoltObject::from_bool(true).bits();
+        collect_runtime_classinfo(_py, class_bits, ClassInfoProtocol::Subclass, &mut classes);
+        for class_info in classes {
+            match class_info {
+                RuntimeClassInfo::Type(class_bits) => {
+                    if issubclass_runtime(_py, sub_bits, class_bits) {
+                        return MoltObject::from_bool(true).bits();
+                    }
+                }
+                RuntimeClassInfo::Protocol(class_bits) => {
+                    match runtime_classinfo_protocol_match(
+                        _py,
+                        class_bits,
+                        sub_bits,
+                        ClassInfoProtocol::Subclass,
+                    ) {
+                        Some(true) => return MoltObject::from_bool(true).bits(),
+                        Some(false) => {}
+                        None => break,
+                    }
+                }
             }
         }
         MoltObject::from_bool(false).bits()
@@ -522,7 +539,7 @@ pub extern "C" fn molt_object_new() -> u64 {
         };
         let class_bits = builtin_classes(_py).object;
         unsafe {
-            let _ = molt_object_set_class(obj_ptr, class_bits);
+            let _ = molt_object_set_class(obj_ptr as usize as u64, class_bits);
         }
         obj_bits
     })
@@ -902,7 +919,15 @@ pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
                 }
                 let name_bits = pair[0];
                 let val_bits = pair[1];
+                // `entries` is a borrowed snapshot of the class dict.  A user
+                // `__set_name__` hook can mutate that dict, including deleting
+                // the descriptor currently being initialized, so the apply loop
+                // must own the key/value pair across arbitrary hook execution.
+                inc_ref_bits(_py, name_bits);
+                inc_ref_bits(_py, val_bits);
                 let Some(val_ptr) = maybe_ptr_from_bits(val_bits) else {
+                    dec_ref_bits(_py, val_bits);
+                    dec_ref_bits(_py, name_bits);
                     continue;
                 };
                 if let Some(set_name) = attr_lookup_ptr_allow_missing(_py, val_ptr, set_name_bits) {
@@ -925,6 +950,8 @@ pub extern "C" fn molt_class_apply_set_name(class_bits: u64) -> u64 {
                     let _ = call_callable2(_py, set_name, class_bits, name_bits);
                     dec_ref_bits(_py, set_name);
                 }
+                dec_ref_bits(_py, val_bits);
+                dec_ref_bits(_py, name_bits);
             }
         }
         MoltObject::none().bits()
@@ -2065,12 +2092,13 @@ pub extern "C" fn molt_types_dynamic_class_attr_deleter(self_bits: u64, fdel_bit
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid Molt object header that can be mutated, and
-/// `class_bits` must be either zero or a valid Molt type object.
+/// `obj_ptr_bits` must encode a valid Molt object header that can be mutated,
+/// and `class_bits` must be either zero or a valid Molt type object.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_object_set_class(obj_ptr_bits: u64, class_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = obj_ptr_bits as usize as *mut u8;
             if obj_ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -2101,33 +2129,6 @@ pub unsafe extern "C" fn molt_object_set_class(obj_ptr: *mut u8, class_bits: u64
             }
             MoltObject::none().bits()
         })
-    }
-}
-
-fn collect_classinfo_issubclass(_py: &PyToken<'_>, class_bits: u64, out: &mut Vec<u64>) {
-    let obj = obj_from_bits(class_bits);
-    let Some(ptr) = obj.as_ptr() else {
-        return raise_exception::<_>(
-            _py,
-            "TypeError",
-            "issubclass() arg 2 must be a class or tuple of classes",
-        );
-    };
-    unsafe {
-        match object_type_id(ptr) {
-            TYPE_ID_TYPE => out.push(class_bits),
-            TYPE_ID_TUPLE => {
-                let items = seq_vec_ref(ptr);
-                for item in items.iter() {
-                    collect_classinfo_issubclass(_py, *item, out);
-                }
-            }
-            _ => raise_exception::<_>(
-                _py,
-                "TypeError",
-                "issubclass() arg 2 must be a class or tuple of classes",
-            ),
-        }
     }
 }
 

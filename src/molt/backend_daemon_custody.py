@@ -143,7 +143,9 @@ def backend_daemon_build_state_root_from_env(
     if explicit:
         path = Path(explicit).expanduser()
         return path if path.is_absolute() else (project_root / path).resolve()
-    target = Path(env.get("CARGO_TARGET_DIR", str(project_root / "target"))).expanduser()
+    target = Path(
+        env.get("CARGO_TARGET_DIR", str(project_root / "target"))
+    ).expanduser()
     if not target.is_absolute():
         target = (project_root / target).resolve()
     return target / ".molt_state"
@@ -154,10 +156,13 @@ def backend_daemon_root_from_env(
     *,
     project_root: Path,
 ) -> Path:
-    return backend_daemon_build_state_root_from_env(
-        env,
-        project_root=project_root,
-    ) / "backend_daemon"
+    return (
+        backend_daemon_build_state_root_from_env(
+            env,
+            project_root=project_root,
+        )
+        / "backend_daemon"
+    )
 
 
 def iter_backend_daemon_identity_records(
@@ -183,7 +188,9 @@ def iter_backend_daemon_identity_records(
         identity = read_backend_daemon_identity(identity_path)
         if identity is None:
             continue
-        records.append(BackendDaemonIdentityRecord(identity=identity, path=identity_path))
+        records.append(
+            BackendDaemonIdentityRecord(identity=identity, path=identity_path)
+        )
     return tuple(records)
 
 
@@ -444,6 +451,10 @@ def backend_daemon_identity_from_health(
     raw_pid = health.get("pid")
     if not isinstance(raw_pid, int) or raw_pid <= 0:
         return None
+    if config_digest is not None:
+        raw_spawn_digest = health.get("spawn_config_digest")
+        if raw_spawn_digest != config_digest:
+            return None
     return backend_daemon_identity_for_pid(
         raw_pid,
         socket_path=socket_path,

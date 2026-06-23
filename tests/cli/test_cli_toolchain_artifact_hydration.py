@@ -36,8 +36,7 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
     profile_dir = cli._cargo_profile_dir("dev-fast")
     primary = cli._wasm_runtime_artifact_path(target_root, profile_dir)
     deps_primary = (
-        cli._wasm_runtime_deps_dir(target_root, profile_dir)
-        / "molt_runtime.wasm"
+        cli._wasm_runtime_deps_dir(target_root, profile_dir) / "molt_runtime.wasm"
     )
     stale_hashed = (
         cli._wasm_runtime_deps_dir(target_root, profile_dir)
@@ -58,7 +57,9 @@ def test_runtime_wasm_cargo_build_preserves_stale_candidates_and_uses_reported_a
 
     seen: dict[str, object] = {}
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         seen["cmd"] = cmd
         seen["env"] = kwargs["env"]
         return subprocess.CompletedProcess(
@@ -113,7 +114,9 @@ def test_runtime_wasm_cargo_build_does_not_fallback_to_old_artifact_without_repo
     primary.parent.mkdir(parents=True, exist_ok=True)
     primary.write_bytes(b"old-valid")
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         del kwargs
         return subprocess.CompletedProcess(
             cmd,
@@ -165,7 +168,9 @@ def test_runtime_wasm_cargo_build_accepts_cargo_fresh_primary_artifact(
     primary.parent.mkdir(parents=True, exist_ok=True)
     primary.write_bytes(b"fresh-primary")
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         del kwargs
         return subprocess.CompletedProcess(
             cmd,
@@ -220,7 +225,9 @@ def test_runtime_wasm_cargo_build_preserves_staticlibs_and_uses_reported_staticl
     reported.parent.mkdir(parents=True, exist_ok=True)
     reported.write_bytes(b"new-staticlib")
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_run(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         del kwargs
         return subprocess.CompletedProcess(
             cmd,
@@ -342,7 +349,9 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
         extension="fingerprint",
     )
     canonical_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(canonical_fp, fingerprint)
+    cli._write_runtime_fingerprint(
+        canonical_fp, fingerprint, artifact=canonical_runtime
+    )
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
     monkeypatch.setattr(
@@ -369,6 +378,69 @@ def test_ensure_runtime_lib_hydrates_from_canonical_target(
     assert isolated_runtime.read_bytes() == _FAKE_STATICLIB
 
 
+def test_ensure_runtime_lib_hydration_requires_artifact_digest_match(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path
+    canonical_target = project_root / "target"
+    isolated_target = project_root / "isolated-target"
+    canonical_runtime = canonical_target / "dev-fast" / "libmolt_runtime.a"
+    isolated_runtime = isolated_target / "dev-fast" / "libmolt_runtime.a"
+    canonical_runtime.parent.mkdir(parents=True, exist_ok=True)
+    canonical_runtime.write_bytes(_FAKE_STATICLIB + b"stale")
+
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+    canonical_fp = cli._artifact_state_path_for_build_state_root(
+        cli._canonical_build_state_root(project_root),
+        canonical_runtime,
+        subdir="runtime_fingerprints",
+        stem_suffix="dev-fast.native",
+        extension="fingerprint",
+    )
+    canonical_fp.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_runtime_fingerprint(
+        canonical_fp, fingerprint, artifact=canonical_runtime
+    )
+    canonical_runtime.write_bytes(_FAKE_STATICLIB + b"mutated")
+    cargo_runs: list[list[str]] = []
+
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(isolated_target))
+    monkeypatch.setattr(
+        cli,
+        "_runtime_fingerprint",
+        lambda *args, **kwargs: dict(fingerprint),
+    )
+
+    def fake_run_cargo(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: float | None,
+        json_output: bool,
+        label: str,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, env, timeout, json_output, label
+        cargo_runs.append(list(cmd))
+        isolated_runtime.parent.mkdir(parents=True, exist_ok=True)
+        isolated_runtime.write_bytes(_FAKE_STATICLIB)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+
+    assert cli._ensure_runtime_lib(
+        isolated_runtime,
+        None,
+        True,
+        "dev-fast",
+        project_root,
+        1.0,
+    )
+    assert cargo_runs
+    assert isolated_runtime.read_bytes() == _FAKE_STATICLIB
+
+
 def test_ensure_runtime_wasm_hydrates_from_current_target_artifact(
     monkeypatch,
     tmp_path: Path,
@@ -392,7 +464,9 @@ def test_ensure_runtime_wasm_hydrates_from_current_target_artifact(
         extension="fingerprint",
     )
     canonical_fp.parent.mkdir(parents=True, exist_ok=True)
-    cli._write_runtime_fingerprint(canonical_fp, fingerprint, artifact=canonical_runtime)
+    cli._write_runtime_fingerprint(
+        canonical_fp, fingerprint, artifact=canonical_runtime
+    )
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
     monkeypatch.setenv("MOLT_EXT_ROOT", str(project_root))
@@ -773,7 +847,9 @@ def test_ensure_runtime_wasm_reloc_uses_reported_staticlib_not_stale_primary(
         del json_output, link_timeout, export_link_args
         linked.append(staticlib_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"\x00asm\x01\x00\x00\x00" + staticlib_path.name.encode())
+        output_path.write_bytes(
+            b"\x00asm\x01\x00\x00\x00" + staticlib_path.name.encode()
+        )
         return True
 
     monkeypatch.setattr(

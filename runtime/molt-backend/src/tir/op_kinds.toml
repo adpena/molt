@@ -54,6 +54,9 @@
 #                  by canonicalize.rs. They live here so operand rewrites do not
 #                  carry backend-local hand-sets beside the generated opcode
 #                  oracle.
+#   - [[explicit_release_operand]] - per-OpCode Python lifetime release facts
+#                  for ops that explicitly release one or all operand roots
+#                  (`DecRef` all operands, `DeleteVar` old slot operand 1).
 #   - alias_rc_barrier_opcodes / alias_heap_barrier_opcodes - opcode-only
 #                  alias-analysis barrier facts. They are conservative
 #                  fail-closed barriers consumed by alias_analysis.rs.
@@ -81,8 +84,11 @@
 classifier_fresh_value = [
     "aiter",
     "ascii_from_obj",
+    "classmethod_new",
+    "code_new",
     "complex_from_obj",
     "contains",
+    "class_def",
     "dataclass_new",
     "dataclass_new_values",
     "dict_from_obj",
@@ -96,8 +102,11 @@ classifier_fresh_value = [
     "exception_new_builtin_empty",
     "exception_new_builtin_one",
     "exception_new_from_class",
+    "exception_finally_pending_observer",
     "float_from_obj",
     "frozenset_new",
+    "func_new",
+    "func_new_closure",
     # The augassign in-place family. Every molt_inplace_* runtime symbol
     # returns an OWNED +1 reference regardless of object identity (a mutating
     # __iadd__-style fast path inc_refs and returns operand 0; the dunder /
@@ -127,11 +136,13 @@ classifier_fresh_value = [
     # whose dunder/buffer/error paths return an owned result object.
     "matmul",
     "object_new",
+    "property_new",
     "range_new",
     "repr_from_obj",
     "set_new",
     "slice",
     "slice_new",
+    "staticmethod_new",
     "str_from_obj",
     "string_format",
     "string_join",
@@ -211,13 +222,16 @@ alias_rc_barrier_opcodes = [
     "CallMethod",
     "ChanRecvYield",
     "ChanSendYield",
+    "CheckException",
     "ClosureLoad",
     "ClosureStore",
+    "Raise",
     "StateSwitch",
     "StateTransition",
     "StateYield",
     "StoreAttr",
     "StoreIndex",
+    "TryStart",
 ]
 
 alias_heap_barrier_opcodes = [
@@ -619,6 +633,9 @@ kind = "set_new"
 [[absorbing_kind]]
 kind = "tuple_new"
 
+[[absorbing_kind]]
+kind = "class_def"
+
 [[absorbing_operand_kind]]
 kind = "list_append"
 absorbed_operand = 1
@@ -639,6 +656,14 @@ source_operand = 0
 opcode = "IterNextUnboxed"
 result = 0
 validity = "conditional_valid_only_on_edge"
+
+[[explicit_release_operand]]
+opcode = "DecRef"
+operand = "all"
+
+[[explicit_release_operand]]
+opcode = "DeleteVar"
+operand = 1
 
 # ===========================================================================
 # Per-OpCode effect classification (EXHAUSTIVE over the OpCode enum).
@@ -1048,7 +1073,7 @@ name = "DeleteVar"
 may_throw = false
 side_effecting = true
 purity = "impure"
-operand_ownership = "all_borrowed"
+operand_ownership = ["borrowed", "borrowed"]
 result_absorbs_operands = false
 
 [[opcode]]
@@ -1777,7 +1802,7 @@ mapper_opcode = "LoadAttr"
 
 [[kind]]
 canonical = "set_attr"
-aliases = ["store_attr", "set_attr_name", "set_attr_generic_ptr", "set_attr_generic_obj", "guarded_field_set", "guarded_field_set_init", "store", "store_init"]
+aliases = ["store_attr", "set_attr_name", "set_attr_generic_ptr", "set_attr_generic_obj", "guarded_field_set", "guarded_field_init", "store", "store_init"]
 mapper_opcode = "StoreAttr"
 
 [[kind]]
@@ -2771,6 +2796,10 @@ reason = "structural: read the last/current exception"
 [[frontend_check_exception_skip]]
 kind = "EXCEPTION_LAST_PENDING"
 reason = "structural: test for a pending exception"
+
+[[frontend_check_exception_skip]]
+kind = "EXCEPTION_FINALLY_PENDING_OBSERVER"
+reason = "structural: observe pending exception for finally save/restore"
 
 [[frontend_check_exception_skip]]
 kind = "EXCEPTION_SET_CAUSE"

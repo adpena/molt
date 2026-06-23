@@ -477,7 +477,7 @@ def test_tensor_scaled_dot_product_attention_matches_manual_path():
     out = tensor_scaled_dot_product_attention(q, k, v, mask, 1.0)
     manual = (
         tensor_softmax_last_axis(
-            (q @ tensor_permute_dims(k, (0, 1, 3, 2))) * Tensor(1.0) + mask
+            (q @ tensor_permute_dims(k, (0, 1, 3, 2))) * 1.0 + mask
         )
         @ v
     )

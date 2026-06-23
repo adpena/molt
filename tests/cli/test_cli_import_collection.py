@@ -9,7 +9,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import time
@@ -44,12 +43,30 @@ def _clear_molt_home_caches() -> None:
     cli._PERSISTED_JSON_OBJECT_CACHE.clear()
     cli._source_content_sha256_cached.cache_clear()
 
-
 def _enable_fake_backend_daemon_unix_socket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     if not hasattr(cli.socket, "AF_UNIX"):
         monkeypatch.setattr(cli.socket, "AF_UNIX", 1, raising=False)
+
+
+def _func_metadata(
+    *,
+    params: int,
+    defaults: list[dict[str, object]] | None = None,
+    kind: str = "sync",
+    has_decorators: bool = False,
+    posonly: int = 0,
+    kwonly: int = 0,
+) -> dict[str, object]:
+    return {
+        "params": params,
+        "defaults": defaults or [],
+        "posonly": posonly,
+        "kwonly": kwonly,
+        "kind": kind,
+        "has_decorators": has_decorators,
+    }
 
 
 def _compile_c_object(tmp_path: Path, name: str, source: str) -> Path:
@@ -73,6 +90,36 @@ def _install_fake_backend_compile(
     backend_ir_files: list[Path] | None = None,
     seen_envs: list[dict[str, str] | None] | None = None,
 ) -> None:
+    fake_runtime_root = Path(os.environ["MOLT_CACHE"]) / "fake-native-runtime"
+    fake_runtime_lib = fake_runtime_root / cli._runtime_lib_archive_name("micro", None)
+    fake_symbols_file = fake_runtime_root / "molt-runtime-symbols.txt"
+
+    def write_fake_runtime_artifacts() -> None:
+        fake_runtime_root.mkdir(parents=True, exist_ok=True)
+        fake_runtime_lib.write_bytes(b"runtime")
+        fake_symbols_file.write_text("molt_test_intrinsic\n", encoding="utf-8")
+
+    def fake_initialize_runtime_artifact_state(
+        *,
+        is_rust_transpile: bool,
+        is_wasm: bool,
+        emit_mode: str,
+        **kwargs: object,
+    ) -> cli._RuntimeArtifactState:
+        state = cli._RuntimeArtifactState()
+        if not is_rust_transpile and not is_wasm and emit_mode in {"bin", "obj"}:
+            write_fake_runtime_artifacts()
+            state.runtime_lib = fake_runtime_lib
+        return state
+
+    def fake_ensure_runtime_lib_ready(
+        runtime_state: cli._RuntimeArtifactState, **kwargs: object
+    ) -> bool:
+        if runtime_state.runtime_lib is None:
+            return True
+        write_fake_runtime_artifacts()
+        return True
+
     def fake_run_subprocess_captured_to_tempfiles(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
@@ -95,6 +142,22 @@ def _install_fake_backend_compile(
         cli,
         "_run_subprocess_captured_to_tempfiles",
         fake_run_subprocess_captured_to_tempfiles,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_initialize_runtime_artifact_state",
+        fake_initialize_runtime_artifact_state,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_maybe_start_native_runtime_lib_ready_async",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(cli, "_ensure_runtime_lib_ready", fake_ensure_runtime_lib_ready)
+    monkeypatch.setattr(
+        cli,
+        "_runtime_intrinsic_symbols_file",
+        lambda runtime_lib: (fake_symbols_file, None),
     )
 
 
@@ -325,6 +388,37 @@ def _frontend_import_transaction_calls(
     return calls
 
 
+def _frontend_import_module_calls(ops: list[dict[str, object]]) -> set[str]:
+    const_str = {
+        op["out"]: op["s_value"]
+        for op in ops
+        if op.get("kind") == "const_str"
+        and isinstance(op.get("out"), str)
+        and isinstance(op.get("s_value"), str)
+    }
+    import_module_funcs = {
+        op["out"]
+        for op in ops
+        if op.get("kind") == "builtin_func"
+        and op.get("s_value") == "molt_importlib_import_module"
+        and isinstance(op.get("out"), str)
+    }
+    calls: set[str] = set()
+    for op in ops:
+        if op.get("kind") != "call_func":
+            continue
+        args = op.get("args")
+        if not isinstance(args, list) or len(args) != 3:
+            continue
+        callee, name_var, _package_var = args
+        if callee not in import_module_funcs:
+            continue
+        name = const_str.get(name_var)
+        if isinstance(name, str):
+            calls.add(name)
+    return calls
+
+
 def test_source_import_syntax_uses_import_transaction_not_module_import() -> None:
     ops = _frontend_main_ops_for_import_source(
         "import pkg.helper as helper\nimport json\n",
@@ -334,8 +428,25 @@ def test_source_import_syntax_uses_import_transaction_not_module_import() -> Non
 
     assert all(op.get("kind") != "module_import" for op in ops)
     calls = _frontend_import_transaction_calls(ops)
-    assert ("pkg.helper", ("*",), 0, False) in calls
+    assert ("pkg.helper", (), 0, False) in calls
     assert ("json", (), 0, False) in calls
+    assert "pkg.helper" not in _frontend_import_module_calls(ops)
+    assert any(op.get("kind") == "module_import_from" for op in ops)
+
+
+def test_literal_importlib_import_module_uses_public_import_module_intrinsic() -> None:
+    ops = _frontend_main_ops_for_import_source(
+        "import importlib\nvalue = importlib.import_module('json')\n",
+        known_modules={"importlib", "json"},
+        stdlib_allowlist={"importlib", "json"},
+    )
+
+    assert "json" in _frontend_import_module_calls(ops)
+    assert all(
+        name != "json" for name, _fromlist, _level, _globals_none in (
+            _frontend_import_transaction_calls(ops)
+        )
+    )
 
 
 def test_relative_from_import_syntax_leaves_package_context_to_transaction() -> None:
@@ -580,6 +691,9 @@ def test_core_closure_copy_reaches_backend_stdlib_symbol_contract(
         module_graph=import_plan.module_graph,
         module_graph_metadata=import_plan.module_graph_metadata,
         module_resolution_cache=import_plan.module_resolution_cache,
+        roots=import_plan.roots,
+        stdlib_root=import_plan.stdlib_root,
+        stdlib_allowlist=set(import_plan.stdlib_allowlist),
         project_root=tmp_path,
         entry_module="demo",
         json_output=False,
@@ -713,6 +827,130 @@ def test_prepare_entry_module_graph_keeps_dependency_function_dynamic_import_laz
     assert prepared.runtime_import_support_policy.needs_runtime_import_support
     assert "pkg.device" in prepared.module_graph
     assert "pkg.runtime.ops_cpu" not in prepared.module_graph
+
+
+def test_prepare_entry_module_graph_admits_declared_static_runtime_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "pkg"
+    runtime = package / "runtime"
+    runtime.mkdir(parents=True)
+    (package / "__init__.py").write_text("import pkg.device\n", encoding="utf-8")
+    (package / "device.py").write_text(
+        "import importlib\n"
+        "def load_backend(name):\n"
+        "    return importlib.import_module(name)\n",
+        encoding="utf-8",
+    )
+    (runtime / "__init__.py").write_text("", encoding="utf-8")
+    (runtime / "ops_cpu.py").write_text("import base64\nVALUE = 1\n", encoding="utf-8")
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import pkg\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_STDLIB_PROFILE", "full")
+    monkeypatch.setenv("MOLT_STATIC_IMPORT_MODULES", "pkg.runtime.ops_cpu")
+
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target="native",
+        import_admission_policy=cli._ImportAdmissionPolicy(
+            external_roots=(tmp_path,),
+            admitted_external_packages=frozenset({"pkg"}),
+        ),
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert "pkg.runtime.ops_cpu" in prepared.module_graph
+    assert "base64" in prepared.module_graph
+    assert "pkg.runtime.ops_cpu" in prepared.explicit_imports
+
+
+def test_prepare_entry_module_graph_full_scans_declared_static_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "pkg"
+    runtime = package / "runtime"
+    runtime.mkdir(parents=True)
+    (package / "__init__.py").write_text("import pkg.device\n", encoding="utf-8")
+    (package / "device.py").write_text(
+        "def load_backend():\n"
+        "    from pkg.runtime import ops_cpu\n"
+        "    return ops_cpu.VALUE\n",
+        encoding="utf-8",
+    )
+    (runtime / "__init__.py").write_text("", encoding="utf-8")
+    (runtime / "ops_cpu.py").write_text("VALUE = 1\n", encoding="utf-8")
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import pkg\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_STATIC_IMPORT_MODULES", "pkg.device")
+
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target="native",
+        import_admission_policy=cli._ImportAdmissionPolicy(
+            external_roots=(tmp_path,),
+            admitted_external_packages=frozenset({"pkg"}),
+        ),
+    )
+
+    assert error is None
+    assert prepared is not None
+    assert "pkg.device" in prepared.module_graph
+    assert "pkg.runtime.ops_cpu" in prepared.module_graph
+    assert "pkg.device" in prepared.explicit_imports
+
+
+def test_prepare_entry_module_graph_rejects_unadmitted_static_runtime_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    package = tmp_path / "pkg"
+    runtime = package / "runtime"
+    runtime.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (runtime / "__init__.py").write_text("", encoding="utf-8")
+    (runtime / "ops_cpu.py").write_text("VALUE = 1\n", encoding="utf-8")
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import pkg\n", encoding="utf-8")
+    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    monkeypatch.setenv("MOLT_STATIC_IMPORT_MODULES", "pkg.runtime.ops_cpu")
+
+    prepared, error = cli._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target="native",
+        import_admission_policy=cli._ImportAdmissionPolicy(external_roots=(tmp_path,)),
+    )
+
+    assert prepared is None
+    assert error == 2
+    err = capsys.readouterr().err
+    assert "MOLT_STATIC_IMPORT_MODULES" in err
+    assert "not within an admitted external static package" in err
 
 
 def test_prepare_entry_module_graph_marks_dependency_module_init_dynamic_import(
@@ -1634,6 +1872,61 @@ def test_from_import_graph_does_not_admit_case_mismatched_attribute_child(
     assert "tinygrad.Tensor" in explicit_imports
 
 
+def test_from_import_star_graph_admits_static_all_child_module(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    site = tmp_path / "site"
+    project.mkdir()
+    package = site / "tinygrad"
+    package.mkdir(parents=True)
+    entry = project / "main.py"
+    entry.write_text("from tinygrad import *\n", encoding="utf-8")
+    (package / "__init__.py").write_text("__all__ = ['tensor']\n", encoding="utf-8")
+    tensor = package / "tensor.py"
+    tensor.write_text("class Tensor:\n    pass\n", encoding="utf-8")
+
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [project.resolve(), site.resolve()]
+    roots = [*module_roots, stdlib_root]
+    stdlib_allowlist = cli._stdlib_allowlist()
+    cache = cli._ModuleResolutionCache()
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        roots,
+        module_roots,
+        stdlib_root,
+        project,
+        stdlib_allowlist,
+        skip_modules=cli.STUB_MODULES,
+        stub_parents=cli.STUB_PARENT_MODULES,
+        resolver_cache=cache,
+    )
+
+    assert {"tinygrad", "tinygrad.tensor"} <= set(graph)
+    assert graph["tinygrad.tensor"] == tensor
+    assert "tinygrad.tensor" in explicit_imports
+
+    tree = ast.parse(entry.read_text(encoding="utf-8"))
+    _, imports, _, _, _, _, _, _ = cli._load_module_analysis(
+        entry,
+        module_name="main",
+        is_package=False,
+        import_scan_mode="full",
+        source=entry.read_text(encoding="utf-8"),
+        logical_source_path=str(entry),
+        resolution_cache=cache,
+        project_root=project,
+        retain_source=False,
+        retain_tree=False,
+        roots=roots,
+        stdlib_root=stdlib_root,
+        stdlib_allowlist=stdlib_allowlist,
+    )
+    assert tree is not None
+    assert "tinygrad.tensor" in imports
+
+
 def test_module_graph_policy_digest_includes_external_admission(
     tmp_path: Path,
 ) -> None:
@@ -2133,7 +2426,6 @@ def test_collect_imports_resolves_name_argument_for_import_module() -> None:
     imports = cli._collect_imports(tree)
     assert "pathlib" in imports
 
-
 def test_collect_imports_resolves_importlib_intrinsic_transaction_wrapper() -> None:
     tree = ast.parse(
         "_MOLT_IMPORTLIB_RESOLVE_NAME = object()\n"
@@ -2202,6 +2494,112 @@ def test_collect_imports_real_importlib_init_includes_runtime_submodules() -> No
     assert "importlib._bootstrap_external" in imports
 
 
+def test_collect_imports_resolves_aliased_importlib_import_module() -> None:
+    tree = ast.parse(
+        "import importlib as loader\nTARGET = 'pathlib'\nloader.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" in imports
+
+
+def test_collect_imports_resolves_from_import_import_module_alias() -> None:
+    tree = ast.parse(
+        "from importlib import import_module as load_module\n"
+        "TARGET = 'pathlib'\n"
+        "load_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" in imports
+
+
+def test_collect_imports_does_not_resolve_future_importlib_alias() -> None:
+    tree = ast.parse(
+        "TARGET = 'pathlib'\n"
+        "loader.import_module(TARGET)\n"
+        "import importlib as loader\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" not in imports
+
+
+def test_collect_imports_importlib_rebinding_blocks_static_resolution() -> None:
+    tree = ast.parse(
+        "import importlib\n"
+        "TARGET = 'pathlib'\n"
+        "def fake(name):\n"
+        "    return None\n"
+        "importlib.import_module = fake\n"
+        "importlib.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" not in imports
+
+
+def test_collect_imports_function_local_importlib_alias_does_not_leak() -> None:
+    tree = ast.parse(
+        "def configure():\n"
+        "    import importlib as loader\n"
+        "TARGET = 'pathlib'\n"
+        "loader.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" not in imports
+
+
+def test_collect_imports_function_local_rebinding_does_not_poison_module_alias() -> None:
+    tree = ast.parse(
+        "import importlib\n"
+        "TARGET = 'pathlib'\n"
+        "def configure():\n"
+        "    importlib.import_module = lambda name: None\n"
+        "importlib.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" in imports
+
+
+def test_collect_imports_resolves_importlib_rhs_before_alias_rebind() -> None:
+    tree = ast.parse(
+        "import importlib\n"
+        "TARGET = 'pathlib'\n"
+        "importlib = importlib.import_module(TARGET)\n"
+    )
+    imports = cli._collect_imports(tree)
+    assert "pathlib" in imports
+
+
+def test_discover_module_graph_includes_importlib_from_alias_target(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    helper = package / "helper.py"
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    entry = tmp_path / "main.py"
+    entry.write_text(
+        "from importlib import import_module as load_module\n"
+        "mod = load_module('pkg.helper')\n",
+        encoding="utf-8",
+    )
+    stdlib_root = cli._stdlib_root_path()
+    module_roots = [tmp_path.resolve()]
+
+    graph, explicit_imports = cli._discover_module_graph(
+        entry,
+        [*module_roots, stdlib_root],
+        module_roots,
+        stdlib_root,
+        tmp_path,
+        cli._stdlib_allowlist(),
+        skip_modules=cli.STUB_MODULES,
+        stub_parents=cli.STUB_PARENT_MODULES,
+    )
+
+    assert graph["pkg.helper"] == helper
+    assert "pkg.helper" in explicit_imports
+
+
 def test_cached_json_round_trips_molt_value_and_set() -> None:
     payload = {
         "value": MoltValue(name="v1", type_hint="int"),
@@ -2230,7 +2628,7 @@ def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
     assert "sys" in imports
 
 
-def test_collect_imports_uses_single_module_tree_walk_for_nested_scans(
+def test_collect_imports_avoids_module_tree_walk_for_nested_scans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tree = ast.parse(
@@ -2254,7 +2652,7 @@ def test_collect_imports_uses_single_module_tree_walk_for_nested_scans(
 
     imports = cli._collect_imports(tree)
 
-    assert module_tree_walks == 1
+    assert module_tree_walks == 0
     assert "os" in imports
     assert "warnings" in imports
 
@@ -2386,6 +2784,9 @@ def _write_shared_stdlib_test_contract(stdlib_obj: Path, cache_key: str) -> str:
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_obj).write_text(
         '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}',
         encoding="utf-8",
+    )
+    cli._stdlib_object_digest_sidecar_path(stdlib_obj).write_text(
+        cli._sha256_file(stdlib_obj) + "\n", encoding="utf-8"
     )
     return manifest
 
@@ -3322,11 +3723,20 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
     )
     first_read_calls = read_calls
     first_parse_calls = parse_calls
+    assert first_read_calls > 0
+    assert first_parse_calls > 0
     for module_path in graph.values():
         source = shared_cache.read_module_source(module_path)
         shared_cache.parse_module_ast(module_path, source, filename=str(module_path))
-    assert read_calls == first_read_calls
-    assert parse_calls == first_parse_calls
+    retained_read_calls = read_calls
+    retained_parse_calls = parse_calls
+    assert retained_read_calls == first_read_calls
+    assert retained_parse_calls == first_parse_calls
+    for module_path in graph.values():
+        source = shared_cache.read_module_source(module_path)
+        shared_cache.parse_module_ast(module_path, source, filename=str(module_path))
+    assert read_calls == retained_read_calls
+    assert parse_calls == retained_parse_calls
 
     read_calls = 0
     parse_calls = 0
@@ -3388,8 +3798,8 @@ def test_shared_module_resolution_cache_skips_resolve_for_normalized_absolute_pa
     def fail_resolve(self: Path, *args: object, **kwargs: object) -> Path:
         raise AssertionError(f"resolve() should not run for {self}")
 
-    with monkeypatch.context() as patch:
-        patch.setattr(Path, "resolve", fail_resolve)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "resolve", fail_resolve)
         assert cache.resolved_path(path) == path
 
 
@@ -3769,7 +4179,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="full",
-        func_defaults={"f": {"x": 1}},
+        func_defaults={"f": _func_metadata(params=1)},
         func_kinds={"f": "sync"},
         imports=("json",),
     )
@@ -3779,7 +4189,7 @@ def test_persisted_module_analysis_cache_tracks_tooling_fingerprint(
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="full",
-    ) == ({"f": {"x": 1}}, {"f": "sync"}, ("json",))
+    ) == ({"f": _func_metadata(params=1)}, {"f": "sync"}, ("json",))
 
     monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tool-b")
     assert (
@@ -3809,7 +4219,7 @@ def test_persisted_module_analysis_cache_tracks_source_content(
         module_name="pkg.mod",
         is_package=False,
         import_scan_mode="full",
-        func_defaults={"f": {"x": 1}},
+        func_defaults={"f": _func_metadata(params=1)},
         func_kinds={"f": "sync"},
         imports=("json",),
     )
@@ -3928,9 +4338,9 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     reads: list[Path] = []
     original_read = cache.read_module_source
 
-    def wrapped_read(path: Path) -> str:
+    def wrapped_read(path: Path, *, retain: bool = True) -> str:
         reads.append(path)
-        return original_read(path)
+        return original_read(path, retain=retain)
 
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
 
@@ -3969,9 +4379,9 @@ def test_discover_module_graph_from_paths_batches_shared_dependency_scan(
     reads: list[Path] = []
     original_read = cache.read_module_source
 
-    def wrapped_read(path: Path) -> str:
+    def wrapped_read(path: Path, *, retain: bool = True) -> str:
         reads.append(path)
-        return original_read(path)
+        return original_read(path, retain=retain)
 
     monkeypatch.setattr(cache, "read_module_source", wrapped_read)
 
@@ -4111,9 +4521,9 @@ def test_discover_module_graph_reuses_persisted_paths_for_unchanged_modules(
     original_resolve = cache.resolve_module
     resolved_candidates: list[str] = []
 
-    def wrapped_read(path: Path) -> str:
+    def wrapped_read(path: Path, *, retain: bool = True) -> str:
         read_paths.append(path)
-        return original_read(path)
+        return original_read(path, retain=retain)
 
     def wrapped_resolve(
         candidate: str,
@@ -4439,6 +4849,54 @@ def test_module_analysis_cache_path_tracks_import_scan_mode(tmp_path: Path) -> N
     assert full != module_init
 
 
+def test_module_analysis_cache_path_tracks_capability_config_digest(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    base = cli._module_analysis_cache_path(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        import_scan_mode="full",
+        capability_config_digest="capability-a",
+    )
+    changed = cli._module_analysis_cache_path(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        import_scan_mode="full",
+        capability_config_digest="capability-b",
+    )
+
+    assert base != changed
+
+
+def test_import_scan_cache_path_tracks_capability_config_digest(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg" / "mod.py"
+    base = cli._import_scan_cache_path(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        import_scan_mode="full",
+        capability_config_digest="capability-a",
+    )
+    changed = cli._import_scan_cache_path(
+        tmp_path,
+        module_path,
+        module_name="pkg.mod",
+        is_package=False,
+        import_scan_mode="full",
+        capability_config_digest="capability-b",
+    )
+
+    assert base != changed
+
+
 def test_persisted_module_analysis_cache_rejects_import_scan_mode_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -4529,6 +4987,43 @@ def test_module_graph_cache_key_is_cached(tmp_path: Path) -> None:
     assert info.currsize >= 1
 
 
+def test_module_graph_cache_key_tracks_capability_config_digest(
+    tmp_path: Path,
+) -> None:
+    entry_path = tmp_path / "main.py"
+    roots = (str(tmp_path),)
+    module_roots = (str(tmp_path / "src"),)
+    stdlib_root = str(tmp_path / "stdlib")
+    cli._module_graph_cache_key.cache_clear()
+
+    base = cli._module_graph_cache_key(
+        str(entry_path),
+        roots,
+        module_roots,
+        stdlib_root,
+        (),
+        (),
+        (),
+        cli._module_graph_policy_digest({"json"}),
+        "tooling",
+        capability_config_digest="capability-a",
+    )
+    changed = cli._module_graph_cache_key(
+        str(entry_path),
+        roots,
+        module_roots,
+        stdlib_root,
+        (),
+        (),
+        (),
+        cli._module_graph_policy_digest({"json"}),
+        "tooling",
+        capability_config_digest="capability-b",
+    )
+
+    assert base != changed
+
+
 def test_module_graph_cache_path_uses_cached_graph_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4552,6 +5047,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
         stdlib_allowlist_digest: str,
         compiler_fingerprint: str,
         target_python_tag: str = cli._DEFAULT_TARGET_PYTHON_VERSION.tag,
+        capability_config_digest: str = "",
     ) -> str:
         nonlocal calls
         calls += 1
@@ -4566,6 +5062,7 @@ def test_module_graph_cache_path_uses_cached_graph_key(
             stdlib_allowlist_digest,
             compiler_fingerprint,
             target_python_tag,
+            capability_config_digest=capability_config_digest,
         )
 
     monkeypatch.setattr(cli, "_module_graph_cache_key", wrapped, raising=True)
@@ -4806,6 +5303,9 @@ def test_clean_delegates_to_canonical_artifact_cleanup(
         "_require_molt_root",
         lambda _root, _json_output, _command: None,
     )
+    cleanup_tool = tmp_path / "tools" / "artifact_cleanup.py"
+    cleanup_tool.parent.mkdir(parents=True)
+    cleanup_tool.write_text("# test cleanup tool marker\n", encoding="utf-8")
     calls: list[list[str]] = []
 
     class FakeArtifactCleanup:
@@ -4814,8 +5314,8 @@ def test_clean_delegates_to_canonical_artifact_cleanup(
             calls.append(list(argv))
             return 0
 
-    monkeypatch.setattr(
-        cli,
+    monkeypatch.setitem(
+        cli.clean.__globals__,
         "_load_artifact_cleanup_module",
         lambda _root: FakeArtifactCleanup,
     )
@@ -4854,6 +5354,9 @@ def test_clean_defaults_to_canonical_dry_run(
         "_require_molt_root",
         lambda _root, _json_output, _command: None,
     )
+    cleanup_tool = tmp_path / "tools" / "artifact_cleanup.py"
+    cleanup_tool.parent.mkdir(parents=True)
+    cleanup_tool.write_text("# test cleanup tool marker\n", encoding="utf-8")
     calls: list[list[str]] = []
 
     class FakeArtifactCleanup:
@@ -4862,8 +5365,8 @@ def test_clean_defaults_to_canonical_dry_run(
             calls.append(list(argv))
             return 0
 
-    monkeypatch.setattr(
-        cli,
+    monkeypatch.setitem(
+        cli.clean.__globals__,
         "_load_artifact_cleanup_module",
         lambda _root: FakeArtifactCleanup,
     )
@@ -5442,6 +5945,10 @@ def test_load_module_analysis_persists_bytes_defaults(
         "f": {
             "params": 1,
             "defaults": [{"const": True, "value": b"abc"}],
+            "posonly": 0,
+            "kwonly": 0,
+            "kind": "sync",
+            "has_decorators": False,
         }
     }
     assert func_kinds == {"f": "sync"}
@@ -5482,6 +5989,78 @@ def test_load_module_analysis_persists_bytes_defaults(
     assert cache_hit is True
     assert interface_changed is False
     assert cached_path_stat is not None
+
+
+def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg.py"
+    module_path.write_text("def g():\n    yield 1\n")
+    cache = cli._ModuleResolutionCache()
+    stat = module_path.stat()
+    source_sha256 = cli._source_content_sha256(module_path, stat)
+    assert source_sha256 is not None
+    cache_path = cli._module_analysis_cache_path(
+        tmp_path,
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        import_scan_mode="full",
+    )
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cli._write_artifact_sync_payload(
+        cache_path,
+        {
+            "version": cli._MODULE_ANALYSIS_CACHE_SCHEMA_VERSION,
+            "compiler_fingerprint": cli._cache_tooling_fingerprint(),
+            "module_name": "pkg",
+            "is_package": False,
+            "import_scan_mode": "full",
+            "target_python": cli._DEFAULT_TARGET_PYTHON_VERSION.tag,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "source_sha256": source_sha256,
+            "func_defaults": {"g": {"params": 0, "defaults": []}},
+            "imports": [],
+        },
+        default=cli._json_ir_default,
+    )
+
+    (
+        tree,
+        imports,
+        func_defaults,
+        func_kinds,
+        cached_source,
+        cache_hit,
+        interface_changed,
+        path_stat,
+    ) = cli._load_module_analysis(
+        module_path,
+        module_name="pkg",
+        is_package=False,
+        import_scan_mode="full",
+        source=None,
+        logical_source_path=str(module_path),
+        resolution_cache=cache,
+        project_root=tmp_path,
+    )
+
+    assert tree is not None
+    assert imports == ()
+    assert func_defaults["g"] == {
+        "params": 0,
+        "defaults": [],
+        "posonly": 0,
+        "kwonly": 0,
+        "kind": "gen",
+        "has_decorators": False,
+    }
+    assert func_kinds == {"g": "gen"}
+    assert cached_source == module_path.read_text(encoding="utf-8")
+    assert cache_hit is False
+    assert interface_changed is True
+    assert path_stat is not None
 
 
 def test_load_module_analysis_reuses_persisted_module_analysis_imports(
@@ -7841,6 +8420,7 @@ def test_build_skips_daemon_preflight_when_socket_exists(
         "_start_backend_daemon",
         lambda *args, **kwargs: True,
     )
+    _install_fake_backend_compile(monkeypatch)
 
     compile_calls = 0
 
@@ -7936,18 +8516,22 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
 def test_stdlib_object_cache_path_tracks_build_variant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cache_root = tmp_path / "cache"
-    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    ambient_cache_root = tmp_path / "ambient-cache"
+    explicit_cache_root = tmp_path / "explicit-cache"
+    monkeypatch.setenv("MOLT_CACHE", str(ambient_cache_root))
 
-    base = cli._stdlib_object_cache_path(tmp_path / "program.o", "variant=a")
-    same = cli._stdlib_object_cache_path(tmp_path / "program.o", "variant=a")
-    changed = cli._stdlib_object_cache_path(tmp_path / "program.o", "variant=b")
+    base = cli._stdlib_object_cache_path(explicit_cache_root / "program.o", "variant=a")
+    same = cli._stdlib_object_cache_path(explicit_cache_root / "program.o", "variant=a")
+    changed = cli._stdlib_object_cache_path(
+        explicit_cache_root / "program.o", "variant=b"
+    )
 
     assert base is not None
     assert same == base
     assert changed is not None
     assert changed != base
-    assert base.parent == cache_root
+    assert base.parent == explicit_cache_root
+    assert base.parent != ambient_cache_root
     assert base.name.startswith("stdlib_shared_")
     assert base.suffix == ".o"
 
@@ -7998,6 +8582,9 @@ def test_prepare_frontend_analysis_uses_path_backed_source_catalog(
         module_graph=module_graph,
         module_graph_metadata=metadata,
         module_resolution_cache=resolution_cache,
+        roots=[tmp_path],
+        stdlib_root=cli._stdlib_root_path(),
+        stdlib_allowlist=cli._stdlib_allowlist(),
         project_root=tmp_path,
         entry_module="main",
         json_output=False,
@@ -8296,13 +8883,19 @@ def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None
                 "promotion_signal": "pkg.mod::fn_a",
                 "budget_ms": 120.0,
                 "spent_ms": 140.0,
+                "work_budget": 100.0,
+                "work_units_spent": 140.0,
                 "degraded": True,
                 "degrade_events": [
                     {
-                        "reason": "budget_exceeded",
+                        "reason": "work_budget_exceeded",
                         "stage": "round_2_post_dce",
                         "action": "disable_cse",
                         "spent_ms": 140.0,
+                        "value": {
+                            "work_budget": 100.0,
+                            "work_units": 140.0,
+                        },
                     }
                 ],
             }
@@ -8337,11 +8930,20 @@ def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None
     assert payload["tier_base_summary"] == {"B": 1}
     assert payload["promoted_functions"] == 1
     assert payload["promotion_source_summary"] == {"pgo_hot_functions": 1}
-    assert payload["degrade_reason_summary"] == {"budget_exceeded": 1}
+    assert payload["degrade_reason_summary"] == {"work_budget_exceeded": 1}
     assert payload["policy_config"]["hot_tier_promotion_enabled"] is True
+    assert payload["policy_config"]["work_budget_override"] is None
     assert payload["policy_config"]["budget_alpha"] == 0.03
     assert payload["policy_config"]["budget_beta"] == 0.75
     assert payload["policy_config"]["budget_scale"] == 1.0
+    assert payload["telemetry_budget_utilization_avg"] == pytest.approx(140.0 / 120.0)
+    assert payload["telemetry_budget_utilization_p95"] == pytest.approx(140.0 / 120.0)
+    assert payload["functions_over_telemetry_budget"] == 1
+    assert payload["functions_under_50pct_telemetry_budget"] == 0
+    assert payload["work_budget_utilization_avg"] == 1.4
+    assert payload["work_budget_utilization_p95"] == 1.4
+    assert payload["functions_over_work_budget"] == 1
+    assert payload["functions_under_50pct_work_budget"] == 0
     assert payload["function_count"] == 1
     hotspots = payload["pass_hotspots_top"]
     assert hotspots
@@ -8352,9 +8954,14 @@ def test_build_midend_diagnostics_payload_summarizes_policy_and_passes() -> None
     assert fn_hotspots
     assert fn_hotspots[0]["module"] == "pkg.mod"
     assert fn_hotspots[0]["function"] == "fn_a"
+    assert fn_hotspots[0]["work_budget"] == 100.0
+    assert fn_hotspots[0]["work_units_spent"] == 140.0
+    normalized = payload["policy_outcomes_by_function"]["pkg.mod::fn_a"]
+    assert normalized["work_budget"] == 100.0
+    assert normalized["work_units_spent"] == 140.0
     degrade_hotspots = payload["degrade_event_hotspots_top"]
     assert degrade_hotspots
-    assert degrade_hotspots[0]["reason"] == "budget_exceeded"
+    assert degrade_hotspots[0]["reason"] == "work_budget_exceeded"
     promotion_hotspots = payload["promotion_hotspots_top"]
     assert promotion_hotspots
     assert promotion_hotspots[0]["module"] == "pkg.mod"
@@ -8694,10 +9301,13 @@ def test_analyze_module_schedule_marks_cycles_and_appends_remaining() -> None:
 
 def test_frontend_lower_module_worker_smoke(tmp_path: Path) -> None:
     module_path = tmp_path / "worker_module.py"
+    source = "x = 1\ny = x + 2\n"
     payload = {
         "module_name": "worker_module",
         "module_path": str(module_path),
-        "source_lease": {"kind": "inline", "source": "x = 1\ny = x + 2\n"},
+        "source_lease": cli._ModuleSourceLease.inline(
+            module_path, source
+        ).worker_payload(),
         "parse_codec": "msgpack",
         "type_hint_policy": "ignore",
         "fallback_policy": "error",
@@ -8815,11 +9425,30 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
                 "policy_config": {
                     "profile_override": None,
                     "hot_tier_promotion_enabled": True,
-                    "work_budget_override": 4096.0,
+                    "work_budget_override": 512.0,
                     "budget_alpha": 0.03,
                     "budget_beta": 0.75,
                     "budget_scale": 1.0,
                 },
+                "work_budget_utilization_avg": 0.75,
+                "work_budget_utilization_p95": 0.8,
+                "functions_over_work_budget": 1,
+                "functions_under_50pct_work_budget": 2,
+                "telemetry_budget_utilization_avg": 1.25,
+                "telemetry_budget_utilization_p95": 1.5,
+                "functions_over_telemetry_budget": 3,
+                "functions_under_50pct_telemetry_budget": 4,
+                "function_hotspots_top": [
+                    {
+                        "module": "pkg.mod",
+                        "function": "cold_fn",
+                        "spent_ms": 18.0,
+                        "budget_ms": 12.0,
+                        "work_units_spent": 900.0,
+                        "work_budget": 600.0,
+                        "degraded": True,
+                    }
+                ],
                 "promoted_functions": 2,
                 "promotion_source_summary": {"pgo_hot_functions": 2},
                 "promotion_hotspots_top": [
@@ -8844,10 +9473,31 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "frontend_parallel.layer.1: mode=parallel" in stderr
     assert "frontend_parallel.worker_ms: count=3" in stderr
     assert "- midend.policy.hot_tier_promotion_enabled: True" in stderr
-    assert "- midend.policy.work_budget_override: 4096.0000" in stderr
+    assert "- midend.policy.work_budget_override: 512.0000" in stderr
     assert (
         "- midend.policy.budget_formula: alpha=0.0300 beta=0.7500 scale=1.0000"
         in stderr
+    )
+    assert "- midend.work_budget_utilization_avg: 0.7500" in stderr
+    assert "- midend.work_budget_utilization_p95: 0.8000" in stderr
+    assert "- midend.functions_over_work_budget: 1" in stderr
+    assert "- midend.functions_under_50pct_work_budget: 2" in stderr
+    assert "- midend.telemetry_budget_utilization_avg: 1.2500" in stderr
+    assert "- midend.telemetry_budget_utilization_p95: 1.5000" in stderr
+    assert "- midend.functions_over_telemetry_budget: 3" in stderr
+    assert "- midend.functions_under_50pct_telemetry_budget: 4" in stderr
+    assert (
+        "midend.function_hotspot.1: pkg.mod::cold_fn spent_ms=18.000 "
+        "budget_ms=12.000 work_units=900.000 work_budget=600.000 degraded=True"
+        in stderr
+    )
+    assert (
+        "midend.work_budget_top.1: pkg.mod::cold_fn ratio=1.5000 "
+        "work_units=900.000 work_budget=600.000" in stderr
+    )
+    assert (
+        "midend.telemetry_budget_top.1: pkg.mod::cold_fn ratio=1.5000 "
+        "spent_ms=18.000 budget_ms=12.000" in stderr
     )
     assert "- midend.promoted_functions: 2" in stderr
     assert "- midend.promotion_source.pgo_hot_functions: 2" in stderr
@@ -8901,7 +9551,7 @@ def test_midend_policy_config_snapshot_honors_env(
     monkeypatch.setenv("MOLT_MIDEND_PROFILE", "release")
     monkeypatch.setenv("MOLT_MIDEND_HOT_TIER_PROMOTION", "0")
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_MS", "42")
-    monkeypatch.setenv("MOLT_MIDEND_WORK_BUDGET", "4096")
+    monkeypatch.setenv("MOLT_MIDEND_WORK_BUDGET", "2048")
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_ALPHA", "0.5")
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_BETA", "2.0")
     monkeypatch.setenv("MOLT_MIDEND_BUDGET_SCALE", "1.5")
@@ -8909,7 +9559,7 @@ def test_midend_policy_config_snapshot_honors_env(
     assert cli._midend_policy_config_snapshot() == {
         "profile_override": "release",
         "hot_tier_promotion_enabled": False,
-        "work_budget_override": 4096.0,
+        "work_budget_override": 2048.0,
         "budget_alpha": 0.5,
         "budget_beta": 2.0,
         "budget_scale": 1.5,
@@ -9434,7 +10084,10 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
             is True
         )
 
-        assert spawn_calls == [
+        backend_spawn_calls = [
+            cmd for cmd in spawn_calls if cmd[0] == str(backend_bin)
+        ]
+        assert backend_spawn_calls == [
             [str(backend_bin), "--daemon", "--socket", str(socket_path)]
         ]
         assert wait_timeouts == [0.25]
@@ -9515,6 +10168,7 @@ def test_start_backend_daemon_restarts_stale_daemon_without_running_cargo(
     )
     monkeypatch.setattr(cli.subprocess, "Popen", lambda *args, **kwargs: _FakePopen())
 
+    warnings: list[str] = []
     assert (
         cli._start_backend_daemon(
             backend_bin,
@@ -9525,12 +10179,15 @@ def test_start_backend_daemon_restarts_stale_daemon_without_running_cargo(
             config_digest=None,
             startup_timeout=2.0,
             json_output=True,
-            warnings=[],
+            warnings=warnings,
         )
-        is True
+        is False
     )
-    assert terminated == [1234]
-    assert removed == [identity_path]
+    assert terminated == []
+    assert removed == []
+    assert warnings
+    assert "preserving verified pid 1234" in warnings[0]
+    assert "one-shot backend compile" in warnings[0]
 
 
 def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
@@ -11169,18 +11826,48 @@ def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint
 ) -> None:
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
-    monkeypatch.setattr(cli, "_runtime_fingerprint", lambda *args, **kwargs: None)
+    fingerprint = {"hash": "ok"}
+    monkeypatch.setattr(
+        cli, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
+    )
     monkeypatch.setattr(
         cli,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "fingerprint.json",
     )
     monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_artifact_needs_rebuild", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         cli,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
+    )
+    checked: list[Path] = []
+
+    def fake_runtime_artifact_fingerprint_matches(
+        artifact: Path,
+        current_fingerprint: dict[str, str | None] | None,
+        fingerprint_path: Path,
+        *,
+        require_artifact_digest: bool,
+    ) -> bool:
+        assert artifact == runtime_lib
+        assert current_fingerprint == fingerprint
+        assert fingerprint_path == tmp_path / "fingerprint.json"
+        assert require_artifact_digest is True
+        checked.append(artifact)
+        return True
+
+    monkeypatch.setattr(
+        cli,
+        "_runtime_artifact_fingerprint_matches",
+        fake_runtime_artifact_fingerprint_matches,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_completed_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected runtime rebuild")
+        ),
     )
 
     assert cli._ensure_runtime_lib(
@@ -11191,6 +11878,7 @@ def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint
         project_root=tmp_path,
         cargo_timeout=1.0,
     )
+    assert checked == [runtime_lib]
 
 
 def test_ensure_runtime_wasm_does_not_overwrite_satisfied_runtime_with_unsatisfied_build_artifact(
@@ -11432,15 +12120,26 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
             "runtime_features": tuple(cast(tuple[str, ...], kwargs["runtime_features"]))
         },
     )
+
+    def fake_runtime_artifact_fingerprint_matches(
+        artifact: Path,
+        fingerprint: dict[str, str | None] | None,
+        fingerprint_path: Path,
+        *,
+        require_artifact_digest: bool,
+    ) -> bool:
+        del artifact, fingerprint_path
+        assert require_artifact_digest is True
+        assert fingerprint is not None
+        verification_calls.append(
+            frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
+        )
+        return True
+
     monkeypatch.setattr(
         cli,
-        "_artifact_needs_rebuild",
-        lambda artifact, fingerprint, stored_fingerprint: (
-            verification_calls.append(
-                frozenset(cast(tuple[str, ...], fingerprint["runtime_features"]))
-            )
-            or False
-        ),
+        "_runtime_artifact_fingerprint_matches",
+        fake_runtime_artifact_fingerprint_matches,
     )
 
     try:
@@ -11537,6 +12236,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         capability_profiles=[],
         capabilities_source=None,
         manifest_env_vars={},
+        capability_config_cache_digest="",
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
     )
     resolved_entry = cli._ResolvedBuildEntry(
@@ -11588,7 +12288,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         frontend_layer_execution_context=cli._FrontendLayerExecutionContext(
             syntax_error_modules={},
             module_graph={},
-            module_source_catalog=cli._build_module_source_catalog({}),
+            module_source_catalog=cli._ModuleSourceCatalog(leases={}),
             project_root=tmp_path,
             module_resolution_cache=cli._ModuleResolutionCache(),
             parse_codec="json",
@@ -11847,6 +12547,63 @@ def test_ensure_backend_binary_uses_native_feature_for_native(
             "native-backend",
         ]
     ]
+
+
+def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend"
+    daemon_root = tmp_path / "target" / ".molt_state" / "backend_daemon"
+    daemon_root.mkdir(parents=True)
+    socket_path = tmp_path / "daemon.sock"
+    identity_path = daemon_root / "molt-backend.dev-fast.deadbeef.identity.json"
+    identity = _test_backend_daemon_identity(
+        4321,
+        socket_path=socket_path,
+        project_root=tmp_path,
+        backend_bin=backend_bin,
+    )
+    cli._write_backend_daemon_identity(identity_path, identity)
+    fingerprint = {"hash": "abc", "rustc": "rustc", "inputs_digest": "inputs"}
+
+    def fake_run_cargo(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        exe_suffix = ".exe" if os.name == "nt" else ""
+        cargo_backend_bin = backend_bin.parent / f"molt-backend{exe_suffix}"
+        cargo_backend_bin.parent.mkdir(parents=True, exist_ok=True)
+        cargo_backend_bin.write_text("#!/bin/sh\n")
+        cargo_backend_bin.chmod(0o755)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(
+        cli, "_backend_fingerprint", lambda *args, **kwargs: fingerprint
+    )
+    monkeypatch.setattr(cli, "_run_cargo_with_sccache_retry", fake_run_cargo)
+    monkeypatch.setattr(
+        cli.os,
+        "kill",
+        lambda pid, sig: (_ for _ in ()).throw(
+            AssertionError("backend rebuild must not signal live daemons")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_run_subprocess_captured_to_tempfiles",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
+    )
+
+    assert cli._ensure_backend_binary(
+        backend_bin,
+        cargo_timeout=1.0,
+        json_output=True,
+        cargo_profile="dev-fast",
+        project_root=tmp_path,
+        backend_features=("native-backend",),
+    )
+    assert identity_path.exists()
 
 
 def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
@@ -14543,6 +15300,42 @@ def test_backend_daemon_compile_request_includes_batch_op_budget_env(
     assert payload["env"]["MOLT_BACKEND_BATCH_OP_BUDGET"] == "16384"
 
 
+def test_backend_daemon_compile_request_includes_resource_env_without_codegen_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    baseline_digest = cli._backend_codegen_env_digest(is_wasm=False)
+    monkeypatch.setenv("MOLT_BACKEND_MEMORY_AVAILABLE_GB", "18")
+    monkeypatch.setenv("MOLT_BACKEND_MAX_RSS_GB", "18")
+    monkeypatch.setenv("MOLT_BACKEND_MEMORY_RESERVE_GB", "4")
+    monkeypatch.setenv("RAYON_NUM_THREADS", "2")
+
+    request_bytes, error = cli._backend_daemon_compile_request_bytes(
+        ir={"functions": []},
+        backend_output=backend_output,
+        is_wasm=False,
+        wasm_link=False,
+        wasm_data_base=None,
+        wasm_table_base=None,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key="function-cache",
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+    )
+
+    assert error is None
+    assert request_bytes is not None
+    payload = json.loads(request_bytes)
+    assert payload["env"]["MOLT_BACKEND_MEMORY_AVAILABLE_GB"] == "18"
+    assert payload["env"]["MOLT_BACKEND_MAX_RSS_GB"] == "18"
+    assert payload["env"]["MOLT_BACKEND_MEMORY_RESERVE_GB"] == "4"
+    assert payload["env"]["RAYON_NUM_THREADS"] == "2"
+    assert cli._backend_codegen_env_digest(is_wasm=False) == baseline_digest
+
+
 def test_compare_uses_build_profile_flag_for_nested_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -14666,6 +15459,7 @@ def test_backend_codegen_env_inputs_is_cached(
 
 def test_backend_codegen_env_digest_tracks_codegen_knobs(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     baseline_native = cli._backend_codegen_env_digest(is_wasm=False)
     monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
@@ -14681,6 +15475,20 @@ def test_backend_codegen_env_digest_tracks_codegen_knobs(
     monkeypatch.setenv("MOLT_WASM_TABLE_BASE", "2048")
     wasm_changed = cli._backend_codegen_env_digest(is_wasm=True)
     assert wasm_changed != baseline_wasm
+
+    linker_a = tmp_path / "ld-a"
+    linker_b = tmp_path / "ld-b"
+    linker_a.write_text("a", encoding="utf-8")
+    linker_b.write_text("b", encoding="utf-8")
+    monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
+    monkeypatch.delenv("MOLT_BACKEND", raising=False)
+    baseline_native = cli._backend_codegen_env_digest(is_wasm=False)
+    monkeypatch.setenv("MOLT_LINKER", str(linker_a))
+    native_linker_a = cli._backend_codegen_env_digest(is_wasm=False)
+    monkeypatch.setenv("MOLT_LINKER", str(linker_b))
+    native_linker_b = cli._backend_codegen_env_digest(is_wasm=False)
+    assert native_linker_a != baseline_native
+    assert native_linker_b != native_linker_a
 
 
 def test_backend_daemon_config_digest_and_socket_path_include_config(
@@ -14702,6 +15510,18 @@ def test_backend_daemon_config_digest_and_socket_path_include_config(
     )
     assert socket_a != socket_b
 
+    linker_a = tmp_path / "ld-a"
+    linker_b = tmp_path / "ld-b"
+    linker_a.write_text("a", encoding="utf-8")
+    linker_b.write_text("b", encoding="utf-8")
+    linker_digest_a = cli._backend_daemon_config_digest(
+        tmp_path, "dev-fast", env={"MOLT_LINKER": str(linker_a)}
+    )
+    linker_digest_b = cli._backend_daemon_config_digest(
+        tmp_path, "dev-fast", env={"MOLT_LINKER": str(linker_b)}
+    )
+    assert linker_digest_a != linker_digest_b
+
 
 def test_backend_daemon_config_digest_tracks_batch_op_budget(
     monkeypatch: pytest.MonkeyPatch,
@@ -14714,6 +15534,68 @@ def test_backend_daemon_config_digest_tracks_batch_op_budget(
     digest_b = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
 
     assert digest_a != digest_b
+
+
+def test_backend_daemon_config_digest_tracks_backend_freshness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path
+    target_root = project_root / "target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
+    (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    backend_bin = target_root / "dev-fast" / "molt-backend"
+    runtime_lib = cli._runtime_lib_path(project_root, "release", None)
+    backend_src = project_root / "runtime" / "molt-backend" / "src" / "main.rs"
+    runtime_src = project_root / "runtime" / "molt-runtime" / "src" / "lib.rs"
+    frontend_init = project_root / "src" / "molt" / "frontend" / "__init__.py"
+    for path in (backend_bin, runtime_lib, backend_src, runtime_src, frontend_init):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    digest_a = cli._backend_daemon_config_digest(
+        project_root,
+        "dev-fast",
+        backend_bin=backend_bin,
+        target_triple=None,
+    )
+    os.utime(backend_src, ns=(3_000_000_000, 3_000_000_000))
+    digest_b = cli._backend_daemon_config_digest(
+        project_root,
+        "dev-fast",
+        backend_bin=backend_bin,
+        target_triple=None,
+    )
+    os.utime(runtime_lib, ns=(4_000_000_000, 4_000_000_000))
+    digest_c = cli._backend_daemon_config_digest(
+        project_root,
+        "dev-fast",
+        backend_bin=backend_bin,
+        target_triple=None,
+    )
+
+    assert digest_a != digest_b
+    assert digest_b != digest_c
+
+
+def test_backend_daemon_config_digest_tracks_compiler_content_fingerprints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "compiler-a")
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tooling-a")
+
+    digest_a = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
+
+    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "compiler-b")
+    digest_b = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
+
+    monkeypatch.setattr(cli, "_cache_fingerprint", lambda: "compiler-b")
+    monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tooling-b")
+    digest_c = cli._backend_daemon_config_digest(tmp_path, "dev-fast")
+
+    assert digest_a != digest_b
+    assert digest_b != digest_c
 
 
 def test_backend_daemon_paths_are_cached(
@@ -14775,8 +15657,12 @@ def test_backend_daemon_log_and_pid_paths_are_session_isolated(
     assert alpha_log.parent != beta_log.parent
     assert alpha_log.parent.name == "backend_daemon"
     assert beta_log.parent.name == "backend_daemon"
-    assert "alpha-session" in alpha_log.parts
-    assert "beta-session" in beta_log.parts
+    assert "alpha-session" in alpha_log.parent.parts
+    assert "beta-session" in beta_log.parent.parts
+    assert "alpha-session" in alpha_log.name
+    assert "beta-session" in beta_log.name
+    assert "alpha-session" in alpha_identity.name
+    assert "beta-session" in beta_identity.name
 
 
 def test_backend_daemon_paths_allow_missing_session_id(tmp_path: Path) -> None:
@@ -15049,6 +15935,133 @@ def test_compile_with_backend_daemon_accepts_response_without_health(
     assert captured_payload["jobs"][0]["skip_function_output_if_synced"] is False
 
 
+def test_compile_with_backend_daemon_surfaces_failed_job_message_from_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    daemon_message = (
+        "failed to compile native application object: native variable "
+        "representation mismatch for tmp"
+    )
+
+    def _fake_request(
+        socket_path: Path,
+        data: bytes,
+        *,
+        timeout: float | None,
+        daemon_identity: object | None = None,
+        project_root: Path | None = None,
+    ) -> tuple[dict[str, object], None]:
+        del socket_path, data, timeout, daemon_identity, project_root
+        return (
+            {
+                "ok": False,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "ok": False,
+                        "message": daemon_message,
+                    }
+                ],
+                "health": {"pid": 42},
+            },
+            None,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+    result = _compile_with_backend_daemon_non_wasm(
+        Path("/tmp/fake.sock"),
+        ir={"functions": []},
+        backend_output=backend_output,
+        target_triple=None,
+        cache_key=None,
+        function_cache_key=None,
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        timeout=0.1,
+    )
+
+    assert result.ok is False
+    assert result.error == daemon_message
+    assert result.health == {"pid": 42}
+
+
+def test_compile_with_backend_daemon_surfaces_failed_job_message_after_probe_miss(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend_output = tmp_path / "output.o"
+    daemon_message = (
+        "failed to compile native application object: native variable "
+        "representation mismatch for cached_tmp"
+    )
+    request_count = 0
+
+    def _fake_request(
+        socket_path: Path,
+        data: bytes,
+        *,
+        timeout: float | None,
+        daemon_identity: object | None = None,
+        project_root: Path | None = None,
+    ) -> tuple[dict[str, object], None]:
+        nonlocal request_count
+        del socket_path, data, timeout, daemon_identity, project_root
+        request_count += 1
+        if request_count == 1:
+            return (
+                {
+                    "ok": True,
+                    "jobs": [
+                        {
+                            "id": "job0",
+                            "ok": True,
+                            "cached": False,
+                            "output_written": False,
+                            "needs_ir": True,
+                        }
+                    ],
+                },
+                None,
+            )
+        return (
+            {
+                "ok": False,
+                "jobs": [
+                    {
+                        "id": "job0",
+                        "ok": False,
+                        "message": daemon_message,
+                    }
+                ],
+                "health": {"pid": 43},
+            },
+            None,
+        )
+
+    monkeypatch.setattr(cli, "_backend_daemon_request_bytes", _fake_request)
+    result = _compile_with_backend_daemon_non_wasm(
+        Path("/tmp/fake.sock"),
+        ir={"functions": [{"name": "heavy"}]},
+        backend_output=backend_output,
+        target_triple=None,
+        cache_key="module-cache",
+        function_cache_key=None,
+        config_digest="digest123",
+        skip_module_output_if_synced=False,
+        skip_function_output_if_synced=False,
+        timeout=0.1,
+    )
+
+    assert request_count == 2
+    assert result.ok is False
+    assert result.error == daemon_message
+    assert result.health == {"pid": 43}
+    assert result.full_request_sent is True
+
+
 def test_compile_with_backend_daemon_uses_preencoded_request_bytes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -15201,6 +16214,9 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object_path).write_text(
         '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}\n',
         encoding="utf-8",
+    )
+    cli._stdlib_object_digest_sidecar_path(stdlib_object_path).write_text(
+        cli._sha256_file(stdlib_object_path) + "\n", encoding="utf-8"
     )
     seen_payloads: list[dict[str, object]] = []
     ir_lease_paths: list[Path] = []
@@ -15906,8 +16922,7 @@ def test_backend_daemon_request_bytes_ignores_redirect_file(
     assert response == {"ok": True}
     assert sent == [b'{"version":1}\n']
 
-
-def test_kill_stale_backend_daemon_requires_verified_identity(
+def test_orphaned_backend_daemon_sweep_removes_dead_identity_and_legacy_pid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -15927,8 +16942,7 @@ def test_kill_stale_backend_daemon_requires_verified_identity(
         backend_bin=backend_bin,
     )
     cli._write_backend_daemon_identity(identity_path, identity)
-    killed: list[tuple[int, int]] = []
-    alive = {4321: True}
+    alive = {4321: False}
 
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -15941,19 +16955,12 @@ def test_kill_stale_backend_daemon_requires_verified_identity(
         lambda pid: f"{backend_bin} --daemon --socket {socket_path}",
     )
 
-    def fake_terminate(
-        daemon_identity: cli._BackendDaemonIdentity, *, grace: float = 1.0
-    ) -> bool:
-        assert grace == 1.0
-        killed.append((daemon_identity.pid, signal.SIGTERM))
-        alive[daemon_identity.pid] = False
-        return True
+    cleaned = cli._sweep_orphaned_backend_daemon_locks(
+        tmp_path,
+        include_other_sessions=False,
+    )
 
-    monkeypatch.setattr(cli, "_terminate_backend_daemon_identity", fake_terminate)
-
-    cli._kill_stale_backend_daemon(tmp_path, "dev-fast")
-
-    assert killed == [(4321, signal.SIGTERM)]
+    assert cleaned == 2
     assert not identity_path.exists()
     assert not legacy_pid_path.exists()
     assert not socket_path.exists()
@@ -17007,6 +18014,30 @@ def test_materialize_cached_backend_artifact_promotes_module_cache_from_function
     assert cache_path.read_bytes() == b"artifact"
 
 
+def test_backend_cache_artifact_path_uses_native_stdlib_context(
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+
+    native_path = cli._backend_cache_artifact_path(
+        cache_root,
+        "function-key",
+        ext="o",
+        stdlib_object_cache_key="stdlib-key",
+        is_wasm=False,
+    )
+    wasm_path = cli._backend_cache_artifact_path(
+        cache_root,
+        "function-key",
+        ext="wasm",
+        stdlib_object_cache_key="stdlib-key",
+        is_wasm=True,
+    )
+
+    assert native_path == cache_root / "function-key.stdlib-stdlib-key.o"
+    assert wasm_path == cache_root / "function-key.wasm"
+
+
 def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -17045,6 +18076,71 @@ def test_try_cached_backend_candidates_promoted_function_hit_marks_module_synced
     )
     assert skip_module is True
     assert skip_function is False
+
+
+def test_try_cached_backend_candidates_promoted_native_function_hit_marks_context_module_synced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "cache" / "function.stdlib-current.o"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"artifact")
+    output_artifact = tmp_path / "dist" / "output.o"
+    cache_path = tmp_path / "cache" / "module.stdlib-current.o"
+    stdlib_object = tmp_path / "cache" / "stdlib_shared_current.o"
+    stdlib_object.write_bytes(b"stdlib")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        cli, "_is_valid_cached_backend_artifact", lambda path, *, is_wasm: True
+    )
+    monkeypatch.setattr(
+        cli,
+        "_shared_stdlib_cache_matches_key_locked",
+        lambda *args, **kwargs: True,
+    )
+
+    ok, cache_hit_tier = cli._try_cached_backend_candidates(
+        project_root=tmp_path,
+        cache_candidates=[("function", candidate)],
+        output_artifact=output_artifact,
+        is_wasm=False,
+        cache_key="module-key",
+        function_cache_key="function-key",
+        cache_path=cache_path,
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+        warnings=warnings,
+    )
+
+    assert ok is True
+    assert cache_hit_tier == "function"
+    assert warnings == []
+    skip_module, skip_function = cli._backend_daemon_skip_output_sync_flags(
+        tmp_path,
+        output_artifact,
+        cache_key="module-key",
+        function_cache_key="function-key",
+        stdlib_object_path=stdlib_object,
+        stdlib_object_cache_key="stdlib-key",
+    )
+    assert skip_module is True
+    assert skip_function is False
+    state = cli._read_artifact_sync_state(
+        cli._artifact_sync_state_path(tmp_path, output_artifact)
+    )
+    output_stat = output_artifact.stat()
+    assert cli._artifact_sync_state_matches_stat(
+        state,
+        source_key="module-key|stdlib:stdlib-key",
+        tier="module",
+        stat=output_stat,
+    )
+    assert not cli._artifact_sync_state_matches_stat(
+        state,
+        source_key="module-key",
+        tier="module",
+        stat=output_stat,
+    )
 
 
 def test_try_cached_backend_candidates_preserves_invalid_candidate(
@@ -17308,6 +18404,9 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
         '{"body_hash":"test","function_count":1,"functions":["molt_init_tkinter"],"schema":"stdlib-partition-v1"}\n',
         encoding="utf-8",
     )
+    cli._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
+        cli._sha256_file(stdlib_object) + "\n", encoding="utf-8"
+    )
     output_artifact = tmp_path / "dist" / "output.o"
     warnings: list[str] = []
 
@@ -17358,6 +18457,9 @@ def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
             '"schema":"stdlib-partition-v1"}\n'
         ),
         encoding="utf-8",
+    )
+    cli._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
+        cli._sha256_file(stdlib_object) + "\n", encoding="utf-8"
     )
 
     assert cli._shared_stdlib_cache_matches_key_locked(
@@ -17420,6 +18522,9 @@ def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with
         '{"body_hash":"test","function_count":1,"functions":["molt_init_tkinter"],"schema":"stdlib-partition-v1"}\n',
         encoding="utf-8",
     )
+    cli._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
+        cli._sha256_file(stdlib_object) + "\n", encoding="utf-8"
+    )
     state_path = cli._artifact_sync_state_path(tmp_path, output_artifact)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     cli._write_artifact_sync_state(
@@ -17457,12 +18562,47 @@ def test_backend_daemon_health_from_response_parses_int_fields() -> None:
             "jobs_total": 9,
             "cache_hits": 4,
             "cache_misses": 5,
+            "spawn_config_digest": "spawn-digest",
+            "active_config_digest": "active-digest",
         },
     }
     health = cli._backend_daemon_health_from_response(response)
     assert isinstance(health, dict)
     assert health["pid"] == 123
     assert health["cache_entries"] == 2
+    assert health["spawn_config_digest"] == "spawn-digest"
+    assert health["active_config_digest"] == "active-digest"
+
+
+def test_backend_daemon_identity_from_health_requires_spawn_digest(
+    tmp_path: Path,
+) -> None:
+    socket_path = tmp_path / "daemon.sock"
+    backend_bin = tmp_path / "molt-backend"
+
+    assert (
+        cli._backend_daemon_identity_from_health(
+            {"pid": 1234, "spawn_config_digest": "old-digest"},
+            socket_path=socket_path,
+            project_root=tmp_path,
+            cargo_profile="dev-fast",
+            config_digest="new-digest",
+            backend_bin=backend_bin,
+        )
+        is None
+    )
+
+    identity = cli._backend_daemon_identity_from_health(
+        {"pid": 1234, "spawn_config_digest": "new-digest"},
+        socket_path=socket_path,
+        project_root=tmp_path,
+        cargo_profile="dev-fast",
+        config_digest="new-digest",
+        backend_bin=backend_bin,
+    )
+
+    assert identity is not None
+    assert identity.pid == 1234
 
 
 def test_backend_daemon_ping_health_backcompat_without_health(
@@ -17586,6 +18726,101 @@ def test_cache_variant_differs_when_stdlib_split_toggles() -> None:
     assert setup_split.cache_key != setup_mono.cache_key, (
         "Cache keys must differ between stdlib-split and monolithic modes"
     )
+
+
+def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "ambient-cache"))
+    explicit_cache = tmp_path / "explicit-cache"
+    tiny_ir: dict = {
+        "module": "__main__",
+        "filename": "test.py",
+        "ops": [],
+        "functions": [],
+        "classes": [],
+        "constants": {},
+        "imports": [],
+    }
+    module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
+    setup = cli._prepare_backend_cache_setup(
+        cache_enabled=True,
+        ir=tiny_ir,
+        target="native",
+        target_triple=None,
+        profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="obj",
+        is_wasm=False,
+        linked=False,
+        project_root=ROOT,
+        cache_dir=str(explicit_cache),
+        output_artifact=tmp_path / "out.o",
+        warnings=[],
+        entry_module="__main__",
+        module_graph_metadata=module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert setup.cache_path is not None
+    assert setup.stdlib_object_path is not None
+    assert setup.cache_path.parent == explicit_cache
+    assert setup.stdlib_object_path.parent == explicit_cache
+
+
+def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_cache_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "ambient-cache"))
+    explicit_cache = tmp_path / "explicit-cache"
+    tiny_ir: dict = {
+        "module": "__main__",
+        "filename": "test.py",
+        "ops": [],
+        "functions": [],
+        "classes": [],
+        "constants": {},
+        "imports": [],
+    }
+    module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
+    setup = cli._prepare_backend_cache_setup(
+        cache_enabled=False,
+        ir=tiny_ir,
+        target="native",
+        target_triple=None,
+        profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="obj",
+        is_wasm=False,
+        linked=False,
+        project_root=ROOT,
+        cache_dir=str(explicit_cache),
+        output_artifact=tmp_path / "out.o",
+        warnings=[],
+        entry_module="__main__",
+        module_graph_metadata=module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert setup.cache_path is None
+    assert setup.stdlib_object_path is not None
+    assert setup.stdlib_object_path.parent == explicit_cache
 
 
 # ---------------------------------------------------------------------------

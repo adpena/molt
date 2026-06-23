@@ -112,7 +112,7 @@ def collect_module_func_kinds(node: ast.Module) -> dict[str, str]:
     kinds: dict[str, str] = {}
     for stmt in node.body:
         if isinstance(stmt, ast.AsyncFunctionDef):
-            kinds[stmt.name] = "async_gen" if _function_contains_yield(stmt) else "async"
+            kinds[stmt.name] = "asyncgen" if _function_contains_yield(stmt) else "async"
         elif isinstance(stmt, ast.FunctionDef):
             if _function_contains_yield(stmt):
                 kinds[stmt.name] = "gen"
@@ -130,8 +130,17 @@ def collect_module_func_defaults(node: ast.Module) -> dict[str, dict[str, Any]]:
     for stmt in node.body:
         if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
+        if isinstance(stmt, ast.AsyncFunctionDef):
+            kind = "asyncgen" if _function_contains_yield(stmt) else "async"
+        else:
+            kind = "gen" if _function_contains_yield(stmt) else "sync"
+        has_decorators = bool(stmt.decorator_list)
         if stmt.args.vararg or stmt.args.kwarg:
-            defaults[stmt.name] = {"has_vararg": True}
+            defaults[stmt.name] = {
+                "has_vararg": True,
+                "kind": kind,
+                "has_decorators": has_decorators,
+            }
             continue
         params = _function_param_names(stmt.args)
         default_specs = _default_specs_from_args(stmt.args)
@@ -140,5 +149,7 @@ def collect_module_func_defaults(node: ast.Module) -> dict[str, dict[str, Any]]:
             "defaults": default_specs,
             "posonly": len(stmt.args.posonlyargs),
             "kwonly": len(stmt.args.kwonlyargs),
+            "kind": kind,
+            "has_decorators": has_decorators,
         }
     return defaults

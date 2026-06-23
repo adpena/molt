@@ -36,6 +36,15 @@ unsafe extern "C" fn fake_alloc_str(_data: *const u8, _len: usize) -> u64 {
 unsafe extern "C" fn fake_alloc_bytes(_data: *const u8, _len: usize) -> u64 {
     next_fake_handle()
 }
+unsafe extern "C" fn fake_int_from_i64(_value: i64) -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_int_from_u64(_value: u64) -> u64 {
+    next_fake_handle()
+}
+unsafe extern "C" fn fake_int_as_i64(_bits: u64) -> i64 {
+    -1
+}
 unsafe extern "C" fn fake_alloc_list() -> u64 {
     next_fake_handle()
 }
@@ -110,6 +119,9 @@ unsafe extern "C" fn fake_register_c_function(
 const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_str: fake_alloc_str,
     alloc_bytes: fake_alloc_bytes,
+    int_from_i64: fake_int_from_i64,
+    int_from_u64: fake_int_from_u64,
+    int_as_i64: fake_int_as_i64,
     alloc_list: fake_alloc_list,
     list_append: fake_list_append,
     list_len: fake_list_len,

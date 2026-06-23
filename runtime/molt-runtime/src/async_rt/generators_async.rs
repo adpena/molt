@@ -5816,12 +5816,14 @@ pub unsafe extern "C" fn molt_anext_default_poll(obj_bits: u64) -> i64 {
 }
 
 /// # Safety
-/// - `task_ptr` must be a valid Molt task pointer.
-/// - `future_ptr` must point to a valid Molt future.
+/// - `task_ptr_bits` must encode a valid Molt task pointer.
+/// - `future_ptr_bits` must encode a valid Molt future pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_sleep_register(task_ptr: *mut u8, future_ptr: *mut u8) -> u64 {
+pub unsafe extern "C" fn molt_sleep_register(task_ptr_bits: u64, future_ptr_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let task_ptr = task_ptr_bits as usize as *mut u8;
+            let future_ptr = future_ptr_bits as usize as *mut u8;
             if task_ptr.is_null() || future_ptr.is_null() {
                 return 0;
             }

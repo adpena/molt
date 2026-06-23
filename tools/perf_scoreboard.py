@@ -353,6 +353,16 @@ class RunOutcome:
     status: str  # "ok" | "timeout" | "oom" | "error" | "nonzero"
     exit_code: int | None
     stdout: str | None = None
+    stdout_tail: str | None = None
+    stderr_tail: str | None = None
+
+
+def _tail_text(text: str | None, *, max_chars: int = 4096) -> str | None:
+    if not text:
+        return None
+    if len(text) <= max_chars:
+        return text
+    return text[-max_chars:]
 
 
 def _safe_run_json(
@@ -397,11 +407,27 @@ def _safe_run_json(
         timeout=timeout_s + 30.0,
     )
     if proc.timed_out:
-        return RunOutcome(False, None, None, "timeout", None)
+        return RunOutcome(
+            False,
+            None,
+            None,
+            "timeout",
+            None,
+            stdout_tail=_tail_text(proc.stdout),
+            stderr_tail=_tail_text(proc.stderr),
+        )
 
     payload = _parse_safe_run_line(proc.stderr or "")
     if payload is None:
-        return RunOutcome(False, None, None, "error", proc.returncode)
+        return RunOutcome(
+            False,
+            None,
+            None,
+            "error",
+            proc.returncode,
+            stdout_tail=_tail_text(proc.stdout),
+            stderr_tail=_tail_text(proc.stderr),
+        )
     status = payload.get("status", "error")
     elapsed = payload.get("elapsed_s")
     peak = payload.get("peak_rss_mib")
@@ -416,6 +442,8 @@ def _safe_run_json(
         status=status,
         exit_code=exit_code if isinstance(exit_code, int) else None,
         stdout=proc.stdout if capture_stdout else None,
+        stdout_tail=_tail_text(proc.stdout),
+        stderr_tail=_tail_text(proc.stderr),
     )
 
 
@@ -1318,6 +1346,10 @@ def capture_hot_only_profile(
             "refused": True,
             "refused_reason": reason,
             "note": note,
+            "size_status": size.status,
+            "size_exit_code": size.exit_code,
+            "size_stdout_tail": size.stdout_tail,
+            "size_stderr_tail": size.stderr_tail,
         }
     looped_runtime_s = size.elapsed_s or 0.0
     # The steady window we can actually carve out after warmup, leaving a 0.3s

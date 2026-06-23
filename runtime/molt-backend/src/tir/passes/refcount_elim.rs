@@ -752,7 +752,7 @@ mod tests {
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
-    use crate::tir::values::ValueId;
+    use crate::tir::values::{TirValue, ValueId};
 
     fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         TirOp {
@@ -1388,6 +1388,151 @@ mod tests {
         );
         assert_eq!(func.blocks[&func.entry_block].ops.len(), 1);
         assert_eq!(func.blocks[&func.entry_block].ops[0].opcode, OpCode::DecRef);
+    }
+
+    #[test]
+    fn post_drop_keeps_check_exception_edge_payload_retain_release() {
+        let mut func = make_func();
+        let payload = func.fresh_value();
+        let handler = func.fresh_block();
+        let handler_arg = func.fresh_value();
+        let label = 77;
+
+        func.has_exception_handling = true;
+        func.label_id_map.insert(handler.0, label);
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::IncRef, vec![payload], vec![]));
+        entry.ops.push(make_op_with_attr(
+            OpCode::CheckException,
+            vec![payload],
+            vec![],
+            "value",
+            crate::tir::ops::AttrValue::Int(label),
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::DecRef, vec![payload], vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let stats = run_post_drop(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+
+        assert_eq!(
+            stats.ops_removed, 0,
+            "post-drop cleanup must preserve the retain consumed by the handler edge"
+        );
+        assert_eq!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .map(|op| op.opcode)
+                .collect::<Vec<_>>(),
+            vec![OpCode::IncRef, OpCode::CheckException, OpCode::DecRef]
+        );
+    }
+
+    #[test]
+    fn post_drop_keeps_try_start_edge_payload_retain_release() {
+        let mut func = make_func();
+        let payload = func.fresh_value();
+        let handler = func.fresh_block();
+        let handler_arg = func.fresh_value();
+        let label = 88;
+
+        func.has_exception_handling = true;
+        func.label_id_map.insert(handler.0, label);
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::IncRef, vec![payload], vec![]));
+        entry.ops.push(make_op_with_attr(
+            OpCode::TryStart,
+            vec![payload],
+            vec![],
+            "value",
+            crate::tir::ops::AttrValue::Int(label),
+        ));
+        entry
+            .ops
+            .push(make_op(OpCode::DecRef, vec![payload], vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
+                args: vec![TirValue {
+                    id: handler_arg,
+                    ty: TirType::DynBox,
+                }],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+
+        let stats = run_post_drop(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+
+        assert_eq!(
+            stats.ops_removed, 0,
+            "post-drop cleanup must preserve the retain consumed by the try handler edge"
+        );
+        assert_eq!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .map(|op| op.opcode)
+                .collect::<Vec<_>>(),
+            vec![OpCode::IncRef, OpCode::TryStart, OpCode::DecRef]
+        );
+    }
+
+    #[test]
+    fn post_drop_keeps_raise_boundary_retain_release() {
+        let mut func = make_func();
+        let payload = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry
+            .ops
+            .push(make_op(OpCode::IncRef, vec![payload], vec![]));
+        entry
+            .ops
+            .push(make_op(OpCode::Raise, vec![payload], vec![]));
+        entry
+            .ops
+            .push(make_op(OpCode::DecRef, vec![payload], vec![]));
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let stats = run_post_drop(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+
+        assert_eq!(
+            stats.ops_removed, 0,
+            "post-drop cleanup must not pair across a no-fallthrough raise"
+        );
+        assert_eq!(
+            func.blocks[&func.entry_block]
+                .ops
+                .iter()
+                .map(|op| op.opcode)
+                .collect::<Vec<_>>(),
+            vec![OpCode::IncRef, OpCode::Raise, OpCode::DecRef]
+        );
     }
 
     // -----------------------------------------------------------------------

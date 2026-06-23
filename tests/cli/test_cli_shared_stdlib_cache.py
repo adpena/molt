@@ -15,14 +15,18 @@ from tests.cli.process_guard import run_cli_test_process
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _cache_variant(backend_binary_identity: str = "") -> str:
+def _cache_variant(
+    backend_binary_identity: str = "",
+    *,
+    codegen_env: str = "codegen=v1",
+) -> str:
     return cli._build_cache_variant(
         profile="dev",
         runtime_cargo="dev-fast",
         backend_cargo="dev-fast",
         emit="native",
         stdlib_split=True,
-        codegen_env="codegen=v1",
+        codegen_env=codegen_env,
         linked=False,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         backend_binary_identity=backend_binary_identity,
@@ -64,6 +68,12 @@ def _manifest(cache_key: str) -> str:
 
 def _partition_manifest(name: str = "partition-a") -> str:
     return f'{{"body_hash":"{name}","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v1"}}'
+
+
+def _write_object_digest_sidecar(stdlib_object: Path) -> None:
+    cli._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
+        cli._sha256_file(stdlib_object) + "\n", encoding="utf-8"
+    )
 
 
 def _legacy_streamed_cache_digest(
@@ -222,6 +232,175 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
     )
 
     assert key_a != key_b
+
+
+def test_shared_stdlib_cache_key_changes_with_capability_config() -> None:
+    stdlib_modules = _explicit_stdlib_modules("sys")
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+    base_variant = _cache_variant()
+    caps_digest = cli._capability_config_cache_digest(
+        capabilities_list=["fs.read"],
+        capability_profiles=["fs"],
+        manifest_env_vars={"MOLT_CAPABILITIES": "fs.read"},
+    )
+    variant_with_caps = cli._build_cache_variant(
+        profile="dev",
+        runtime_cargo="dev-fast",
+        backend_cargo="dev-fast",
+        emit="native",
+        stdlib_split=True,
+        codegen_env="codegen=v1",
+        linked=False,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        capability_config_digest=caps_digest,
+    )
+
+    key_base = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=stdlib_modules,
+        target_triple=None,
+        cache_variant=base_variant,
+    )
+    key_caps = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=stdlib_modules,
+        target_triple=None,
+        cache_variant=variant_with_caps,
+    )
+
+    assert key_base != key_caps
+    assert "capability_config=" in variant_with_caps
+
+
+def test_capability_config_digest_changes_with_ambient_capability_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read")
+    digest_fs = cli._capability_config_cache_digest(
+        capabilities_list=None,
+        capability_profiles=None,
+        manifest_env_vars=None,
+    )
+    monkeypatch.setenv("MOLT_CAPABILITIES", "env.read")
+    digest_env = cli._capability_config_cache_digest(
+        capabilities_list=None,
+        capability_profiles=None,
+        manifest_env_vars=None,
+    )
+
+    assert digest_fs != digest_env
+
+
+def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
+    tmp_path: Path,
+) -> None:
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+    module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
+    common = dict(
+        cache_enabled=True,
+        ir=ir,
+        target="native",
+        target_triple=None,
+        profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="bin",
+        is_wasm=False,
+        linked=False,
+        project_root=ROOT,
+        cache_dir=str(tmp_path / "cache"),
+        warnings=[],
+        entry_module="app",
+        module_graph_metadata=module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        stdlib_profile="micro",
+    )
+
+    setup_base = cli._prepare_backend_cache_setup(
+        output_artifact=tmp_path / "base.o",
+        **common,
+    )
+    setup_caps = cli._prepare_backend_cache_setup(
+        output_artifact=tmp_path / "caps.o",
+        capabilities_list=["fs.read"],
+        capability_profiles=["fs"],
+        manifest_env_vars={"MOLT_CAPABILITIES": "fs.read"},
+        **common,
+    )
+
+    assert setup_base.stdlib_object_cache_key is not None
+    assert setup_caps.stdlib_object_cache_key is not None
+    assert setup_base.stdlib_object_cache_key != setup_caps.stdlib_object_cache_key
+
+
+def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+    module_graph_metadata = cli._ModuleGraphMetadata(
+        logical_source_path_by_module={},
+        entry_override_by_module={},
+        module_is_namespace_by_module={},
+        module_is_package_by_module={},
+        frontend_module_costs=None,
+        stdlib_like_by_module={"sys": True},
+    )
+    common = dict(
+        cache_enabled=True,
+        ir=ir,
+        target="native",
+        target_triple=None,
+        profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        emit_mode="bin",
+        is_wasm=False,
+        linked=False,
+        project_root=ROOT,
+        cache_dir=str(tmp_path / "cache"),
+        warnings=[],
+        entry_module="app",
+        module_graph_metadata=module_graph_metadata,
+        target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        stdlib_profile="micro",
+    )
+
+    monkeypatch.delenv("MOLT_CAPABILITIES", raising=False)
+    setup_without_env = cli._prepare_backend_cache_setup(
+        output_artifact=tmp_path / "without-env.o",
+        **common,
+    )
+    monkeypatch.setenv("MOLT_CAPABILITIES", "fs.read,fs.write,env.read")
+    setup_with_env = cli._prepare_backend_cache_setup(
+        output_artifact=tmp_path / "with-env.o",
+        **common,
+    )
+
+    assert setup_without_env.stdlib_object_cache_key is not None
+    assert setup_with_env.stdlib_object_cache_key is not None
+    assert (
+        setup_without_env.stdlib_object_cache_key
+        != setup_with_env.stdlib_object_cache_key
+    )
 
 
 def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
@@ -638,7 +817,21 @@ def test_shared_stdlib_cache_matches_key_requires_present_matching_contract(
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
         _partition_manifest() + "\n", encoding="utf-8"
     )
+    assert not cli._shared_stdlib_cache_matches_key(
+        stdlib_object,
+        "abc123",
+        stdlib_object_manifest=_manifest("abc123"),
+    )
+
+    _write_object_digest_sidecar(stdlib_object)
     assert cli._shared_stdlib_cache_matches_key(
+        stdlib_object,
+        "abc123",
+        stdlib_object_manifest=_manifest("abc123"),
+    )
+
+    stdlib_object.write_bytes(b"changed")
+    assert not cli._shared_stdlib_cache_matches_key(
         stdlib_object,
         "abc123",
         stdlib_object_manifest=_manifest("abc123"),
@@ -669,6 +862,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
         _partition_manifest() + "\n", encoding="utf-8"
     )
+    _write_object_digest_sidecar(stdlib_object)
     module_object = cache_root / "module_cache_old.o"
     module_object.write_bytes(b"module-object")
     wasm_object = cache_root / "module_cache_old.wasm"
@@ -755,6 +949,7 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ne
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
         _partition_manifest() + "\n", encoding="utf-8"
     )
+    _write_object_digest_sidecar(stdlib_object)
 
     backend_bin = target_root / "dev-fast" / "molt-backend"
     runtime_lib = target_root / "release-output" / "libmolt_runtime.a"
@@ -809,6 +1004,7 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ta
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
         _partition_manifest() + "\n", encoding="utf-8"
     )
+    _write_object_digest_sidecar(stdlib_object)
 
     runtime_lib = (
         target_root / target_triple / "release-output" / "libmolt_runtime.stdlib_full.a"
@@ -857,6 +1053,7 @@ def test_validate_shared_stdlib_cache_contract_preserves_other_keyed_siblings(
     cli._stdlib_object_partition_manifest_sidecar_path(active).write_text(
         _partition_manifest() + "\n", encoding="utf-8"
     )
+    _write_object_digest_sidecar(active)
 
     sibling = cache_root / "stdlib_shared_sibling.o"
     sibling.write_bytes(b"sibling")
@@ -870,6 +1067,7 @@ def test_validate_shared_stdlib_cache_contract_preserves_other_keyed_siblings(
     cli._stdlib_object_partition_manifest_sidecar_path(sibling).write_text(
         _partition_manifest("partition-b") + "\n", encoding="utf-8"
     )
+    _write_object_digest_sidecar(sibling)
 
     cli._validate_shared_stdlib_cache_contract(
         active,
@@ -974,6 +1172,7 @@ finally:
         cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
             partition_manifest + "\n", encoding="utf-8"
         )
+        _write_object_digest_sidecar(stdlib_object)
 
     acquired = run_cli_test_process(
         [sys.executable, "-c", probe_code, str(stdlib_object)],
@@ -1105,6 +1304,15 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
     cli._stdlib_object_partition_manifest_sidecar_path(stdlib_object).write_text(
         _partition_manifest() + "\n", encoding="utf-8"
     )
+    with pytest.raises(OSError, match="Shared stdlib cache contract mismatch"):
+        cli._stage_shared_stdlib_object_for_link(
+            stdlib_object,
+            stdlib_object_cache_key="abc123",
+            stdlib_object_manifest=_manifest("abc123"),
+            artifacts_root=artifacts_root,
+        )
+
+    _write_object_digest_sidecar(stdlib_object)
 
     staged = cli._stage_shared_stdlib_object_for_link(
         stdlib_object,
@@ -1131,6 +1339,10 @@ def test_stage_shared_stdlib_object_for_link_requires_matching_source_key_sideca
             encoding="utf-8"
         )
         == _partition_manifest() + "\n"
+    )
+    assert (
+        cli._stdlib_object_digest_sidecar_path(staged).read_text(encoding="utf-8")
+        == cli._sha256_file(staged) + "\n"
     )
 
 
@@ -1247,6 +1459,52 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
     # Identical IR, target, and compiler fingerprint — ONLY the backend binary
     # identity differs (a rebuild). The cache key (and the .o path) must change so
     # the stale object compiled by the prior binary is never linked.
+    assert key_a != key_b
+    assert cli._stdlib_object_cache_path(
+        Path("cache"), key_a
+    ) != cli._stdlib_object_cache_path(Path("cache"), key_b)
+
+
+def test_shared_stdlib_cache_key_changes_with_relocatable_linker_identity(
+    tmp_path: Path,
+) -> None:
+    stdlib_modules = _explicit_stdlib_modules("sys")
+    ir = _ir_with_stdlib(
+        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        stdlib_ops=[{"kind": "code_slot_set", "value": 73}],
+    )
+    linker_a = tmp_path / "ld-a"
+    linker_b = tmp_path / "ld-b"
+    linker_a.write_text("a", encoding="utf-8")
+    linker_b.write_text("b", encoding="utf-8")
+    variant_a = _cache_variant(
+        codegen_env=cli._backend_codegen_env_digest(
+            is_wasm=False,
+            env={"MOLT_LINKER": str(linker_a)},
+        )
+    )
+    variant_b = _cache_variant(
+        codegen_env=cli._backend_codegen_env_digest(
+            is_wasm=False,
+            env={"MOLT_LINKER": str(linker_b)},
+        )
+    )
+
+    key_a = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=stdlib_modules,
+        target_triple=None,
+        cache_variant=variant_a,
+    )
+    key_b = cli._shared_stdlib_cache_key(
+        ir,
+        entry_module="app",
+        stdlib_module_symbols=stdlib_modules,
+        target_triple=None,
+        cache_variant=variant_b,
+    )
+
     assert key_a != key_b
     assert cli._stdlib_object_cache_path(
         Path("cache"), key_a

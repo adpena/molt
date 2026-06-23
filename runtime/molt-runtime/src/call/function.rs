@@ -5,9 +5,9 @@ use crate::{
     CALL_DISPATCH_COUNT, HEADER_FLAG_FUNC_TASK_TRAMPOLINE_KNOWN,
     HEADER_FLAG_FUNC_TASK_TRAMPOLINE_NEEDED, PyToken, TYPE_ID_FUNCTION, TYPE_ID_TUPLE,
     ensure_function_code_bits, exception_pending, exception_stack_baseline_get,
-    exception_stack_baseline_set, frame_stack_pop, frame_stack_push, function_arity,
+    exception_stack_baseline_set, frame_stack_pop, frame_stack_push_function, function_arity,
     function_attr_bits, function_closure_bits, function_fn_ptr, function_name_bits,
-    function_trampoline_ptr, header_from_obj_ptr, intern_static_name, is_truthy,
+    function_trampoline_ptr, header_from_obj_ptr, inc_ref_bits, intern_static_name, is_truthy,
     molt_exception_clear, obj_from_bits, object_type_id, profile_hit, raise_exception,
     recursion_guard_enter, recursion_guard_exit, runtime_state, seq_vec_ref, type_name,
 };
@@ -16,10 +16,10 @@ use crate::{
 use crate::MoltObject;
 #[cfg(target_arch = "wasm32")]
 use crate::{
-    inc_ref_bits, molt_call_indirect0, molt_call_indirect1, molt_call_indirect2,
-    molt_call_indirect3, molt_call_indirect4, molt_call_indirect5, molt_call_indirect6,
-    molt_call_indirect7, molt_call_indirect8, molt_call_indirect9, molt_call_indirect10,
-    molt_call_indirect11, molt_call_indirect12, molt_call_indirect13,
+    molt_call_indirect0, molt_call_indirect1, molt_call_indirect2, molt_call_indirect3,
+    molt_call_indirect4, molt_call_indirect5, molt_call_indirect6, molt_call_indirect7,
+    molt_call_indirect8, molt_call_indirect9, molt_call_indirect10, molt_call_indirect11,
+    molt_call_indirect12, molt_call_indirect13,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -396,7 +396,7 @@ pub(crate) unsafe fn call_function_obj1(_py: &PyToken<'_>, func_bits: u64, arg0_
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -583,7 +583,7 @@ pub(crate) unsafe fn call_function_obj0(_py: &PyToken<'_>, func_bits: u64) -> u6
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -739,7 +739,7 @@ pub(crate) unsafe fn call_function_obj2(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -850,7 +850,7 @@ pub(crate) unsafe fn call_function_obj3(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -955,7 +955,7 @@ pub(crate) unsafe fn call_function_obj4(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1063,7 +1063,7 @@ unsafe fn call_function_obj5(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1191,7 +1191,7 @@ unsafe fn call_function_obj6(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1324,7 +1324,7 @@ unsafe fn call_function_obj7(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1461,7 +1461,7 @@ unsafe fn call_function_obj8(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1605,7 +1605,7 @@ unsafe fn call_function_obj9(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1764,7 +1764,7 @@ unsafe fn call_function_obj10(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -1950,7 +1950,7 @@ unsafe fn call_function_obj11(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -2155,7 +2155,7 @@ unsafe fn call_function_obj12(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         let res = if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
@@ -2397,7 +2397,7 @@ pub(crate) unsafe fn call_function_obj_trampoline(
         if !recursion_guard_enter() {
             return raise_exception::<_>(_py, "RecursionError", "maximum recursion depth exceeded");
         }
-        frame_stack_push(_py, code_bits);
+        frame_stack_push_function(_py, code_bits, func_ptr);
         #[cfg(target_arch = "wasm32")]
         if matches!(
             std::env::var("MOLT_TRACE_CALL_FUNCTION_TRAMPOLINE")
@@ -2443,7 +2443,47 @@ pub(crate) unsafe fn call_function_obj_trampoline(
     }
 }
 
+/// Return an owned result when a direct call returns one of its borrowed args.
+///
+/// `call_function_obj_bound_vec` is intentionally raw because the CallArgs
+/// binder has its own builder-slot protection. Public direct-call boundaries
+/// use this helper so generated code and Rust intrinsics both observe the same
+/// owned-result ABI even when a Python function implements `return arg`.
+#[inline]
+pub(crate) unsafe fn protect_borrowed_args_aliased_return(
+    _py: &PyToken<'_>,
+    result: u64,
+    args: &[u64],
+) -> u64 {
+    if args.contains(&result) {
+        inc_ref_bits(_py, result);
+    }
+    result
+}
+
 pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, args: &[u64]) -> u64 {
+    unsafe {
+        let func_obj = obj_from_bits(func_bits);
+        if let Some(func_ptr) = func_obj.as_ptr()
+            && object_type_id(func_ptr) == TYPE_ID_FUNCTION
+            && crate::call::bind::function_raw_positional_call_needs_binding(
+                _py,
+                func_ptr,
+                args.len(),
+            )
+        {
+            return crate::call::bind::call_function_obj_via_positional_bind(_py, func_bits, args);
+        }
+        let result = call_function_obj_bound_vec(_py, func_bits, args);
+        protect_borrowed_args_aliased_return(_py, result, args)
+    }
+}
+
+pub(crate) unsafe fn call_function_obj_bound_vec(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    args: &[u64],
+) -> u64 {
     unsafe {
         let func_obj = obj_from_bits(func_bits);
         if let Some(func_ptr) = func_obj.as_ptr()
@@ -2505,10 +2545,14 @@ pub(crate) unsafe fn call_function_obj_vec(_py: &PyToken<'_>, func_bits: u64, ar
 mod tests {
     use super::{
         enforce_no_pending_on_success, fixed_arity_call_target_ptr,
-        fixed_arity_trampoline_target_ptr, should_force_trampoline_for_fixed_arity_call,
+        fixed_arity_trampoline_target_ptr, protect_borrowed_args_aliased_return,
+        should_force_trampoline_for_fixed_arity_call,
     };
+    use crate::object::builders::{alloc_function_obj, alloc_list};
+    use crate::{dec_ref_bits, header_from_obj_ptr, obj_from_bits};
     use molt_obj_model::MoltObject;
     use std::sync::Once;
+    use std::sync::atomic::Ordering;
 
     static INIT: Once = Once::new();
 
@@ -2529,6 +2573,19 @@ mod tests {
             unsafe { crate::molt_string_from_bytes(text.as_ptr(), text.len() as u64, &mut out) };
         assert_eq!(rc, 0);
         out
+    }
+
+    extern "C" fn identity_returns_arg(arg_bits: u64) -> i64 {
+        arg_bits as i64
+    }
+
+    fn ref_count(bits: u64) -> u32 {
+        let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
+        unsafe {
+            (*header_from_obj_ptr(ptr))
+                .ref_count
+                .load(Ordering::Relaxed)
+        }
     }
 
     struct EnvGuard(&'static str);
@@ -2561,6 +2618,68 @@ mod tests {
         assert!(should_force_trampoline_for_fixed_arity_call(
             293, 4097, false
         ));
+    }
+
+    #[test]
+    fn public_vec_call_promotes_borrowed_arg_alias_return() {
+        init();
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr =
+                alloc_function_obj(_py, identity_returns_arg as *const () as usize as u64, 1);
+            assert!(!func_ptr.is_null());
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+            let list_ptr = alloc_list(_py, &[int(11), int(13)]);
+            assert!(!list_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+
+            let result = unsafe { super::call_function_obj_vec(_py, func_bits, &[list_bits]) };
+            assert_eq!(result, list_bits);
+            assert_eq!(
+                ref_count(result),
+                2,
+                "public direct function calls return an owned alias"
+            );
+
+            dec_ref_bits(_py, result);
+            dec_ref_bits(_py, list_bits);
+            dec_ref_bits(_py, func_bits);
+        });
+    }
+
+    #[test]
+    fn call_func_fast1_promotes_borrowed_arg_alias_return() {
+        init();
+        crate::with_gil_entry_nopanic!(_py, {
+            let func_ptr =
+                alloc_function_obj(_py, identity_returns_arg as *const () as usize as u64, 1);
+            assert!(!func_ptr.is_null());
+            let func_bits = MoltObject::from_ptr(func_ptr).bits();
+            let list_ptr = alloc_list(_py, &[int(17)]);
+            assert!(!list_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+
+            let result = crate::molt_call_func_fast1(func_bits, list_bits);
+            assert_eq!(result, list_bits);
+            assert_eq!(
+                ref_count(result),
+                2,
+                "call_func fast path returns an owned alias"
+            );
+
+            let protected =
+                unsafe { protect_borrowed_args_aliased_return(_py, result, &[list_bits]) };
+            assert_eq!(protected, result);
+            assert_eq!(
+                ref_count(result),
+                3,
+                "canonical alias protector retains exactly once per returned owner"
+            );
+
+            dec_ref_bits(_py, protected);
+            dec_ref_bits(_py, result);
+            dec_ref_bits(_py, list_bits);
+            dec_ref_bits(_py, func_bits);
+        });
     }
 
     #[test]

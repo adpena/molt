@@ -1,11 +1,13 @@
 use super::types::TirType;
 
 /// Unique identifier for an SSA value within a function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize, serde::Serialize,
+)]
 pub struct ValueId(pub u32);
 
 /// A typed SSA value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TirValue {
     pub id: ValueId,
     pub ty: TirType,

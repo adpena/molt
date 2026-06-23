@@ -12,29 +12,25 @@ SCRIPT_PATH = REPO_ROOT / "src" / "molt" / "stdlib" / "importlib" / "machinery.p
 
 _MACHINERY_INTRINSICS = [
     "molt_stdlib_probe",
-    "molt_importlib_source_exec_payload",
-    "molt_importlib_zip_source_exec_payload",
     "molt_importlib_read_file",
     "molt_importlib_coerce_module_name",
     "molt_importlib_pathfinder_find_spec",
     "molt_importlib_filefinder_find_spec",
     "molt_importlib_filefinder_invalidate",
-    "molt_importlib_exec_restricted_source",
-    "molt_importlib_exec_extension",
-    "molt_importlib_exec_sourceless",
-    "molt_importlib_extension_loader_payload",
-    "molt_importlib_sourceless_loader_payload",
-    "molt_importlib_module_spec_is_package",
+    "molt_importlib_sourcefileloader_exec_module",
+    "molt_importlib_zip_source_loader_exec_module",
+    "molt_importlib_extension_loader_exec_module",
+    "molt_importlib_sourceless_loader_exec_module",
     "molt_importlib_resources_reader_resource_path_from_roots",
     "molt_importlib_resources_reader_open_resource_bytes_from_roots",
     "molt_importlib_resources_reader_is_resource_from_roots",
     "molt_importlib_resources_reader_contents_from_roots",
-    "molt_importlib_path_is_archive_member",
     "molt_importlib_package_root_from_origin",
     "molt_importlib_validate_resource_name",
-    "molt_importlib_set_module_state",
-    "molt_importlib_stabilize_module_state",
+    "molt_importlib_load_module_from_spec",
     "molt_exception_clear",
+    "molt_exception_last",
+    "molt_exception_pending",
     "molt_module_import",
     "molt_sys_platform",
 ]
@@ -58,17 +54,16 @@ def _coerce_stub(module, loader, spec=None):
     raise TypeError("module name must be str")
 
 
-def _load_machinery_module():
-    registry = getattr(builtins, "_molt_intrinsics", None)
-    if not isinstance(registry, dict):
-        registry = {}
-        builtins._molt_intrinsics = registry
+def _load_machinery_module(missing_intrinsics=frozenset()):
+    registry = {}
+    builtins._molt_intrinsics = registry
 
     def _noop(*_args, **_kwargs):
         return None
 
     for name in _MACHINERY_INTRINSICS:
-        registry.setdefault(name, _noop)
+        if name not in missing_intrinsics:
+            registry[name] = _noop
     registry["molt_importlib_coerce_module_name"] = _coerce_stub
     registry["molt_sys_platform"] = lambda: sys.platform
 
@@ -161,3 +156,21 @@ def test_platform_suffixes_resolve_when_sys_is_partially_initialized() -> None:
         sys.modules["sys"] = original_sys_module
 
     assert module.EXTENSION_SUFFIXES == [".so", ".dylib"]
+
+
+def test_ensure_intrinsics_does_not_publish_partial_registry() -> None:
+    machinery = _load_machinery_module(missing_intrinsics={"molt_module_import"})
+
+    for _ in range(2):
+        try:
+            machinery._ensure_intrinsics()  # noqa: SLF001
+        except RuntimeError as exc:
+            assert str(exc) == "intrinsic unavailable: molt_module_import"
+        else:
+            raise AssertionError("expected missing intrinsic to fail closed")
+
+        assert machinery._MOLT_IMPORTLIB_INTRINSICS_READY is False  # noqa: SLF001
+        assert (  # noqa: SLF001
+            machinery._MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE is None
+        )
+        assert machinery._MOLT_MODULE_IMPORT is None  # noqa: SLF001

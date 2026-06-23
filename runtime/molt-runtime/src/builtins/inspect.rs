@@ -3,10 +3,10 @@ use molt_obj_model::MoltObject;
 use crate::object::HEADER_FLAG_COROUTINE;
 use crate::{
     TYPE_ID_FUNCTION, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TYPE, alloc_dict_with_pairs,
-    alloc_string, alloc_tuple, attr_name_bits_from_bytes, clear_exception, dec_ref_bits,
-    decode_value_list, exception_pending, int_bits_from_i64, is_truthy, maybe_ptr_from_bits,
-    missing_bits, molt_getattr_builtin, obj_from_bits, object_type_id, raise_exception,
-    string_obj_to_owned, to_i64, type_of_bits,
+    alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes, call_callable1,
+    clear_exception, dec_ref_bits, decode_value_list, exception_pending, int_bits_from_i64,
+    is_truthy, maybe_ptr_from_bits, missing_bits, molt_dir_builtin, molt_getattr_builtin,
+    obj_from_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
 };
 
 fn get_attr_optional(
@@ -1052,6 +1052,97 @@ pub extern "C" fn molt_inspect_getdoc(obj_bits: u64) -> u64 {
         let out = inspect_cleandoc_impl(_py, doc_bits);
         dec_ref_bits(_py, doc_bits);
         out
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_inspect_getmembers(obj_bits: u64, predicate_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let names_bits = molt_dir_builtin(obj_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(names) = decode_value_list(obj_from_bits(names_bits)) else {
+            if !obj_from_bits(names_bits).is_none() {
+                dec_ref_bits(_py, names_bits);
+            }
+            return raise_exception(_py, "TypeError", "dir() did not return a sequence");
+        };
+        let names = names.to_vec();
+        let missing = missing_bits(_py);
+        let mut pairs: Vec<u64> = Vec::new();
+        let mut owned_pairs: Vec<u64> = Vec::new();
+        for name_bits in names {
+            let value_bits = molt_getattr_builtin(obj_bits, name_bits, missing);
+            if exception_pending(_py) {
+                if crate::builtins::attr::clear_attribute_error_if_pending(_py) {
+                    continue;
+                }
+                for bits in owned_pairs {
+                    dec_ref_bits(_py, bits);
+                }
+                if !obj_from_bits(names_bits).is_none() {
+                    dec_ref_bits(_py, names_bits);
+                }
+                return MoltObject::none().bits();
+            }
+            if value_bits == missing {
+                continue;
+            }
+            let mut keep = true;
+            if !obj_from_bits(predicate_bits).is_none() {
+                let pred_bits = unsafe { call_callable1(_py, predicate_bits, value_bits) };
+                if exception_pending(_py) {
+                    if !obj_from_bits(value_bits).is_none() {
+                        dec_ref_bits(_py, value_bits);
+                    }
+                    for bits in owned_pairs {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if !obj_from_bits(names_bits).is_none() {
+                        dec_ref_bits(_py, names_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                keep = is_truthy(_py, obj_from_bits(pred_bits));
+                if !obj_from_bits(pred_bits).is_none() {
+                    dec_ref_bits(_py, pred_bits);
+                }
+            }
+            if keep {
+                let pair_ptr = alloc_tuple(_py, &[name_bits, value_bits]);
+                if pair_ptr.is_null() {
+                    if !obj_from_bits(value_bits).is_none() {
+                        dec_ref_bits(_py, value_bits);
+                    }
+                    for bits in owned_pairs {
+                        dec_ref_bits(_py, bits);
+                    }
+                    if !obj_from_bits(names_bits).is_none() {
+                        dec_ref_bits(_py, names_bits);
+                    }
+                    return MoltObject::none().bits();
+                }
+                let pair_bits = MoltObject::from_ptr(pair_ptr).bits();
+                pairs.push(pair_bits);
+                owned_pairs.push(pair_bits);
+            }
+            if !obj_from_bits(value_bits).is_none() {
+                dec_ref_bits(_py, value_bits);
+            }
+        }
+        let list_ptr = alloc_list(_py, &pairs);
+        for bits in owned_pairs {
+            dec_ref_bits(_py, bits);
+        }
+        if !obj_from_bits(names_bits).is_none() {
+            dec_ref_bits(_py, names_bits);
+        }
+        if list_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(list_ptr).bits()
+        }
     })
 }
 

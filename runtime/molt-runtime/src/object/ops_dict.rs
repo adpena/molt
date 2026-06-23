@@ -73,8 +73,9 @@ pub extern "C" fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64
                         return MoltObject::none().bits();
                     }
                     let order = dict_order(dict_ptr);
+                    let hashes = dict_hashes(dict_ptr);
                     let table = dict_table(dict_ptr);
-                    let found = dict_find_entry(_py, order, table, item_bits);
+                    let found = dict_find_entry(_py, order, hashes, table, item_bits);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
                     }
@@ -569,8 +570,9 @@ pub extern "C" fn molt_dict_pop(
                 return MoltObject::none().bits();
             }
             let order = dict_order(dict_ptr);
+            let hashes = dict_hashes(dict_ptr);
             let table = dict_table(dict_ptr);
-            let found = dict_find_entry(_py, order, table, key_bits);
+            let found = dict_find_entry(_py, order, hashes, table, key_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -581,9 +583,10 @@ pub extern "C" fn molt_dict_pop(
                 let val_val = order[val_idx];
                 inc_ref_bits(_py, val_val);
                 order.drain(key_idx..=val_idx);
+                hashes.remove(entry_idx);
                 let entries = order.len() / 2;
                 let capacity = dict_table_capacity(entries.max(1));
-                dict_rebuild(_py, order, table, capacity);
+                dict_rebuild(_py, order, hashes, table, capacity);
                 if order.is_empty() {
                     (*header_from_obj_ptr(dict_ptr)).flags &=
                         !crate::object::HEADER_FLAG_CONTAINS_REFS;
@@ -769,10 +772,12 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             order.truncate(order.len() - 2);
+            let hashes = dict_hashes(dict_ptr);
+            hashes.truncate(hashes.len().saturating_sub(1));
             let entries = order.len() / 2;
             let table = dict_table(dict_ptr);
             let capacity = dict_table_capacity(entries.max(1));
-            dict_rebuild(_py, order, table, capacity);
+            dict_rebuild(_py, order, hashes, table, capacity);
             if order.is_empty() {
                 (*header_from_obj_ptr(dict_ptr)).flags &= !crate::object::HEADER_FLAG_CONTAINS_REFS;
             }

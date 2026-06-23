@@ -49,10 +49,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-try:
-    from tools import harness_memory_guard
-except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
-    import harness_memory_guard  # type: ignore
+from tools import harness_memory_guard
 
 TABLE = ROOT / "runtime/molt-backend/src/tir/op_kinds.toml"
 OUT_RS = ROOT / "runtime/molt-backend/src/tir/op_kinds_generated.rs"
@@ -127,10 +124,8 @@ _TERMINATOR_VARIANTS = (
 )
 
 # The flat classifier sets (mirroring the flat `matches!` arms in
-# alias_analysis.rs). Kept distinct from the mapper's alias grouping because the
-# classifier groups per-individual-kind, not per-OpCode-equivalence. Ownership
-# lattice result absorption is owned by the generated result-ownership tables,
-# not by a classifier_* ghost lane.
+# alias_analysis.rs). Kept distinct from the mapper's alias grouping because
+# the classifier groups per-individual-kind, not per-OpCode-equivalence.
 _CLASSIFIER_SETS = (
     "classifier_fresh_value",
     "classifier_exception_creation_ref",
@@ -331,6 +326,7 @@ def load_table() -> dict:
     _validate_absorbing_operand_kinds(data)
     _validate_result_finalizer_source_kinds(data)
     _validate_result_validity(data, seen_opcodes)
+    _validate_explicit_release_operands(data, {row["name"]: row for row in opcodes})
 
     _validate_terminators(data)
 
@@ -355,7 +351,7 @@ def _validate_operand_ownership(name: str, value: object) -> None:
     if value is None:
         raise OpKindTableError(
             f"opcode {name}: 'operand_ownership' is mandatory — classify every "
-            "operand as borrowed|consumed (use \"all_borrowed\" for the common "
+            'operand as borrowed|consumed (use "all_borrowed" for the common '
             "callee-borrows-args case; design 20 §1.2 / design 27 §2.1)"
         )
     if isinstance(value, str):
@@ -691,7 +687,9 @@ def _validate_absorbing_operand_kinds(data: dict) -> None:
     for row in rows:
         kind = row.get("kind")
         if not isinstance(kind, str) or not kind:
-            raise OpKindTableError(f"[[absorbing_operand_kind]] row missing 'kind': {row}")
+            raise OpKindTableError(
+                f"[[absorbing_operand_kind]] row missing 'kind': {row}"
+            )
         if kind in seen:
             raise OpKindTableError(f"duplicate absorbing_operand_kind: {kind}")
         seen.add(kind)
@@ -701,7 +699,7 @@ def _validate_absorbing_operand_kinds(data: dict) -> None:
         if isinstance(sel, bool) or not isinstance(sel, int) or sel < 0:
             raise OpKindTableError(
                 f"absorbing_operand_kind {kind}: 'absorbed_operand' must be "
-                f"\"last\" or a non-negative operand index, got {sel!r}"
+                f'"last" or a non-negative operand index, got {sel!r}'
             )
 
 
@@ -735,7 +733,7 @@ def _validate_result_finalizer_source_kinds(data: dict) -> None:
         if isinstance(sel, bool) or not isinstance(sel, int) or sel < 0:
             raise OpKindTableError(
                 f"result_finalizer_source_kind {kind}: 'source_operand' must be "
-                f"\"last\" or a non-negative operand index, got {sel!r}"
+                f'"last" or a non-negative operand index, got {sel!r}'
             )
 
 
@@ -777,6 +775,53 @@ def _validate_result_validity(data: dict, opcodes: set[str]) -> None:
                 f"duplicate result_validity row for opcode {opcode} result {result}"
             )
         seen.add(key)
+
+
+def _validate_explicit_release_operands(data: dict, opcodes: dict[str, dict]) -> None:
+    """Validate opcodes that explicitly release Python-owned operand roots.
+
+    These rows encode release boundaries such as `DecRef` (all operands) and
+    `DeleteVar` (the old slot value at operand 1). The fact is intentionally
+    distinct from operand ownership: it is a Python lifetime boundary consumed by
+    DropInsertion, not an ABI consume/borrow rule.
+    """
+    rows = data.get("explicit_release_operand", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("[[explicit_release_operand]] must be an array of tables")
+    seen: set[str] = set()
+    for row in rows:
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"[[explicit_release_operand]] row missing 'opcode': {row}"
+            )
+        opcode_row = opcodes.get(opcode)
+        if opcode_row is None:
+            raise OpKindTableError(
+                f"explicit_release_operand opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate explicit_release_operand row: {opcode}")
+        seen.add(opcode)
+        operand = row.get("operand")
+        if operand in {"all", "last"}:
+            continue
+        if isinstance(operand, bool) or not isinstance(operand, int) or operand < 0:
+            raise OpKindTableError(
+                f"explicit_release_operand {opcode}: 'operand' must be \"all\", "
+                f'"last", or a non-negative operand index, got {operand!r}'
+            )
+        ownership = opcode_row.get("operand_ownership")
+        if not isinstance(ownership, list):
+            raise OpKindTableError(
+                f"explicit_release_operand {opcode}: numeric operand {operand} "
+                "requires a fixed per-position operand_ownership list"
+            )
+        if operand >= len(ownership):
+            raise OpKindTableError(
+                f"explicit_release_operand {opcode}: operand index {operand} "
+                f"is out of range for {len(ownership)} declared operands"
+            )
 
 
 def _validate_terminators(data: dict) -> None:
@@ -1258,6 +1303,12 @@ def _render_rs_unformatted(data: dict) -> str:
     )
     out.append("\n")
     out.append(_render_result_validity(opcodes, data.get("result_validity", [])))
+    out.append("\n")
+    out.append(
+        _render_explicit_release_operands(
+            opcodes, data.get("explicit_release_operand", [])
+        )
+    )
 
     # -- per-terminator operand ownership (the ownership-moves-out / transfer axis) --
     out.append("\n")
@@ -1742,16 +1793,16 @@ def _render_operand_ownership(
 ) -> str:
     """Render the operand-ownership tables (design 27 §2.1/§2.3):
 
-      * ``OperandOwnership`` — the per-operand borrowed|consumed leaf.
-      * ``opcode_operand_ownership_table(opcode, operand_idx)`` — the per-OpCode
-        DEFAULT, EXHAUSTIVE over the enum (a new variant fails to compile until
-        classified). Honors the per-position list form (a list opcode dispatches
-        on ``operand_idx``); a uniform opcode ignores the index.
-      * ``kind_consumed_operand_table(kind, arity)`` — the per-SPELLING consume
-        override keyed on the ``_original_kind`` attr. Returns the 0-based index
-        of the consumed operand, resolving ``"last"`` against the op's ``arity``.
-        This is the table ``op_consumed_operand_root`` reads (replacing the
-        hand-coded ``matches!(_original_kind, "call_bind" | "call_indirect")``).
+    * ``OperandOwnership`` — the per-operand borrowed|consumed leaf.
+    * ``opcode_operand_ownership_table(opcode, operand_idx)`` — the per-OpCode
+      DEFAULT, EXHAUSTIVE over the enum (a new variant fails to compile until
+      classified). Honors the per-position list form (a list opcode dispatches
+      on ``operand_idx``); a uniform opcode ignores the index.
+    * ``kind_consumed_operand_table(kind, arity)`` — the per-SPELLING consume
+      override keyed on the ``_original_kind`` attr. Returns the 0-based index
+      of the consumed operand, resolving ``"last"`` against the op's ``arity``.
+      This is the table ``op_consumed_operand_root`` reads (replacing the
+      hand-coded ``matches!(_original_kind, "call_bind" | "call_indirect")``).
     """
     out: list[str] = []
     # `operand_idx` is referenced by the match body ONLY when some opcode carries
@@ -1801,6 +1852,11 @@ def _render_operand_ownership(
         "///     this operand while the caller still owns the producer temp ref. This\n"
         "///     gives DropInsertion a shared release boundary for absorbed temps\n"
         "///     without making the mutator consume the operand.\n"
+        "///   * `ConditionalValidOnlyOnEdge` — the §2.8 `IterNextUnboxed` value-out:\n"
+        "///     valid only on the not-exhausted edge, NEVER unconditionally\n"
+        "///     droppable (non-owned `None` sentinel on the exhaustion edge). The LONE\n"
+        "///     remaining `from_str`-only variant (its consumer hand-list —\n"
+        "///     `iter_cond_value_results` — migrates in the iter-cond tranche, #74).\n"
         "///   * `NoOperand` — no ref-bearing operand in that category (a\n"
         "///     raw lane; a terminator category absent on a variant — `Branch` has\n"
         "///     no direct operand, `Return` forwards no branch arg).\n"
@@ -1811,7 +1867,66 @@ def _render_operand_ownership(
         "    Transferred,\n"
         "    InteriorBorrowKeepAlive,\n"
         "    ContainerAbsorb,\n"
+        "    ConditionalValidOnlyOnEdge,\n"
         "    NoOperand,\n"
+        "}\n\n"
+        "// Parse/render path for the operand-ownership vocabulary. `Transferred`\n"
+        "// is LIVE through `terminator_operand_ownership_table` (ladder #72) and\n"
+        "// `InteriorBorrowKeepAlive` through `opcode_operand_ownership_table` /\n"
+        "// `opcode_borrows_source_operand` (ladder #73); `from_str` remains the\n"
+        "// toml-ingest path the LAST migration (the `conditional_valid_only_on_edge`\n"
+        "// row, #74) reads and is not yet wired to a runtime caller, so\n"
+        "// `from_str`/`as_str`/`ALL` keep allow(dead_code) — SCOPED to this\n"
+        "// forward-compat parse API, never the enum (every variant is constructed)\n"
+        "// nor the file. `ALL` + the round-trip test keep every variant constructed\n"
+        "// and live today.\n"
+        "#[allow(dead_code)]\n"
+        "impl OperandOwnership {\n"
+        "    pub(crate) const ALL: [OperandOwnership; 7] = [\n"
+        "        OperandOwnership::Borrowed,\n"
+        "        OperandOwnership::Consumed,\n"
+        "        OperandOwnership::Transferred,\n"
+        "        OperandOwnership::InteriorBorrowKeepAlive,\n"
+        "        OperandOwnership::ContainerAbsorb,\n"
+        "        OperandOwnership::ConditionalValidOnlyOnEdge,\n"
+        "        OperandOwnership::NoOperand,\n"
+        "    ];\n"
+        "    pub(crate) fn as_str(self) -> &'static str {\n"
+        "        match self {\n"
+        '            OperandOwnership::Borrowed => "borrowed",\n'
+        '            OperandOwnership::Consumed => "consumed",\n'
+        '            OperandOwnership::Transferred => "transferred",\n'
+        '            OperandOwnership::InteriorBorrowKeepAlive => "interior_borrow_keepalive",\n'
+        '            OperandOwnership::ContainerAbsorb => "container_absorb",\n'
+        '            OperandOwnership::ConditionalValidOnlyOnEdge => "conditional_valid_only_on_edge",\n'
+        '            OperandOwnership::NoOperand => "no_operand_ownership",\n'
+        "        }\n"
+        "    }\n"
+        "    pub(crate) fn from_str(s: &str) -> Option<OperandOwnership> {\n"
+        "        match s {\n"
+        '            "borrowed" => Some(OperandOwnership::Borrowed),\n'
+        '            "consumed" => Some(OperandOwnership::Consumed),\n'
+        '            "transferred" => Some(OperandOwnership::Transferred),\n'
+        '            "interior_borrow_keepalive" => Some(OperandOwnership::InteriorBorrowKeepAlive),\n'
+        '            "container_absorb" => Some(OperandOwnership::ContainerAbsorb),\n'
+        '            "conditional_valid_only_on_edge" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),\n'
+        '            "no_operand_ownership" => Some(OperandOwnership::NoOperand),\n'
+        "            _ => None,\n"
+        "        }\n"
+        "    }\n"
+        "}\n\n"
+        "#[cfg(test)]\n"
+        "mod operand_ownership_schema_tests {\n"
+        "    use super::OperandOwnership;\n"
+        "    #[test]\n"
+        "    fn every_variant_round_trips() {\n"
+        "        // The schema is alive: every declared variant parses + renders +\n"
+        "        // round-trips. Dropping or renaming a variant breaks this test.\n"
+        "        for v in OperandOwnership::ALL {\n"
+        "            assert_eq!(OperandOwnership::from_str(v.as_str()), Some(v));\n"
+        "        }\n"
+        '        assert_eq!(OperandOwnership::from_str("bogus"), None);\n'
+        "    }\n"
         "}\n\n"
     )
 
@@ -1895,7 +2010,7 @@ def _render_operand_ownership(
         "/// Per-SPELLING consume override (design 27 §2.3): for a `Copy`-lifted op\n"
         "/// carrying `_original_kind = kind`, the 0-based index of the operand the\n"
         "/// op CONSUMES (frees internally), or `None` if it consumes none. `arity`\n"
-        "/// is the op's operand count, used to resolve a `\"last\"` selector. The\n"
+        '/// is the op\'s operand count, used to resolve a `"last"` selector. The\n'
         "/// drop pass treats a value whose last use is the consumed-operand\n"
         "/// position exactly like a `Return` transfer — no trailing `DecRef`.\n"
         "/// Replaces the hand-coded `op_consumed_operand_root` match.\n"
@@ -1908,14 +2023,14 @@ def _render_operand_ownership(
             kind = row["kind"]
             sel = row["consumed_operand"]
             if sel == "last":
-                out.append(
-                    f'        "{kind}" => arity.checked_sub(1),\n'
-                )
+                out.append(f'        "{kind}" => arity.checked_sub(1),\n')
             else:
                 out.append(f'        "{kind}" => Some({int(sel)}),\n')
     out.append("        _ => None,\n")
     out.append("    }\n}\n")
-    absorbed_uses_arity = any(row["absorbed_operand"] == "last" for row in absorbing_operands)
+    absorbed_uses_arity = any(
+        row["absorbed_operand"] == "last" for row in absorbing_operands
+    )
     absorbed_arity_param = "arity" if absorbed_uses_arity else "_arity"
     out.append(
         "\n/// Per-SPELLING existing-container absorption override. These preserved\n"
@@ -2016,7 +2131,9 @@ def _render_result_absorption(
     out.append(_render_matches_arm(absorbing_kinds))
     out.append("    )\n}\n\n")
 
-    result_source_uses_arity = any(row["source_operand"] == "last" for row in result_sources)
+    result_source_uses_arity = any(
+        row["source_operand"] == "last" for row in result_sources
+    )
     result_source_arity_param = "arity" if result_source_uses_arity else "_arity"
     out.append(
         "/// Per-SPELLING result finalizer-source facts. These Copy-lifted\n"
@@ -2099,23 +2216,70 @@ def _render_result_validity(opcodes: list[dict], rows: list[dict]) -> str:
     return "".join(out)
 
 
+def _render_explicit_release_operands(opcodes: list[dict], rows: list[dict]) -> str:
+    """Render Python lifetime release-boundary operand facts."""
+    by_opcode = {row["opcode"]: row["operand"] for row in rows}
+    uses_arity = any(row["operand"] == "last" for row in rows)
+    arity_param = "arity" if uses_arity else "_arity"
+    out: list[str] = []
+    out.append(
+        "/// Python lifetime release-boundary fact: which operand roots an opcode\n"
+        "/// explicitly releases. This is separate from operand ownership: `DecRef`\n"
+        "/// consumes/releases all operands, while `DeleteVar` releases the old slot\n"
+        "/// occupant at operand 1 after storing the missing sentinel. DropInsertion\n"
+        "/// uses this table to avoid a pass-local `DecRef | DeleteVar` hand list.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq, Debug)]\n"
+        "pub(crate) enum ExplicitReleaseOperands {\n"
+        "    None,\n"
+        "    All,\n"
+        "    One(usize),\n"
+        "}\n\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_explicit_release_operands_table(\n"
+        "    opcode: OpCode,\n"
+        f"    {arity_param}: usize,\n"
+        ") -> ExplicitReleaseOperands {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        operand = by_opcode.get(name)
+        if operand is None:
+            out.append(f"        OpCode::{name} => ExplicitReleaseOperands::None,\n")
+        elif operand == "all":
+            out.append(f"        OpCode::{name} => ExplicitReleaseOperands::All,\n")
+        elif operand == "last":
+            out.append(
+                f"        OpCode::{name} => match arity.checked_sub(1) {{\n"
+                "            Some(idx) => ExplicitReleaseOperands::One(idx),\n"
+                "            None => ExplicitReleaseOperands::None,\n"
+                "        },\n"
+            )
+        else:
+            out.append(
+                f"        OpCode::{name} => ExplicitReleaseOperands::One({int(operand)}),\n"
+            )
+    out.append("    }\n}\n")
+    return "".join(out)
+
+
 def _render_terminator_ownership(terminators: list[dict]) -> str:
     """Render the per-TERMINATOR operand-ownership authority (design 27 §2.4):
 
-      * ``TerminatorKind`` — a zero-cost discriminant of the ``Terminator`` enum
-        (blocks.rs) the table is keyed on (the drop pass maps ``&Terminator`` ->
-        ``TerminatorKind`` with one structural match). EXHAUSTIVE over the enum.
-      * ``OperandCategory`` — ``Direct`` (the terminator's own operands: a
-        ``Return`` value, a ``CondBranch``/``Switch`` predicate) vs ``BranchArg``
-        (a value forwarded into a successor's phi). The two categories have
-        different ownership, so they are classified independently.
-      * ``terminator_operand_ownership_table(kind, category)`` — the per-(variant,
-        category) ``OperandOwnership`` leaf, EXHAUSTIVE over both axes.
-      * ``terminator_operand_is_transferred(kind, category)`` — the derived
-        predicate drop_insertion reads: ``true`` iff the leaf is ``Transferred``
-        (ownership moves OUT — no trailing ``DecRef`` at the transfer point). This
-        is the generated authority that REPLACES the hand-coded transfer carve-out
-        in ``terminator_branch_args`` + the ``Return`` arm of ``terminator_uses_root``.
+    * ``TerminatorKind`` — a zero-cost discriminant of the ``Terminator`` enum
+      (blocks.rs) the table is keyed on (the drop pass maps ``&Terminator`` ->
+      ``TerminatorKind`` with one structural match). EXHAUSTIVE over the enum.
+    * ``OperandCategory`` — ``Direct`` (the terminator's own operands: a
+      ``Return`` value, a ``CondBranch``/``Switch`` predicate) vs ``BranchArg``
+      (a value forwarded into a successor's phi). The two categories have
+      different ownership, so they are classified independently.
+    * ``terminator_operand_ownership_table(kind, category)`` — the per-(variant,
+      category) ``OperandOwnership`` leaf, EXHAUSTIVE over both axes.
+    * ``terminator_operand_is_transferred(kind, category)`` — the derived
+      predicate drop_insertion reads: ``true`` iff the leaf is ``Transferred``
+      (ownership moves OUT — no trailing ``DecRef`` at the transfer point). This
+      is the generated authority that REPLACES the hand-coded transfer carve-out
+      in ``terminator_branch_args`` + the ``Return`` arm of ``terminator_uses_root``.
     """
     out: list[str] = []
     out.append(

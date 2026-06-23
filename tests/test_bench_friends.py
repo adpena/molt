@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -71,6 +72,71 @@ def _run_tool(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _sample_suite_result(module, suite_id: str = "replay_smoke"):
+    phase = module.PhaseResult(
+        cmd=["python3", "-c", "print('ok')"],
+        returncode=0,
+        elapsed_s=0.0125,
+        timed_out=False,
+        stdout_path="stdout.log",
+        stderr_path="stderr.log",
+        stdout_json={"status": "ok"},
+        guard_status="pass",
+        guard_orphaned_process_groups=[4321],
+        guard_cargo_incremental_quarantine={"status": "not_needed"},
+    )
+    runner = module.RunnerResult(
+        name="tinygrad",
+        role="workload",
+        status="ok",
+        reason=None,
+        build=phase,
+        runs=[phase],
+        run_samples_s=[0.0125],
+        run_median_s=0.0125,
+        run_mean_s=0.0125,
+        run_stdev_s=0.0,
+        structured_outputs=[{"workload": "ok"}],
+        structured_samples_s={"workload": [0.0125]},
+        structured_median_s={"workload": 0.0125},
+    )
+    return module.SuiteResult(
+        id=suite_id,
+        friend="tinygrad",
+        display_name="Replay Smoke",
+        semantic_mode="runs_unmodified",
+        source="local",
+        suite_root="/tmp/replay-suite",
+        suite_workdir="/tmp/replay-suite",
+        resolved_ref=None,
+        requested_ref=None,
+        source_custody=module.SourceCustody(
+            source="local",
+            requested_ref=None,
+            expected_ref=None,
+            head_ref=None,
+            ref_verified=None,
+            git_clean=None,
+            git_status_porcelain=None,
+            suite_root_overridden=False,
+            verification="local_path",
+        ),
+        status="ok",
+        reason=None,
+        adapter_notes="replay-only",
+        tags=["unit"],
+        runners={"tinygrad": runner},
+        metrics={
+            "cpython_median_s": 0.02,
+            "tinygrad_median_s": 0.0125,
+            "molt_median_s": None,
+            "molt_cpython_ratio": None,
+            "molt_vs_friend_speedup": None,
+            "molt_vs_numpy_speedup": None,
+        },
+    )
+
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return run_native_test_process(
         ["git", *args],
@@ -108,40 +174,134 @@ def test_default_output_root_is_canonical_bench_results(monkeypatch) -> None:
     assert output_root.parent == REPO_ROOT / "bench" / "results" / "friends"
 
 
-def test_base_run_env_preserves_native_toolchain_env(monkeypatch) -> None:
+def test_project_python_prefers_active_virtualenv(monkeypatch, tmp_path: Path) -> None:
     module = _load_tool_module()
-    toolchain_env = {
-        "INCLUDE": "C:/toolchain/include",
-        "LIB": "C:/toolchain/lib;C:/sdk/lib",
-        "LIBPATH": "C:/toolchain/libpath",
-        "Path": "C:/toolchain/bin",
-        "PATHEXT": ".COM;.EXE;.BAT;.CMD",
-        "SystemRoot": "C:/Windows",
-        "UCRTVersion": "10.0.26100.0",
-        "UniversalCRTSdkDir": "C:/Program Files (x86)/Windows Kits/10/",
-        "VCToolsInstallDir": "C:/VS/VC/Tools/MSVC/14.44.35207/",
-        "VCToolsVersion": "14.44.35207",
-        "VSINSTALLDIR": "C:/VS/",
-        "VisualStudioVersion": "17.0",
-        "WindowsLibPath": "C:/Windows Kits/10/UnionMetadata",
-        "WindowsSdkBinPath": "C:/Windows Kits/10/bin/10.0.26100.0/x64",
-        "WindowsSdkDir": "C:/Windows Kits/10/",
-        "WindowsSDKLibVersion": "10.0.26100.0/",
-        "WindowsSDKVersion": "10.0.26100.0/",
+    venv = tmp_path / "venv"
+    python_path = venv / (
+        "Scripts/python.exe" if module.os.name == "nt" else "bin/python"
+    )
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("", encoding="utf-8")
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv))
+    monkeypatch.setattr(module.sys, "prefix", str(venv))
+    monkeypatch.setattr(module.sys, "base_prefix", str(tmp_path / "base"))
+
+    assert module._project_python() == str(python_path)
+
+
+def test_bench_friends_result_dict_round_trip_preserves_renderer_fields() -> None:
+    module = _load_tool_module()
+    suite = _sample_suite_result(module, "round_trip_smoke")
+    payload = module._suite_to_dict(suite)
+
+    round_tripped = module._suite_to_dict(module._suite_from_dict(payload))
+
+    assert round_tripped == payload
+
+
+def test_bench_friends_summary_row_spacing_is_regular() -> None:
+    module = _load_tool_module()
+    suite = _sample_suite_result(module, "spacing_smoke")
+
+    summary_text = module._render_summary_markdown(
+        run_started_at="2026-06-16T20:18:20+00:00",
+        manifest_path=Path("bench/friends/manifest.toml"),
+        json_rel="bench/results/friends/example/results.json",
+        suites=[suite],
+    )
+
+    header = next(
+        line for line in summary_text.splitlines() if line.startswith("| Suite")
+    )
+    row = next(
+        line for line in summary_text.splitlines() if line.startswith("| spacing")
+    )
+    assert "|-" not in row
+    assert len(header.strip().strip("|").split("|")) == len(
+        row.strip().strip("|").split("|")
+    )
+
+
+def test_bench_friends_render_existing_json_does_not_run_workloads(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_tool_module()
+    suite = _sample_suite_result(module)
+    results_json = tmp_path / "results.json"
+    summary_out = tmp_path / "summary.md"
+    payload = {
+        "schema_version": 1,
+        "generated_at": "2026-06-16T20:18:20+00:00",
+        "manifest_path": str(tmp_path / "manifest.toml"),
+        "interrupted": None,
+        "backend_daemon_cleanup": [],
+        "memory_guard_incidents": [],
+        "suites": [module._suite_to_dict(suite)],
     }
-    for key, value in toolchain_env.items():
-        monkeypatch.setenv(key, value)
-    monkeypatch.setenv("MOLT_BENCH_MAX_PROCESS_RSS_GB", "12")
-    monkeypatch.setenv("PYTHONPATH", "must-not-leak")
+    results_text = json.dumps(payload, indent=2, sort_keys=True)
+    results_json.write_text(results_text, encoding="utf-8")
 
-    env = module._base_run_env()
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("render-only mode must not execute benchmark paths")
 
-    for key, value in toolchain_env.items():
-        assert _has_env_pair_casefold(env, key, value)
-    assert env["MOLT_BENCH_MAX_PROCESS_RSS_GB"] == "12"
-    assert env["TMP"] == env["TMPDIR"]
-    assert env["TEMP"] == env["TMPDIR"]
-    assert not any(key.upper() == "PYTHONPATH" for key in env)
+    monkeypatch.setattr(module, "_acquire_suite", fail_if_called)
+    monkeypatch.setattr(module, "_run_prepare_steps", fail_if_called)
+    monkeypatch.setattr(module, "_run_runner", fail_if_called)
+    monkeypatch.setattr(module, "_cleanup_backend_daemons", fail_if_called)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "bench_friends.py",
+            "--render-existing-json",
+            str(results_json),
+            "--summary-out",
+            str(summary_out),
+        ],
+    )
+
+    assert module.main() == 0
+    assert results_json.read_text(encoding="utf-8") == results_text
+    summary_text = summary_out.read_text(encoding="utf-8")
+    assert "replay_smoke" in summary_text
+    assert "|-" not in next(
+        line for line in summary_text.splitlines() if line.startswith("| replay")
+    )
+
+
+def test_bench_friends_render_existing_json_rejects_workload_checkout_flag(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    module = _load_tool_module()
+    results_json = tmp_path / "results.json"
+    summary_out = tmp_path / "summary.md"
+    results_json.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-06-16T20:18:20+00:00",
+                "manifest_path": str(tmp_path / "manifest.toml"),
+                "suites": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "bench_friends.py",
+            "--render-existing-json",
+            str(results_json),
+            "--summary-out",
+            str(summary_out),
+            "--no-checkout",
+        ],
+    )
+
+    assert module.main() == 2
+    assert "--checkout/--no-checkout" in capsys.readouterr().err
+    assert not summary_out.exists()
 
 
 def test_bench_friends_local_suite_runs(tmp_path: Path) -> None:
@@ -1175,17 +1335,26 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
     )
     assert "--suite-root" in cpython.run_cmd
     assert "{suite_root}" in cpython.run_cmd
-    assert cpython.env == {"PYTHONDONTWRITEBYTECODE": "1"}
+    assert cpython.env == {"DEV": "PYTHON", "PYTHONDONTWRITEBYTECODE": "1"}
     assert molt.run_cmd is not None
     assert molt.skip_reason is None
-    assert molt.run_cmd[:4] == ["{python}", "-m", "molt.cli", "run"]
+    assert molt.run_cmd[:4] == ["{project_python}", "-m", "molt.cli", "run"]
+    assert "--capabilities" in molt.run_cmd
+    assert "ffi.unsafe" in molt.run_cmd
     assert "--build-arg=--stdlib-profile" in molt.run_cmd
     assert "--build-arg=full" in molt.run_cmd
+    assert "--build-arg=--rebuild" in molt.run_cmd
+    assert "--build-arg=--no-cache" in molt.run_cmd
     assert any(
         part.endswith("tools/tinygrad_off_shelf_adapter.py") for part in molt.run_cmd
     )
+    assert molt.env["DEV"] == "PYTHON"
     assert molt.env["MOLT_MODULE_ROOTS"] == "{suite_root}"
     assert molt.env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "tinygrad"
+    assert (
+        molt.env["MOLT_STATIC_IMPORT_MODULES"]
+        == "tinygrad.runtime.ops_python tinygrad.uop.ops"
+    )
     assert molt.env["PYTHONDONTWRITEBYTECODE"] == "1"
     assert molt.env["PYTHONPATH"] == "{repo_root}/src:{suite_root}"
     assert tinygrad.skip_reason is None
@@ -1207,6 +1376,21 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
         "PYTHONPATH": "{suite_root}",
         "TYPED": "1",
     }
+
+
+def test_friend_manifest_does_not_register_upat_compile_diagnostic_lane() -> None:
+    module = _load_tool_module()
+    _meta, suites = module._load_manifest(REPO_ROOT / "bench/friends/manifest.toml")
+    suite_ids = {suite.id for suite in suites}
+    tinygrad_suite = next(
+        suite for suite in suites if suite.id == "tinygrad_off_the_shelf"
+    )
+
+    assert "tinygrad_upat_interpret_diagnostic" not in suite_ids
+    assert "molt_upat_interpret" not in tinygrad_suite.runners
+    for runner in tinygrad_suite.runners.values():
+        assert "UPAT_COMPILE" not in runner.env
+        assert all("UPAT_COMPILE" not in part for part in (runner.run_cmd or []))
 
 
 def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
@@ -1248,7 +1432,7 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
     assert molt.skip_reason is None
     assert molt.role == "workload"
     assert molt.json_stdout is True
-    assert molt.run_cmd[:4] == ["{python}", "-m", "molt.cli", "run"]
+    assert molt.run_cmd[:4] == ["{project_python}", "-m", "molt.cli", "run"]
     assert any(
         part.endswith("tools/numpy_off_shelf_adapter.py") for part in molt.run_cmd
     )
@@ -1262,7 +1446,7 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
     assert c_api_scan.role == "c_api_scan"
     assert c_api_scan.json_stdout is True
     assert c_api_scan.run_cmd == [
-        "{python}",
+        "{project_python}",
         "-m",
         "molt.cli",
         "extension",
@@ -1292,7 +1476,8 @@ def test_friend_manifest_registers_numpy_off_the_shelf_suite() -> None:
 def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) -> None:
     tinygrad_pkg = tmp_path / "tinygrad"
     tinygrad_pkg.mkdir()
-    (tinygrad_pkg / "__init__.py").write_text(
+    (tinygrad_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (tinygrad_pkg / "tensor.py").write_text(
         textwrap.dedent(
             """
             class Tensor:
@@ -1319,6 +1504,52 @@ def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) ->
                     for row in self.data:
                         rows.append([sum(a * b for a, b in zip(row, col)) for col in cols])
                     return Tensor(rows)
+
+                def scaled_dot_product_attention(
+                    self,
+                    key,
+                    value,
+                    attn_mask=None,
+                    dropout_p=0.0,
+                    is_causal=False,
+                    enable_gqa=False,
+                ):
+                    import math
+
+                    if dropout_p != 0.0:
+                        raise AssertionError("fake tinygrad adapter does not support dropout")
+                    if enable_gqa:
+                        raise AssertionError("fake tinygrad adapter does not support gqa")
+                    if is_causal:
+                        raise AssertionError("attention_core passes an additive mask instead")
+                    if attn_mask is None:
+                        raise AssertionError("attention_core must pass an additive mask")
+                    batches = []
+                    for q_batch, k_batch, v_batch, mask_batch in zip(
+                        self.data, key.data, value.data, attn_mask.data
+                    ):
+                        heads = []
+                        for q_head, k_head, v_head, mask_head in zip(
+                            q_batch, k_batch, v_batch, mask_batch
+                        ):
+                            rows = []
+                            scale = 1.0 / math.sqrt(len(q_head[0]))
+                            for q_vec, mask_row in zip(q_head, mask_head):
+                                scores = [
+                                    sum(q * k for q, k in zip(q_vec, k_vec)) * scale + mask
+                                    for k_vec, mask in zip(k_head, mask_row)
+                                ]
+                                max_score = max(scores)
+                                exps = [math.exp(score - max_score) for score in scores]
+                                denom = sum(exps)
+                                probs = [exp / denom for exp in exps]
+                                rows.append([
+                                    sum(prob * v_vec[col] for prob, v_vec in zip(probs, v_head))
+                                    for col in range(len(v_head[0]))
+                                ])
+                            heads.append(rows)
+                        batches.append(heads)
+                    return Tensor(batches)
 
                 def where(self, x, y):
                     x_data = x.data if isinstance(x, Tensor) else x
@@ -1395,10 +1626,14 @@ def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) ->
     payload = json.loads(res.stdout)
     assert payload["status"] == "ok"
     assert sorted(payload["workloads"]) == [
+        "attention_core",
         "elementwise_chain",
         "matmul_2x2",
         "movement_views",
         "where_promotion",
+    ]
+    assert payload["workloads"]["attention_core"]["result"] == [
+        [[[10.0, 1.0], [2.0, 20.0]]],
     ]
     assert payload["workloads"]["elementwise_chain"]["result"] == [
         5.0,
@@ -1420,6 +1655,101 @@ def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) ->
         [5.0, 4.0],
         [0.0, 0.0],
     ]
+    assert not list(tmp_path.rglob("__pycache__"))
+
+
+def test_tinygrad_off_shelf_adapter_propagates_upat_interpret_nameerror(
+    tmp_path: Path,
+) -> None:
+    tinygrad_pkg = tmp_path / "tinygrad"
+    tinygrad_pkg.mkdir()
+    (tinygrad_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (tinygrad_pkg / "tensor.py").write_text(
+        textwrap.dedent(
+            """
+            import os
+
+            class Tensor:
+                def __init__(self, data):
+                    self.data = data
+
+                def scaled_dot_product_attention(
+                    self,
+                    key,
+                    value,
+                    attn_mask=None,
+                    dropout_p=0.0,
+                    is_causal=False,
+                    enable_gqa=False,
+                ):
+                    if os.environ.get("UPAT_COMPILE") == "0":
+                        raise NameError("name 'do_substitute' is not defined")
+                    return Tensor([[[[10.0, 1.0], [2.0, 20.0]]]])
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    res = run_native_test_process(
+        [
+            "python3",
+            "tools/tinygrad_off_shelf_adapter.py",
+            "--suite-root",
+            str(tmp_path),
+            "--workload",
+            "attention_core",
+            "--iterations",
+            "1",
+            "--json",
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "UPAT_COMPILE": "0"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert res.returncode == 1
+    assert "NameError: name 'do_substitute' is not defined" in res.stderr
+    assert not list(tmp_path.rglob("__pycache__"))
+
+
+def test_tinygrad_off_shelf_adapter_import_restores_process_state(
+    tmp_path: Path,
+) -> None:
+    module = _load_tinygrad_adapter_module()
+    tinygrad_pkg = tmp_path / "tinygrad"
+    tinygrad_pkg.mkdir()
+    (tinygrad_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (tinygrad_pkg / "tensor.py").write_text(
+        "class Tensor:\n    pass\n", encoding="utf-8"
+    )
+
+    saved_modules = {
+        name: sys.modules.get(name)
+        for name in ("tinygrad", "tinygrad.tensor")
+        if name in sys.modules
+    }
+    for name in ("tinygrad", "tinygrad.tensor"):
+        sys.modules.pop(name, None)
+    original_path = list(sys.path)
+    original_dont_write_bytecode = sys.dont_write_bytecode
+    try:
+        with (
+            module._suppress_bytecode_writes(),
+            module._suite_root_import_path(tmp_path),
+        ):
+            tinygrad = module._import_tinygrad()
+            assert tinygrad.Tensor.__name__ == "Tensor"
+            assert sys.dont_write_bytecode is True
+            assert sys.path[0] == str(tmp_path.resolve())
+        assert sys.path == original_path
+        assert sys.dont_write_bytecode == original_dont_write_bytecode
+    finally:
+        for name in ("tinygrad", "tinygrad.tensor"):
+            sys.modules.pop(name, None)
+        sys.modules.update(saved_modules)
 
 
 def test_tinygrad_off_shelf_adapter_prefers_tolist_without_numpy() -> None:

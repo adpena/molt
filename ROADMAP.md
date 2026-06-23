@@ -48,8 +48,21 @@ roadmap claim drifts.
    has moved its Cargo timing/version probes to `MOLT_DX_BUILD` custody, and
    `tools/cold_start_decompose.py` now routes safe-run, no-op C compile, dyld
    timing, and Molt-probe build subprocesses through `MOLT_COLD_START`.
-   `tools/gen_intrinsics.py` now formats generated Rust through
-   `MOLT_GENERATOR` custody, and `tools/perf_inner_repeat.py` plus its
+   `tools/gen_intrinsics.py` now emits rustfmt-stable generated Rust, skips
+   exact-content no-op writes before invoking rustfmt, lazy-loads memory-guard
+   formatting custody only when a changed Rust file needs formatting, and
+   formats changed generated Rust through `MOLT_GENERATOR`. Resolver bodies
+   live in generated per-category modules under
+   `runtime/molt-runtime/src/intrinsics/generated_resolvers/`, leaving
+   `generated.rs` as the single parser-facing intrinsic manifest table.
+   The `html` and `unicodedata` text domains plus `zoneinfo` now use extracted
+   runtime leaves as their only implementation authorities, with the in-facade
+   fallback modules deleted and resolver arms gated by `stdlib_text` /
+   `stdlib_zoneinfo`.
+   `stringprep` now owns the first generated per-crate intrinsic sub-registry;
+   the next registry throughput step is moving the remaining generated
+   categories behind the same thin `molt-runtime` facade composition.
+   `tools/perf_inner_repeat.py` plus its
    perf-scoreboard proof test now route inner-repeat proof children through
    `MOLT_BENCH` / `MOLT_TEST`. `tools/perf_scoreboard.py` also routes
    `safe_run.py --json` workload timing children and Codon build children
@@ -107,8 +120,18 @@ roadmap claim drifts.
     Repo cleanup must prove host/Claude/Codex control-plane process groups and
     external Claude/Codex-descendant process groups are protected before any
     drain path can terminate Molt-owned workers, while still allowing the
-    current guard to terminate its own child tree. Every
-    sentinel trip/drain/stale-preflight path must preserve sampled processes,
+    current guard to terminate its own child tree. The low-level guard now
+    captures a pre-launch PGID baseline and, after direct PID-lineage teardown,
+    drains only new orphaned Molt-owned process groups whose parents are init or
+    already selected for cleanup; keep this as the required shape for future
+    timeout/interruption cleanup so reparented `molt.cli build`/`molt-backend`
+    workers cannot survive while concurrent Claude/Codex/control-plane groups
+    remain protected. Guard summary paths must be evidence-producing before the
+    child launch: `status: "running"` summaries carry repro command, resolved
+    limits, guard identity, and bounded host/control-plane samples, and parent
+    SIGTERM/SIGINT/SIGHUP rewrites the same path with `guard_interrupted` before
+    exit. Every sentinel trip/drain/stale-preflight path must preserve sampled
+    processes,
     external parents, resolved guard limits, and bounded repro context inline in
     JSON diagnostics. Cleanup JSON is the carrier for parsed sentinel events;
     raw sentinel streams stay verbose-only.
@@ -143,7 +166,16 @@ roadmap claim drifts.
 	    Luau target-info terminal-drop execution plus shared-drop no-ops, and
 	    executed Luau, LLVM, plus WASM differential runtime proof for the
 	    raise/catch leak loop, while the wider `HandlerState` boundary and
-	    authoritative speed evidence remain the parity closeout. CLI rebuild/cache policy now treats shared exact-key
+	    authoritative speed evidence remain the parity closeout. The 2026-06-15
+	    local parity rerun passed the all-backend `exception_region`,
+	    `shared_drop`, and `exception_pop` Rust filters plus the focused WASM LIR
+	    `DelBoundary` release regression and a root `dev-fast` backend build; the
+	    same continuation proved marker-only `drop_inserted` facts survive
+	    pass-manager snapshot/restore as first-class fact changes and that
+	    frontend JSON preserves `bound_local` for list/tuple/dict/set/frozenset
+	    absorbing constructors; the
+	    same-day targeted hot-only `bench_exception_heavy` attempt refused before
+	    sampling and moved no speed claim. CLI rebuild/cache policy now treats shared exact-key
 	    cache artifacts as non-destructive during
 	    build/link/probe hot paths,
 	    publishes JSON/cache/text/byte/file/archive sidecars and final file
@@ -190,15 +222,34 @@ roadmap claim drifts.
     sidecar `tmp/memory_guard/friends_tinygrad_molt_daemon_harness_custody.json`
     records a Molt-owned backend daemon RSS guard trip near the 12 GB cap.
     Native application-object batching now consumes the same
-    `MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching. Daemon-off
-    proof now builds the full-stdlib adapter and reaches runtime execution under
-    guard; after the importlib bootstrap export fix and list-clear detach proof,
-    the current Molt runtime blocker remains `molt fatal: invalid object header
-    before dec_ref` at 1.985 GB peak RSS
-    (`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
-    The current remaining work is runtime object-header/RC correctness plus
-    daemon outcome/log custody until the adapter workload executes and leaves a
-    benchmark artifact.
+    `MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching, and the
+    production self-spawn worker path is covered by
+    `cargo test -p molt-backend --test native_batch_worker_spawn`
+    (`tmp/memory_guard/cargo_test_native_batch_worker_spawn_cleanup_diag_20260615.json`):
+    the real `molt-backend` binary compiles two live functions as two
+    materialized batches through `--native-batch-job-file`. Daemon-off
+    proof now builds the full-stdlib adapter and reaches upstream tinygrad
+    runtime execution under guard. The importlib bootstrap export, list-clear
+    detach, namedtuple return-boundary ownership, defaultdict factory-handle
+    ownership, deque retained-handle ownership, descriptor-cache retained
+    snapshots, and descriptor-bind reentrant class-dict mutation custody
+    supersede both the older 1.985 GB invalid-header receipt and the fresh
+    `graph_rewrite` invalid-header receipt as current blockers. Fresh
+    2026-06-20 guarded
+    evidence builds the full-stdlib adapter, gets past the
+    `tinygrad/uop/ops.py:1586` teardown invalid-header abort, fixes the
+    post-JSON `argparse.Namespace` return-cleanup double drop, and makes direct
+    execution of the rebuilt adapter exit cleanly for all four default
+    public-API workloads. The official `tinygrad_off_the_shelf` Molt friend
+    runner with clean pinned source custody now fails closed at
+    `tinygrad/uop/upat.py:167`, where upstream `upat_compile` calls
+    `exec(code_str, globs, namespace)`. The current remaining work is a static
+    AOT-compatible path for tinygrad's lazy pattern compiler. The producer side
+    now exists as `tools/tinygrad_upat_static_exec_registry.py`, which captures
+    deterministic UPat matcher sources from the pinned checkout and emits a
+    fail-closed generated factory registry without runtime `exec`; runtime/build
+    graph consumption is still open. Prior failure artifact:
+    `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`.
 14. Make ecosystem compatibility a first-class generated scoreboard, starting
     with NumPy. The current matrix has a dedicated NumPy row deriving `partial`
     through `D28` source-recompiled `libmolt` extension packages, not through
@@ -237,6 +288,22 @@ roadmap claim drifts.
   raise/catch leak loop. The durable milestone that remains is to finish the
   wider `HandlerState` boundary and obtain authoritative
   `bench_exception_heavy` speed evidence.
+  The 2026-06-15 local rerun passed the all-backend Rust consumption filters
+  (`exception_region`, `shared_drop`, `exception_pop`), the focused WASM LIR
+  `DelBoundary` release regression, and a root `dev-fast` backend build. The
+  same continuation proved marker-only `drop_inserted` facts survive
+  pass-manager snapshot/restore as first-class fact changes and that frontend
+  JSON preserves `bound_local` for list/tuple/dict/set/frozenset absorbing
+  constructors. The
+  same-day hot-only `bench_exception_heavy` rerun was non-authoritative and
+  refused during the size phase, so the performance status remains unchanged.
+  The 2026-06-20 direct release-fast WASM backend replay of the saved full
+  stdlib handoff IR now proves the active-frame ExceptionRegions rule: implicit
+  `TryStart`/`CheckException` handler ownership is created only when the target
+  label is active in the lexical exception frame stack. The previously fatal
+  `_collections_abc__Sequence_index` analysis completes with zero MatchRef
+  release facts at 259.1 MiB, and the guarded backend replay exits 0 under the
+  same 12 GiB process cap with a 0.324 GiB rusage peak.
   The prior WASM runtime-surface blocker that pulled `molt-db`/sqlite into the
   linked runtime is closed at the feature-plane level: wasm micro and full
   runtime profiles now exclude sqlite from the compile-time availability surface
@@ -247,13 +314,20 @@ roadmap claim drifts.
   `tests/differential/memory/exception_raise_catch_loop_leak.py`. The JS harness
   host map includes the process host ABI imports required by the linked runtime,
   including `env::molt_process_terminate_host`.
-- Finish finalizer ownership boundaries: the standalone raising-finalizer lane,
-  native scope-exit ordering gate, plain-object false-positive guard,
-  object-attribute release smoke, focused container clear/pop boundaries,
-  inline object-field child release, exit-semantics lane, and shared `DeleteVar`
-  old-slot release boundary are green, including the explicit local `del` /
-  `gc.collect()` resurrection-once differential. Remaining work is the broader
-  resurrection/leak matrix and backend-wide finalizer ordering parity.
+- Finish finalizer ownership boundaries: the native scope-exit ordering
+  differential, unit-level direct-field/runtime finalizer guards, shared
+  `DeleteVar` old-slot release boundary, and frontend `bound_local` carrier for
+  list/tuple/dict/set/frozenset absorbing constructors are green. The
+  2026-06-15 focused native differential shard now passes
+  `finalizer_scope_exit_ordering.py`, `finalizer_object_attr_release.py`,
+  `finalizer_matrix.py`, `finalizer_container_clear.py`, and
+  `finalizer_standalone_raise_swallow.py`
+  (`tmp/diff/finalizer_reaudit_after_borrowed_self.json`,
+  `logs/finalizer_reaudit_after_borrowed_self.log`) after deleting the legacy
+  compiled-`__init__` extra `self` retain in type-call dispatch. Remaining work
+  is widening the same finalizer-ordering proof across backend/profile parity
+  and deleting any stale value-tracking lanes once shared ownership facts cover
+  them.
 - Resume CallFacts only after the exception-region lane is no longer competing
   for the same no-throw/handler facts; its first landing must be a real
   generated/typed analysis surface, not comments or inert markers.
@@ -277,10 +351,10 @@ roadmap claim drifts.
   CPython public-API adapter now run with clean pinned custody, while the Molt
   runner is executable by default. Keep upstream tinygrad unmodified, keep
   `MOLT_EXTERNAL_STATIC_PACKAGES=tinygrad` as the explicit full-closure contract,
-  keep the runner on `{python} -m molt.cli run` with the full stdlib build
-  profile forwarded, and reduce backend-daemon compile RSS until the runner
-  reaches adapter workload execution under the benchmark memory guard. Current
-  evidence gets past manifest skip and full-profile validation, then kills
+  keep the runner on `{project_python} -m molt.cli run` with the full stdlib
+  build profile forwarded, and retire the current upstream lazy-pattern compiler
+  blocker without widening Molt's AOT contract. Earlier evidence got past
+  manifest skip and full-profile validation, then killed
   `molt-backend --daemon` at 12.005 GB after 435.5s
   (`tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`). Path-backed
   `ModuleSourceLease`/analysis metadata, byte-backed backend IR custody, and
@@ -304,20 +378,53 @@ roadmap claim drifts.
   a separate Molt-owned backend daemon RSS guard trip at the 12 GB process cap;
   it did not leave a full `results.json`/`summary.md` benchmark artifact.
   Native application-object batching now consumes the same
-  `MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching. Daemon-off proof
+  `MOLT_BACKEND_BATCH_OP_BUDGET` authority as stdlib batching, and the
+  production self-spawn worker path is covered by
+  `cargo test -p molt-backend --test native_batch_worker_spawn`
+  (`tmp/memory_guard/cargo_test_native_batch_worker_spawn_cleanup_diag_20260615.json`):
+  the real `molt-backend` binary compiles two live functions as two materialized
+  batches through `--native-batch-job-file`. Daemon-off proof
   now builds the full-stdlib adapter and reaches runtime execution under guard;
-  after the importlib bootstrap export fix and list-clear detach proof, the
-  current Molt runtime blocker remains `molt fatal: invalid object header before
-  dec_ref` at 1.985 GB peak RSS
-  (`tmp/memory_guard/tinygrad_adapter_run_daemon_off_after_list_detach_retry.json`).
-  The native benchmark/friend-suite Molt result contract now records
-  phase-aware `molt_failure` payloads, so the next rerun can distinguish
-  build-phase `daemon_crash` details such as `backend_daemon_empty_response`
-  from run-phase `runtime_crash` details such as
+  a 2026-06-15 list-workloads smoke
+  (`tmp/memory_guard/tinygrad_importlib_module_from_spec_smoke.json`) timed out
+  after 900s with `violation=null`, no orphaned process groups, 3.75 GB peak
+  process-tree RSS, and Cargo incremental quarantine while compiling the
+  full-stdlib tinygrad adapter. The active IR for that lane was 49 MB with
+  5,845 functions and 866,671 ops, so classify this result as cold
+  build/compiler-throughput evidence before adapter workload enumeration, not a
+  tinygrad semantic failure. Direct guarded backend replays of that IR
+  (`tmp/memory_guard/tinygrad_backend_replay_indexed_20260615.json` and
+  `tmp/memory_guard/tinygrad_backend_replay_indexed_scratch_20260615.json`)
+  both detected 1,469 leaf functions and failed closed before object emission
+  because `MOLT_RUNTIME_INTRINSIC_SYMBOLS` was absent; their 0.891 GB and
+  0.887 GB peak RSS receipts are backend compile-memory evidence only. A later
+  lazy-index guarded list-workloads retry
+  (`tmp/memory_guard/tinygrad_adapter_list_workloads_lazy_index_20260615.json`)
+  still timed out in the full-stdlib adapter build after 1200s with
+  `violation=null`, no orphaned process groups, 1.34 GB peak process RSS, and
+  2.28 GB peak process-tree RSS; the post-run sentinel receipt
+  (`tmp/memory_guard/process_sentinel_after_lazy_index_20260615.json`) returned
+  0 with no incident or orphaned process groups. The older 1.985 GB
+  invalid-header receipt is now historical: after the importlib bootstrap
+  export, list-clear detach, namedtuple return-boundary ownership, defaultdict
+  factory-handle ownership, and deque retained-handle ownership fixes, fresh
+  2026-06-20 guarded evidence builds the full-stdlib adapter, gets past the
+  `tinygrad/uop/ops.py:1586` teardown invalid-header abort, and fixes the
+  post-JSON `argparse.Namespace` return-cleanup double drop. Direct execution
+  of the rebuilt adapter now exits cleanly for all four default public-API
+  workloads. The official `tinygrad_off_the_shelf` Molt friend runner with
+  clean pinned source custody now fails closed inside upstream tinygrad's lazy
+  pattern compiler at `tinygrad/uop/upat.py:167`, where `upat_compile` calls
+  `exec(code_str, globs, namespace)`. This is the current blocker because
+  unrestricted `exec()` is outside Molt's verified AOT subset. The static
+  materialization producer is now `tools/tinygrad_upat_static_exec_registry.py`;
+  runtime/build graph consumption remains open. Prior failure artifact:
+  `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`.
+  The native benchmark/friend-suite Molt result contract records phase-aware
+  `molt_failure` payloads, so reruns distinguish build-phase daemon details
+  such as `backend_daemon_empty_response` from run-phase runtime details such as
   `molt_runtime_invalid_object_header_before_dec_ref` instead of collapsing
-  them into generic failed rows. The next structural landing point is runtime
-  object-header/RC correctness, while daemon-enabled runs still need the
-  compile-memory split to leave a complete benchmark artifact.
+  them into generic failed rows.
 - Continue the clean `molt-gpu` scheduler lane from the current code state:
   Movement/ShapeTracker binding is now a real per-kernel input-view contract
   with storage identity separated from binding identity across scheduler,
@@ -403,15 +510,20 @@ roadmap claim drifts.
 	  `PYTHONPATH={suite_root}` so the checked-out upstream package stays clean;
 	  the CPython runner uses `tools/tinygrad_off_shelf_adapter.py`
 	  as a public-API benchmark driver against the checked-out upstream package.
-		  The Molt runner executes the correct `{python} -m molt.cli run`
-		  full-stdlib command by default; current evidence reaches the backend daemon
-		  and no longer trips the outer memory guard after daemon full-request
-		  custody closed the hidden one-shot overlap, but still fails before
-		  adapter workload execution through lost-daemon / empty-response outcomes.
-		  A separate 21:12 sidecar records a Molt-owned backend daemon RSS guard
-		  trip near the 12 GB process cap. App-object batching now shares the
-		  stdlib op-budget authority; backend compile-memory reduction remains the
-		  next owner to retire. `tools/bench_friends.py`
+			  The Molt runner executes the correct `{project_python} -m molt.cli run`
+			  full-stdlib command by default. Earlier daemon-custody evidence reached
+			  the backend daemon and no longer tripped the outer memory guard after
+			  daemon full-request custody closed the hidden one-shot overlap, but still
+			  failed before adapter workload execution through lost-daemon /
+			  empty-response outcomes; the separate 21:12 sidecar recorded a
+			  Molt-owned backend daemon RSS guard trip near the 12 GB process cap.
+			  Current 2026-06-20 evidence builds the full-stdlib adapter and now fails
+			  closed at upstream `tinygrad/uop/upat.py:167`, where `upat_compile`
+			  requires unrestricted `exec(code_str, globs, namespace)`, outside Molt's
+			  verified AOT subset. `tools/tinygrad_upat_static_exec_registry.py` now
+			  emits the deterministic static-registry producer for those matcher
+			  sources; consuming that registry in static package lowering/runtime
+			  dispatch remains the active blocker. `tools/bench_friends.py`
 	  now fail-closes
 	  git-source custody by verifying requested refs against checked-out `HEAD`,
 	  requiring clean upstream checkouts, supporting per-suite `--suite-root` and
@@ -467,19 +579,27 @@ roadmap claim drifts.
   SimpleIR function references are not closed inside the partition before
   reuse or publish, so stale objects cannot externalize a different stdlib
   partition or leave `collections__UserDict_copy -> copy__copy` unresolved.
-  The Rust-owned import transaction now exists for the active importlib and
-  `builtins.__import__` runtime paths, and the retired
-  `molt_importlib_import_module` intrinsic/export/WASM row has been deleted so
-  importlib cannot drift through a resolved-name-only side door. The empty
+  Shared stdlib and native object cache identity now also includes resolved
+  capability config, capability-manifest runtime env, and ambient
+  `MOLT_CAPABILITIES`/resource/audit/IO env that can be present in per-file
+  differential runs. The Rust-owned import transaction now exists for the
+  active importlib and `builtins.__import__` runtime paths. The public
+  `molt_importlib_import_module(name, package)` intrinsic remains the
+  CPython-public `importlib.import_module` API wrapper: it owns public argument
+  validation and relative-name resolution, then delegates into the same
+  resolved transaction core as `molt_importlib_import_transaction`. The empty
   `_MODULE_ALIASES` branch is gone, and frontend literal/direct-call folding of
-  `importlib.import_module("literal")` now emits a direct
-  `molt_importlib_import_transaction(name, None, None, ("*",), 0)` call
-  whenever callable identity and an absolute literal name are statically proven;
-  runtime import owns target availability, version-gated absence, module cache
-  custody, provenance, fromlist behavior, and error shape. Frontend module-attribute
+  `importlib.import_module("literal")` now emits the public
+  `molt_importlib_import_module(name, None)` wrapper whenever callable identity
+  and an absolute literal name are statically proven; runtime import owns target
+  availability, version-gated absence, module cache custody, provenance,
+  fromlist behavior, and error shape. Frontend module-attribute
   mutation tracking now refuses both the transaction fold and cross-module static
   direct-call lowering whenever `importlib.import_module` is rebound through
-  `importlib` or a module alias. Module graph resolution now requires exact
+  `importlib` or a module alias. Build-time module graph discovery now mirrors
+  that callable-identity model for `importlib`, `importlib as alias`, and
+  `from importlib import import_module as alias`, while refusing static target
+  collection after `import_module` rebinding. Module graph resolution now requires exact
   filesystem casing, known project modules authorize only exact graph members,
   and ordinary source syntax imports now call the same transaction intrinsic
   with explicit `name`/`fromlist`/`level` payloads while bootstrap/importlib
@@ -488,13 +608,74 @@ roadmap claim drifts.
   submodule identity. Graph-proven `fromlist` child auto-import/binding now
   lives inside the Rust transaction for the focused native path, preserving
   package exports and binding successful child modules on the parent before the
-  final `IMPORT_FROM`. The remaining structural import work is to continue
-  public API validation beyond the covered `import_module` relative-package and
-  bootstrap-submodule cases while sharing the private resolver,
-  implement CPython 3.12 package-context calculation
-  (`__package__` / `__spec__.parent` / `__name__` fallback), and close
-  `fromlist` star/`__all__` plus namespace-package edge semantics under the
-  same transaction authority.
+  final `IMPORT_FROM`; a focused rerun also proves that child body dependency
+  failures stay pending through active handler frames instead of being cleared as
+  absent child modules. Static package `__all__` child modules named by source
+  `from package import *` now flow through the import scan, persisted
+  module-analysis cache, dependency graph, and Rust transaction `fromlist=["*"]`
+  path before star binding; unresolved `__all__` names stay runtime-visible and
+  raise the normal star-binding `AttributeError`. Covered evidence is the runtime
+  `from_import_child_missing_clear_preserves_unrelated_pending_failure_in_handler`
+  unit, the seven-case native import transaction/fromlist slice, the current
+  10-file full-profile importlib transaction differential shard
+  (`logs/importlib_10_diff_full.log`,
+  `logs/importlib_10_diff_full_results.jsonl`), and the four-file full-profile
+  differential active transaction/fromlist slice. The static package `__all__`
+  star-child evidence is
+  `tests/cli/test_cli_import_collection.py::test_from_import_star_graph_admits_static_all_child_module`,
+  `tests/test_native_import_star_all_regressions.py`,
+  `logs/import_star_package_all_child_pair_diff.log`,
+  `logs/import_star_package_all_child_pair_diff_results.jsonl`,
+  `logs/importlib_transaction_fromlist_star_regression_diff.log`, and
+  `logs/importlib_transaction_fromlist_star_regression_diff_results.jsonl`. The
+  relative `builtins.__import__` package-context path now matches the covered
+  CPython 3.12 order for dict-required `globals`, `__package__`,
+  `__spec__.parent`, missing-parent `AttributeError`, `__name__` fallback,
+  package `__path__`, and no-known-parent errors; evidence is
+  `tests/test_native_import_package_context_regressions.py`,
+  `tests/differential/basic/import_dunder_package_context.py`,
+  `logs/import_dunder_package_context_diff.log`, and
+  `logs/import_dunder_package_context_diff_results.jsonl`. Public resolver
+  validation for `importlib.import_module` and `importlib.util.resolve_name`
+  now shares private Rust relative-name math while preserving CPython 3.12
+  API-specific errors for non-string names/packages, missing packages, empty
+  names, and beyond-top-level relative imports; evidence is
+  `tests/test_native_importlib_public_api_regressions.py`,
+  `tests/differential/stdlib/importlib_public_api_validation.py`,
+  `logs/importlib_public_api_validation_diff.log`, and
+  `logs/importlib_public_api_validation_diff_results.jsonl`. `FileLoader` and
+  `SourceFileLoader.load_module` now use the shared Rust spec-execution
+  transaction for materialization, `sys.modules` preinsert, failed-new-load
+  rollback, existing-module no-rollback behavior, and successful substitution
+  return selection; evidence is
+  `tests/test_native_importlib_load_module_transaction.py`,
+  `tests/differential/stdlib/importlib_load_module_transaction.py`,
+  `logs/importlib_load_module_transaction_diff.log`,
+  `logs/importlib_load_module_transaction_diff_results.jsonl`,
+  `logs/importlib_spec_execution_transaction_regression_diff.log`, and
+  `logs/importlib_spec_execution_transaction_regression_diff_results.jsonl`. The four-file
+  transaction/fromlist differential slice intentionally fails closed under the
+  micro profile when full-profile stdlib features are required. The remaining
+  structural import work is to continue
+  public API validation beyond the covered import-module/resolve-name resolver
+  and load-module/bootstrap-submodule cases while sharing the private resolver,
+  continue collapsing manual `exec_module`/namespace spec execution into the
+  same Rust transaction, and separate semantic failures from full-profile native
+  compile-throughput failures. The latest guarded `importlib.util.module_from_spec`
+  external-module proof reached the harness 600s build timeout with
+  `violation=null` and no orphaned process groups, so its current blocker is
+  build/DX throughput rather than runtime importlib semantics. The separate
+  full-profile native `threading` import split-transport blocker is closed: the
+  SimpleIR megafunction splitter now treats cloned suffix cleanup handlers as
+  dataflow-custody edges, cloning only when external reads are available from
+  the extracted chunk or split frame and failing closed instead of stripping
+  external `check_exception` targets. Guarded proof passed
+  `test_native_full_profile_import_threading_survives_split_frame_transport`
+  for default, `1000`, and `500` split limits
+  (`logs/memory_guard_native_threading_all_summary.json`; `violation=null`, no
+  orphaned groups, 2.41 GB peak process-tree RSS). Continue to close
+  dynamic/broader `fromlist` star/`__all__` plus namespace-package edge
+  semantics under the same transaction authority.
 - Establish baseline and ratchet artifacts for tiny hello-world output rows
   across native, linked-WASM, Luau, and MLIR: release/dev size, backend/profile
   dimensions, same-path startup where runnable, fresh-path startup where
@@ -615,12 +796,14 @@ roadmap claim drifts.
   additional native exception-release map remains safe to delete. The next
   native deletion frontier is broader HandlerState/drop coverage that makes the
   remaining legacy value-tracking RC lanes redundant.
-- Finalizer dispatch, standalone `__del__` exception isolation, scope-exit
-  ordering, plain-object no-false-positive behavior, object-attribute release
-  smoke, exit semantics, and explicit local `del` / `gc.collect()`
-  resurrection-once are present. Container-owned release boundaries and the
-  broader resurrection/leak matrix remain open ownership-boundary defects, not
-  benchmark-only defects.
+- Finalizer dispatch has unit-level runtime and direct-field guards, the native
+  scope-exit ordering differential passes, and the shared `DeleteVar` old-slot
+  release boundary is covered. The 2026-06-15 focused native differential shard
+  now passes standalone raising-finalizer isolation, object-attribute release,
+  container clear/pop/delete finalizers, and the finalizer matrix after removing
+  the obsolete compiled-constructor `self` retain; remaining finalizer work is
+  backend/profile parity and stale value-tracking deletion, not benchmark-only
+  proof.
 - ExceptionRegion / HandlerState ownership is not fully landed. Native
   Cranelift now consumes shared TIR DropInsertion releases from
   `ExceptionRegions`/CreationRef facts as ordinary `DecRef` ops, and the
@@ -629,10 +812,17 @@ roadmap claim drifts.
   are present, and Luau plus LLVM runtime execute the generated raise/catch
   leak-loop artifact while `tools/wasm_diff.py` passes the same leak-loop
   differential for WASM; full closure still requires the wider `HandlerState`
-  boundary and authoritative `bench_exception_heavy` speed evidence. The targeted native/LLVM
-  `exception_raise_catch_loop_leak` gates are green under `MOLT_ASSERT_NO_LEAK=1`; the 2026-06-12 after-Luau-parity
+  boundary and authoritative `bench_exception_heavy` speed evidence. The
+  2026-06-20 active-frame regression closes the false-owner/RSS cliff where
+  inactive universal `CheckException` handler targets manufactured MatchRef
+  obligations after the protected region had closed; this is coverage for the
+  proven shared slice, not completion of the wider HandlerState boundary. The
+  targeted native/LLVM `exception_raise_catch_loop_leak` gates are green under
+  `MOLT_ASSERT_NO_LEAK=1`; the 2026-06-12 after-Luau-parity
   hot-only run was valid for cycle attribution but not authoritative for
-  performance movement because the host was non-quiescent.
+  performance movement because the host was non-quiescent. The 2026-06-15
+  hot-only rerun also moved no performance claim because it refused before
+  sampling.
 - Incomplete compatibility coverage across language and stdlib.
 - Container/list/dict semantic dispatch is now represented through the shared
   representation plan; remaining work is storage-proof precision,

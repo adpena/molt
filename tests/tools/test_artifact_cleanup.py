@@ -68,7 +68,9 @@ def test_default_cleanup_intentionally_covers_cargo_quarantine_receipts() -> Non
     defaults = set(module.default_pathspecs())
     stateful = set(module.stateful_pathspecs())
 
-    quarantine_receipt = "target/.molt_state/quarantine/cargo_incremental/q/receipt.json"
+    quarantine_receipt = (
+        "target/.molt_state/quarantine/cargo_incremental/q/receipt.json"
+    )
     assert quarantine_receipt.startswith("target/")
     assert "target/" in defaults
     assert "target/" not in stateful
@@ -142,6 +144,17 @@ def test_git_clean_command_apply_uses_delete_mode() -> None:
 def test_main_dry_run_invokes_git_clean_without_process_kill(monkeypatch) -> None:
     module = _load_artifact_cleanup()
     calls: list[dict[str, object]] = []
+    for key in (
+        "MOLT_EXT_ROOT",
+        "CARGO_TARGET_DIR",
+        "MOLT_DIFF_CARGO_TARGET_DIR",
+        "MOLT_CACHE",
+        "MOLT_DIFF_ROOT",
+        "MOLT_DIFF_TMPDIR",
+        "UV_CACHE_DIR",
+        "TMPDIR",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
     def fake_guarded_completed_process(cmd, **kwargs):
         calls.append({"cmd": list(cmd), **kwargs})
@@ -300,3 +313,63 @@ def test_main_json_includes_sentinel_events_without_raw_logs(
     assert data["entries"] == [{"action": "removed", "path": "target/"}]
     assert "sentinel_stdout" not in data
     assert "sentinel_stderr" not in data
+
+
+def test_main_json_rejects_malformed_sentinel_events_before_git_clean(
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_artifact_cleanup()
+
+    def fake_guarded_completed_process(cmd, **_kwargs):
+        if "process_sentinel.py" in cmd[1]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="{not-json}\n",
+                stderr="sentinel text stderr\n",
+            )
+        raise AssertionError("git clean must not run with malformed sentinel JSON")
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    rc = module.main(["--apply", "--kill-processes", "--json"])
+
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["data"]["sentinel_returncode"] == 1
+    assert "malformed JSON" in payload["errors"][0]
+
+
+def test_main_json_rejects_empty_sentinel_violation_before_git_clean(
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_artifact_cleanup()
+
+    def fake_guarded_completed_process(cmd, **_kwargs):
+        if "process_sentinel.py" in cmd[1]:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="traceback without sentinel JSON\n",
+            )
+        raise AssertionError("git clean must not run without sentinel events")
+
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    rc = module.main(["--apply", "--kill-processes", "--json"])
+
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["data"]["sentinel_returncode"] == 1
+    assert "no JSON events" in payload["errors"][0]

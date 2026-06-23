@@ -11,6 +11,7 @@ use molt_cpython_abi::abi_types::MoltTypeTag;
 use molt_obj_model::MoltObject;
 
 use crate::builtins::containers::{dict_len, dict_order, list_len, tuple_len};
+use crate::builtins::numbers::{int_bits_from_i64, int_bits_from_i128, to_i64};
 use crate::concurrency::gil::with_gil;
 use crate::object::builders::{
     alloc_bytes, alloc_dict_with_pairs, alloc_function_obj, alloc_list_with_capacity,
@@ -22,8 +23,8 @@ use crate::object::layout::{
 };
 use crate::object::ops::dict_set_in_place;
 use crate::object::type_ids::{
-    TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
-    TYPE_ID_TUPLE,
+    TYPE_ID_BIGINT, TYPE_ID_BYTES, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET,
+    TYPE_ID_STRING, TYPE_ID_TUPLE,
 };
 use crate::object::{
     MoltHeader, bytes_data, bytes_len, dec_ref_bits, inc_ref_bits, object_type_id, string_bytes,
@@ -64,6 +65,18 @@ unsafe extern "C" fn hook_alloc_bytes(data: *const u8, len: usize) -> u64 {
             MoltObject::from_ptr(ptr).bits()
         }
     })
+}
+
+unsafe extern "C" fn hook_int_from_i64(value: i64) -> u64 {
+    with_gil(|_py| int_bits_from_i64(&_py, value))
+}
+
+unsafe extern "C" fn hook_int_from_u64(value: u64) -> u64 {
+    with_gil(|_py| int_bits_from_i128(&_py, value as i128))
+}
+
+unsafe extern "C" fn hook_int_as_i64(bits: u64) -> i64 {
+    with_gil(|_py| to_i64(MoltObject::from_bits(bits)).unwrap_or(-1))
 }
 
 unsafe extern "C" fn hook_alloc_list() -> u64 {
@@ -290,6 +303,7 @@ unsafe extern "C" fn hook_classify_heap(bits: u64) -> u8 {
     match unsafe { object_type_id(ptr) } {
         TYPE_ID_STRING => MoltTypeTag::Str as u8,
         TYPE_ID_BYTES => MoltTypeTag::Bytes as u8,
+        TYPE_ID_BIGINT => MoltTypeTag::Int as u8,
         TYPE_ID_LIST => MoltTypeTag::List as u8,
         TYPE_ID_TUPLE => MoltTypeTag::Tuple as u8,
         TYPE_ID_DICT => MoltTypeTag::Dict as u8,
@@ -596,6 +610,9 @@ pub fn register_cpython_hooks() {
     let hooks = RuntimeHooks {
         alloc_str: hook_alloc_str,
         alloc_bytes: hook_alloc_bytes,
+        int_from_i64: hook_int_from_i64,
+        int_from_u64: hook_int_from_u64,
+        int_as_i64: hook_int_as_i64,
         alloc_list: hook_alloc_list,
         list_append: hook_list_append,
         list_len: hook_list_len,

@@ -131,7 +131,7 @@ def _build_native_binary_with_env(
         env=env,
         capture_output=True,
         text=True,
-        timeout=NATIVE_BUILD_TIMEOUT_SECS,
+        default_timeout=NATIVE_BUILD_TIMEOUT_SECS,
     )
     assert build.returncode == 0, build.stdout + build.stderr
     return out_path, env
@@ -351,10 +351,168 @@ def test_native_or_short_circuit_preserves_falsy_fallback(tmp_path: Path) -> Non
     assert run.stdout.strip() == "Y"
 
 
+def test_native_dict_and_set_probe_collisions_gate_equality_by_hash(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class Key:\n"
+            "    def __init__(self, value, h):\n"
+            "        self.value = value\n"
+            "        self.h = h\n"
+            "    def __hash__(self):\n"
+            "        return self.h\n"
+            "    def __eq__(self, other):\n"
+            "        raise RuntimeError('hash-mismatched equality was called')\n"
+            "\n"
+            "a = Key('a', 1)\n"
+            "b = Key('b', 9)\n"
+            "d = {}\n"
+            "d[a] = 'A'\n"
+            "d[b] = 'B'\n"
+            "s = set()\n"
+            "s.add(a)\n"
+            "s.add(b)\n"
+            "print(len(d), d[a], d[b], len(s))\n"
+        ),
+        "dict_set_hash_gate",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "2 A B 2"
+
+
+def test_native_weakref_dict_keys_do_not_compare_hash_mismatched_referents(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import weakref\n"
+            "\n"
+            "class Target:\n"
+            "    def __init__(self, h):\n"
+            "        self.h = h\n"
+            "    def __hash__(self):\n"
+            "        return self.h\n"
+            "    def __eq__(self, other):\n"
+            "        raise RuntimeError('referent equality was called')\n"
+            "\n"
+            "a = Target(1)\n"
+            "b = Target(9)\n"
+            "ra = weakref.ref(a)\n"
+            "rb = weakref.ref(b)\n"
+            "d = {}\n"
+            "d[ra] = None\n"
+            "d[rb] = None\n"
+            "print(len(d), d[ra] is None, d[rb] is None)\n"
+        ),
+        "weakref_dict_hash_gate",
+        session_id="pytest-native-bootstrap-weakref-hash-gate",
+        cache_dir=ROOT / ".molt_cache",
+        backend="cranelift",
+        extra_env={"MOLT_STDLIB_PROFILE": "full"},
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "2 True True"
+
+
+def test_native_inline_list_setitem_marks_heap_refs_for_container_drop(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "events = []\n"
+            "\n"
+            "class Item:\n"
+            "    def __del__(self):\n"
+            "        events.append('dropped')\n"
+            "\n"
+            "def make():\n"
+            "    xs = [None]\n"
+            "    xs[0] = Item()\n"
+            "\n"
+            "make()\n"
+            "print(len(events))\n"
+        ),
+        "list_setitem_heap_ref_flag",
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "1"
+
+
+def test_native_reassigned_list_local_does_not_drop_stale_initial_owner(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class Item:\n"
+            "    pass\n"
+            "\n"
+            "def choose(flag):\n"
+            "    xs = []\n"
+            "    if flag:\n"
+            "        xs = [Item()]\n"
+            "    if flag:\n"
+            "        return 'taken'\n"
+            "    return 'skipped'\n"
+            "\n"
+            "print(choose(True))\n"
+        ),
+        "reassigned_list_local_stale_owner",
+    )
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "taken"
+
+
 def test_native_import_sys_is_clean(tmp_path: Path) -> None:
     run = _build_and_run(tmp_path, "import sys\nprint('ok')\n", "import_sys")
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
+
+
+def test_native_contextlib_contextmanager_exit_reads_pending_generator_exception(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import contextlib\n"
+            "\n"
+            "@contextlib.contextmanager\n"
+            "def managed_error(log):\n"
+            "    try:\n"
+            "        yield 'ok'\n"
+            "    except ValueError:\n"
+            "        log.append('handled')\n"
+            "\n"
+            "events = []\n"
+            "cm = managed_error(events)\n"
+            "print('enter', cm.__enter__())\n"
+            "try:\n"
+            "    raise ValueError('boom')\n"
+            "except ValueError as exc:\n"
+            "    print('exit', cm.__exit__(type(exc), exc, None))\n"
+            "print(events)\n"
+            "with managed_error(events) as out:\n"
+            "    print('with', out)\n"
+            "    raise ValueError('boom2')\n"
+            "print(events)\n"
+        ),
+        "contextlib_contextmanager_pending_generator_exception",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "enter ok",
+        "exit True",
+        "['handled']",
+        "with ok",
+        "['handled', 'handled']",
+    ]
 
 
 def test_native_full_profile_importlib_machinery_sees_bootstrapped_sys_platform(
@@ -1091,10 +1249,7 @@ def test_native_from_import_package_export_wins_over_same_named_child_module(
 ) -> None:
     run = _build_and_run_with_env(
         tmp_path,
-        (
-            "from pkg import value\n"
-            "print(value)\n"
-        ),
+        ("from pkg import value\nprint(value)\n"),
         "package_export_wins_over_child",
         session_id="pytest-native-bootstrap-from-export-vs-child",
         cache_dir=ROOT / ".molt_cache-package-from-export-vs-child",
@@ -1297,6 +1452,54 @@ def test_native_importlib_import_module_literal_uses_transaction(
     assert run.stdout.strip().splitlines() == ["json", "True"]
 
 
+def test_native_importlib_dynamic_source_failure_does_not_commit_partial_module(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import importlib\n"
+            "import sys\n"
+            f"sys.path.insert(0, {str(tmp_path / 'runtime_site')!r})\n"
+            "module_name = sys.__name__.replace('sys', 'dynamic_unsupported')\n"
+            "try:\n"
+            "    importlib.import_module(module_name)\n"
+            "except BaseException as exc:\n"
+            "    print(type(exc).__name__)\n"
+            "    print('unsupported module statement' in str(exc))\n"
+            "else:\n"
+            "    print('NO_ERROR')\n"
+            "print(sys.modules.get(module_name) is None)\n"
+        ),
+        "importlib_dynamic_source_fail_closed",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-importlib-dynamic-source-fail",
+        cache_dir=ROOT / ".molt_cache-importlib-dynamic-source-fail",
+        backend="cranelift",
+        extra_files={
+            "runtime_site/dynamic_unsupported.py": (
+                "from typing import Any\n\n"
+                "def unsupported_runtime_function():\n"
+                "    return Any\n"
+            )
+        },
+        extra_build_args=[
+            "--capabilities",
+            "fs.read",
+            "--stdlib-profile",
+            "full",
+            "--rebuild",
+            "--no-cache",
+        ],
+        run_timeout_secs=20,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "NotImplementedError",
+        "True",
+        "True",
+    ]
+
+
 def test_native_package_entry_alias_imports_preserve_os_and_sys_identity(
     tmp_path: Path,
 ) -> None:
@@ -1467,6 +1670,35 @@ def test_native_top_level_alias_imports_preserve_os_sys_identity(
     ]
 
 
+def test_native_module_hasattr_missing_uses_seeded_module_name_metadata(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import sys\n"
+            "import builtins\n"
+            "import types\n"
+            "synthetic = types.ModuleType('synthetic_mod')\n"
+            "print(sys.__name__)\n"
+            "print(hasattr(sys, 'tolist'))\n"
+            "print(synthetic.__name__)\n"
+            "print(hasattr(synthetic, 'tolist'))\n"
+        ),
+        "module_hasattr_seeded_name_metadata",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-hasattr",
+        cache_dir=ROOT / ".molt_cache-module-hasattr",
+        backend="cranelift",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "sys",
+        "False",
+        "synthetic_mod",
+        "False",
+    ]
+
+
 def test_native_llvm_json_loads_with_kwonly_defaults_executes(tmp_path: Path) -> None:
     run = _build_and_run_with_env(
         tmp_path,
@@ -1497,6 +1729,498 @@ def test_native_import_os_is_clean(tmp_path: Path) -> None:
     run = _build_and_run(tmp_path, "import os\nprint('ok')\n", "import_os")
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "ok"
+
+
+def test_native_hasattr_missing_attr_does_not_poison_following_import(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import os\n"
+            "print(hasattr(os, 'sched_getaffinity'))\n"
+            "import enum\n"
+            "print(enum.IntEnum.__name__)\n"
+        ),
+        "hasattr_missing_attr_then_enum",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["False", "IntEnum"]
+
+
+def test_native_slots_subclass_inherits_base_instance_dict(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class Base:\n"
+            "    pass\n"
+            "class Child(Base):\n"
+            "    __slots__ = ('slot_value',)\n"
+            "c = Child()\n"
+            "c.slot_value = 3\n"
+            "c.dynamic_value = 4\n"
+            "print(c.slot_value)\n"
+            "print(c.dynamic_value)\n"
+            "print(c.__dict__['dynamic_value'])\n"
+            "class SlotOnly:\n"
+            "    __slots__ = ('slot_value',)\n"
+            "s = SlotOnly()\n"
+            "s.slot_value = 5\n"
+            "print(s.slot_value)\n"
+            "try:\n"
+            "    s.dynamic_value = 6\n"
+            "except AttributeError:\n"
+            "    print('blocked')\n"
+        ),
+        "slots_subclass_inherits_base_instance_dict",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["3", "4", "4", "5", "blocked"]
+
+
+def test_native_handled_missing_ctypes_attr_does_not_poison_dataclass_enum_imports(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import ctypes\n"
+            "try:\n"
+            "    getattr(ctypes, '__molt_missing_ctypes_attr__')\n"
+            "except AttributeError:\n"
+            "    pass\n"
+            "from dataclasses import dataclass\n"
+            "@dataclass(frozen=True)\n"
+            "class Box:\n"
+            "    name: str\n"
+            "    value: int = 1\n"
+            "print(Box('a').name)\n"
+            "import enum\n"
+            "print(enum.IntEnum.__name__)\n"
+        ),
+        "handled_missing_ctypes_attr_dataclass_enum",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["a", "IntEnum"]
+
+
+def test_native_dataclass_field_objects_survive_class_storage_and_fields_tuple(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from dataclasses import dataclass, field, fields\n"
+            "import ctypes\n"
+            "try:\n"
+            "    getattr(ctypes, '__molt_missing_ctypes_attr__')\n"
+            "except AttributeError:\n"
+            "    pass\n"
+            "@dataclass(frozen=True, eq=False)\n"
+            "class DType:\n"
+            "    priority: int\n"
+            "    bitsize: int\n"
+            "    name: str = field(default='void', metadata={'kind': 'scalar'})\n"
+            "    count: int = 1\n"
+            "@dataclass(frozen=True, eq=False)\n"
+            "class PtrDType(DType):\n"
+            "    base: DType = field(default=DType(-1, 0))\n"
+            "    size: int = -1\n"
+            "dt = DType(0, 1, 'bool')\n"
+            "pt = PtrDType(2, 64, 'ptr', 1, dt, 4)\n"
+            "dtype_fields = fields(DType)\n"
+            "ptr_fields = fields(PtrDType)\n"
+            "print(dtype_fields[2].name)\n"
+            "print(ptr_fields[-2].name)\n"
+            "print(pt.base.name)\n"
+            "import enum\n"
+            "print(enum.IntEnum.__name__)\n"
+        ),
+        "dataclass_field_objects_survive_class_storage",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["name", "base", "bool", "IntEnum"]
+
+
+def test_native_loop_phi_local_boundary_set_survives_slotted_dataclass(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "def inherited_slots_probe():\n"
+            "    inherited = set()\n"
+            "    for base in ():\n"
+            "        try:\n"
+            "            for entry in base:\n"
+            "                inherited.add(entry)\n"
+            "        except TypeError:\n"
+            "            continue\n"
+            "    return inherited\n"
+            "slots = inherited_slots_probe()\n"
+            "print(type(slots).__name__)\n"
+            "print('value' in slots)\n"
+            "from dataclasses import dataclass\n"
+            "@dataclass(eq=False, slots=True)\n"
+            "class Node:\n"
+            "    value: int\n"
+            "print(Node(7).value)\n"
+        ),
+        "loop_phi_local_boundary_set_survives_slotted_dataclass",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["set", "False", "7"]
+
+
+def test_native_slotted_dataclass_field_overrides_inherited_readonly_property(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from dataclasses import dataclass\n"
+            "class DTypeMixin:\n"
+            "    @property\n"
+            "    def dtype(self):\n"
+            "        return 'base-property'\n"
+            "@dataclass(eq=False, slots=True)\n"
+            "class UOp(DTypeMixin):\n"
+            "    dtype: str = 'void'\n"
+            "    arg: int = 0\n"
+            "u = UOp('float32', 7)\n"
+            "print(u.dtype)\n"
+            "print(u.arg)\n"
+            "u.dtype = 'int32'\n"
+            "print(u.dtype)\n"
+            "try:\n"
+            "    del u.dtype\n"
+            "    print(u.dtype)\n"
+            "except AttributeError:\n"
+            "    print('missing')\n"
+        ),
+        "slotted_dataclass_field_overrides_inherited_readonly_property",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["float32", "7", "int32", "missing"]
+
+
+def test_native_slotted_dataclass_inherits_base_dict_without_field_mirroring(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from dataclasses import dataclass\n"
+            "class recursive_property(property):\n"
+            "    def __init__(self, fn):\n"
+            "        self.nm = '_cache_' + fn.__name__\n"
+            "        self.fxn = fn\n"
+            "        super().__init__(fn)\n"
+            "    def __get__(self, obj, cls=None):\n"
+            "        if obj is None:\n"
+            "            return self\n"
+            "        if self.nm not in obj.__dict__:\n"
+            "            obj.__dict__[self.nm] = self.fxn(obj)\n"
+            "        return obj.__dict__[self.nm]\n"
+            "class Mixin:\n"
+            "    pass\n"
+            "@dataclass(eq=False, slots=True)\n"
+            "class Node(Mixin):\n"
+            "    value: int\n"
+            "    @recursive_property\n"
+            "    def doubled(self):\n"
+            "        return self.value * 2\n"
+            "n = Node(6)\n"
+            "print(type(n.__dict__).__name__)\n"
+            "print('value' in n.__dict__)\n"
+            "print(n.doubled)\n"
+            "cache_name = Node.doubled.nm\n"
+            "print(cache_name in n.__dict__)\n"
+            "print(n.__dict__[cache_name])\n"
+            "n.extra = 9\n"
+            "print(n.extra)\n"
+            "print(n.value)\n"
+        ),
+        "slotted_dataclass_inherits_base_dict_without_field_mirroring",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "dict",
+        "False",
+        "12",
+        "True",
+        "12",
+        "9",
+        "6",
+    ]
+
+
+def test_native_functools_cached_property_descriptor_survives_class_lifetime(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import functools\n"
+            "class _Device:\n"
+            "    @property\n"
+            "    def DEFAULT(self):\n"
+            "        return self._select_device\n"
+            "    @functools.cached_property\n"
+            "    def _select_device(self):\n"
+            "        return 'PYTHON'\n"
+            "Device = _Device()\n"
+            "print(Device.DEFAULT)\n"
+            "print(Device.__dict__['_select_device'])\n"
+            "print(Device.DEFAULT)\n"
+            "print(_Device._select_device.attrname)\n"
+        ),
+        "functools_cached_property_descriptor_survives_class_lifetime",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-cached-property-class-lifetime",
+        cache_dir=ROOT / ".molt_cache-cached-property-class-lifetime",
+        backend="cranelift",
+        extra_build_args=["--rebuild", "--no-cache"],
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "PYTHON",
+        "PYTHON",
+        "PYTHON",
+        "_select_device",
+    ]
+
+
+def test_native_slots_only_dataclass_rejects_instance_dict_and_extra_attrs(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from dataclasses import dataclass\n"
+            "@dataclass(eq=False, slots=True)\n"
+            "class SlotOnly:\n"
+            "    value: int\n"
+            "s = SlotOnly(3)\n"
+            "try:\n"
+            "    print(s.__dict__)\n"
+            "except AttributeError:\n"
+            "    print('no-dict')\n"
+            "try:\n"
+            "    s.extra = 4\n"
+            "    print('set')\n"
+            "except AttributeError:\n"
+            "    print('no-extra')\n"
+            "print(s.value)\n"
+        ),
+        "slots_only_dataclass_rejects_instance_dict_and_extra_attrs",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["no-dict", "no-extra", "3"]
+
+
+def test_native_property_getter_runtime_error_propagates_without_attr_fallback(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class C:\n"
+            "    @property\n"
+            "    def value(self):\n"
+            "        raise RuntimeError('boom')\n"
+            "try:\n"
+            "    print(C().value)\n"
+            "except Exception as exc:\n"
+            "    print(type(exc).__name__, str(exc))\n"
+        ),
+        "property_getter_runtime_error_propagates",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["RuntimeError boom"]
+
+
+def test_native_ctypes_tinygrad_scalar_surface_uses_intrinsic_coercion(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import ctypes\n"
+            "print(hasattr(ctypes.c_float, '_fields_'))\n"
+            "print(ctypes.c_char(65).value)\n"
+            "print(ctypes.c_uint8(-1).value)\n"
+            "print(ctypes.c_int8(255).value)\n"
+            "print(ctypes.c_uint64(-1).value)\n"
+            "print(ctypes.c_float(0.1).value != 0.1)\n"
+            "print(ctypes.sizeof(ctypes.c_uint64))\n"
+            "arr = (ctypes.c_uint8 * 3)(1, -1, 256)\n"
+            "print(list(arr))\n"
+        ),
+        "ctypes_tinygrad_scalar_surface",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-ctypes-tinygrad-scalar",
+        cache_dir=ROOT / ".molt_cache-ctypes-tinygrad-scalar",
+        backend="cranelift",
+        extra_build_args=[
+            "--capabilities",
+            "ffi.unsafe",
+            "--stdlib-profile",
+            "full",
+            "--rebuild",
+            "--no-cache",
+        ],
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "False",
+        "b'A'",
+        "255",
+        "-1",
+        "18446744073709551615",
+        "True",
+        "8",
+        "[1, 255, 0]",
+    ]
+
+
+def test_native_ctypes_scalar_numeric_protocol_matches_cpython_shape(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import ctypes\n"
+            "class ConstFloat:\n"
+            "    def __init__(self, value):\n"
+            "        self.value_payload = value\n"
+            "    def __float__(self):\n"
+            "        return self.value_payload\n"
+            "    def __int__(self):\n"
+            "        return int(self.value_payload)\n"
+            "class IndexLike:\n"
+            "    def __index__(self):\n"
+            "        return 260\n"
+            "class IntOnly:\n"
+            "    def __int__(self):\n"
+            "        return 7\n"
+            "class Box:\n"
+            "    value = 3\n"
+            "class FloatSubclass(float):\n"
+            "    __slots__ = ('bits',)\n"
+            "    def __new__(cls, value):\n"
+            "        obj = super().__new__(cls, value)\n"
+            "        obj.bits = 99\n"
+            "        return obj\n"
+            "class IntSubclass(int):\n"
+            "    __slots__ = ('bits',)\n"
+            "    def __new__(cls, value):\n"
+            "        obj = super().__new__(cls, value)\n"
+            "        obj.bits = 77\n"
+            "        return obj\n"
+            "sub = FloatSubclass(2.25)\n"
+            "isub = IntSubclass(12)\n"
+            "print(ctypes.c_float(ConstFloat(1.5)).value)\n"
+            "print(ctypes.c_int8(IndexLike()).value)\n"
+            "print(type(sub).__name__)\n"
+            "print(float(sub))\n"
+            "print(float.__float__(sub))\n"
+            "print(ctypes.c_float(sub).value)\n"
+            "print(type(isub).__name__)\n"
+            "print(int(isub))\n"
+            "print(isub.bits)\n"
+            "print(ctypes.c_int(isub).value)\n"
+            "for value in (IntOnly(), Box(), 7.0):\n"
+            "    try:\n"
+            "        ctypes.c_int(value)\n"
+            "    except Exception as exc:\n"
+            "        print(type(exc).__name__)\n"
+            "    else:\n"
+            "        print('no-error')\n"
+        ),
+        "ctypes_scalar_numeric_protocol",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-ctypes-scalar-numeric-protocol",
+        cache_dir=ROOT / ".molt_cache-ctypes-scalar-numeric-protocol",
+        backend="cranelift",
+        extra_build_args=[
+            "--capabilities",
+            "ffi.unsafe",
+            "--stdlib-profile",
+            "full",
+            "--rebuild",
+            "--no-cache",
+        ],
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "1.5",
+        "4",
+        "FloatSubclass",
+        "2.25",
+        "2.25",
+        "2.25",
+        "IntSubclass",
+        "12",
+        "77",
+        "12",
+        "TypeError",
+        "TypeError",
+        "TypeError",
+    ]
+
+
+def test_native_dict_values_loop_cleanup_preserves_dict_owned_values(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class Box:\n"
+            "    pass\n"
+            "def make():\n"
+            "    d = {}\n"
+            "    d['x'] = Box()\n"
+            "    d['y'] = Box()\n"
+            "    for _ in range(8):\n"
+            "        for value in d.values():\n"
+            "            hold = value\n"
+            "        hold = None\n"
+            "    for value in d.values():\n"
+            "        print(value.__class__.__name__)\n"
+            "make()\n"
+        ),
+        "dict_values_loop_cleanup_preserves_dict_owned_values",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["Box", "Box"]
+
+
+def test_native_builtin_container_class_attribute_matches_type(tmp_path: Path) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "values = [(), [], {}, set(), 'x', b'y', 1, True, 2.5, None]\n"
+            "for value in values:\n"
+            "    print(\n"
+            "        value.__class__.__name__,\n"
+            "        value.__class__ is type(value),\n"
+            "        getattr(value, '__class__') is type(value),\n"
+            "        hasattr(value, '__class__'),\n"
+            "    )\n"
+        ),
+        "builtin_container_class_attribute_matches_type",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "tuple True True True",
+        "list True True True",
+        "dict True True True",
+        "set True True True",
+        "str True True True",
+        "bytes True True True",
+        "int True True True",
+        "bool True True True",
+        "float True True True",
+        "NoneType True True True",
+    ]
 
 
 def test_native_array_repeat_semantics_executes(tmp_path: Path) -> None:
@@ -1978,6 +2702,143 @@ def test_native_bound_method_defaults_still_take_full_binding_path(
     assert run.stdout.strip() == "3"
 
 
+def test_native_functools_cache_binds_binary_special_method_descriptor(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import functools\n"
+            "class Acc:\n"
+            "    @functools.cache\n"
+            "    def __add__(self, other):\n"
+            "        print(type(self).__name__, type(other).__name__)\n"
+            "        return 7\n"
+            "a = Acc()\n"
+            "b = Acc()\n"
+            "print(a + b)\n"
+            "print(a + b)\n"
+        ),
+        "functools_cache_binary_special_descriptor",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["Acc Acc", "7", "7"]
+
+
+def test_native_tuple_ordering_reports_first_unorderable_element(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "try:\n"
+            "    print((object(),) < (object(),))\n"
+            "except TypeError as exc:\n"
+            "    print(str(exc))\n"
+            "try:\n"
+            "    print([(object(),), (object(),)].sort())\n"
+            "except TypeError as exc:\n"
+            "    print(str(exc))\n"
+        ),
+        "tuple_ordering_first_unorderable_element",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "'<' not supported between instances of 'object' and 'object'",
+        "'<' not supported between instances of 'object' and 'object'",
+    ]
+
+
+def test_native_sequence_comparison_uses_rich_equality_before_ordering(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from dataclasses import dataclass\n"
+            "\n"
+            "@dataclass(frozen=True)\n"
+            "class Box:\n"
+            "    x: int\n"
+            "    y: tuple\n"
+            "\n"
+            "class Opaque:\n"
+            "    pass\n"
+            "\n"
+            "print((Box(2, (3,)),) == (Box(2, (3,)),))\n"
+            "print((1, Box(2, (3,)), 'a') < (1, Box(2, (3,)), 'b'))\n"
+            "try:\n"
+            "    print((1, Box(2, (Opaque(),)), 'a') < (1, Box(2, (Opaque(),)), 'b'))\n"
+            "except TypeError as exc:\n"
+            "    print(str(exc))\n"
+        ),
+        "sequence_rich_equality_before_ordering",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "True",
+        "True",
+        "'<' not supported between instances of 'Box' and 'Box'",
+    ]
+
+
+def test_native_property_getter_exception_matches_superclass_handler(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class MovementMixin:\n"
+            "    @property\n"
+            "    def shape(self):\n"
+            "        raise NotImplementedError\n"
+            "\n"
+            "class UPat(MovementMixin):\n"
+            "    pass\n"
+            "\n"
+            "try:\n"
+            "    UPat().shape\n"
+            "except (RuntimeError, ValueError) as exc:\n"
+            "    print('caught', type(exc).__name__)\n"
+            "\n"
+            "try:\n"
+            "    UPat().shape\n"
+            "except Exception as exc:\n"
+            "    print('caught2', type(exc).__name__)\n"
+        ),
+        "property_getter_exception_superclass_handler",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "caught NotImplementedError",
+        "caught2 NotImplementedError",
+    ]
+
+
+def test_native_unary_invert_dispatches_dunder_for_user_objects(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "class Bits:\n"
+            "    def __init__(self, tag):\n"
+            "        self.tag = tag\n"
+            "    def __xor__(self, other):\n"
+            "        return Bits(('xor', self.tag, other))\n"
+            "    def bitwise_not(self):\n"
+            "        return self ^ -1\n"
+            "    def __invert__(self):\n"
+            "        return self.bitwise_not()\n"
+            "\n"
+            "print((~Bits('x')).tag)\n"
+        ),
+        "unary_invert_dunder_user_object",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip() == "('xor', 'x', -1)"
+
+
 def test_native_callable_object_positional_fast_path_preserves_semantics(
     tmp_path: Path,
 ) -> None:
@@ -2030,14 +2891,30 @@ def test_native_indirect_noncallable_still_raises_typeerror(
 def test_native_import_typing_optional_is_clean(tmp_path: Path) -> None:
     run = _build_and_run_with_env(
         tmp_path,
-        "import typing\nfrom typing import Optional\nprint('ok')\n",
+        (
+            "import typing\n"
+            "from typing import Generator, Optional, Sequence, Type\n"
+            "print(isinstance([], Sequence))\n"
+            "print(typing.get_origin(Sequence[int]).__name__)\n"
+            "print(typing.get_args(Generator[int, None, None])[0].__name__)\n"
+            "print(typing.get_origin(Type[int]).__name__)\n"
+            "print(Optional)\n"
+            "print('ok')\n"
+        ),
         "import_typing_optional",
         session_id="pytest-native-bootstrap-typing",
         cache_dir=ROOT / ".molt_cache-typing",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip() == "ok"
+    assert run.stdout.strip().splitlines() == [
+        "True",
+        "Sequence",
+        "int",
+        "type",
+        "typing.Optional",
+        "ok",
+    ]
 
 
 def test_native_collections_abc_runtime_types_does_not_poison_next_abc_class(
@@ -2672,6 +3549,44 @@ def test_native_deferred_builtin_surface_resolves_on_first_use(
     ]
 
 
+def test_native_functools_cache_keyword_key_keeps_runtime_marker_root(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from functools import cache\n"
+            "\n"
+            "calls = 0\n"
+            "\n"
+            "@cache\n"
+            "def pattern(name=None):\n"
+            "    global calls\n"
+            "    calls += 1\n"
+            "    return (name, calls)\n"
+            "\n"
+            "def main() -> None:\n"
+            "    print(pattern(name='x'))\n"
+            "    for _ in range(64):\n"
+            "        pattern(name='x')\n"
+            "    print(calls)\n"
+            "    print(pattern(name='y'))\n"
+            "    info = pattern.cache_info()\n"
+            "    print(info.hits, info.misses)\n"
+            "\n"
+            "main()\n"
+        ),
+        "functools_cache_keyword_marker_root",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "('x', 1)",
+        "1",
+        "('y', 2)",
+        "64 2",
+    ]
+
+
 def test_native_help_resolves_via_builtins_attr(tmp_path: Path) -> None:
     # `help`/`quit`/`exit` are site-like builtins backed by `_sitebuiltins`.
     # Verify the bound objects are still reachable and callable-shaped after the
@@ -2692,3 +3607,302 @@ def test_native_help_resolves_via_builtins_attr(tmp_path: Path) -> None:
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["True", "True", "True"]
+
+
+def test_native_function_code_names_match_global_import_and_attr_order(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "HELPER_CONST = 4\n"
+            "\n"
+            "def helper(value):\n"
+            "    return value + 1\n"
+            "\n"
+            "def target(value):\n"
+            "    local = helper(value)\n"
+            "    import os.path as p\n"
+            "    return HELPER_CONST + local.real\n"
+            "\n"
+            "def main() -> None:\n"
+            "    print(target.__code__.co_names)\n"
+            "    print(isinstance(target.__code__.co_names, tuple))\n"
+            "\n"
+            "main()\n"
+        ),
+        "function_code_names_order",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "('helper', 'os.path', 'path', 'HELPER_CONST', 'real')",
+        "True",
+    ]
+
+
+def test_native_types_functiontype_reconstructs_executable_function_from_code(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import builtins\n"
+            "import types\n"
+            "\n"
+            "SCALE = 7\n"
+            "\n"
+            "def base(value=3):\n"
+            "    return SCALE + value\n"
+            "\n"
+            "clone_globals = {\n"
+            "    'SCALE': 11,\n"
+            "    '__builtins__': builtins,\n"
+            "    '__name__': 'clone_mod',\n"
+            "}\n"
+            "clone = types.FunctionType(base.__code__, clone_globals, 'clone', (5,))\n"
+            "print(clone.__name__)\n"
+            "print(clone.__module__)\n"
+            "print(clone.__defaults__)\n"
+            "print(clone())\n"
+            "print(clone(2))\n"
+            "print(clone(value=2))\n"
+            "print(clone(**{'value': 4}))\n"
+            "print(clone.__globals__['SCALE'])\n"
+        ),
+        "types_functiontype_reconstructs_code",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "clone",
+        "clone_mod",
+        "(5,)",
+        "16",
+        "13",
+        "13",
+        "15",
+        "11",
+    ]
+
+
+def test_native_itertools_repeat_is_runtime_type(tmp_path: Path) -> None:
+    run = _build_and_run_with_env(
+        tmp_path,
+        (
+            "import itertools\n"
+            "r = itertools.repeat('x', 2)\n"
+            "print(itertools.repeat.__name__)\n"
+            "print(type(r) is itertools.repeat)\n"
+            "print(isinstance(r, itertools.repeat))\n"
+            "print(next(r))\n"
+            "print(next(r))\n"
+            "try:\n"
+            "    next(r)\n"
+            "except StopIteration:\n"
+            "    print('stop')\n"
+        ),
+        "itertools_repeat_runtime_type",
+        session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-itertools-repeat-type",
+        cache_dir=ROOT / ".molt_cache-itertools-repeat-type",
+        backend="cranelift",
+        extra_build_args=["--stdlib-profile", "full", "--rebuild", "--no-cache"],
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "repeat",
+        "True",
+        "True",
+        "x",
+        "x",
+        "stop",
+    ]
+
+
+def test_native_inspect_getmembers_lists_and_filters_functions(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "import inspect\n"
+            "\n"
+            "class C:\n"
+            "    value = 2\n"
+            "    def method(self):\n"
+            "        return 1\n"
+            "\n"
+            "members = dict(inspect.getmembers(C))\n"
+            "funcs = dict(inspect.getmembers(C, inspect.isfunction))\n"
+            "print('method' in members, '__name__' in members)\n"
+            "print('method' in funcs, 'value' in funcs)\n"
+        ),
+        "inspect_getmembers_lists_and_filters",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "True True",
+        "True False",
+    ]
+
+
+def test_native_higher_order_builtin_minmax_binds_vararg_shape(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "def apply(fn, value):\n"
+            "    return fn(value)\n"
+            "\n"
+            "def apply_args(fn, a, b, c):\n"
+            "    return fn(a, b, c)\n"
+            "\n"
+            "print(apply(max, [1, 5, 3]))\n"
+            "print(apply(min, [1, 5, 3]))\n"
+            "print(apply_args(max, 1, 5, 3))\n"
+            "print(apply_args(min, 1, 5, 3))\n"
+        ),
+        "higher_order_builtin_minmax_binds_vararg_shape",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "5",
+        "1",
+        "5",
+        "1",
+    ]
+
+
+def test_native_scalar_subclass_hash_matches_value_equality(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from enum import IntEnum\n"
+            "\n"
+            "class A(IntEnum):\n"
+            "    X = 2\n"
+            "\n"
+            "class B(IntEnum):\n"
+            "    X = 2\n"
+            "\n"
+            "class I(int):\n"
+            "    pass\n"
+            "\n"
+            "class F(float):\n"
+            "    pass\n"
+            "\n"
+            "print(hash(A.X), hash(B.X), hash(2))\n"
+            "print(A.X == B.X, B.X in {A.X}, A.X in {2}, 2 in {A.X})\n"
+            "print(hash(I(7)), hash(7), I(7) in {7}, 7 in {I(7)})\n"
+            "print(hash(F(1.5)) == hash(1.5), F(1.5) in {1.5}, 1.5 in {F(1.5)})\n"
+        ),
+        "scalar_subclass_hash_matches_value_equality",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "2 2 2",
+        "True True True True",
+        "7 7 True True",
+        "True True True",
+    ]
+
+
+def test_native_set_multi_methods_keep_operand_tuple_on_ic_hits(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "base = {1, 2}\n"
+            "other = {3}\n"
+            "for i in range(6):\n"
+            "    u = base.union(other)\n"
+            "    print(i, len(u), 3 in u, len(base), 3 in base)\n"
+            "\n"
+            "mutable = {1}\n"
+            "for i in range(3):\n"
+            "    mutable.update({i + 2})\n"
+            "print(sorted(mutable))\n"
+            "\n"
+            "frozen = frozenset({1, 2})\n"
+            "for i in range(4):\n"
+            "    fu = frozen.union({3})\n"
+            "    print('f', i, len(fu), 3 in fu, len(frozen), 3 in frozen)\n"
+        ),
+        "set_multi_methods_keep_operand_tuple_on_ic_hits",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "0 3 True 2 False",
+        "1 3 True 2 False",
+        "2 3 True 2 False",
+        "3 3 True 2 False",
+        "4 3 True 2 False",
+        "5 3 True 2 False",
+        "[1, 2, 3, 4]",
+        "f 0 3 True 2 False",
+        "f 1 3 True 2 False",
+        "f 2 3 True 2 False",
+        "f 3 3 True 2 False",
+    ]
+
+
+def test_native_collections_namedtuple_kwonly_defaults_bind_as_keywords(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "from collections import namedtuple\n"
+            "\n"
+            "Point = namedtuple('Point', ['x', 'y'])\n"
+            "print(Point(3, 4))\n"
+            "Renamed = namedtuple('Renamed', ['class', 'value'], rename=True)\n"
+            "print(Renamed._fields)\n"
+        ),
+        "collections_namedtuple_kwonly_defaults_bind_as_keywords",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == [
+        "Point(x=3, y=4)",
+        "('_0', 'value')",
+    ]
+
+
+def test_native_direct_call_alias_returns_are_owned_across_fast_paths(
+    tmp_path: Path,
+) -> None:
+    run = _build_and_run(
+        tmp_path,
+        (
+            "def passthrough(x):\n"
+            "    return x\n"
+            "\n"
+            "fn = passthrough\n"
+            "value = fn([1, 2, 3])\n"
+            "print(value[0])\n"
+            "print(len(value))\n"
+            "\n"
+            "class Echo:\n"
+            "    def echo(self, x):\n"
+            "        return x\n"
+            "\n"
+            "obj = Echo()\n"
+            "for i in range(6):\n"
+            "    out = obj.echo(value)\n"
+            "print(out[1])\n"
+            "\n"
+            "class Child(Echo):\n"
+            "    def echo(self, x):\n"
+            "        return super().echo(x)\n"
+            "\n"
+            "child = Child()\n"
+            "for i in range(6):\n"
+            "    inherited = child.echo(value)\n"
+            "print(inherited[2])\n"
+        ),
+        "direct_call_alias_returns_owned",
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.strip().splitlines() == ["1", "3", "2", "3"]

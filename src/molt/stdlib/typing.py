@@ -42,20 +42,30 @@ TYPE_CHECKING = False
 __all__ = [
     "Annotated",
     "Any",
+    "AsyncGenerator",
+    "AsyncIterable",
+    "AsyncIterator",
     "Awaitable",
     "Callable",
+    "Collection",
     "ContextManager",
     "ClassVar",
     "Concatenate",
+    "Container",
+    "Coroutine",
     "Final",
     "ForwardRef",
+    "Generator",
     "Generic",
+    "Hashable",
     "IO",
     "Iterable",
     "Iterator",
     "Literal",
     "Never",
+    "Mapping",
     "MutableMapping",
+    "MutableSequence",
     "NamedTuple",
     "NewType",
     "NoReturn",
@@ -63,17 +73,22 @@ __all__ = [
     "ParamSpec",
     "Protocol",
     "Required",
+    "Reversible",
     "Self",
+    "Sequence",
     "Set",
+    "Sized",
     "FrozenSet",
     "List",
     "Dict",
     "Tuple",
+    "Type",
     "SupportsIndex",
     "SupportsInt",
     "Text",
     "TextIO",
     "BinaryIO",
+    "ByteString",
     "TYPE_CHECKING",
     "TypeAlias",
     "TypeGuard",
@@ -212,6 +227,18 @@ class _SpecialGenericAlias(_TypingBase):
     def __call__(self, *_args: object, **_kwargs: object) -> object:
         raise TypeError(f"Cannot instantiate {self!r}")
 
+    def __instancecheck__(self, instance: object) -> bool:
+        origin = self.__origin__
+        if isinstance(origin, type):
+            return isinstance(instance, origin)
+        return False
+
+    def __subclasscheck__(self, subclass: object) -> bool:
+        origin = self.__origin__
+        if isinstance(origin, type) and isinstance(subclass, type):
+            return issubclass(subclass, origin)
+        return False
+
 
 class _LazySpecialGenericAlias(_TypingBase):
     __slots__ = ("_origin_name", "_name", "_origin_cache")
@@ -244,6 +271,18 @@ class _LazySpecialGenericAlias(_TypingBase):
 
     def __call__(self, *_args: object, **_kwargs: object) -> object:
         raise TypeError(f"Cannot instantiate {self!r}")
+
+    def __instancecheck__(self, instance: object) -> bool:
+        origin = self._origin()
+        if isinstance(origin, type):
+            return isinstance(instance, origin)
+        return False
+
+    def __subclasscheck__(self, subclass: object) -> bool:
+        origin = self._origin()
+        if isinstance(origin, type) and isinstance(subclass, type):
+            return issubclass(subclass, origin)
+        return False
 
 
 class _GenericAlias(_TypingBase):
@@ -531,7 +570,27 @@ def _load_collections_abc() -> ModuleType:
     abc_mod = _typing_cast(ModuleType, abc_mod_raw)
     if getattr(abc_mod, "__name__", None) == "_abc":
         raise RuntimeError("typing requires _collections_abc, not _abc")
-    required_names = ("Awaitable", "Iterable", "Iterator", "MutableMapping", "Callable")
+    required_names = (
+        "AsyncGenerator",
+        "AsyncIterable",
+        "AsyncIterator",
+        "Awaitable",
+        "Callable",
+        "Collection",
+        "Container",
+        "Coroutine",
+        "Generator",
+        "Hashable",
+        "Iterable",
+        "Iterator",
+        "Mapping",
+        "MutableMapping",
+        "MutableSequence",
+        "Reversible",
+        "Sequence",
+        "Sized",
+        "ByteString",
+    )
     missing = [name for name in required_names if getattr(abc_mod, name, None) is None]
     if missing:
         repaired = _reload_collections_abc()
@@ -581,11 +640,33 @@ def _reload_collections_abc() -> ModuleType | None:
         return None
 
 
-Awaitable = _LazySpecialGenericAlias("Awaitable", "Awaitable")
 _abc_module = _load_collections_abc()
+Hashable = _SpecialGenericAlias(getattr(_abc_module, "Hashable"), "Hashable")
+Awaitable = _SpecialGenericAlias(getattr(_abc_module, "Awaitable"), "Awaitable")
+Coroutine = _SpecialGenericAlias(getattr(_abc_module, "Coroutine"), "Coroutine")
+AsyncIterable = _SpecialGenericAlias(
+    getattr(_abc_module, "AsyncIterable"), "AsyncIterable"
+)
+AsyncIterator = _SpecialGenericAlias(
+    getattr(_abc_module, "AsyncIterator"), "AsyncIterator"
+)
+AsyncGenerator = _SpecialGenericAlias(
+    getattr(_abc_module, "AsyncGenerator"), "AsyncGenerator"
+)
 Iterable = _SpecialGenericAlias(getattr(_abc_module, "Iterable"), "Iterable")
 Iterator = _SpecialGenericAlias(getattr(_abc_module, "Iterator"), "Iterator")
+Generator = _SpecialGenericAlias(getattr(_abc_module, "Generator"), "Generator")
+Reversible = _SpecialGenericAlias(getattr(_abc_module, "Reversible"), "Reversible")
+Sized = _SpecialGenericAlias(getattr(_abc_module, "Sized"), "Sized")
+Container = _SpecialGenericAlias(getattr(_abc_module, "Container"), "Container")
+Collection = _SpecialGenericAlias(getattr(_abc_module, "Collection"), "Collection")
+Mapping = _SpecialGenericAlias(getattr(_abc_module, "Mapping"), "Mapping")
 MutableMapping = _LazySpecialGenericAlias("MutableMapping", "MutableMapping")
+Sequence = _SpecialGenericAlias(getattr(_abc_module, "Sequence"), "Sequence")
+MutableSequence = _SpecialGenericAlias(
+    getattr(_abc_module, "MutableSequence"), "MutableSequence"
+)
+ByteString = _SpecialGenericAlias(getattr(_abc_module, "ByteString"), "ByteString")
 
 _types_mod = _sys.modules.get("types")
 if _types_mod is not None:
@@ -598,6 +679,7 @@ if _types_mod is not None:
 List = _SpecialGenericAlias(list, "List")
 Dict = _SpecialGenericAlias(dict, "Dict")
 Tuple = _SpecialGenericAlias(tuple, "Tuple")
+Type = _SpecialGenericAlias(type, "Type")
 Set = _SpecialGenericAlias(set, "Set")
 FrozenSet = _SpecialGenericAlias(frozenset, "FrozenSet")
 

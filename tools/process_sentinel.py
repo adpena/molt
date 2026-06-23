@@ -335,7 +335,9 @@ def _candidate_process_group_ids(
     samples: Mapping[int, memory_guard.ProcessSample],
     owned_pids: set[int],
 ) -> set[int]:
-    return {_sample_pgid(sample) for sample in samples.values() if sample.pid in owned_pids}
+    return {
+        _sample_pgid(sample) for sample in samples.values() if sample.pid in owned_pids
+    }
 
 
 def _group_is_fully_owned(
@@ -360,7 +362,13 @@ def is_molt_process(
         return False
     if _repo_scoped_command_match(command, root):
         return True
-    return any(_command_contains(command, token) for token in MOLT_PROCESS_TOKENS)
+    normalized_command = _normalized_path_text(command)
+    return any(
+        _command_contains(normalized_command, repo_token)
+        for repo_token in _normalized_repo_tokens(root)
+    ) and any(
+        _command_contains(normalized_command, token) for token in MOLT_PROCESS_TOKENS
+    )
 
 
 def process_groups(
@@ -524,8 +532,7 @@ def _violation_payload(violation: SentinelViolation) -> dict[str, object]:
         "pids": list(violation.pids),
         "command": violation.command,
         "process_samples": [
-            memory_guard.process_sample_payload(sample)
-            for sample in violation.samples
+            memory_guard.process_sample_payload(sample) for sample in violation.samples
         ],
         "external_parent_pids": list(violation.external_parent_pids),
         "oldest_elapsed_sec": violation.oldest_elapsed_sec,
@@ -769,6 +776,14 @@ def terminate_group(
         except (ProcessLookupError, PermissionError):
             return
         time.sleep(0.05)
+    samples = memory_guard.sample_processes()
+    protected_pgids = protected_process_group_ids(
+        samples,
+        self_pid=os.getpid(),
+        self_pgid=os.getpgrp(),
+    )
+    if pgid in protected_pgids:
+        return
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(pgid, memory_guard.fallback_kill_signal())
 
@@ -984,7 +999,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for group in groups:
             for sample in group.samples:
-                known_process_identities[sample.pid] = memory_guard.process_identity(sample)
+                known_process_identities[sample.pid] = memory_guard.process_identity(
+                    sample
+                )
         return groups
 
     def process_observed_groups(

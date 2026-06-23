@@ -21,8 +21,6 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
 ) {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
                                        import_ids: &mut BTreeMap<
@@ -35,9 +33,7 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        int_primary_vars: &BTreeSet<String>,
-                                       float_primary_vars: &BTreeSet<String>,
-                                       box_int_mask_var: Variable,
-                                       box_int_tag_var: Variable|
+                                       float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -51,8 +47,6 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
             float_primary_vars,
             bool_primary_vars,
             nbc,
-            box_int_mask_var,
-            box_int_tag_var,
         )
     };
 
@@ -69,8 +63,6 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Id arg not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -99,8 +91,6 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Ord arg not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -129,8 +119,6 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Ord-at object not found");
             let index = var_get_boxed_overflow_safe(
@@ -143,8 +131,6 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Ord-at index not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -173,8 +159,6 @@ pub(in crate::native_backend::function_compiler) fn handle_scalar_builtin(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Chr arg not found");
             let callee = SimpleBackend::import_func_id_split(

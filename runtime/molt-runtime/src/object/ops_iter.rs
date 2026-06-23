@@ -1863,24 +1863,31 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
 
 /// Advance an iterator without allocating a `(value, done)` tuple.
 ///
-/// Writes the next value to `*value_out` and returns `false`-bits when a
-/// value is available, or `true`-bits when the iterator is exhausted.
-/// Returns `None` bits when an exception is pending.
+/// Writes `None` to `*value_out` before advancing the iterator, overwrites it
+/// with the next owned value when one is available, and returns `false`-bits for
+/// that value or `true`-bits when the iterator is exhausted. Returns `None`
+/// bits when an exception is pending.
 ///
 /// Fast-paths list, tuple, and i64-range iterators with zero allocation.
 /// Everything else falls back to `molt_iter_next` + destructure.
 ///
 /// # Safety
 ///
-/// `value_out` must point to writable storage for one `u64`.
+/// `value_out_bits` must encode writable storage for one `u64`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) -> u64 {
+pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let done_true = MoltObject::from_bool(true).bits();
         let done_false = MoltObject::from_bool(false).bits();
+        let no_value = MoltObject::none().bits();
+        let value_out = value_out_bits as usize as *mut u64;
+
+        unsafe {
+            *value_out = no_value;
+        }
 
         let Some(ptr) = maybe_ptr_from_bits(iter_bits) else {
-            return MoltObject::none().bits();
+            return no_value;
         };
 
         unsafe {
@@ -2028,7 +2035,7 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut 
                         if let Some((key_bits, val_bits)) = dict_view_entry(target_ptr, idx) {
                             let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
                             if tuple_ptr.is_null() {
-                                return MoltObject::none().bits();
+                                return no_value;
                             }
                             *value_out = MoltObject::from_ptr(tuple_ptr).bits();
                             iter_set_index(ptr, idx + 1);
@@ -2046,7 +2053,7 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut 
                 if !obj_from_bits(pair_bits).is_none() {
                     dec_ref_bits(_py, pair_bits);
                 }
-                return MoltObject::none().bits();
+                return no_value;
             }
             let pair_obj = obj_from_bits(pair_bits);
             let Some(pair_ptr) = pair_obj.as_ptr() else {
@@ -2085,6 +2092,8 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut 
 ///
 /// Returns `false`-bits when a pair is available (key/value written),
 /// `true`-bits when the iterator is exhausted.
+/// Initializes both output slots to `None`, so callers may safely load them
+/// after any return value without observing stale stack contents.
 ///
 /// # Safety
 ///
@@ -2098,9 +2107,15 @@ pub unsafe extern "C" fn molt_iter_next_dict_items(
     crate::with_gil_entry_nopanic!(_py, {
         let done_true = MoltObject::from_bool(true).bits();
         let done_false = MoltObject::from_bool(false).bits();
+        let no_value = MoltObject::none().bits();
+
+        unsafe {
+            *key_out = no_value;
+            *value_out = no_value;
+        }
 
         let Some(ptr) = maybe_ptr_from_bits(iter_bits) else {
-            return MoltObject::none().bits();
+            return no_value;
         };
 
         unsafe {
@@ -2139,7 +2154,7 @@ pub unsafe extern "C" fn molt_iter_next_dict_items(
 
             // Fallback: use molt_iter_next_unboxed and unpack the tuple.
             let mut pair_bits: u64 = 0;
-            let done = molt_iter_next_unboxed(iter_bits, &mut pair_bits as *mut u64);
+            let done = molt_iter_next_unboxed(iter_bits, (&mut pair_bits as *mut u64) as u64);
             if done == done_true || done == MoltObject::none().bits() {
                 return done;
             }

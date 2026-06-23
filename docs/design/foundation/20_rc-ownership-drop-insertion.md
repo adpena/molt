@@ -178,6 +178,61 @@ In TIR's MLIR-style block-argument encoding, "insert on the edge to bb3" means i
 
 **Implementation choice**: to keep the initial pass simpler, emit drops at the *beginning* of successor blocks for values that die on entry rather than splitting edges. This keeps the pass `OpsOnly` (no block creation). The elim pass then handles the common case where both successors drop the same value by hoisting the drop to the predecessor. The edge-split form (cleaner, avoids redundant drops on hot paths) is the Phase 3 upgrade.
 
+**Current invariant (2026-06-18)**: a branch-argument transfer is not only an
+immediate successor-entry exclusion. Once an owned root is clean-transferred
+into a successor block argument, that block argument remains the release
+authority for every reachable descendant block that can still reach a use,
+return, release boundary, or onward branch-argument forwarding of that block
+argument. The return-edge Python-lifetime cleanup path must use the same
+path-aware transfer fact before inserting cleanup split blocks; otherwise a
+pre-transfer source root can be released on a branch-to-return path and then the
+transferred phi releases the same object at the return boundary. This is pinned
+by `typing._load_collections_abc`: the list-comprehension result bound to
+`missing` transferred through a block arg, and the old source root was released
+on the `if not missing` return path before the `missing` phi release at
+`typing.py:605`, causing `invalid object header before dec_ref`. The
+implementation records `(source_root, phi, transfer_target)` and computes the
+blocks reachable after that specific transfer that can still reach a phi
+mention; a shared return target alone is not proof for unrelated non-transfer
+edges.
+
+**Current invariant (2026-06-18, Python lifetime authority)**: roots released by
+Python lifetime machinery are not generic SSA edge-dying candidates. The
+drop-insertion pass treats explicit `DelBoundary`/`DeleteVar`/pre-existing
+`DecRef`, statement finalizer release, and `store_var` scope-exit cleanup as a
+single `python_release_authority_roots` set. Edge-dying must skip those roots
+because a successor-entry drop is path-insensitive, while the Python lifetime
+boundary may be path-local or may intentionally run later at return cleanup.
+This is pinned by `collections.namedtuple`: `_field_getter` is stored in a local
+and used through a `copy_var` alias inside the intrinsic/fallback field loops.
+SSA liveness made the alias appear dead at loop exit, but scope cleanup still
+owned the function object until `return cls`; dropping at loop exit and again at
+return produced `invalid object header before dec_ref` at
+`collections/__init__.py:479`.
+
+**Current invariant (2026-06-20, Python local epoch remapping)**: `store_var`
+scope cleanup is keyed by the current local epoch, not by every source root that
+was ever stored in the local. A source root that clean-transfers into block
+arguments must be remapped through that block-arg chain; an explicit cleanup
+`DecRef` of the final carrier releases the source epoch. A later same-slot
+rebind closes the prior epoch only on paths through the rebind and must remove
+the old source root from shared return/cleanup eligibility. Otherwise a local
+such as tinygrad's `or_clause` can drop the current cleanup phi and then drop
+the stale initial list source root after it has already been released on the
+rebind path. Pinned by
+`store_var_rebind_epoch_closes_old_scope_cleanup_candidate`.
+
+**Current invariant (2026-06-20, origin carrier liveness)**: a `store_var`
+source root that has clean-transferred into a later block-arg carrier remains
+released by that carrier wherever the carrier is live, including descendant
+return-cleanup blocks that do not pass the source root as a return-block
+argument. Return-boundary planning must project transferred-phi liveness through
+the Python origin map before deciding to edge-split or return-drop the stale
+source root. Otherwise a local such as the tinygrad adapter's parsed `args`
+namespace can be released once by the live carrier and again by the original
+`parse_args()` source root. Pinned by
+`store_var_origin_carrier_live_to_return_cleanup_suppresses_source_release`.
+
 ### 2.6 Exception Edges
 
 C2 (commit `430e09793`) made exception observation universal: every potentially-throwing op is followed by `CheckException(→ handler_label, → normal_label)`. Values that are live at the throw site must be dropped on BOTH the normal and exception continuation paths if they are dead after the check.
@@ -250,6 +305,34 @@ Already implements:
 
 After drop insertion, `refcount_elim` runs again (a second invocation is added to the post-insertion pass sequence). The new insertion supplies the ops that the elim pass was previously starved of — now it can prove more elisions.
 
+**Current invariant (2026-06-20, post-drop exception transfer barriers)**:
+post-drop balanced-pair cleanup may remove `IncRef`/`DecRef` pairs only across
+ops that execute on the same control-flow path. `Raise`, `CheckException`, and
+`TryStart` are RC barriers in `AliasAnalysis::is_rc_barrier`: `Raise` does not
+fall through, and `CheckException`/`TryStart` carry implicit handler edges whose
+payload retains are consumed only on that exceptional path. In particular,
+`IncRef(v); CheckException(v); DecRef(v)` is not a balanced same-path pair: the
+handler edge skips the trailing `DecRef` and owns the retained payload until the
+handler block releases it. This is pinned by
+`post_drop_keeps_check_exception_edge_payload_retain_release`,
+`post_drop_keeps_try_start_edge_payload_retain_release`, and
+`exception_control_transfer_ops_are_rc_barriers`. `lower_to_simple` must also
+materialize handler block-argument stores for both `CheckException` and
+`TryStart` before emitting the transfer op; otherwise the retained payload would
+survive TIR but disappear before native lowering. This protects
+`functools.cached_property.__get__` native lowering from releasing the descriptor
+owner while the handler path still needs `self`/`instance`.
+
+**Current invariant (2026-06-20, insertion coverage)**: drop insertion, post-drop
+refcount cleanup, and SimpleIR lowering all treat `CheckException` and
+`TryStart` through the same exception-transfer-edge authority. The focused proof
+chain is `exception_edge_borrowed_payload_retains_for_owned_handler_arg`,
+`try_start_edge_borrowed_payload_retains_for_owned_handler_arg`,
+`post_drop_keeps_check_exception_edge_payload_retain_release`,
+`post_drop_keeps_try_start_edge_payload_retain_release`,
+`check_exception_materializes_handler_arg_stores`, and
+`try_start_materializes_handler_arg_stores`.
+
 ### 3.2 Borrow Inference (new, part of DropInsertion)
 
 During the drop insertion phase, when computing whether a value requires an IncRef before passing to a function call, apply borrow inference:
@@ -285,6 +368,16 @@ No new native-backend code is needed for DecRef emission — the mechanism alrea
 
 The existing loop-body reassignment dec-ref in `function_compiler.rs:3566-3628` must be **disabled** once the TIR drop pass is live for that function, to avoid double-drops. The disable condition: if the function's TIR was processed by the drop insertion pass (detectable by a function-level attr `"drop_inserted": true` set by the pass), skip the `loop_reassign_old_val` path in the SimpleIR backend. This is the Phase 4 cleanup task; it is not a structural blocker for Phase 1 correctness because the loop-reassign path only fires on a narrow subset and the TIR drop pass inserts the same DecRef, but it WILL cause double-free if both paths fire simultaneously. **Phase 1 must include this guard from the start.**
 
+**Current invariant (2026-06-18)**: SimpleIR still transports full-RC authority
+as a leading `drop_inserted` marker op because `FunctionIR` has no function-level
+attrs. Any transform that extracts executable body functions from a drop-inserted
+function must preserve that marker on the extracted body functions. Megafunction
+splitting is the concrete case: every extracted chunk inherits the original
+drop-fact markers so native preanalysis suppresses legacy value tracking while
+lowering TIR-inserted `dec_ref` ops. The synthetic split stub is deliberately
+not marked because it creates fresh split-frame carrier values after the drop
+phase and must remain under normal native cleanup.
+
 > **ACTIVATION FINDING (2026-06-05, RC activation session) — §4.1 understated the native RC overlap; it is an ACTIVATION PREREQUISITE, not a Phase-4 cleanup.** Two things were discovered when DropInsertion was wired into `build_default_pipeline`:
 >
 > 1. **The activation-blocker abort was a borrow-alias double-drop, NOT carrier resolution.** The lowered loop loads its carried accumulator via `load_var`→`Copy` every iteration; the per-SSA-value drop pass dropped EACH copy of the one live object → refcount underflow → premature free → `invalid object header before dec_ref` UAF at n≥50k. **Fixed**: liveness (`liveness.rs`) and drop placement (`drop_insertion.rs`) now operate in **alias-root space** (a `Copy`/`TypeGuard` borrow alias — §1.2 — shares its root's single ownership obligation; build the union-find via `alias_analysis::build_alias_union_find`). Each heap object is dropped exactly once. A `loop_slot_accumulator_no_double_drop` regression asserts the invariant. Also: the `drop_inserted` marker now round-trips losslessly through `lower_from_simple` (it re-sets the func attr after stripping the transport op — the native module-phase re-lift previously lost it), and DropInsertion is idempotent on a re-lifted function.
@@ -300,7 +393,7 @@ The existing loop-body reassignment dec-ref in `function_compiler.rs:3566-3628` 
 > * `TirFunction::has_state_machine()` — the drop pass now ALSO bails on lowered coroutine `_poll` state machines (`StateSwitch`/`StateTransition`/`StateYield`/`Chan*Yield`/`AllocTask`), not just `StateBlockStart/End`. A generator can lower to a `_poll` body carrying `StateSwitch` without the block delimiters; the re-entrant state dispatch made the dominator-based liveness place a `DecRef` in a resume block BEFORE the value's def (an LLVM-verifier `dec_ref %v` before `%v = …` failure + a native double-free). Test: `state_machine_function_gets_no_drops`.
 > * `refcount_elim::run` now honors the `drop_inserted` marker (falls back to the balance-preserving subset, like `run_post_drop`). The native/LLVM module phase RE-RUNS the whole per-function pipeline on already-`drop_inserted` functions (post-inline rebuild / module-slot promotion); on that re-run the FULL `refcount_elim` Step 5/6 was DELETING the lone ownership-release DecRefs (re-opening the leak — this is why LLVM string-concat leaked even though the drop pass had inserted the DecRef). The marker check closes it. (A `loop_carried_phi_dropped_on_backedge` test pins the real-phi loop-accumulator drop shape.)
 >
-> **(C) THE REMAINING ACTIVATION BLOCKER — drop-pass OVER-DROP on broad real-world shapes → double-free UAF.** A 40-sample random sweep of `tests/differential/basic` on native (passes WIRED) showed **13/40 NEW `invalid object header before dec_ref` UAFs**: `args_kwargs_eval_order`, `bool_short_circuit_order`, `comprehension_nested_lambda_scope`, `nonlocal_and_class_closure`, `class_mro_entries_with_bases`, `method_find_custom_class`, `import_package_init`, `context_return_unwind_scope`, `dict_subclass_slots_weakref_ref`, `recursion_limit`, `call_arity_trampoline`, `async_generator_athrow_after_stop`, `asyncgen_hooks_api`. Minimal repro: a **module-global** list + a function that reads it (`log = []`; `def side(t,v): log.append(t); return v`; `side("a",False) and side("b",True)`) → UAF. Root cause class: the drop pass treats values whose single owning reference is held by a longer-lived container (the **module dict** for a global binding; likely also cell/closure storage) as ordinary dead temps and drops them, freeing an object another function still reaches via the global/cell — the drop is on a path where the object is NOT actually dead. The drop pass's ownership-transfer set is INCOMPLETE: it covers Return values and branch args, but NOT global/cell stores. **NOTE:** this is NOT the §1.2 "ModuleSetAttr/ModuleCacheSet = borrowed, caller drops at last use" case as written — the UAF means either that convention is violated by the runtime/codegen (the global store does not actually inc-ref, so the function's drop is the last ref) or the module-dict binding IS the sole owner (so the function must transfer, not drop). RESOLVING THIS REQUIRES auditing the `molt_module_cache_set` / global-load refcount contract end-to-end (drop pass ⨯ runtime), not a localized drop-pass tweak. **Until the drop pass is sound across the full `tests/differential/basic` corpus (native AND llvm) under `MOLT_ASSERT_NO_LEAK=1` with ZERO new UAFs, the two passes stay OUT of `build_default_pipeline`.** Everything in (A)/(B) is already on `main` behind the `drop_inserted` marker (inert while dormant), so activation is a 2-line pipeline append + restoring the +2 pinned-pass-name entries and the `stats.len()` 28→30 assertion.
+> **(C) HISTORICAL / SUPERSEDED — this 2026-06-06 activation blocker text is preserved as audit trail, not current status.** Later same-file findings corrected the module-store hypothesis, cache-confound analysis superseded the broad stdlib-module-init claim, and the 2026-06-18 Python lifetime authority invariant above is the current drop-insertion rule. A 40-sample random sweep of `tests/differential/basic` on native (passes WIRED) showed **13/40 NEW `invalid object header before dec_ref` UAFs**: `args_kwargs_eval_order`, `bool_short_circuit_order`, `comprehension_nested_lambda_scope`, `nonlocal_and_class_closure`, `class_mro_entries_with_bases`, `method_find_custom_class`, `import_package_init`, `context_return_unwind_scope`, `dict_subclass_slots_weakref_ref`, `recursion_limit`, `call_arity_trampoline`, `async_generator_athrow_after_stop`, `asyncgen_hooks_api`. Minimal repro: a **module-global** list + a function that reads it (`log = []`; `def side(t,v): log.append(t); return v`; `side("a",False) and side("b",True)`) → UAF. Root cause class: the drop pass treats values whose single owning reference is held by a longer-lived container (the **module dict** for a global binding; likely also cell/closure storage) as ordinary dead temps and drops them, freeing an object another function still reaches via the global/cell — the drop is on a path where the object is NOT actually dead. The drop pass's ownership-transfer set is INCOMPLETE: it covers Return values and branch args, but NOT global/cell stores. **NOTE:** this is NOT the §1.2 "ModuleSetAttr/ModuleCacheSet = borrowed, caller drops at last use" case as written — the UAF means either that convention is violated by the runtime/codegen (the global store does not actually inc-ref, so the function's drop is the last ref) or the module-dict binding IS the sole owner (so the function must transfer, not drop). RESOLVING THIS REQUIRES auditing the `molt_module_cache_set` / global-load refcount contract end-to-end (drop pass ⨯ runtime), not a localized drop-pass tweak. **Until the drop pass is sound across the full `tests/differential/basic` corpus (native AND llvm) under `MOLT_ASSERT_NO_LEAK=1` with ZERO new UAFs, the two passes stay OUT of `build_default_pipeline`.** Everything in (A)/(B) is already on `main` behind the `drop_inserted` marker (inert while dormant), so activation is a 2-line pipeline append + restoring the +2 pinned-pass-name entries and the `stats.len()` 28→30 assertion.
 
 > **ACTIVATION FINDING #3 (2026-06-06, ownership-audit + arg-cleanup session) — Finding #2(C)'s root-cause hypothesis is CORRECTED by a full runtime audit; ONE more native-RC gap was found and FIXED (inert behind the marker); the remaining blocker is now NARROWED to a drop-induced native-codegen bug in the closure-CALL path. Passes remain DORMANT.**
 >
@@ -317,13 +410,13 @@ The existing loop-body reassignment dec-ref in `function_compiler.rs:3566-3628` 
 > | subscript → `Index` (list/tuple/dict element) | `molt_index` | **Owned (+1)** | `object/ops.rs:4019` (list), `:3563` (dict) |
 > So the drop pass IS correct to drop the local ref after a borrow-store, and to drop a loaded-owned value at last use. The §1.2 table needs no change. The module-global minimal repro (`log = []` + `def side`) NO LONGER UAFs after (B); several of the original 13 (`bool_short_circuit_order`, `args_kwargs_eval_order`, `comprehension_nested_lambda_scope`, `import_package_init`, `class_mro_entries_with_bases`, `call_arity_trampoline`, `context_return_unwind_scope`) now PASS byte-identical with the passes wired.
 >
-> **(B) FIXED — the SECOND un-gated native value-tracking RC source: per-call-site dead-argument release (`arg_cleanup`).** Finding #2(A) claimed the heap-result *registration* gate (`function_compiler.rs:24441`, `!drop_inserted`) is the SINGLE source feeding every drain site. That is true for the `tracked_*`/`block_tracked_*` lists — but the `"call"` op handler ALSO computes a SEPARATE `arg_cleanup` set DIRECTLY from the SimpleIR `last_use` map (`function_compiler.rs` ~line 15414), NOT from the tracked lists, and `local_dec_ref_obj`s every call argument that dies at its call. With the TIR drop pass active this DOUBLE-FREES every dead call arg (the TIR pass already emits `DecRef(arg)` after the call) → the exact heap-layout-dependent `invalid object header before dec_ref` / refcount-underflow abort. **Fix (this session): gate the `arg_cleanup` population on `!drop_inserted`** so for drop-inserted functions the TIR `DecRef`s are the sole authority (empty `arg_cleanup` → emit-loop no-op, root-filtered retains become identity, `already_decrefed` un-polluted). Verified WHEN ACTIVE: `recursion_limit` (-6 abort → exit 0 byte-identical), `method_find_custom_class` (intermittent -6 → deterministic pass), and the whole call-arg-double-free class fixed. The OTHER call handlers were audited: `"call_internal"`/`"call_guarded"`/`"call_func"`/`"call_method"` have NO un-gated `arg_cleanup` (only the `tracked_*` drains, already gated). This is a complete sub-piece of the Phase-5 native-RC retirement — committed behind the `drop_inserted` marker (INERT while dormant; `drop_inserted` is never set with the passes out of the pipeline).
+> **(B) FIXED — the SECOND un-gated native value-tracking RC source: per-call-site dead-argument release (`arg_cleanup`).** Finding #2(A) claimed the heap-result *registration* gate (`function_compiler.rs:24441`, `!drop_inserted`) is the SINGLE source feeding every drain site. That is true for the `tracked_*`/`block_tracked_*` lists — but the `"call"` op handler ALSO computes a SEPARATE `arg_cleanup` set DIRECTLY from the SimpleIR `last_use` map (`function_compiler.rs` ~line 15414), NOT from the tracked lists, and `local_dec_ref_obj`s every call argument that dies at its call. With the TIR drop pass active this DOUBLE-FREES every dead call arg (the TIR pass already emits `DecRef(arg)` after the call) → the exact heap-layout-dependent `invalid object header before dec_ref` / refcount-underflow abort. **Fix (this session): gate the `arg_cleanup` population on `!drop_inserted`** so for drop-inserted functions the TIR `DecRef`s are the sole authority (empty `arg_cleanup` → emit-loop no-op, root-filtered retains become identity, `already_decrefed` un-polluted). Verified WHEN ACTIVE: `recursion_limit` (-6 abort → exit 0 byte-identical), `method_find_custom_class` (intermittent -6 → deterministic pass), and the whole call-arg-double-free class fixed. The OTHER call handlers were audited: `"call_internal"`/`"call_guarded"`/`"call_func"`/`"call_method"` have NO un-gated `arg_cleanup` (only the `tracked_*` drains, already gated). This is a complete sub-piece of the Phase-5 native-RC retirement: when shared DropInsertion marks a function with `drop_inserted`, this native call-argument lane is suppressed and the TIR `DecRef`s are the release authority.
 >
 > **(C) THE REMAINING BLOCKER — a DROP-INDUCED native-codegen value-confusion in the closure-CALL path.** After (B), the residual native-corpus failures are closure / `nonlocal` shapes (e.g. `nonlocal_and_class_closure`) that fail as `TypeError: 'function' object is not subscriptable` (exit 1, a caught Python error, NOT an abort). **Tight isolation (verified):** `def f(): x=1; def inner(): return x; return inner()` (READ-ONLY capture, CALLED) FAILS with drops active but PASSES byte-identical on the dormant `main` backend → a genuine drop-INDUCED regression, not pre-existing. `def f(): x=1; def inner(): nonlocal x; x=5; return x` (closure created but NOT called) PASSES. So the trigger is **closure-create + closure-CALL + drop insertion**, independent of `nonlocal`/cell-write and of whether `x` is returned (a variant returning a constant after the call STILL fails). **Runtime ground truth** (`MOLT_DEBUG_SUBSCRIPT=1` + `MOLT_DEBUG_DECREF_ZERO=1` on the active binary): the indexed object is a LIVE function (`type_id=221`, freed only AFTER the subscript) — so this is a VALUE confusion, NOT a use-after-free: the SSA value that should hold the closure env tuple/cell holds the inner FUNCTION object at the `Index` site. **Drop-pass trace** (alias-root + producer, for `nlb__nonlocal_basic`): every inserted DecRef is individually RC-balanced — `DecRef(cell=list_new)`, `DecRef(closure_tuple=tuple_new)`, `DecRef(function=func_new_closure)` each exactly once; `func_new_closure` classifies as `FreshValue` (its result is its own alias root, correctly droppable). So the bug is NOT an RC imbalance in the drop pass; it is the inserted `DecRef`/`IncRef` ops perturbing the native backend's Cranelift variable/slot management for the closure-call's env-extraction (`call_guarded` reads `molt_function_closure_bits(func_obj)` at `function_compiler.rs:16289-16300`, prepends it as arg 0; `inner` then does `Index(closure, 0)`), such that `inner` receives the function object instead of its closure tuple. **NEXT (de-risked):** re-wire the two passes, build the read-only-capture-called repro, dump CLIF (`MOLT_DUMP_CLIF=1 MOLT_DUMP_CLIF_FUNC=...`) for `__inner` and the creating fn WITH drops vs the dormant CLIF, and find where the env-extraction operand or the function-object variable diverges — the fix is almost certainly a native `call_guarded`/closure-env slot-reuse guard that must respect the inserted RC ops (mirror the `!drop_inserted` slot-store/slot-load gates already in `function_compiler.rs`), NOT the (proven-balanced) drop pass.
 >
 > **WORKFLOW LESSONS (cost most of this session):** (1) the per-session backend daemon caches the compiled binary in memory — after EVERY `cargo build` you MUST `kill` the `target/sessions/<id>/release-fast/molt-backend --daemon` PID (verify it is YOUR session and not `codex`) so the next `molt build` reloads the new binary. (2) `cargo build` from the worktree with a RELATIVE `CARGO_TARGET_DIR` writes to the WORKTREE's `target/`, but `python3 -m molt` is editable-installed from the MAIN repo and reads `/Users/adpena/Projects/molt/target/sessions/<id>/` — build with an ABSOLUTE `CARGO_TARGET_DIR=/Users/adpena/Projects/molt/target/sessions/<id>` (+ `--manifest-path <worktree>/Cargo.toml`). (3) custom diagnostic env vars do NOT reach the codegen worker unless added to the CLI `_BACKEND_REQUEST_ENV_KNOBS` allow-list (`src/molt/cli.py:174`); use a sentinel FILE (`/tmp/...`) inside the pass, or an already-allow-listed var (`MOLT_DUMP_IR`, `MOLT_DEBUG_ARTIFACT_DIR`, `MOLT_DEBUG_SUBSCRIPT`, `MOLT_DEBUG_DECREF_ZERO`). Activation stays a 2-line `build_default_pipeline` append + the +2 pinned-pass-name entries + `stats.len()` 28→30 once (C) is fixed and the full corpus is clean (native AND llvm) under `MOLT_ASSERT_NO_LEAK=1`.
 
-> **ACTIVATION FINDING #4 (2026-06-06, drop-induced call-lowering session) — Finding #3C's "closure value confusion" was actually TWO bugs, BOTH FIXED (inert behind the marker); a THIRD, batch/context-sensitive stdlib-module-init miscompile remains. Passes remain DORMANT.** This session's wired-corpus delta on `tests/differential/basic`: finding-3C 13-case set went **9/13 → 10/13** with the two fixes below; `m2_modlevel.py` (the minimal `class C: def f(self): return 5; print(C().f())` method call) went **abort → pass**; `import contextlib` went **TypeError → pass**.
+> **ACTIVATION FINDING #4 (2026-06-06, drop-induced call-lowering session) — HISTORICAL / SUPERSEDED.** Finding #5 below determined that the apparent third stdlib-module-init miscompile was the stale stdlib-cache confound, not a current compiler bug. Keep this block only as provenance for the two fixed bugs and the invalidated hypothesis. This session's wired-corpus delta on `tests/differential/basic`: finding-3C 13-case set went **9/13 → 10/13** with the two fixes below; `m2_modlevel.py` (the minimal `class C: def f(self): return 5; print(C().f())` method call) went **abort → pass**; `import contextlib` went **TypeError → pass**.
 >
 > **(A) FIXED — finding #3C's headline `invalid object header before dec_ref` on METHOD calls was a CallArgs-builder DOUBLE-FREE, NOT a closure-env confusion.** Root cause, CLIF-confirmed: the un-fused `obj.method(args)` idiom lowers (in `lower_to_simple`) to `b = callargs_new; r = call_bind(callee, b)`. `molt_call_bind_ic` (`call/bind.rs:3537`, via `PtrDropGuard::new(builder_ptr)`) **frees `b` internally**, regardless of normal/exception return. The TIR drop pass treated `b` as an ordinary dead temp (its last use is the `call_bind`) and inserted `DecRef(b)` after the call → a SECOND free of the `TYPE_ID_CALLARGS` object (`type_id=236`) → the abort. The runtime trace was unambiguous: `dec_ref_zero ptr=X type_id=236` (the call_bind's internal free) immediately followed by `invalid object header before dec_ref ptr=X` (the inserted DecRef hitting freed memory). **Why it surfaced now (and only via drops):** the inserted `DecRef(b)` is a SECOND read of `b`, which defeats `fuse_method_dispatch`'s single-use gate (`passes.rs:1660`, `fuse_count_value_reads(b)!=1`), so the fused alloc-free `call_method_ic` (which never materialises a builder) is NOT taken → the un-fused `call_bind` path runs WITH the double-free. **Fix (`tir/passes/drop_insertion.rs` `op_consumed_operand_root`):** a value whose last use is the CONSUMED callargs operand of `call_bind`/`call_indirect` (operand index 1, the last operand — matching the `molt_call_bind_ic(site, callee, builder)` ABI) transfers ownership to the op exactly like a `Return` value — no trailing `DecRef`. This is the §1.2 "Operands: takes-ownership" row, which the drop pass was missing (it only modeled Return/branch-arg transfer). `call_func`/`call_guarded`/`call`/`call_internal` build+consume their OWN builder internally (no pre-built builder operand) so they consume none of their TIR operands — verified. Regression test: `call_bind_callargs_operand_not_dropped`.
 >
@@ -350,7 +443,15 @@ The existing loop-body reassignment dec-ref in `function_compiler.rs:3566-3628` 
 >
 > **What WAS reliably established (fresh, identical-flag, single-file builds — the trustworthy method):** the 2 corpus UAFs are BOTH pre-existing — `attr_security` (`refcount underflow before dec_ref type_id=0`, descriptor/`__getattr__` exception path) and `memoryview_format_codes` (`invalid object header before dec_ref type_id=1599684946`, memoryview lifetime) fail IDENTICALLY wired+dormant on fresh builds. Plus the ~30-40 fresh single-file triages in (B) (async cluster, dict_subclass, builtin_numeric_ops, descriptor_delete, container_mutation, …) were all pre-existing, and `bytes_codec` is a non-regression. ZERO drop-induced regressions found by any TRUSTWORTHY (fresh-build) comparison.
 >
-> **Activation prerequisite (de-risked): a corpus harness that (a) builds each file fresh with identical flags on wired AND dormant in one run, (b) compares per-file with the xfail `# MOLT_META: expect_fail=molt` overlay, (c) survives or works around SIGURG (pytest `--forked` per test, OR batches of ≤~30 files each in its own short process so no single process runs >~3 min, OR a `process_sentinel`-free window), and (d) emits ZERO wired-fail-&-dormant-pass deltas + ZERO new `invalid object header`/`refcount underflow` UAFs.** A `pytest`-driven scaffold exists at `/tmp/rcf4/test_corpus_gate.py` (parametrized, fresh-build per test, junitxml) — it needs ONLY the SIGURG survival fix (batch/`--forked`) to be the gate. Given (B) + the fresh-build triage found zero regressions across ~40 files + 2 pre-existing UAFs + the exhaustive memory(14/14)/compliance(46/46)/peel(9/9×2) gates, the full sweep is EXPECTED clean. Once green: activation = flip `target_uses_tir_drop_insertion`'s `NativeCranelift => false` to `true` (ONE line; everything else already wired behind the `drop_inserted` marker), commit the 30M leak repros into `tests/differential/memory/`, record the `MOLT_PROFILE` numbers above. The native-RC retirement (Findings #2/#3 — `tracked_*` registration gate, `arg_cleanup` gate, slot-store/load gates, `rc_coalescing` skip) auto-engages via the `drop_inserted` marker the moment the gate flips; no further native-backend edits needed. **The `f2b2d1b32` restack already activated LLVM/WASM/Luau** (value-keyed / 1:1-NaN-boxed-local / GC); only NativeCranelift stays gated pending (C).
+> **Current activation status (2026-06-20): NativeCranelift now participates in
+> `target_uses_tir_drop_insertion` with LLVM/WASM/Luau.** The old false-to-true
+> activation flip is closed; the remaining gate is broader native legacy-RC
+> deletion and full ownership-surface proof. Any deletion of native automatic
+> temp-RC/value-tracking lanes still needs a fresh corpus harness that builds
+> each file with identical flags, applies the xfail overlay, survives SIGURG via
+> short batches or forked tests, and emits zero wired-fail/dormant-pass deltas
+> plus zero new `invalid object header`/`refcount underflow` UAFs under
+> `MOLT_ASSERT_NO_LEAK=1`.
 
 ### 4.2 LLVM Backend
 

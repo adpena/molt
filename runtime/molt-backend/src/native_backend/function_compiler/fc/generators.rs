@@ -23,8 +23,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
     nbc: &crate::NanBoxConsts,
-    box_int_mask_var: Variable,
-    box_int_tag_var: Variable,
 ) {
     // Reconstruct the original op-local closure (captures bool_primary_vars +
     // nbc; all other state threads through explicit params) so the moved arm
@@ -40,9 +38,7 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                                        vars: &BTreeMap<String, Variable>,
                                        name: &str,
                                        int_primary_vars: &BTreeSet<String>,
-                                       float_primary_vars: &BTreeSet<String>,
-                                       box_int_mask_var: Variable,
-                                       box_int_tag_var: Variable|
+                                       float_primary_vars: &BTreeSet<String>|
      -> Option<crate::VarValue> {
         var_get_boxed_overflow_safe_fn(
             module,
@@ -56,8 +52,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
             float_primary_vars,
             bool_primary_vars,
             nbc,
-            box_int_mask_var,
-            box_int_tag_var,
         )
     };
     match op.kind.as_str() {
@@ -73,8 +67,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Async iter source not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -103,8 +95,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Async iter not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -133,8 +123,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Generator not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -178,8 +166,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Generator not found");
             let val = var_get_boxed_overflow_safe(
@@ -192,8 +178,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Send value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -222,8 +206,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Generator not found");
             let val = var_get_boxed_overflow_safe(
@@ -236,8 +218,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[1],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Throw value not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -266,8 +246,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Generator not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -296,8 +274,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Obj not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -326,8 +302,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Obj not found");
             let callee = SimpleBackend::import_func_id_split(
@@ -356,8 +330,6 @@ pub(in crate::native_backend::function_compiler) fn handle_generator_op(
                 &args[0],
                 int_primary_vars,
                 float_primary_vars,
-                box_int_mask_var,
-                box_int_tag_var,
             )
             .expect("Obj not found");
             let callee = SimpleBackend::import_func_id_split(

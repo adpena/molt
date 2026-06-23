@@ -26,6 +26,14 @@ unsafe extern "C" {
     fn molt_list_builder_append(builder_bits: u64, val: u64);
     fn molt_list_builder_finish_owned(builder_bits: u64) -> u64;
     fn molt_list_pop(list_bits: u64, index_bits: u64) -> u64;
+    fn molt_iter(iter_bits: u64) -> u64;
+    fn molt_iter_next_unboxed(iter_bits: u64, value_out: *mut u64) -> u64;
+    fn molt_iter_next_dict_items(iter_bits: u64, key_out: *mut u64, value_out: *mut u64) -> u64;
+    fn molt_dict_new(capacity_bits: u64) -> u64;
+    fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64;
+    fn molt_dict_items(dict_bits: u64) -> u64;
+    fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64;
+    fn molt_string_eq(a_bits: u64, b_bits: u64) -> u64;
 }
 
 static INIT: Once = Once::new();
@@ -49,8 +57,19 @@ fn header_ref(bits: u64) -> &'static MoltHeader {
     unsafe { &*header_ptr }
 }
 
+fn object_ptr(bits: u64) -> *mut u8 {
+    MoltObject::from_bits(bits)
+        .as_ptr()
+        .expect("expected heap object pointer")
+}
+
 fn refcount(bits: u64) -> u32 {
     header_ref(bits).ref_count.load(Ordering::Acquire)
+}
+
+fn assert_string_eq(lhs: u64, rhs: u64) {
+    let eq_bits = unsafe { molt_string_eq(lhs, rhs) };
+    assert_eq!(MoltObject::from_bits(eq_bits).as_bool(), Some(true));
 }
 
 fn class_from_name(name: &[u8]) -> u64 {
@@ -60,6 +79,89 @@ fn class_from_name(name: &[u8]) -> u64 {
     assert_ne!(class_bits, none());
     molt_runtime::molt_dec_ref_obj(name_bits);
     class_bits
+}
+
+#[test]
+fn iter_next_unboxed_overwrites_value_out_on_exhaustion() {
+    init();
+
+    let elem_bits = unsafe { molt_string_from(b"iter-owned".as_ptr(), 10) };
+    assert_ne!(elem_bits, none());
+    let elem_before = refcount(elem_bits);
+
+    let list_bits = molt_runtime::molt_list_fill_new(MoltObject::from_int(1).bits(), elem_bits);
+    assert_ne!(list_bits, none());
+    assert_eq!(refcount(elem_bits), elem_before + 1);
+
+    let iter_bits = unsafe { molt_iter(list_bits) };
+    assert_ne!(iter_bits, none());
+
+    let done_false = MoltObject::from_bool(false).bits();
+    let done_true = MoltObject::from_bool(true).bits();
+
+    let mut value_bits = none();
+    let done_bits = unsafe { molt_iter_next_unboxed(iter_bits, &mut value_bits) };
+    assert_eq!(done_bits, done_false);
+    assert_eq!(value_bits, elem_bits);
+    assert_eq!(refcount(elem_bits), elem_before + 2);
+    molt_runtime::molt_dec_ref_obj(value_bits);
+
+    value_bits = elem_bits;
+    let done_bits = unsafe { molt_iter_next_unboxed(iter_bits, &mut value_bits) };
+    assert_eq!(done_bits, done_true);
+    assert_eq!(value_bits, none());
+
+    molt_runtime::molt_dec_ref_obj(iter_bits);
+    molt_runtime::molt_dec_ref_obj(list_bits);
+    assert_eq!(refcount(elem_bits), elem_before);
+    molt_runtime::molt_dec_ref_obj(elem_bits);
+}
+
+#[test]
+fn iter_next_dict_items_overwrites_outputs_on_exhaustion() {
+    init();
+
+    let dict_bits = unsafe { molt_dict_new(1) };
+    assert_ne!(dict_bits, none());
+    let key_bits = unsafe { molt_string_from(b"k".as_ptr(), 1) };
+    let val_bits = unsafe { molt_string_from(b"v".as_ptr(), 1) };
+    assert_ne!(key_bits, none());
+    assert_ne!(val_bits, none());
+
+    let set_result = unsafe { molt_dict_set(dict_bits, key_bits, val_bits) };
+    assert_eq!(set_result, dict_bits);
+
+    let items_bits = unsafe { molt_dict_items(dict_bits) };
+    assert_ne!(items_bits, none());
+    let iter_bits = unsafe { molt_iter(items_bits) };
+    assert_ne!(iter_bits, none());
+
+    let done_false = MoltObject::from_bool(false).bits();
+    let done_true = MoltObject::from_bool(true).bits();
+
+    let mut out_key_bits = none();
+    let mut out_val_bits = none();
+    let done_bits =
+        unsafe { molt_iter_next_dict_items(iter_bits, &mut out_key_bits, &mut out_val_bits) };
+    assert_eq!(done_bits, done_false);
+    assert_eq!(out_key_bits, key_bits);
+    assert_eq!(out_val_bits, val_bits);
+    molt_runtime::molt_dec_ref_obj(out_key_bits);
+    molt_runtime::molt_dec_ref_obj(out_val_bits);
+
+    out_key_bits = key_bits;
+    out_val_bits = val_bits;
+    let done_bits =
+        unsafe { molt_iter_next_dict_items(iter_bits, &mut out_key_bits, &mut out_val_bits) };
+    assert_eq!(done_bits, done_true);
+    assert_eq!(out_key_bits, none());
+    assert_eq!(out_val_bits, none());
+
+    molt_runtime::molt_dec_ref_obj(iter_bits);
+    molt_runtime::molt_dec_ref_obj(items_bits);
+    molt_runtime::molt_dec_ref_obj(dict_bits);
+    molt_runtime::molt_dec_ref_obj(key_bits);
+    molt_runtime::molt_dec_ref_obj(val_bits);
 }
 
 #[test]
@@ -214,4 +316,39 @@ fn module_del_global_releases_owned_list_builder_literal_element() {
     molt_runtime::molt_dec_ref_obj(elem0_bits);
     molt_runtime::molt_dec_ref_obj(attr_bits);
     molt_runtime::molt_dec_ref_obj(module_bits);
+}
+
+#[test]
+fn string_join_singleton_list_mints_fresh_owned_string() {
+    init();
+
+    let sep_bits = unsafe { molt_string_from(b".".as_ptr(), 1) };
+    let elem_bits = unsafe { molt_string_from(b"math".as_ptr(), 4) };
+    assert_ne!(sep_bits, none());
+    assert_ne!(elem_bits, none());
+
+    molt_runtime::molt_inc_ref_obj(elem_bits);
+    let builder_bits = unsafe { molt_list_builder_new(MoltObject::from_int(1).bits()) };
+    assert_ne!(builder_bits, none());
+    unsafe {
+        molt_list_builder_append(builder_bits, elem_bits);
+    }
+    let list_bits = unsafe { molt_list_builder_finish_owned(builder_bits) };
+    assert_ne!(list_bits, none());
+
+    let joined_bits = unsafe { molt_string_join(sep_bits, list_bits) };
+    assert_ne!(joined_bits, none());
+    assert_ne!(object_ptr(joined_bits), object_ptr(elem_bits));
+    assert_string_eq(joined_bits, elem_bits);
+
+    molt_runtime::molt_dec_ref_obj(list_bits);
+    molt_runtime::molt_dec_ref_obj(elem_bits);
+
+    let expected_bits = unsafe { molt_string_from(b"math".as_ptr(), 4) };
+    assert_ne!(expected_bits, none());
+    assert_string_eq(joined_bits, expected_bits);
+
+    molt_runtime::molt_dec_ref_obj(expected_bits);
+    molt_runtime::molt_dec_ref_obj(joined_bits);
+    molt_runtime::molt_dec_ref_obj(sep_bits);
 }

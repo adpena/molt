@@ -35,6 +35,10 @@ of truth when a claim drifts.
 - [design/foundation/00_integrated_parallel_program.md](design/foundation/00_integrated_parallel_program.md)
 - [design/foundation/20_rc-ownership-drop-insertion.md](design/foundation/20_rc-ownership-drop-insertion.md)
 - [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md)
+- [design/parallel_build_architecture.md](design/parallel_build_architecture.md)
+- [architecture/compilation-model.md](architecture/compilation-model.md)
+- [architecture/gpu-primitive-stack.md](architecture/gpu-primitive-stack.md)
+- [spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md](spec/areas/perf/0513_GPU_PARALLELISM_AND_MLIR.md)
 - [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
 - [design/foundation/27_perceus_borrow_inference.md](design/foundation/27_perceus_borrow_inference.md)
 - [design/foundation/45_exception_region_ownership.md](design/foundation/45_exception_region_ownership.md)
@@ -48,6 +52,7 @@ of truth when a claim drifts.
 ## Proof And Validation
 
 - [BENCHMARKING.md](BENCHMARKING.md)
+- [../bench/friends/README.md](../bench/friends/README.md)
 - [COMPATIBILITY_CORPUS_MANIFEST.md](COMPATIBILITY_CORPUS_MANIFEST.md)
 - [proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md](proofs/STANDALONE_BINARY_PROOF_WORKFLOW.md)
 - [spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md](spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md)

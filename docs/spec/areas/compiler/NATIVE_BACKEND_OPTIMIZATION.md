@@ -149,8 +149,9 @@ optimization loop in `_canonicalize_control_aware_ops_impl` (line 34342).
 **Tiered execution** (line 29585): Functions are classified into tiers A/B/C
 based on module, function name, op count, and PGO hot function lists. Tier A
 gets full optimization (deep edge threading, CSE, LICM, guard hoisting).
-Tier C gets minimal optimization. Budget-based degradation (line 34486)
-progressively disables expensive passes when time budget is exceeded.
+Tier C gets minimal optimization. Work-budget-based degradation (line 34486)
+progressively disables expensive passes when deterministic IR work units exceed
+the function's `work_budget`; wall-clock `budget_ms` is telemetry only.
 
 **Quality assessment**:
 
@@ -172,7 +173,7 @@ progressively disables expensive passes when time budget is exceeded.
 | **No heap-aware SCCP**. Any operation that reads from or writes to the heap (attribute access, subscript, container mutation) immediately makes the result overdefined. This prevents constant-folding through `self.x` patterns, `dict[key]` lookups with known keys, etc. | `eval_lattice_value` in SCCP (line 31940+) | High — class-heavy code gets almost no constant propagation | High |
 | **Escape-bounded object allocation is still incomplete**. TIR escape analysis can rewrite some local `ObjectNewBound` values to stack objects, and native direct-write preanalysis removes field-store runtime dispatch for fresh fixed-layout stack or sized heap objects carrying non-heap values. Broader object lifetime elimination still needs all-backend representation planning instead of native-local recovery. | TIR escape analysis, native direct field-store preanalysis | Medium-High — eliminates heap allocation/refcount/field-dispatch overhead for temporaries | High |
 | **Stdlib modules skip midend entirely**. Line 29451: `if self._source_is_stdlib_module: return ops`. Stdlib wrappers get zero optimization. This is intentional for correctness but means stdlib call-heavy code sees unoptimized call sequences. | `_run_ir_midend_passes` line 29451 | Low-Medium — stdlib is mostly thin wrappers over intrinsics | Low |
-| **Fixed-point work-budget degradation can reduce pass coverage**. The deterministic budget system progressively disables expensive passes (CSE, edge threading, guard hoisting, LICM) when the work budget is exceeded. Fixed-point policies preserve a two-round proof floor; if the resulting loop still does not converge, or if the post-convergence idempotence probe drifts, the frontend fails closed instead of accepting a degraded IR variant. | `maybe_apply_budget_degrade` / `_canonicalize_control_aware_ops_impl` | Medium | Low |
+| **Fixed-point convergence can degrade**. The deterministic work-budget system (line 34486) progressively disables passes (CSE, edge threading, guard hoisting, LICM) when accumulated IR work exceeds the per-function `work_budget`. For Tier B/C functions, this means most optimizations never run. | `maybe_apply_budget_degrade` | Medium | Low |
 | **No strength reduction**. Multiplications by powers of 2 are not converted to shifts. Modular arithmetic patterns are not recognized. Division by constants is not converted to multiply-high. | Not implemented | Low-Medium — Cranelift handles some of this internally | Medium |
 
 ---

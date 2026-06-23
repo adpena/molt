@@ -12,10 +12,10 @@ use crate::{
     STRUCT_FIELD_STORE_COUNT, TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_OBJECT, TYPE_ID_TYPE,
     attr_name_bits_from_bytes, builtin_classes_if_initialized, class_dict_bits, class_field_offset,
     class_layout_version_bits, dec_ref_bits, dict_get_in_place, dict_order, dict_set_in_place,
-    exception_pending, global_type_version, header_from_obj_ptr, inc_ref_bits, instance_dict_bits,
-    intern_static_name, is_missing_bits, obj_from_bits, object_class_bits,
-    object_is_exact_builtin_dict, object_mark_has_ptrs, object_payload_size, object_type_id,
-    profile_hit, raise_exception, runtime_state, to_i64, usize_from_bits,
+    exception_pending, header_from_obj_ptr, inc_ref_bits, instance_dict_bits, intern_static_name,
+    is_missing_bits, obj_from_bits, object_class_bits, object_is_exact_builtin_dict,
+    object_mark_has_ptrs, object_payload_size, object_type_id, profile_hit, raise_exception,
+    runtime_state, to_i64, usize_from_bits,
 };
 
 fn debug_field_bounds_enabled() -> bool {
@@ -36,6 +36,25 @@ fn debug_field_enabled() -> bool {
 fn debug_guard_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("MOLT_DEBUG_GUARD").is_ok())
+}
+
+#[inline(always)]
+unsafe fn attr_ic_class_key(obj_ptr: *mut u8) -> Option<(u64, *mut u8, u64)> {
+    unsafe {
+        let type_id = object_type_id(obj_ptr);
+        if type_id != TYPE_ID_OBJECT && type_id != TYPE_ID_DATACLASS {
+            return None;
+        }
+        let class_bits = object_class_bits(obj_ptr);
+        if class_bits == 0 {
+            return None;
+        }
+        let class_ptr = obj_from_bits(class_bits).as_ptr()?;
+        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+            return None;
+        }
+        Some((class_bits, class_ptr, class_layout_version_bits(class_ptr)))
+    }
 }
 
 unsafe fn sync_materialized_instance_dict_for_field_offset(
@@ -193,10 +212,18 @@ pub(crate) unsafe fn object_field_set_ptr_raw(
             return MoltObject::none().bits();
         }
         if old_bits != val_bits {
-            dec_ref_bits(_py, old_bits);
-            inc_ref_bits(_py, val_bits);
+            // Heap field assignment must retain the incoming value before the
+            // displaced value is released. The old release can cascade through
+            // arbitrary object graphs, so the new value must already be owned
+            // by the field/dict synchronization path before that cascade runs.
+            if new_is_ptr {
+                inc_ref_bits(_py, val_bits);
+            }
             *slot = val_bits;
             sync_materialized_instance_dict_for_field_offset(_py, obj_ptr, offset, val_bits);
+            if old_is_ptr {
+                dec_ref_bits(_py, old_bits);
+            }
         }
         MoltObject::none().bits()
     }
@@ -231,11 +258,12 @@ pub(crate) unsafe fn object_field_init_ptr_raw(
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with enough payload for `offset_bits`.
+/// `obj_ptr_bits` must encode a valid object with enough payload for `offset_bits`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr: *mut u8, offset_bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr_bits: u64, offset_bits: u64) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = obj_ptr_bits as usize as *mut u8;
             let offset = usize_from_bits(offset_bits);
             object_field_get_ptr_raw(_py, obj_ptr, offset)
         })
@@ -243,15 +271,16 @@ pub unsafe extern "C" fn molt_object_field_get_ptr(obj_ptr: *mut u8, offset_bits
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with enough payload for `offset_bits`.
+/// `obj_ptr_bits` must encode a valid object with enough payload for `offset_bits`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_field_set_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = obj_ptr_bits as usize as *mut u8;
             let offset = usize_from_bits(offset_bits);
             object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits)
         })
@@ -259,16 +288,17 @@ pub unsafe extern "C" fn molt_object_field_set_ptr(
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with enough payload for `offset_bits`.
+/// `obj_ptr_bits` must encode a valid object with enough payload for `offset_bits`.
 /// Intended for initializing freshly allocated objects with immediate values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_field_init_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     offset_bits: u64,
     val_bits: u64,
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = obj_ptr_bits as usize as *mut u8;
             let offset = usize_from_bits(offset_bits);
             object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits)
         })
@@ -358,15 +388,16 @@ unsafe fn guard_layout_match(
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with a class.
+/// `obj_ptr_bits` must encode a valid object pointer with a class.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_guard_layout_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     class_bits: u64,
     expected_version: u64,
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = obj_ptr_bits as usize as *mut u8;
             let matches = guard_layout_match(_py, obj_ptr, class_bits, expected_version);
             if !matches {
                 profile_hit(_py, &GUARD_DICT_SHAPE_LAYOUT_MISMATCH_DEOPT_COUNT);
@@ -377,18 +408,21 @@ pub unsafe extern "C" fn molt_guard_layout_ptr(
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with enough payload for `offset_bits`.
+/// `obj_ptr_bits` must encode a valid object with enough payload for
+/// `offset_bits`; `attr_name_ptr_bits` must encode valid UTF-8 bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_guarded_field_get_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     class_bits: u64,
     expected_version: u64,
     offset_bits: u64,
-    attr_name_ptr: *const u8,
+    attr_name_ptr_bits: u64,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = obj_ptr_bits as usize as *mut u8;
+            let attr_name_ptr = attr_name_ptr_bits as usize as *const u8;
             let offset = usize_from_bits(offset_bits);
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
@@ -406,16 +440,18 @@ pub unsafe extern "C" fn molt_guarded_field_get_ptr(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_guarded_field_set_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     class_bits: u64,
     expected_version: u64,
     offset_bits: u64,
     val_bits: u64,
-    attr_name_ptr: *const u8,
+    attr_name_ptr_bits: u64,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = obj_ptr_bits as usize as *mut u8;
+            let attr_name_ptr = attr_name_ptr_bits as usize as *const u8;
             let offset = usize_from_bits(offset_bits);
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
@@ -426,19 +462,22 @@ pub unsafe extern "C" fn molt_guarded_field_set_ptr(
 }
 
 /// # Safety
-/// `obj_ptr` must point to a valid object with enough payload for `offset_bits`.
+/// `obj_ptr_bits` must encode a valid object with enough payload for
+/// `offset_bits`; `attr_name_ptr_bits` must encode valid UTF-8 bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_guarded_field_init_ptr(
-    obj_ptr: *mut u8,
+    obj_ptr_bits: u64,
     class_bits: u64,
     expected_version: u64,
     offset_bits: u64,
     val_bits: u64,
-    attr_name_ptr: *const u8,
+    attr_name_ptr_bits: u64,
     attr_name_len_bits: u64,
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
+            let obj_ptr = obj_ptr_bits as usize as *mut u8;
+            let attr_name_ptr = attr_name_ptr_bits as usize as *const u8;
             let offset = usize_from_bits(offset_bits);
             if guard_layout_match(_py, obj_ptr, class_bits, expected_version) {
                 return object_field_init_ptr_raw(_py, obj_ptr, offset, val_bits);
@@ -540,8 +579,10 @@ pub unsafe extern "C" fn molt_object_field_init(
 ///
 /// # Fast path
 /// 1. Read the object's `type_id` from its header.
-/// 2. Probe the global lock-free IC table at `ic_index` with `(type_id, global_type_version)`.
-/// 3. On hit the cached value is a byte offset into the object's payload — read the
+/// 2. Read the object's class identity and class layout version.
+/// 3. Probe the global lock-free IC table at `ic_index` with
+///    `(class_bits, class_layout_version)`.
+/// 4. On hit the cached value is a byte offset into the object's payload — read the
 ///    field at that offset and return it (same as `object_field_get_ptr_raw`).
 ///
 /// # Slow path
@@ -574,23 +615,26 @@ pub unsafe extern "C" fn molt_getattr_ic(
             if type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS {
                 let ic_index = usize_from_bits(ic_index_bits);
                 if ic_index < IC_TABLE_CAPACITY {
-                    let version = global_type_version();
                     let ic = global_ic_table().get(ic_index);
 
-                    if let Some(cached_offset) = ic.probe(type_id, version) {
-                        let offset = cached_offset as usize;
-                        // Bounds-check the offset against the object's payload.
-                        let payload = object_payload_size(obj_ptr);
-                        if offset.saturating_add(std::mem::size_of::<u64>()) <= payload {
-                            let slot = obj_ptr.add(offset) as *const u64;
-                            let bits = *slot;
-                            // A cached offset might point at an uninitialised /
-                            // "missing" sentinel slot (e.g. the field was deleted
-                            // after the IC was written). Treat that as a miss and
-                            // fall through to the slow path.
-                            if !is_missing_bits(_py, bits) && bits != 0 {
-                                inc_ref_bits(_py, bits);
-                                return bits as i64;
+                    if let Some((class_bits, _class_ptr, class_version)) =
+                        attr_ic_class_key(obj_ptr)
+                    {
+                        if let Some(cached_offset) = ic.probe(class_bits, class_version) {
+                            let offset = cached_offset as usize;
+                            // Bounds-check the offset against the object's payload.
+                            let payload = object_payload_size(obj_ptr);
+                            if offset.saturating_add(std::mem::size_of::<u64>()) <= payload {
+                                let slot = obj_ptr.add(offset) as *const u64;
+                                let bits = *slot;
+                                // A cached offset might point at an uninitialised /
+                                // "missing" sentinel slot (e.g. the field was deleted
+                                // after the IC was written). Treat that as a miss and
+                                // fall through to the slow path.
+                                if !is_missing_bits(_py, bits) && bits != 0 {
+                                    inc_ref_bits(_py, bits);
+                                    return bits as i64;
+                                }
                             }
                         }
                     }
@@ -605,10 +649,8 @@ pub unsafe extern "C" fn molt_getattr_ic(
                         && !obj_from_bits(result as u64).is_none()
                         && !exception_pending(_py)
                     {
-                        let class_bits = object_class_bits(obj_ptr);
-                        if class_bits != 0
-                            && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                            && object_type_id(class_ptr) == TYPE_ID_TYPE
+                        if let Some((class_bits, class_ptr, class_version)) =
+                            attr_ic_class_key(obj_ptr)
                         {
                             let attr_len = usize_from_bits(attr_name_len_bits);
                             let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
@@ -616,8 +658,7 @@ pub unsafe extern "C" fn molt_getattr_ic(
                                 if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
                                     && offset <= u32::MAX as usize
                                 {
-                                    let version = global_type_version();
-                                    ic.update(type_id, offset as u32, version);
+                                    ic.update(class_bits, offset as u32, class_version);
                                 }
                                 dec_ref_bits(_py, attr_bits);
                             }
@@ -664,22 +705,18 @@ pub unsafe extern "C" fn molt_ic_probe_fast(obj_ptr: *mut u8, ic_index: u64) -> 
             return 0;
         }
 
-        let type_id = (*header_from_obj_ptr(obj_ptr)).type_id;
-
-        // IC is only applicable to OBJECT and DATACLASS types.
-        if type_id != TYPE_ID_OBJECT && type_id != TYPE_ID_DATACLASS {
+        let Some((class_bits, _class_ptr, class_version)) = attr_ic_class_key(obj_ptr) else {
             return 0;
-        }
+        };
 
         let idx = ic_index as usize;
         if idx >= IC_TABLE_CAPACITY {
             return 0;
         }
 
-        let version = global_type_version();
         let ic = global_ic_table().get(idx);
 
-        if let Some(cached_offset) = ic.probe(type_id, version) {
+        if let Some(cached_offset) = ic.probe(class_bits, class_version) {
             let offset = cached_offset as usize;
             let payload = object_payload_size(obj_ptr);
             if offset.saturating_add(std::mem::size_of::<u64>()) <= payload {
@@ -733,7 +770,6 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
                 return crate::molt_get_attr_ptr(obj_ptr, attr_name_ptr, attr_name_len_bits);
             }
 
-            let type_id = object_type_id(obj_ptr);
             let idx = ic_index as usize;
 
             // Full resolution.
@@ -741,25 +777,19 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
 
             // Populate the IC on success.
             if idx < IC_TABLE_CAPACITY
-                && (type_id == TYPE_ID_OBJECT || type_id == TYPE_ID_DATACLASS)
                 && result != 0
                 && !obj_from_bits(result as u64).is_none()
                 && !exception_pending(_py)
             {
-                let class_bits = object_class_bits(obj_ptr);
-                if class_bits != 0
-                    && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-                    && object_type_id(class_ptr) == TYPE_ID_TYPE
-                {
+                if let Some((class_bits, class_ptr, class_version)) = attr_ic_class_key(obj_ptr) {
                     let attr_len = usize_from_bits(attr_name_len_bits);
                     let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
                     if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
                         if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
                             && offset <= u32::MAX as usize
                         {
-                            let version = global_type_version();
                             let ic = global_ic_table().get(idx);
-                            ic.update(type_id, offset as u32, version);
+                            ic.update(class_bits, offset as u32, class_version);
                         }
                         dec_ref_bits(_py, attr_bits);
                     }

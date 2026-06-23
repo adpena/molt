@@ -1,12 +1,12 @@
 # Molt Compilation Model — Production Architecture
 
-Status: target architecture / partially landed (refreshed 2026-06-12).
+Status: target architecture / partially landed (refreshed 2026-06-20).
 The live codebase, `Cargo.toml`, and guarded `cargo metadata` are authoritative;
 this document describes the production direction and calls out the current gaps.
 See [parallel_build_architecture.md](../design/parallel_build_architecture.md)
 for the crate-extraction and incremental-build routing plan.
 
-## Live State Snapshot (2026-06-12)
+## Live State Snapshot (2026-06-20)
 
 - Runtime leaf crates already exist and are wired from
   `runtime/molt-runtime/Cargo.toml`, including core, collections, math, text,
@@ -15,16 +15,34 @@ for the crate-extraction and incremental-build routing plan.
   exists as a workspace package, but is not yet a `molt-runtime` facade
   dependency.
 - `stdlib_stringprep` is leaf-owned: the old in-facade `builtins/stringprep.rs`
-  fallback is deleted, `molt_stringprep_*` resolver arms are gated by
-  `stdlib_stringprep`, and feature-on/feature-off `molt-runtime` checks prove
-  the facade no longer carries a duplicate stringprep authority.
+  fallback is deleted, `molt_stringprep_*` resolver ownership is generated into
+  `molt-runtime-stringprep/src/intrinsics_generated.rs`, and the `molt-runtime`
+  facade delegates through that leaf sub-registry behind `stdlib_stringprep`.
+  Feature-on/feature-off `molt-runtime` checks prove the facade no longer
+  carries a duplicate stringprep authority.
+- `stdlib_text` now owns the extracted `html` and `unicodedata` implementation:
+  the old in-facade `builtins/html.rs` and `builtins/unicodedata_mod.rs`
+  fallbacks are deleted, `molt_html_*` and `molt_unicodedata_*` resolver arms
+  are gated by `stdlib_text`, and feature-on/feature-off runtime checks prove
+  the facade no longer carries a duplicate text authority for those modules.
+- `stdlib_zoneinfo` is leaf-owned: the old in-facade `builtins/zoneinfo.rs`
+  fallback is deleted, `molt_zoneinfo_*` resolver arms are gated by
+  `stdlib_zoneinfo`, and feature-on/feature-off runtime checks prove the facade
+  no longer carries a duplicate zoneinfo authority.
 - `molt-runtime` is not yet a pure facade. It still owns substantial runtime
   implementation, so the precompiled-per-import library model below is the
   target architecture rather than a completed current guarantee.
 - `release-fast` already uses thin LTO/high codegen-unit parallelism for
   compiler iteration; shipped output profiles retain whole-program optimization
   where runtime performance and size require it.
-- Remaining structural work: finish runtime facade composition, split per-crate
+- The runtime intrinsic resolver source is split by generated category:
+  `runtime/molt-runtime/src/intrinsics/generated.rs` remains the canonical
+  `INTRINSICS` manifest table, and
+  `runtime/molt-runtime/src/intrinsics/generated_resolvers/` owns category
+  resolver modules. `stringprep` is the first generated per-leaf-crate
+  sub-registry; the remaining registry work is to lift the other generated
+  categories the same way as runtime facade extraction proceeds.
+- Remaining structural work: finish runtime facade composition, finish per-crate
   intrinsic registries, isolate native backend codegen into its own crate, and
   preserve deterministic cache/build-state custody across concurrent agents.
 
@@ -132,8 +150,9 @@ linkable libraries via:
 cargo build -p molt-runtime-core --release
 ```
 
-This `.a` file is cached at `~/.molt/cache/lib/libmolt_core.a` (or equivalent).
-The fingerprint includes: Rust toolchain version, target triple, feature flags.
+This `.a` file is cached under the canonical artifact/cache root
+(`MOLT_CACHE`/`MOLT_EXT_ROOT`, not an ambient home-directory cache). The
+fingerprint includes: Rust toolchain version, target triple, feature flags.
 
 ### 2. Backend Split: User Code Only
 

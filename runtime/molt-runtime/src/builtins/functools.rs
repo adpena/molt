@@ -18,7 +18,7 @@ use crate::{
     seq_vec_ref, string_obj_to_owned, to_i64, type_of_bits,
 };
 
-const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 22;
+const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 23;
 
 pub(crate) struct FunctoolsRuntimeState {
     kwd_mark_bits: AtomicU64,
@@ -39,6 +39,7 @@ pub(crate) struct FunctoolsRuntimeState {
     lru_cache_info_fn: AtomicU64,
     lru_cache_clear_fn: AtomicU64,
     lru_cache_params_fn: AtomicU64,
+    lru_descriptor_get_fn: AtomicU64,
     lru_factory_call_fn: AtomicU64,
     cacheinfo_iter_fn: AtomicU64,
     cacheinfo_repr_fn: AtomicU64,
@@ -68,6 +69,7 @@ impl FunctoolsRuntimeState {
             lru_cache_info_fn: AtomicU64::new(0),
             lru_cache_clear_fn: AtomicU64::new(0),
             lru_cache_params_fn: AtomicU64::new(0),
+            lru_descriptor_get_fn: AtomicU64::new(0),
             lru_factory_call_fn: AtomicU64::new(0),
             cacheinfo_iter_fn: AtomicU64::new(0),
             cacheinfo_repr_fn: AtomicU64::new(0),
@@ -97,6 +99,7 @@ impl FunctoolsRuntimeState {
             &self.lru_cache_info_fn,
             &self.lru_cache_clear_fn,
             &self.lru_cache_params_fn,
+            &self.lru_descriptor_get_fn,
             &self.lru_factory_call_fn,
             &self.cacheinfo_iter_fn,
             &self.cacheinfo_repr_fn,
@@ -207,7 +210,11 @@ fn kwd_mark_bits(_py: &PyToken<'_>) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_kwd_mark() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { kwd_mark_bits(_py) })
+    crate::with_gil_entry_nopanic!(_py, {
+        let bits = kwd_mark_bits(_py);
+        inc_ref_bits(_py, bits);
+        bits
+    })
 }
 
 fn functools_class(_py: &PyToken<'_>, slot: &AtomicU64, name: &str, layout_size: i64) -> u64 {
@@ -412,7 +419,14 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
         crate::molt_functools_lru_cache_params as *const () as usize as u64,
         1,
     );
+    let get_bits = builtin_func_bits(
+        _py,
+        &functools.lru_descriptor_get_fn,
+        crate::molt_functools_lru_descriptor_get as *const () as usize as u64,
+        3,
+    );
     set_class_method(_py, class_bits, "__call__", call_bits);
+    set_class_method(_py, class_bits, "__get__", get_bits);
     set_class_method(_py, class_bits, "cache_info", info_bits);
     set_class_method(_py, class_bits, "cache_clear", clear_bits);
     set_class_method(_py, class_bits, "cache_parameters", params_bits);
@@ -667,6 +681,32 @@ fn extend_positional_from_call_arg(arg_bits: u64, out: &mut Vec<u64>) {
         }
     }
     out.push(arg_bits);
+}
+
+fn push_owned_lru_key_part(_py: &PyToken<'_>, out: &mut Vec<u64>, bits: u64) {
+    inc_ref_bits(_py, bits);
+    out.push(bits);
+}
+
+fn extend_owned_lru_key_parts_from_call_arg(_py: &PyToken<'_>, arg_bits: u64, out: &mut Vec<u64>) {
+    let Some(arg_ptr) = obj_from_bits(arg_bits).as_ptr() else {
+        return;
+    };
+    unsafe {
+        if object_type_id(arg_ptr) == TYPE_ID_TUPLE {
+            for bits in seq_vec_ref(arg_ptr).iter().copied() {
+                push_owned_lru_key_part(_py, out, bits);
+            }
+            return;
+        }
+    }
+    push_owned_lru_key_part(_py, out, arg_bits);
+}
+
+fn release_owned_lru_key_parts(_py: &PyToken<'_>, parts: &[u64]) {
+    for bits in parts.iter().copied() {
+        dec_ref_bits(_py, bits);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1489,9 +1529,9 @@ fn default_wrapper_updates(_py: &PyToken<'_>) -> u64 {
 
 fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool) -> u64 {
     let mut parts: Vec<u64> = Vec::new();
-    extend_positional_from_call_arg(args_bits, &mut parts);
+    extend_owned_lru_key_parts_from_call_arg(_py, args_bits, &mut parts);
     if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-        parts.push(kwd_mark_bits(_py));
+        push_owned_lru_key_part(_py, &mut parts, kwd_mark_bits(_py));
         if let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
@@ -1500,6 +1540,7 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
                     while idx + 1 < order.len() {
                         let pair_ptr = alloc_tuple(_py, &[order[idx], order[idx + 1]]);
                         if pair_ptr.is_null() {
+                            release_owned_lru_key_parts(_py, &parts);
                             return MoltObject::none().bits();
                         }
                         parts.push(MoltObject::from_ptr(pair_ptr).bits());
@@ -1514,7 +1555,7 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
         extend_positional_from_call_arg(args_bits, &mut typed_args);
         for val_bits in typed_args {
             let type_bits = crate::type_of_bits(_py, val_bits);
-            parts.push(type_bits);
+            push_owned_lru_key_part(_py, &mut parts, type_bits);
         }
         if kwargs_bits != 0
             && !obj_from_bits(kwargs_bits).is_none()
@@ -1527,18 +1568,20 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
                     while idx + 1 < order.len() {
                         let val_bits = order[idx + 1];
                         let type_bits = crate::type_of_bits(_py, val_bits);
-                        parts.push(type_bits);
+                        push_owned_lru_key_part(_py, &mut parts, type_bits);
                         idx += 2;
                     }
                 }
             }
         }
     }
-    let tuple_ptr = alloc_tuple(_py, parts.as_slice());
-    for bits in parts.iter() {
-        dec_ref_bits(_py, *bits);
-    }
+    let tuple_ptr = if parts.is_empty() {
+        alloc_tuple(_py, &[])
+    } else {
+        crate::object::builders::alloc_tuple_with_capacity_owned(_py, parts.as_slice(), parts.len())
+    };
     if tuple_ptr.is_null() {
+        release_owned_lru_key_parts(_py, &parts);
         MoltObject::none().bits()
     } else {
         MoltObject::from_ptr(tuple_ptr).bits()
@@ -1678,6 +1721,21 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
         }
         dec_ref_bits(_py, key_bits);
         result_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_functools_lru_descriptor_get(
+    self_bits: u64,
+    instance_bits: u64,
+    _owner_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        if obj_from_bits(instance_bits).is_none() {
+            inc_ref_bits(_py, self_bits);
+            return self_bits;
+        }
+        crate::molt_bound_method_new(self_bits, instance_bits)
     })
 }
 
@@ -1943,10 +2001,10 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
 mod tests {
     use super::{
         cacheinfo_class, cmpkey_class, functools_clear_runtime_state, kwd_mark_bits,
-        lru_factory_class, lru_wrapper_class, molt_functools_singledispatch_drop,
-        molt_functools_singledispatch_new, partial_class,
+        lru_factory_class, lru_wrapper_class, molt_functools_kwd_mark,
+        molt_functools_singledispatch_drop, molt_functools_singledispatch_new, partial_class,
     };
-    use crate::{MoltObject, obj_from_bits, runtime_state, to_i64};
+    use crate::{MoltObject, dec_ref_bits, inc_ref_bits, obj_from_bits, runtime_state, to_i64};
     use std::sync::atomic::Ordering;
 
     #[test]
@@ -2013,6 +2071,25 @@ mod tests {
             let reset = molt_functools_singledispatch_new(MoltObject::none().bits());
             assert_eq!(to_i64(obj_from_bits(reset)), Some(1));
             let _ = molt_functools_singledispatch_drop(reset);
+        });
+    }
+
+    #[test]
+    fn functools_kwd_mark_public_return_is_owned_without_releasing_runtime_root() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            functools_clear_runtime_state(_py, state);
+
+            let root_bits = kwd_mark_bits(_py);
+            let owned_bits = molt_functools_kwd_mark();
+            assert_eq!(root_bits, owned_bits);
+            dec_ref_bits(_py, owned_bits);
+
+            inc_ref_bits(_py, root_bits);
+            dec_ref_bits(_py, root_bits);
+
+            functools_clear_runtime_state(_py, state);
         });
     }
 }

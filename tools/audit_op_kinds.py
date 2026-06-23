@@ -1151,7 +1151,12 @@ def print_report(res: AuditResult) -> None:
 
 
 def to_baseline(res: AuditResult) -> dict:
-    """The committed baseline = the dangerous-cell sets. CI fails on NEW members."""
+    """The committed baseline = the current dangerous-cell sets.
+
+    CI fails on either new current danger or stale baseline-only danger. Stale
+    entries are not harmless bookkeeping: they mask a future regression that
+    reintroduces a previously removed dangerous cell.
+    """
     return {"dangerous": res.dangerous()}
 
 
@@ -1166,24 +1171,35 @@ def check_against_baseline(res: AuditResult) -> int:
     base = baseline.get("dangerous", {})
     current = res.dangerous()
     rc = 0
-    for cat, items in current.items():
-        new = sorted(set(items) - set(base.get(cat, [])))
+    for cat in sorted(set(current) | set(base)):
+        current_items = set(current.get(cat, []))
+        base_items = set(base.get(cat, []))
+        new = sorted(current_items - base_items)
+        stale = sorted(base_items - current_items)
         if new:
             rc = 1
             print(
                 f"NEW dangerous-cell in '{cat}': {new}",
                 file=sys.stderr,
             )
+        if stale:
+            rc = 1
+            print(
+                f"STALE dangerous-cell baseline in '{cat}': {stale}",
+                file=sys.stderr,
+            )
     if rc == 0:
-        print("op-kind drift check: OK (no new dangerous cells vs baseline)")
+        print("op-kind drift check: OK (dangerous-cell baseline is exact)")
     else:
         print(
             "\nA new op kind drifted across the frontend/backend boundary. "
-            "Add a mapper arm in ssa.rs kind_to_opcode (or, for a pre-dispatch "
-            "control/dataflow kind, add it to is_structural/the cfg.rs helpers or "
-            "PRE_SSA_REWRITTEN_KINDS), classify it in alias_analysis.rs, ensure LLVM coverage "
-            "(dedicated arm, vec table entry, or ABI-exact runtime fallback), and refresh the baseline once "
-            "the fix lands.",
+            "Add a mapper arm in ssa.rs kind_to_opcode (or, for a CFG/SSA-consumed "
+            "control kind, add it to is_structural/the cfg.rs leader/terminator "
+            "helpers), classify it in alias_analysis.rs, ensure LLVM coverage "
+            "(dedicated arm or molt_<kind> symbol), and refresh the baseline once "
+            "the fix lands. If the error is stale baseline-only danger, refresh "
+            "the baseline from the current audit after verifying the removal is "
+            "intentional.",
             file=sys.stderr,
         )
     return rc

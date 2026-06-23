@@ -154,25 +154,26 @@ consumption paths:
 
 Backend-neutral TIR now has `ExceptionRegions` analysis + verification in
 `runtime/molt-backend/src/tir/exception_regions.rs`. It recognizes the current
-`Copy` + `_original_kind` exception carriers, computes path-depth reachable
+`Copy` + `_original_kind` exception carriers, computes path-state reachable
 `exception_pop` release boundaries for handler MatchRefs, emits diagnostics for
 missing/ambiguous/too-early releases, is registered with the analysis
 manager/debug freshness check, and fails closed from the pass-manager
-verification boundary when those diagnostics are present. Depth-zero exception
-reads remain ordinary observers rather than handler-owned MatchRefs, so
-guard-style `exception_last` probes outside an open handler region stay on the
-normal value/lifetime path. Shared drop insertion materializes TIR `DecRef`s for
-CreationRefs sourced from the ownership module at `Raise` and for MatchRefs
-after the owning `exception_pop` for activated TIR-drop targets, including
-native Cranelift. When shared `exception_pop` splitting must remap the moved
-tail through no-heap `Copy` aliases, DropInsertion consumes
-`ownership_lattice_min::copy_no_heap_move_alias`; the `_original_kind`
-classifier read remains in the ownership module rather than becoming a
-drop-placement-side spelling table. The current analyzer also accepts
-path-alternative handler exits, loop re-entry shapes where `try_end` and
-`exception_pop` are one close boundary, and shared `exception_pop` blocks with
-block-arg payloads, where the splitter now routes the moved tail through fresh
-continuation args so inserted MatchRef releases preserve SSA dominance.
+verification boundary when those diagnostics are present. An implicit
+`TryStart`/`CheckException` transfer may enter handler-owned state only when the
+target label is currently active in the lexical exception frame stack; inactive
+handler-label targets remain ordinary depth-zero exception observers and must
+not manufacture handler owners. This keeps universal `CheckException`
+observation from turning post-region or exit-cleanup probes into false
+MatchRef-release obligations. Depth-zero exception reads remain ordinary
+observers rather than handler-owned MatchRefs, so guard-style `exception_last`
+probes outside an open handler region stay on the normal value/lifetime path.
+Shared drop insertion materializes TIR `DecRef`s for CreationRefs at `Raise` and
+for MatchRefs after the owning `exception_pop` for activated TIR-drop targets,
+including native Cranelift. The current analyzer also accepts path-alternative
+handler exits, loop re-entry shapes where `try_end` and `exception_pop` are one
+close boundary, and shared `exception_pop` blocks with block-arg payloads, where
+the splitter now routes the moved tail through fresh continuation args so
+inserted MatchRef releases preserve SSA dominance.
 Validator fail-closed coverage now includes missing-pop, ambiguous-depth, and
 terminal drop-pipeline diagnostics. Checked backend consumption proof covers
 LLVM lowering order, WASM host-EH/native-EH import behavior plus the LIR
@@ -181,11 +182,16 @@ as GC no-ops after the Luau target-info terminal drop phase. Luau and LLVM now
 also have executed runtime artifact proof for the raise/catch leak loop. The
 prior WASM structural-validation blocker is fixed and the linked artifact
 validates. The `env::molt_process_terminate_host` host-ABI gap is now covered by
-the JS harness import map alongside the real Node/Wasmtime/browser hosts, but
-WASM runtime parity proof is still required.
+the JS harness import map alongside the real Node/Wasmtime/browser hosts, and
+the focused WASM leak-loop differential now passes. Broader WASM
+`HandlerState` parity still remains open.
 
 Evidence:
 - `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" exception_region -- --nocapture` (23 passed).
+- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --features wasm-backend tir::exception_regions -- --nocapture` (22 passed; includes inactive `CheckException` handler-target regression).
+- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --features wasm-backend tir::drop_phase -- --nocapture` (4 passed).
+- `cargo build --profile release-fast -p molt-backend --no-default-features --features wasm-backend` (passed; existing warnings only).
+- `MOLT_WASM_LINKED=0 MOLT_WASM_LINK=0 MOLT_WASM_STAGE_AUDIT=1 MOLT_MODULE_STAGE_AUDIT=1 MOLT_DROP_STAGE_AUDIT=1 MOLT_DROP_STAGE_AUDIT_FUNC=Sequence_index MOLT_DISABLE_INLINING=1 .venv/bin/python3 tools/memory_guard.py --max-rss-gb 12 --max-total-rss-gb 14 -- target/release-fast/molt-backend --target wasm --wasm-data-base 69074944 --wasm-table-base 3367 --output tmp/wasm-rss-repro/20260620-060416-exception-region-active-frame-fix/out.wasm --ir-file logs/wasm-rss-repro/20260620-054224-moduleaudit-noinline/handoff.ir.json` (passed; receipt `logs/wasm-rss-repro/20260620-060416-exception-region-active-frame-fix/memory_guard.summary.json`; `returncode=0`, `violation=null`, rusage peak 0.324 GiB; `_collections_abc__Sequence_index` exception-region analysis produced 0 match-release facts at 259.1 MiB instead of the prior 12 GiB kill).
 - `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" lower_to_simple_emits_separate_drop_fact_markers -- --nocapture` (1 passed).
 - `cargo test -p molt-backend --features wasm-backend import_transaction_callable_wrapper_matches_runtime_import_abi -- --nocapture` (1 passed).
 - `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" compile_checked_ -- --nocapture` (14 passed).

@@ -768,6 +768,8 @@ class CallVisitorMixin(_MixinBase):
         total_params = info.get("params")
         defaults = info.get("defaults", [])
         kwonly_count = info.get("kwonly")
+        if kwonly_count:
+            return None
         positional_limit = None
         if total_params is not None and isinstance(kwonly_count, int):
             positional_limit = total_params - kwonly_count
@@ -809,6 +811,11 @@ class CallVisitorMixin(_MixinBase):
             # for direct calls — return None so the caller falls back to the
             # generic CALL_BIND / CALL_INDIRECT path which handles them at runtime.
             return None
+        if (
+            module_name is not None
+            and self._lookup_func_defaults(module_name, func_id) is None
+        ):
+            return None
         args = self._emit_call_args(node.args)
         return self._apply_direct_call_defaults(module_name, func_id, args, node)
 
@@ -836,6 +843,8 @@ class CallVisitorMixin(_MixinBase):
                 module_name, func_name = known_symbol_target
                 info = self._lookup_func_defaults(module_name, func_name)
         if info is not None and info.get("has_vararg"):
+            return None, func_obj
+        if info is not None and info.get("kwonly"):
             return None, func_obj
         args = self._emit_call_args(node.args)
         if info is None:
@@ -872,6 +881,113 @@ class CallVisitorMixin(_MixinBase):
             positional_limit=positional_limit,
         )
         return args, func_obj
+
+    @staticmethod
+    def _known_module_func_kind(info: dict[str, Any] | None) -> str | None:
+        if info is None:
+            return None
+        kind = info.get("kind")
+        if kind == "async_gen":
+            return "asyncgen"
+        if kind in {"async", "asyncgen", "gen"}:
+            return cast(str, kind)
+        return None
+
+    def _emit_call_bind_for_known_module_func(
+        self,
+        node: ast.Call,
+        *,
+        result_hint: str,
+    ) -> MoltValue:
+        callee = self.visit(node.func)
+        if callee is None:
+            raise NotImplementedError("Unsupported call target")
+        callargs = self._emit_call_args_builder(node)
+        res = MoltValue(self.next_var(), type_hint=result_hint)
+        self.emit(MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res))
+        return res
+
+    def _emit_known_module_task_func_call(
+        self,
+        target_module: str,
+        func_id: str,
+        node: ast.Call,
+        *,
+        needs_bind: bool,
+    ) -> MoltValue | None:
+        info = self._lookup_func_defaults(target_module, func_id)
+        kind = self._known_module_func_kind(info)
+        if kind is None:
+            raw_kind = self._lookup_func_kind(target_module, func_id)
+            if raw_kind in {"async", "asyncgen", "gen"}:
+                kind = raw_kind
+        if kind is None:
+            return None
+        positional_only_kind_fact = info is None
+        decorated = bool(info.get("has_decorators")) if info is not None else False
+        result_hint = {
+            "async": "Future",
+            "asyncgen": "async_generator",
+            "gen": "generator",
+        }[kind]
+        if positional_only_kind_fact:
+            if needs_bind or node.keywords:
+                return self._emit_call_bind_for_known_module_func(
+                    node,
+                    result_hint=result_hint,
+                )
+            args = self._emit_call_args(node.args)
+            params = len(args)
+        elif needs_bind or decorated or info.get("has_vararg"):
+            bind_hint = "Any" if decorated else result_hint
+            return self._emit_call_bind_for_known_module_func(
+                node,
+                result_hint=bind_hint,
+            )
+        else:
+            params = info.get("params")
+            if not isinstance(params, int):
+                return self._emit_call_bind_for_known_module_func(
+                    node,
+                    result_hint=result_hint,
+                )
+            args = self._emit_direct_call_args(target_module, func_id, node)
+            if args is None:
+                return self._emit_call_bind_for_known_module_func(
+                    node,
+                    result_hint=result_hint,
+                )
+        poll_func = f"{self._sanitize_module_name(target_module)}__{func_id}_poll"
+        include_gen_control = kind != "async"
+        closure_size = self._task_closure_size(
+            params,
+            include_gen_control=include_gen_control,
+        )
+        if kind == "async":
+            res = MoltValue(self.next_var(), type_hint="Future")
+            self.emit(
+                MoltOp(
+                    kind="ALLOC_TASK",
+                    args=[poll_func, closure_size] + args,
+                    result=res,
+                    metadata={"task_kind": "coroutine"},
+                )
+            )
+            return res
+        gen_val = MoltValue(self.next_var(), type_hint="generator")
+        self.emit(
+            MoltOp(
+                kind="ALLOC_TASK",
+                args=[poll_func, closure_size] + args,
+                result=gen_val,
+                metadata={"task_kind": "generator"},
+            )
+        )
+        if kind == "gen":
+            return gen_val
+        res = MoltValue(self.next_var(), type_hint="async_generator")
+        self.emit(MoltOp(kind="ASYNCGEN_NEW", args=[gen_val], result=res))
+        return res
 
     def _emit_dataclasses_field_call(
         self, module_name: str, node: ast.Call
@@ -2636,6 +2752,11 @@ class CallVisitorMixin(_MixinBase):
     def _local_name_shadows_import_binding(self, name: str) -> bool:
         if self.current_func_name == "molt_main":
             return False
+        if (
+            name in getattr(self, "local_imported_names", set())
+            or name in getattr(self, "local_imported_modules", set())
+        ):
+            return False
         if name in self.global_decls:
             return False
         return name in self.locals or name in self.boxed_locals
@@ -2658,11 +2779,9 @@ class CallVisitorMixin(_MixinBase):
             binding_name = node.func.value.id
             if self._local_name_shadows_import_binding(binding_name):
                 return None
-            if self.imported_modules.get(binding_name) != "importlib":
+            if self._imported_module_binding_target(binding_name) != "importlib":
                 return None
-            if not self._imported_module_attr_is_stable(
-                "importlib", "import_module"
-            ):
+            if not self._imported_module_attr_is_stable("importlib", "import_module"):
                 return None
         elif isinstance(node.func, ast.Name):
             binding_name = node.func.id
@@ -2676,18 +2795,12 @@ class CallVisitorMixin(_MixinBase):
             original_attr = self._imported_attr_name(binding_name)
             if original_attr != "import_module":
                 return None
-            if not self._imported_module_attr_is_stable(
-                "importlib", "import_module"
-            ):
+            if not self._imported_module_attr_is_stable("importlib", "import_module"):
                 return None
         else:
             return None
 
-        if module_name in self.known_modules:
-            return module_name
-        if self._should_attempt_runtime_module_import(module_name):
-            return module_name
-        return None
+        return module_name
 
     def _try_emit_importlib_import_module_literal_call(
         self, node: ast.Call
@@ -2695,7 +2808,24 @@ class CallVisitorMixin(_MixinBase):
         module_name = self._literal_importlib_import_module_target(node)
         if module_name is None:
             return None
-        return self._emit_importlib_import_module_transaction(module_name)
+        if (
+            module_name in self.known_modules
+            or self._should_attempt_runtime_module_import(module_name)
+        ):
+            return self._emit_importlib_import_module_leaf(module_name)
+        name_val = MoltValue(self.next_var(), type_hint="str")
+        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
+        package_val = MoltValue(self.next_var(), type_hint="None")
+        self.emit(MoltOp(kind="CONST_NONE", args=[], result=package_val))
+        res = MoltValue(self.next_var(), type_hint="module")
+        self.emit(
+            MoltOp(
+                kind="CALL",
+                args=["importlib__import_module", name_val, package_val],
+                result=res,
+            )
+        )
+        return res
 
     def visit_Call(self, node: ast.Call) -> Any:
         gpu_launch = self._lower_gpu_kernel_launch_call(node)
@@ -4470,7 +4600,9 @@ class CallVisitorMixin(_MixinBase):
                         )
                     )
                     return res
-            module_name = self.imported_modules.get(obj_name) if obj_name else None
+            module_name = (
+                self._imported_module_binding_target(obj_name) if obj_name else None
+            )
             if module_name is None:
                 callee = load_attr_callee()
                 # Dynamic attribute calls must use binder semantics so bound methods
@@ -4480,7 +4612,9 @@ class CallVisitorMixin(_MixinBase):
         if isinstance(node.func, ast.Attribute):
             module_name = None
             if isinstance(node.func.value, ast.Name):
-                module_name = self.imported_modules.get(node.func.value.id)
+                module_name = self._imported_module_binding_target(
+                    node.func.value.id
+                )
             if module_name:
                 func_id = node.func.attr
                 normalized = self._normalize_allowlist_module(module_name)
@@ -4504,6 +4638,14 @@ class CallVisitorMixin(_MixinBase):
                     )
                     if func_id[:1].isupper():
                         force_bind = True
+                    lowered_task_func = self._emit_known_module_task_func_call(
+                        allowlist_key,
+                        func_id,
+                        node,
+                        needs_bind=needs_bind or force_bind,
+                    )
+                    if lowered_task_func is not None:
+                        return lowered_task_func
                     if needs_bind or force_bind:
                         callee = self.visit(node.func)
                         if callee is None:
@@ -5548,7 +5690,9 @@ class CallVisitorMixin(_MixinBase):
                 res = MoltValue(self.next_var(), type_hint="Future")
                 self.emit(
                     MoltOp(
-                        kind="CALL_ASYNC", args=["molt_async_sleep", *args], result=res
+                        kind="CALL_ASYNC",
+                        args=["molt_async_sleep_poll", *args],
+                        result=res,
                     )
                 )
                 return res
@@ -6797,6 +6941,21 @@ class CallVisitorMixin(_MixinBase):
                             )
                         )
                         return res
+                    if imported_from:
+                        imported_info = self._lookup_func_defaults(
+                            imported_from, func_id
+                        )
+                        if imported_info is None or imported_info.get("kwonly"):
+                            callargs = self._emit_call_args_builder(node)
+                            res = MoltValue(self.next_var(), type_hint="Any")
+                            self.emit(
+                                MoltOp(
+                                    kind="CALL_BIND",
+                                    args=[callee, callargs],
+                                    result=res,
+                                )
+                            )
+                            return res
                     args = self._emit_call_args(node.args)
                     if imported_from:
                         args = self._apply_direct_call_defaults(
@@ -7166,7 +7325,7 @@ class CallVisitorMixin(_MixinBase):
                         target_name = target.id
                         iterable_val = self.visit(comp.iter)
                         iter_obj = self._emit_iter_new(iterable_val)
-                        # Initial result: False for any(), True for all()
+                        # Initial result: False for any(), True for all().
                         res = MoltValue(self.next_var(), type_hint="bool")
                         self.emit(
                             MoltOp(
@@ -7179,10 +7338,15 @@ class CallVisitorMixin(_MixinBase):
                         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
                         one = MoltValue(self.next_var(), type_hint="int")
                         self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                        # Wrap result in a mutable cell so the loop body can
-                        # update it and the value is visible after the loop.
-                        res_cell = MoltValue(self.next_var(), type_hint="list")
-                        self.emit(MoltOp(kind="LIST_NEW", args=[res], result=res_cell))
+                        res_slot = f"__molt_{func_id}_result_{self.next_var()}"
+                        self.emit(
+                            MoltOp(
+                                kind="STORE_VAR",
+                                args=[res],
+                                result=MoltValue("none"),
+                                metadata={"var": res_slot},
+                            )
+                        )
                         # Save/restore boxed cell for scoping.
                         cell = self._load_boxed_cell(target_name)
                         saved_cell_val: MoltValue | None = None
@@ -7304,9 +7468,10 @@ class CallVisitorMixin(_MixinBase):
                             )
                             self.emit(
                                 MoltOp(
-                                    kind="STORE_INDEX",
-                                    args=[res_cell, zero, true_val],
+                                    kind="STORE_VAR",
+                                    args=[true_val],
                                     result=MoltValue("none"),
+                                    metadata={"var": res_slot},
                                 )
                             )
                             self.emit(
@@ -7338,9 +7503,10 @@ class CallVisitorMixin(_MixinBase):
                             )
                             self.emit(
                                 MoltOp(
-                                    kind="STORE_INDEX",
-                                    args=[res_cell, zero, false_val],
+                                    kind="STORE_VAR",
+                                    args=[false_val],
                                     result=MoltValue("none"),
+                                    metadata={"var": res_slot},
                                 )
                             )
                             self.emit(
@@ -7389,13 +7555,14 @@ class CallVisitorMixin(_MixinBase):
                                     result=MoltValue("none"),
                                 )
                             )
-                        # Read result from the cell.
+                        # Read the loop-carried scalar result.
                         final_res = MoltValue(self.next_var(), type_hint="bool")
                         self.emit(
                             MoltOp(
-                                kind="INDEX",
-                                args=[res_cell, zero],
+                                kind="LOAD_VAR",
+                                args=[],
                                 result=final_res,
+                                metadata={"var": res_slot},
                             )
                         )
                         return final_res
@@ -7567,14 +7734,16 @@ class CallVisitorMixin(_MixinBase):
                         "multiple positional arguments"
                     )
                     return self._emit_type_error_value(msg)
-                callee = self._emit_builtin_function(func_id)
                 res = MoltValue(self.next_var(), type_hint="Any")
                 if node.keywords:
+                    callee = self._emit_builtin_function(func_id)
                     callargs = self._emit_call_args_builder(node)
                     self.emit(
                         MoltOp(kind="CALL_BIND", args=[callee, callargs], result=res)
                     )
                 else:
+                    runtime_name = BUILTIN_FUNC_SPECS[func_id].runtime
+                    callee = self._emit_runtime_function(runtime_name, 3)
                     arg_vals: list[MoltValue] = []
                     for expr in node.args:
                         arg_val = self.visit(expr)
@@ -8321,6 +8490,7 @@ class CallVisitorMixin(_MixinBase):
 
             if target_info is not None or imported_from is not None:
                 target_module = None
+                normalized = None
                 if imported_from == "molt":
                     if func_id in MOLT_DIRECT_CALLS.get("molt", set()):
                         target_module = MOLT_REEXPORT_FUNCTIONS.get(func_id)
@@ -8336,27 +8506,60 @@ class CallVisitorMixin(_MixinBase):
                         and func_id in MOLT_DIRECT_CALLS[imported_from]
                     ):
                         target_module = imported_from
-                if (
+                original_attr = self._imported_attr_name(func_id)
+                force_bind = original_attr[
+                    :1
+                ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
+                    target_module or "", set()
+                )
+                target_kind = (
+                    self._lookup_func_kind(target_module, original_attr)
+                    if target_module is not None
+                    else None
+                )
+                known_direct_target = (
+                    self._lookup_func_defaults(target_module, original_attr)
+                    if target_module is not None
+                    else None
+                )
+                has_known_direct_target = known_direct_target is not None
+                known_info_kind = self._known_module_func_kind(known_direct_target)
+                direct_target_is_linkable = (
                     target_module is not None
                     and self._is_linkable_module_function_symbol(target_module)
-                ):
-                    original_attr = self._imported_attr_name(func_id)
-                    target_kind = self._lookup_func_kind(target_module, original_attr)
-                    if target_kind not in {None, "sync"}:
-                        target_module = None
+                )
+                allow_speculative_internal_direct = (
+                    target_module is not None
+                    and not has_known_direct_target
+                    and target_kind in {None, "sync"}
+                    and imported_from not in self.stdlib_allowlist
+                    and (normalized is None or normalized not in self.stdlib_allowlist)
+                    and (
+                        self._is_internal_module(imported_from)
+                        or self._is_known_project_module(imported_from)
+                    )
+                    and not force_bind
+                )
                 if (
                     target_module is not None
-                    and self._is_linkable_module_function_symbol(target_module)
-                ):
-                    original_attr = self._imported_attr_name(func_id)
-                    if not self._imported_module_attr_is_stable(
+                    and direct_target_is_linkable
+                    and self._imported_module_attr_is_stable(
                         target_module, original_attr
-                    ):
-                        target_module = None
-                if (
-                    target_module is not None
-                    and self._is_linkable_module_function_symbol(target_module)
+                    )
+                    and (
+                        target_module in MOLT_DIRECT_CALLS
+                        or has_known_direct_target
+                        or allow_speculative_internal_direct
+                    )
                 ):
+                    lowered_task_func = self._emit_known_module_task_func_call(
+                        target_module,
+                        original_attr,
+                        node,
+                        needs_bind=needs_bind,
+                    )
+                    if lowered_task_func is not None:
+                        return lowered_task_func
                     if needs_bind:
                         callee = self.visit(node.func)
                         if callee is None:
@@ -8371,10 +8574,34 @@ class CallVisitorMixin(_MixinBase):
                             )
                         )
                         return res
-                    # Resolve alias -> original attr name for cross-module calls
-                    args = self._emit_direct_call_args(
-                        target_module, original_attr, node
-                    )
+                    if (
+                        target_kind not in {None, "sync"}
+                        or known_info_kind is not None
+                    ):
+                        callee = self.visit(node.func)
+                        if callee is None:
+                            raise NotImplementedError("Unsupported call target")
+                        res = MoltValue(self.next_var(), type_hint="Any")
+                        callargs = self._emit_call_args_builder(node)
+                        self.emit(
+                            MoltOp(
+                                kind="CALL_BIND",
+                                args=[callee, callargs],
+                                result=res,
+                            )
+                        )
+                        return res
+                    if (
+                        allow_speculative_internal_direct
+                        and not has_known_direct_target
+                    ):
+                        args = (
+                            None if node.keywords else self._emit_call_args(node.args)
+                        )
+                    else:
+                        args = self._emit_direct_call_args(
+                            target_module, original_attr, node
+                        )
                     if args is None:
                         callee = self.visit(node.func)
                         if callee is None:
@@ -8442,15 +8669,20 @@ class CallVisitorMixin(_MixinBase):
                 ].isupper() or original_attr in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
                     target_module, set()
                 )
-                has_known_direct_target = (
-                    self._lookup_func_defaults(target_module, original_attr) is not None
-                    and target_kind in {None, "sync"}
+                known_direct_target = self._lookup_func_defaults(
+                    target_module, original_attr
+                )
+                has_known_direct_target = known_direct_target is not None
+                known_info_kind = self._known_module_func_kind(known_direct_target)
+                has_known_task_target = (
+                    target_kind not in {None, "sync"} or known_info_kind is not None
                 )
                 direct_target_is_linkable = self._is_linkable_module_function_symbol(
                     target_module
                 )
                 allow_speculative_internal_direct = (
                     not has_known_direct_target
+                    and target_kind in {None, "sync"}
                     and imported_from not in self.stdlib_allowlist
                     and (normalized is None or normalized not in self.stdlib_allowlist)
                     and (
@@ -8466,11 +8698,45 @@ class CallVisitorMixin(_MixinBase):
                     and self._imported_module_attr_is_stable(
                         target_module, original_attr
                     )
-                    and (has_known_direct_target or allow_speculative_internal_direct)
-                ):
-                    args = self._emit_direct_call_args(
-                        target_module, original_attr, node
+                    and (
+                        has_known_direct_target
+                        or has_known_task_target
+                        or allow_speculative_internal_direct
                     )
+                ):
+                    lowered_task_func = self._emit_known_module_task_func_call(
+                        target_module,
+                        original_attr,
+                        node,
+                        needs_bind=False,
+                    )
+                    if lowered_task_func is not None:
+                        return lowered_task_func
+                    if has_known_task_target:
+                        callee = self.visit(node.func)
+                        if callee is None:
+                            raise NotImplementedError("Unsupported call target")
+                        res = MoltValue(self.next_var(), type_hint="Any")
+                        callargs = self._emit_call_args_builder(node)
+                        self.emit(
+                            MoltOp(
+                                kind="CALL_BIND",
+                                args=[callee, callargs],
+                                result=res,
+                            )
+                        )
+                        return res
+                    if (
+                        allow_speculative_internal_direct
+                        and not has_known_direct_target
+                    ):
+                        args = (
+                            None if node.keywords else self._emit_call_args(node.args)
+                        )
+                    else:
+                        args = self._emit_direct_call_args(
+                            target_module, original_attr, node
+                        )
                     if args is not None:
                         res = MoltValue(self.next_var(), type_hint="Any")
                         target_name = f"{self._sanitize_module_name(target_module)}__{original_attr}"

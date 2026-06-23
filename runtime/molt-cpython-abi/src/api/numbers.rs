@@ -2,16 +2,59 @@
 
 use crate::abi_types::{Py_False, Py_True, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
+use crate::hooks::hooks_or_stubs;
 use molt_lang_obj_model::MoltObject;
 use std::os::raw::{c_double, c_int, c_long, c_longlong, c_ulong, c_ulonglong};
+use std::ptr;
 
 // ─── PyLong ──────────────────────────────────────────────────────────────────
+
+fn py_long_from_i64(v: i64) -> *mut PyObject {
+    let bits = MoltObject::try_from_int(v)
+        .map(MoltObject::bits)
+        .unwrap_or_else(|| unsafe { (hooks_or_stubs().int_from_i64)(v) });
+    if bits == 0 {
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+}
+
+fn py_long_from_u64(v: u64) -> *mut PyObject {
+    let bits = MoltObject::try_from_uint(v)
+        .map(MoltObject::bits)
+        .unwrap_or_else(|| unsafe { (hooks_or_stubs().int_from_u64)(v) });
+    if bits == 0 {
+        return ptr::null_mut();
+    }
+    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+}
+
+fn py_long_as_i64(op: *mut PyObject) -> i64 {
+    if op.is_null() {
+        return -1;
+    }
+    let bridge = GLOBAL_BRIDGE.lock();
+    match bridge.pyobj_to_handle(op) {
+        Some(bits) => {
+            let obj = MoltObject::from_bits(bits);
+            if obj.is_int() {
+                obj.as_int().unwrap_or(-1)
+            } else if obj.is_bool() {
+                obj.as_bool().map(|b| if b { 1 } else { 0 }).unwrap_or(-1)
+            } else if obj.is_ptr() {
+                unsafe { (hooks_or_stubs().int_as_i64)(bits) }
+            } else {
+                -1
+            }
+        }
+        None => -1,
+    }
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromLong(v: c_long) -> *mut PyObject {
     #[allow(clippy::unnecessary_cast)]
-    let bits = MoltObject::from_int(v as i64).bits();
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    py_long_from_i64(v as i64)
 }
 
 #[unsafe(no_mangle)]
@@ -22,54 +65,42 @@ pub unsafe extern "C" fn PyLong_FromSsize_t(v: isize) -> *mut PyObject {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromLongLong(v: c_longlong) -> *mut PyObject {
     #[allow(clippy::unnecessary_cast)]
-    let bits = MoltObject::from_int(v as i64).bits();
-    unsafe { GLOBAL_BRIDGE.lock().handle_to_pyobj(bits) }
+    py_long_from_i64(v as i64)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromUnsignedLong(v: c_ulong) -> *mut PyObject {
-    unsafe { PyLong_FromLongLong(v as c_longlong) }
+    #[allow(clippy::unnecessary_cast)]
+    py_long_from_u64(v as u64)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromUnsignedLongLong(v: c_ulonglong) -> *mut PyObject {
-    unsafe { PyLong_FromLongLong(v as c_longlong) }
+    #[allow(clippy::unnecessary_cast)]
+    py_long_from_u64(v as u64)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLong(op: *mut PyObject) -> c_long {
-    if op.is_null() {
-        return -1;
-    }
-    let bridge = GLOBAL_BRIDGE.lock();
-    match bridge.pyobj_to_handle(op) {
-        Some(bits) => {
-            let obj = MoltObject::from_bits(bits);
-            if obj.is_int() {
-                obj.as_int().unwrap_or(-1) as c_long
-            } else if obj.is_bool() {
-                obj.as_bool().map(|b| b as c_long).unwrap_or(-1)
-            } else {
-                -1
-            }
-        }
-        None => -1,
-    }
+    py_long_as_i64(op) as c_long
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsSsize_t(op: *mut PyObject) -> isize {
-    unsafe { PyLong_AsLong(op) as isize }
+    py_long_as_i64(op) as isize
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLongLong(op: *mut PyObject) -> c_longlong {
-    unsafe { PyLong_AsLong(op) as c_longlong }
+    #[allow(clippy::unnecessary_cast)]
+    {
+        py_long_as_i64(op) as c_longlong
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsUnsignedLong(op: *mut PyObject) -> c_ulong {
-    unsafe { PyLong_AsLong(op) as c_ulong }
+    py_long_as_i64(op) as c_ulong
 }
 
 // ─── PyFloat ─────────────────────────────────────────────────────────────────

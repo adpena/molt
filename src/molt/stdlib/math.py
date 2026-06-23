@@ -1,4 +1,4 @@
-# Shim churn audit: 42 intrinsic-direct / 52 total exports
+# Shim churn audit: 41 intrinsic-direct / 52 total exports
 """Minimal math shim for Molt.
 
 Pure-forwarding shims eliminated per MOL-215. Functions that require Python-level
@@ -53,7 +53,6 @@ ldexp = _require_intrinsic("molt_math_ldexp")
 fsum = _require_intrinsic("molt_math_fsum")
 factorial = _require_intrinsic("molt_math_factorial")
 comb = _require_intrinsic("molt_math_comb")
-perm = _require_intrinsic("molt_math_perm")
 degrees = _require_intrinsic("molt_math_degrees")
 radians = _require_intrinsic("molt_math_radians")
 dist = _require_intrinsic("molt_math_dist")
@@ -71,6 +70,7 @@ _MOLT_MATH_PROD = _require_intrinsic("molt_math_prod")
 _MOLT_MATH_GCD = _require_intrinsic("molt_math_gcd")
 _MOLT_MATH_LCM = _require_intrinsic("molt_math_lcm")
 _MOLT_MATH_HYPOT = _require_intrinsic("molt_math_hypot")
+_MOLT_MATH_PERM = _require_intrinsic("molt_math_perm")
 
 _MOLT_MATH_MISSING = object()
 _MOLT_HAS_FMA = sys.platform != "darwin"
@@ -178,6 +178,10 @@ def isclose(
 
 def prod(iterable, /, *, start: object = 1) -> object:
     return _MOLT_MATH_PROD(iterable, start)
+
+
+def perm(n: object, k: object = None, /) -> int:
+    return _MOLT_MATH_PERM(n, k)
 
 
 def gcd(*integers: object) -> int:

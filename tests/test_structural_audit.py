@@ -42,6 +42,7 @@ SA = _load_tool()
 
 # --- 1. the ratchet gate --------------------------------------------------
 
+
 def test_baseline_exists():
     assert BASELINE.is_file(), (
         "no structural_audit_baseline.json — run "
@@ -68,6 +69,7 @@ def test_structural_debt_does_not_exceed_baseline():
 
 # --- 2. robustness of the scanning helpers --------------------------------
 
+
 def test_failloud_default_is_not_flagged():
     """A dispatch switchboard with a fail-loud default is the CORRECT pattern
     and must NOT be reported as drift."""
@@ -77,7 +79,7 @@ def test_failloud_default_is_not_flagged():
         "        OpCode::Add => emit_add(),\n"
         "        OpCode::Sub => emit_sub(),\n"
         "        OpCode::Mul => emit_mul(),\n"
-        "        _ => panic!(\"unsupported opcode {:?}\", op.opcode),\n"
+        '        _ => panic!("unsupported opcode {:?}", op.opcode),\n'
         "    }\n"
         "}\n"
     )
@@ -144,7 +146,7 @@ def test_enum_variant_extraction_handles_payloads():
         "    Call(String),\n"
         "    Phi { block: usize, args: Vec<u32> },\n"
         "    Const = 7,\n"
-        "    #[doc = \"x\"]\n"
+        '    #[doc = "x"]\n'
         "    Last,\n"
         "}\n"
     )
@@ -163,7 +165,8 @@ def _scan_rust_string(rust: str, rel: str) -> list:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(rust)
         return [
-            f for f in SA.probe_semantic_fallthroughs(root)
+            f
+            for f in SA.probe_semantic_fallthroughs(root)
             if f.title.startswith("hand-classified")
         ]
 
