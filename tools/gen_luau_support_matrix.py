@@ -49,9 +49,11 @@ TARGET_LIMITED_OPS = {
     "dataclass_get": "Modeled as Luau field/index access for the admitted subset.",
     "dataclass_set": "Modeled as Luau field assignment for the admitted subset.",
     "dataclass_set_class": "Modeled as Luau field assignment for the admitted subset.",
+    "getargv": "Luau has no process argv surface; materializes an empty argv list.",
     "id": "Uses string identity representation, not CPython object address identity.",
     "dict_popitem": "Luau table iteration order is not CPython insertion order.",
     "set_pop": "Luau table iteration order is not CPython set pop order.",
+    "sys_executable": "Luau has no executable path surface; materializes an empty string.",
 }
 
 CAPABILITY_OPS = {
