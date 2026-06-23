@@ -558,7 +558,9 @@ def default_codex_stall_report_path(repo_root: Path) -> Path:
     return repo_root / CODEX_STALL_ROOT / f"stall_{artifact_stamp()}_{os.getpid()}.json"
 
 
-def command_descriptor(command: Sequence[str], *, record_command: bool) -> dict[str, Any]:
+def command_descriptor(
+    command: Sequence[str], *, record_command: bool
+) -> dict[str, Any]:
     joined = "\0".join(command).encode("utf-8", errors="surrogateescape")
     descriptor: dict[str, Any] = {
         "argv_count": len(command),
@@ -571,7 +573,9 @@ def command_descriptor(command: Sequence[str], *, record_command: bool) -> dict[
     return descriptor
 
 
-def codex_stall_launch_command(args: argparse.Namespace, command: Sequence[str]) -> list[str]:
+def codex_stall_launch_command(
+    args: argparse.Namespace, command: Sequence[str]
+) -> list[str]:
     if args.no_memory_guard:
         return list(command)
     memory_guard = args.repo_root.resolve() / "tools" / "memory_guard.py"
@@ -579,9 +583,7 @@ def codex_stall_launch_command(args: argparse.Namespace, command: Sequence[str])
     if args.memory_guard_max_rss_gb is not None:
         wrapped.extend(["--max-rss-gb", str(args.memory_guard_max_rss_gb)])
     if args.memory_guard_max_total_rss_gb is not None:
-        wrapped.extend(
-            ["--max-total-rss-gb", str(args.memory_guard_max_total_rss_gb)]
-        )
+        wrapped.extend(["--max-total-rss-gb", str(args.memory_guard_max_total_rss_gb)])
     if args.memory_guard_child_rlimit_gb is not None:
         wrapped.extend(["--child-rlimit-gb", str(args.memory_guard_child_rlimit_gb)])
     if args.memory_guard_timeout_sec is not None:
