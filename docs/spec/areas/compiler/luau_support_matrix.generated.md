@@ -6,8 +6,8 @@
 
 ## Summary
 
-- `compile-error`: `7`
-- `implemented-exact`: `360`
+- `compile-error`: `4`
+- `implemented-exact`: `363`
 - `implemented-target-limited`: `20`
 - `not-admitted`: `24`
 - `runtime-capability-error`: `5`
@@ -51,9 +51,9 @@
 | `bool_const` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `bound_method_new` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `box_from_raw_int` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `br_if` | `compile-error` | Checked Luau emission rejects unsupported markers. |
-| `branch` | `compile-error` | Checked Luau emission rejects unsupported markers. |
-| `branch_false` | `compile-error` | Checked Luau emission rejects unsupported markers. |
+| `br_if` | `implemented-exact` | Valid labeled conditional branch lowers to Luau goto; missing target labels fail closed. |
+| `branch` | `implemented-exact` | Valid labeled conditional branch lowers to Luau goto; missing target labels fail closed. |
+| `branch_false` | `implemented-exact` | Valid labeled false-branch lowers to Luau goto; missing target labels fail closed. |
 | `bridge_unavailable` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `build_dict` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `build_list` | `implemented-exact` | Lowered without checked-output stub markers. |

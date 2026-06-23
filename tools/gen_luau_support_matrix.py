@@ -62,6 +62,12 @@ CAPABILITY_OPS = {
     "file_flush",
 }
 
+IMPLEMENTED_WITH_MALFORMED_IR_ERRORS = {
+    "br_if": "Valid labeled conditional branch lowers to Luau goto; missing target labels fail closed.",
+    "branch": "Valid labeled conditional branch lowers to Luau goto; missing target labels fail closed.",
+    "branch_false": "Valid labeled false-branch lowers to Luau goto; missing target labels fail closed.",
+}
+
 
 @dataclass(frozen=True)
 class Row:
@@ -126,6 +132,8 @@ def _iter_arms(match_text: str) -> list[tuple[list[str], str]]:
 
 
 def _classify(op: str, body: str) -> Row:
+    if op in IMPLEMENTED_WITH_MALFORMED_IR_ERRORS and "missing target label" in body:
+        return Row(op, "implemented-exact", IMPLEMENTED_WITH_MALFORMED_IR_ERRORS[op])
     if "-- [unsupported op:" in body or 'error(\\"[unsupported op:' in body:
         return Row(
             op, "compile-error", "Checked Luau emission rejects unsupported markers."
