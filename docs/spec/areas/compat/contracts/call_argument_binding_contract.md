@@ -2,7 +2,7 @@
 
 **Spec ID:** 0016
 **Status:** Draft
-**Last updated:** 2026-01-07
+**Last updated:** 2026-06-23
 **Audience:** compiler engineers, runtime engineers
 **Goal:** Add Python-compatible call argument binding (positional, keyword, varargs, varkw) while preserving Molt Tier 0 performance via specialization and allocation-free fast paths.
 
@@ -30,6 +30,8 @@ This spec defines:
   - Star expansion: `f(*xs)` and mixtures like `f(1, *xs, 2)`
   - Double-star expansion: `f(**m)` and mixtures like `f(a=1, **m)`
   - Combined: `f(*xs, **m, a=1)` (preserve left-to-right evaluation)
+  - Ordinary class calls: `T(...)`, including `__new__`/`__init__` routing
+    through `type.__call__`
 - Function signatures:
   - Positional-or-keyword params, defaults
   - Keyword-only params
@@ -106,6 +108,30 @@ Side effects from argument expressions must occur before binding errors are rais
 - If the callee signature includes `*args`, it receives a tuple of **extra** positional args (those not bound to named positional params).
 - If the callee signature includes `**kwargs`, it receives a dict of **extra** keyword args (those not bound to named params).
 - If `*args` / `**kwargs` are absent from the signature, passing extra positional / keyword args is an error.
+
+### 4.6 Ordinary class constructor routing
+
+Ordinary class calls use runtime `type.__call__` as the semantic authority
+unless closed-world class analysis proves the MRO resolves `__new__` to default
+`object.__new__`.
+
+Required behavior:
+- Custom, inherited, builtin, dynamic, or otherwise opaque `__new__`
+  resolution must stay on the runtime class-call path. The frontend must not
+  lower those calls to static `object_new_bound` allocation or inlined
+  `__init__` construction.
+- Default `object.__new__` plus default `object.__init__` rejects user
+  constructor arguments.
+- Custom `__new__` plus default `object.__init__` skips `__init__`.
+- Custom `__init__` receives the original constructor arguments even when
+  `__new__` is custom.
+- If `__new__` returns an object that is not an instance of the called class,
+  `__init__` is not run.
+
+The static constructor-allocation fold is a Tier 0 optimization, not a
+semantic fallback. Its eligibility predicate must be one-way conservative: when
+class analysis cannot prove default `object.__new__`, lower through the same
+runtime class-call/binder machinery as dynamic calls.
 
 ---
 
