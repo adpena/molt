@@ -3872,10 +3872,29 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = \"\""));
                 }
             }
-            "getframe" | "bridge_unavailable" => {
+            "getframe" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
+                }
+            }
+            "bridge_unavailable" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                let msg = args
+                    .first()
+                    .map(|arg| {
+                        format!(
+                            "\"Molt bridge unavailable: \" .. tostring({})",
+                            sanitize_ident(arg)
+                        )
+                    })
+                    .unwrap_or_else(|| "\"Molt bridge unavailable\"".to_string());
+                let diagnostic = format!("{{__type=\"RuntimeError\", __msg={msg}}}");
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out}: any = error({diagnostic})"));
+                } else {
+                    self.emit_line(&format!("error({diagnostic})"));
                 }
             }
             "super_new" => {
@@ -11257,6 +11276,50 @@ mod tests {
         assert!(
             err.contains("semantic stub marker"),
             "error should mention semantic stub marker, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_bridge_unavailable_to_runtime_error() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "bridge_unavailable_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("message".to_string()),
+                        s_value: Some("dynamic bridge disabled".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "bridge_unavailable".to_string(),
+                        out: Some("v0".to_string()),
+                        args: Some(vec!["message".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("bridge_unavailable must lower to a checked runtime error");
+        assert!(
+            source.contains("local v0: any = error({__type=\"RuntimeError\""),
+            "bridge_unavailable should be a terminal RuntimeError expression, got:\n{source}"
+        );
+        assert!(
+            source.contains("Molt bridge unavailable: "),
+            "diagnostic should match runtime bridge-unavailable prefix, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[bridge_unavailable]"),
+            "bridge_unavailable must not leave a semantic stub marker, got:\n{source}"
         );
     }
 
