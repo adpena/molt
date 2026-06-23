@@ -93,7 +93,7 @@ _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
 # terminator (nothing frees a terminator operand internally), so it is excluded.
 _TERMINATOR_OWNERSHIP_LEAVES = {"borrowed", "transferred", "none"}
 _RESULT_VALIDITY_VALUES = {"conditional_valid_only_on_edge"}
-_CANONICALIZE_LITERAL_KINDS = {"int": "Int", "bool": "Bool"}
+_LITERAL_PAYLOAD_KINDS = {"int": "Int", "bool": "Bool"}
 _CANONICALIZE_COMMUTATIVE_DOMAINS = {"numeric", "i64", "unboxed_scalar"}
 _CANONICALIZE_BINARY_PREDICATES = {
     "lhs_int": "int",
@@ -275,6 +275,7 @@ def load_table() -> dict:
         if len(set(members)) != len(members):
             raise OpKindTableError(f"{key} has duplicate members")
 
+    _validate_literal_payload_facts(data, seen_opcodes)
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
@@ -338,6 +339,32 @@ def load_table() -> dict:
     return data
 
 
+def _validate_literal_payload_facts(data: dict, opcodes: set[str]) -> None:
+    rows = data.get("literal_payload_opcodes", [])
+    if not isinstance(rows, list) or not rows:
+        raise OpKindTableError("literal_payload_opcodes must be a non-empty array of tables")
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError("literal_payload_opcodes rows must be inline tables")
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"literal_payload_opcodes row missing opcode: {row}")
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"literal_payload_opcodes opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate literal_payload_opcodes opcode: {opcode}")
+        seen.add(opcode)
+        literal = row.get("literal")
+        if literal not in _LITERAL_PAYLOAD_KINDS:
+            raise OpKindTableError(
+                f"literal_payload_opcodes {opcode}: literal must be one of "
+                f"{sorted(_LITERAL_PAYLOAD_KINDS)}, got {literal!r}"
+            )
+
+
 def _validate_operand_ownership(name: str, value: object) -> None:
     """Validate one opcode's ``operand_ownership`` (fail-loud).
 
@@ -391,32 +418,6 @@ def _validate_canonicalize_facts(data: dict, opcodes: set[str]) -> None:
     be explicit, duplicate-free, and opcode-backed so a typo cannot silently
     disable an algebraic rewrite or make a comparison swap one-way.
     """
-    literal_rows = data.get("canonicalize_literal_opcodes", [])
-    if not isinstance(literal_rows, list) or not literal_rows:
-        raise OpKindTableError(
-            "canonicalize_literal_opcodes must be a non-empty array of tables"
-        )
-    seen_literals: set[str] = set()
-    for row in literal_rows:
-        if not isinstance(row, dict):
-            raise OpKindTableError("canonicalize_literal_opcodes rows must be inline tables")
-        opcode = row.get("opcode")
-        if not isinstance(opcode, str) or not opcode:
-            raise OpKindTableError(f"canonicalize_literal_opcodes row missing opcode: {row}")
-        if opcode not in opcodes:
-            raise OpKindTableError(
-                f"canonicalize_literal_opcodes opcode {opcode!r} is not a known OpCode"
-            )
-        if opcode in seen_literals:
-            raise OpKindTableError(f"duplicate canonicalize_literal_opcodes opcode: {opcode}")
-        seen_literals.add(opcode)
-        literal = row.get("literal")
-        if literal not in _CANONICALIZE_LITERAL_KINDS:
-            raise OpKindTableError(
-                f"canonicalize_literal_opcodes {opcode}: literal must be one of "
-                f"{sorted(_CANONICALIZE_LITERAL_KINDS)}, got {literal!r}"
-            )
-
     reorder_rows = data.get("canonicalize_commutative_reorder", [])
     if not isinstance(reorder_rows, list) or not reorder_rows:
         raise OpKindTableError(
@@ -1295,32 +1296,24 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_alias_slot_observation(opcodes, data))
     out.append("\n")
 
-    # -- canonicalize facts: exhaustive over OpCode -------------------------
+    # -- literal payload facts: exhaustive over OpCode ----------------------
     literal_kinds = {
         row["opcode"]: row["literal"]
-        for row in data.get("canonicalize_literal_opcodes", [])
-    }
-    commutative_domains = {
-        row["opcode"]: row["domain"]
-        for row in data.get("canonicalize_commutative_reorder", [])
-    }
-    swapped_comparisons = {
-        row["opcode"]: row["swapped"]
-        for row in data.get("canonicalize_swapped_comparison", [])
+        for row in data.get("literal_payload_opcodes", [])
     }
     out.append(
-        "/// Literal payload kind canonicalize.rs may record for an opcode.\n"
+        "/// Literal payload kind consumers may record for an opcode.\n"
         "#[derive(Clone, Copy, PartialEq, Eq)]\n"
-        "pub(crate) enum CanonicalizeLiteralKind {\n"
+        "pub(crate) enum LiteralPayloadKind {\n"
         "    Int,\n"
         "    Bool,\n"
         "}\n\n"
-        "/// Canonicalize literal payload classifier. EXHAUSTIVE over OpCode;\n"
-        "/// non-literal opcodes map to None instead of a pass-local wildcard.\n"
+        "/// Literal payload classifier. EXHAUSTIVE over OpCode; non-literal\n"
+        "/// opcodes map to None instead of pass-local wildcards.\n"
         "#[inline]\n"
-        "pub(crate) fn opcode_canonicalize_literal_kind_table(\n"
+        "pub(crate) fn opcode_literal_payload_kind_table(\n"
         "    opcode: OpCode,\n"
-        ") -> Option<CanonicalizeLiteralKind> {\n"
+        ") -> Option<LiteralPayloadKind> {\n"
         "    match opcode {\n"
     )
     for row in opcodes:
@@ -1329,12 +1322,19 @@ def _render_rs_unformatted(data: dict) -> str:
         if literal is None:
             out.append(f"        OpCode::{opcode} => None,\n")
         else:
-            variant = _CANONICALIZE_LITERAL_KINDS[literal]
-            out.append(
-                f"        OpCode::{opcode} => Some(CanonicalizeLiteralKind::{variant}),\n"
-            )
+            variant = _LITERAL_PAYLOAD_KINDS[literal]
+            out.append(f"        OpCode::{opcode} => Some(LiteralPayloadKind::{variant}),\n")
     out.append("    }\n}\n\n")
 
+    # -- canonicalize facts: exhaustive over OpCode -------------------------
+    commutative_domains = {
+        row["opcode"]: row["domain"]
+        for row in data.get("canonicalize_commutative_reorder", [])
+    }
+    swapped_comparisons = {
+        row["opcode"]: row["swapped"]
+        for row in data.get("canonicalize_swapped_comparison", [])
+    }
     out.append(
         "/// Type domain required before canonicalize.rs may reorder a commutative\n"
         "/// opcode. The domain belongs in the generated opcode oracle; the\n"

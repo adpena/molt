@@ -35,7 +35,10 @@ use super::effects::op_may_throw;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::opcode_requires_i64_zero_divisor_guard_table;
+use crate::tir::op_kinds_generated::{
+    LiteralPayloadKind, opcode_literal_payload_kind_table,
+    opcode_requires_i64_zero_divisor_guard_table,
+};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -135,17 +138,17 @@ fn const_int_values(func: &TirFunction) -> HashMap<ValueId, i64> {
     let mut values = HashMap::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            let value = match op.opcode {
-                OpCode::ConstInt => match op.attrs.get("value") {
+            let value = match opcode_literal_payload_kind_table(op.opcode) {
+                Some(LiteralPayloadKind::Int) => match op.attrs.get("value") {
                     Some(AttrValue::Int(value)) => Some(*value),
                     _ => None,
                 },
-                OpCode::ConstBool => match op.attrs.get("value") {
+                Some(LiteralPayloadKind::Bool) => match op.attrs.get("value") {
                     Some(AttrValue::Bool(value)) => Some(i64::from(*value)),
                     Some(AttrValue::Int(value)) => Some(i64::from(*value != 0)),
                     _ => None,
                 },
-                _ => None,
+                None => None,
             };
             if let Some(value) = value {
                 for result in &op.results {

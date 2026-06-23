@@ -1836,19 +1836,17 @@ pub(crate) fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotOb
     }
 }
 
-/// Literal payload kind canonicalize.rs may record for an opcode.
+/// Literal payload kind consumers may record for an opcode.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CanonicalizeLiteralKind {
+pub(crate) enum LiteralPayloadKind {
     Int,
     Bool,
 }
 
-/// Canonicalize literal payload classifier. EXHAUSTIVE over OpCode;
-/// non-literal opcodes map to None instead of a pass-local wildcard.
+/// Literal payload classifier. EXHAUSTIVE over OpCode; non-literal
+/// opcodes map to None instead of pass-local wildcards.
 #[inline]
-pub(crate) fn opcode_canonicalize_literal_kind_table(
-    opcode: OpCode,
-) -> Option<CanonicalizeLiteralKind> {
+pub(crate) fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloadKind> {
     match opcode {
         OpCode::Add => None,
         OpCode::Sub => None,
@@ -1932,11 +1930,11 @@ pub(crate) fn opcode_canonicalize_literal_kind_table(
         OpCode::TryEnd => None,
         OpCode::StateBlockStart => None,
         OpCode::StateBlockEnd => None,
-        OpCode::ConstInt => Some(CanonicalizeLiteralKind::Int),
+        OpCode::ConstInt => Some(LiteralPayloadKind::Int),
         OpCode::ConstBigInt => None,
         OpCode::ConstFloat => None,
         OpCode::ConstStr => None,
-        OpCode::ConstBool => Some(CanonicalizeLiteralKind::Bool),
+        OpCode::ConstBool => Some(LiteralPayloadKind::Bool),
         OpCode::ConstNone => None,
         OpCode::ConstBytes => None,
         OpCode::Copy => None,
