@@ -64,6 +64,12 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
                 };
                 self.emit_line(mapped);
             }
+            "isinstance" => {
+                self.emit_line("local out = molt_isinstance(obj, cls)");
+            }
+            "issubclass" => {
+                self.emit_line("local out = molt_issubclass(sub, cls)");
+            }
             kind if kind.starts_with("vec_sum_")
                 || kind.starts_with("vec_prod_") =>
             {
@@ -97,6 +103,8 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["class_merge_layout"].status == "implemented-target-limited"
     assert rows["call_internal"].status == "implemented-exact"
     assert "molt_abs_builtin" not in rows
+    assert rows["isinstance"].status == "implemented-target-limited"
+    assert rows["issubclass"].status == "implemented-target-limited"
     assert rows["vec_sum_*"].status == "implemented-exact"
     assert rows["vec_prod_*"].status == "implemented-exact"
     assert rows["is"].status == "implemented-target-limited"
