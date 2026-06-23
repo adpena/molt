@@ -27,6 +27,22 @@ def _load_diff_module():
     return module
 
 
+def test_diff_capabilities_prefers_explicit_diff_override_then_test_contract() -> None:
+    module = _load_diff_module()
+
+    assert module._diff_capabilities({}) == "fs,env,time,random"
+    assert module._diff_capabilities({"MOLT_CAPABILITIES": "process.exec"}) == (
+        "process.exec"
+    )
+    assert module._diff_capabilities({"MOLT_CAPABILITIES": ""}) == ""
+    assert module._diff_capabilities(
+        {
+            "MOLT_CAPABILITIES": "process.exec",
+            "MOLT_DIFF_CAPABILITIES": "fs,env,time,random",
+        }
+    ) == "fs,env,time,random"
+
+
 def test_expected_failure_status_maps_fail_to_xfail_pass() -> None:
     module = _load_diff_module()
     status, reason = module._resolve_expected_failure_status(

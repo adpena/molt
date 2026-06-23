@@ -1632,6 +1632,7 @@ tests/differential/stdlib/os_read_write_basic.py
 tests/differential/stdlib/os_read_write_errors.py
 tests/differential/stdlib/os_stat_rename_replace_intrinsic.py
 tests/differential/stdlib/os_supports_dir_fd.py
+tests/differential/stdlib/os_system_shell.py
 tests/differential/stdlib/os_urandom_basic.py
 tests/differential/stdlib/os_utime_ns_only.py
 tests/differential/stdlib/os_walk_scandir.py
