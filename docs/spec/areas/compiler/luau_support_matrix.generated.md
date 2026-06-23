@@ -8,8 +8,8 @@
 
 - `compile-error`: `1`
 - `implemented-exact`: `367`
-- `implemented-target-limited`: `20`
-- `not-admitted`: `23`
+- `implemented-target-limited`: `22`
+- `not-admitted`: `21`
 - `runtime-capability-error`: `5`
 - `total`: `416`
 
@@ -169,7 +169,7 @@
 | `get_attr_name` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `get_attr_name_default` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `get_item` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `getargv` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `getargv` | `implemented-target-limited` | Luau has no process argv surface; materializes an empty argv list. |
 | `getframe` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
 | `goto` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `gt` | `implemented-exact` | Lowered without checked-output stub markers. |
@@ -418,7 +418,7 @@
 | `sum` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `super_new` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `sys` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `sys_executable` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `sys_executable` | `implemented-target-limited` | Luau has no executable path surface; materializes an empty string. |
 | `taq_ingest_line` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `time` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `trunc` | `implemented-exact` | Lowered without checked-output stub markers. |

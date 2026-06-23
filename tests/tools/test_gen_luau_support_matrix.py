@@ -43,6 +43,9 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
                 // Python non-None identity maps to equality in Luau.
                 self.emit_line("local out = (a == b)");
             }
+            "getargv" => {
+                self.emit_line("local out = {}");
+            }
         }
     }
     """
@@ -57,6 +60,7 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["br_if"].status == "implemented-exact"
     assert "missing target labels fail closed" in rows["br_if"].note
     assert rows["is"].status == "implemented-target-limited"
+    assert rows["getargv"].status == "implemented-target-limited"
 
 
 def test_check_mode_detects_stale_generated_output(tmp_path: Path) -> None:
