@@ -4180,12 +4180,18 @@ impl LuauBackend {
             | "asyncgen_locals_register"
             | "gen_locals_register"
             | "function_closure_bits"
-            | "trace_enter_slot"
-            | "trace_exit"
             | "frame_locals_set" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [internal: {}]", op.kind));
+                }
+            }
+            "trace_enter_slot" | "trace_exit" => {
+                if let Some(ref out_name) = op.out
+                    && out_name != "none"
+                {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil"));
                 }
             }
 
@@ -10984,6 +10990,58 @@ mod tests {
         assert!(!source.contains("-- [getargv]"));
         assert!(!source.contains("-- [sys_executable]"));
         assert!(!source.contains("-- [getframe]"));
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_trace_markers_as_luau_noops() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "trace_marker_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "trace_enter_slot".to_string(),
+                        value: Some(7),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "trace_exit".to_string(),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("ok".to_string()),
+                        value: Some(1),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["ok".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("trace markers should lower as Luau no-ops");
+
+        assert!(
+            source.contains("trace_marker_test"),
+            "compiled trace marker function should be emitted, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[internal: trace_enter_slot]")
+                && !source.contains("[internal: trace_exit]")
+                && !source.contains("[unsupported op: trace_enter_slot]")
+                && !source.contains("[unsupported op: trace_exit]"),
+            "trace markers must not leave semantic stub markers, got:\n{source}"
+        );
     }
 
     #[test]
