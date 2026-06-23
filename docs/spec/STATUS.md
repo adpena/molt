@@ -218,9 +218,15 @@ the implementation. For forward-looking priorities, use
 - Luau is a checked source-emission target for the current/future Luau surface;
   current OpIR support is generated in
   `docs/spec/areas/compiler/luau_support_matrix.generated.md`.
-- Backend-facing native and WASM lowering always runs through the TIR pipeline;
-  the old environment-variable opt-out has been removed so SimpleIR transport
-  metadata cannot bypass typed-IR validation.
+- Luau source emission now participates in the shared TIR module phase. The
+  backend lifts the source-emission `SimpleIR` once to a `TirModule`, runs every
+  local function through the per-function TIR pipeline, then runs
+  `run_module_pipeline` (E1 inliner, generator fusion, module-slot promotion,
+  terminal DropInsertion) before fail-closed back-conversion. Guarded evidence:
+  `luau_tir_module_pipeline_inlines_direct_local_calls`.
+- Native, WASM, LLVM, and Luau backend-facing lowering now run through the TIR
+  pipeline; the old environment-variable opt-out has been removed so SimpleIR
+  transport metadata cannot bypass typed-IR validation.
 - Frontend midend fixed-point verification fails closed: non-convergence and
   post-convergence idempotence drift record policy diagnostics and raise instead
   of accepting the last verified round or probe output behind an env-controlled

@@ -53,7 +53,7 @@ The substrate and correctness foundation is largely built. Completed arcs:
 |-----|--------|-------------|
 | E1 inliner core (phases a/b) | `f14b196ce` (hardened `951938075`) | `tir/passes/inliner.rs`: clone/remap/splice/is_inlineable; refcount arg-IncRef guard; SSA verify; all-4-loop-metadata transfer |
 | E1 phase-c (obs-only EH inlining) | `6d9962a98` | Inlines observation-only callees; `has_exception_handlers()` handler⟂observation split; fresh exception-label remap |
-| **E1 ACTIVATION (native+WASM)** | `7512919fa` | **Routed native+WASM codegen through the `run_module_pipeline`-inlined `TirModule`; DELETED `passes::inline_functions` + the dead needs_inlining gate.** The inliner is no longer dormant on those two targets (see §2 for the LLVM/Luau gap) |
+| **E1 ACTIVATION (native+WASM)** | `7512919fa` | **Routed native+WASM codegen through the `run_module_pipeline`-inlined `TirModule`; DELETED `passes::inline_functions` + the dead needs_inlining gate.** Later work also routed LLVM and Luau through the same module-phase authority (see section 4.2 for remaining proof gaps) |
 | module_slot_promotion | `b9188ab1c` | mem2reg of module-dict slots across loops — the bench_sum 16× fix (design 10) |
 | dispatch-IC (fused method/super) | `798f9b136` | Allocation-free fused method/super dispatch — class_hierarchy 7× |
 | CheckedAdd primitive (peel phase A) | `c2a373a3a` | `OpCode::CheckedAdd` exact signed-overflow add, all 4 backends |
@@ -174,10 +174,10 @@ TIER 1 (correctness — open)
 TIER 2 (engine)
   E1-e  inliner activation
     native + WASM                  DONE  7512919fa
-    LLVM                           OUTSTANDING  (LLVM never calls run_module_pipeline)
-    Luau                           OUTSTANDING  (doc 14 Gap 1: module phase entirely absent)
+    LLVM                           DONE          (direct TIR module pipeline)
+    Luau                           DONE          (source target runs TIR module pipeline)
   E3  IP escape + purity summaries OUTSTANDING  (design 03/12; requires S4 DONE)
-  E4  IPSCCP                       OUTSTANDING  (requires S4, E1-e LLVM/Luau for full IPO)
+  E4  IPSCCP                       OUTSTANDING  (requires S4 plus all-target module-phase proof for full IPO)
   E5  monomorphization (Julia axis) OUTSTANDING (design 03; requires S4, E1 clone infra)
   S5-ph2c cross-block DSE          OUTSTANDING  (design 02; MemorySSA DONE)
   S5-ph2e LICM-of-loads            OUTSTANDING  (design 02; MemorySSA DONE)
@@ -203,7 +203,7 @@ TIER 6 (verification)
 PARITY arcs (cross-cutting)
   Luau CheckedAdd lowering         OUTSTANDING  (design 15; portable helper, Luau f64 model)
   asyncio-wasm event loop          OUTSTANDING  (design 18; WASI poll_oneoff, 4 blockers)
-  Luau module-phase parity         OUTSTANDING  (design 14 Gap 1)
+  Luau module-phase parity         DONE          (E1/module-slot/drop authority active)
   CPython surface / stdlib / GPU   ongoing      (design 16)
   ecosystem / third-party compat   ongoing      (design 17)
 ```
@@ -246,23 +246,19 @@ the touched path.
 
 ### 4.2 Perf keystone
 
-**E1-e LLVM + Luau activation is the pending perf keystone.** Native and WASM
-already route codegen through the inlined `TirModule` (`7512919fa`); the inliner
-fires in production on those targets and the SimpleIR dual path is deleted. Two
-gaps remain (design 14):
+**E1-e module-phase activation is now structurally present across native, WASM,
+LLVM, and Luau.** Native/WASM landed in `7512919fa`; LLVM lowers its inlined
+`TirModule` directly; Luau now lifts source-emission IR once to a `TirModule`,
+runs every local function through the per-function TIR pipeline, then runs
+`run_module_pipeline` (E1 inliner, generator fusion, module-slot promotion, and
+terminal DropInsertion) before one fail-closed SimpleIR back-conversion. The
+focused guard is `luau_tir_module_pipeline_inlines_direct_local_calls`, which
+proves a direct local Luau call boundary is removed by the TIR module inliner.
 
-- **LLVM (Gap 2)**: the LLVM branch consumes the inliner's changed bodies
-  *transitively* (it re-lifts the already-mutated `ir.functions`), but never
-  calls `run_module_pipeline` itself and re-runs the full per-function pipeline
-  from post-inline SimpleIR — a compile-time asymmetry, not a miscompile. LLVM
-  also gets no molt-level inlining decisions of its own (it relies on its `-O2`
-  IPO).
-- **Luau (Gap 1, blocking parity)**: `run_module_pipeline` is *never* called on
-  the Luau path (`main.rs` bypasses `SimpleBackend::compile` entirely). The
-  inliner and slot-promotion produce zero benefit for Luau. Insertion point:
-  `main.rs` after the per-function loop / `eliminate_dead_ops`.
-
-Activating those two closes the IPO context for E3/E4/E5 across all four targets.
+The remaining perf-frontier work is no longer "activate E1"; it is proving and
+exploiting that activation across real workloads: E3/E4/E5 summaries and
+monomorphization, L4/L2 loop/SIMD work, Luau CheckedAdd and broader
+CPython-vs-Luau parity, and authoritative benchmark evidence.
 
 ### 4.3 The size/startup lever
 
@@ -304,9 +300,11 @@ open until fusion lands). Requires E1 active (DONE native/WASM) + SROA (DONE,
   `add_reader`/`add_writer` are `#[cfg(not(wasm32))]` stubs; table-ref trap;
   zipimport; thread unavailability). The structural fix is a first-class WASM
   event loop over WASI `poll_oneoff`.
-- **Luau lag** generally (design 14, ROADMAP item 8): Luau trails native/WASM —
-  no module phase, a `< 4`-op skip heuristic with no parallel elsewhere, no TIR
-  cache. Drive to checked parity per the support matrix.
+- **Luau lag** generally (design 14, ROADMAP item 8): Luau now participates in
+  the shared TIR module phase, deleting the old per-function-only skip
+  heuristic. It still trails native/WASM in checked surface coverage, runtime
+  execution evidence, cache/deployment ergonomics, and parity matrix closure.
+  Drive to checked parity per the support matrix.
 
 ---
 
@@ -329,8 +327,9 @@ dev-fast, debug-with-asserts).** Headline targets: sieve → 1000×, cold start
 | **Y5** | Leadership | "Mojo/Julia speed, Python semantics" delivered across all four targets; the full evidence matrix (native/WASM/Luau/MLIR) green on cold-start, size, and throughput simultaneously |
 
 The single highest-leverage ordering: **finish the RC correctness front (RC-1 +
-RC-1b/HandlerState) → complete E1-e on LLVM/Luau → E3/E5 IPO → L2 SIMD / W1 PGO
-→ D1 fusion + W3 size.** Correctness gates perf; perf gates the five-year claim.
+RC-1b/HandlerState) → exploit now-active E1 across all targets with E3/E5 IPO →
+L2 SIMD / W1 PGO → D1 fusion + W3 size.** Correctness gates perf; perf gates
+the five-year claim.
 
 ---
 
@@ -424,7 +423,7 @@ Per CLAUDE.md, unchanged:
 
 | Doc | Arc |
 |-----|-----|
-| `01`, `01b` | E1 inliner activation (native+WASM landed `7512919fa`; LLVM/Luau open) |
+| `01`, `01b` | E1 inliner activation (native+WASM landed `7512919fa`; LLVM/Luau now active) |
 | `02` | S5 MemorySSA + SROA + MemGVN + cross-block DSE (ph2a/2b/2d landed; 2c/2e open) |
 | `03`, `12` | E3 IP escape/purity summaries + E5 monomorphization |
 | `04` | L4 loop transforms (corrected arc — producer chain, not gate-flip) |
@@ -435,7 +434,7 @@ Per CLAUDE.md, unchanged:
 | `09`, `13` | W3 per-attribute DCE (the `<2 MB` lever) |
 | `10` | module-global loop promotion (bench_sum 16× — landed `b9188ab1c`) |
 | `11` | bug-#15 dual-loop overflow peel (landed `e267a4f5a`, `c2a373a3a`) |
-| `14` | target × profile parity audit (E1 LLVM/Luau gaps) |
+| `14` | target × profile parity audit (post-E1 LLVM/Luau proof gaps) |
 | `15` | Luau CheckedAdd lowering plan |
 | `16` | CPython surface / stdlib / GPU gap audit |
 | `17` | ecosystem / third-party compat gap audit |
