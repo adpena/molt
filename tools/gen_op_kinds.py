@@ -142,17 +142,28 @@ _OPCODE_FACT_SETS = (
     "alias_rc_barrier_opcodes",
     "alias_heap_barrier_opcodes",
     "alias_memory_inert_opcodes",
-    "alias_region_typed_slot_opcodes",
+    "alias_typed_slot_load_opcodes",
+    "alias_typed_slot_store_opcodes",
+    "alias_transparent_type_guard_opcodes",
+    "alias_transparent_copy_opcodes",
     "alias_region_copy_refinement_opcodes",
     "alias_region_container_element_opcodes",
     "alias_region_module_dict_opcodes",
     "alias_slot_direct_observer_opcodes",
     "alias_slot_typed_store_opcodes",
-    "alias_slot_transparent_alias_opcodes",
     "alias_slot_never_observer_opcodes",
 )
+_ALIAS_TYPED_SLOT_ROLE_SETS = (
+    "alias_typed_slot_load_opcodes",
+    "alias_typed_slot_store_opcodes",
+)
+_ALIAS_TRANSPARENT_ALIAS_ROLE_SETS = (
+    "alias_transparent_type_guard_opcodes",
+    "alias_transparent_copy_opcodes",
+)
 _ALIAS_MEMORY_REGION_SETS = (
-    "alias_region_typed_slot_opcodes",
+    "alias_typed_slot_load_opcodes",
+    "alias_typed_slot_store_opcodes",
     "alias_region_copy_refinement_opcodes",
     "alias_region_container_element_opcodes",
     "alias_region_module_dict_opcodes",
@@ -161,7 +172,8 @@ _ALIAS_MEMORY_REGION_SETS = (
 _ALIAS_SLOT_OBSERVATION_SETS = (
     "alias_slot_direct_observer_opcodes",
     "alias_slot_typed_store_opcodes",
-    "alias_slot_transparent_alias_opcodes",
+    "alias_transparent_type_guard_opcodes",
+    "alias_transparent_copy_opcodes",
     "alias_slot_never_observer_opcodes",
 )
 
@@ -268,6 +280,12 @@ def load_table() -> dict:
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
+    _validate_alias_opcode_role_sets(
+        data, _ALIAS_TYPED_SLOT_ROLE_SETS, "alias typed-slot role"
+    )
+    _validate_alias_opcode_role_sets(
+        data, _ALIAS_TRANSPARENT_ALIAS_ROLE_SETS, "alias transparent-alias role"
+    )
     _validate_alias_memory_region_sets(data)
     _validate_alias_slot_observation_sets(data)
 
@@ -553,6 +571,20 @@ def _validate_opcode_fact_set(data: dict, key: str, opcodes: set[str]) -> None:
     unknown = sorted(set(members) - opcodes)
     if unknown:
         raise OpKindTableError(f"{key} contains unknown OpCode names: {unknown}")
+
+
+def _validate_alias_opcode_role_sets(
+    data: dict, role_sets: tuple[str, ...], label: str
+) -> None:
+    owners: dict[str, str] = {}
+    for key in role_sets:
+        for opcode in data.get(key, []):
+            if opcode in owners:
+                raise OpKindTableError(
+                    f"{label} opcode {opcode!r} appears in both "
+                    f"{owners[opcode]} and {key}"
+                )
+            owners[opcode] = key
 
 
 def _validate_alias_slot_observation_sets(data: dict) -> None:
@@ -1149,6 +1181,10 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, alias_heap_barriers))
     out.append("    }\n}\n\n")
 
+    out.append(_render_alias_typed_slot_role(opcodes, data))
+    out.append("\n")
+    out.append(_render_alias_transparent_alias_role(opcodes, data))
+    out.append("\n")
     out.append(_render_alias_memory_region(opcodes, data))
     out.append("\n")
     out.append(_render_alias_slot_observation(opcodes, data))
@@ -1349,18 +1385,96 @@ def _render_swapped_comparison_arms(
 _ALIAS_SLOT_OBSERVATION_VARIANTS = {
     "alias_slot_direct_observer_opcodes": "AliasSlotObservation::DirectObserver",
     "alias_slot_typed_store_opcodes": "AliasSlotObservation::TypedSlotStore",
-    "alias_slot_transparent_alias_opcodes": "AliasSlotObservation::TransparentAlias",
+    "alias_transparent_type_guard_opcodes": "AliasSlotObservation::TransparentAlias",
+    "alias_transparent_copy_opcodes": "AliasSlotObservation::TransparentAlias",
     "alias_slot_never_observer_opcodes": "AliasSlotObservation::NeverObserver",
 }
 
 
 _ALIAS_MEMORY_REGION_VARIANTS = {
-    "alias_region_typed_slot_opcodes": "AliasMemoryRegionClass::TypedSlotAttr",
+    "alias_typed_slot_load_opcodes": "AliasMemoryRegionClass::TypedSlotAttr",
+    "alias_typed_slot_store_opcodes": "AliasMemoryRegionClass::TypedSlotAttr",
     "alias_region_copy_refinement_opcodes": "AliasMemoryRegionClass::CopyRefinement",
     "alias_region_container_element_opcodes": "AliasMemoryRegionClass::ContainerElement",
     "alias_region_module_dict_opcodes": "AliasMemoryRegionClass::ModuleDict",
     "alias_memory_inert_opcodes": "AliasMemoryRegionClass::ScalarRegister",
 }
+
+
+_ALIAS_TYPED_SLOT_ROLE_VARIANTS = {
+    "alias_typed_slot_load_opcodes": "AliasTypedSlotRole::Load",
+    "alias_typed_slot_store_opcodes": "AliasTypedSlotRole::Store",
+}
+
+
+_ALIAS_TRANSPARENT_ALIAS_ROLE_VARIANTS = {
+    "alias_transparent_type_guard_opcodes": "AliasTransparentAliasRole::TypeGuard",
+    "alias_transparent_copy_opcodes": "AliasTransparentAliasRole::Copy",
+}
+
+
+def _render_alias_typed_slot_role(opcodes: list[dict], data: dict) -> str:
+    role_by_opcode: dict[str, str] = {}
+    for key, variant in _ALIAS_TYPED_SLOT_ROLE_VARIANTS.items():
+        for opcode in data.get(key, []):
+            role_by_opcode[opcode] = variant
+
+    out: list[str] = []
+    out.append(
+        "/// Opcode role for offset-based typed-slot field helpers. Omitted\n"
+        "/// opcodes are not typed-slot field candidates.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) enum AliasTypedSlotRole {\n"
+        "    Load,\n"
+        "    Store,\n"
+        "    NotTypedSlot,\n"
+        "}\n\n"
+        "/// Typed-slot opcode role for alias_analysis.rs. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_alias_typed_slot_role_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> AliasTypedSlotRole {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        variant = role_by_opcode.get(name, "AliasTypedSlotRole::NotTypedSlot")
+        out.append(f"        OpCode::{name} => {variant},\n")
+    out.append("    }\n}\n")
+    return "".join(out)
+
+
+def _render_alias_transparent_alias_role(opcodes: list[dict], data: dict) -> str:
+    role_by_opcode: dict[str, str] = {}
+    for key, variant in _ALIAS_TRANSPARENT_ALIAS_ROLE_VARIANTS.items():
+        for opcode in data.get(key, []):
+            role_by_opcode[opcode] = variant
+
+    out: list[str] = []
+    out.append(
+        "/// Opcode role for transparent alias-root propagation. Omitted opcodes\n"
+        "/// do not forward object identity through their result.\n"
+        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "pub(crate) enum AliasTransparentAliasRole {\n"
+        "    TypeGuard,\n"
+        "    Copy,\n"
+        "    NotTransparentAlias,\n"
+        "}\n\n"
+        "/// Transparent-alias opcode role for alias_analysis.rs. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_alias_transparent_alias_role_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> AliasTransparentAliasRole {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        variant = role_by_opcode.get(
+            name, "AliasTransparentAliasRole::NotTransparentAlias"
+        )
+        out.append(f"        OpCode::{name} => {variant},\n")
+    out.append("    }\n}\n")
+    return "".join(out)
 
 
 def _render_alias_memory_region(opcodes: list[dict], data: dict) -> str:
