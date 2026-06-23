@@ -168,11 +168,11 @@ the implementation. For forward-looking priorities, use
   lowering and `check_exception_elim`, so boxed-dispatch retention and
   nonzero-divisor exception elimination share one authority for `div`,
   `floordiv`, and `mod`.
-- Canonicalization opcode facts are registry-owned: literal payload extraction
-  uses `canonicalize_literal_opcodes`, while commutative reordering, comparison
-  swaps, and ordered binary algebraic folds use the adjacent generated
-  canonicalize tables. `canonicalize.rs` owns only live operand/type checks and
-  rewrites, not private opcode lists.
+- Literal payload facts are registry-owned through `literal_payload_opcodes` and
+  shared by canonicalization and exception-check elimination. Commutative
+  reordering, comparison swaps, and ordered binary algebraic folds use adjacent
+  generated canonicalize tables. `canonicalize.rs` owns only live operand/type
+  checks and rewrites, not private opcode lists.
 - `molt-gpu` schedules `Movement` operands as zero-copy views over source
   storage and schedules `Contiguous` DAG operands as first-class
   `KernelBody::MaterializeCopy` producers with fresh storage identity.

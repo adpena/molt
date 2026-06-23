@@ -903,15 +903,20 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     canonicalize = (
         ROOT / "runtime/molt-backend/src/tir/passes/canonicalize.rs"
     ).read_text(encoding="utf-8")
+    check_exception = (
+        ROOT / "runtime/molt-backend/src/tir/passes/check_exception_elim.rs"
+    ).read_text(encoding="utf-8")
 
     assert "fn is_commutative" not in canonicalize
     assert "fn swap_comparison" not in canonicalize
     assert "opcode_canonicalize_commutative_domain_table" in canonicalize
-    assert "opcode_canonicalize_literal_kind_table" in canonicalize
+    assert "opcode_literal_payload_kind_table" in canonicalize
+    assert "opcode_literal_payload_kind_table" in check_exception
     assert "opcode_swapped_comparison_for_canonicalize_table" in canonicalize
     assert "opcode_canonicalize_binary_rules_table" in canonicalize
     assert "OpCode::Add | OpCode::InplaceAdd" not in canonicalize
     assert "OpCode::ConstInt =>" not in canonicalize
+    assert "OpCode::ConstInt =>" not in check_exception
     assert "OpCode::And if" not in canonicalize
 
     expected_literals = {
@@ -938,7 +943,7 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     } == expected_swaps
     assert {
         row["opcode"]: row["literal"]
-        for row in data["canonicalize_literal_opcodes"]
+        for row in data["literal_payload_opcodes"]
     } == expected_literals
     assert len(data["canonicalize_binary_rules"]) == 28
     assert data["canonicalize_binary_rules"][0] == {
@@ -958,11 +963,11 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     }
 
     literal_block = rendered.split(
-        "fn opcode_canonicalize_literal_kind_table"
+        "fn opcode_literal_payload_kind_table"
     )[1].split("fn opcode_canonicalize_commutative_domain_table")[0]
     literal_variant = {
-        "int": "CanonicalizeLiteralKind::Int",
-        "bool": "CanonicalizeLiteralKind::Bool",
+        "int": "LiteralPayloadKind::Int",
+        "bool": "LiteralPayloadKind::Bool",
     }
     for opcode, literal in expected_literals.items():
         assert (
@@ -1000,19 +1005,25 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     assert "OpCode::Eq => &[]," in binary_block
 
 
-def test_canonicalize_fact_validation_rejects_drift() -> None:
+def test_literal_payload_fact_validation_rejects_drift() -> None:
     gen = _gen()
     data = gen.load_table()
     opcodes = {row["name"] for row in data["opcode"]}
 
     bad_literal = json.loads(json.dumps(data))
-    bad_literal["canonicalize_literal_opcodes"][0]["literal"] = "float"
+    bad_literal["literal_payload_opcodes"][0]["literal"] = "float"
     try:
-        gen._validate_canonicalize_facts(bad_literal, opcodes)
+        gen._validate_literal_payload_facts(bad_literal, opcodes)
     except gen.OpKindTableError as e:
         assert "literal" in str(e)
     else:
-        raise AssertionError("bad canonicalize literal kind was accepted")
+        raise AssertionError("bad literal payload kind was accepted")
+
+
+def test_canonicalize_fact_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
 
     bad_domain = json.loads(json.dumps(data))
     bad_domain["canonicalize_commutative_reorder"][0]["domain"] = "boxed"
