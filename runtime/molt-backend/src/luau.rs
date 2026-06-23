@@ -4051,11 +4051,16 @@ impl LuauBackend {
             | "promise_set_result"
             | "promise_set_exception"
             | "thread_submit"
-            | "task_register_token_owned"
-            | "is_native_awaitable" => {
+            | "task_register_token_owned" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [async: {}]", op.kind));
+                }
+            }
+            "is_native_awaitable" => {
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = false"));
                 }
             }
 
@@ -11416,6 +11421,46 @@ mod tests {
         assert!(
             err.contains("semantic stub marker"),
             "error should mention semantic stub marker, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_is_native_awaitable_target_fact() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "native_awaitable_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "object_new".to_string(),
+                        out: Some("awaitable".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "is_native_awaitable".to_string(),
+                        out: Some("is_native".to_string()),
+                        args: Some(vec!["awaitable".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("is_native_awaitable should lower as a Luau target fact");
+        assert!(
+            source.contains("local is_native = false"),
+            "Luau has no native Molt poll-function objects, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[async: is_native_awaitable]")
+                && !source.contains("[unsupported op: is_native_awaitable]"),
+            "is_native_awaitable must not lower through async stubs, got:\n{source}"
         );
     }
 
