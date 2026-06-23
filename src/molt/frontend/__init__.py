@@ -89,10 +89,13 @@ from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
     _INTRINSIC_ARITY_CACHE,
     _INTRINSIC_SYMBOL_CACHE,
+    _INTRINSIC_DEFAULTS_CACHE,
     _ensure_intrinsic_arity_cache,
     _ensure_intrinsic_symbol_cache,
+    _ensure_intrinsic_defaults_cache,
     _canonical_intrinsic_runtime_name,
     _intrinsic_arity_exact,
+    _intrinsic_defaults_exact,
     _intrinsic_arity,
     MOLT_REEXPORT_FUNCTIONS,
     MOLT_DIRECT_CALLS,
@@ -201,10 +204,13 @@ __all__ = [
     "BUILTIN_FUNC_SPECS",
     "_INTRINSIC_ARITY_CACHE",
     "_INTRINSIC_SYMBOL_CACHE",
+    "_INTRINSIC_DEFAULTS_CACHE",
     "_ensure_intrinsic_arity_cache",
     "_ensure_intrinsic_symbol_cache",
+    "_ensure_intrinsic_defaults_cache",
     "_canonical_intrinsic_runtime_name",
     "_intrinsic_arity_exact",
+    "_intrinsic_defaults_exact",
     "_intrinsic_arity",
     "MOLT_REEXPORT_FUNCTIONS",
     "MOLT_DIRECT_CALLS",
@@ -5504,8 +5510,10 @@ class SimpleTIRGenerator(
         arity = _intrinsic_arity_exact(runtime_name)
         if arity is None:
             raise KeyError(runtime_name)
-        return self._emit_runtime_function(
-            _canonical_intrinsic_runtime_name(runtime_name), arity
+        return self._emit_runtime_function_with_defaults(
+            _canonical_intrinsic_runtime_name(runtime_name),
+            arity,
+            _intrinsic_defaults_exact(runtime_name),
         )
 
     def _emit_optional_intrinsic_lookup_value(self, runtime_name: str) -> MoltValue:
@@ -5534,14 +5542,17 @@ class SimpleTIRGenerator(
     def _emit_runtime_function_with_none_defaults(
         self, runtime_name: str, arity: int, *, default_count: int
     ) -> MoltValue:
+        return self._emit_runtime_function_with_defaults(
+            runtime_name, arity, (None,) * max(0, default_count)
+        )
+
+    def _emit_runtime_function_with_defaults(
+        self, runtime_name: str, arity: int, defaults: Sequence[object]
+    ) -> MoltValue:
         func_val = self._emit_runtime_function(runtime_name, arity)
-        if default_count <= 0:
+        if not defaults:
             return func_val
-        default_vals: list[MoltValue] = []
-        for _ in range(default_count):
-            none_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            default_vals.append(none_val)
+        default_vals = [self._emit_const_value(value) for value in defaults]
         defaults_tuple = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(MoltOp(kind="TUPLE_NEW", args=default_vals, result=defaults_tuple))
         self.emit(

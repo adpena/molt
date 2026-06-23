@@ -910,6 +910,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, runtime_name: str, arity: int, *, default_count: int
     ) -> MoltValue: ...
 
+    def _emit_runtime_function_with_defaults(
+        self, runtime_name: str, arity: int, defaults: Sequence[object]
+    ) -> MoltValue: ...
+
     def _static_expr_type_hint_without_emitting(self, expr: ast.expr) -> str | None: ...
 
     def _try_emit_intrinsic_handle_class_constructor(

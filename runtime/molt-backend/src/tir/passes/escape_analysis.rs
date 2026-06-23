@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    kind_result_absorbs_operand_ownership_table, opcode_result_absorbs_operand_ownership_table,
+    copy_kind_is_explicit_no_heap_move_table, kind_result_absorbs_operand_ownership_table,
+    opcode_result_absorbs_operand_ownership_table,
 };
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -54,14 +55,24 @@ fn attr_str<'a>(attrs: &'a AttrDict, key: &str) -> Option<&'a str> {
 /// `_original_kind` passthrough that `kind_to_opcode` assigns to SimpleIR ops
 /// without a dedicated TIR opcode.
 ///
-/// A move has either no `_original_kind` (a true SSA-lift copy) or one of the
-/// pure variable-copy kinds. Anything else under `Copy` is a passthrough whose
-/// result is a *distinct* value (e.g. a freshly built container), so it must
-/// NOT be aliased to its operand.
+/// A move has either no `_original_kind` (a true SSA-lift copy) or an
+/// `_original_kind` the generated registry proves is a no-heap move of operand 0
+/// (the named SSA/var moves plus the validate-and-pass-through guards). Anything
+/// else under `Copy` is a passthrough whose result is a *distinct* value (e.g. a
+/// freshly built container), so it must NOT be aliased to its operand.
+///
+/// The kind set is the single generated authority `op_kinds.toml`
+/// `classifier_no_heap_move` (`copy_kind_is_explicit_no_heap_move_table`), shared
+/// with `alias_analysis.rs` and the ownership lattice — escape analysis no longer
+/// keeps a private hand-list that could diverge. Every alias-propagation site
+/// below reads `op.operands.first()` / `op.results.first()`, which matches the
+/// registry's operand-0 pure-move contract for all those kinds (including the
+/// guard passthroughs), so consuming the broader authority is sound and only
+/// tightens the alias relation toward the rest of the compiler.
 fn is_pure_move_copy(attrs: &AttrDict) -> bool {
     match attr_str(attrs, "_original_kind") {
         None => true,
-        Some(kind) => matches!(kind, "copy" | "copy_var" | "store_var" | "load_var"),
+        Some(kind) => copy_kind_is_explicit_no_heap_move_table(kind),
     }
 }
 

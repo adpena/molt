@@ -111,7 +111,7 @@ adapter_notes = "Compile/profile unmodified upstream tinygrad package code throu
 tags = ["gpu", "mlir", "tinygrad", "compatibility", "benchmark-suite"]
 repeat = 5
 timeout_sec = 1800
-env = { CACHEDB = "{output_root}/tinygrad_cache/tinygrad/cache.db", XDG_CACHE_HOME = "{output_root}/tinygrad_cache" }
+env = { CACHEDB = "{output_root}/tinygrad_cache/tinygrad/cache.db", DEV = "PYTHON", PYTHONDONTWRITEBYTECODE = "1", XDG_CACHE_HOME = "{output_root}/tinygrad_cache" }
 prepare_cmds = [
   ["{python}", "{repo_root}/tools/tinygrad_upat_static_exec_registry.py", "--suite-root", "{suite_root}", "--repo-root", "{repo_root}", "--workload", "all", "--iterations", "1", "--manifest-output", "{output_root}/tinygrad_static_exec/manifest.json", "--module-output", "{output_root}/tinygrad_static_exec/_molt_tinygrad_upat_static_exec_registry.py", "--json"],
 ]
