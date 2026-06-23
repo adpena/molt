@@ -3860,7 +3860,19 @@ impl LuauBackend {
             // ================================================================
             // Misc intrinsics
             // ================================================================
-            "getargv" | "getframe" | "sys_executable" | "bridge_unavailable" => {
+            "getargv" => {
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = {{}}"));
+                }
+            }
+            "sys_executable" => {
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = \"\""));
+                }
+            }
+            "getframe" | "bridge_unavailable" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
@@ -10584,6 +10596,52 @@ mod tests {
         assert!(source.contains("local first = molt_missing_sentinel"));
         assert!(source.contains("local second = molt_missing_sentinel"));
         assert!(!source.contains("-- [missing]"));
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_luau_process_target_facts() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "process_target_facts_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "getargv".to_string(),
+                        out: Some("argv".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "sys_executable".to_string(),
+                        out: Some("executable".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "tuple_new".to_string(),
+                        args: Some(vec!["argv".to_string(), "executable".to_string()]),
+                        out: Some("facts".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["facts".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("process target facts should lower without stub markers");
+
+        assert!(source.contains("local argv = {}"));
+        assert!(source.contains("local executable = \"\""));
+        assert!(!source.contains("-- [getargv]"));
+        assert!(!source.contains("-- [sys_executable]"));
     }
 
     #[test]
