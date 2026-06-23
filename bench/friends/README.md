@@ -30,7 +30,9 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   stays clean; the CPython runner uses the same isolated `typeguard` dependency
   and bytecode-write ban while staying on
   `tools/tinygrad_off_shelf_adapter.py`, which is only a public-API workload
-  driver. The Molt runner is executable by default with the full-stdlib
+  driver. Suite-wide `XDG_CACHE_HOME` and `CACHEDB` point under the run
+  `output_root` so upstream tinygrad cache writes cannot dirty the pinned source
+  checkout. The Molt runner is executable by default with the full-stdlib
   static-package command. Earlier local evidence reached the backend daemon and
   then trips the process RSS guard (`molt-backend --daemon` at 12.005 GB after
   435.5s; summary `tmp/memory_guard/friends_tinygrad_molt_sqlite_profile.json`),

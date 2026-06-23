@@ -1322,7 +1322,10 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
     assert suite.repo_url == "https://github.com/tinygrad/tinygrad.git"
     assert suite.repo_ref == "a83710396c991272241e40da94489747c2393851"
     assert suite.semantic_mode == "runs_unmodified"
-    assert suite.env == {}
+    assert suite.env == {
+        "CACHEDB": "{output_root}/tinygrad_cache/tinygrad/cache.db",
+        "XDG_CACHE_HOME": "{output_root}/tinygrad_cache",
+    }
     assert suite.prepare_cmds == [
         [
             "{python}",
