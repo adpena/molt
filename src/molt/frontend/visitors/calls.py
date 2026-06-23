@@ -113,9 +113,35 @@ _BUILTINS_IMPORT_ALIAS_CALL_NAMES = frozenset(BUILTIN_FUNC_SPECS) | frozenset(
 
 
 class CallVisitorMixin(_MixinBase):
+    def _class_resolves_default_object_new(
+        self, class_name: str, class_info: ClassInfo
+    ) -> bool:
+        if class_info.get("dynamic"):
+            return False
+        for base_name in self._class_mro_names(class_name):
+            if base_name == "object":
+                return True
+            if base_name in BUILTIN_TYPE_TAGS:
+                return False
+            base_info = self.classes.get(base_name)
+            if base_info is None or base_info.get("dynamic"):
+                return False
+            methods = base_info.get("methods", {})
+            class_attrs = base_info.get("class_attrs", {})
+            pending = base_info.get("pending_methods")
+            if (
+                "__new__" in methods
+                or "__new__" in class_attrs
+                or (pending and "__new__" in pending)
+            ):
+                return False
+        return False
+
     def _class_new_policy(
         self, class_name: str, class_info: ClassInfo
     ) -> tuple[bool, bool]:
+        if self._class_resolves_default_object_new(class_name, class_info):
+            return False, False
         if class_info.get("dynamic"):
             return True, True
         for base_name in self._class_mro_names(class_name):
@@ -4699,62 +4725,29 @@ class CallVisitorMixin(_MixinBase):
                     allowlist_key in MOLT_DIRECT_CALLS
                     or allowlist_key in self.stdlib_allowlist
                 )
+                force_bind = func_id[
+                    :1
+                ].isupper() or func_id in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
+                    allowlist_key, set()
+                )
                 if (
                     allowlist_key in MOLT_DIRECT_CALLS
                     and func_id in MOLT_DIRECT_CALLS[allowlist_key]
-                    and self._is_linkable_module_function_symbol(allowlist_key)
-                    and self._imported_module_attr_is_stable(allowlist_key, func_id)
                 ):
-                    force_bind = func_id in MOLT_DIRECT_CALL_BIND_ALWAYS.get(
-                        allowlist_key, set()
-                    )
-                    if func_id[:1].isupper():
-                        force_bind = True
-                    lowered_task_func = self._emit_known_module_task_func_call(
-                        allowlist_key,
-                        func_id,
-                        node,
-                        needs_bind=needs_bind or force_bind,
-                    )
-                    if lowered_task_func is not None:
-                        return lowered_task_func
-                    if needs_bind or force_bind:
-                        callee = self.visit(node.func)
-                        if callee is None:
-                            raise NotImplementedError("Unsupported call target")
-                        res = MoltValue(self.next_var(), type_hint="Any")
-                        callargs = self._emit_call_args_builder(node)
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[callee, callargs],
-                                result=res,
-                            )
+                    lowered_imported_call = (
+                        self._try_emit_imported_module_direct_or_task_call(
+                            allowlist_key,
+                            func_id,
+                            node,
+                            imported_from=module_name,
+                            normalized=normalized,
+                            needs_bind=needs_bind,
+                            force_bind=force_bind,
+                            direct_registry_authorized=True,
                         )
-                        return res
-                    args = self._emit_direct_call_args(allowlist_key, func_id, node)
-                    if args is None:
-                        callee = self.visit(node.func)
-                        if callee is None:
-                            raise NotImplementedError("Unsupported call target")
-                        res = MoltValue(self.next_var(), type_hint="Any")
-                        callargs = self._emit_call_args_builder(node)
-                        self.emit(
-                            MoltOp(
-                                kind="CALL_BIND",
-                                args=[callee, callargs],
-                                result=res,
-                            )
-                        )
-                        return res
-                    res = MoltValue(self.next_var(), type_hint="Any")
-                    target_name = (
-                        f"{self._sanitize_module_name(allowlist_key)}__{func_id}"
                     )
-                    self.emit(
-                        MoltOp(kind="CALL", args=[target_name] + args, result=res)
-                    )
-                    return res
+                    if lowered_imported_call is not None:
+                        return lowered_imported_call
                 if (
                     allowlist_key in self.stdlib_allowlist
                     or self._is_internal_module(module_name)
@@ -4769,6 +4762,20 @@ class CallVisitorMixin(_MixinBase):
                     )
                     if lowered_handle_ctor is not None:
                         return lowered_handle_ctor
+                    lowered_imported_call = (
+                        self._try_emit_imported_module_direct_or_task_call(
+                            allowlist_key,
+                            func_id,
+                            node,
+                            imported_from=module_name,
+                            normalized=normalized,
+                            needs_bind=needs_bind,
+                            force_bind=force_bind,
+                            direct_registry_authorized=False,
+                        )
+                    )
+                    if lowered_imported_call is not None:
+                        return lowered_imported_call
                     callee = self.visit(node.func)
                     if callee is None:
                         raise NotImplementedError("Unsupported call target")
@@ -6279,9 +6286,9 @@ class CallVisitorMixin(_MixinBase):
                 # Phase-1-sibling class-instantiation fold.
                 #
                 # When a class has a vanilla layout — no metaclass, no
-                # __new__ override (so `_class_new_policy` did not flag
-                # `new_returns_any`), no closures/varargs/kwargs/defaults
-                # on __init__, and the call site supplies positional args
+                # constructor-fold safety proving default `object.__new__`, no
+                # closures/varargs/kwargs/defaults on __init__, and the call
+                # site supplies positional args
                 # only — we can replace the `CALL_BIND(class_ref,
                 # callargs)` dispatch (which goes through
                 # `type.__call__` → `__new__` → bound-method-init →
@@ -6300,7 +6307,6 @@ class CallVisitorMixin(_MixinBase):
                 constructor_fold_safe = bool(class_info.get("constructor_fold_safe"))
                 if (
                     constructor_fold_safe
-                    and not new_returns_any
                     and not class_info.get("dynamic")
                     and not class_info.get("dataclass")
                     and not class_info.get("custom_metaclass")
@@ -6348,20 +6354,14 @@ class CallVisitorMixin(_MixinBase):
                         # all required positional args, so that no
                         # default-spec evaluation is needed at runtime.
                         # The arg-count match below enforces this.
-                        # Honour __new__ overrides on bases too:
-                        # `_resolve_method_info` walks MRO so an
-                        # __init__ resolved through the chain is the
-                        # one Python would dispatch to.
+                        # Constructor fold safety has already proven default
+                        # `object.__new__` through the full MRO. Keep this arm
+                        # focused on the remaining direct-`__init__` contract.
                         getattribute_info, _ = self._resolve_method_info(
                             class_id, "__getattribute__"
                         )
-                        new_info, new_owner = self._resolve_method_info(
-                            class_id, "__new__"
-                        )
-                        new_is_default = new_info is None or new_owner == "object"
                         if (
                             getattribute_info is None
-                            and new_is_default
                             and (init_owner or class_id) in self.classes
                         ):
                             init_func_val = init_info.get("func")
