@@ -347,6 +347,11 @@ working in this repo:
   WSL `/home/...`, WSL `/mnt/c/...`, or macOS-native, and the resolved paths
   for `python`, `python3`, `py`, `bash`, `node`, and `npm` if those tools may
   be used. Prefer `tools/agent_coordination.py env` for the repo-local snapshot.
+- Before starting broad differential, conformance, backend, or perf proof work,
+  run `uv run --python 3.12 python tools/agent_coordination.py proof-plan`
+  or pass the intended touched paths explicitly. Use its focused lane
+  recommendations to pick high-signal checks before broad sweeps, then record
+  the chosen lane in `logs/agents/<task>/coordination.json`.
 - Never paste huge terminal logs, stack traces, generated diffs, benchmark
   JSON, or repeated error streams into the Codex prompt. Write large evidence
   under canonical roots (`logs/`, `tmp/`, `bench/results/`) and summarize the
