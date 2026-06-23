@@ -56,11 +56,22 @@ if __name__ == "__main__":
     print("hint_only", operator.length_hint(HintOnly()))
     print("len_wins", operator.length_hint(LenAndHint()))
     print("len_type_error_falls_back", operator.length_hint(LenTypeErrorAndHint()))
+    print("default_negative", operator.length_hint(Empty(), -1))
+    print("default_bool", operator.length_hint(Empty(), True))
     for label, value in (
         ("len_value_error", LenValueErrorAndHint()),
         ("negative_len", NegativeLenAndHint()),
     ):
         try:
             print(label, operator.length_hint(value))
+        except Exception as exc:
+            print(label + "_raises", type(exc).__name__, str(exc))
+    for label, value, default in (
+        ("invalid_default_empty", Empty(), "x"),
+        ("invalid_default_len", Seq(), "x"),
+        ("invalid_default_hint", HintOnly(), None),
+    ):
+        try:
+            print(label, operator.length_hint(value, default))
         except Exception as exc:
             print(label + "_raises", type(exc).__name__, str(exc))
