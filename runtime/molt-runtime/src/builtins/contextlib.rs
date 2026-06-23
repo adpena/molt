@@ -2,8 +2,8 @@ use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_EXCEPTION, TYPE_ID_TYPE, attr_name_bits_from_bytes,
-    bits_from_ptr, call_callable0, call_callable1, call_callable3, class_dict_bits, class_mro_ref,
-    clear_exception, clear_exception_state, contextlib_async_exitstack_enter_context_poll_fn_addr,
+    call_callable0, call_callable1, call_callable3, class_dict_bits, class_mro_ref, clear_exception,
+    clear_exception_state, contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place, exception_kind_bits,
     exception_materialize_traceback_bits, exception_pending, exception_stack_pop,
@@ -12,8 +12,8 @@ use crate::{
     molt_callargs_expand_star, molt_callargs_new, molt_exception_clear, molt_future_new,
     molt_future_poll, molt_getattr_builtin, molt_inspect_getasyncgenstate,
     molt_inspect_isawaitable, molt_is_callable, molt_issubclass, molt_object_setattr, molt_raise,
-    obj_from_bits, object_type_id, path_from_bits, pending_bits_i64, ptr_from_bits,
-    raise_exception, release_ptr, resolve_ptr, string_obj_to_owned, type_of_bits,
+    obj_from_bits, object_type_id, opaque_handle_bits, path_from_bits, pending_bits_i64,
+    ptr_from_bits, raise_exception, release_ptr, resolve_ptr, string_obj_to_owned, type_of_bits,
 };
 
 const ASYNCGEN_ENTER_SLOT_AGEN: usize = 0;
@@ -902,7 +902,7 @@ pub extern "C" fn molt_contextlib_asyncgen_cm_new(
             args_bits,
             kwargs_bits,
         ))) as *mut u8;
-        bits_from_ptr(ptr)
+        opaque_handle_bits(ptr)
     })
 }
 
@@ -1187,7 +1187,7 @@ pub extern "C" fn molt_contextlib_exitstack_new() -> u64 {
         let ptr = Box::into_raw(Box::new(ExitStackHandle {
             callbacks: Vec::new(),
         })) as *mut u8;
-        bits_from_ptr(ptr)
+        opaque_handle_bits(ptr)
     })
 }
 
@@ -1404,7 +1404,7 @@ pub extern "C" fn molt_contextlib_exitstack_pop_all(handle_bits: u64) -> u64 {
         };
         std::mem::swap(&mut handle.callbacks, &mut new_handle.callbacks);
         let ptr = Box::into_raw(Box::new(new_handle)) as *mut u8;
-        bits_from_ptr(ptr)
+        opaque_handle_bits(ptr)
     })
 }
 

@@ -70,6 +70,22 @@ class SerializationMixin(_MixinBase):
         local_to_const_string: dict[str, tuple[str, int]] = {}
         current_region = 0
         control_depth = 0
+        arg_user_kinds: dict[str, set[str]] = {}
+        for op in json_ops:
+            kind = op.get("kind")
+            args = op.get("args")
+            if not isinstance(kind, str) or not isinstance(args, list):
+                continue
+            for arg in args:
+                if isinstance(arg, str):
+                    arg_user_kinds.setdefault(arg, set()).add(kind)
+        cleanup_load_outputs = {
+            out
+            for op in json_ops
+            if op.get("kind") == "load_var"
+            and isinstance((out := op.get("out")), str)
+            and arg_user_kinds.get(out, set()).issubset({"del_boundary"})
+        }
         control_boundary_kinds = {
             "if",
             "else",
@@ -198,6 +214,8 @@ class SerializationMixin(_MixinBase):
             if kind == "load_var":
                 var = op.get("var")
                 if isinstance(var, str) and isinstance(out, str):
+                    if out in cleanup_load_outputs:
+                        continue
                     escaped_root = split_locals_crossing_control.get(var)
                     if escaped_root is not None and escaped_root in candidates:
                         candidates[escaped_root].unsafe = True

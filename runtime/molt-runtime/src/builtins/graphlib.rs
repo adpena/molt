@@ -1,7 +1,7 @@
 use crate::{
     MoltObject, PyToken, alloc_dict_with_pairs, alloc_list, alloc_tuple, dec_ref_bits,
-    dict_get_in_place, dict_set_in_place, exception_pending, obj_from_bits, ptr_from_bits,
-    raise_exception, string_obj_to_owned, to_i64,
+    dict_get_in_place, dict_set_in_place, exception_pending, obj_from_bits, opaque_handle_bits,
+    ptr_from_bits, raise_exception, string_obj_to_owned, to_i64,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -244,7 +244,7 @@ pub extern "C" fn molt_graphlib_new() -> u64 {
         };
         let arc = Arc::new(handle);
         let raw = Arc::into_raw(arc) as *mut u8;
-        crate::bits_from_ptr(raw)
+        opaque_handle_bits(raw)
     })
 }
 

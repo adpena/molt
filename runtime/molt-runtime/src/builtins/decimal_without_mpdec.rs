@@ -9,8 +9,8 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::object::ops::{is_truthy, string_obj_to_owned};
 use crate::{
-    PyToken, alloc_string, alloc_tuple, bits_from_ptr, dec_ref_bits, int_bits_from_bigint,
-    int_bits_from_i64, obj_from_bits, ptr_from_bits, raise_exception, release_ptr, to_bigint,
+    PyToken, alloc_string, alloc_tuple, dec_ref_bits, int_bits_from_bigint, int_bits_from_i64,
+    obj_from_bits, opaque_handle_bits, ptr_from_bits, raise_exception, release_ptr, to_bigint,
 };
 
 const MPD_CLAMPED: u32 = 0x00000001;
@@ -611,14 +611,14 @@ fn decimal_from_cmp(value: i64) -> DecimalHandle {
 }
 
 fn decimal_bits(dec: DecimalHandle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(dec)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(dec)) as *mut u8)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = Box::new(default_context());
-        bits_from_ptr(Box::into_raw(handle) as *mut u8)
+        opaque_handle_bits(Box::into_raw(handle) as *mut u8)
     })
 }
 
@@ -627,7 +627,7 @@ pub extern "C" fn molt_decimal_context_get_current() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = ensure_current_context();
         context_inc(ptr);
-        bits_from_ptr(ptr as *mut u8)
+        opaque_handle_bits(ptr as *mut u8)
     })
 }
 
@@ -647,7 +647,7 @@ pub extern "C" fn molt_decimal_context_set_current(ctx_bits: u64) -> u64 {
         if !old_ptr.is_null() {
             context_inc(old_ptr);
             context_dec(old_ptr);
-            return bits_from_ptr(old_ptr as *mut u8);
+            return opaque_handle_bits(old_ptr as *mut u8);
         }
         MoltObject::none().bits()
     })
@@ -663,7 +663,7 @@ pub extern "C" fn molt_decimal_context_copy(ctx_bits: u64) -> u64 {
         // SAFETY: pointer validated above.
         let mut cloned = unsafe { (*ctx_ptr).clone() };
         cloned.refs = 1;
-        bits_from_ptr(Box::into_raw(Box::new(cloned)) as *mut u8)
+        opaque_handle_bits(Box::into_raw(Box::new(cloned)) as *mut u8)
     })
 }
 
