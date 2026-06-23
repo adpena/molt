@@ -107,9 +107,10 @@ on memory-model trust. So correctness verticals come first *because they unlock 
   PyPy-parity lever.
 - **Repr/TirType convergence** (typed IR Phase 2 — token-typed unbox keystone) → boxing
   precision is a proven fact, not a heuristic.
-- **The native RC flip** — once B (ownership lattice) + finalizer trust is green, flip
-  dormant value-tracking → drop-insertion, with the leak gauge + ownership validators as
-  the safety net. The single biggest dynamic-perf unlock.
+- **The native RC flip (✓ LANDED)** — `target_uses_tir_drop_insertion` is true for
+  NativeCranelift; native value-tracking → drop-insertion is the live RC authority on every
+  target, with the leak gauge + ownership validators as the safety net. The single biggest
+  dynamic-perf unlock; the remaining work is deleting the dead legacy value-tracking lane.
 
 **Warm-reds to retire (CPython-floor scoreboard):** #68 etl_orders 0.60×, csv_parse_wide
 0.68×, #77 exception_heavy 0.68×; #66 LLVM lane (fib 0.30×, str_* 0.65-0.68×,

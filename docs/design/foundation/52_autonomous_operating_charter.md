@@ -183,10 +183,11 @@ does not yet exist, in dependency order. Each item is a fact-plane or
 institution gap, not a feature.
 
 ### C.1 Now → 1 year (the trust substrate — everything else stands on it)
-1. **Finish the lifetime/ownership vertical** (in flight: #58 ordering landed
-   for the drop lanes; #63 loop temps; dataclass placement; native-lane
-   boundary marker; then the native RC flip readiness verdict). The flip is
-   the largest single perf unlock and it is gated purely on TRUST.
+1. **Finish the lifetime/ownership vertical** (the native RC flip is LANDED —
+   `target_uses_tir_drop_insertion` is true for NativeCranelift, so drop-insertion
+   is the live native RC authority. Remaining: delete the dead legacy value-tracking
+   lane; #63 loop temps; dataclass placement). The flip was the largest single perf
+   unlock; the TRUST substrate that gated it is now in place.
 2. **Python-boundary facts as first-class IR, completed**: `DelBoundary` landed;
    `bound_local` landed; REBINDING boundaries (STORE_FAST-equivalent release),
    closure-cell boundaries, and exception-region cleanup edges (doc 45) remain.
