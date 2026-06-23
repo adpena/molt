@@ -174,6 +174,8 @@ def _coerce_argv(args: Any, shell: bool) -> list[str | bytes]:
             raise TypeError("path-like args is not allowed when shell is true")
         else:
             raise TypeError("args must be str, bytes, or os.PathLike when shell=True")
+        if _os.name == "nt":
+            return ["cmd.exe", "/c", command]
         return ["/bin/sh", "-c", command]
     if isinstance(args, (str, bytes)) or hasattr(args, "__fspath__"):
         return [_to_argv_item(args)]

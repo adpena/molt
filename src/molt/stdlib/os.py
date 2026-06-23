@@ -152,6 +152,7 @@ _MOLT_OS_RENAME_AT = _require_intrinsic("molt_os_rename_at")
 _MOLT_OS_REPLACE_AT = _require_intrinsic("molt_os_replace_at")
 _MOLT_OS_LINK_AT = _require_intrinsic("molt_os_link_at")
 _MOLT_OS_UTIME_AT = _require_intrinsic("molt_os_utime_at")
+_MOLT_SUBPROCESS_RUN = _require_intrinsic("molt_subprocess_run")
 
 
 def _resolve_os_name() -> str:
@@ -247,6 +248,7 @@ __all__ = [
     "getpgrp",
     "setpgrp",
     "setsid",
+    "system",
     "sysconf",
     "sysconf_names",
     "utime",
@@ -1350,6 +1352,44 @@ def geteuid() -> int:
 def getegid() -> int:
     intrinsic = _require_callable_intrinsic(_MOLT_OS_GETEGID, "molt_os_getegid")
     return int(intrinsic())
+
+
+def _system_status_from_returncode(returncode: int) -> int:
+    code = int(returncode)
+    if name == "nt":
+        return code
+    if code < 0:
+        return -code
+    return code << 8
+
+
+def _system_shell_argv(command: str) -> list[str]:
+    if name == "nt":
+        return ["cmd.exe", "/c", command]
+    return ["/bin/sh", "-c", command]
+
+
+def _system_type_name(value: Any) -> str:
+    if value is None:
+        return "None"
+    return type(value).__name__
+
+
+def system(command: Any) -> int:
+    if not isinstance(command, str):
+        raise TypeError(
+            f"system() argument 'command' must be str, not {_system_type_name(command)}"
+        )
+    raw = _MOLT_SUBPROCESS_RUN(
+        _system_shell_argv(command),
+        False,
+        None,
+        False,
+        None,
+        None,
+        None,
+    )
+    return _system_status_from_returncode(int(raw[0]))
 
 
 def getlogin() -> str:

@@ -187,6 +187,14 @@ def _collect_meta(file_path: str) -> dict[str, list[str]]:
     return meta
 
 
+def _diff_capabilities(env: dict[str, str]) -> str:
+    if "MOLT_DIFF_CAPABILITIES" in env:
+        return env["MOLT_DIFF_CAPABILITIES"]
+    if "MOLT_CAPABILITIES" in env:
+        return env["MOLT_CAPABILITIES"]
+    return "fs,env,time,random"
+
+
 def _metadata_stdlib_profile(file_path: str) -> tuple[str | None, str | None]:
     values = _collect_meta(file_path).get("stdlib_profile", [])
     normalized = {value.strip().lower() for value in values if value.strip()}
@@ -2786,7 +2794,7 @@ def _run_batch_compile_build(
     strict_mode: bool,
     extra_params: dict[str, object] | None = None,
 ) -> tuple[int, str, str, str | None]:
-    diff_caps = env.get("MOLT_DIFF_CAPABILITIES", "fs,env,time,random")
+    diff_caps = _diff_capabilities(env)
     stdlib_profile, stdlib_profile_error = _diff_stdlib_profile(env)
     if stdlib_profile_error is not None:
         return 2, "", stdlib_profile_error, None
@@ -3208,7 +3216,7 @@ def _run_molt(
         # Without these, compiled binaries cannot access the filesystem (tempfile,
         # pathlib, os.path), environment variables, or time functions — causing
         # spurious failures unrelated to the tested semantics.
-        diff_caps = env.get("MOLT_DIFF_CAPABILITIES", "fs,env,time,random")
+        diff_caps = _diff_capabilities(env)
         if diff_caps:
             build_cmd.extend(["--capabilities", diff_caps])
         if no_cache:
