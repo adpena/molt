@@ -549,6 +549,18 @@ impl LuauBackend {
                 "local function molt_dict_items(d: {[any]: any}): {{any}}\n\tlocal result = {}\n\tlocal n = 0\n\tfor k, v in pairs(d) do n += 1; result[n] = {k, v} end\n\treturn result\nend\n",
             ),
             (
+                "molt_string_split_ws_dict_inc",
+                "local function molt_string_split_ws_dict_inc(line: any, dict: any, delta: any): {any}\n\tif type(line) ~= \"string\" then error({__type=\"TypeError\", __msg=\"split expects str\"}) end\n\tif type(dict) ~= \"table\" then error({__type=\"TypeError\", __msg=\"dict increment expects dict\"}) end\n\tlocal last: any = nil\n\tlocal had_any = false\n\tfor token in string.gmatch(line, \"%S+\") do\n\t\tlocal current = dict[token]\n\t\tif current == nil then current = 0 end\n\t\tdict[token] = current + delta\n\t\tlast = token\n\t\thad_any = true\n\tend\n\treturn {last, had_any}\nend\n",
+            ),
+            (
+                "molt_string_split_sep_dict_inc",
+                "local function molt_string_split_sep_dict_inc(line: any, sep: any, dict: any, delta: any): {any}\n\tif type(line) ~= \"string\" then error({__type=\"TypeError\", __msg=\"split expects str\"}) end\n\tif type(sep) ~= \"string\" then error({__type=\"TypeError\", __msg=\"must be str or None\"}) end\n\tif type(dict) ~= \"table\" then error({__type=\"TypeError\", __msg=\"dict increment expects dict\"}) end\n\tif sep == \"\" then error({__type=\"ValueError\", __msg=\"empty separator\"}) end\n\tlocal last: any = nil\n\tlocal had_any = false\n\tlocal pos = 1\n\twhile true do\n\t\tlocal i, j = string.find(line, sep, pos, true)\n\t\tlocal token\n\t\tif i then\n\t\t\ttoken = string.sub(line, pos, i - 1)\n\t\t\tpos = j + 1\n\t\telse\n\t\t\ttoken = string.sub(line, pos)\n\t\tend\n\t\tlocal current = dict[token]\n\t\tif current == nil then current = 0 end\n\t\tdict[token] = current + delta\n\t\tlast = token\n\t\thad_any = true\n\t\tif not i then break end\n\tend\n\treturn {last, had_any}\nend\n",
+            ),
+            (
+                "molt_taq_ingest_line",
+                "local function molt_taq_parse_i64_field(field: string): number\n\tlocal trimmed = string.match(field, \"^%s*(.-)%s*$\")\n\tif trimmed == nil or trimmed == \"\" then error({__type=\"ValueError\", __msg=\"invalid literal for int() with base 10: ''\"}) end\n\tif string.match(trimmed, \"^[+-]?%d+$\") == nil then error({__type=\"ValueError\", __msg=\"invalid literal for int() with base 10: '\" .. trimmed .. \"'\"}) end\n\treturn tonumber(trimmed) :: number\nend\n\nlocal function molt_taq_div_euclid(a: number, b: number): number\n\tlocal q = if a >= 0 then math.floor(a / b) else math.ceil(a / b)\n\tlocal r = a - q * b\n\tif r < 0 then\n\t\tif b > 0 then q -= 1 else q += 1 end\n\tend\n\treturn q\nend\n\nlocal function molt_taq_ingest_line(dict: any, line: any, bucket_size: any): boolean\n\tif type(dict) ~= \"table\" then error({__type=\"TypeError\", __msg=\"TAQ ingest expects dict\"}) end\n\tif type(line) ~= \"string\" then error({__type=\"TypeError\", __msg=\"TAQ ingest expects str\"}) end\n\tif type(bucket_size) ~= \"number\" then error({__type=\"TypeError\", __msg=\"TAQ ingest expects integer bucket size\"}) end\n\tif bucket_size == 0 then error({__type=\"ZeroDivisionError\", __msg=\"integer division or modulo by zero\"}) end\n\tlocal fields = {}\n\tlocal field_count = 0\n\tlocal pos = 1\n\twhile true do\n\t\tlocal i, j = string.find(line, \"|\", pos, true)\n\t\tfield_count += 1\n\t\tif i then\n\t\t\tfields[field_count] = string.sub(line, pos, i - 1)\n\t\t\tpos = j + 1\n\t\telse\n\t\t\tfields[field_count] = string.sub(line, pos)\n\t\t\tbreak\n\t\tend\n\tend\n\tlocal ts_field = fields[1]\n\tlocal sym_field = fields[3]\n\tlocal vol_field = fields[5]\n\tif ts_field == nil or sym_field == nil or vol_field == nil then error({__type=\"IndexError\", __msg=\"list index out of range\"}) end\n\tif ts_field == \"END\" or vol_field == \"ENDP\" then return false end\n\tlocal timestamp = molt_taq_parse_i64_field(ts_field)\n\tlocal volume = molt_taq_parse_i64_field(vol_field)\n\tlocal series = dict[sym_field]\n\tif series == nil then\n\t\tseries = {}\n\t\tdict[sym_field] = series\n\tend\n\tif type(series) ~= \"table\" then error({__type=\"TypeError\", __msg=\"TAQ ingest bucket must be list\"}) end\n\tseries[#series + 1] = {molt_taq_div_euclid(timestamp, bucket_size), volume}\n\treturn true\nend\n",
+            ),
+            (
                 "molt_print",
                 "local function molt_print(...)\n\tlocal n = select(\"#\", ...)\n\tif n == 0 then print(); return end\n\tif n == 1 then print(molt_str((...))) return end\n\tlocal parts = table.create(n)\n\tfor i = 1, n do\n\t\tparts[i] = molt_str((select(i, ...)))\n\tend\n\tprint(table.concat(parts, \" \"))\nend\n",
             ),
@@ -765,7 +777,7 @@ impl LuauBackend {
         }
 
         // String method helpers.
-        if used("molt_string") {
+        if used("molt_string.") {
             self.output.push_str(concat!(
                 "local molt_string = {\n",
                 "\tformat = string.format,\n",
@@ -4351,13 +4363,48 @@ impl LuauBackend {
                     self.emit_line(&format!("local {out} = string.rep({s}, {n})"));
                 }
             }
-            "string_split_ws_dict_inc" | "string_split_sep_dict_inc" | "taq_ingest_line" => {
-                // Mark as unsupported so compile_checked rejects these.
-                self.emit_line(&format!(
-                    "local {} = nil -- [unsupported op: {}]",
-                    self.out_var(op),
-                    op.kind
-                ));
+            "string_split_ws_dict_inc" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let line = sanitize_ident(&args[0]);
+                    let dict = sanitize_ident(&args[1]);
+                    let delta = sanitize_ident(&args[2]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_string_split_ws_dict_inc({line}, {dict}, {delta})"
+                    ));
+                    if let Some(ref out_name) = op.out {
+                        self.tuple_vars.insert(out_name.clone());
+                    }
+                }
+            }
+            "string_split_sep_dict_inc" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 4 {
+                    let line = sanitize_ident(&args[0]);
+                    let sep = sanitize_ident(&args[1]);
+                    let dict = sanitize_ident(&args[2]);
+                    let delta = sanitize_ident(&args[3]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_string_split_sep_dict_inc({line}, {sep}, {dict}, {delta})"
+                    ));
+                    if let Some(ref out_name) = op.out {
+                        self.tuple_vars.insert(out_name.clone());
+                    }
+                }
+            }
+            "taq_ingest_line" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let dict = sanitize_ident(&args[0]);
+                    let line = sanitize_ident(&args[1]);
+                    let bucket_size = sanitize_ident(&args[2]);
+                    self.emit_line(&format!(
+                        "local {out} = molt_taq_ingest_line({dict}, {line}, {bucket_size})"
+                    ));
+                }
             }
 
             // ================================================================
@@ -10706,6 +10753,134 @@ mod tests {
             source.contains("local sum: number, overflow: boolean = molt_checked_i64_add(a, b)")
         );
         assert!(!source.contains("[unsupported op: checked_add]"));
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_fused_dict_kernels() {
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "split_ws_dict_inc_test".to_string(),
+                    params: vec!["line".to_string(), "dict".to_string(), "delta".to_string()],
+                    param_types: Some(vec![
+                        "str".to_string(),
+                        "dict".to_string(),
+                        "int".to_string(),
+                    ]),
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![
+                        OpIR {
+                            kind: "string_split_ws_dict_inc".to_string(),
+                            args: Some(vec![
+                                "line".to_string(),
+                                "dict".to_string(),
+                                "delta".to_string(),
+                            ]),
+                            out: Some("ws_result".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            args: Some(vec!["ws_result".to_string()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                },
+                FunctionIR {
+                    name: "split_sep_dict_inc_test".to_string(),
+                    params: vec![
+                        "line".to_string(),
+                        "sep".to_string(),
+                        "dict".to_string(),
+                        "delta".to_string(),
+                    ],
+                    param_types: Some(vec![
+                        "str".to_string(),
+                        "str".to_string(),
+                        "dict".to_string(),
+                        "int".to_string(),
+                    ]),
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![
+                        OpIR {
+                            kind: "string_split_sep_dict_inc".to_string(),
+                            args: Some(vec![
+                                "line".to_string(),
+                                "sep".to_string(),
+                                "dict".to_string(),
+                                "delta".to_string(),
+                            ]),
+                            out: Some("sep_result".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            args: Some(vec!["sep_result".to_string()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                },
+                FunctionIR {
+                    name: "taq_ingest_line_test".to_string(),
+                    params: vec![
+                        "dict".to_string(),
+                        "line".to_string(),
+                        "bucket_size".to_string(),
+                    ],
+                    param_types: Some(vec![
+                        "dict".to_string(),
+                        "str".to_string(),
+                        "int".to_string(),
+                    ]),
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![
+                        OpIR {
+                            kind: "taq_ingest_line".to_string(),
+                            args: Some(vec![
+                                "dict".to_string(),
+                                "line".to_string(),
+                                "bucket_size".to_string(),
+                            ]),
+                            out: Some("ingested".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".to_string(),
+                            args: Some(vec!["ingested".to_string()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                },
+            ],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("fused dict kernels should lower without unsupported markers");
+
+        assert!(source.contains("local function molt_string_split_ws_dict_inc"));
+        assert!(source.contains("local function molt_string_split_sep_dict_inc"));
+        assert!(source.contains("local function molt_taq_ingest_line"));
+        assert!(!source.contains("local molt_string = {"));
+        assert!(
+            source.contains("local ws_result = molt_string_split_ws_dict_inc(line, dict, delta)")
+        );
+        assert!(
+            source.contains(
+                "local sep_result = molt_string_split_sep_dict_inc(line, sep, dict, delta)"
+            )
+        );
+        assert!(source.contains("local ingested = molt_taq_ingest_line(dict, line, bucket_size)"));
+        assert!(source.contains(
+            "series[#series + 1] = {molt_taq_div_euclid(timestamp, bucket_size), volume}"
+        ));
+        assert!(!source.contains("[unsupported op: string_split_ws_dict_inc]"));
+        assert!(!source.contains("[unsupported op: string_split_sep_dict_inc]"));
+        assert!(!source.contains("[unsupported op: taq_ingest_line]"));
     }
 
     #[test]
