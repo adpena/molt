@@ -2,18 +2,29 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import os
 import platform
 from pathlib import Path
+import subprocess
 import sys
-from typing import Any, Sequence
+import threading
+import time
+from typing import Any, BinaryIO, Sequence, TextIO
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOG_ROOT = Path("logs/agents")
+CODEX_STALL_ROOT = LOG_ROOT / "codex_stall"
+CANONICAL_ARTIFACT_ROOTS = (
+    Path("logs"),
+    Path("tmp"),
+    Path("bench/results"),
+    Path("target"),
+)
 SCHEMA_VERSION = 1
 ACTIVE_STATUSES = frozenset({"running", "paused", "blocked"})
 BROAD_ROLE = "broad-sweep coordinator"
@@ -57,8 +68,185 @@ class CoordinationRecord:
         return self.proof_role == BROAD_ROLE
 
 
+@dataclass
+class StreamTiming:
+    name: str
+    byte_count: int = 0
+    chunk_count: int = 0
+    first_output_offset_sec: float | None = None
+    last_output_offset_sec: float | None = None
+    max_idle_gap_sec: float = 0.0
+    idle_spans: list[dict[str, float | str]] | None = None
+    idle_spans_truncated: int = 0
+
+    def __post_init__(self) -> None:
+        if self.idle_spans is None:
+            self.idle_spans = []
+
+    def _record_span(
+        self,
+        *,
+        kind: str,
+        start_offset_sec: float,
+        end_offset_sec: float,
+        max_spans: int,
+    ) -> None:
+        duration = max(0.0, end_offset_sec - start_offset_sec)
+        if len(self.idle_spans or ()) >= max_spans:
+            self.idle_spans_truncated += 1
+            return
+        assert self.idle_spans is not None
+        self.idle_spans.append(
+            {
+                "kind": kind,
+                "start_offset_sec": round(start_offset_sec, 6),
+                "end_offset_sec": round(end_offset_sec, 6),
+                "duration_sec": round(duration, 6),
+            }
+        )
+
+    def observe(
+        self,
+        *,
+        offset_sec: float,
+        byte_count: int,
+        idle_threshold_sec: float,
+        max_spans: int,
+    ) -> None:
+        if byte_count <= 0:
+            return
+        if self.first_output_offset_sec is None:
+            idle_gap = offset_sec
+            self.first_output_offset_sec = offset_sec
+            if idle_gap >= idle_threshold_sec:
+                self._record_span(
+                    kind="first_output_gap",
+                    start_offset_sec=0.0,
+                    end_offset_sec=offset_sec,
+                    max_spans=max_spans,
+                )
+        else:
+            assert self.last_output_offset_sec is not None
+            idle_gap = max(0.0, offset_sec - self.last_output_offset_sec)
+            if idle_gap >= idle_threshold_sec:
+                self._record_span(
+                    kind="between_outputs",
+                    start_offset_sec=self.last_output_offset_sec,
+                    end_offset_sec=offset_sec,
+                    max_spans=max_spans,
+                )
+        self.max_idle_gap_sec = max(self.max_idle_gap_sec, idle_gap)
+        self.last_output_offset_sec = offset_sec
+        self.byte_count += byte_count
+        self.chunk_count += 1
+
+    def finish(
+        self,
+        *,
+        elapsed_sec: float,
+        idle_threshold_sec: float,
+        max_spans: int,
+    ) -> dict[str, Any]:
+        no_output = self.first_output_offset_sec is None
+        if no_output:
+            first_output_gap_sec = elapsed_sec
+            self.max_idle_gap_sec = max(self.max_idle_gap_sec, elapsed_sec)
+            if elapsed_sec >= idle_threshold_sec:
+                self._record_span(
+                    kind="no_output",
+                    start_offset_sec=0.0,
+                    end_offset_sec=elapsed_sec,
+                    max_spans=max_spans,
+                )
+        else:
+            first_output_gap_sec = self.first_output_offset_sec
+            assert self.last_output_offset_sec is not None
+            terminal_gap = max(0.0, elapsed_sec - self.last_output_offset_sec)
+            self.max_idle_gap_sec = max(self.max_idle_gap_sec, terminal_gap)
+            if terminal_gap >= idle_threshold_sec:
+                self._record_span(
+                    kind="terminal_idle",
+                    start_offset_sec=self.last_output_offset_sec,
+                    end_offset_sec=elapsed_sec,
+                    max_spans=max_spans,
+                )
+        return {
+            "name": self.name,
+            "byte_count": self.byte_count,
+            "chunk_count": self.chunk_count,
+            "first_output_gap_sec": round(first_output_gap_sec, 6),
+            "first_output_seen": not no_output,
+            "last_output_offset_sec": (
+                None
+                if self.last_output_offset_sec is None
+                else round(self.last_output_offset_sec, 6)
+            ),
+            "max_idle_gap_sec": round(self.max_idle_gap_sec, 6),
+            "idle_spans": list(self.idle_spans or ()),
+            "idle_spans_truncated": self.idle_spans_truncated,
+        }
+
+
+class CodexStallTelemetry:
+    def __init__(
+        self,
+        *,
+        idle_threshold_sec: float,
+        max_spans: int,
+        started_monotonic: float,
+    ) -> None:
+        self.idle_threshold_sec = idle_threshold_sec
+        self.max_spans = max_spans
+        self.started_monotonic = started_monotonic
+        self._lock = threading.Lock()
+        self._streams = {
+            "combined": StreamTiming("combined"),
+            "stdout": StreamTiming("stdout"),
+            "stderr": StreamTiming("stderr"),
+        }
+
+    def observe(self, stream: str, byte_count: int) -> None:
+        offset_sec = time.monotonic() - self.started_monotonic
+        with self._lock:
+            self._streams[stream].observe(
+                offset_sec=offset_sec,
+                byte_count=byte_count,
+                idle_threshold_sec=self.idle_threshold_sec,
+                max_spans=self.max_spans,
+            )
+            self._streams["combined"].observe(
+                offset_sec=offset_sec,
+                byte_count=byte_count,
+                idle_threshold_sec=self.idle_threshold_sec,
+                max_spans=self.max_spans,
+            )
+
+    def combined_idle_sec(self) -> tuple[float, bool]:
+        elapsed = time.monotonic() - self.started_monotonic
+        with self._lock:
+            combined = self._streams["combined"]
+            if combined.last_output_offset_sec is None:
+                return (elapsed, True)
+            return (max(0.0, elapsed - combined.last_output_offset_sec), False)
+
+    def finish(self, elapsed_sec: float) -> dict[str, Any]:
+        with self._lock:
+            return {
+                name: stream.finish(
+                    elapsed_sec=elapsed_sec,
+                    idle_threshold_sec=self.idle_threshold_sec,
+                    max_spans=self.max_spans,
+                )
+                for name, stream in self._streams.items()
+            }
+
+
 def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def artifact_stamp() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def repo_relative(path: Path, repo_root: Path) -> str:
@@ -350,6 +538,286 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def resolve_canonical_artifact_path(repo_root: Path, path: Path) -> Path:
+    repo_root = repo_root.resolve()
+    resolved = path if path.is_absolute() else repo_root / path
+    resolved = resolved.resolve()
+    try:
+        resolved.relative_to(repo_root)
+    except ValueError as exc:
+        raise ValueError(f"artifact path must stay under repo root: {path}") from exc
+
+    roots = tuple((repo_root / root).resolve() for root in CANONICAL_ARTIFACT_ROOTS)
+    if not any(resolved == root or root in resolved.parents for root in roots):
+        allowed = ", ".join(root.as_posix() for root in CANONICAL_ARTIFACT_ROOTS)
+        raise ValueError(f"artifact path must stay under canonical roots: {allowed}")
+    return resolved
+
+
+def default_codex_stall_report_path(repo_root: Path) -> Path:
+    return repo_root / CODEX_STALL_ROOT / f"stall_{artifact_stamp()}_{os.getpid()}.json"
+
+
+def command_descriptor(command: Sequence[str], *, record_command: bool) -> dict[str, Any]:
+    joined = "\0".join(command).encode("utf-8", errors="surrogateescape")
+    descriptor: dict[str, Any] = {
+        "argv_count": len(command),
+        "argv_sha256": hashlib.sha256(joined).hexdigest(),
+        "executable_name": Path(command[0]).name if command else "",
+        "argv_recorded": record_command,
+    }
+    if record_command:
+        descriptor["argv"] = list(command)
+    return descriptor
+
+
+def codex_stall_launch_command(args: argparse.Namespace, command: Sequence[str]) -> list[str]:
+    if args.no_memory_guard:
+        return list(command)
+    memory_guard = args.repo_root.resolve() / "tools" / "memory_guard.py"
+    wrapped = [sys.executable, str(memory_guard)]
+    if args.memory_guard_max_rss_gb is not None:
+        wrapped.extend(["--max-rss-gb", str(args.memory_guard_max_rss_gb)])
+    if args.memory_guard_max_total_rss_gb is not None:
+        wrapped.extend(
+            ["--max-total-rss-gb", str(args.memory_guard_max_total_rss_gb)]
+        )
+    if args.memory_guard_child_rlimit_gb is not None:
+        wrapped.extend(["--child-rlimit-gb", str(args.memory_guard_child_rlimit_gb)])
+    if args.memory_guard_timeout_sec is not None:
+        wrapped.extend(["--timeout", str(args.memory_guard_timeout_sec)])
+    wrapped.extend(["--", *command])
+    return wrapped
+
+
+def _write_stream_chunk(target: TextIO, chunk: bytes) -> None:
+    buffer = getattr(target, "buffer", None)
+    try:
+        if buffer is not None:
+            buffer.write(chunk)
+            buffer.flush()
+        else:
+            target.write(chunk.decode("utf-8", errors="replace"))
+            target.flush()
+    except BrokenPipeError:
+        return
+
+
+def _pipe_reader(
+    pipe: BinaryIO,
+    *,
+    stream_name: str,
+    target: TextIO,
+    telemetry: CodexStallTelemetry,
+) -> None:
+    try:
+        while True:
+            chunk = pipe.read(8192)
+            if not chunk:
+                break
+            telemetry.observe(stream_name, len(chunk))
+            _write_stream_chunk(target, chunk)
+    finally:
+        pipe.close()
+
+
+def run_codex_stall_diagnostic(args: argparse.Namespace) -> int:
+    repo_root = args.repo_root.resolve()
+    command = list(args.child_command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        print("agent_coordination: codex-stall command is required", file=sys.stderr)
+        return 2
+    if args.idle_threshold_sec <= 0:
+        print("agent_coordination: --idle-threshold-sec must be > 0", file=sys.stderr)
+        return 2
+    if args.poll_sec <= 0:
+        print("agent_coordination: --poll-sec must be > 0", file=sys.stderr)
+        return 2
+    if args.max_spans < 0:
+        print("agent_coordination: --max-spans must be >= 0", file=sys.stderr)
+        return 2
+    try:
+        report_path = resolve_canonical_artifact_path(
+            repo_root,
+            args.out or default_codex_stall_report_path(repo_root),
+        )
+    except ValueError as exc:
+        print(f"agent_coordination: {exc}", file=sys.stderr)
+        return 2
+
+    launched_command = codex_stall_launch_command(args, command)
+    started_at = utc_now()
+    started_monotonic = time.monotonic()
+    telemetry = CodexStallTelemetry(
+        idle_threshold_sec=args.idle_threshold_sec,
+        max_spans=args.max_spans,
+        started_monotonic=started_monotonic,
+    )
+    base_payload: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "codex_stall_diagnostic",
+        "status": "running",
+        "started_at_utc": started_at,
+        "completed_at_utc": None,
+        "repo_root": str(repo_root),
+        "report_path": repo_relative(report_path, repo_root),
+        "privacy": {
+            "records_child_output_text": False,
+            "records_codex_state": False,
+            "records_argv_by_default": False,
+            "recorded_fields": [
+                "timing",
+                "byte_counts",
+                "chunk_counts",
+                "return_code",
+                "command_hash",
+            ],
+        },
+        "diagnostic": {
+            "idle_threshold_sec": args.idle_threshold_sec,
+            "poll_sec": args.poll_sec,
+            "max_spans_per_stream": args.max_spans,
+            "live_notices": not args.no_live_notices,
+        },
+        "memory_guard": {
+            "enabled": not args.no_memory_guard,
+            "wrapper": "tools/memory_guard.py" if not args.no_memory_guard else None,
+            "timeout_sec": args.memory_guard_timeout_sec,
+            "max_rss_gb": args.memory_guard_max_rss_gb,
+            "max_total_rss_gb": args.memory_guard_max_total_rss_gb,
+            "child_rlimit_gb": args.memory_guard_child_rlimit_gb,
+        },
+        "command": command_descriptor(command, record_command=args.record_command),
+        "launched_command": command_descriptor(
+            launched_command,
+            record_command=False,
+        ),
+        "environment": environment_snapshot(repo_root),
+        "streams": {},
+    }
+    write_json(report_path, base_payload)
+
+    print(
+        "codex-stall: timing child output; report={path}; privacy=no child output text".format(
+            path=repo_relative(report_path, repo_root)
+        ),
+        file=sys.stderr,
+    )
+    proc: subprocess.Popen[bytes] | None = None
+    interrupted = False
+    try:
+        proc = subprocess.Popen(
+            launched_command,
+            cwd=str(repo_root),
+            stdin=None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+        readers = [
+            threading.Thread(
+                target=_pipe_reader,
+                kwargs={
+                    "pipe": proc.stdout,
+                    "stream_name": "stdout",
+                    "target": sys.stdout,
+                    "telemetry": telemetry,
+                },
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_pipe_reader,
+                kwargs={
+                    "pipe": proc.stderr,
+                    "stream_name": "stderr",
+                    "target": sys.stderr,
+                    "telemetry": telemetry,
+                },
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+
+        next_notice_sec = args.idle_threshold_sec
+        while proc.poll() is None:
+            time.sleep(args.poll_sec)
+            if args.no_live_notices:
+                continue
+            idle_sec, awaiting_first = telemetry.combined_idle_sec()
+            elapsed_sec = time.monotonic() - started_monotonic
+            if idle_sec >= next_notice_sec:
+                phase = "awaiting first child output" if awaiting_first else "idle"
+                print(
+                    "codex-stall: {phase} for {idle:.1f}s (elapsed {elapsed:.1f}s)".format(
+                        phase=phase,
+                        idle=idle_sec,
+                        elapsed=elapsed_sec,
+                    ),
+                    file=sys.stderr,
+                )
+                next_notice_sec = idle_sec + args.idle_threshold_sec
+            elif idle_sec < args.idle_threshold_sec:
+                next_notice_sec = args.idle_threshold_sec
+
+        return_code = proc.wait()
+        for reader in readers:
+            reader.join(timeout=5.0)
+    except KeyboardInterrupt:
+        interrupted = True
+        return_code = 130
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                return_code = proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return_code = proc.wait()
+    except OSError as exc:
+        completed_at = utc_now()
+        elapsed_sec = time.monotonic() - started_monotonic
+        payload = base_payload | {
+            "status": "spawn_failed",
+            "completed_at_utc": completed_at,
+            "elapsed_sec": round(elapsed_sec, 6),
+            "error": str(exc),
+            "streams": telemetry.finish(elapsed_sec),
+        }
+        write_json(report_path, payload)
+        print(f"agent_coordination: codex-stall spawn failed: {exc}", file=sys.stderr)
+        return 2
+
+    completed_at = utc_now()
+    elapsed_sec = time.monotonic() - started_monotonic
+    streams = telemetry.finish(elapsed_sec)
+    status = "interrupted" if interrupted else "completed"
+    payload = base_payload | {
+        "status": status,
+        "completed_at_utc": completed_at,
+        "elapsed_sec": round(elapsed_sec, 6),
+        "return_code": return_code,
+        "streams": streams,
+    }
+    write_json(report_path, payload)
+    combined = streams["combined"]
+    print(
+        "codex-stall: rc={rc} elapsed={elapsed:.1f}s first_output_gap={first:.1f}s "
+        "max_idle={idle:.1f}s report={path}".format(
+            rc=return_code,
+            elapsed=elapsed_sec,
+            first=combined["first_output_gap_sec"],
+            idle=combined["max_idle_gap_sec"],
+            path=repo_relative(report_path, repo_root),
+        ),
+        file=sys.stderr,
+    )
+    return int(return_code)
+
+
 def init_task(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = args.repo_root.resolve()
     task = validate_task_name(args.task)
@@ -512,6 +980,63 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     env = sub.add_parser("env", help="print local agent environment facts")
     env.add_argument("--json", action="store_true")
+
+    stall = sub.add_parser(
+        "codex-stall",
+        help=(
+            "run a command and write privacy-preserving first-output/idle timing "
+            "diagnostics under canonical artifact roots"
+        ),
+    )
+    stall.add_argument(
+        "--out",
+        type=Path,
+        help=(
+            "JSON report path; must stay under logs/, tmp/, bench/results/, or "
+            "target/ (default: logs/agents/codex_stall/stall_<timestamp>.json)"
+        ),
+    )
+    stall.add_argument(
+        "--idle-threshold-sec",
+        type=float,
+        default=30.0,
+        help="minimum silent span recorded as an idle gap (default: 30)",
+    )
+    stall.add_argument(
+        "--poll-sec",
+        type=float,
+        default=1.0,
+        help="live-notice polling interval while the child is running (default: 1)",
+    )
+    stall.add_argument(
+        "--max-spans",
+        type=int,
+        default=200,
+        help="maximum idle spans retained per stream before truncation (default: 200)",
+    )
+    stall.add_argument(
+        "--record-command",
+        action="store_true",
+        help="include the raw child argv in the report; default stores only a hash",
+    )
+    stall.add_argument(
+        "--no-live-notices",
+        action="store_true",
+        help="suppress stderr notices while combined child output stays idle",
+    )
+    stall.add_argument(
+        "--no-memory-guard",
+        action="store_true",
+        help=(
+            "launch the command directly instead of through tools/memory_guard.py; "
+            "use only for non-proof probes or an already guarded direct child"
+        ),
+    )
+    stall.add_argument("--memory-guard-timeout-sec", type=float)
+    stall.add_argument("--memory-guard-max-rss-gb", type=float)
+    stall.add_argument("--memory-guard-max-total-rss-gb", type=float)
+    stall.add_argument("--memory-guard-child-rlimit-gb", type=float)
+    stall.add_argument("child_command", nargs=argparse.REMAINDER)
     return parser.parse_args(argv)
 
 
@@ -534,6 +1059,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print_text_environment(payload)
         return 0
+
+    if args.command == "codex-stall":
+        return run_codex_stall_diagnostic(args)
 
     payload = summary_payload(repo_root)
     if args.json:

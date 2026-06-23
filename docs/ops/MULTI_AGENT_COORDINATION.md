@@ -91,6 +91,12 @@ uv run --python 3.12 python tools/agent_coordination.py check
   same proof lane on the same shared target root.
 - `env` prints local OS/Python/shell facts so agents choose macOS, Linux, WSL,
   or Windows-safe commands before running long proof lanes.
+- `codex-stall -- <command>` runs a proof command through
+  `tools/memory_guard.py` by default and writes privacy-preserving output
+  liveness evidence under `logs/agents/codex_stall/`. Use it when Codex appears
+  stalled or crash-adjacent during Windows proof work; it records first-output
+  gaps, stream-idle spans, byte/chunk counts, elapsed time, and return code,
+  but not child stdout/stderr text or Codex state.
 - `tools/new-agent-task.sh <task>` is the short wrapper for
   `tools/agent_coordination.py init <task>`.
 - `coordination.json` is a discovery index, not a lock. The real serialization
@@ -113,8 +119,10 @@ When a POSIX wrapper is useful on Windows, use the `usable_bash` reported by
 
 If Codex restarts with Windows status `0xC000013A`, treat it as an interrupted
 or torn-down process first. Preserve the active task log, re-run `env`, and
-inspect application logs before assuming the most recent `state_db`
-read-repair warning is causal.
+inspect application logs before assuming the most recent `state_db`,
+plugin-manifest, or MCP warning is causal. Do not edit Codex runtime plugin
+manifests, plugin caches, or state databases as a first response while a Molt
+proof lane is active.
 
 ## Coordination Roles
 
