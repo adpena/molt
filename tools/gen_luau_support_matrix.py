@@ -43,6 +43,7 @@ TARGET_LIMITED_OPS = {
     "module_new": "Modeled as Luau table object for the admitted subset.",
     "builtin_type": "Modeled as named Luau type metadata for the admitted subset.",
     "class_new": "Modeled as Luau table/metatable object for the admitted subset.",
+    "class_apply_set_name": "__set_name__ hooks dispatch over Luau class-table snapshots for the admitted subset.",
     "classmethod_new": "Modeled as Luau descriptor metadata for the admitted subset.",
     "class_layout_version": "Modeled as Luau class-table layout metadata for the admitted subset.",
     "class_merge_layout": "Maintains Luau class-table layout metadata for the admitted subset.",

@@ -497,6 +497,10 @@ impl LuauBackend {
                 "local function molt_class_lookup(cls: any, attr: any): any\n\tlocal current = cls\n\tlocal seen = {}\n\twhile type(current) == \"table\" and seen[current] ~= true do\n\t\tseen[current] = true\n\t\tlocal raw = rawget(current, attr)\n\t\tif raw ~= nil then return raw end\n\t\tlocal mt = getmetatable(current)\n\t\tif type(mt) ~= \"table\" or type(mt.__index) ~= \"table\" then return nil end\n\t\tcurrent = mt.__index\n\tend\n\treturn nil\nend\n\nlocal function molt_bind_attr(obj: any, owner: any, raw: any): any\n\tif type(raw) == \"table\" then\n\t\tlocal kind = raw.__molt_descriptor_kind\n\t\tif kind == \"staticmethod\" then return raw.__func end\n\t\tif kind == \"classmethod\" then\n\t\t\tlocal func = raw.__func\n\t\t\treturn function(...) return func(owner, ...) end\n\t\tend\n\t\tif kind == \"property\" then\n\t\t\tif obj == owner then return raw end\n\t\t\tlocal fget = raw.__get\n\t\t\tif fget == nil then error({__type=\"AttributeError\", __msg=\"unreadable attribute\"}) end\n\t\t\treturn fget(obj)\n\t\tend\n\tend\n\tif type(raw) == \"function\" and type(owner) == \"table\" and obj ~= owner then\n\t\treturn function(...) return raw(obj, ...) end\n\tend\n\treturn raw\nend\n\nlocal function molt_get_attr(obj: any, attr: any): any\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type == true then\n\t\tlocal raw = molt_class_lookup(obj, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, obj, raw) end\n\t\treturn nil\n\tend\n\tlocal own = rawget(obj, attr)\n\tif own ~= nil then return own end\n\tlocal cls = getmetatable(obj)\n\tif type(cls) == \"table\" then\n\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\tif raw ~= nil then return molt_bind_attr(obj, cls, raw) end\n\tend\n\treturn obj[attr]\nend\n\nlocal function molt_get_attr_default(obj: any, attr: any, default: any): any\n\tlocal value = molt_get_attr(obj, attr)\n\tif value ~= nil then return value end\n\treturn default\nend\n\nlocal function molt_has_attr(obj: any, attr: any): boolean\n\tlocal ok, value = pcall(function() return molt_get_attr(obj, attr) end)\n\tif ok then return value ~= nil end\n\tif type(value) == \"table\" and value.__type == \"AttributeError\" then return false end\n\terror(value)\nend\n\nlocal function molt_set_attr(obj: any, attr: any, value: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fset = raw.__set\n\t\t\t\tif fset == nil then error({__type=\"AttributeError\", __msg=\"can't set attribute\"}) end\n\t\t\t\tfset(obj, value)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = value\n\treturn nil\nend\n\nlocal function molt_del_attr(obj: any, attr: any): nil\n\tif type(obj) ~= \"table\" then return nil end\n\tif obj.__molt_is_type ~= true then\n\t\tlocal cls = getmetatable(obj)\n\t\tif type(cls) == \"table\" then\n\t\t\tlocal raw = molt_class_lookup(cls, attr)\n\t\t\tif type(raw) == \"table\" and raw.__molt_descriptor_kind == \"property\" then\n\t\t\t\tlocal fdel = raw.__del\n\t\t\t\tif fdel == nil then error({__type=\"AttributeError\", __msg=\"can't delete attribute\"}) end\n\t\t\t\tfdel(obj)\n\t\t\t\treturn nil\n\t\t\tend\n\t\tend\n\tend\n\tobj[attr] = nil\n\treturn nil\nend\n",
             ),
             (
+                "molt_class_apply_set_name",
+                "local function molt_class_apply_set_name(cls: any): nil\n\tif type(cls) ~= \"table\" or cls.__molt_is_type ~= true then return nil end\n\tlocal entries = {}\n\tlocal count = 0\n\tfor name, value in pairs(cls) do\n\t\tif name ~= \"__index\" and name ~= \"__molt_is_type\" and (type(name) ~= \"string\" or string.sub(name, 1, 7) ~= \"__molt_\") then\n\t\t\tcount += 1\n\t\t\tentries[count] = {name, value}\n\t\tend\n\tend\n\tfor i = 1, count do\n\t\tlocal entry = entries[i]\n\t\tlocal name = entry[1]\n\t\tlocal value = entry[2]\n\t\tlocal hook = molt_get_attr(value, \"__set_name__\")\n\t\tif hook ~= nil then hook(cls, name) end\n\tend\n\treturn nil\nend\n",
+            ),
+            (
                 "molt_guard_type",
                 "local function molt_guard_type(val: any, expected: any): any\n\tif type(expected) ~= \"number\" then error({__type=\"TypeError\", __msg=\"guard type tag must be int\"}) end\n\treturn val\nend\n",
             ),
@@ -631,7 +635,8 @@ impl LuauBackend {
             || used_call("molt_get_attr_default")
             || used_call("molt_has_attr")
             || used_call("molt_set_attr")
-            || used_call("molt_del_attr");
+            || used_call("molt_del_attr")
+            || used_call("molt_class_apply_set_name");
         if needs_str_group {
             self.output.push_str("local molt_repr\n");
         }
@@ -2938,15 +2943,10 @@ impl LuauBackend {
                 let out = self.out_var(op);
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let raw_attr = op.s_value.as_deref().unwrap_or("unknown");
-                let attr = sanitize_ident(raw_attr);
                 if let Some(obj) = args.first() {
                     let raw_obj = obj.as_str();
                     let obj = sanitize_ident(raw_obj);
                     let obj_is_str = self.plan_knows_string(raw_obj);
-                    // For dunder attrs that might be on functions (stored
-                    // in the side-table), look there first.
-                    let use_side_table =
-                        matches!(raw_attr, "__defaults__" | "__kwdefaults__" | "__closure__");
                     if obj_is_str && raw_attr == "removeprefix" {
                         self.emit_line(&format!(
                             "local {out} = function(__args) local __prefix = __args[1]; if __prefix ~= \"\" and string.sub({obj}, 1, #__prefix) == __prefix then return string.sub({obj}, #__prefix + 1) end; return {obj} end"
@@ -2972,9 +2972,10 @@ impl LuauBackend {
                         )
                     {
                         self.emit_string_predicate_attr(&out, &obj, raw_attr);
-                    } else if use_side_table {
+                    } else if raw_attr.starts_with("__") && raw_attr.ends_with("__") {
+                        let escaped = escape_luau_string(raw_attr);
                         self.emit_line(&format!(
-                            "local {out} = if molt_func_attrs[{obj}] then molt_func_attrs[{obj}].{attr} else nil"
+                            "local {out} = if type({obj}) == \"function\" and molt_func_attrs[{obj}] ~= nil then molt_func_attrs[{obj}][\"{escaped}\"] else molt_get_attr({obj}, \"{escaped}\")"
                         ));
                     } else {
                         let escaped = escape_luau_string(raw_attr);
@@ -3046,23 +3047,18 @@ impl LuauBackend {
             "set_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
                 let attr = op.s_value.as_deref().unwrap_or("unknown");
+                let escaped = escape_luau_string(attr);
                 if attr.starts_with("__") && attr.ends_with("__") {
-                    // Dunder attribute.  Functions can't hold attrs in Luau,
-                    // so store semantically meaningful ones in the side-table
-                    // and drop purely informational metadata.
-                    let needs_side_table =
-                        matches!(attr, "__defaults__" | "__kwdefaults__" | "__closure__");
-                    if needs_side_table && args.len() >= 2 {
+                    // Functions cannot hold attrs in Luau; table-backed
+                    // classes and objects use the normal attribute authority.
+                    if args.len() >= 2 {
                         let obj = sanitize_ident(&args[0]);
                         let value = sanitize_ident(&args[1]);
-                        let attr_s = sanitize_ident(attr);
                         self.emit_line(&format!(
-                            "if {obj} then if not molt_func_attrs[{obj}] then molt_func_attrs[{obj}] = {{}} end; molt_func_attrs[{obj}].{attr_s} = {value} end"
+                            "if type({obj}) == \"function\" then if molt_func_attrs[{obj}] == nil then molt_func_attrs[{obj}] = {{}} end; molt_func_attrs[{obj}][\"{escaped}\"] = {value} else molt_set_attr({obj}, \"{escaped}\", {value}) end"
                         ));
                     }
-                    // All other dunders — no-op.
                 } else {
-                    let escaped = escape_luau_string(attr);
                     if args.len() >= 2 {
                         let obj = sanitize_ident(&args[0]);
                         let value = sanitize_ident(&args[1]);
@@ -3625,7 +3621,17 @@ impl LuauBackend {
                 }
             }
             "class_apply_set_name" => {
-                self.emit_line(&format!("-- [class op: {}]", op.kind));
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if let Some(class) = args.first() {
+                    let class = sanitize_ident(class);
+                    self.emit_line(&format!("molt_class_apply_set_name({class})"));
+                }
+                if let Some(ref out_name) = op.out
+                    && out_name != "none"
+                {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil"));
+                }
             }
             "module_import" => {
                 if let Some(ref out_name) = op.out {
@@ -11893,6 +11899,108 @@ mod tests {
                 && !source.contains("[unsupported op: staticmethod_new]")
                 && !source.contains("[unsupported op: property_new]"),
             "descriptor ops must not leave checked-output markers, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_class_apply_set_name_authority() {
+        let ir = SimpleIR {
+            functions: vec![
+                FunctionIR {
+                    name: "class_apply_set_name_test".to_string(),
+                    params: vec![],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![
+                        OpIR {
+                            kind: "func_new".to_string(),
+                            out: Some("set_name_func".to_string()),
+                            s_value: Some("descriptor_set_name".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "class_new".to_string(),
+                            out: Some("descriptor_cls".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "set_attr_generic_obj".to_string(),
+                            args: Some(vec![
+                                "descriptor_cls".to_string(),
+                                "set_name_func".to_string(),
+                            ]),
+                            s_value: Some("__set_name__".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "object_new".to_string(),
+                            out: Some("descriptor".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "object_set_class".to_string(),
+                            args: Some(vec![
+                                "descriptor".to_string(),
+                                "descriptor_cls".to_string(),
+                            ]),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "class_new".to_string(),
+                            out: Some("owner_cls".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "set_attr_generic_obj".to_string(),
+                            args: Some(vec!["owner_cls".to_string(), "descriptor".to_string()]),
+                            s_value: Some("field".to_string()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "class_apply_set_name".to_string(),
+                            args: Some(vec!["owner_cls".to_string()]),
+                            out: Some("none".to_string()),
+                            ..OpIR::default()
+                        },
+                    ],
+                },
+                FunctionIR {
+                    name: "descriptor_set_name".to_string(),
+                    params: vec!["self".to_string(), "owner".to_string(), "name".to_string()],
+                    param_types: None,
+                    source_file: None,
+                    is_extern: false,
+                    ops: vec![OpIR {
+                        kind: "ret_void".to_string(),
+                        ..OpIR::default()
+                    }],
+                },
+            ],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("class_apply_set_name should lower through descriptor authority");
+        assert!(
+            source.contains("local function molt_class_apply_set_name")
+                && source.contains("local entries = {}")
+                && source.contains("local hook = molt_get_attr(value, \"__set_name__\")")
+                && source.contains("if hook ~= nil then hook(cls, name) end"),
+            "class_apply_set_name helper should snapshot and dispatch hooks, got:\n{source}"
+        );
+        assert!(
+            source.contains("molt_set_attr(descriptor_cls, \"__set_name__\", set_name_func)")
+                && source.contains("molt_set_attr(owner_cls, \"field\", descriptor)")
+                && source.contains("molt_class_apply_set_name(owner_cls)"),
+            "dunder class attrs and apply op should share attribute authority, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[class op: class_apply_set_name]")
+                && !source.contains("[unsupported op: class_apply_set_name]")
+                && !source.contains("All other dunders"),
+            "class_apply_set_name must not leave stale stub/no-op markers, got:\n{source}"
         );
     }
 
