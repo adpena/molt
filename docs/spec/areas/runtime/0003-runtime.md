@@ -12,6 +12,12 @@ The Molt runtime is a minimal, high-performance library written in Rust. It prov
 Molt uses 64-bit NaN-boxing for all objects. This allows small primitives to be stored inline without heap allocation.
 
 Heap objects are referenced directly via tagged 48-bit canonical pointers.
+Rust-owned opaque handles are not heap objects: they are registered in the
+pointer registry and exposed to Python as immediate-int handle bits via
+`opaque_handle_bits`. Runtime intrinsics that own those handles resolve and
+release the registry id explicitly; refcount, finalizer, and object-header APIs
+must never observe opaque Rust allocations as pointer-tagged `MoltObject`
+payloads.
 
 ### 2.1 The Bit Scheme (64-bit)
 - **NaN Space**: `0x7FF0000000000000` to `0xFFFF000000000000`

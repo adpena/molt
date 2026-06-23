@@ -964,6 +964,12 @@ PermissionError: missing 'net.connect' capability. Use --trusted, MOLT_TRUSTED=1
 ## Runtime Locking & Unsafe Policy
 - Runtime mutation requires the GIL token; do not bypass it.
 - Unsafe code must live in provenance/object modules; other runtime modules should be safe Rust.
+- Rust-owned opaque handles must be exposed with `opaque_handle_bits`, which
+  registers the pointer and returns an immediate-int registry id. Only real
+  Molt heap objects may use pointer-tagged bits such as `bits_from_ptr`; never
+  return `bits_from_ptr(Box::into_raw(...))` for a lock, async stream,
+  subprocess handle, decimal/fraction/ipaddress/contextlib/graphlib/select
+  state, or any other non-Molt Rust allocation.
 - When changing handle resolution or the pointer registry, run strict provenance checks (Miri when available) and the lock-sensitive bench subset.
 
 ## Testing Guidelines
