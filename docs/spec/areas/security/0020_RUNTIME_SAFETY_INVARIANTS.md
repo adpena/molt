@@ -17,6 +17,10 @@ entrypoints used to validate them.
 - `molt_handle_resolve` resolves via the pointer registry (not a raw unbox).
 - `molt_alloc` returns boxed object bits; raw pointers are only used internally
   for field access and must be registered when exposed as bits.
+- Rust-owned opaque handles must not use pointer-tagged object bits. Non-Molt
+  Rust allocations are exposed with `opaque_handle_bits`, which registers the
+  pointer and returns an immediate-int registry id; only the owning intrinsic
+  may resolve/release that id.
 
 ## 2. Header/Layout Invariants
 - `MoltHeader` is prepended to every heap object.

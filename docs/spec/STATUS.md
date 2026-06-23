@@ -59,6 +59,15 @@ the implementation. For forward-looking priorities, use
   The default target remains Python `3.12`.
 - Rust-first stdlib lowering is the canonical direction, with generated audit
   surfaces under `docs/spec/areas/compat/surfaces/stdlib/`.
+- `os.system` is intrinsic-backed through the subprocess process boundary,
+  uses explicit platform shells (`cmd.exe /c` on `nt`, `/bin/sh -c` otherwise),
+  and is tracked in the stdlib surface matrix with focused CPython differential
+  coverage.
+- Runtime opaque handles are pointer-registry ids encoded as immediate ints
+  through `opaque_handle_bits`; only Molt heap objects use pointer-tagged bits.
+  Rust-backed stdlib/runtime handles for locks, async streams, process/socket
+  state, select, decimal, fractions, ipaddress, contextlib, and graphlib no
+  longer expose `bits_from_ptr(Box::into_raw(...))` to Python refcount traffic.
 - Runtime intrinsic metadata and resolver generation now have separate generated
   source surfaces: `runtime/molt-runtime/src/intrinsics/generated.rs` remains the
   canonical `INTRINSICS` manifest table consumed by frontend/WASM tooling, while
