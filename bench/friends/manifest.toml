@@ -111,6 +111,9 @@ adapter_notes = "Compile/profile unmodified upstream tinygrad package code throu
 tags = ["gpu", "mlir", "tinygrad", "compatibility", "benchmark-suite"]
 repeat = 5
 timeout_sec = 1800
+prepare_cmds = [
+  ["{python}", "{repo_root}/tools/tinygrad_upat_static_exec_registry.py", "--suite-root", "{suite_root}", "--repo-root", "{repo_root}", "--workload", "all", "--iterations", "1", "--manifest-output", "{output_root}/tinygrad_static_exec/manifest.json", "--module-output", "{output_root}/tinygrad_static_exec/_molt_tinygrad_upat_static_exec_registry.py", "--json"],
+]
 
 [suite.runners.cpython]
 json_stdout = true
@@ -119,7 +122,7 @@ run_cmd = ["uv", "run", "--isolated", "--python", "{python}", "--with", "typegua
 
 [suite.runners.molt]
 json_stdout = true
-env = { DEV = "PYTHON", MOLT_MODULE_ROOTS = "{suite_root}", MOLT_EXTERNAL_STATIC_PACKAGES = "tinygrad", MOLT_STATIC_IMPORT_MODULES = "tinygrad.runtime.ops_python tinygrad.uop.ops", PYTHONDONTWRITEBYTECODE = "1", PYTHONPATH = "{repo_root}/src:{suite_root}" }
+env = { DEV = "PYTHON", MOLT_MODULE_ROOTS = "{suite_root}{pathsep}{output_root}/tinygrad_static_exec", MOLT_EXTERNAL_STATIC_PACKAGES = "tinygrad _molt_tinygrad_upat_static_exec_registry", MOLT_STATIC_IMPORT_MODULES = "tinygrad.runtime.ops_python tinygrad.uop.ops _molt_tinygrad_upat_static_exec_registry", MOLT_TINYGRAD_UPAT_STATIC_EXEC_ROOT = "{output_root}/tinygrad_static_exec", PYTHONDONTWRITEBYTECODE = "1", PYTHONPATH = "{repo_root}/src{pathsep}{suite_root}{pathsep}{output_root}/tinygrad_static_exec" }
 run_cmd = ["{project_python}", "-m", "molt.cli", "run", "--profile", "dev", "--capabilities", "ffi.unsafe", "--build-arg=--stdlib-profile", "--build-arg=full", "--build-arg=--rebuild", "--build-arg=--no-cache", "{repo_root}/tools/tinygrad_off_shelf_adapter.py", "--", "--suite-root", "{suite_root}", "--workload", "all", "--iterations", "20", "--json"]
 
 [suite.runners.tinygrad]

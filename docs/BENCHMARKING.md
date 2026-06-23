@@ -405,12 +405,20 @@ evidence covered the then-four default public-API workloads.
 The current CPython adapter source now enumerates five default public-API
 workloads, including `attention_core`, and the pinned upstream CPython probe
 exits cleanly for all five. The official `tinygrad_off_the_shelf` Molt friend
-runner with clean pinned source custody now builds the full-stdlib adapter and
-fails closed inside upstream tinygrad's lazy pattern compiler at
-`tinygrad/uop/upat.py:167`, where
-`upat_compile` calls `exec(code_str, globs, namespace)`. This is the current
-blocker because unrestricted `exec()` is outside Molt's verified AOT subset;
-artifact: `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`. A
+runner with clean pinned source custody reached upstream tinygrad's lazy pattern
+compiler at `tinygrad/uop/upat.py:167`, where `upat_compile` calls
+`exec(code_str, globs, namespace)`. Unrestricted `exec()` is outside Molt's
+verified AOT subset; historical artifact:
+`bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`. The friend
+manifest now runs `tools/tinygrad_upat_static_exec_registry.py` as a prepare
+step, writes the generated `_molt_tinygrad_upat_static_exec_registry` module
+under the run output root, admits that module beside upstream `tinygrad` in the
+Molt static-package lane, and configures
+`tools/tinygrad_off_shelf_adapter.py` to install the registry as the
+package-scoped `tinygrad.uop.upat.exec` global. Unknown matcher source strings
+still fail closed through the generated registry. The next required evidence is
+a fresh guarded `tinygrad_off_the_shelf` Molt runner result with this wired
+registry, not an `UPAT_COMPILE=0` bypass. A
 source-custody CPython probe of the pinned `attention_core` workload with
 `UPAT_COMPILE=0` also returned 1 before Molt was involved: it got past
 `upat_compile` but failed in upstream tinygrad's interpreted matcher with
