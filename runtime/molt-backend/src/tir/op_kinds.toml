@@ -59,8 +59,11 @@
 #                  fail-closed barriers consumed by alias_analysis.rs.
 #   - alias_memory_inert_opcodes - opcode-only MemRegion scalar-register facts.
 #                  Omitted opcodes conservatively touch heap memory.
-#   - alias_region_*_opcodes - opcode classes for alias_analysis.rs MemRegion
-#                  classification. Omitted opcodes are GenericHeap.
+#   - alias_typed_slot_*_opcodes / alias_region_*_opcodes - opcode classes
+#                  for alias_analysis.rs MemRegion classification. Omitted
+#                  opcodes are GenericHeap.
+#   - alias_transparent_*_opcodes - opcode roles for transparent alias root
+#                  propagation. These also feed slot-observation classification.
 #   - alias_slot_*_opcodes - opcode classes for alias_analysis.rs slot
 #                  observation. Omitted opcodes are conservative observers.
 #
@@ -290,9 +293,20 @@ alias_memory_inert_opcodes = [
     "UnboxVal",
 ]
 
-alias_region_typed_slot_opcodes = [
+alias_typed_slot_load_opcodes = [
     "LoadAttr",
+]
+
+alias_typed_slot_store_opcodes = [
     "StoreAttr",
+]
+
+alias_transparent_type_guard_opcodes = [
+    "TypeGuard",
+]
+
+alias_transparent_copy_opcodes = [
+    "Copy",
 ]
 
 alias_region_copy_refinement_opcodes = [
@@ -338,11 +352,6 @@ alias_slot_direct_observer_opcodes = [
 
 alias_slot_typed_store_opcodes = [
     "StoreAttr",
-]
-
-alias_slot_transparent_alias_opcodes = [
-    "Copy",
-    "TypeGuard",
 ]
 
 alias_slot_never_observer_opcodes = [

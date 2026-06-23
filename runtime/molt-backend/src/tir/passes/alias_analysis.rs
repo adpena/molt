@@ -69,9 +69,10 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    AliasMemoryRegionClass, AliasSlotObservation, opcode_alias_memory_region_table,
-    opcode_alias_slot_observation_table, opcode_is_alias_heap_barrier_table,
-    opcode_is_alias_rc_barrier_table,
+    AliasMemoryRegionClass, AliasSlotObservation, AliasTransparentAliasRole, AliasTypedSlotRole,
+    opcode_alias_memory_region_table, opcode_alias_slot_observation_table,
+    opcode_alias_transparent_alias_role_table, opcode_alias_typed_slot_role_table,
+    opcode_is_alias_heap_barrier_table, opcode_is_alias_rc_barrier_table,
 };
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -727,14 +728,14 @@ fn transparent_alias_root(op: &TirOp, aliases: &AliasUnionFind) -> Option<ValueI
     if op.results.is_empty() {
         return None;
     }
-    match op.opcode {
-        OpCode::TypeGuard => {
+    match opcode_alias_transparent_alias_role_table(op.opcode) {
+        AliasTransparentAliasRole::TypeGuard => {
             if op.attrs.contains_key("_original_kind") || op.operands.len() != 1 {
                 return None;
             }
             Some(aliases.root(op.operands[0]))
         }
-        OpCode::Copy => {
+        AliasTransparentAliasRole::Copy => {
             if !copy_is_known_local_alias(op) || op.operands.is_empty() {
                 return None;
             }
@@ -749,7 +750,7 @@ fn transparent_alias_root(op: &TirOp, aliases: &AliasUnionFind) -> Option<ValueI
                 None
             }
         }
-        _ => None,
+        AliasTransparentAliasRole::NotTransparentAlias => None,
     }
 }
 
@@ -807,16 +808,16 @@ fn typed_slot_field_kind(op: &TirOp) -> Option<&'static str> {
         Some(AttrValue::Str(s)) => s.as_str(),
         _ => return None,
     };
-    match op.opcode {
-        OpCode::LoadAttr => match original {
+    match opcode_alias_typed_slot_role_table(op.opcode) {
+        AliasTypedSlotRole::Load => match original {
             "load" | "guarded_field_get" => Some("load"),
             _ => None,
         },
-        OpCode::StoreAttr => match original {
+        AliasTypedSlotRole::Store => match original {
             "store" | "store_init" | "guarded_field_set" | "guarded_field_init" => Some("store"),
             _ => None,
         },
-        _ => None,
+        AliasTypedSlotRole::NotTypedSlot => None,
     }
 }
 
