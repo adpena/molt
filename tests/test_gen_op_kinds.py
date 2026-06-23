@@ -502,7 +502,8 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
     expected_never = {"CheckException", "DecRef", "IncRef"}
     assert set(data["alias_slot_direct_observer_opcodes"]) == expected_direct
     assert set(data["alias_slot_typed_store_opcodes"]) == expected_typed_store
-    assert set(data["alias_slot_transparent_alias_opcodes"]) == expected_transparent
+    assert set(data["alias_transparent_copy_opcodes"]) == {"Copy"}
+    assert set(data["alias_transparent_type_guard_opcodes"]) == {"TypeGuard"}
     assert set(data["alias_slot_never_observer_opcodes"]) == expected_never
 
     block = rendered.split("fn opcode_alias_slot_observation_table")[1].split(
@@ -597,7 +598,9 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
         "TypeGuard",
         "UnboxVal",
     }
-    expected_typed_slot = {"LoadAttr", "StoreAttr"}
+    expected_typed_slot_load = {"LoadAttr"}
+    expected_typed_slot_store = {"StoreAttr"}
+    expected_typed_slot = expected_typed_slot_load | expected_typed_slot_store
     expected_copy = {"Copy"}
     expected_container = {"DelIndex", "Index", "StoreIndex"}
     expected_module = {
@@ -613,10 +616,31 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
         "ModuleSetAttr",
     }
     assert set(data["alias_memory_inert_opcodes"]) == expected_scalar
-    assert set(data["alias_region_typed_slot_opcodes"]) == expected_typed_slot
+    assert set(data["alias_typed_slot_load_opcodes"]) == expected_typed_slot_load
+    assert set(data["alias_typed_slot_store_opcodes"]) == expected_typed_slot_store
     assert set(data["alias_region_copy_refinement_opcodes"]) == expected_copy
     assert set(data["alias_region_container_element_opcodes"]) == expected_container
     assert set(data["alias_region_module_dict_opcodes"]) == expected_module
+
+    typed_slot_block = rendered.split("fn opcode_alias_typed_slot_role_table")[1].split(
+        "enum AliasTransparentAliasRole"
+    )[0]
+    assert "OpCode::LoadAttr => AliasTypedSlotRole::Load," in typed_slot_block
+    assert "OpCode::StoreAttr => AliasTypedSlotRole::Store," in typed_slot_block
+    assert "OpCode::Copy => AliasTypedSlotRole::NotTypedSlot," in typed_slot_block
+
+    transparent_block = rendered.split(
+        "fn opcode_alias_transparent_alias_role_table"
+    )[1].split("enum AliasMemoryRegionClass")[0]
+    assert (
+        "OpCode::TypeGuard => AliasTransparentAliasRole::TypeGuard,"
+        in transparent_block
+    )
+    assert "OpCode::Copy => AliasTransparentAliasRole::Copy," in transparent_block
+    assert (
+        "OpCode::LoadAttr => AliasTransparentAliasRole::NotTransparentAlias,"
+        in transparent_block
+    )
 
     block = rendered.split("fn opcode_alias_memory_region_table")[1].split(
         "fn opcode_alias_slot_observation_table"
@@ -650,6 +674,20 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert "match op.opcode" not in body
     assert "OpCode::" not in body
 
+    transparent_start = alias.index("fn transparent_alias_root(")
+    transparent_end = alias.index("// Typed-slot store helpers", transparent_start)
+    transparent_body = alias[transparent_start:transparent_end]
+    assert "opcode_alias_transparent_alias_role_table" in transparent_body
+    assert "match op.opcode" not in transparent_body
+    assert "OpCode::" not in transparent_body
+
+    typed_start = alias.index("fn typed_slot_field_kind(")
+    typed_end = alias.index("fn typed_slot_obj_offset(", typed_start)
+    typed_body = alias[typed_start:typed_end]
+    assert "opcode_alias_typed_slot_role_table" in typed_body
+    assert "match op.opcode" not in typed_body
+    assert "OpCode::" not in typed_body
+
 
 def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
     gen = _gen()
@@ -663,6 +701,32 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
         assert "StoreIndx" in str(e)
     else:
         raise AssertionError("unknown opcode fact-set member was accepted")
+
+    typed_role_overlap = json.loads(json.dumps(data))
+    typed_role_overlap["alias_typed_slot_store_opcodes"].append("LoadAttr")
+    try:
+        gen._validate_alias_opcode_role_sets(
+            typed_role_overlap,
+            gen._ALIAS_TYPED_SLOT_ROLE_SETS,
+            "alias typed-slot role",
+        )
+    except gen.OpKindTableError as e:
+        assert "LoadAttr" in str(e)
+    else:
+        raise AssertionError("overlapping alias typed-slot role was accepted")
+
+    transparent_role_overlap = json.loads(json.dumps(data))
+    transparent_role_overlap["alias_transparent_copy_opcodes"].append("TypeGuard")
+    try:
+        gen._validate_alias_opcode_role_sets(
+            transparent_role_overlap,
+            gen._ALIAS_TRANSPARENT_ALIAS_ROLE_SETS,
+            "alias transparent-alias role",
+        )
+    except gen.OpKindTableError as e:
+        assert "TypeGuard" in str(e)
+    else:
+        raise AssertionError("overlapping alias transparent-alias role was accepted")
 
     region_overlap = json.loads(json.dumps(data))
     region_overlap["alias_region_module_dict_opcodes"].append("LoadAttr")
