@@ -64,6 +64,7 @@ TARGET_LIMITED_OPS = {
     "get_attr_name_default": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
     "get_attr_special_obj": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
     "getargv": "Luau has no process argv surface; materializes an empty argv list.",
+    "getframe": "Luau has no Python frame-object introspection surface; materializes None for fallback-aware stdlib paths.",
     "has_attr_name": "Uses descriptor-aware Luau table/metatable lookup for the admitted subset.",
     "id": "Uses string identity representation, not CPython object address identity.",
     "intarray_from_seq": "Modeled as a copied dense Luau integer table for vector consumers.",
