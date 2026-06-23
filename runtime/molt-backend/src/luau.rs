@@ -722,6 +722,9 @@ impl LuauBackend {
         if used("bit32") || used("bit.") {
             self.output.push_str("local bit = bit32 or bit\n");
         }
+        if used("molt_missing_sentinel") {
+            self.output.push_str("local molt_missing_sentinel = {}\n");
+        }
         self.output.push('\n');
 
         // Math module bridge — emit if any function references math module.
@@ -1332,6 +1335,10 @@ impl LuauBackend {
             "const_not_implemented" | "const_ellipsis" => {
                 let out = self.out_var(op);
                 self.emit_line(&format!("local {out} = nil -- {}", op.kind));
+            }
+            "missing" => {
+                let out = self.out_var(op);
+                self.emit_line(&format!("local {out} = molt_missing_sentinel"));
             }
 
             // ================================================================
@@ -3853,7 +3860,7 @@ impl LuauBackend {
             // ================================================================
             // Misc intrinsics
             // ================================================================
-            "getargv" | "getframe" | "sys_executable" | "bridge_unavailable" | "missing" => {
+            "getargv" | "getframe" | "sys_executable" | "bridge_unavailable" => {
                 if let Some(ref out_name) = op.out {
                     let out = sanitize_ident(out_name);
                     self.emit_line(&format!("local {out} = nil -- [{}]", op.kind));
@@ -10531,6 +10538,52 @@ mod tests {
         assert!(source.contains("return slot") || source.contains("local v1 = slot"));
         assert!(!source.contains("[unsupported op: store_var]"));
         assert!(!source.contains("[unsupported op: load_var]"));
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_missing_singleton() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "missing_singleton_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "missing".to_string(),
+                        out: Some("first".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "missing".to_string(),
+                        out: Some("second".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "is".to_string(),
+                        args: Some(vec!["first".to_string(), "second".to_string()]),
+                        out: Some("same".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".to_string(),
+                        args: Some(vec!["same".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("missing sentinel should lower without stub markers");
+
+        assert!(source.contains("local molt_missing_sentinel = {}"));
+        assert!(source.contains("local first = molt_missing_sentinel"));
+        assert!(source.contains("local second = molt_missing_sentinel"));
+        assert!(!source.contains("-- [missing]"));
     }
 
     #[test]

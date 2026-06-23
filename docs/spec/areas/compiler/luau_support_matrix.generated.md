@@ -7,9 +7,9 @@
 ## Summary
 
 - `compile-error`: `1`
-- `implemented-exact`: `366`
+- `implemented-exact`: `367`
 - `implemented-target-limited`: `20`
-- `not-admitted`: `24`
+- `not-admitted`: `23`
 - `runtime-capability-error`: `5`
 - `total`: `416`
 
@@ -246,7 +246,7 @@
 | `matmul` | `compile-error` | Checked Luau emission rejects unsupported markers. |
 | `max` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `min` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `missing` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `missing` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `mod` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `module_cache_del` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `module_cache_get` | `implemented-target-limited` | Only known module bridges are materialized in Luau. |
