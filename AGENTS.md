@@ -432,6 +432,14 @@ working in this repo:
   exact crash text, collect nearby Codex logs, inspect Event Viewer when useful,
   and correlate with running commands, MCP enumeration, WSL mode, rollout
   resume, and state DB activity before changing code or deleting state.
+- Treat `state db discrepancy during read_repair_rollout_path: upsert_needed`
+  near a Codex crash as a rollout-state resume/repair symptom, not proof that
+  the repository, Git index, or current command caused the crash. After reload,
+  first verify `git status --short --branch`, recent commits, and any active
+  command sessions; then continue from durable repo evidence. Do not delete
+  Codex SQLite/state databases, plugin caches, rollout summaries, or thread
+  state as a first response. If state repair evidence is needed, copy bounded
+  Codex logs into `logs/` or `tmp/` and summarize the relevant lines.
 - In native Windows multi-repo workspaces, watch for Codex-spawned Git polling
   residue before adding more agents or long-running proof lanes. If many
   overlapping `git.exe`/`conhost.exe` processes appear with `Codex.exe` as the
