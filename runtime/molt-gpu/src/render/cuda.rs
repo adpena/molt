@@ -214,6 +214,7 @@ impl CudaRenderer {
 
 impl Renderer for CudaRenderer {
     fn render(&self, kernel: &FusedKernel) -> String {
+        kernel.assert_no_mxfp_dtypes("CUDA renderer");
         let mut out = String::with_capacity(4096);
 
         writeln!(out, "#include <cuda_runtime.h>").unwrap();

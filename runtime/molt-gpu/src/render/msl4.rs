@@ -399,6 +399,7 @@ impl Msl4Renderer {
 
 impl Renderer for Msl4Renderer {
     fn render(&self, kernel: &FusedKernel) -> String {
+        kernel.assert_no_mxfp_dtypes("MSL4 renderer");
         let mut out = String::with_capacity(4096);
 
         // Include headers

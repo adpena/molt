@@ -250,6 +250,7 @@ impl OpenClRenderer {
 
 impl Renderer for OpenClRenderer {
     fn render(&self, kernel: &FusedKernel) -> String {
+        kernel.assert_no_mxfp_dtypes("OpenCL renderer");
         let mut out = String::with_capacity(4096);
 
         // Emit fp64 pragma if needed and supported
