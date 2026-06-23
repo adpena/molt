@@ -79,6 +79,9 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "get_attr_generic_obj" | "set_attr_generic_obj" | "del_attr_generic_obj" => {
                 self.emit_line("molt_get_attr(obj, \"name\")");
             }
+            "has_attr_name" => {
+                self.emit_line("local out = molt_has_attr(obj, name)");
+            }
             "isinstance" => {
                 self.emit_line("local out = molt_isinstance(obj, cls)");
             }
@@ -123,6 +126,7 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["get_attr_generic_obj"].status == "implemented-target-limited"
     assert rows["set_attr_generic_obj"].status == "implemented-target-limited"
     assert rows["del_attr_generic_obj"].status == "implemented-target-limited"
+    assert rows["has_attr_name"].status == "implemented-target-limited"
     assert rows["call_internal"].status == "implemented-exact"
     assert "molt_abs_builtin" not in rows
     assert rows["isinstance"].status == "implemented-target-limited"

@@ -7,8 +7,8 @@
 ## Summary
 
 - `compile-error`: `1`
-- `implemented-exact`: `295`
-- `implemented-target-limited`: `42`
+- `implemented-exact`: `294`
+- `implemented-target-limited`: `43`
 - `not-admitted`: `59`
 - `runtime-capability-error`: `5`
 - `total`: `402`
@@ -217,7 +217,7 @@
 | `guarded_field_init` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `guarded_field_set` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `guarded_load` | `implemented-exact` | Lowered without checked-output stub markers. |
-| `has_attr_name` | `implemented-exact` | Lowered without checked-output stub markers. |
+| `has_attr_name` | `implemented-target-limited` | Uses descriptor-aware Luau table/metatable lookup for the admitted subset. |
 | `id` | `implemented-target-limited` | Uses string identity representation, not CPython object address identity. |
 | `identity_alias` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `if` | `implemented-exact` | Lowered without checked-output stub markers. |
