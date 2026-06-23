@@ -61,13 +61,11 @@ fn reverse_element_bytes(bytes: &[u8], elem_size: usize) -> Vec<u8> {
     out
 }
 
-fn raw_byte_copy_dtypes() -> [DType; 15] {
+fn raw_byte_copy_dtypes() -> [DType; 13] {
     [
         DType::Bool,
         DType::Int8,
         DType::UInt8,
-        DType::MxFP8,
-        DType::MxFP4,
         DType::Int16,
         DType::UInt16,
         DType::Float16,
@@ -326,6 +324,33 @@ fn test_cpu_interpreter_materialize_copy_preserves_u16_raw_bytes() {
 }
 
 #[test]
+#[should_panic(
+    expected = "molt-gpu CPU interpreter: buffer storage for MXFP requires explicit block/exponent storage lowering"
+)]
+fn test_cpu_interpreter_rejects_mxfp_buffer_storage_until_block_lowering_exists() {
+    let source = Arc::new(LazyOp::Buffer {
+        buf: DeviceBufferRef {
+            id: 48,
+            size_bytes: DType::MxFP8.storage_bytes_for_numel(4),
+        },
+        st: ShapeTracker::contiguous(&[4]),
+        dtype: DType::MxFP8,
+    });
+    let contig = Arc::new(LazyOp::Contiguous { src: source });
+
+    let kernels = schedule(&contig, &[4]);
+    assert_eq!(kernels.len(), 1);
+    let kernel = &kernels[0];
+    assert_eq!(kernel.body, KernelBody::MaterializeCopy);
+
+    let mut bufs = vec![
+        vec![0u8; DType::MxFP8.storage_bytes_for_numel(4)],
+        vec![0u8; DType::MxFP8.storage_bytes_for_numel(4)],
+    ];
+    interpret::execute_kernel(kernel, &mut bufs);
+}
+
+#[test]
 fn test_cpu_interpreter_materialize_copy_preserves_raw_element_bytes_by_dtype_width() {
     for (idx, dtype) in raw_byte_copy_dtypes().into_iter().enumerate() {
         let elem_size = dtype.size_bytes();
@@ -544,6 +569,38 @@ fn test_cpu_interpreter_materialize_copy_composed_view_uses_generic_semantics() 
     interpret::execute_kernel(kernel, &mut bufs);
 
     assert_eq!(bytes_to_u16(&bufs[0]), vec![0x0708, 0x0506, 0x0304, 0x0102]);
+}
+
+#[test]
+#[should_panic(expected = "MaterializeCopy output byte count overflows usize")]
+fn test_cpu_interpreter_materialize_copy_rejects_overflowing_byte_span() {
+    let huge_numel = usize::MAX / DType::Float64.size_bytes() + 1;
+    let st = ShapeTracker::contiguous(&[huge_numel]);
+    let kernel = FusedKernel {
+        body: KernelBody::MaterializeCopy,
+        ops: Vec::new(),
+        bufs: vec![
+            BufferBinding {
+                buf_id: 0,
+                st: st.clone(),
+                dtype: DType::Float64,
+                access: BufferAccess::Write,
+            },
+            BufferBinding {
+                buf_id: 1,
+                st,
+                dtype: DType::Float64,
+                access: BufferAccess::Read,
+            },
+        ],
+        grid: [1, 1, 1],
+        local: [1, 1, 1],
+        spec: None,
+        vectorize_width: 1,
+    };
+    let mut bufs = vec![Vec::new(), Vec::new()];
+
+    interpret::execute_kernel(&kernel, &mut bufs);
 }
 
 // --- exp(x) = EXP2(x * LOG2_E) ---

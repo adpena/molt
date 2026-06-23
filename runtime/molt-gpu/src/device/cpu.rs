@@ -764,6 +764,7 @@ pub mod interpret {
     /// bufs[0] is the output buffer (written to).
     #[inline(always)]
     pub fn execute_kernel(kernel: &FusedKernel, bufs: &mut [Vec<u8>]) {
+        assert_supported_cpu_buffer_storage_dtypes(kernel);
         if kernel.body == KernelBody::MaterializeCopy {
             let (_, _, output_numel) = kernel.materialize_copy_contract();
             execute_materialize_copy(kernel, bufs, output_numel);
@@ -884,6 +885,16 @@ pub mod interpret {
         }
     }
 
+    fn assert_supported_cpu_buffer_storage_dtypes(kernel: &FusedKernel) {
+        for binding in &kernel.bufs {
+            assert!(
+                !binding.dtype.is_mxfp(),
+                "molt-gpu CPU interpreter: buffer storage for MXFP requires explicit block/exponent storage lowering ({:?})",
+                binding.dtype
+            );
+        }
+    }
+
     fn execute_materialize_copy(kernel: &FusedKernel, bufs: &mut [Vec<u8>], output_numel: usize) {
         assert!(
             kernel.ops.is_empty() && kernel.bufs.len() == 2 && bufs.len() == 2,
@@ -900,7 +911,8 @@ pub mod interpret {
         let src = &in_slots[0];
         let dst_binding = &kernel.bufs[0];
         let src_binding = &kernel.bufs[1];
-        let required_output_bytes = output_numel * elem_size;
+        let required_output_bytes =
+            checked_byte_count(output_numel, elem_size, "MaterializeCopy output");
 
         if dst_binding.st.view().is_contiguous()
             && src_binding.st.views.len() == 1
@@ -941,27 +953,46 @@ pub mod interpret {
                 .st
                 .expr_idx(gid)
                 .expect("MaterializeCopy output must be addressable");
-            let dst_offset = dst_idx * elem_size;
+            let dst_offset = checked_byte_offset(dst_idx, elem_size, "MaterializeCopy output");
+            let dst_end = checked_byte_end(dst_offset, elem_size, "MaterializeCopy output");
             assert!(
-                dst_offset + elem_size <= out.len(),
+                dst_end <= out.len(),
                 "MaterializeCopy output index {} exceeds output buffer bytes {}",
                 dst_idx,
                 out.len()
             );
             if let Some(src_idx) = src_binding.st.expr_idx(gid) {
-                let src_offset = src_idx * elem_size;
+                let src_offset = checked_byte_offset(src_idx, elem_size, "MaterializeCopy source");
+                let src_end = checked_byte_end(src_offset, elem_size, "MaterializeCopy source");
                 assert!(
-                    src_offset + elem_size <= src.len(),
+                    src_end <= src.len(),
                     "MaterializeCopy source index {} exceeds source buffer bytes {}",
                     src_idx,
                     src.len()
                 );
-                out[dst_offset..dst_offset + elem_size]
-                    .copy_from_slice(&src[src_offset..src_offset + elem_size]);
+                out[dst_offset..dst_end].copy_from_slice(&src[src_offset..src_end]);
             } else {
-                out[dst_offset..dst_offset + elem_size].fill(0);
+                out[dst_offset..dst_end].fill(0);
             }
         }
+    }
+
+    fn checked_byte_count(numel: usize, elem_size: usize, context: &str) -> usize {
+        numel.checked_mul(elem_size).unwrap_or_else(|| {
+            panic!("{context} byte count overflows usize: {numel} elements * {elem_size} bytes")
+        })
+    }
+
+    fn checked_byte_offset(idx: usize, elem_size: usize, context: &str) -> usize {
+        idx.checked_mul(elem_size).unwrap_or_else(|| {
+            panic!("{context} byte offset overflows usize: index {idx} * {elem_size} bytes")
+        })
+    }
+
+    fn checked_byte_end(offset: usize, byte_len: usize, context: &str) -> usize {
+        offset.checked_add(byte_len).unwrap_or_else(|| {
+            panic!("{context} byte span overflows usize: offset {offset} + {byte_len} bytes")
+        })
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -1010,12 +1041,17 @@ pub mod interpret {
         }
 
         fn execute(&self, out: &mut [u8], src: &[u8], elem_size: usize, output_numel: usize) {
-            let required_output_bytes = output_numel * elem_size;
+            let required_output_bytes =
+                checked_byte_count(output_numel, elem_size, "MaterializeCopy output");
             if self.valid_start > 0 {
-                out[..self.valid_start * elem_size].fill(0);
+                let valid_start_bytes =
+                    checked_byte_count(self.valid_start, elem_size, "MaterializeCopy valid start");
+                out[..valid_start_bytes].fill(0);
             }
             if self.valid_end < output_numel {
-                out[self.valid_end * elem_size..required_output_bytes].fill(0);
+                let valid_end_bytes =
+                    checked_byte_count(self.valid_end, elem_size, "MaterializeCopy valid end");
+                out[valid_end_bytes..required_output_bytes].fill(0);
             }
             if self.valid_start == self.valid_end {
                 return;
@@ -1030,18 +1066,24 @@ pub mod interpret {
 
         fn copy_forward_span(&self, out: &mut [u8], src: &[u8], elem_size: usize) {
             let elems = self.valid_end - self.valid_start;
-            let src_offset = self.first_src_idx as usize * elem_size;
-            let dst_offset = self.valid_start * elem_size;
-            let byte_len = elems * elem_size;
+            let src_offset = checked_byte_offset(
+                self.first_src_idx as usize,
+                elem_size,
+                "MaterializeCopy source span",
+            );
+            let dst_offset =
+                checked_byte_offset(self.valid_start, elem_size, "MaterializeCopy output span");
+            let byte_len = checked_byte_count(elems, elem_size, "MaterializeCopy span");
+            let src_end = checked_byte_end(src_offset, byte_len, "MaterializeCopy source span");
+            let dst_end = checked_byte_end(dst_offset, byte_len, "MaterializeCopy output span");
             assert!(
-                src_offset + byte_len <= src.len(),
+                src_end <= src.len(),
                 "MaterializeCopy source span [{}..{}) exceeds source buffer bytes {}",
                 src_offset,
-                src_offset + byte_len,
+                src_end,
                 src.len()
             );
-            out[dst_offset..dst_offset + byte_len]
-                .copy_from_slice(&src[src_offset..src_offset + byte_len]);
+            out[dst_offset..dst_end].copy_from_slice(&src[src_offset..src_end]);
         }
 
         fn copy_reverse_elements(&self, out: &mut [u8], src: &[u8], elem_size: usize) {
@@ -1050,10 +1092,20 @@ pub mod interpret {
             let last_src_idx = first_src_idx.checked_sub(elems - 1).expect(
                 "MaterializeCopy reverse source span must stay within non-negative indices",
             );
-            let src_start = last_src_idx * elem_size;
-            let src_end = (first_src_idx + 1) * elem_size;
-            let dst_start = self.valid_start * elem_size;
-            let dst_end = self.valid_end * elem_size;
+            let src_start =
+                checked_byte_offset(last_src_idx, elem_size, "MaterializeCopy reverse source");
+            let src_end = checked_byte_offset(
+                first_src_idx + 1,
+                elem_size,
+                "MaterializeCopy reverse source",
+            );
+            let dst_start = checked_byte_offset(
+                self.valid_start,
+                elem_size,
+                "MaterializeCopy reverse output",
+            );
+            let dst_end =
+                checked_byte_offset(self.valid_end, elem_size, "MaterializeCopy reverse output");
             assert!(
                 src_end <= src.len(),
                 "MaterializeCopy reverse source span [{}..{}) exceeds source buffer bytes {}",
@@ -1085,8 +1137,20 @@ pub mod interpret {
             src_start: usize,
             elems: usize,
         ) {
-            debug_assert!(dst_start + elems * ELEM_SIZE <= out.len());
-            debug_assert!(src_start + elems * ELEM_SIZE <= src.len());
+            debug_assert!(
+                checked_byte_end(
+                    dst_start,
+                    checked_byte_count(elems, ELEM_SIZE, "MaterializeCopy reverse output"),
+                    "MaterializeCopy reverse output"
+                ) <= out.len()
+            );
+            debug_assert!(
+                checked_byte_end(
+                    src_start,
+                    checked_byte_count(elems, ELEM_SIZE, "MaterializeCopy reverse source"),
+                    "MaterializeCopy reverse source"
+                ) <= src.len()
+            );
 
             // SAFETY: The caller preflights both complete spans. `out` and
             // `src` come from distinct MaterializeCopy buffer slots, and each
@@ -1102,6 +1166,29 @@ pub mod interpret {
                     );
                 }
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{checked_byte_count, checked_byte_end, checked_byte_offset};
+
+        #[test]
+        #[should_panic(expected = "MaterializeCopy output byte count overflows usize")]
+        fn materialize_copy_byte_count_overflow_panics_with_context() {
+            let _ = checked_byte_count(usize::MAX, 2, "MaterializeCopy output");
+        }
+
+        #[test]
+        #[should_panic(expected = "MaterializeCopy source byte offset overflows usize")]
+        fn materialize_copy_byte_offset_overflow_panics_with_context() {
+            let _ = checked_byte_offset(usize::MAX, 2, "MaterializeCopy source");
+        }
+
+        #[test]
+        #[should_panic(expected = "MaterializeCopy span byte span overflows usize")]
+        fn materialize_copy_byte_end_overflow_panics_with_context() {
+            let _ = checked_byte_end(usize::MAX, 1, "MaterializeCopy span");
         }
     }
 
