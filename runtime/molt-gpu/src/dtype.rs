@@ -138,6 +138,32 @@ impl DType {
         }
     }
 
+    /// Number of MXFP storage blocks needed for `numel` logical elements.
+    ///
+    /// Non-MXFP dtypes return 0. MXFP storage uses fixed 32-element blocks; a
+    /// partial tail still owns a full block so the shared exponent and packed
+    /// element payload have one deterministic address calculation.
+    pub fn mxfp_block_count(self, numel: usize) -> usize {
+        if !self.is_mxfp() || numel == 0 {
+            return 0;
+        }
+        numel.div_ceil(self.mxfp_block_size())
+    }
+
+    /// Exact storage bytes required for `numel` logical elements.
+    ///
+    /// For ordinary dtypes this is `numel * size_bytes()`. For MXFP this is the
+    /// padded block storage footprint, including one E8M0 exponent byte per
+    /// 32-element block. Use this for buffer allocation and capacity checks;
+    /// `size_bytes()` remains the scalar addressable lane width.
+    pub fn storage_bytes_for_numel(self, numel: usize) -> usize {
+        if self.is_mxfp() {
+            self.mxfp_block_count(numel) * self.mxfp_block_bytes()
+        } else {
+            numel * self.size_bytes()
+        }
+    }
+
     /// MSL type name for this dtype.
     pub fn msl_type(self) -> &'static str {
         match self {

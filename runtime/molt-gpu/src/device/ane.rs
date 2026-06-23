@@ -54,8 +54,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::device::{
-    Allocator, BufferHandle, CompiledProgram, Compiler, DeviceBuffer, DeviceError, Executor,
-    ProgramHandle,
+    Allocator, BufferHandle, CompiledProgram, Compiler, CpuBuffer, DeviceBuffer, DeviceError,
+    Executor, ProgramHandle,
 };
 
 /// Page size for IOSurface-backed ANE buffers (arm64).
@@ -207,7 +207,7 @@ impl Allocator for AneDevice {
         self.live_buffers.lock().unwrap().insert(key, buf);
 
         Ok(DeviceBuffer {
-            handle: BufferHandle::Cpu(Vec::new()), // Placeholder: real impl uses IOSurface handle
+            handle: BufferHandle::Cpu(CpuBuffer::empty()), // Placeholder: real impl uses IOSurface handle
             size_bytes,
         })
     }

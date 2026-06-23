@@ -3,6 +3,10 @@
 //! Each backend implements all three traits. The separation provides
 //! distinct ownership semantics (buffers vs programs vs execution state).
 
+use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use std::ops::{Deref, DerefMut};
+use std::ptr::NonNull;
+
 #[cfg(feature = "ane-backend")]
 pub mod ane;
 pub mod arena;
@@ -30,8 +34,8 @@ pub struct DeviceBuffer {
 /// Backend-specific buffer handle.
 #[derive(Debug)]
 pub(crate) enum BufferHandle {
-    /// CPU buffer (owned Vec<u8>).
-    Cpu(Vec<u8>),
+    /// CPU buffer with explicit allocation-layout custody.
+    Cpu(CpuBuffer),
     /// Metal buffer (raw pointer to MTLBuffer).
     #[cfg(target_os = "macos")]
     Metal(*mut std::ffi::c_void),
@@ -40,6 +44,127 @@ pub(crate) enum BufferHandle {
 // SAFETY: Metal buffers are Send+Sync when accessed through command buffers.
 unsafe impl Send for BufferHandle {}
 unsafe impl Sync for BufferHandle {}
+
+/// Owned CPU byte allocation with exact layout custody.
+///
+/// `Vec<u8>` may only deallocate with `u8`'s natural layout. CPU backend
+/// buffers need stronger alignments (16-byte SIMD lanes and 4096-byte page
+/// alignment), so the owner must retain the original [`Layout`] and release it
+/// with the same alignment.
+#[derive(Debug)]
+pub(crate) struct CpuBuffer {
+    ptr: NonNull<u8>,
+    len: usize,
+    layout: Option<Layout>,
+}
+
+impl CpuBuffer {
+    pub(crate) fn empty() -> Self {
+        Self {
+            ptr: NonNull::dangling(),
+            len: 0,
+            layout: None,
+        }
+    }
+
+    pub(crate) fn zeroed(size_bytes: usize, align: usize) -> Self {
+        assert!(
+            align.is_power_of_two(),
+            "CPU buffer alignment must be a power of two"
+        );
+        if size_bytes == 0 {
+            return Self::empty();
+        }
+        let layout = Layout::from_size_align(size_bytes, align)
+            .expect("invalid CPU buffer allocation layout");
+        // SAFETY: `layout` is nonzero and valid. The matching `Drop`
+        // implementation deallocates with the identical layout.
+        unsafe {
+            let ptr = alloc_zeroed(layout);
+            if ptr.is_null() {
+                handle_alloc_error(layout);
+            }
+            Self {
+                ptr: NonNull::new_unchecked(ptr),
+                len: size_bytes,
+                layout: Some(layout),
+            }
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        // SAFETY: `ptr` owns `len` initialized bytes for nonempty buffers; for
+        // empty buffers the dangling pointer is valid for zero-length slices.
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `&mut self` proves unique access to the owned allocation.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+
+    #[cfg(feature = "webgpu-backend")]
+    #[cfg(feature = "webgpu-backend")]
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Self {
+        let buf = Self::zeroed(bytes.len(), 16);
+        buf.copy_from(bytes)
+            .expect("new CPU buffer has exact source byte length");
+        buf
+    }
+
+    pub(crate) fn copy_from(&self, data: &[u8]) -> Result<(), DeviceError> {
+        if data.len() > self.len {
+            return Err(DeviceError::InvalidArgument(format!(
+                "copy_in: data ({} bytes) exceeds buffer ({} bytes)",
+                data.len(),
+                self.len
+            )));
+        }
+        // SAFETY: `data.len() <= self.len` and CPU copy operations are
+        // serialized by the backend device contract. This preserves the
+        // existing copy_in(&DeviceBuffer) API without forging a Vec owner.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.as_ptr(), data.len());
+        }
+        Ok(())
+    }
+}
+
+impl Deref for CpuBuffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl DerefMut for CpuBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
+}
+
+impl Drop for CpuBuffer {
+    fn drop(&mut self) {
+        if let Some(layout) = self.layout {
+            // SAFETY: `ptr` was allocated with this exact layout in
+            // `CpuBuffer::zeroed` and has not been deallocated elsewhere.
+            unsafe {
+                dealloc(self.ptr.as_ptr(), layout);
+            }
+        }
+    }
+}
+
+// SAFETY: CpuBuffer owns its allocation. Shared mutation is only exposed
+// through backend copy operations that uphold the device synchronization
+// contract documented on Allocator.
+unsafe impl Send for CpuBuffer {}
+unsafe impl Sync for CpuBuffer {}
 
 /// Compiled program handle for a backend-specific shader or kernel.
 #[derive(Debug)]
