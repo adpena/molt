@@ -413,12 +413,17 @@ roadmap claim drifts.
   post-JSON `argparse.Namespace` return-cleanup double drop. Direct execution
   of the rebuilt adapter now exits cleanly for all four default public-API
   workloads. The official `tinygrad_off_the_shelf` Molt friend runner with
-  clean pinned source custody now fails closed inside upstream tinygrad's lazy
-  pattern compiler at `tinygrad/uop/upat.py:167`, where `upat_compile` calls
-  `exec(code_str, globs, namespace)`. This is the current blocker because
-  unrestricted `exec()` is outside Molt's verified AOT subset. The static
-  materialization producer is now `tools/tinygrad_upat_static_exec_registry.py`;
-  runtime/build graph consumption remains open. Prior failure artifact:
+  clean pinned source custody reached upstream tinygrad's lazy pattern compiler
+  at `tinygrad/uop/upat.py:167`, where `upat_compile` calls
+  `exec(code_str, globs, namespace)`. Unrestricted `exec()` is outside Molt's
+  verified AOT subset. The static materialization producer
+  `tools/tinygrad_upat_static_exec_registry.py` is now wired into the friend
+  manifest as a prepare step; its generated
+  `_molt_tinygrad_upat_static_exec_registry` module is admitted beside
+  `tinygrad` in the Molt static-package lane, and the adapter installs
+  `exec_static` as the package-scoped `tinygrad.uop.upat.exec` global. The next
+  blocker is fresh guarded runner evidence for that wired registry path. Prior
+  failure artifact:
   `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`.
   The native benchmark/friend-suite Molt result contract records phase-aware
   `molt_failure` payloads, so reruns distinguish build-phase daemon details

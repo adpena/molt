@@ -381,7 +381,12 @@ user-facing shim instead of private helpers. The friend-suite manifest also
 contains an upstream-owned `tinygrad` runner for `test/test_tiny.py` at the
 pinned tinygrad commit, using an isolated `typeguard` dependency environment so
 non-synthetic compatibility gates come from tinygrad itself rather than from
-expanding Molt-side adapter tests. Movement-family view
+expanding Molt-side adapter tests. The Molt lane prepares a generated
+`_molt_tinygrad_upat_static_exec_registry` module from pinned upstream UPat
+matcher sources, admits it beside `tinygrad` as an explicit static package, and
+installs its fail-closed `exec_static` function as the package-scoped
+`tinygrad.uop.upat.exec` global so tinygrad's lazy matcher compilation does not
+require unrestricted runtime `exec`. Movement-family view
 operations (`reshape`, `expand`, `permute`, zero-fill `pad`, `shrink`, `flip`,
 and `contiguous`) now stay on runtime handles through GPU primitive intrinsics,
 with root views crossing an explicit `MaterializeCopy` boundary. `matmul`

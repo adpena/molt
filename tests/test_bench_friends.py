@@ -973,6 +973,18 @@ def test_bench_friends_dynamic_runner_keys_are_manifest_authority() -> None:
             {},
         )
 
+def test_bench_friends_token_resolution_exposes_platform_pathsep() -> None:
+    module = _load_tool_module()
+
+    assert module._resolve_tokenized(
+        ["{repo_root}{pathsep}{suite_root}"],
+        {
+            "repo_root": "repo",
+            "suite_root": "suite",
+            "pathsep": os.pathsep,
+        },
+    ) == [f"repo{os.pathsep}suite"]
+
 
 def test_bench_friends_non_workload_runner_excluded_from_speed_metrics() -> None:
     module = _load_tool_module()
@@ -1311,6 +1323,25 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
     assert suite.repo_ref == "a83710396c991272241e40da94489747c2393851"
     assert suite.semantic_mode == "runs_unmodified"
     assert suite.env == {}
+    assert suite.prepare_cmds == [
+        [
+            "{python}",
+            "{repo_root}/tools/tinygrad_upat_static_exec_registry.py",
+            "--suite-root",
+            "{suite_root}",
+            "--repo-root",
+            "{repo_root}",
+            "--workload",
+            "all",
+            "--iterations",
+            "1",
+            "--manifest-output",
+            "{output_root}/tinygrad_static_exec/manifest.json",
+            "--module-output",
+            "{output_root}/tinygrad_static_exec/_molt_tinygrad_upat_static_exec_registry.py",
+            "--json",
+        ],
+    ]
     assert {"gpu", "mlir", "tinygrad", "compatibility", "benchmark-suite"} <= set(
         suite.tags
     )
@@ -1349,14 +1380,27 @@ def test_friend_manifest_registers_tinygrad_off_the_shelf_suite() -> None:
         part.endswith("tools/tinygrad_off_shelf_adapter.py") for part in molt.run_cmd
     )
     assert molt.env["DEV"] == "PYTHON"
-    assert molt.env["MOLT_MODULE_ROOTS"] == "{suite_root}"
-    assert molt.env["MOLT_EXTERNAL_STATIC_PACKAGES"] == "tinygrad"
+    assert (
+        molt.env["MOLT_MODULE_ROOTS"]
+        == "{suite_root}{pathsep}{output_root}/tinygrad_static_exec"
+    )
+    assert (
+        molt.env["MOLT_EXTERNAL_STATIC_PACKAGES"]
+        == "tinygrad _molt_tinygrad_upat_static_exec_registry"
+    )
     assert (
         molt.env["MOLT_STATIC_IMPORT_MODULES"]
-        == "tinygrad.runtime.ops_python tinygrad.uop.ops"
+        == "tinygrad.runtime.ops_python tinygrad.uop.ops _molt_tinygrad_upat_static_exec_registry"
+    )
+    assert (
+        molt.env["MOLT_TINYGRAD_UPAT_STATIC_EXEC_ROOT"]
+        == "{output_root}/tinygrad_static_exec"
     )
     assert molt.env["PYTHONDONTWRITEBYTECODE"] == "1"
-    assert molt.env["PYTHONPATH"] == "{repo_root}/src:{suite_root}"
+    assert (
+        molt.env["PYTHONPATH"]
+        == "{repo_root}/src{pathsep}{suite_root}{pathsep}{output_root}/tinygrad_static_exec"
+    )
     assert tinygrad.skip_reason is None
     assert tinygrad.run_cmd == [
         "uv",
@@ -1658,6 +1702,94 @@ def test_tinygrad_off_shelf_adapter_runs_public_api_workloads(tmp_path: Path) ->
     assert not list(tmp_path.rglob("__pycache__"))
 
 
+def test_tinygrad_off_shelf_adapter_installs_static_upat_exec_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_tinygrad_adapter_module()
+    tinygrad_pkg = tmp_path / "tinygrad"
+    (tinygrad_pkg / "uop").mkdir(parents=True)
+    (tinygrad_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (tinygrad_pkg / "tensor.py").write_text(
+        "class Tensor:\n    pass\n", encoding="utf-8"
+    )
+    (tinygrad_pkg / "uop" / "__init__.py").write_text("", encoding="utf-8")
+    (tinygrad_pkg / "uop" / "upat.py").write_text(
+        textwrap.dedent(
+            """
+            exec = 'upstream dynamic exec placeholder'
+
+            def compile_matcher(namespace):
+                exec("# match for fake\\n", {}, namespace)
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    registry_root = tmp_path / "registry"
+    registry_root.mkdir()
+    (registry_root / "_molt_tinygrad_upat_static_exec_registry.py").write_text(
+        textwrap.dedent(
+            """
+            def exec_static(source, globals=None, locals=None):
+                if locals is None:
+                    locals = globals
+                locals["compiled_match"] = lambda uop, ctx: ("static", uop, ctx)
+                return None
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    saved_modules = {
+        name: sys.modules.get(name)
+        for name in (
+            "_molt_tinygrad_upat_static_exec_registry",
+            "tinygrad",
+            "tinygrad.tensor",
+            "tinygrad.uop",
+            "tinygrad.uop.upat",
+        )
+        if name in sys.modules
+    }
+    for name in (
+        "_molt_tinygrad_upat_static_exec_registry",
+        "tinygrad",
+        "tinygrad.tensor",
+        "tinygrad.uop",
+        "tinygrad.uop.upat",
+    ):
+        sys.modules.pop(name, None)
+    monkeypatch.setenv(
+        module.STATIC_EXEC_REGISTRY_ROOT_ENV,
+        str(registry_root),
+    )
+    original_path = list(sys.path)
+    try:
+        with module._suite_root_import_path(tmp_path):
+            tinygrad = module._import_tinygrad()
+            assert module._install_tinygrad_upat_static_exec_registry(tinygrad) is True
+            from tinygrad.uop import upat
+
+            namespace: dict[str, object] = {}
+            upat.compile_matcher(namespace)
+            assert namespace["compiled_match"]("uop", "ctx") == ("static", "uop", "ctx")
+            assert getattr(tinygrad, "_molt_upat_static_exec_registry").__name__ == (
+                "_molt_tinygrad_upat_static_exec_registry"
+            )
+    finally:
+        sys.path[:] = original_path
+        for name in (
+            "_molt_tinygrad_upat_static_exec_registry",
+            "tinygrad",
+            "tinygrad.tensor",
+            "tinygrad.uop",
+            "tinygrad.uop.upat",
+        ):
+            sys.modules.pop(name, None)
+        sys.modules.update(saved_modules)
+
+
 def test_tinygrad_off_shelf_adapter_propagates_upat_interpret_nameerror(
     tmp_path: Path,
 ) -> None:
@@ -1693,7 +1825,7 @@ def test_tinygrad_off_shelf_adapter_propagates_upat_interpret_nameerror(
 
     res = run_native_test_process(
         [
-            "python3",
+            sys.executable,
             "tools/tinygrad_off_shelf_adapter.py",
             "--suite-root",
             str(tmp_path),

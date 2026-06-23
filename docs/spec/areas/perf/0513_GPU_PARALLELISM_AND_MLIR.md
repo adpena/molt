@@ -74,16 +74,17 @@ This crate provides:
 	  The current CPython adapter source now enumerates five default public-API
 	  workloads, including `attention_core`, and the pinned upstream CPython probe
 	  exits cleanly for all five. The official friend runner with clean pinned
-	  upstream custody now fails closed at `tinygrad/uop/upat.py:167` because
-	  upstream tinygrad calls
-	  `exec(code_str, globs, namespace)` in its lazy pattern compiler; unrestricted
-	  `exec()` remains outside Molt's verified AOT subset. The compile-time
-	  materialization primitive for this lane is
-	  `tools/tinygrad_upat_static_exec_registry.py`: it captures deterministic
-	  UPat matcher source strings from the pinned upstream checkout and emits a
-	  fail-closed static factory registry without runtime `exec`. The remaining
-	  blocker is wiring that registry into static package lowering/runtime
-	  dispatch.
+	  upstream custody reached `tinygrad/uop/upat.py:167`, where upstream
+	  tinygrad calls `exec(code_str, globs, namespace)` in its lazy pattern
+	  compiler; unrestricted `exec()` remains outside Molt's verified AOT subset.
+	  The friend manifest now wires the compile-time materialization primitive
+	  for this lane, `tools/tinygrad_upat_static_exec_registry.py`: it captures
+	  deterministic UPat matcher source strings from the pinned upstream checkout,
+	  emits a fail-closed static factory registry without runtime `exec`, admits
+	  the generated `_molt_tinygrad_upat_static_exec_registry` module in the Molt
+	  static-package lane, and configures the adapter to install `exec_static` as
+	  the package-scoped `tinygrad.uop.upat.exec` global. The next blocker is
+	  fresh guarded runner evidence for the wired registry path.
 	  Movement-family view operations (`reshape`,
 	  `expand`, `permute`,
 	  zero-fill `pad`, `shrink`, `flip`, `contiguous`) now lower through GPU

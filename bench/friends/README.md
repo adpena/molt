@@ -68,12 +68,17 @@ UV_NO_SYNC=1 uv run --python 3.12 python3 tools/bench_friends.py \
   public-API workloads, including `attention_core`, and the pinned upstream
   CPython probe exits cleanly for all five. The official
   `tinygrad_off_the_shelf` Molt friend runner with clean pinned source custody
-  now builds the full-stdlib adapter and fails
-  closed inside upstream tinygrad's lazy pattern compiler at
+  reached upstream tinygrad's lazy pattern compiler at
   `tinygrad/uop/upat.py:167`, where `upat_compile` calls
-  `exec(code_str, globs, namespace)`. This is the current blocker because
-  unrestricted `exec()` is outside Molt's verified AOT subset; artifact:
-  `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`. A pinned
+  `exec(code_str, globs, namespace)`. Unrestricted `exec()` is outside Molt's
+  verified AOT subset; the historical artifact is
+  `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`. The manifest
+  now prepares a generated `_molt_tinygrad_upat_static_exec_registry` module
+  from pinned upstream matcher sources, admits it as an explicit static package
+  beside `tinygrad`, and configures the adapter to install its `exec_static`
+  function as the package-scoped `tinygrad.uop.upat.exec` global. Unknown
+  matcher strings still fail closed. A fresh guarded Molt runner result with
+  this wired registry is the next required evidence. A pinned
   source-custody CPython probe of `attention_core` with `UPAT_COMPILE=0`
   returned 1 before Molt was involved: upstream tinygrad's interpreted matcher
   raised `NameError: name 'do_substitute' is not defined` from

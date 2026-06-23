@@ -922,12 +922,18 @@ the implementation. For forward-looking priorities, use
 		  five default public-API workloads, including `attention_core`, and the
 		  pinned upstream CPython probe exits cleanly for all five. The official
 		  `tinygrad_off_the_shelf` Molt friend runner with clean pinned source
-		  custody now fails closed inside upstream tinygrad's lazy pattern
-		  compiler at `tinygrad/uop/upat.py:167`, where
-		  `upat_compile` calls `exec(code_str, globs, namespace)`. This is the
-		  current blocker because unrestricted `exec()` is outside Molt's verified
-		  AOT subset; artifact:
-		  `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`. It remains the
+		  custody reached upstream tinygrad's lazy pattern compiler at
+		  `tinygrad/uop/upat.py:167`, where `upat_compile` calls
+		  `exec(code_str, globs, namespace)`. Unrestricted `exec()` is outside
+		  Molt's verified AOT subset; historical artifact:
+		  `bench/results/friends/2026-06-20-tinygrad-origin-fix-rerun/`. The
+		  friend manifest now prepares a generated
+		  `_molt_tinygrad_upat_static_exec_registry` module from pinned upstream
+		  matcher sources, admits it beside `tinygrad` in the Molt
+		  static-package lane, and configures the adapter to install
+		  `exec_static` as the package-scoped `tinygrad.uop.upat.exec` global.
+		  The next required proof is a fresh guarded runner result through this
+		  wired registry path. It remains the
 	  compatibility/perf case study for compiling and profiling unmodified
 	  tinygrad code. The friend-suite harness now records
 	  git source custody, fails dirty or wrong-ref checkouts, accepts per-suite
