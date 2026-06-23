@@ -32,7 +32,6 @@ from molt.frontend._types import (
     FallbackPolicy,
     FormatParseState,
     FormatToken,
-    FuncInfo,
     IntrinsicHandleClassConstructorSpec,
     LoopBoundFact,
     MethodInfo,
