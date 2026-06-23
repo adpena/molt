@@ -125,6 +125,7 @@ class SourceCustody:
     ref_verified: bool | None
     git_clean: bool | None
     git_status_porcelain: str | None
+    git_ignored_artifacts: str | None
     suite_root_overridden: bool
     verification: str
 
@@ -798,6 +799,8 @@ def _verify_git_source_custody(
     dry_run: bool,
     limits: harness_memory_guard.HarnessMemoryLimits,
     suite_root_overridden: bool,
+    verification: str = "git_ref_and_clean_tree",
+    raise_on_dirty: bool = True,
 ) -> SourceCustody:
     if dry_run:
         return SourceCustody(
@@ -808,6 +811,7 @@ def _verify_git_source_custody(
             ref_verified=None,
             git_clean=None,
             git_status_porcelain=None,
+            git_ignored_artifacts=None,
             suite_root_overridden=suite_root_overridden,
             verification="dry_run",
         )
@@ -868,11 +872,6 @@ def _verify_git_source_custody(
     if rc != 0:
         raise RuntimeError(f"suite {suite.id}: git status failed: {err.strip()}")
     git_status = status_out.strip()
-    if git_status:
-        raise RuntimeError(
-            f"suite {suite.id}: git checkout is dirty; refusing off-the-shelf "
-            f"benchmark custody:\n{git_status}"
-        )
 
     rc, ignored_out, err = _run_git(
         ["ls-files", "--others", "--ignored", "--exclude-standard"],
@@ -886,7 +885,13 @@ def _verify_git_source_custody(
             f"suite {suite.id}: git ignored-file custody scan failed: {err.strip()}"
         )
     ignored_files = ignored_out.strip()
-    if ignored_files:
+    git_clean = not git_status and not ignored_files
+    if raise_on_dirty and git_status:
+        raise RuntimeError(
+            f"suite {suite.id}: git checkout is dirty; refusing off-the-shelf "
+            f"benchmark custody:\n{git_status}"
+        )
+    if raise_on_dirty and ignored_files:
         raise RuntimeError(
             f"suite {suite.id}: git checkout contains ignored artifacts; refusing "
             f"off-the-shelf benchmark custody:\n{ignored_files}"
@@ -898,10 +903,11 @@ def _verify_git_source_custody(
         expected_ref=expected_ref,
         head_ref=head_ref,
         ref_verified=True,
-        git_clean=True,
-        git_status_porcelain="",
+        git_clean=git_clean,
+        git_status_porcelain=git_status,
+        git_ignored_artifacts=ignored_files,
         suite_root_overridden=suite_root_overridden,
-        verification="git_ref_and_clean_tree",
+        verification=verification,
     )
 
 
@@ -945,6 +951,7 @@ def _acquire_suite(
                 ref_verified=None,
                 git_clean=None,
                 git_status_porcelain=None,
+                git_ignored_artifacts=None,
                 suite_root_overridden=suite_root_override is not None,
                 verification="local_path_exists" if not dry_run else "dry_run",
             ),
@@ -1023,6 +1030,36 @@ def _acquire_suite(
         suite_workdir=suite_workdir,
         custody=custody,
     )
+
+
+def _post_run_source_custody_failure_reason(
+    suite: SuiteSpec,
+    custody: SourceCustody,
+) -> str | None:
+    details: list[str] = []
+    if custody.git_status_porcelain:
+        details.append(
+            "git checkout is dirty after suite execution:\n"
+            f"{custody.git_status_porcelain}"
+        )
+    if custody.git_ignored_artifacts:
+        details.append(
+            "git checkout contains ignored artifacts after suite execution:\n"
+            f"{custody.git_ignored_artifacts}"
+        )
+    if not details:
+        return None
+    return f"suite {suite.id}: post-run source custody check failed; " + "\n".join(
+        details
+    )
+
+
+def _combine_suite_reasons(left: str | None, right: str | None) -> str | None:
+    if not left:
+        return right
+    if not right:
+        return left
+    return f"{left}; {right}"
 
 
 def _run_prepare_steps(
@@ -1536,6 +1573,7 @@ def _source_custody_to_dict(custody: SourceCustody) -> dict[str, Any]:
         "ref_verified": custody.ref_verified,
         "git_clean": custody.git_clean,
         "git_status_porcelain": custody.git_status_porcelain,
+        "git_ignored_artifacts": custody.git_ignored_artifacts,
         "suite_root_overridden": custody.suite_root_overridden,
         "verification": custody.verification,
     }
@@ -1550,6 +1588,7 @@ def _source_custody_from_dict(payload: dict[str, Any]) -> SourceCustody:
         ref_verified=payload.get("ref_verified"),
         git_clean=payload.get("git_clean"),
         git_status_porcelain=payload.get("git_status_porcelain"),
+        git_ignored_artifacts=payload.get("git_ignored_artifacts"),
         suite_root_overridden=bool(payload.get("suite_root_overridden", False)),
         verification=str(payload["verification"]),
     )
@@ -1773,9 +1812,7 @@ def _molt_failure_detail_records(
                     "message": _bounded_failure_text(failure.get("message")),
                     "guard_violation": failure.get("guard_violation"),
                     "signal": failure.get("signal"),
-                    "orphaned_process_groups": failure.get(
-                        "orphaned_process_groups"
-                    ),
+                    "orphaned_process_groups": failure.get("orphaned_process_groups"),
                     "log_refs": failure.get("log_refs", []),
                 }
             )
@@ -2348,9 +2385,48 @@ def main() -> int:
                                         status="failed",
                                         reason=prep_reason,
                                     )
+                            post_run_source_custody = source_custody
+                            post_run_custody_reason = None
+                            if suite.source == "git" and not args.dry_run:
+                                try:
+                                    post_run_source_custody = _verify_git_source_custody(
+                                        suite,
+                                        repo_dir=suite_root,
+                                        requested_ref=suite.repo_ref
+                                        or source_custody.requested_ref
+                                        or "",
+                                        timeout_sec=suite.timeout_sec,
+                                        dry_run=args.dry_run,
+                                        limits=limits,
+                                        suite_root_overridden=source_custody.suite_root_overridden,
+                                        verification="post_run_git_ref_and_clean_tree",
+                                        raise_on_dirty=False,
+                                    )
+                                    post_run_custody_reason = (
+                                        _post_run_source_custody_failure_reason(
+                                            suite,
+                                            post_run_source_custody,
+                                        )
+                                    )
+                                except Exception as exc:  # noqa: BLE001
+                                    post_run_source_custody = replace(
+                                        source_custody,
+                                        git_clean=False,
+                                        verification="post_run_git_ref_and_clean_tree_failed",
+                                    )
+                                    post_run_custody_reason = (
+                                        f"suite {suite.id}: post-run source "
+                                        f"custody check failed: {exc}"
+                                    )
                             status, reason = _suite_status(runners)
                             if prep_reason and not reason:
                                 reason = prep_reason
+                            if post_run_custody_reason:
+                                status = "failed"
+                                reason = _combine_suite_reasons(
+                                    reason,
+                                    post_run_custody_reason,
+                                )
                             metrics = _suite_metrics(runners)
                             suite_result = SuiteResult(
                                 id=suite.id,
@@ -2361,8 +2437,8 @@ def main() -> int:
                                 suite_root=str(suite_root),
                                 suite_workdir=str(suite_workdir),
                                 resolved_ref=resolved_ref,
-                                requested_ref=source_custody.requested_ref,
-                                source_custody=source_custody,
+                                requested_ref=post_run_source_custody.requested_ref,
+                                source_custody=post_run_source_custody,
                                 status=status,
                                 reason=reason,
                                 adapter_notes=suite.adapter_notes,
@@ -2396,6 +2472,7 @@ def main() -> int:
                                     else None,
                                     git_clean=False if suite.source == "git" else None,
                                     git_status_porcelain=None,
+                                    git_ignored_artifacts=None,
                                     suite_root_overridden=suite.id
                                     in suite_root_overrides,
                                     verification="not_acquired",
