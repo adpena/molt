@@ -145,6 +145,20 @@ the implementation. For forward-looking priorities, use
   read `__defaults__` / `__kwdefaults__` for literal and dynamic default specs
   instead of baking sema-time literals. Constructor and method call paths rely
   on the same live metadata through direct padding or the runtime binder.
+- Runtime intrinsic manifest defaults now participate in that same metadata
+  contract. `tools/gen_intrinsics.py` parses supported concrete trailing
+  defaults from `runtime/molt-runtime/src/intrinsics/manifest.pyi`, emits
+  `IntrinsicSpec.defaults`, and runtime eager/lazy registration attaches
+  matching `__defaults__` tuples. `operator.length_hint(obj, default=0)` is the
+  first default-bearing intrinsic and preserves CPython precedence: `__len__`
+  wins over `__length_hint__`, and the default is used only when neither length
+  surface applies.
+- Deforestation fusion eligibility is generated from
+  `runtime/molt-backend/src/tir/op_kinds.toml` as the exhaustive
+  `fusion_barrier_opcodes` classifier. The classifier is intentionally distinct
+  from side-effecting/may-throw facts: fusion preserves per-element evaluation
+  order, so allocation, attribute reads, indexing, and arithmetic that may throw
+  are not barriers unless they alter cross-iteration/control state or suspend.
 - `molt-gpu` schedules `Movement` operands as zero-copy views over source
   storage and schedules `Contiguous` DAG operands as first-class
   `KernelBody::MaterializeCopy` producers with fresh storage identity.

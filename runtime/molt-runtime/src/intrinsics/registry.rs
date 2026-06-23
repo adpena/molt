@@ -1,4 +1,4 @@
-use crate::intrinsics::generated::INTRINSICS;
+use crate::intrinsics::generated::{INTRINSICS, IntrinsicDefaultValue};
 // `resolve_symbol` (which address-takes every intrinsic via `resolve_core_symbol`)
 // is referenced on wasm32 (table-based eager registration / lookup) and in any
 // `cfg(test)` build (unit tests resolve intrinsics directly, without a
@@ -10,7 +10,7 @@ use crate::intrinsics::generated::INTRINSICS;
 use crate::intrinsics::generated::resolve_symbol;
 use crate::{
     MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_MODULE, TYPE_ID_STRING, alloc_dict_with_pairs,
-    alloc_string, builtin_classes, dec_ref_bits, dict_get_in_place, dict_set_in_place,
+    alloc_string, alloc_tuple, builtin_classes, dec_ref_bits, dict_get_in_place, dict_set_in_place,
     inc_ref_bits, module_dict_bits, obj_from_bits, object_set_class_bits, object_type_id,
     raise_exception, runtime_state, string_bytes, string_len,
 };
@@ -190,11 +190,11 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let resolver_fn_ptr = molt_intrinsic_resolve as *const () as usize as u64;
-            if let Some(helper_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1) {
+            if let Some(helper_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1, &[]) {
                 set_dict_entry(_py, dict_ptr, LOOKUP_HELPER_NAME, helper_bits);
                 dec_ref_bits(_py, helper_bits);
             }
-            if let Some(resolver_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1) {
+            if let Some(resolver_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1, &[]) {
                 set_intrinsic_entry(_py, registry_ptr, "_molt_lazy_resolve", resolver_bits);
                 dec_ref_bits(_py, resolver_bits);
             }
@@ -215,7 +215,9 @@ pub(crate) fn install_into_builtins(_py: &PyToken<'_>, module_ptr: *mut u8) {
                     let Some(fn_ptr) = resolve_symbol(spec.symbol) else {
                         continue;
                     };
-                    let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
+                    let Some(func_bits) =
+                        build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults)
+                    else {
                         continue;
                     };
                     set_intrinsic_entry(_py, registry_ptr, spec.name, func_bits);
@@ -477,7 +479,49 @@ fn alias_name(name: &str) -> Option<String> {
     Some(alias)
 }
 
-fn build_runtime_function(_py: &PyToken<'_>, fn_ptr: u64, arity: u8) -> Option<u64> {
+fn attach_function_defaults(_py: &PyToken<'_>, ptr: *mut u8, defaults: &[u64]) -> bool {
+    if defaults.is_empty() {
+        return true;
+    }
+    unsafe {
+        let defaults_name = crate::intern_static_name(
+            _py,
+            &crate::runtime_state(_py).interned.defaults_name,
+            b"__defaults__",
+        );
+        let defaults_ptr = alloc_tuple(_py, defaults);
+        if defaults_ptr.is_null() {
+            return false;
+        }
+        let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
+        crate::function_set_attr_bits(_py, ptr, defaults_name, defaults_bits);
+        dec_ref_bits(_py, defaults_bits);
+    }
+    true
+}
+
+fn materialize_intrinsic_defaults(
+    _py: &PyToken<'_>,
+    defaults: &[IntrinsicDefaultValue],
+) -> Option<Vec<u64>> {
+    let mut out = Vec::with_capacity(defaults.len());
+    for default in defaults {
+        let bits = match *default {
+            IntrinsicDefaultValue::None => MoltObject::none().bits(),
+            IntrinsicDefaultValue::Bool(value) => MoltObject::from_bool(value).bits(),
+            IntrinsicDefaultValue::Int(value) => MoltObject::from_int(value).bits(),
+        };
+        out.push(bits);
+    }
+    Some(out)
+}
+
+fn build_runtime_function(
+    _py: &PyToken<'_>,
+    fn_ptr: u64,
+    arity: u8,
+    defaults: &[u64],
+) -> Option<u64> {
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(_py, fn_ptr, arity as u64);
     if ptr.is_null() {
         return None;
@@ -487,7 +531,12 @@ fn build_runtime_function(_py: &PyToken<'_>, fn_ptr: u64, arity: u8) -> Option<u
         object_set_class_bits(_py, ptr, builtin_bits);
         inc_ref_bits(_py, builtin_bits);
     }
-    Some(MoltObject::from_ptr(ptr).bits())
+    let fn_bits = MoltObject::from_ptr(ptr).bits();
+    if !attach_function_defaults(_py, ptr, defaults) {
+        dec_ref_bits(_py, fn_bits);
+        return None;
+    }
+    Some(fn_bits)
 }
 
 fn build_bootstrap_function(
@@ -500,26 +549,22 @@ fn build_bootstrap_function(
     if ptr.is_null() {
         return None;
     }
-    if !defaults.is_empty() {
-        unsafe {
-            let defaults_name = crate::intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.defaults_name,
-                b"__defaults__",
-            );
-            let defaults_ptr = crate::alloc_tuple(_py, defaults);
-            if !defaults_ptr.is_null() {
-                let defaults_bits = MoltObject::from_ptr(defaults_ptr).bits();
-                crate::function_set_attr_bits(_py, ptr, defaults_name, defaults_bits);
-                dec_ref_bits(_py, defaults_bits);
-            }
-        }
+    let fn_bits = MoltObject::from_ptr(ptr).bits();
+    if !attach_function_defaults(_py, ptr, defaults) {
+        dec_ref_bits(_py, fn_bits);
+        return None;
     }
-    Some(MoltObject::from_ptr(ptr).bits())
+    Some(fn_bits)
 }
 
-fn build_intrinsic_func(_py: &PyToken<'_>, fn_ptr: u64, arity: u8) -> Option<u64> {
-    build_runtime_function(_py, fn_ptr, arity)
+fn build_intrinsic_func(
+    _py: &PyToken<'_>,
+    fn_ptr: u64,
+    arity: u8,
+    default_values: &[IntrinsicDefaultValue],
+) -> Option<u64> {
+    let defaults = materialize_intrinsic_defaults(_py, default_values)?;
+    build_runtime_function(_py, fn_ptr, arity, &defaults)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -593,7 +638,7 @@ fn resolve_intrinsic_func(
     let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
         return Err(IntrinsicResolveError::MissingSymbol);
     };
-    let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity) else {
+    let Some(func_bits) = build_intrinsic_func(_py, fn_ptr, spec.arity, spec.defaults) else {
         return Err(IntrinsicResolveError::AllocFailed);
     };
     if cache_result {

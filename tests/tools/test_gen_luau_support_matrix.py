@@ -29,8 +29,8 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
             "add" | "inplace_add" => {
                 self.emit_line("local out = a + b");
             }
-            "matmul" => {
-                self.emit_line("local out = nil -- [unsupported op: matmul]");
+            "unsupported_fixture_op" => {
+                self.emit_line("local out = nil -- [unsupported op: unsupported_fixture_op]");
             }
             "call_async" => {
                 self.emit_line("local out = poll_target(payload)");
@@ -111,7 +111,7 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
 
     assert rows["add"].status == "implemented-exact"
     assert rows["inplace_add"].status == "implemented-exact"
-    assert rows["matmul"].status == "compile-error"
+    assert rows["unsupported_fixture_op"].status == "compile-error"
     assert rows["call_async"].status == "implemented-target-limited"
     assert rows["spawn"].status == "not-admitted"
     assert rows["br_if"].status == "implemented-exact"

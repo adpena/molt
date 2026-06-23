@@ -43,6 +43,7 @@ the source of truth.
 - Backend LIR representation evidence: [spec/areas/compiler/backend_lir_representation.generated.md](spec/areas/compiler/backend_lir_representation.generated.md)
 - Luau backend optimization and generated support: [spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md](spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md), [spec/areas/compiler/luau_support_matrix.generated.md](spec/areas/compiler/luau_support_matrix.generated.md)
 - Stdlib intrinsic audit and platform availability: [spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md), [spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md](spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md)
+- Stdlib intrinsic loading/default metadata contract: [spec/areas/runtime/0031_STDLIB_INTRINSICS_LOADING.md](spec/areas/runtime/0031_STDLIB_INTRINSICS_LOADING.md)
 
 ## Compiler Foundation Routing
 
@@ -54,6 +55,7 @@ the source of truth.
 - Codebase decomposition program: [design/foundation/21_decomposition_program.md](design/foundation/21_decomposition_program.md)
 - Parallel build, crate extraction, incremental cache, and compiler-throughput architecture: [design/parallel_build_architecture.md](design/parallel_build_architecture.md), [architecture/compilation-model.md](architecture/compilation-model.md)
 - Op-kind registry and generated dispatch direction: [design/foundation/25_op_kind_registry.md](design/foundation/25_op_kind_registry.md)
+- Generator fusion and deforestation routing: [design/generator_fusion.md](design/generator_fusion.md)
 
 ## Workspace Guides
 

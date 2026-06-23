@@ -51,6 +51,7 @@ authoritative when a design claim drifts.
 - Op-kind registry source: [runtime/molt-backend/src/tir/op_kinds.toml](../../runtime/molt-backend/src/tir/op_kinds.toml)
 - Backend generated op-kind table: [runtime/molt-backend/src/tir/op_kinds_generated.rs](../../runtime/molt-backend/src/tir/op_kinds_generated.rs)
 - Frontend generated op-kind table: [src/molt/frontend/lowering/op_kinds_generated.py](../../src/molt/frontend/lowering/op_kinds_generated.py)
+- Deforestation fusion-barrier classifier: `fusion_barrier_opcodes` in [runtime/molt-backend/src/tir/op_kinds.toml](../../runtime/molt-backend/src/tir/op_kinds.toml), consumed by [runtime/molt-backend/src/tir/passes/deforestation.rs](../../runtime/molt-backend/src/tir/passes/deforestation.rs)
 - Pipeline/module/drop phase authority: [runtime/molt-backend/src/tir/pass_manager.rs](../../runtime/molt-backend/src/tir/pass_manager.rs), [runtime/molt-backend/src/tir/module_phase.rs](../../runtime/molt-backend/src/tir/module_phase.rs), [runtime/molt-backend/src/tir/drop_phase.rs](../../runtime/molt-backend/src/tir/drop_phase.rs)
 - Representation plan authority: [runtime/molt-backend/src/representation_plan.rs](../../runtime/molt-backend/src/representation_plan.rs)
 - Integrated foundation program: [docs/design/foundation/00_integrated_parallel_program.md](../design/foundation/00_integrated_parallel_program.md)
@@ -58,6 +59,7 @@ authoritative when a design claim drifts.
 - Codebase decomposition program: [docs/design/foundation/21_decomposition_program.md](../design/foundation/21_decomposition_program.md)
 - Parallel build, crate extraction, incremental cache, and compiler-throughput architecture: [docs/design/parallel_build_architecture.md](../design/parallel_build_architecture.md), [docs/architecture/compilation-model.md](../architecture/compilation-model.md)
 - Op-kind registry: [docs/design/foundation/25_op_kind_registry.md](../design/foundation/25_op_kind_registry.md)
+- Generator fusion and deforestation routing: [docs/design/generator_fusion.md](../design/generator_fusion.md)
 - Perceus-style borrow inference: [docs/design/foundation/27_perceus_borrow_inference.md](../design/foundation/27_perceus_borrow_inference.md)
 - ExceptionRegion ownership, shared TIR facts, shared drop artifacts, backend parity evidence, and HandlerState frontier: [docs/design/foundation/45_exception_region_ownership.md](../design/foundation/45_exception_region_ownership.md)
 

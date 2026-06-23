@@ -69,6 +69,10 @@
 #                  propagation. These also feed slot-observation classification.
 #   - alias_slot_*_opcodes - opcode classes for alias_analysis.rs slot
 #                  observation. Omitted opcodes are conservative observers.
+#   - fusion_barrier_opcodes - opcode-only deforestation.rs fusion-eligibility
+#                  fact: ops that make a comprehension/generator body ineligible
+#                  for iterator-chain fusion. A DISTINCT fact from side_effecting
+#                  (see its own comment below). Rendered exhaustively over OpCode.
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -249,6 +253,42 @@ alias_heap_barrier_opcodes = [
     "ModuleDelGlobal",
     "ModuleDelGlobalIfPresent",
     "ModuleSetAttr",
+    "Raise",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
+    "StoreAttr",
+    "StoreIndex",
+    "Yield",
+    "YieldFrom",
+]
+
+# fusion_barrier_opcodes: deforestation.rs's loop/genexpr fusion barrier set.
+# An op in this set makes a candidate comprehension/generator body INELIGIBLE
+# for iterator-chain fusion (`sum`/`list`/`map`/`filter`/`any`/`all`/`min`/`max`
+# over a `for` loop). This is a DISTINCT fact from `side_effecting`, not a
+# duplicate of it: fusion preserves per-element evaluation order and count, so
+# allocation/attribute-read/may-throw ops (`ObjectNewBound`, `LoadAttr`,
+# `Index`, `Div`, ...) are SAFE to fuse and are deliberately NOT barriers, even
+# though several of them are side-effecting/may-throw for DCE's purposes.
+# The barriers are exactly the ops that change cross-iteration/control state or
+# suspend: opaque calls, attribute/index mutation+deletion, the async
+# state/channel suspend ops, closure load/store, `raise`, `yield`/`yield from`,
+# and `import`. Rendered EXHAUSTIVELY over OpCode by gen_op_kinds.py, so a new
+# OpCode variant must be classified here before the backend compiles — closing
+# the prior default-false drift trap in the hand-written `is_impure` matches!.
+fusion_barrier_opcodes = [
+    "Call",
+    "CallBuiltin",
+    "CallMethod",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "ClosureLoad",
+    "ClosureStore",
+    "DelAttr",
+    "DelIndex",
+    "Import",
+    "ImportFrom",
     "Raise",
     "StateSwitch",
     "StateTransition",

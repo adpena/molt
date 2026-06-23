@@ -318,8 +318,8 @@ def test_guarded_field_init_has_one_wire_spelling() -> None:
     assert current in aliases
     assert rejected not in aliases
 
-    generated_rs = OUT_RS.read_text()
-    generated_py = OUT_PY.read_text()
+    generated_rs = OUT_RS.read_text(encoding="utf-8")
+    generated_py = OUT_PY.read_text(encoding="utf-8")
     assert f'"{current}"' in generated_rs
     assert f'"{rejected}"' not in generated_rs
     assert f'"{current}"' in generated_py
@@ -337,7 +337,7 @@ def test_guarded_field_init_has_one_wire_spelling() -> None:
 
     llvm_lowering = (
         ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert f'Some("{current}")' in llvm_lowering
     assert f'Some("{rejected}")' not in llvm_lowering
 
@@ -347,7 +347,7 @@ def test_guarded_field_init_has_one_wire_spelling() -> None:
         for kind in kinds
         if kind.startswith("guarded_field")
     }
-    baseline = json.loads((ROOT / "tools/op_kinds_baseline.json").read_text())
+    baseline = json.loads((ROOT / "tools/op_kinds_baseline.json").read_text(encoding="utf-8"))
     baseline_guarded_danger = {
         kind
         for kinds in baseline["dangerous"].values()
@@ -1097,7 +1097,7 @@ def test_dangerous_cell_baseline_matches_current_audit() -> None:
     """
     audit = _audit()
     res = audit.run_audit()
-    baseline = json.loads((ROOT / "tools/op_kinds_baseline.json").read_text())
+    baseline = json.loads((ROOT / "tools/op_kinds_baseline.json").read_text(encoding="utf-8"))
 
     assert baseline.get("dangerous", {}) == res.dangerous()
 
@@ -2007,7 +2007,7 @@ def test_op_borrow_source_delegates_to_generated_table() -> None:
     Index references elsewhere in alias_analysis.rs (load-purity classification,
     the borrow-provenance unit-test fixtures) are not mistaken for the deleted
     hand-coded match."""
-    alias = (ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs").read_text()
+    alias = (ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs").read_text(encoding="utf-8")
     marker = "fn op_borrow_source("
     assert marker in alias, "op_borrow_source not found"
     start = alias.index(marker)
@@ -2276,7 +2276,7 @@ def test_drop_insertion_delegates_transfer_to_generated_authority() -> None:
     Scoped to the two transfer-helper FUNCTION BODIES so the structural shape
     match (which fields carry args — legitimately in the pass) is not mistaken for
     a hand-coded transfer fact."""
-    drop = (ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs").read_text()
+    drop = (ROOT / "runtime/molt-backend/src/tir/passes/drop_insertion.rs").read_text(encoding="utf-8")
     ownership = (
         ROOT / "runtime/molt-backend/src/tir/passes/ownership_lattice_min.rs"
     ).read_text(encoding="utf-8")

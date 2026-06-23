@@ -34,6 +34,22 @@ def test_async_sleep_intrinsic_symbol_matches_public_name() -> None:
     assert symbols["molt_async_sleep"] == "molt_async_sleep"
 
 
+def test_manifest_literal_defaults_feed_generated_intrinsic_metadata() -> None:
+    module = _load_gen_intrinsics_module()
+    _raw, entries = module._load_manifest()
+
+    by_name = {entry.name: entry for entry in entries}
+    length_hint = by_name["molt_operator_length_hint"]
+
+    assert length_hint.arity == 2
+    assert length_hint.defaults == ("IntrinsicDefaultValue::Int(0)",)
+
+    generated = (ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs").read_text()
+    assert "pub(crate) enum IntrinsicDefaultValue" in generated
+    assert "molt_operator_length_hint" in generated
+    assert "defaults: &[IntrinsicDefaultValue::Int(0)]," in generated
+
+
 def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
     module = _load_gen_intrinsics_module()
     _raw, entries = module._load_manifest()
@@ -47,10 +63,7 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
 
     assert module._feature_gate_for_symbol("molt_http_client_execute") == "stdlib_net"
     assert module._feature_gate_for_symbol("molt_html_escape") == "stdlib_text"
-    assert (
-        module._feature_gate_for_symbol("molt_unicodedata_category")
-        == "stdlib_text"
-    )
+    assert module._feature_gate_for_symbol("molt_unicodedata_category") == "stdlib_text"
     assert (
         module._feature_gate_for_symbol("molt_zoneinfo_available_timezones")
         == "stdlib_zoneinfo"
@@ -69,15 +82,15 @@ def test_ssl_intrinsic_abi_is_not_profile_gated() -> None:
 def test_generated_resolvers_are_split_from_manifest_table() -> None:
     """Resolver address-taking is generated into per-module Rust files."""
     generated_path = ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs"
-    resolver_root = (
-        ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
-    )
+    resolver_root = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
     generated = generated_path.read_text()
     resolver_mod = (resolver_root / "mod.rs").read_text()
     core_resolver = (resolver_root / "core_resolver.rs").read_text()
     ssl_resolver = (resolver_root / "ssl_resolver.rs").read_text()
 
-    assert '#[path = "generated_resolvers/mod.rs"]\nmod generated_resolvers;' in generated
+    assert (
+        '#[path = "generated_resolvers/mod.rs"]\nmod generated_resolvers;' in generated
+    )
     assert "pub(crate) use generated_resolvers::resolve_symbol;" in generated
     assert "IntrinsicSpec {" in generated
     assert "fn resolve_core_symbol" not in generated
@@ -118,9 +131,7 @@ def test_stringprep_category_is_toml_owned() -> None:
 
 
 def test_stringprep_resolver_is_leaf_owned() -> None:
-    resolver_root = (
-        ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
-    )
+    resolver_root = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
     facade_resolver = (resolver_root / "stringprep_resolver.rs").read_text()
     leaf_resolver = (
         ROOT / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs"
@@ -219,7 +230,9 @@ def test_write_rust_if_changed_skips_rustfmt_for_exact_match(
     assert target.read_text(encoding="utf-8") == text
 
 
-def test_resolver_cleanup_preserves_concurrent_temp_files(monkeypatch, tmp_path: Path) -> None:
+def test_resolver_cleanup_preserves_concurrent_temp_files(
+    monkeypatch, tmp_path: Path
+) -> None:
     module = _load_gen_intrinsics_module()
     resolver_root = tmp_path / "generated_resolvers"
     resolver_root.mkdir()
@@ -231,9 +244,7 @@ def test_resolver_cleanup_preserves_concurrent_temp_files(monkeypatch, tmp_path:
     monkeypatch.setattr(module, "OUT_RS_RESOLVERS_DIR", resolver_root)
     monkeypatch.setattr(module, "_rustfmt", lambda _path: None)
 
-    module._write_resolver_modules(
-        OrderedDict({"core": ["molt_capabilities_trusted"]})
-    )
+    module._write_resolver_modules(OrderedDict({"core": ["molt_capabilities_trusted"]}))
 
     assert hidden_temp.read_text(encoding="utf-8") == "temp"
     assert not stale_resolver.exists()

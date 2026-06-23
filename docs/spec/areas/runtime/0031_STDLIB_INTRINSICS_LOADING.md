@@ -28,6 +28,12 @@ checklist for new or modified stdlib shims.
   `src/molt/_intrinsics.pyi` plus
   `runtime/molt-runtime/src/intrinsics/generated.rs` via
   `python3 tools/gen_intrinsics.py`.
+- Literal positional defaults in `manifest.pyi` are canonical metadata. The
+  generator records supported concrete trailing defaults (`None`, booleans, and
+  integers) in `IntrinsicSpec.defaults`; runtime registration must attach the
+  matching `__defaults__` tuple to both eager and lazy intrinsic functions.
+  `tests/test_gen_intrinsics.py` guards this by checking generated Rust metadata
+  for default-bearing intrinsics such as `molt_operator_length_hint`.
 
 ## Lint Gate
 - `tools/check_stdlib_intrinsics.py` enforces the loader contract and runs in
