@@ -4885,7 +4885,10 @@ class CallVisitorMixin(_MixinBase):
                     allowlist_key, original_attr
                 )
                 if known_func_hint is not None:
-                    target_info = MoltValue(func_id, type_hint=known_func_hint)
+                    if target_info is None:
+                        target_info = MoltValue(func_id, type_hint=known_func_hint)
+                    else:
+                        target_info.type_hint = known_func_hint
             # Try lowering _intrinsics.require_intrinsic("name") calls to a
             # BUILTIN_FUNC opcode early, before any local-function dispatch
             # path (e.g. a `def _require_intrinsic(...)` defined in an except

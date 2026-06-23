@@ -1020,6 +1020,54 @@ def test_imported_class_ctor_avoids_cross_module_name_collision() -> None:
     ), "main lowering should not hardwire zipfile._path.Path.__init__ for pathlib.Path"
 
 
+def test_imported_known_vararg_function_call_bind_uses_imported_value() -> None:
+    gen = SimpleTIRGenerator(
+        known_modules={"typing"},
+        stdlib_allowlist={"typing"},
+        known_func_defaults={
+            "typing": {
+                "TypeVar": {
+                    "params": 1,
+                    "defaults": [],
+                    "kwonly": 0,
+                    "has_vararg": True,
+                }
+            }
+        },
+    )
+    gen.visit(ast.parse("from typing import TypeVar\nT = TypeVar('T')\n"))
+    main_ops = next(
+        func["ops"] for func in gen.to_json()["functions"] if func["name"] == "molt_main"
+    )
+    const_str = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op.get("kind") == "const_str" and isinstance(op.get("out"), str)
+    }
+    imported_typevar_values = {
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "module_import_from"
+        and len(op.get("args") or []) == 2
+        and const_str.get(op["args"][1]) == "TypeVar"
+    }
+    assert imported_typevar_values, "expected from-import to materialize TypeVar"
+    assert any(
+        op.get("kind") == "call_bind"
+        and len(op.get("args") or []) == 2
+        and op["args"][0] in imported_typevar_values
+        for op in main_ops
+    )
+    assert all(
+        not (
+            op.get("kind") == "call_bind"
+            and len(op.get("args") or []) == 2
+            and op["args"][0] == "TypeVar"
+        )
+        for op in main_ops
+    )
+
+
 def _counter_known_classes() -> dict[str, dict[str, object]]:
     return {
         "Counter": {
@@ -1510,10 +1558,32 @@ def test_collections_namedtuple_kwonly_defaults_use_call_bind() -> None:
         for func in gen.to_json()["functions"]
         if func["name"] == "molt_main"
     )
+    const_str = {
+        op["out"]: op["s_value"]
+        for op in main_ops
+        if op.get("kind") == "const_str" and isinstance(op.get("out"), str)
+    }
+    imported_namedtuple_values = {
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "module_import_from"
+        and len(op.get("args") or []) == 2
+        and const_str.get(op["args"][1]) == "namedtuple"
+    }
 
+    assert imported_namedtuple_values, "expected from-import to materialize namedtuple"
     assert any(
         op.get("kind") == "call_bind"
-        and op.get("args", [None])[0] == "namedtuple"
+        and len(op.get("args") or []) == 2
+        and op["args"][0] in imported_namedtuple_values
+        for op in main_ops
+    ), main_ops
+    assert all(
+        not (
+            op.get("kind") == "call_bind"
+            and len(op.get("args") or []) == 2
+            and op["args"][0] == "namedtuple"
+        )
         for op in main_ops
     ), main_ops
     assert all(
