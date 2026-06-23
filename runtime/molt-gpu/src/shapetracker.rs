@@ -8,6 +8,69 @@
 //! - `expr_idx` has a fast path for contiguous views (linear_idx == buffer offset).
 //! - Specialized `expr_idx_1d`, `expr_idx_2d`, `expr_idx_3d` avoid the general loop.
 
+#[inline(always)]
+fn checked_shape_numel(shape: &[usize]) -> Option<usize> {
+    shape
+        .iter()
+        .try_fold(1usize, |numel, &dim| numel.checked_mul(dim))
+}
+
+#[inline(always)]
+fn usize_to_i64(value: usize, context: &str) -> i64 {
+    i64::try_from(value).unwrap_or_else(|_| panic!("{context} exceeds i64 capacity: {value}"))
+}
+
+#[inline(always)]
+fn checked_shape_add(left: usize, right: usize, context: &str) -> usize {
+    left.checked_add(right)
+        .unwrap_or_else(|| panic!("{context} overflows usize: {left} + {right}"))
+}
+
+#[inline(always)]
+fn checked_shape_sub(left: usize, right: usize, context: &str) -> usize {
+    left.checked_sub(right)
+        .unwrap_or_else(|| panic!("{context} underflows usize: {left} - {right}"))
+}
+
+#[inline(always)]
+fn validate_shape_i64(shape: &[usize], context: &str) {
+    for &dim in shape {
+        let _ = usize_to_i64(dim, context);
+    }
+}
+
+#[inline(always)]
+fn checked_stride_term(index: usize, stride: i64, context: &str) -> i64 {
+    usize_to_i64(index, context)
+        .checked_mul(stride)
+        .unwrap_or_else(|| panic!("{context} stride term overflows i64: {index} * {stride}"))
+}
+
+#[inline(always)]
+fn checked_offset_add(offset: i64, term: i64, context: &str) -> i64 {
+    offset
+        .checked_add(term)
+        .unwrap_or_else(|| panic!("{context} offset overflows i64: {offset} + {term}"))
+}
+
+#[inline(always)]
+fn checked_offset_sub(offset: i64, term: i64, context: &str) -> i64 {
+    offset
+        .checked_sub(term)
+        .unwrap_or_else(|| panic!("{context} offset overflows i64: {offset} - {term}"))
+}
+
+#[inline(always)]
+fn nonnegative_offset_to_usize(offset: i64, context: &str) -> Option<usize> {
+    if offset < 0 {
+        return None;
+    }
+    Some(
+        usize::try_from(offset)
+            .unwrap_or_else(|_| panic!("{context} exceeds usize capacity: {offset}")),
+    )
+}
+
 /// A single view into a contiguous buffer.
 ///
 /// Describes how to access a region of a flat buffer via shape, strides,
@@ -34,12 +97,16 @@ impl View {
     /// Create a contiguous view for a given shape.
     /// Strides are row-major (C-order): last dimension is stride 1.
     pub fn contiguous(shape: &[usize]) -> Self {
+        validate_shape_i64(shape, "contiguous shape dimension");
         let ndim = shape.len();
         let mut strides = vec![0i64; ndim];
         if ndim > 0 {
             strides[ndim - 1] = 1;
             for i in (0..ndim - 1).rev() {
-                strides[i] = strides[i + 1] * shape[i + 1] as i64;
+                let dim = usize_to_i64(shape[i + 1], "row-major shape dimension");
+                strides[i] = strides[i + 1]
+                    .checked_mul(dim)
+                    .expect("row-major stride overflows i64");
             }
         }
         Self {
@@ -58,6 +125,7 @@ impl View {
         offset: i64,
         mask: Option<Vec<(i64, i64)>>,
     ) -> Self {
+        validate_shape_i64(&shape, "view shape dimension");
         let is_contiguous_cache = Self::compute_is_contiguous(&shape, &strides, offset, &mask);
         Self {
             shape,
@@ -88,15 +156,29 @@ impl View {
             if strides[i] != expected_stride {
                 return false;
             }
-            expected_stride *= shape[i] as i64;
+            let dim = match i64::try_from(shape[i]) {
+                Ok(dim) => dim,
+                Err(_) => return false,
+            };
+            expected_stride = match expected_stride.checked_mul(dim) {
+                Some(stride) => stride,
+                None => return false,
+            };
         }
         true
+    }
+
+    /// Checked total number of logical elements.
+    #[inline(always)]
+    pub fn checked_numel(&self) -> Option<usize> {
+        checked_shape_numel(&self.shape)
     }
 
     /// Total number of logical elements.
     #[inline(always)]
     pub fn numel(&self) -> usize {
-        self.shape.iter().product()
+        self.checked_numel()
+            .expect("shape logical element count overflows usize")
     }
 
     /// Whether this view is contiguous (row-major, no mask, offset=0).
@@ -152,17 +234,18 @@ impl View {
         let idx = linear_idx;
 
         if let Some(ref mask) = self.mask {
-            let idx_i64 = idx as i64;
+            let idx_i64 = usize_to_i64(idx, "1D logical index");
             if idx_i64 < mask[0].0 || idx_i64 >= mask[0].1 {
                 return None;
             }
         }
 
-        let buf_offset = self.offset + idx as i64 * self.strides[0];
-        if buf_offset < 0 {
-            return None;
-        }
-        Some(buf_offset as usize)
+        let buf_offset = checked_offset_add(
+            self.offset,
+            checked_stride_term(idx, self.strides[0], "1D buffer offset"),
+            "1D buffer offset",
+        );
+        nonnegative_offset_to_usize(buf_offset, "1D buffer offset")
     }
 
     /// Specialized 2D index computation.
@@ -172,8 +255,8 @@ impl View {
         let i0 = linear_idx / self.shape[1];
 
         if let Some(ref mask) = self.mask {
-            let i0_i64 = i0 as i64;
-            let i1_i64 = i1 as i64;
+            let i0_i64 = usize_to_i64(i0, "2D logical index");
+            let i1_i64 = usize_to_i64(i1, "2D logical index");
             if i0_i64 < mask[0].0
                 || i0_i64 >= mask[0].1
                 || i1_i64 < mask[1].0
@@ -183,27 +266,34 @@ impl View {
             }
         }
 
-        let buf_offset = self.offset + i0 as i64 * self.strides[0] + i1 as i64 * self.strides[1];
-        if buf_offset < 0 {
-            return None;
-        }
-        Some(buf_offset as usize)
+        let buf_offset = checked_offset_add(
+            checked_offset_add(
+                self.offset,
+                checked_stride_term(i0, self.strides[0], "2D buffer offset"),
+                "2D buffer offset",
+            ),
+            checked_stride_term(i1, self.strides[1], "2D buffer offset"),
+            "2D buffer offset",
+        );
+        nonnegative_offset_to_usize(buf_offset, "2D buffer offset")
     }
 
     /// Specialized 3D index computation.
     #[inline(always)]
     fn expr_idx_3d(&self, linear_idx: usize) -> Option<usize> {
         let dim2_size = self.shape[2];
-        let dim12_size = self.shape[1] * dim2_size;
+        let dim12_size = self.shape[1]
+            .checked_mul(dim2_size)
+            .expect("3D linear index divisor overflows usize");
 
         let i2 = linear_idx % dim2_size;
         let i1 = (linear_idx / dim2_size) % self.shape[1];
         let i0 = linear_idx / dim12_size;
 
         if let Some(ref mask) = self.mask {
-            let i0_i64 = i0 as i64;
-            let i1_i64 = i1 as i64;
-            let i2_i64 = i2 as i64;
+            let i0_i64 = usize_to_i64(i0, "3D logical index");
+            let i1_i64 = usize_to_i64(i1, "3D logical index");
+            let i2_i64 = usize_to_i64(i2, "3D logical index");
             if i0_i64 < mask[0].0
                 || i0_i64 >= mask[0].1
                 || i1_i64 < mask[1].0
@@ -215,14 +305,20 @@ impl View {
             }
         }
 
-        let buf_offset = self.offset
-            + i0 as i64 * self.strides[0]
-            + i1 as i64 * self.strides[1]
-            + i2 as i64 * self.strides[2];
-        if buf_offset < 0 {
-            return None;
-        }
-        Some(buf_offset as usize)
+        let buf_offset = checked_offset_add(
+            checked_offset_add(
+                checked_offset_add(
+                    self.offset,
+                    checked_stride_term(i0, self.strides[0], "3D buffer offset"),
+                    "3D buffer offset",
+                ),
+                checked_stride_term(i1, self.strides[1], "3D buffer offset"),
+                "3D buffer offset",
+            ),
+            checked_stride_term(i2, self.strides[2], "3D buffer offset"),
+            "3D buffer offset",
+        );
+        nonnegative_offset_to_usize(buf_offset, "3D buffer offset")
     }
 
     /// General N-dimensional index computation (4D+).
@@ -233,7 +329,7 @@ impl View {
         // Check mask validity
         if let Some(ref mask) = self.mask {
             for (dim, &(lo, hi)) in mask.iter().enumerate() {
-                let idx = indices[dim] as i64;
+                let idx = usize_to_i64(indices[dim], "N-D logical index");
                 if idx < lo || idx >= hi {
                     return None;
                 }
@@ -243,14 +339,14 @@ impl View {
         // Compute buffer offset: offset + sum(idx[i] * strides[i])
         let mut buf_offset = self.offset;
         for (dim, &idx) in indices.iter().enumerate() {
-            buf_offset += idx as i64 * self.strides[dim];
+            buf_offset = checked_offset_add(
+                buf_offset,
+                checked_stride_term(idx, self.strides[dim], "N-D buffer offset"),
+                "N-D buffer offset",
+            );
         }
 
-        // Buffer offset must be non-negative for valid elements
-        if buf_offset < 0 {
-            return None;
-        }
-        Some(buf_offset as usize)
+        nonnegative_offset_to_usize(buf_offset, "N-D buffer offset")
     }
 }
 
@@ -284,6 +380,12 @@ impl ShapeTracker {
 
     /// Total number of logical elements.
     #[inline(always)]
+    pub fn checked_numel(&self) -> Option<usize> {
+        self.view().checked_numel()
+    }
+
+    /// Total number of logical elements.
+    #[inline(always)]
     pub fn numel(&self) -> usize {
         self.view().numel()
     }
@@ -293,12 +395,13 @@ impl ShapeTracker {
     /// fallback otherwise.
     pub fn reshape(&self, new_shape: &[usize]) -> Self {
         let current = self.view();
+        let current_numel = current.numel();
+        let new_numel =
+            checked_shape_numel(new_shape).expect("reshape target element count overflows usize");
         assert_eq!(
-            current.numel(),
-            new_shape.iter().product::<usize>(),
+            current_numel, new_numel,
             "reshape: element count mismatch ({} vs {})",
-            current.numel(),
-            new_shape.iter().product::<usize>()
+            current_numel, new_numel
         );
         if current.is_contiguous() {
             Self {
@@ -372,13 +475,23 @@ impl ShapeTracker {
             .shape
             .iter()
             .zip(padding.iter())
-            .map(|(&s, &(before, after))| s + before + after)
+            .map(|(&s, &(before, after))| {
+                checked_shape_add(
+                    checked_shape_add(s, before, "pad shape"),
+                    after,
+                    "pad shape",
+                )
+            })
             .collect();
 
         // Adjust offset for padding
         let mut new_offset = current.offset;
         for (i, &(before, _)) in padding.iter().enumerate() {
-            new_offset -= before as i64 * current.strides[i];
+            new_offset = checked_offset_sub(
+                new_offset,
+                checked_stride_term(before, current.strides[i], "pad offset"),
+                "pad offset",
+            );
         }
 
         // Build mask: valid region is [before, before + original_size)
@@ -386,7 +499,12 @@ impl ShapeTracker {
             .shape
             .iter()
             .zip(padding.iter())
-            .map(|(&s, &(before, _))| (before as i64, (before + s) as i64))
+            .map(|(&s, &(before, _))| {
+                (
+                    usize_to_i64(before, "pad mask"),
+                    usize_to_i64(checked_shape_add(before, s, "pad mask"), "pad mask"),
+                )
+            })
             .collect();
 
         Self {
@@ -404,21 +522,40 @@ impl ShapeTracker {
         let current = self.view();
         assert_eq!(bounds.len(), current.shape.len(), "shrink: ndim mismatch");
 
-        let new_shape: Vec<usize> = bounds.iter().map(|&(s, e)| e - s).collect();
+        let new_shape: Vec<usize> = current
+            .shape
+            .iter()
+            .zip(bounds.iter())
+            .enumerate()
+            .map(|(axis, (&dim, &(start, end)))| {
+                assert!(
+                    end <= dim,
+                    "shrink bound end exceeds dimension on axis {axis}: {end} > {dim}"
+                );
+                checked_shape_sub(end, start, "shrink shape")
+            })
+            .collect();
 
         // Adjust offset for shrink start
         let mut new_offset = current.offset;
         for (i, &(start, _)) in bounds.iter().enumerate() {
-            new_offset += start as i64 * current.strides[i];
+            new_offset = checked_offset_add(
+                new_offset,
+                checked_stride_term(start, current.strides[i], "shrink offset"),
+                "shrink offset",
+            );
         }
         let new_mask = current.mask.as_ref().map(|mask| {
             mask.iter()
                 .zip(bounds.iter())
                 .zip(new_shape.iter())
                 .map(|((&(lo, hi), &(start, _)), &len)| {
-                    let start = start as i64;
-                    let len = len as i64;
-                    ((lo - start).max(0), (hi - start).min(len))
+                    let start = usize_to_i64(start, "shrink mask");
+                    let len = usize_to_i64(len, "shrink mask");
+                    (
+                        checked_offset_sub(lo, start, "shrink mask").max(0),
+                        checked_offset_sub(hi, start, "shrink mask").min(len),
+                    )
                 })
                 .collect()
         });
@@ -439,15 +576,29 @@ impl ShapeTracker {
         assert!(axis < current.shape.len(), "flip: axis out of bounds");
 
         let mut new_strides = current.strides.clone();
-        new_strides[axis] = -new_strides[axis];
+        new_strides[axis] = new_strides[axis]
+            .checked_neg()
+            .expect("flip stride negation overflows i64");
 
         // Adjust offset: flip moves the start pointer to the last element
-        let new_offset = current.offset + (current.shape[axis] as i64 - 1) * current.strides[axis];
+        let axis_len = usize_to_i64(current.shape[axis], "flip axis length");
+        let new_offset = if current.shape[axis] == 0 {
+            current.offset
+        } else {
+            let last_axis_index = checked_shape_sub(current.shape[axis], 1, "flip axis length");
+            checked_offset_add(
+                current.offset,
+                checked_stride_term(last_axis_index, current.strides[axis], "flip offset"),
+                "flip offset",
+            )
+        };
         let new_mask = current.mask.as_ref().map(|mask| {
             let mut flipped_mask = mask.clone();
             let (lo, hi) = flipped_mask[axis];
-            let axis_len = current.shape[axis] as i64;
-            flipped_mask[axis] = (axis_len - hi, axis_len - lo);
+            flipped_mask[axis] = (
+                checked_offset_sub(axis_len, hi, "flip mask"),
+                checked_offset_sub(axis_len, lo, "flip mask"),
+            );
             flipped_mask
         });
 

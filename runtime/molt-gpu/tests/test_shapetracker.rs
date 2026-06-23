@@ -7,7 +7,68 @@ fn test_contiguous_view() {
     assert_eq!(v.strides, vec![12, 4, 1]);
     assert_eq!(v.offset, 0);
     assert!(v.is_contiguous());
+    assert_eq!(v.checked_numel(), Some(24));
     assert_eq!(v.numel(), 24);
+}
+
+#[test]
+fn test_checked_numel_reports_overflow() {
+    let huge_dim = (u32::MAX as usize) + 1;
+    let v = View::contiguous(&[huge_dim, huge_dim]);
+    let st = ShapeTracker::contiguous(&[huge_dim, huge_dim]);
+
+    assert_eq!(v.checked_numel(), None);
+    assert_eq!(st.checked_numel(), None);
+}
+
+#[test]
+#[should_panic(expected = "shape logical element count overflows usize")]
+fn test_numel_panics_on_overflow() {
+    let huge_dim = (u32::MAX as usize) + 1;
+    let v = View::contiguous(&[huge_dim, huge_dim]);
+    let _ = v.numel();
+}
+
+#[test]
+#[should_panic(expected = "row-major stride overflows i64")]
+fn test_contiguous_rejects_i64_stride_overflow() {
+    let dim = 3_037_000_500usize;
+    let _ = View::contiguous(&[2, dim, dim]);
+}
+
+#[test]
+#[should_panic(expected = "contiguous shape dimension exceeds i64 capacity")]
+fn test_contiguous_rejects_i64_coordinate_overflow() {
+    let _ = View::contiguous(&[usize::MAX]);
+}
+
+#[test]
+#[should_panic(expected = "reshape target element count overflows usize")]
+fn test_reshape_rejects_overflowing_target_numel() {
+    let huge_dim = (u32::MAX as usize) + 1;
+    let st = ShapeTracker::contiguous(&[1]);
+    let _ = st.reshape(&[huge_dim, huge_dim]);
+}
+
+#[test]
+#[should_panic(expected = "view shape dimension exceeds i64 capacity")]
+fn test_expand_rejects_i64_coordinate_overflow() {
+    let st = ShapeTracker::contiguous(&[1]);
+    let _ = st.expand(&[usize::MAX]);
+}
+
+#[test]
+#[should_panic(expected = "pad shape overflows usize")]
+fn test_pad_rejects_shape_overflow() {
+    let st = ShapeTracker::contiguous(&[1]);
+    let _ = st.pad(&[(usize::MAX, 1)]);
+}
+
+#[test]
+#[should_panic(expected = "shrink shape underflows usize")]
+fn test_shrink_rejects_inverted_bounds() {
+    let st = ShapeTracker::contiguous(&[4]);
+    let _ = st.shrink(&[(3, 2)]);
 }
 
 #[test]
@@ -86,6 +147,13 @@ fn test_shrink() {
 }
 
 #[test]
+#[should_panic(expected = "shrink bound end exceeds dimension")]
+fn test_shrink_rejects_end_past_dimension() {
+    let st = ShapeTracker::contiguous(&[4]);
+    let _ = st.shrink(&[(0, 5)]);
+}
+
+#[test]
 fn test_flip() {
     let st = ShapeTracker::contiguous(&[4]);
     let flipped = st.flip(0);
@@ -94,6 +162,17 @@ fn test_flip() {
     assert_eq!(flipped.expr_idx(1), Some(2));
     assert_eq!(flipped.expr_idx(2), Some(1));
     assert_eq!(flipped.expr_idx(3), Some(0));
+}
+
+#[test]
+fn test_flip_zero_length_axis_keeps_empty_offset() {
+    let st = ShapeTracker::contiguous(&[0]);
+    let flipped = st.flip(0);
+
+    assert_eq!(flipped.shape(), &[0]);
+    assert_eq!(flipped.view().offset, 0);
+    assert_eq!(flipped.view().strides, vec![-1]);
+    assert_eq!(flipped.numel(), 0);
 }
 
 #[test]
