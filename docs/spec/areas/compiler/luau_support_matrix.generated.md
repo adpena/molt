@@ -7,9 +7,9 @@
 ## Summary
 
 - `compile-error`: `1`
-- `implemented-exact`: `367`
+- `implemented-exact`: `368`
 - `implemented-target-limited`: `22`
-- `not-admitted`: `21`
+- `not-admitted`: `20`
 - `runtime-capability-error`: `5`
 - `total`: `416`
 
@@ -54,7 +54,7 @@
 | `br_if` | `implemented-exact` | Valid labeled conditional branch lowers to Luau goto; missing target labels fail closed. |
 | `branch` | `implemented-exact` | Valid labeled conditional branch lowers to Luau goto; missing target labels fail closed. |
 | `branch_false` | `implemented-exact` | Valid labeled false-branch lowers to Luau goto; missing target labels fail closed. |
-| `bridge_unavailable` | `not-admitted` | Checked Luau emission rejects semantic stub markers. |
+| `bridge_unavailable` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `build_dict` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `build_list` | `implemented-exact` | Lowered without checked-output stub markers. |
 | `builtin_func` | `implemented-exact` | Lowered without checked-output stub markers. |

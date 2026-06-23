@@ -39,6 +39,9 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
                 self.emit_line("if cond then goto label_1 end");
                 self.emit_line("error(\"[unsupported op: br_if cond missing target label]\")");
             }
+            "bridge_unavailable" => {
+                self.emit_line("local out: any = error({__type=\"RuntimeError\", __msg=\"Molt bridge unavailable: \" .. tostring(msg)})");
+            }
             "is" => {
                 // Python non-None identity maps to equality in Luau.
                 self.emit_line("local out = (a == b)");
@@ -59,6 +62,7 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["spawn"].status == "not-admitted"
     assert rows["br_if"].status == "implemented-exact"
     assert "missing target labels fail closed" in rows["br_if"].note
+    assert rows["bridge_unavailable"].status == "implemented-exact"
     assert rows["is"].status == "implemented-target-limited"
     assert rows["getargv"].status == "implemented-target-limited"
 
