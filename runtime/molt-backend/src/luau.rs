@@ -3415,10 +3415,159 @@ impl LuauBackend {
                     self.emit_line(&format!("setmetatable({obj}, {class})"));
                 }
             }
-            "class_set_layout_version"
-            | "class_apply_set_name"
-            | "class_layout_version"
-            | "class_merge_layout" => {
+            "class_layout_version" => {
+                if let Some(ref out_name) = op.out {
+                    let out = sanitize_ident(out_name);
+                    let args = op.args.as_deref().unwrap_or(&[]);
+                    if let Some(class) = args.first() {
+                        let class = sanitize_ident(class);
+                        self.emit_line(&format!(
+                            "local {out} = if type({class}) == \"table\" and type({class}.__molt_layout_version) == \"number\" then {class}.__molt_layout_version else 0"
+                        ));
+                    } else {
+                        self.emit_line(&format!("local {out} = 0"));
+                    }
+                }
+            }
+            "class_set_layout_version" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 2 {
+                    let class = sanitize_ident(&args[0]);
+                    let version = sanitize_ident(&args[1]);
+                    self.emit_line("do");
+                    self.push_indent();
+                    self.emit_line(&format!("local __cls = {class}"));
+                    self.emit_line(&format!("local __version = {version}"));
+                    self.emit_line("if type(__version) ~= \"number\" or __version < 0 then");
+                    self.push_indent();
+                    self.emit_line(
+                        "error({__type=\"TypeError\", __msg=\"layout version must be int\"})",
+                    );
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("if type(__cls) == \"table\" then");
+                    self.push_indent();
+                    self.emit_line("__cls.__molt_layout_version = __version");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("end");
+                }
+                if let Some(ref out_name) = op.out
+                    && out_name != "none"
+                {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil"));
+                }
+            }
+            "class_merge_layout" => {
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if args.len() >= 3 {
+                    let class = sanitize_ident(&args[0]);
+                    let offsets = sanitize_ident(&args[1]);
+                    let size = sanitize_ident(&args[2]);
+                    self.emit_line("do");
+                    self.push_indent();
+                    self.emit_line(&format!("local __cls = {class}"));
+                    self.emit_line(&format!("local __offsets = {offsets}"));
+                    self.emit_line(&format!("local __size = {size}"));
+                    self.emit_line("if type(__cls) ~= \"table\" then");
+                    self.push_indent();
+                    self.emit_line(
+                        "error({__type=\"TypeError\", __msg=\"class layout merge expects type\"})",
+                    );
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("if type(__size) ~= \"number\" or __size < 0 then");
+                    self.push_indent();
+                    self.emit_line(
+                        "error({__type=\"TypeError\", __msg=\"__molt_layout_size__ must be int\"})",
+                    );
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("local __merged = __cls.__molt_field_offsets__");
+                    self.emit_line("if __offsets ~= nil then");
+                    self.push_indent();
+                    self.emit_line("if type(__offsets) ~= \"table\" then");
+                    self.push_indent();
+                    self.emit_line(
+                        "error({__type=\"TypeError\", __msg=\"__molt_field_offsets__ must be dict or None\"})",
+                    );
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("if type(__merged) ~= \"table\" then");
+                    self.push_indent();
+                    self.emit_line("__merged = {}");
+                    self.emit_line("__cls.__molt_field_offsets__ = __merged");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("for __k, __v in pairs(__offsets) do");
+                    self.push_indent();
+                    self.emit_line(
+                        "if type(__k) == \"string\" and type(__v) == \"number\" and __v >= 0 and __merged[__k] == nil then",
+                    );
+                    self.push_indent();
+                    self.emit_line("__merged[__k] = __v");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("elseif __merged ~= nil and type(__merged) ~= \"table\" then");
+                    self.push_indent();
+                    self.emit_line(
+                        "error({__type=\"TypeError\", __msg=\"__molt_field_offsets__ must be dict or None\"})",
+                    );
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("local __layout_size = __cls.__molt_layout_size__");
+                    self.emit_line(
+                        "if type(__layout_size) ~= \"number\" or __layout_size < 0 then",
+                    );
+                    self.push_indent();
+                    self.emit_line("__layout_size = 0");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("if __size > __layout_size then");
+                    self.push_indent();
+                    self.emit_line("__layout_size = __size");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("if type(__merged) == \"table\" then");
+                    self.push_indent();
+                    self.emit_line("for _, __offset in pairs(__merged) do");
+                    self.push_indent();
+                    self.emit_line("if type(__offset) == \"number\" and __offset >= 0 then");
+                    self.push_indent();
+                    self.emit_line("local __end = __offset + 16");
+                    self.emit_line("if __end > __layout_size then");
+                    self.push_indent();
+                    self.emit_line("__layout_size = __end");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("if __layout_size == 0 then");
+                    self.push_indent();
+                    self.emit_line("__layout_size = 8");
+                    self.pop_indent();
+                    self.emit_line("end");
+                    self.emit_line("__cls.__molt_layout_size__ = __layout_size");
+                    self.pop_indent();
+                    self.emit_line("end");
+                }
+                if let Some(ref out_name) = op.out
+                    && out_name != "none"
+                {
+                    let out = sanitize_ident(out_name);
+                    self.emit_line(&format!("local {out} = nil"));
+                }
+            }
+            "class_apply_set_name" => {
                 self.emit_line(&format!("-- [class op: {}]", op.kind));
             }
             "module_import" => {
@@ -11363,6 +11512,106 @@ mod tests {
         assert!(
             !source.contains("[class op: object_set_class]"),
             "object_set_class must not be reported as a class-op marker, got:\n{source}"
+        );
+    }
+
+    #[test]
+    fn test_compile_checked_lowers_class_layout_metadata() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "class_layout_metadata_test".to_string(),
+                params: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                ops: vec![
+                    OpIR {
+                        kind: "class_new".to_string(),
+                        out: Some("cls".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "class_layout_version".to_string(),
+                        out: Some("version_before".to_string()),
+                        args: Some(vec!["cls".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const_str".to_string(),
+                        out: Some("field_name".to_string()),
+                        s_value: Some("field".to_string()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("field_offset".to_string()),
+                        value: Some(0),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "dict_new".to_string(),
+                        out: Some("offsets".to_string()),
+                        args: Some(vec!["field_name".to_string(), "field_offset".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("layout_size".to_string()),
+                        value: Some(24),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "class_merge_layout".to_string(),
+                        args: Some(vec![
+                            "cls".to_string(),
+                            "offsets".to_string(),
+                            "layout_size".to_string(),
+                        ]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "const".to_string(),
+                        out: Some("layout_version".to_string()),
+                        value: Some(7),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "class_set_layout_version".to_string(),
+                        args: Some(vec!["cls".to_string(), "layout_version".to_string()]),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "class_layout_version".to_string(),
+                        out: Some("version_after".to_string()),
+                        args: Some(vec!["cls".to_string()]),
+                        ..OpIR::default()
+                    },
+                ],
+            }],
+            profile: None,
+        };
+        let mut backend = LuauBackend::new();
+        let source = backend
+            .compile_checked(&ir)
+            .expect("class layout metadata ops must lower to Luau class-table metadata");
+        assert!(
+            source.contains("local version_before = if type(cls) == \"table\""),
+            "class_layout_version should read class-table layout metadata, got:\n{source}"
+        );
+        assert!(
+            source.contains("__cls.__molt_field_offsets__ = __merged")
+                && source.contains("__cls.__molt_layout_size__ = __layout_size"),
+            "class_merge_layout should maintain field offsets and layout size, got:\n{source}"
+        );
+        assert!(
+            source.contains("__cls.__molt_layout_version = __version"),
+            "class_set_layout_version should write layout version metadata, got:\n{source}"
+        );
+        assert!(
+            !source.contains("[class op: class_layout_version]")
+                && !source.contains("[class op: class_set_layout_version]")
+                && !source.contains("[class op: class_merge_layout]"),
+            "layout metadata ops must not leave class-op markers, got:\n{source}"
         );
     }
 
