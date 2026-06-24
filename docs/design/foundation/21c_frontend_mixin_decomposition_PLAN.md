@@ -77,8 +77,9 @@ PEP-634. **Route them to `lowering/analysis.py`, NOT `pattern_match.py`.**
    `ast`, stdlib — NEVER `from molt.frontend import ...` and never each other (no cycles).
 6. `@staticmethod`/`@contextmanager` move with decorators intact; callers via `self._foo` still
    resolve through MRO.
-7. **Regenerate `_protocol.py`** after each extraction (`python tmp/gen_protocol.py` or
-   equivalent) so cross-family `self.*` references stay type-clean. Never hand-edit it.
+7. **Regenerate `_protocol.py` / `_protocol_attrs.py`** after each extraction
+   (`python tools/gen_protocol.py`) so cross-family `self.*` references stay
+   type-clean. Never hand-edit generated protocol files.
 
 ## Verification (per extraction + final)
 1. Import/MRO sanity (cheapest first): instantiate `SimpleTIRGenerator()`, assert all `visit_*`
