@@ -2,7 +2,7 @@ use super::super::*;
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for `dict` ops: construction (`dict_new`/`dict_from_obj`), access/mutation (`get`/`pop`/`setdefault`/`update`/`clear`/`copy`/`popitem`), counting builders (`dict_inc`/`dict_str_int_inc`/`string_split_*_dict_inc`/`taq_ingest_line`), and views (`keys`/`values`/`items`).
+/// Cranelift codegen handlers for `dict` ops: construction (`dict_new`/`dict_from_obj`), access/mutation (`get`/`set`/`pop`/`setdefault`/`update`/`update_missing`/`clear`/`copy`/`popitem`), counting builders (`dict_inc`/`dict_str_int_inc`/`string_split_*_dict_inc`/`taq_ingest_line`), and views (`keys`/`values`/`items`).
 ///
 /// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
 /// Each arm body is byte-for-byte identical to the original; only the access
@@ -15,6 +15,8 @@ use super::var_get_boxed_overflow_safe_fn;
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     op: &OpIR,
+    op_idx: usize,
+    func_name: &str,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
@@ -24,6 +26,8 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
     int_primary_vars: &BTreeSet<String>,
     float_primary_vars: &BTreeSet<String>,
     bool_primary_vars: &BTreeSet<String>,
+    scalar_fast_paths_enabled: bool,
+    representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     // Reconstruct the original op-local closure (captures bool_primary_vars +
@@ -55,6 +59,9 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
             bool_primary_vars,
             nbc,
         )
+    };
+    let op_index_key_is_integer_family = |op: &OpIR| {
+        scalar_fast_paths_enabled && representation_plan.op_index_key_is_integer_family(op)
     };
     match op.kind.as_str() {
         "dict_new" => {
@@ -877,6 +884,171 @@ pub(in crate::native_backend::function_compiler) fn handle_dict_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
+                "dict_set" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let dict_bits = var_get_boxed_overflow_safe(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        &mut *sealed_blocks,
+                        vars,
+                        &args[0],
+                        int_primary_vars,
+                        float_primary_vars,
+                    )
+                    .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_name, op_idx));
+                    let key_bits = var_get_boxed_overflow_safe(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        &mut *sealed_blocks,
+                        vars,
+                        &args[1],
+                        int_primary_vars,
+                        float_primary_vars,
+                    )
+                    .unwrap_or_else(|| panic!("Key not found in {} op {}", func_name, op_idx));
+                    let val_bits = var_get_boxed_overflow_safe(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        &mut *sealed_blocks,
+                        vars,
+                        &args[2],
+                        int_primary_vars,
+                        float_primary_vars,
+                    )
+                    .unwrap_or_else(|| panic!("Value not found in {} op {}", func_name, op_idx));
+                    // Dispatch based on container specialization:
+                    // - list_int: flat i64 storage (Codon-style)
+                    // - fast_int: generic list but key is known int
+                    // - default: full dict/generic dispatch
+                    if representation_plan.op_has_container_storage(
+                        op_idx,
+                        op,
+                        ContainerStorageKind::FlatListInt,
+                    ) {
+                        // raw_int_shadow fast path for list_int dict_set.
+                        // Inside loops, use Variable-only shadows (phi-correct).
+                        let raw_key_opt =
+                            int_raw_value(&mut *builder, vars, int_primary_vars, &args[1]);
+                        let raw_val_opt =
+                            int_raw_value(&mut *builder, vars, int_primary_vars, &args[2]);
+                        if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
+                            let callee = SimpleBackend::import_func_id_split(
+                                &mut *module,
+                                &mut *import_ids,
+                                "molt_list_int_setitem_unchecked",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee =
+                                module.declare_func_in_func(callee, builder.func);
+                            let call = builder
+                                .ins()
+                                .call(local_callee, &[*dict_bits, raw_key, raw_val]);
+                            let res = builder.inst_results(call)[0];
+                            if let Some(out__) = op.out.as_ref() {
+                                def_var_named(&mut *builder, vars, out__, res);
+                            }
+                        } else {
+                            let callee = SimpleBackend::import_func_id_split(
+                                &mut *module,
+                                &mut *import_ids,
+                                "molt_list_int_setitem",
+                                &[types::I64, types::I64, types::I64],
+                                &[types::I64],
+                            );
+                            let local_callee =
+                                module.declare_func_in_func(callee, builder.func);
+                            let call = builder
+                                .ins()
+                                .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
+                            let res = builder.inst_results(call)[0];
+                            if let Some(out__) = op.out.as_ref() {
+                                def_var_named(&mut *builder, vars, out__, res);
+                            }
+                        }
+                    } else {
+                        let fn_name = if op_index_key_is_integer_family(op) {
+                            "molt_list_setitem_int_fast"
+                        } else {
+                            "molt_dict_set"
+                        };
+                        let callee = SimpleBackend::import_func_id_split(
+                            &mut *module,
+                            &mut *import_ids,
+                            fn_name,
+                            &[types::I64, types::I64, types::I64],
+                            &[types::I64],
+                        );
+                        let local_callee = module.declare_func_in_func(callee, builder.func);
+                        let call = builder
+                            .ins()
+                            .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
+                        let res = builder.inst_results(call)[0];
+                        if let Some(out__) = op.out.as_ref() {
+                            def_var_named(&mut *builder, vars, out__, res);
+                        }
+                    }
+                }
+                "dict_update_missing" => {
+                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
+                    let dict_bits = var_get_boxed_overflow_safe(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        &mut *sealed_blocks,
+                        vars,
+                        &args[0],
+                        int_primary_vars,
+                        float_primary_vars,
+                    )
+                    .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_name, op_idx));
+                    let key_bits = var_get_boxed_overflow_safe(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        &mut *sealed_blocks,
+                        vars,
+                        &args[1],
+                        int_primary_vars,
+                        float_primary_vars,
+                    )
+                    .unwrap_or_else(|| panic!("Key not found in {} op {}", func_name, op_idx));
+                    let val_bits = var_get_boxed_overflow_safe(
+                        &mut *module,
+                        &mut *import_ids,
+                        &mut *builder,
+                        &mut *import_refs,
+                        &mut *sealed_blocks,
+                        vars,
+                        &args[2],
+                        int_primary_vars,
+                        float_primary_vars,
+                    )
+                    .unwrap_or_else(|| panic!("Value not found in {} op {}", func_name, op_idx));
+                    let callee = SimpleBackend::import_func_id_split(
+                        &mut *module,
+                        &mut *import_ids,
+                        "molt_dict_update_missing",
+                        &[types::I64, types::I64, types::I64],
+                        &[types::I64],
+                    );
+                    let local_callee = module.declare_func_in_func(callee, builder.func);
+                    let call = builder
+                        .ins()
+                        .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
+                    let res = builder.inst_results(call)[0];
+                    if let Some(out__) = op.out.as_ref() {
+                        def_var_named(&mut *builder, vars, out__, res);
+                    }
+                }
         _ => unreachable!("handler invoked with non-matching op.kind"),
     }
     OpFlow::Proceed
