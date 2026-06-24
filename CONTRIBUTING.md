@@ -26,6 +26,15 @@ Molt expects production-grade changes, not opportunistic patches.
   authority while pretending to create velocity. When a maintainer says a change
   is too narrow, widen the work to the coherent structural class instead of
   defending or renaming the narrow cut.
+- **Force a tiny slice, then rip it open.** The legitimate small unit is the
+  smallest slice that still cuts through the REAL structure end-to-end (one case,
+  one path, one invariant), *ripped fully open* — the missing IR fact, the one
+  authority, the ownership boundary, and the whole bug class it exposes inside
+  that boundary, with zero workarounds, until correct + measured + gated. That is
+  the OPPOSITE of the convenient chip above: tiny in scope, total in depth, no
+  sibling of its bug class left un-migrated. A plan is not a slice — investigation
+  may *find* the slice, but the deliverable is the ripped-open slice. Shrink the
+  scope and deepen the rip; never patch the surface, never boil the ocean.
 - Crash recovery is the exception that proves the rule: after Codex, Claude,
   Desktop, WSL bridging, process custody, subagent orchestration, or a guarded
   command crashes, stalls, disappears, or gets manually killed, use tiny complete
