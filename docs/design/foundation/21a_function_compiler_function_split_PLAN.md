@@ -6,26 +6,26 @@ the working tree (post-T1 molt-tir extraction). Move-only / zero-logic-change. -
 
 # 21a — Decompose `function_compiler` (Move #1, function-extraction)
 
-## Executive finding: premise corrected; M1.1-M1.10 now landed
+## Executive finding: premise corrected; M1.1-M1.11 now landed
 
 doc 21's original move #1 ("STRICT move-only **file** split into opcode-family
 submodules") was investigated, **REFUSED, and replaced** by the DX lane. Execution of
 the replacement is in flight in the tree; M1.1 `arith`, M1.2 `compare`, M1.3
 `unary_logic`, M1.4 `funcobj`, M1.5 `coroutine`, M1.6 `calls`, M1.7 `memory`,
-M1.8 `ret_jump`, M1.9 `control_flow`, and M1.10 `loops` are landed as
-standalone `fc/` handlers. Do not undo it. Three
+M1.8 `ret_jump`, M1.9 `control_flow`, M1.10 `loops`, and M1.11 full
+`indexing` are landed as standalone `fc/` handlers. Do not undo it. Three
 load-bearing facts:
 
 1. **`function_compiler` is already a directory module, partially extracted.**
-   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **12,266 lines**,
+   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **10,913 lines**,
    down from doc 21's 39,043) declares `mod fc;` (line 10) → `function_compiler/fc/`, a
    subtree of **35 already-extracted handler files** (`arith.rs`, `compare.rs`,
    `unary_logic.rs`, `funcobj.rs`, `coroutine.rs`, `calls.rs`, `memory.rs`, `ret_jump.rs`, `control_flow.rs`, `loops.rs`, `list_ops.rs`,
    `dict_ops.rs`, `set_ops.rs`, `attrs.rs`, `exceptions.rs`, `text_predicates.rs` (1,716),
    `text_transform.rs` (1,203), `vec_reductions.rs` (1,140), …). The dispatch now routes
    arithmetic, comparison, unary/logic, function-object, coroutine, call, memory,
-   return/jump/variable-transfer, structured control-flow, and loop families
-   through `fc::<family>::handle_*` handlers as well.
+   return/jump/variable-transfer, structured control-flow, loop, and subscript
+   read/write families through `fc::<family>::handle_*` handlers as well.
 
 2. **The file-split buys ~0 build win and was explicitly rejected.** `dx_baseline.md`
    §3.3/§4/§6 (MEASURED) proves `function_compiler.rs` is essentially ONE method,
@@ -42,24 +42,24 @@ load-bearing facts:
    explicit split-borrowed `&mut` params, with `OpFlow` returns replicating outer-loop
    `continue`. Arm bodies move **byte-identically**; only field-access paths change.
 
-**Move #1 = continue the function-extraction of `compile_func_inner`** (now ~6,156
-lines, lines 3125-9280, with the planned large opcode-family clusters extracted).
+**Move #1 = continue the function-extraction of `compile_func_inner`** (now ~4,803
+lines, lines 3125-7927, with the planned large opcode-family clusters extracted).
 Strictly move-only / zero-logic-change / no-API-widening.
 
 ## 1. Current structure map
 
-### 1.1 `function_compiler.rs` (12,266 lines)
+### 1.1 `function_compiler.rs` (10,913 lines)
 | Region | Lines | Contents |
 |---|---|---|
 | `mod fc;` + free helpers | 1-3011 | ~50 free helpers (`var_get_boxed_overflow_safe_base` 728, `box_raw_i64_value_overflow_safe` 668, `ensure_boxed_*`, `def_var_from_*`, `merge_rebind_*`, loop-scan helpers). The shared private helper set every handler calls. |
 | `impl SimpleBackend` open | 3012 | |
 | `compile_func()` | 3013-3124 | Thin wrapper -> `compile_func_inner`. |
-| **`compile_func_inner()`** | **3125-9280** | THE MONOLITH (~6,156 lines). Preanalysis destructure (3133-~3227, ~45 shared `let mut` locals), pre-passes (3228-4217), dispatch loop `for op_idx in 0..ops.len()` at **4218**, central `match op.kind.as_str()` at **4394**, per-op **epilogue** at **8711** (post-dispatch: dec_ref of loop-reassigned vars, drain-cleanup, deferred define). |
-| `drain_dead_block_temps_for_suspend()` | 9307-9349 | trailing helper |
-| `#[cfg(test)] mod tests` | 9352-12266 | 61 tests |
+| **`compile_func_inner()`** | **3125-7927** | THE MONOLITH (~4,803 lines). Preanalysis destructure (3133-~3227, ~45 shared `let mut` locals), pre-passes (3228-4198), dispatch loop `for op_idx in 0..ops.len()` at **4199**, central `match op.kind.as_str()` at **4375**, per-op **epilogue** at **7416** (post-dispatch: dec_ref of loop-reassigned vars, drain-cleanup, deferred define). |
+| `drain_dead_block_temps_for_suspend()` | 7954-7996 | trailing helper |
+| `#[cfg(test)] mod tests` | 7999-10913 | 61 tests |
 
 ### 1.2 Dispatch + already-extracted families
-Dispatch fn `SimpleBackend::compile_func_inner` (3125); match at 4394 (~140 arms);
+Dispatch fn `SimpleBackend::compile_func_inner` (3125); match at 4375 (~140 arms);
 epilogue follows the dispatch for any arm that fell through (did not `continue`).
 Already delegated families: vec_reductions, scalar_builtins, callargs, list_ops,
 dict_ops, set_ops, generators, indexing, text_predicates, text_transform, statistics,
@@ -79,10 +79,11 @@ Landed in `fc/`:
 - `fc::ret_jump::handle_ret_jump_op` (`ret_jump.rs`) covers returns, jumps/branches, labels, phi no-ops, variable stores/deletes/loads/copies, and parameter loads.
 - `fc::control_flow::handle_control_flow_op` (`control_flow.rs`) covers structured `if`, `else`, and `end_if` lowering, including branch-local cleanup transfer and phi/rebind state.
 - `fc::loops::handle_loop_op` (`loops.rs`) covers structured loop starts, index loops, break/continue variants, exception-break cleanup, hoisted list loop caches, and loop-end sealing.
+- `fc::indexing::handle_indexing_op` (`indexing.rs`) covers `index`, `store_index`, `del_index`, `slice`, and `slice_new`, including stack-tuple indexing, list-int/list-bool fast paths, conditional list-bool carriers, and container-store refcount absorption.
 
-Remaining inline families, current as of the M1.10 landing:
+Remaining inline families, current as of the M1.11 landing:
 
-No large M1 opcode-family clusters remain inline. Small arms (constants, len/id/ord/chr, iter*, print*, raise, check_exception) stay inline until a future structural arc proves a better shared primitive.
+No planned M1 opcode-family cluster remains inline. Residual inline clusters (constants, len/id/ord/chr, tuple/iterator fast paths, dict update helpers, print, raise, check_exception) require a fresh structural contract before movement; do not split semantic ownership just to chase line count.
 
 ### 1.4 Shared helper + shared-state sets
 - **Free helpers** (1–2983, reached via `super::*`): `var_get_boxed_overflow_safe_base`, `box_raw_i64_value_overflow_safe`, `ensure_boxed_overflow_safe`, `def_var_from_*`, `def_var_named`, `import_func_ref`, `merge_rebind_*`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`; shared `fc` helpers own `op_prefers_int_lane` for extracted arithmetic/unary/control-flow handlers.
@@ -96,7 +97,7 @@ free `fn handle_<family>_op(...) -> OpFlow` (or `-> ()` if no `continue`), regis
 File header idiom: `use super::super::*; use super::OpFlow;` (+ shared helpers as needed).
 
 **Stays in `function_compiler.rs`:** the `compile_func_inner` shell (preanalysis, pre-passes,
-dispatch match reduced to thin delegating arms, epilogue at 8711), `compile_func`, the §1.4
+dispatch match reduced to thin delegating arms, epilogue at 7416), `compile_func`, the §1.4
 free helpers, trailing `drain_dead_block_temps_for_suspend`, `mod tests`. NOTE: struct defs
 (`SimpleBackend`, `NativeBackendModuleContext`) live in `simple_backend.rs`, not here — handlers
 call `SimpleBackend::` assoc fns (path-independent).
@@ -118,7 +119,7 @@ op-local closures reconstructed with identical captures (template: `list_ops.rs:
    — narrower than pub(crate), zero external-API change. `function_compiler.rs` bare-private
    helpers are reachable by `fc` descendants via the glob (ancestry privacy) — **no `pub` needed**.
 3. **`continue`/`break`/epilogue fidelity (correctness-critical):** outer op-loop is UNLABELED
-   (4218). `OpFlow::Continue` ⇒ caller `continue` (skips epilogue 8711+); `OpFlow::Proceed` ⇒
+   (4218). `OpFlow::Continue` ⇒ caller `continue` (skips epilogue 7416+); `OpFlow::Proceed` ⇒
    fall through (runs epilogue). Inner-loop breaks stay inside handlers. The labeled `break 'find_phi`
    (`fc/loops.rs:357-407`) is fully inside its local arm. **Audit each candidate's arm range for a
    bare outer-loop `break;` (not inside a nested for/while/loop) before moving**; if found, add an
@@ -138,10 +139,12 @@ op-local closures reconstructed with identical captures (template: `list_ops.rs:
 - **M1.8 `fc::ret_jump`** — landed.
 - **M1.9 `fc::control_flow`** — landed.
 - **M1.10 `fc::loops`** — landed.
-Stop-anywhere: M1.1-M1.10 removed the largest arithmetic/compare/unary/function-object,
-coroutine, call, memory, ret/jump, structured control-flow, and loop families and
-converted them into separate codegen units. Future work should start from the next
-foundation routing doc rather than reopening these landed family moves.
+- **M1.11 `fc::indexing` full `index`/`store_index` expansion** — landed.
+Stop-anywhere: M1.1-M1.11 removed the largest arithmetic/compare/unary/function-object,
+coroutine, call, memory, ret/jump, structured control-flow, loop, and subscript
+families and converted them into separate codegen units. Future work should start
+from the next foundation routing doc or a fresh residual-inline contract rather than
+reopening these landed family moves.
 
 ## 5. Verification gates (per commit — 34e3bddbf / dx_baseline §9; isolated CARGO_TARGET_DIR)
 - **G1 0-warning builds, both feature sets:** `cargo build -p molt-backend --features native-backend --profile dev-fast` (0 warns); `--features wasm-backend` (fc is `#[cfg(feature="native-backend")]` → compiles out under wasm-only; diff warning set vs pre-split, no NEW warns); `cargo clippy -p molt-backend --features native-backend -- -D warnings`; `cargo clippy --features "native-backend llvm" --lib -- -D warnings`.
@@ -152,11 +155,11 @@ foundation routing doc rather than reopening these landed family moves.
 A commit is not done until G1–G5 pass.
 
 ## 6. The win
-1. **Intra-crate codegen parallelism (the function-split win):** `compile_func_inner` is now ~6,156 lines instead of the original ~39K-line god-file center, and each extracted `handle_*_op` is its own codegen unit. The shell now holds orchestration, shared setup, residual small arms, and epilogue logic; the large M1 opcode families codegen independently.
-2. **Ownership-collision blast-radius (headline friction win, now):** the #1 god-file collision source is materially smaller. The dominant opcode families now live in independently-owned `fc/*.rs` handlers; an arith fix touches only `fc/arith.rs` (~4K) + a 1-line dispatch arm, while loop work touches `fc/loops.rs` instead of the monolith.
+1. **Intra-crate codegen parallelism (the function-split win):** `compile_func_inner` is now ~4,803 lines instead of the original ~39K-line god-file center, and each extracted `handle_*_op` is its own codegen unit. The shell now holds orchestration, shared setup, residual small arms, and epilogue logic; the large M1 opcode families codegen independently.
+2. **Ownership-collision blast-radius (headline friction win, now):** the #1 god-file collision source is materially smaller. The dominant opcode families now live in independently-owned `fc/*.rs` handlers; an arith fix touches only `fc/arith.rs` (~4K) + a 1-line dispatch arm, while loop/subscript work touches `fc/loops.rs` or `fc/indexing.rs` instead of the monolith.
 
 ## Critical files
-- `runtime/molt-backend/src/native_backend/function_compiler.rs` (shell + `compile_func_inner` 3125-9280)
+- `runtime/molt-backend/src/native_backend/function_compiler.rs` (shell + `compile_func_inner` 3125-7927)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/mod.rs` (register families; `OpFlow`; shared `var_get_boxed_overflow_safe_fn`)
 - `runtime/molt-backend/src/native_backend/function_compiler/fc/list_ops.rs` (reference template: handler signature, split-borrow params, closure reconstruction, `OpFlow`)
 - `runtime/molt-backend/src/native_backend/mod.rs` (the `use super::*` ancestry — do not change)

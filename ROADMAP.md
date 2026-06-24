@@ -350,11 +350,12 @@ lowering and exception-check elimination.
 - Make typed SSA / explicit representation facts survive lowering without
   degrading into transport-only hints.
 - Continue backend-native function decomposition by complete op-family handlers
-  that are independent codegen units. The current live code has moved indexing
-  and scalar builtin runtime-call dispatch (`id`, `ord`, fused `ord_at`, `chr`)
-  under `native_backend/function_compiler/fc/`; keep extracting whole families
-  without splitting semantic ownership or moving `len` until its
-  representation-plan specialization can move as a complete structural unit.
+  that are independent codegen units. The current live code has moved full
+  subscript/indexing read-write lowering (`index`, `store_index`, `del_index`,
+  `slice`, `slice_new`) under `native_backend/function_compiler/fc/indexing.rs`;
+  scalar builtin runtime-call dispatch (`id`, `ord`, fused `ord_at`, `chr`) and
+  `len` remain inline until they can move as complete structural units without
+  splitting semantic ownership or representation-plan specialization.
 - Keep the TIR pipeline unconditional for backend-facing lowering; debugging
   uses dumps and verifier evidence rather than an environment-variable bypass,
   and frontend midend fixed-point/idempotence verification must fail closed
