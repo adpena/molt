@@ -342,14 +342,17 @@ from `perf_scoreboard.py` (the `VERDICT_*`, `CLASS_*`, `CLASSIFY_STATES`, thresh
 lines ~104–172) into this leaf module and have `perf_scoreboard.py` import them. The
 contract is not just vocabulary: `validate_cell()` must reject measured verdicts that lack
 the full cold/warm methodology row, and `RED_STABLE` must prove quiescence plus a repeat CI
-that clears below the CPython floor.
+that clears below the CPython floor. Every CPython scoreboard emission path must validate
+before writing, including checkpoint partials, rebuild-summary rewrites, merge outputs, and
+final run artifacts.
 
 **Gates:** `uv run --python 3.12 python tools/perf_scoreboard.py --self-test` passes
 unchanged (proves the extraction is behavior-preserving); a new
 `tests/tools/test_perf_schema.py` round-trips every cell in the committed
 `bench/scoreboard/quiet_native.json` through `validate_cell()` (proves the contract
-accepts real data and rejects a column-dropped mutant). `python tools/structural_audit.py
---check` does not regress (new file is small/leaf).
+accepts real data and rejects a column-dropped mutant); the scoreboard unit suite proves an
+invalid board raises `ScoreboardSchemaError` before creating or replacing an artifact.
+`python tools/structural_audit.py --check` does not regress (new file is small/leaf).
 
 **Independently valuable:** yes — a validated schema catches malformed boards immediately.
 

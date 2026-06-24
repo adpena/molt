@@ -9,8 +9,9 @@ and tests can import without importing the full runner.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 SCHEMA_VERSION = 3
 RED_THRESHOLD = 1.00
@@ -140,6 +141,36 @@ REQUIRED_PROVENANCE_FIELDS = frozenset(
     }
 )
 
+REQUIRED_HOST_FIELDS = frozenset(
+    {
+        "platform",
+        "python_runner",
+        "cpython_baseline",
+    }
+)
+
+MODERN_HOST_FIELDS = frozenset(
+    {
+        "machine",
+        "arch",
+        "pointer_bits",
+        "cpython_oracle",
+    }
+)
+
+REQUIRED_CPYTHON_ORACLE_FIELDS = frozenset(
+    {
+        "cmd",
+        "executable",
+        "implementation",
+        "version",
+        "sys_platform",
+        "machine",
+        "arch",
+        "pointer_bits",
+    }
+)
+
 REQUIRED_SUMMARY_FIELDS = frozenset(
     {
         "cells_fail_engine",
@@ -209,6 +240,8 @@ _MEASURED_RUN_VERDICTS = frozenset(
 
 _MEASURED_RUN_FACT_FIELDS = frozenset(
     {
+        "binary_size_kib",
+        "compile_time_s",
         "cold_molt_s",
         "cold_cpython_s",
         "warm_molt_s",
@@ -304,6 +337,11 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
         problems.append(
             f"cell {cell.get('benchmark')} has unfinalized verdict {cell.get('verdict')!r}"
         )
+    log_artifact = cell.get("log_artifact")
+    if not isinstance(log_artifact, str) or not log_artifact:
+        problems.append(
+            f"cell {cell.get('benchmark')} has missing log_artifact"
+        )
     if cell.get("verdict") not in _ALL_VERDICTS:
         problems.append(
             f"cell {cell.get('benchmark')} has unknown verdict {cell.get('verdict')!r}"
@@ -356,6 +394,7 @@ def validate_board(doc: Mapping[str, Any]) -> list[str]:
     pmiss = REQUIRED_PROVENANCE_FIELDS - set(_mapping(doc.get("provenance")))
     if pmiss:
         problems.append(f"provenance missing fields: {sorted(pmiss)}")
+    problems.extend(_validate_host_payload(_mapping(doc.get("host"))))
     smiss = REQUIRED_SUMMARY_FIELDS - set(_mapping(doc.get("summary")))
     if smiss:
         problems.append(f"summary missing 2-D fields: {sorted(smiss)}")
@@ -376,6 +415,105 @@ def validate_board(doc: Mapping[str, Any]) -> list[str]:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _validate_host_payload(host: Mapping[str, Any]) -> list[str]:
+    problems: list[str] = []
+    missing = REQUIRED_HOST_FIELDS - set(host)
+    if missing:
+        problems.append(f"host missing fields: {sorted(missing)}")
+        return problems
+
+    for field in sorted(REQUIRED_HOST_FIELDS):
+        value = host.get(field)
+        if not isinstance(value, str) or not value:
+            problems.append(f"host field {field} must be a non-empty string")
+
+    has_modern_field = any(field in host for field in MODERN_HOST_FIELDS)
+    if not has_modern_field:
+        return problems
+
+    modern_missing = MODERN_HOST_FIELDS - set(host)
+    if modern_missing:
+        problems.append(f"host missing current oracle fields: {sorted(modern_missing)}")
+        return problems
+
+    machine = host.get("machine")
+    arch = host.get("arch")
+    pointer_bits = host.get("pointer_bits")
+    if not isinstance(machine, str) or not machine:
+        problems.append("host field machine must be a non-empty string")
+    if not isinstance(arch, str) or not arch:
+        problems.append("host field arch must be a non-empty string")
+    if not _is_pointer_width(pointer_bits):
+        problems.append(f"host field pointer_bits must be 32 or 64, got {pointer_bits!r}")
+
+    oracle = _mapping(host.get("cpython_oracle"))
+    if not oracle:
+        problems.append("host.cpython_oracle must be an object")
+        return problems
+    problems.extend(_validate_cpython_oracle(host, oracle))
+    return problems
+
+
+def _validate_cpython_oracle(
+    host: Mapping[str, Any], oracle: Mapping[str, Any]
+) -> list[str]:
+    problems: list[str] = []
+    missing = REQUIRED_CPYTHON_ORACLE_FIELDS - set(oracle)
+    if missing:
+        problems.append(f"host.cpython_oracle missing fields: {sorted(missing)}")
+        return problems
+
+    for field in ("executable", "implementation", "version", "sys_platform", "machine", "arch"):
+        value = oracle.get(field)
+        if not isinstance(value, str) or not value:
+            problems.append(f"host.cpython_oracle.{field} must be a non-empty string")
+
+    cmd = oracle.get("cmd")
+    if (
+        not isinstance(cmd, list)
+        or not cmd
+        or any(not isinstance(part, str) or not part for part in cmd)
+    ):
+        problems.append("host.cpython_oracle.cmd must be a non-empty string list")
+    elif cmd[0] != oracle.get("executable"):
+        problems.append(
+            "host.cpython_oracle.cmd[0] must be the resolved executable, "
+            f"got {cmd[0]!r} vs {oracle.get('executable')!r}"
+        )
+
+    if oracle.get("implementation") != "CPython":
+        problems.append(
+            "host.cpython_oracle.implementation must be 'CPython', "
+            f"got {oracle.get('implementation')!r}"
+        )
+    if oracle.get("version") != host.get("cpython_baseline"):
+        problems.append(
+            "host.cpython_oracle.version must match host.cpython_baseline, "
+            f"got {oracle.get('version')!r} vs {host.get('cpython_baseline')!r}"
+        )
+    if oracle.get("sys_platform") != host.get("platform"):
+        problems.append(
+            "host.cpython_oracle.sys_platform must match host.platform, "
+            f"got {oracle.get('sys_platform')!r} vs {host.get('platform')!r}"
+        )
+    if oracle.get("arch") != host.get("arch"):
+        problems.append(
+            "host.cpython_oracle.arch must match host.arch, "
+            f"got {oracle.get('arch')!r} vs {host.get('arch')!r}"
+        )
+    if oracle.get("pointer_bits") != host.get("pointer_bits"):
+        problems.append(
+            "host.cpython_oracle.pointer_bits must match host.pointer_bits, "
+            f"got {oracle.get('pointer_bits')!r} vs {host.get('pointer_bits')!r}"
+        )
+    if not _is_pointer_width(oracle.get("pointer_bits")):
+        problems.append(
+            "host.cpython_oracle.pointer_bits must be 32 or 64, "
+            f"got {oracle.get('pointer_bits')!r}"
+        )
+    return problems
 
 
 def _validate_measured_run_cell(cell: Mapping[str, Any], verdict: str) -> list[str]:
@@ -456,6 +594,10 @@ def _validate_red_stable_cell(cell: Mapping[str, Any]) -> list[str]:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_pointer_width(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value in {32, 64}
 
 
 def _optional_float(value: Any) -> float | None:

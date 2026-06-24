@@ -25,6 +25,9 @@ Companion: `08_DX-buildspeed.md` (the build-speed sub-arc, partially landed — 
 >   backend (native→llvm is a real one-way edge — NOT grouped); add `molt-codegen-abi`
 >   for the shared NaN-box ABI. 21b §"Flags" lists every granularity correction to this
 >   doc and to 08.
+> - **Crate graph execution** → [`21f_crate_graph_smove_execution_specs.md`](21f_crate_graph_smove_execution_specs.md):
+>   the live-state, per-S-move execution spec for 21b's S1-S8 crate moves, including
+>   file partitions, feature wiring, visibility widening, and per-commit gates.
 > - **Frontend move #2** → [`21c_frontend_mixin_decomposition_PLAN.md`](21c_frontend_mixin_decomposition_PLAN.md).
 Methodology precedent: `34e3bddbf` (the `lib.rs` god-file split: 6,928→264 lines,
 move-only, 0-warning build + byte-identical diagnostics + lib tests + symbol identity +

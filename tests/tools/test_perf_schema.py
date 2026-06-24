@@ -47,6 +47,39 @@ def _cell(**overrides: object) -> dict[str, object]:
     return cell
 
 
+def _minimal_host() -> dict[str, object]:
+    return {
+        "platform": "test",
+        "python_runner": "3.12.13",
+        "cpython_baseline": "3.14.3",
+    }
+
+
+def _modern_host(**overrides: object) -> dict[str, object]:
+    host: dict[str, object] = {
+        "platform": "win32",
+        "machine": "AMD64",
+        "arch": "x86_64",
+        "pointer_bits": 64,
+        "python_runner": "3.12.13",
+        "cpython_baseline": "3.14.3",
+        "cpython_oracle": {
+            "cmd": ["C:/Python314/python.exe"],
+            "executable": "C:/Python314/python.exe",
+            "implementation": "CPython",
+            "version": "3.14.3",
+            "sys_platform": "win32",
+            "machine": "AMD64",
+            "arch": "x86_64",
+            "pointer_bits": 64,
+        },
+        "pypy": None,
+        "codon": None,
+    }
+    host.update(overrides)
+    return host
+
+
 def _doc(cell: dict[str, object]) -> dict[str, object]:
     return {
         "schema_version": schema.SCHEMA_VERSION,
@@ -63,7 +96,7 @@ def _doc(cell: dict[str, object]) -> dict[str, object]:
             "stdlib_cache_key": "cache",
             "authoritative": True,
         },
-        "host": {"platform": "test"},
+        "host": _minimal_host(),
         "direction": "speedup = cpython_time / molt_time",
         "red_threshold": 1.0,
         "verdict_legend": {},
@@ -106,6 +139,43 @@ def test_schema_accepts_valid_board_and_materializes_cell() -> None:
     assert perf_cell.verdict == schema.VERDICT_GREEN
     assert perf_cell.stable is True
     assert perf_cell.warm_speedup == 2.0
+
+
+def test_schema_accepts_modern_cpython_oracle_host_metadata() -> None:
+    cell = _cell()
+    doc = _doc(cell)
+    doc["host"] = _modern_host()
+
+    assert schema.validate_board(doc) == []
+
+
+def test_schema_rejects_incomplete_or_inconsistent_cpython_oracle_host() -> None:
+    cell = _cell()
+    doc = _doc(cell)
+    doc["host"] = _modern_host(arch="aarch64")
+
+    problems = schema.validate_board(doc)
+
+    assert any("host.cpython_oracle.arch must match host.arch" in p for p in problems)
+
+    doc["host"] = _modern_host(cpython_oracle=None)
+    problems = schema.validate_board(doc)
+
+    assert any("host.cpython_oracle must be an object" in p for p in problems)
+
+
+def test_schema_rejects_cpython_oracle_launcher_command() -> None:
+    cell = _cell()
+    doc = _doc(cell)
+    host = _modern_host()
+    oracle = dict(host["cpython_oracle"])
+    oracle["cmd"] = ["py", "-3.14"]
+    host["cpython_oracle"] = oracle
+    doc["host"] = host
+
+    problems = schema.validate_board(doc)
+
+    assert any("cmd[0] must be the resolved executable" in p for p in problems)
 
 
 def test_schema_rejects_unknown_verdict_and_classification() -> None:
