@@ -37,6 +37,7 @@ LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
 RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
+RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 
 
@@ -11744,10 +11745,10 @@ def test_runtime_wasm_exports_satisfy_required_surface(tmp_path: Path) -> None:
         payload.append(0x00)  # func export
         payload.append(index)
     wasm.write_bytes(b"\0asm\x01\0\0\0" + b"\x07" + bytes([len(payload)]) + payload)
-    assert cli._runtime_wasm_exports_satisfy(
+    assert RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(
         wasm, {"molt_fast_list_append", "molt_resource_on_free"}
     )
-    assert not cli._runtime_wasm_exports_satisfy(
+    assert not RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(
         wasm, {"molt_fast_list_append", "molt_dict_getitem"}
     )
 
@@ -11799,8 +11800,10 @@ def test_runtime_wasm_exports_satisfy_browser_runtime_fallback_surface(
         "molt_resource_on_allocate",
         "molt_resource_on_free",
     }
-    assert cli._runtime_wasm_exports_satisfy(wasm, required)
-    assert cli._runtime_wasm_missing_exports(wasm, required) == set()
+    assert RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(wasm, required)
+    assert (
+        RUNTIME_WASM_VALIDATION._runtime_wasm_missing_exports(wasm, required) == set()
+    )
 
 
 def test_runtime_wasm_resource_exports_are_not_satisfied_by_browser_fallbacks(
@@ -11836,8 +11839,11 @@ def test_runtime_wasm_resource_exports_are_not_satisfied_by_browser_fallbacks(
     )
 
     required = {"molt_resource_on_allocate", "molt_resource_on_free"}
-    assert not cli._runtime_wasm_exports_satisfy(wasm, required)
-    assert cli._runtime_wasm_missing_exports(wasm, required) == required
+    assert not RUNTIME_WASM_VALIDATION._runtime_wasm_exports_satisfy(wasm, required)
+    assert (
+        RUNTIME_WASM_VALIDATION._runtime_wasm_missing_exports(wasm, required)
+        == required
+    )
 
 
 def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
@@ -12065,7 +12071,9 @@ def test_ensure_runtime_wasm_materializes_prebuilt_cargo_artifact_without_rebuil
 
     assert cargo_builds == []
     assert runtime.read_bytes() == cargo_runtime.read_bytes()
-    assert cli._runtime_wasm_integrity_sidecar_path(runtime).exists()
+    assert RUNTIME_WASM_VALIDATION._runtime_wasm_integrity_sidecar_path(
+        runtime
+    ).exists()
 
 
 def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
@@ -12146,7 +12154,9 @@ def test_ensure_runtime_wasm_links_prebuilt_staticlib_without_rebuild(
     assert cargo_builds == []
     assert linked_from == [staticlib]
     assert runtime.read_bytes() == b"\0asm\x01\0\0\0reloc"
-    assert cli._runtime_wasm_integrity_sidecar_path(runtime).exists()
+    assert RUNTIME_WASM_VALIDATION._runtime_wasm_integrity_sidecar_path(
+        runtime
+    ).exists()
 
 
 def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
@@ -17449,7 +17459,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
     wasm_path = tmp_path / "wasm" / "app.wasm"
     wasm_path.parent.mkdir(parents=True)
     wasm_path.write_bytes(b"\0asm")
-    cli._write_runtime_wasm_integrity_sidecar(wasm_path)
+    RUNTIME_WASM_VALIDATION._write_runtime_wasm_integrity_sidecar(wasm_path)
 
     generated_text_path = tmp_path / "generated" / "module.py"
     cli._write_text_if_changed(generated_text_path, "value = 1\n")
@@ -17484,7 +17494,7 @@ def test_publication_sidecar_writers_use_atomic_temp_siblings(
     cli._atomic_write_bytes(signature_path, b"signature")
 
     expected_dests = {
-        cli._runtime_wasm_integrity_sidecar_path(wasm_path),
+        RUNTIME_WASM_VALIDATION._runtime_wasm_integrity_sidecar_path(wasm_path),
         generated_text_path,
         diagnostics_path,
         emitted_ir_path,
