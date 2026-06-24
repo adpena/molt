@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use super::blocks::{BlockId, Terminator};
 use super::dominators::{self, CfgEdgePolicy};
 use super::function::TirFunction;
+use super::op_kinds_generated::opcode_fixed_result_count_table;
 use super::ops::{AttrValue, OpCode};
 use super::values::ValueId;
 
@@ -231,93 +232,8 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 _ => {}
             }
 
-            // Check expected result counts for well-known opcodes.
-            let expected_results = match op.opcode {
-                // These produce exactly one result.
-                OpCode::ConstInt
-                | OpCode::ConstBigInt
-                | OpCode::ConstFloat
-                | OpCode::ConstStr
-                | OpCode::ConstBool
-                | OpCode::ConstNone
-                | OpCode::ConstBytes
-                | OpCode::Add
-                | OpCode::Sub
-                | OpCode::Mul
-                | OpCode::Div
-                | OpCode::FloorDiv
-                | OpCode::Mod
-                | OpCode::Pow
-                | OpCode::Neg
-                | OpCode::Pos
-                | OpCode::Eq
-                | OpCode::Ne
-                | OpCode::Lt
-                | OpCode::Le
-                | OpCode::Gt
-                | OpCode::Ge
-                | OpCode::Is
-                | OpCode::IsNot
-                | OpCode::In
-                | OpCode::NotIn
-                | OpCode::BitAnd
-                | OpCode::BitOr
-                | OpCode::BitXor
-                | OpCode::BitNot
-                | OpCode::Shl
-                | OpCode::Shr
-                | OpCode::And
-                | OpCode::Or
-                | OpCode::Not
-                | OpCode::Bool
-                | OpCode::BoxVal
-                | OpCode::UnboxVal
-                | OpCode::TypeGuard
-                | OpCode::Index
-                | OpCode::OrdAt
-                | OpCode::LoadAttr
-                | OpCode::GetIter
-                | OpCode::IterNext
-                | OpCode::Alloc
-                | OpCode::StackAlloc
-                | OpCode::ObjectNewBound
-                | OpCode::ObjectNewBoundStack
-                | OpCode::BuildList
-                | OpCode::BuildDict
-                | OpCode::BuildTuple
-                | OpCode::BuildSet
-                | OpCode::BuildSlice
-                | OpCode::Import
-                | OpCode::ImportFrom
-                | OpCode::ClosureLoad => Some(1),
-                OpCode::IterNextUnboxed => Some(2),
-                // CheckedAdd: results[0] = wrapping i64 sum, results[1] =
-                // signed-overflow flag. Both results are mandatory — a
-                // 1-result CheckedAdd would silently drop the overflow flag
-                // and reintroduce the wrapped-BigInt miscompile class.
-                OpCode::CheckedAdd => Some(2),
-                // These produce zero results (side-effecting only).
-                OpCode::IncRef
-                | OpCode::DecRef
-                | OpCode::StoreAttr
-                | OpCode::DelAttr
-                | OpCode::StoreIndex
-                | OpCode::DelIndex
-                | OpCode::Free
-                | OpCode::Raise
-                | OpCode::Deopt
-                | OpCode::StateSwitch
-                | OpCode::StateYield => Some(0),
-                // CheckException may optionally produce a result (exc flag).
-                // Allow both 0 and 1 results.
-                OpCode::CheckException
-                | OpCode::StateTransition
-                | OpCode::ChanSendYield
-                | OpCode::ChanRecvYield
-                | OpCode::ClosureStore => None,
-                // Variable/unknown result count.
-                _ => None,
-            };
+            // Check expected result counts using the generated opcode registry.
+            let expected_results = opcode_fixed_result_count_table(op.opcode);
 
             if let Some(expected) = expected_results
                 && op.results.len() != expected
