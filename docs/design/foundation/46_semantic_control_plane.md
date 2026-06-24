@@ -40,7 +40,7 @@ hand-maintained drift to zero.
 | structural drift / deletion board | `tools/structural_audit.py` | `--check` ratchet (debt only goes down) + `tests/test_structural_audit.py` | **BUILT** |
 | call-site fact coverage census | `tools/call_fact_coverage.py` | `--check` ratchet (attached facts only go up) + evidence self-validation | **BUILT** |
 | Repr coverage | `tools/representation_report.py` (existing) + `--corpus` join | typed_repr_report backend binary | EXISTS — wire into census |
-| FactGraph (per-value provenance) | `tools/fact_graph_dump.py` + `runtime/.../fact_graph.rs` | — | NAMED (§4.1) |
+| FactGraph (per-value provenance) | `tools/fact_graph_dump.py` + `runtime/.../fact_graph.rs` | `cargo test -p molt-tir fact_graph` + `tests/tools/test_fact_graph_dump.py` | BUILT substrate (§4.1); `molt factgraph` remains a route to the same artifact |
 | perf causality (slow→missing fact) | `tools/perf_causality.py` | joins #76 profiles + census | NAMED (§4.2) |
 | Region calculus | `runtime/.../lifetime_regions.rs` + `tools/region_coverage.py` | validator obligations | NAMED (§4.3); ExceptionRegion (doc 45) is member 1 |
 | Typed runtime interface | `runtime/.../runtime_contracts.rs` | `tools/runtime_contract_audit.py` | NAMED (§4.4); #71 CallableTarget is member 1 |
@@ -49,10 +49,11 @@ hand-maintained drift to zero.
 | Backend support matrix | `tools/backend_support_audit.py` | generated from op registry | NAMED (§4.7) |
 | Pass-delta ledger | `tools/pass_delta_dashboard.py` | per-pass fact-loss attribution | NAMED (§4.8) |
 
-The two BUILT instruments are **complementary ratchets**: structural_audit
+The first two BUILT instruments are **complementary ratchets**: structural_audit
 drives hand-maintained debt *down*; call_fact_coverage drives recorded-fact
-coverage *up*. Both fail CI on regression — drift is a red build, not a reviewer's
-vigilance.
+coverage *up*. FactGraph is now the live provenance substrate those ratchets can
+join against. The ratchets fail CI on regression — drift is a red build, not a
+reviewer's vigilance.
 
 ## 3. The sweep answers the council's 10 questions (with tool data)
 
@@ -123,13 +124,17 @@ coverage`, `perf relevance`. Start narrow: **attach a `CallFacts` record to the
 call op** (direct target, leaf, no-throw, no-alloc, inline-eligibility + why-not,
 arg-noescape mask). That single primitive moves call_fact_coverage from 28.6% to
 measurable, lets backends specialize calls, and is the substrate for #67/#68/#71.
-`tools/fact_graph_dump.py` + `molt factgraph <function>` render it. **Full
-implementation spec: `docs/design/foundation/47_call_facts_leaf_coverage.md`**
-(the `CallFacts` struct, `FactValue` confidence lattice, per-field producers, the
-"pop many reds into place" benchmark map, and the 4-phase plan).
+`runtime/molt-tir/src/tir/fact_graph.rs` now emits deterministic JSON from live
+`TirFunction` / `CallFactsTable` state, and `tools/fact_graph_dump.py` validates
+and renders that compiler-emitted graph (including `--why-boxed`). A future
+`molt factgraph <function>` command is a thin route to the same artifact, not a
+new authority. **Full implementation spec:
+`docs/design/foundation/47_call_facts_leaf_coverage.md`** (the `CallFacts` struct,
+`FactValue` confidence lattice, per-field producers, the "pop many reds into
+place" benchmark map, and the 4-phase plan).
 
 ### 4.2 Optimization Causality Engine
-`tools/perf_causality.py` joins #76 hot profiles + the census + (future)
+`tools/perf_causality.py` joins #76 hot profiles + the census + the
 pass-delta ledger → `benchmark → top hot helpers → missing facts → likely fix →
 expected metric movement`. Turns "exception_heavy is slow" into "missing
 ExceptionRegion-exit ownership forces inc/dec_ref churn = 22% of samples; fix =
