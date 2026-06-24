@@ -317,10 +317,12 @@ def test_artifact_needs_rebuild_stats_artifact_once(
     original_stat = Path.stat
     calls = 0
 
-    def wrapped_stat(self: Path) -> os.stat_result:
+    def wrapped_stat(
+        self: Path, *, follow_symlinks: bool = True
+    ) -> os.stat_result:
         nonlocal calls
         calls += 1
-        return original_stat(self)
+        return original_stat(self, follow_symlinks=follow_symlinks)
 
     monkeypatch.setattr(Path, "stat", wrapped_stat, raising=True)
     needs = cli._artifact_needs_rebuild(
