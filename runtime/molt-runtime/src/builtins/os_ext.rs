@@ -2363,6 +2363,36 @@ fn windows_filetime_from_unix_parts(secs: i64, nanos: u32) -> Option<WindowsFile
 }
 
 #[cfg(windows)]
+fn windows_filetime_from_sec_nsec_bits(
+    _py: &PyToken<'_>,
+    sec_bits: u64,
+    nsec_bits: u64,
+    label: &str,
+) -> Result<WindowsFileTime, u64> {
+    let secs = to_i64(obj_from_bits(sec_bits))
+        .ok_or_else(|| raise_exception::<u64>(_py, "TypeError", "utime: times must be integers"))?;
+    let nanos = to_i64(obj_from_bits(nsec_bits))
+        .ok_or_else(|| raise_exception::<u64>(_py, "TypeError", "utime: times must be integers"))?;
+    if nanos == -1 {
+        return windows_filetime_now(_py);
+    }
+    if !(0..1_000_000_000).contains(&nanos) {
+        return Err(raise_exception::<u64>(
+            _py,
+            "ValueError",
+            &format!("utime: {label} nanosecond out of range"),
+        ));
+    }
+    windows_filetime_from_unix_parts(secs, nanos as u32).ok_or_else(|| {
+        raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            &format!("utime: {label} out of range"),
+        )
+    })
+}
+
+#[cfg(windows)]
 fn set_windows_file_times(
     path: &Path,
     atime: WindowsFileTime,
@@ -2576,7 +2606,37 @@ pub extern "C" fn molt_os_utime_at(
             }
             MoltObject::none().bits()
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            if !obj_from_bits(dir_fd_bits).is_none()
+                || !is_truthy(_py, obj_from_bits(follow_symlinks_bits))
+            {
+                return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime");
+            }
+            let atime = match windows_filetime_from_sec_nsec_bits(
+                _py,
+                atime_sec_bits,
+                atime_nsec_bits,
+                "atime",
+            ) {
+                Ok(v) => v,
+                Err(bits) => return bits,
+            };
+            let mtime = match windows_filetime_from_sec_nsec_bits(
+                _py,
+                mtime_sec_bits,
+                mtime_nsec_bits,
+                "mtime",
+            ) {
+                Ok(v) => v,
+                Err(bits) => return bits,
+            };
+            if let Err(err) = set_windows_file_times(&path, atime, mtime) {
+                return raise_os_error::<u64>(_py, err, "utime");
+            }
+            MoltObject::none().bits()
+        }
+        #[cfg(all(not(unix), not(windows)))]
         {
             let _ = (
                 path,

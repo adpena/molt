@@ -943,9 +943,9 @@ pub mod prelude {
     pub use crate::HashContextCode;
     pub use crate::{
         bits_from_ptr, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, bridge_owned_u8_buffer,
-        bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, obj_from_bits,
-        opaque_handle_bits, opaque_handle_ptr_from_bits, ptr_from_bits, CoreGilGuard,
-        CoreGilToken, GilReleaseGuard, MoltObject, PyToken,
+        bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, obj_from_bits, opaque_handle_bits,
+        opaque_handle_ptr_from_bits, ptr_from_bits, CoreGilGuard, CoreGilToken, GilReleaseGuard,
+        MoltObject, PyToken,
     };
 
     // Safe runtime wrappers
