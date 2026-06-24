@@ -175,6 +175,12 @@ jobs:
       - name: Clippy (molt-backend)
         run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-backend --features native-backend -- -D warnings
 
+      - name: Clippy (molt-tir)
+        # TIR owns the compiler's midend invariants and pass contracts; keep
+        # its test targets and feature-gated utilities on the same zero-warning
+        # ratchet as the backend that consumes them.
+        run: python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo clippy -p molt-tir --all-targets --all-features -- -D warnings
+
       - name: Clippy (runtime satellites)
         # The feature-gated stdlib satellite crates (molt-runtime-X) are the
         # DEFAULT native source for their modules but were never clippy-gated, so

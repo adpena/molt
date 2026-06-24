@@ -158,6 +158,28 @@ def test_committed_gate_manifest_is_valid(drv):
     # The dev-tooling self-gate must exist (the tool gates its own changes).
     assert "dev-tooling" in names
     assert "backend-native" in names
+    assert "tir-midend" in names
+    assert "wasm-host" in names
+
+
+def test_committed_gate_manifest_selects_tir_midend_ratchet(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select(["runtime/molt-tir/src/tir/passes/bce.rs"])
+
+    assert [r.name for r in matched] == ["tir-midend"]
+    assert "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings" in (
+        gates
+    )
+    assert "cargo test -p molt-tir --all-features" in gates
+
+
+def test_committed_gate_manifest_selects_wasm_host_ratchet(drv):
+    cfg = drv.GateConfig.load(COMMITTED_GATES)
+    gates, matched = cfg.select(["runtime/molt-wasm-host/src/main.rs"])
+
+    assert [r.name for r in matched] == ["wasm-host"]
+    assert "cargo clippy -p molt-wasm-host -- -D warnings" in gates
+    assert "cargo build --profile release-fast -p molt-wasm-host" in gates
 
 
 def _write_gates(tmp_path: Path) -> Path:
@@ -1245,9 +1267,7 @@ def test_difftest_refuses_missing_program(drv):
     assert "not found" in str(exc.value)
 
 
-def test_difftest_roots_relative_output_dir_before_safe_run(
-    drv, tmp_path, monkeypatch
-):
+def test_difftest_roots_relative_output_dir_before_safe_run(drv, tmp_path, monkeypatch):
     """A relative --out-dir is part of the rooted toolchain, not a process-cwd
     accident.
 

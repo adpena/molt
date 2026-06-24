@@ -231,7 +231,8 @@ def _run_repo_cmd(cmd: list[str], env: dict[str, str], *, tty: bool) -> None:
 
 def _run_dx_command(name: str, env: dict[str, str], *, tty: bool) -> None:
     command = _dx_commands().get(name)
-    _run_repo_cmd(_split_command(command, name), env, tty=tty)
+    for split in _split_command_sequence(command, name):
+        _run_repo_cmd(split, env, tty=tty)
 
 
 def _run_dx_command_with_args(

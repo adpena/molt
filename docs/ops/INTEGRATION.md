@@ -118,10 +118,10 @@ pid is a *diagnosis*, not a mystery.
 commits against each rule's globs. `always` gates run for every non-empty
 change; a rule matches when **any** touched path matches **any** of its globs;
 gates are de-duplicated preserving first-seen order. Rules ship for: native &
-LLVM backend Rust, runtime/object-model Rust, frontend & bootstrap stdlib
-Python, the op-kind registry, the suite-honesty and ecosystem-compat ratchets,
-docs architecture, the dev tooling itself (a self-gate that runs
-`tests/test_molt_dev.py`), and CI/pyproject wiring. A rule may set
+LLVM backend Rust, TIR midend Rust, WASM host Rust, runtime/object-model Rust,
+frontend & bootstrap stdlib Python, the op-kind registry, the suite-honesty and
+ecosystem-compat ratchets, docs architecture, the dev tooling itself (a
+self-gate that runs `tests/test_molt_dev.py`), and CI/pyproject wiring. A rule may set
 `require_fresh_toolchain = true` so a Rust change additionally demands a fresh
 built binary (hazard 6) when `--toolchain-binary` is supplied.
 

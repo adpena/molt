@@ -58,6 +58,36 @@ gates = [
   "cargo test --profile release-fast -p molt-backend --features \"native-backend llvm\" --lib",
 ]
 
+# --- TIR midend Rust ------------------------------------------------------
+[[rule]]
+name = "tir-midend"
+description = "TIR midend Rust: all-target clippy + feature-complete tests."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-tir/**/*.rs",
+  "runtime/molt-tir/**/*.toml",
+  "runtime/molt-tir/Cargo.toml",
+]
+gates = [
+  "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings",
+  "cargo test -p molt-tir --all-features",
+]
+
+# --- WASM host Rust -------------------------------------------------------
+[[rule]]
+name = "wasm-host"
+description = "Wasmtime host Rust: warning-free clippy + release-fast link build."
+require_fresh_toolchain = true
+globs = [
+  "runtime/molt-wasm-host/**/*.rs",
+  "runtime/molt-wasm-host/**/*.toml",
+  "runtime/molt-wasm-host/Cargo.toml",
+]
+gates = [
+  "cargo clippy -p molt-wasm-host -- -D warnings",
+  "cargo build --profile release-fast -p molt-wasm-host",
+]
+
 # --- Runtime crate Rust (object model / runtime library) -----------------
 [[rule]]
 name = "runtime-lib"

@@ -155,13 +155,13 @@ Interpretation:
   command still uses the shared test-suite guard, while `molt bench` applies the
   benchmark-family memory guard to benchmark child processes.
 - `tools/dev.py gates` executes the pyproject-owned CI-adjacent local gate
-  sequence: backend Clippy with `-D warnings`, `cargo deny check`, release-fast
-  workspace build, native backend lib tests, compliance tests, then an explicit
-  working-tree status check. It writes `logs/dev-gates-summary.json` with the
-  guard limits, commands, return codes, timings, git status, and any failure
-  reason; use `--summary-out` for an explicit custody path. Use `--allow-dirty`
-  only while preserving known partner WIP; commits should still be made from a
-  reviewed staged set.
+  sequence: backend and TIR Clippy with `-D warnings`, `cargo deny check`,
+  release-fast workspace build, native backend lib tests, compliance tests, then
+  an explicit working-tree status check. It writes
+  `logs/dev-gates-summary.json` with the guard limits, commands, return codes,
+  timings, git status, and any failure reason; use `--summary-out` for an
+  explicit custody path. Use `--allow-dirty` only while preserving known partner
+  WIP; commits should still be made from a reviewed staged set.
 - `tools/dev.py lint` also runs the subprocess and memory-guard wiring audits
   from the pyproject command table, so command-runner drift is caught in the
   standard local lint lane rather than left to review memory.

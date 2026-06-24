@@ -106,7 +106,12 @@ PYTHONPATH = "{root}/src"
 
 [tool.molt.dx.commands]
 install = "uv sync --group dev --group bench --python 3.12"
-clippy = "cargo clippy -p molt-backend --features native-backend -- -D warnings"
+clippy-backend = "cargo clippy -p molt-backend --features native-backend -- -D warnings"
+clippy-tir = "cargo clippy -p molt-tir --all-targets --all-features -- -D warnings"
+clippy = [
+    "@clippy-backend",
+    "@clippy-tir",
+]
 security = "cargo deny check"
 build = "cargo build --profile release-fast --workspace"
 backend = "cargo test --profile release-fast -p molt-backend --features native-backend --lib"
