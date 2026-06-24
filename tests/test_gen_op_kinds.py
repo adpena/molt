@@ -871,6 +871,50 @@ def test_refcount_heap_exposure_delegates_to_generated_table() -> None:
     assert "OpCode::" not in body
 
 
+def test_refcount_balance_roles_delegate_to_generated_table() -> None:
+    """Refcount balance accounting has one opcode-role authority."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    refcount = (ROOT / "runtime/molt-tir/src/tir/passes/refcount_elim.rs").read_text(
+        encoding="utf-8"
+    )
+
+    assert set(data["refcount_balance_inc_opcodes"]) == {"IncRef"}
+    assert set(data["refcount_balance_dec_opcodes"]) == {"DecRef"}
+    assert "pub enum RefcountBalanceRole" in rendered
+    assert "RefcountBalanceRole::Increment => 1," in rendered
+    assert "RefcountBalanceRole::Decrement => -1," in rendered
+
+    table_block = rendered.split("fn opcode_refcount_balance_role_table")[1].split(
+        "fn opcode_is_lowered_state_machine_body_table"
+    )[0]
+    for row in data["opcode"]:
+        if row["name"] == "IncRef":
+            role = "RefcountBalanceRole::Increment"
+        elif row["name"] == "DecRef":
+            role = "RefcountBalanceRole::Decrement"
+        else:
+            role = "RefcountBalanceRole::NotRefcountBalance"
+        assert f"OpCode::{row['name']} => {role}," in table_block
+
+    production = refcount.split("// Tests", maxsplit=1)[0]
+    table_name = "opcode_refcount_balance_role_table"
+    assert table_name in production
+    assert "fn refcount_balance_role(" in production
+    assert "fn is_refcount_balance_op(" in production
+    assert "fn complementary_refcount_opcode(" in production
+    assert (
+        "op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef" not in production
+    )
+    assert (
+        "op_i.opcode != OpCode::IncRef && op_i.opcode != OpCode::DecRef"
+        not in production
+    )
+    assert "OpCode::IncRef =>" not in production
+    assert "OpCode::DecRef =>" not in production
+
+
 def test_i64_arithmetic_lowering_facts_delegate_to_generated_tables() -> None:
     """Raw-i64 arithmetic lowering policy belongs to the op-kind registry."""
     gen = _gen()

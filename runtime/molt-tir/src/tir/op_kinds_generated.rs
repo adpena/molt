@@ -1332,6 +1332,157 @@ pub fn opcode_is_refcount_heap_exposure_table(opcode: OpCode) -> bool {
     }
 }
 
+/// Opcode role in reference-count balance accounting.
+/// Generated from refcount_balance_*_opcodes in op_kinds.toml so
+/// refcount_elim.rs does not carry private IncRef/DecRef hand-sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefcountBalanceRole {
+    NotRefcountBalance,
+    Increment,
+    Decrement,
+}
+
+impl RefcountBalanceRole {
+    #[inline]
+    pub fn is_refcount_balance(self) -> bool {
+        !matches!(self, RefcountBalanceRole::NotRefcountBalance)
+    }
+
+    #[inline]
+    pub fn delta(self) -> i32 {
+        match self {
+            RefcountBalanceRole::NotRefcountBalance => 0,
+            RefcountBalanceRole::Increment => 1,
+            RefcountBalanceRole::Decrement => -1,
+        }
+    }
+
+    #[inline]
+    pub fn complementary_opcode(self) -> Option<OpCode> {
+        match self {
+            RefcountBalanceRole::NotRefcountBalance => None,
+            RefcountBalanceRole::Increment => Some(OpCode::DecRef),
+            RefcountBalanceRole::Decrement => Some(OpCode::IncRef),
+        }
+    }
+}
+
+/// Refcount balance role by opcode. EXHAUSTIVE over OpCode so new RC
+/// transition opcodes cannot silently skip balance accounting.
+#[inline]
+pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole {
+    match opcode {
+        OpCode::Add => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Sub => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Mul => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::CheckedAdd => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::InplaceAdd => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::InplaceSub => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::InplaceMul => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Div => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::FloorDiv => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Mod => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Pow => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Neg => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Pos => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Eq => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Ne => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Lt => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Le => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Gt => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Ge => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Is => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::IsNot => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::In => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::NotIn => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BitAnd => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BitOr => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BitXor => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BitNot => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Shl => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Shr => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::And => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Or => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Not => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Bool => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Alloc => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StackAlloc => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ObjectNewBound => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ObjectNewBoundStack => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Free => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::LoadAttr => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StoreAttr => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::DelAttr => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Index => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StoreIndex => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::DelIndex => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::DeleteVar => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Call => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::CallMethod => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::CallBuiltin => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::OrdAt => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BoxVal => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::UnboxVal => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::TypeGuard => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::IncRef => RefcountBalanceRole::Increment,
+        OpCode::DecRef => RefcountBalanceRole::Decrement,
+        OpCode::DelBoundary => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BuildList => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BuildDict => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BuildTuple => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BuildSet => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::BuildSlice => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::GetIter => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::IterNext => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::IterNextUnboxed => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ForIter => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::AllocTask => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StateSwitch => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StateTransition => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StateYield => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ChanSendYield => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ChanRecvYield => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ClosureLoad => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ClosureStore => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Yield => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::YieldFrom => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Raise => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::CheckException => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ExceptionPending => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::FunctionDefaultsVersion => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::TryStart => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::TryEnd => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StateBlockStart => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::StateBlockEnd => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ConstInt => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ConstBigInt => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ConstFloat => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ConstStr => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ConstBool => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ConstNone => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ConstBytes => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Copy => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Import => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ImportFrom => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleCacheGet => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleCacheSet => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleCacheDel => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleGetAttr => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleImportFrom => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleGetGlobal => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleGetName => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleSetAttr => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleDelGlobal => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleDelGlobalIfPresent => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::WarnStderr => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ScfIf => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ScfFor => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ScfWhile => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ScfYield => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::Deopt => RefcountBalanceRole::NotRefcountBalance,
+    }
+}
+
 /// Whether an opcode is the body-op half of TirFunction::has_state_machine.
 /// StateDispatch is a terminator and is checked in function.rs beside this
 /// table. EXHAUSTIVE over OpCode so lowered coroutine body ops cannot drift

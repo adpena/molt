@@ -133,6 +133,10 @@ feeds `opcode_is_lowered_state_machine_body_table`, the opcode half of
 terminator check. Raw-i64 LIR arithmetic also uses generated opcode facts:
 `i64_overflow_box_dispatch_opcodes` owns boxed-dispatch overflow custody, while
 `i64_checked_overflow_triple_opcodes` owns checked-overflow triple eligibility.
+Refcount balance accounting is generated too:
+`refcount_balance_inc_opcodes` / `refcount_balance_dec_opcodes` produce
+`opcode_refcount_balance_role_table`, so `refcount_elim.rs` consumes a typed
+Increment/Decrement/neutral role instead of private IncRef/DecRef hand-sets.
 
 1. **One table** `runtime/molt-tir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, effect ∈ {pure, observe, throw, side_effect}, backends_required[], runtime_symbol?)`.
 2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-tir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, the effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants the emitter uses).

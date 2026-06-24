@@ -185,6 +185,8 @@ _OPCODE_FACT_SETS = (
     "alias_slot_typed_store_opcodes",
     "alias_slot_never_observer_opcodes",
     "refcount_heap_exposure_opcodes",
+    "refcount_balance_inc_opcodes",
+    "refcount_balance_dec_opcodes",
     "lowered_state_machine_body_opcodes",
     "fusion_barrier_opcodes",
     "state_machine_opcodes",
@@ -218,6 +220,10 @@ _ALIAS_SLOT_OBSERVATION_SETS = (
     "alias_transparent_type_guard_opcodes",
     "alias_transparent_copy_opcodes",
     "alias_slot_never_observer_opcodes",
+)
+_REFCOUNT_BALANCE_ROLE_SETS = (
+    "refcount_balance_inc_opcodes",
+    "refcount_balance_dec_opcodes",
 )
 
 
@@ -342,6 +348,9 @@ def load_table() -> dict:
     )
     _validate_alias_opcode_role_sets(
         data, _ALIAS_TRANSPARENT_ALIAS_ROLE_SETS, "alias transparent-alias role"
+    )
+    _validate_alias_opcode_role_sets(
+        data, _REFCOUNT_BALANCE_ROLE_SETS, "refcount balance role"
     )
     _validate_alias_memory_region_sets(data)
     _validate_alias_slot_observation_sets(data)
@@ -1389,6 +1398,9 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, refcount_heap_exposures))
     out.append("    }\n}\n\n")
 
+    out.append(_render_refcount_balance_role(opcodes, data))
+    out.append("\n")
+
     lowered_state_machine_body = list(
         data.get("lowered_state_machine_body_opcodes", [])
     )
@@ -1462,6 +1474,7 @@ def _render_rs_unformatted(data: dict) -> str:
     )
     out.append(_render_opcode_bool_arms(opcodes, i64_checked_overflow_triples))
     out.append("    }\n}\n\n")
+
     i64_zero_divisor_guards = list(data.get("i64_zero_divisor_guard_opcodes", []))
     out.append(
         "/// Whether a binary opcode needs a proven nonzero RHS before raw i64\n"
@@ -1846,6 +1859,64 @@ _ALIAS_TRANSPARENT_ALIAS_ROLE_VARIANTS = {
     "alias_transparent_type_guard_opcodes": "AliasTransparentAliasRole::TypeGuard",
     "alias_transparent_copy_opcodes": "AliasTransparentAliasRole::Copy",
 }
+
+
+_REFCOUNT_BALANCE_ROLE_VARIANTS = {
+    "refcount_balance_inc_opcodes": "RefcountBalanceRole::Increment",
+    "refcount_balance_dec_opcodes": "RefcountBalanceRole::Decrement",
+}
+
+
+def _render_refcount_balance_role(opcodes: list[dict], data: dict) -> str:
+    role_by_opcode: dict[str, str] = {}
+    for key, variant in _REFCOUNT_BALANCE_ROLE_VARIANTS.items():
+        for opcode in data.get(key, []):
+            role_by_opcode[opcode] = variant
+
+    lines = [
+        "/// Opcode role in reference-count balance accounting.\n",
+        "/// Generated from refcount_balance_*_opcodes in op_kinds.toml so\n",
+        "/// refcount_elim.rs does not carry private IncRef/DecRef hand-sets.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum RefcountBalanceRole {\n",
+        "    NotRefcountBalance,\n",
+        "    Increment,\n",
+        "    Decrement,\n",
+        "}\n\n",
+        "impl RefcountBalanceRole {\n",
+        "    #[inline]\n",
+        "    pub fn is_refcount_balance(self) -> bool {\n",
+        "        !matches!(self, RefcountBalanceRole::NotRefcountBalance)\n",
+        "    }\n\n",
+        "    #[inline]\n",
+        "    pub fn delta(self) -> i32 {\n",
+        "        match self {\n",
+        "            RefcountBalanceRole::NotRefcountBalance => 0,\n",
+        "            RefcountBalanceRole::Increment => 1,\n",
+        "            RefcountBalanceRole::Decrement => -1,\n",
+        "        }\n",
+        "    }\n\n",
+        "    #[inline]\n",
+        "    pub fn complementary_opcode(self) -> Option<OpCode> {\n",
+        "        match self {\n",
+        "            RefcountBalanceRole::NotRefcountBalance => None,\n",
+        "            RefcountBalanceRole::Increment => Some(OpCode::DecRef),\n",
+        "            RefcountBalanceRole::Decrement => Some(OpCode::IncRef),\n",
+        "        }\n",
+        "    }\n",
+        "}\n\n",
+        "/// Refcount balance role by opcode. EXHAUSTIVE over OpCode so new RC\n",
+        "/// transition opcodes cannot silently skip balance accounting.\n",
+        "#[inline]\n",
+        "pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole {\n",
+        "    match opcode {\n",
+    ]
+    for row in opcodes:
+        name = row["name"]
+        variant = role_by_opcode.get(name, "RefcountBalanceRole::NotRefcountBalance")
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
 
 
 def _render_alias_typed_slot_role(opcodes: list[dict], data: dict) -> str:

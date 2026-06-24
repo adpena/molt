@@ -79,6 +79,9 @@
 #   - refcount_heap_exposure_opcodes - opcode-only deferred-RC fact for ops
 #                  whose operands become heap/external roots and therefore cannot
 #                  be treated as non-escaping by refcount_elim.rs.
+#   - refcount_balance_inc_opcodes / refcount_balance_dec_opcodes -
+#                  opcode-role facts for reference-count balance accounting.
+#                  Rendered as one exhaustive role table for refcount_elim.rs.
 #   - lowered_state_machine_body_opcodes - body-op half of
 #                  TirFunction::has_state_machine. StateDispatch terminators
 #                  are the other half, so this remains distinct from the broad
@@ -358,6 +361,14 @@ refcount_heap_exposure_opcodes = [
     "Yield",
     "YieldFrom",
 ]
+
+# refcount_balance_*_opcodes: the opcode-level role in RC balance accounting.
+# IncRef adds one temporary reference; DecRef releases one. Keeping this as a
+# generated role table prevents refcount_elim.rs from growing private
+# IncRef/DecRef hand-sets at each scan site and makes future RC balance opcodes
+# fail loud until they are classified.
+refcount_balance_inc_opcodes = ["IncRef"]
+refcount_balance_dec_opcodes = ["DecRef"]
 
 # lowered_state_machine_body_opcodes: body-op half of
 # TirFunction::has_state_machine(). StateDispatch is a terminator, not an
