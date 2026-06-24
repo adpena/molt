@@ -54,32 +54,7 @@ pub mod wasm_streaming;
 /// Shared between `ssa.rs` and `lower_from_simple.rs` to ensure identical
 /// classification — divergence would silently misalign SSA ops with original ops.
 pub(crate) fn is_structural(kind: &str) -> bool {
-    matches!(
-        kind,
-        "label"
-            | "state_label"
-            | "if"
-            | "else"
-            | "end_if"
-            | "loop_start"
-            | "loop_end"
-            | "loop_break"
-            | "loop_continue"
-            | "jump"
-            | "goto"
-            | "br_if"
-            | "loop_break_if_true"
-            | "loop_break_if_false"
-            | "loop_break_if_exception"
-            | "ret"
-            | "ret_void"
-            | "return"
-            | "nop"
-            // `state_switch` is the `_poll` dispatch terminator: it ends its
-            // block and lowers to a `StateDispatch` terminator (it must NOT also
-            // appear as a body op, or the dispatch would be emitted twice).
-            | "state_switch"
-    )
+    op_kinds_generated::simpleir_kind_is_structural(kind)
 }
 
 // Re-export primary types for convenience.
