@@ -109,21 +109,21 @@ def test_cargo_build_env_pins_build_python(monkeypatch):
 
 
 def test_runtime_staticlib_names_are_target_platform_specific():
-    from molt import cli
+    from molt.cli import runtime_paths
 
     assert (
-        cli._runtime_lib_archive_name("micro", "x86_64-pc-windows-msvc")
+        runtime_paths._runtime_lib_archive_name("micro", "x86_64-pc-windows-msvc")
         == "molt_runtime.stdlib_micro.lib"
     )
     assert (
-        cli._runtime_cargo_scratch_lib_name("x86_64-pc-windows-msvc")
+        runtime_paths._runtime_cargo_scratch_lib_name("x86_64-pc-windows-msvc")
         == "molt_runtime.lib"
     )
-    assert cli._runtime_lib_archive_name("micro", "x86_64-unknown-linux-gnu") == (
-        "libmolt_runtime.stdlib_micro.a"
-    )
+    assert runtime_paths._runtime_lib_archive_name(
+        "micro", "x86_64-unknown-linux-gnu"
+    ) == ("libmolt_runtime.stdlib_micro.a")
     assert (
-        cli._runtime_cargo_scratch_lib_name("x86_64-unknown-linux-gnu")
+        runtime_paths._runtime_cargo_scratch_lib_name("x86_64-unknown-linux-gnu")
         == "libmolt_runtime.a"
     )
 
