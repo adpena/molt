@@ -22,6 +22,7 @@ from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 
 from molt import process_guard as _process_guard
+from molt.cli.lockfiles import _check_lockfiles
 
 MOLT_VENV_DIR = ".molt-venv"
 _CLI_MEMORY_GUARD_PREFIX = _process_guard.CLI_MEMORY_GUARD_PREFIX
@@ -45,10 +46,6 @@ def _find_molt_root(*candidates: Path) -> Path:
 
 def _require_molt_root(*args: Any, **kwargs: Any) -> Any:
     return _cli_module()._require_molt_root(*args, **kwargs)
-
-
-def _check_lockfiles(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._check_lockfiles(*args, **kwargs)
 
 
 def _json_payload(*args: Any, **kwargs: Any) -> Any:
