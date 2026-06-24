@@ -222,6 +222,48 @@ def _file_is_critical(path: Path) -> bool:
     return any(h in s for h in _CRITICAL_FILE_HINTS)
 
 
+def _top_level_wildcard_arm_start(block: str) -> int | None:
+    """Return the wildcard arm start for this match block, if it has one.
+
+    `block` includes the outer match braces. A nested `match` inside an arm may
+    legitimately contain `_ => fallback` for local data decoding; that is not a
+    wildcard arm of the opcode classifier. Track delimiter depth and only accept
+    `_` at the first token of a top-level arm.
+    """
+    depth = 0
+    line_start = True
+    i = 0
+    n = len(block)
+    while i < n:
+        c = block[i]
+        if c in "([{":
+            depth += 1
+            line_start = False
+            i += 1
+            continue
+        if c in ")]}":
+            depth = max(depth - 1, 0)
+            line_start = False
+            i += 1
+            continue
+        if c == "\n":
+            line_start = True
+            i += 1
+            continue
+        if line_start and c in " \t\r":
+            i += 1
+            continue
+        if depth == 1 and line_start and c == "_":
+            j = i + 1
+            while j < n and block[j] in " \t\r\n":
+                j += 1
+            if block.startswith("=>", j) or block.startswith("if", j):
+                return i
+        line_start = False
+        i += 1
+    return None
+
+
 def _default_arm_body(block: str, wildcard_start: int) -> str:
     """Extract just the body of the `_ => …` arm (block or expression), so
     classification of the default does not see the rest of the match."""
@@ -301,10 +343,10 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
                 continue
             if not (_KIND_SCRUTINEE_RE.search(scrutinee) or opcode_arms >= 3):
                 continue
-            wildcard = _WILDCARD_ARM_RE.search(block)
-            if not wildcard:
+            wildcard_start = _top_level_wildcard_arm_start(block)
+            if wildcard_start is None:
                 continue  # exhaustive → compiler-gated → safe, skip
-            default_body = _default_arm_body(block, wildcard.start())
+            default_body = _default_arm_body(block, wildcard_start)
             if _FAILLOUD_RE.search(default_body):
                 continue  # fail-closed dispatch switchboard → correct, not drift
             if _EMITTER_RE.search(default_body):
@@ -739,7 +781,16 @@ def _tooling_gaps(root: Path) -> list[tuple[str, str]]:
             )
         )
 
-    if not (fact_graph_built and fact_dump_built):
+    if fact_graph_built and fact_dump_built:
+        gaps.append(
+            (
+                "BUILT: fact graph substrate",
+                "runtime/molt-tir/src/tir/fact_graph.rs derives per-value "
+                "producer/consumer/fact provenance from live TIR and "
+                "tools/fact_graph_dump.py validates compiler-emitted graph JSON.",
+            )
+        )
+    else:
         gaps.append(
             (
                 "MISSING: fact graph",
