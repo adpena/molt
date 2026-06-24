@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 import sys
 import tomllib
 from pathlib import Path, PurePosixPath
@@ -14,6 +15,11 @@ BENCH_START = "<!-- GENERATED:bench-summary:start -->"
 BENCH_END = "<!-- GENERATED:bench-summary:end -->"
 AUTHORITY_MANIFEST_REL = "docs/design/foundation/authority_manifest.toml"
 AUTHORITY_MANIFEST_DOC_REF = "design/foundation/authority_manifest.toml"
+FOUNDATION_PORTFOLIO_RE = re.compile(r"^([5-9][0-9])_.*\.md$")
+FOUNDATION_BLUEPRINT_META_RE = re.compile(
+    r"\bFoundation blueprint\s+([0-9]{2})\b", re.IGNORECASE
+)
+FOUNDATION_DOC_META_RE = re.compile(r"^doc:\s*([0-9]{2})\s*$", re.IGNORECASE)
 
 
 def _read_text(path: Path) -> str:
@@ -253,6 +259,45 @@ def _check_long_horizon_routing(errors: list[str]) -> None:
                 errors.append(f"{rel_path}: missing authority marker {marker!r}")
 
 
+def _first_markdown_heading(text: str) -> str | None:
+    for line in text.splitlines():
+        if line.startswith("# "):
+            return line
+    return None
+
+
+def _check_foundation_portfolio_numbering(errors: list[str]) -> None:
+    foundation_root = ROOT / "docs/design/foundation"
+    if not foundation_root.exists():
+        return
+    for path in sorted(foundation_root.glob("[5-9][0-9]_*.md")):
+        match = FOUNDATION_PORTFOLIO_RE.match(path.name)
+        if not match:
+            continue
+        number = match.group(1)
+        rel_path = path.relative_to(ROOT).as_posix()
+        text = _read_text(path)
+        heading = _first_markdown_heading(text)
+        if heading is None:
+            errors.append(f"{rel_path}: missing top-level markdown heading")
+        elif not re.search(rf"\b{re.escape(number)}\b", heading):
+            errors.append(
+                f"{rel_path}: heading number must match filename prefix {number}"
+            )
+        front_matter = "\n".join(text.splitlines()[:25])
+        for meta_match in FOUNDATION_BLUEPRINT_META_RE.finditer(front_matter):
+            if meta_match.group(1) != number:
+                errors.append(
+                    f"{rel_path}: Foundation blueprint metadata must match filename prefix {number}"
+                )
+        for line in front_matter.splitlines():
+            meta_match = FOUNDATION_DOC_META_RE.match(line.strip())
+            if meta_match and meta_match.group(1) != number:
+                errors.append(
+                    f"{rel_path}: doc metadata must match filename prefix {number}"
+                )
+
+
 def check_repo() -> list[str]:
     errors: list[str] = []
     _check_readme(errors)
@@ -262,6 +307,7 @@ def check_repo() -> list[str]:
     _check_benchmarking_docs(errors)
     _check_support_story_refs(errors)
     _check_long_horizon_routing(errors)
+    _check_foundation_portfolio_numbering(errors)
     return errors
 
 
