@@ -1,6 +1,6 @@
 # enjoice OCR Migration Guide: molt GPU Stack
 
-This document describes the Molt-owned handoff artifacts for updating
+This document describes the Molt-owned integration sources for updating
 enjoice's OCR integration to use the molt-compiled Falcon-OCR WASM module.
 The canonical source files in this repository live under `deploy/enjoice/`;
 the `site/src/...` paths below are downstream enjoice application targets.
@@ -23,8 +23,8 @@ unchanged.
 
 ### 1. `deploy/enjoice/falcon-ocr-molt.ts`
 
-**Canonical source:** Molt-owned handoff adapter that downstream enjoice
-copies to `site/src/lib/ocr/falcon-ocr-molt.ts`.
+**Canonical source:** Molt-owned adapter that downstream enjoice vendors to
+`site/src/lib/ocr/falcon-ocr-molt.ts`.
 
 **Current state:** Creates a direct WASM session, streams weights/config
 from R2/CDN, preprocesses image input, calls the Molt exports, and decodes
@@ -41,8 +41,8 @@ Changes required:
 
 ### 2. `deploy/enjoice/ocr-backend-molt.ts`
 
-**Canonical source:** Molt-owned `OcrBackend` implementation handoff for the
-downstream enjoice app.
+**Canonical source:** Molt-owned `OcrBackend` implementation for the downstream
+enjoice app.
 
 **Current state:** Selects the internal Falcon engine (`falcon-ocr-webgpu` or
 `falcon-ocr-wasm`), creates the direct Molt WASM session, and reports
@@ -70,7 +70,7 @@ engine selection inside `ocr-backend-molt.ts`.
 chain, and the PaddleOCR/server paths are all unchanged.
 
 The only change is that the backend factory should instantiate
-`MoltOcrBackend` from the copied `ocr-backend-molt.ts` handoff file when
+`MoltOcrBackend` from the vendored `ocr-backend-molt.ts` adapter when
 `detectOcrCapabilities()` recommends `molt-gpu`.
 
 ## What Does NOT Change
