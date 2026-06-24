@@ -4625,7 +4625,24 @@ impl SimpleBackend {
                 | "rshift" | "shr" | "inplace_rshift" | "matmul" | "inplace_matmul" | "div"
                 | "inplace_div" | "floordiv" | "inplace_floordiv" | "mod" | "inplace_mod"
                 | "floor_div" | "binop_floor_div" | "pow" | "inplace_pow" | "pow_mod" | "round"
-                | "trunc" => {
+                | "trunc"
+                // The vec_* reduction family is handled INSIDE handle_arith_op
+                // (fc/arith.rs:818-841 delegates to fc::vec_reductions), so these
+                // kinds MUST be listed here to reach that handler. Omitting them
+                // routes the op to the silent `_ => {}` arm below, which emits no
+                // call and leaves the result SSA value undefined (resolving to the
+                // None sentinel) -- the loop-accumulator miscompile regressed by
+                // 8b5773878's asymmetric handler extraction. Keep in exact sync
+                // with the vec_* arm in fc/arith.rs.
+                | "vec_sum_int" | "vec_sum_int_trusted" | "vec_sum_int_range"
+                | "vec_sum_int_range_trusted" | "vec_sum_int_range_iter"
+                | "vec_sum_int_range_iter_trusted" | "vec_sum_float" | "vec_sum_float_trusted"
+                | "vec_sum_float_range" | "vec_sum_float_range_trusted"
+                | "vec_sum_float_range_iter" | "vec_sum_float_range_iter_trusted"
+                | "vec_prod_int" | "vec_prod_int_trusted" | "vec_prod_int_range"
+                | "vec_prod_int_range_trusted" | "vec_min_int" | "vec_min_int_trusted"
+                | "vec_min_int_range" | "vec_min_int_range_trusted" | "vec_max_int"
+                | "vec_max_int_trusted" | "vec_max_int_range" | "vec_max_int_range_trusted" => {
                     let __flow = fc::arith::handle_arith_op(
                         &op,
                         op_idx,
