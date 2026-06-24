@@ -127,6 +127,12 @@ def test_command_executable_name_handles_windows_paths() -> None:
 
     assert (
         module._command_executable_name(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.616.10790.0_x64__2p2nqsd0c76g0\app\resources\codex.exe"
+        )
+        == "codex.exe"
+    )
+    assert (
+        module._command_executable_name(
             r'"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0\app\Codex.exe"'
         )
         == "codex.exe"
