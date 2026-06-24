@@ -23,6 +23,8 @@ import ast
 import importlib
 import inspect
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import molt.frontend as frontend
@@ -133,8 +135,8 @@ def test_mixin_modules_import_standalone() -> None:
 # cross-mixin ``self.<method>`` / ``self.<attr>`` references type-check across
 # files.  That guarantee only holds while the Protocol is a SUPERSET of the
 # assembled generator's real surface.  If a method moves into a mixin but the
-# Protocol is not regenerated (tmp/gen_protocol.py), the moved method — and
-# every sibling-mixin call to it — silently loses static checking.  These tests
+# Protocol is not regenerated (tools/gen_protocol.py), the moved method - and
+# every sibling-mixin call to it - silently loses static checking.  These tests
 # fail the moment the Protocol and the assembled class diverge.
 # ---------------------------------------------------------------------------
 
@@ -221,14 +223,14 @@ def _discover_mixin_classes() -> dict[str, type]:
 def test_protocol_covers_full_class_method_surface() -> None:
     """_GeneratorProtocol must declare every method the assembled class exposes.
 
-    A missing entry means the Protocol drifted from the class (gen_protocol.py
-    was not re-run after a move), so sibling-mixin ``self.<method>`` calls no
-    longer type-check.
+    A missing entry means the Protocol drifted from the class
+    (tools/gen_protocol.py was not re-run after a move), so sibling-mixin
+    ``self.<method>`` calls no longer type-check.
     """
     missing = _assembled_class_methods() - _protocol_methods()
     assert not missing, (
         "Protocol drift: methods on SimpleTIRGenerator missing from "
-        f"_GeneratorProtocol (re-run tmp/gen_protocol.py): {sorted(missing)}"
+        f"_GeneratorProtocol (re-run tools/gen_protocol.py): {sorted(missing)}"
     )
 
 
@@ -238,8 +240,21 @@ def test_protocol_covers_full_class_attr_surface() -> None:
     missing = _assembled_class_attrs() - _protocol_attrs()
     assert not missing, (
         "Protocol drift: attributes on SimpleTIRGenerator missing from "
-        f"_GeneratorProtocol (re-run tmp/gen_protocol.py): {sorted(missing)}"
+        f"_GeneratorProtocol (re-run tools/gen_protocol.py): {sorted(missing)}"
     )
+
+
+def test_protocol_generator_is_idempotent() -> None:
+    """The tracked protocol generator must reproduce the checked-in files."""
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "gen_protocol.py"), "--check"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 def test_every_mixin_method_is_on_protocol() -> None:
@@ -264,7 +279,7 @@ def test_every_mixin_method_is_on_protocol() -> None:
             drift[mixin_name] = missing
     assert not drift, (
         "Protocol drift: mixin methods missing from _GeneratorProtocol "
-        f"(re-run tmp/gen_protocol.py): {drift}"
+        f"(re-run tools/gen_protocol.py): {drift}"
     )
 
 
