@@ -13,6 +13,11 @@ use super::effects;
 use super::reachability::metadata_preserving_reachable_blocks;
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    ExceptionRegionNestingRole, SccpConstantEvalRule, SccpConstantSeedRule,
+    opcode_exception_region_nesting_role_table, opcode_sccp_constant_eval_rule_table,
+    opcode_sccp_constant_seed_rule_table,
+};
 use crate::tir::ops::{AttrDict, AttrValue, OpCode};
 use crate::tir::values::ValueId;
 
@@ -76,10 +81,10 @@ fn build_try_region_results(func: &TirFunction) -> HashSet<ValueId> {
     for block in func.blocks.values() {
         let mut try_depth: u32 = 0;
         for op in &block.ops {
-            match op.opcode {
-                OpCode::TryStart => try_depth += 1,
-                OpCode::TryEnd => try_depth = try_depth.saturating_sub(1),
-                _ => {}
+            match opcode_exception_region_nesting_role_table(op.opcode) {
+                ExceptionRegionNestingRole::Enter => try_depth += 1,
+                ExceptionRegionNestingRole::Exit => try_depth = try_depth.saturating_sub(1),
+                ExceptionRegionNestingRole::None => {}
             }
             if try_depth > 0 && effects::op_may_throw(op) {
                 for &r in &op.results {
@@ -154,40 +159,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                     lattice.insert(res, LatticeValue::Bottom);
                     continue;
                 }
-                let val = match op.opcode {
-                    OpCode::ConstInt => {
-                        if let Some(AttrValue::Int(v)) = op.attrs.get("value") {
-                            LatticeValue::Constant(ConstVal::Int(*v))
-                        } else {
-                            LatticeValue::Bottom
-                        }
-                    }
-                    OpCode::ConstFloat => {
-                        if let Some(AttrValue::Float(v)) = op.attrs.get("f_value") {
-                            LatticeValue::Constant(ConstVal::Float(*v))
-                        } else {
-                            LatticeValue::Bottom
-                        }
-                    }
-                    OpCode::ConstBool => {
-                        if let Some(AttrValue::Bool(v)) = op.attrs.get("value") {
-                            LatticeValue::Constant(ConstVal::Bool(*v))
-                        } else {
-                            LatticeValue::Bottom
-                        }
-                    }
-                    OpCode::ConstStr => {
-                        if let Some(AttrValue::Str(v)) = op.attrs.get("s_value") {
-                            LatticeValue::Constant(ConstVal::Str(v.clone()))
-                        } else if let Some(AttrValue::Str(v)) = op.attrs.get("value") {
-                            LatticeValue::Constant(ConstVal::Str(v.clone()))
-                        } else {
-                            LatticeValue::Bottom
-                        }
-                    }
-                    OpCode::ConstNone => LatticeValue::Constant(ConstVal::None),
-                    _ => LatticeValue::Top,
-                };
+                let val =
+                    seed_constant_lattice_value(op.opcode, &op.attrs).unwrap_or(LatticeValue::Top);
                 lattice.insert(res, val);
             }
         }
@@ -262,15 +235,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             }
             let result_id = op.results[0];
             // Don't rewrite ops that are already constant constructors.
-            match op.opcode {
-                OpCode::ConstInt
-                | OpCode::ConstFloat
-                | OpCode::ConstStr
-                | OpCode::ConstBool
-                | OpCode::ConstNone => {
-                    continue;
-                }
-                _ => {}
+            if opcode_sccp_constant_seed_rule_table(op.opcode) != SccpConstantSeedRule::None {
+                continue;
             }
             if let Some(LatticeValue::Constant(cv)) = lattice.get(&result_id) {
                 match cv {
@@ -441,40 +407,68 @@ fn range_len(start: i64, stop: i64, step: i64) -> i64 {
     }
 }
 
+fn seed_constant_lattice_value(opcode: OpCode, attrs: &AttrDict) -> Option<LatticeValue> {
+    match opcode_sccp_constant_seed_rule_table(opcode) {
+        SccpConstantSeedRule::None => None,
+        SccpConstantSeedRule::IntAttr => Some(match attrs.get("value") {
+            Some(AttrValue::Int(v)) => LatticeValue::Constant(ConstVal::Int(*v)),
+            _ => LatticeValue::Bottom,
+        }),
+        SccpConstantSeedRule::FloatAttr => Some(match attrs.get("f_value") {
+            Some(AttrValue::Float(v)) => LatticeValue::Constant(ConstVal::Float(*v)),
+            _ => LatticeValue::Bottom,
+        }),
+        SccpConstantSeedRule::BoolAttr => Some(match attrs.get("value") {
+            Some(AttrValue::Bool(v)) => LatticeValue::Constant(ConstVal::Bool(*v)),
+            _ => LatticeValue::Bottom,
+        }),
+        SccpConstantSeedRule::StrAttr => Some(match attrs.get("s_value") {
+            Some(AttrValue::Str(v)) => LatticeValue::Constant(ConstVal::Str(v.clone())),
+            _ => match attrs.get("value") {
+                Some(AttrValue::Str(v)) => LatticeValue::Constant(ConstVal::Str(v.clone())),
+                _ => LatticeValue::Bottom,
+            },
+        }),
+        SccpConstantSeedRule::NoneSingleton => Some(LatticeValue::Constant(ConstVal::None)),
+    }
+}
+
 /// Try to evaluate a binary/unary op on constant operands.
 fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVal> {
-    match opcode {
+    match opcode_sccp_constant_eval_rule_table(opcode) {
         // Binary arithmetic
         // Use checked arithmetic to avoid panic on overflow in debug / silent wrap in release.
         // On overflow, return None → value stays as Bottom (unfoldable), matching Python's BigInt.
-        OpCode::Add => {
+        SccpConstantEvalRule::Add => {
             // Try string concatenation first, then numeric addition.
             eval_str_concat(operands)
                 .or_else(|| eval_list_concat(operands))
                 .or_else(|| eval_binary(operands, |a, b| a.checked_add(b), |a, b| Some(a + b)))
         }
-        OpCode::Sub => eval_binary(operands, |a, b| a.checked_sub(b), |a, b| Some(a - b)),
-        OpCode::Mul => {
+        SccpConstantEvalRule::Sub => {
+            eval_binary(operands, |a, b| a.checked_sub(b), |a, b| Some(a - b))
+        }
+        SccpConstantEvalRule::Mul => {
             // Try string/list repeat first, then numeric multiplication.
             eval_str_repeat(operands)
                 .or_else(|| eval_list_repeat(operands))
                 .or_else(|| eval_binary(operands, |a, b| a.checked_mul(b), |a, b| Some(a * b)))
         }
-        OpCode::Div => eval_binary_div(operands),
-        OpCode::FloorDiv => eval_binary_floordiv(operands),
-        OpCode::Mod => eval_binary_mod(operands),
-        OpCode::Pow => eval_binary_pow(operands),
+        SccpConstantEvalRule::Div => eval_binary_div(operands),
+        SccpConstantEvalRule::FloorDiv => eval_binary_floordiv(operands),
+        SccpConstantEvalRule::Mod => eval_binary_mod(operands),
+        SccpConstantEvalRule::Pow => eval_binary_pow(operands),
 
         // Comparisons
-        OpCode::Eq => eval_cmp(operands, |a, b| a == b, |a, b| a == b, |a, b| a == b),
-        OpCode::Ne => eval_cmp(operands, |a, b| a != b, |a, b| a != b, |a, b| a != b),
-        OpCode::Lt => eval_cmp(operands, |a, b| a < b, |a, b| a < b, |a, b| !a & b),
-        OpCode::Le => eval_cmp(operands, |a, b| a <= b, |a, b| a <= b, |a, b| a <= b),
-        OpCode::Gt => eval_cmp(operands, |a, b| a > b, |a, b| a > b, |a, b| a & !b),
-        OpCode::Ge => eval_cmp(operands, |a, b| a >= b, |a, b| a >= b, |a, b| a >= b),
+        SccpConstantEvalRule::Eq => eval_cmp(operands, |a, b| a == b, |a, b| a == b, |a, b| a == b),
+        SccpConstantEvalRule::Ne => eval_cmp(operands, |a, b| a != b, |a, b| a != b, |a, b| a != b),
+        SccpConstantEvalRule::Lt => eval_cmp(operands, |a, b| a < b, |a, b| a < b, |a, b| !a & b),
+        SccpConstantEvalRule::Le => eval_cmp(operands, |a, b| a <= b, |a, b| a <= b, |a, b| a <= b),
+        SccpConstantEvalRule::Gt => eval_cmp(operands, |a, b| a > b, |a, b| a > b, |a, b| a & !b),
+        SccpConstantEvalRule::Ge => eval_cmp(operands, |a, b| a >= b, |a, b| a >= b, |a, b| a >= b),
 
         // Unary
-        OpCode::Neg => {
+        SccpConstantEvalRule::Neg => {
             let a = operands.first().copied().flatten()?;
             match a {
                 ConstVal::Int(v) => v.checked_neg().map(ConstVal::Int),
@@ -482,7 +476,7 @@ fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVa
                 _ => None,
             }
         }
-        OpCode::Not => {
+        SccpConstantEvalRule::Not => {
             let a = operands.first().copied().flatten()?;
             match a {
                 ConstVal::Bool(v) => Some(ConstVal::Bool(!v)),
@@ -491,11 +485,12 @@ fn evaluate_op(opcode: OpCode, operands: &[Option<&ConstVal>]) -> Option<ConstVa
         }
 
         // Container construction with all-constant elements.
-        OpCode::BuildList => eval_build_list(operands),
-        OpCode::BuildDict => eval_build_dict(operands),
-        OpCode::BuildTuple => eval_build_list(operands), // tuples fold to List for SCCP purposes
+        SccpConstantEvalRule::BuildList => eval_build_list(operands),
+        SccpConstantEvalRule::BuildDict => eval_build_dict(operands),
+        // Tuples fold to List for SCCP purposes.
+        SccpConstantEvalRule::BuildTupleAsList => eval_build_list(operands),
 
-        _ => None,
+        SccpConstantEvalRule::None => None,
     }
 }
 

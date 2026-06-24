@@ -1904,7 +1904,7 @@ use super::is_structural;
 /// Map a SimpleIR `kind` string to a TIR `OpCode`.
 ///
 /// The kind→opcode table is the single-source-of-truth op-kind registry
-/// (`runtime/molt-backend/src/tir/op_kinds.toml`, generated into
+/// (`runtime/molt-tir/src/tir/op_kinds.toml`, generated into
 /// [`crate::tir::op_kinds_generated::kind_to_opcode_table`]; see
 /// `docs/design/foundation/25_op_kind_registry.md`). A kind with no first-class
 /// opcode falls back to `OpCode::Copy` (carrying its spelling in

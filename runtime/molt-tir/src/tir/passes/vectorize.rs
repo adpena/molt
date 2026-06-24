@@ -56,7 +56,10 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::op_kinds_generated::{
+    VectorReductionRule, VectorizeBodyAction, opcode_vectorize_facts_table,
+};
+use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -110,100 +113,49 @@ impl ReductionOp {
     }
 }
 
+#[inline]
+fn reduction_op_for_rule(rule: VectorReductionRule) -> Option<ReductionOp> {
+    match rule {
+        VectorReductionRule::None => None,
+        VectorReductionRule::Sum => Some(ReductionOp::Sum),
+        VectorReductionRule::Product => Some(ReductionOp::Product),
+        VectorReductionRule::And => Some(ReductionOp::And),
+        VectorReductionRule::Or => Some(ReductionOp::Or),
+        VectorReductionRule::Min => Some(ReductionOp::Min),
+        VectorReductionRule::Max => Some(ReductionOp::Max),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers — op classification
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if an opcode is an impure/side-effecting call.
-#[inline]
-fn is_impure_call(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
-    )
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VectorizeBodyDecision {
+    Analyze,
+    Skip,
+    Reject,
 }
 
-/// Returns `true` if an opcode writes to (potentially non-local) memory.
+/// Translate generated opcode facts into the pass-local action.
+///
+/// The generated table owns opcode membership. This helper owns the only live
+/// refinement: a Copy op is analyzable only when its attrs prove it is a plain
+/// value copy rather than a lifetime/ownership operation.
 #[inline]
-fn is_memory_store(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::StoreAttr
-            | OpCode::StoreIndex
-            | OpCode::DelAttr
-            | OpCode::DelIndex
-            | OpCode::ClosureStore
-            | OpCode::Free
-            | OpCode::IncRef
-            | OpCode::DecRef
-    )
-}
-
-/// Returns `true` if an opcode is completely disqualifying for vectorization.
-#[inline]
-fn is_disqualifying(opcode: OpCode) -> bool {
-    is_impure_call(opcode)
-        || is_memory_store(opcode)
-        || matches!(
-            opcode,
-            OpCode::Yield
-                | OpCode::YieldFrom
-                | OpCode::StateSwitch
-                | OpCode::StateTransition
-                | OpCode::StateYield
-                | OpCode::ChanSendYield
-                | OpCode::ChanRecvYield
-                | OpCode::ClosureLoad
-                | OpCode::ClosureStore
-                | OpCode::Raise
-                | OpCode::CheckException
-                | OpCode::OrdAt
-                | OpCode::Import
-                | OpCode::ImportFrom
-                | OpCode::Alloc
-                | OpCode::StackAlloc
-                | OpCode::Deopt
-                | OpCode::BuildList
-                | OpCode::BuildDict
-                | OpCode::BuildTuple
-                | OpCode::BuildSet
-                | OpCode::BuildSlice
-        )
-}
-
-/// Returns `true` if an op is pure arithmetic on numeric scalars.
-/// These are the only ops allowed inside a vectorizable body.
-#[inline]
-fn is_scalar_arithmetic(op: &TirOp) -> bool {
-    matches!(
-        op.opcode,
-        OpCode::Add
-            | OpCode::Sub
-            | OpCode::Mul
-            | OpCode::Div
-            | OpCode::FloorDiv
-            | OpCode::Mod
-            | OpCode::Pow
-            | OpCode::Neg
-            | OpCode::Pos
-            | OpCode::BitAnd
-            | OpCode::BitOr
-            | OpCode::BitXor
-            | OpCode::BitNot
-            | OpCode::Shl
-            | OpCode::Shr
-            | OpCode::Eq
-            | OpCode::Ne
-            | OpCode::Lt
-            | OpCode::Le
-            | OpCode::Gt
-            | OpCode::Ge
-            | OpCode::ConstInt
-            | OpCode::ConstFloat
-            | OpCode::ConstBool
-            | OpCode::UnboxVal
-            | OpCode::BoxVal
-    ) || op.is_plain_value_copy()
+fn vectorize_body_decision(op: &TirOp, action: VectorizeBodyAction) -> VectorizeBodyDecision {
+    match action {
+        VectorizeBodyAction::ScalarArithmetic => VectorizeBodyDecision::Analyze,
+        VectorizeBodyAction::CopyIfPlain if op.is_plain_value_copy() => {
+            VectorizeBodyDecision::Analyze
+        }
+        VectorizeBodyAction::IterationControl | VectorizeBodyAction::NonEscapingGuard => {
+            VectorizeBodyDecision::Skip
+        }
+        VectorizeBodyAction::Reject | VectorizeBodyAction::CopyIfPlain => {
+            VectorizeBodyDecision::Reject
+        }
+    }
 }
 
 /// SIMD lane category used for promotion analysis: `Int` covers `I64` / `Bool`
@@ -277,7 +229,7 @@ fn find_loops(func: &TirFunction) -> HashMap<BlockId, HashSet<BlockId>> {
         if block
             .ops
             .iter()
-            .any(|op| matches!(op.opcode, OpCode::ForIter | OpCode::ScfFor))
+            .any(|op| opcode_vectorize_facts_table(op.opcode).loop_header_marker)
         {
             loops.entry(*bid).or_insert_with(|| {
                 let mut s = HashSet::new();
@@ -505,36 +457,14 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
         };
 
         for op in &block.ops {
-            // Skip iteration machinery — not disqualifying. IterNextUnboxed
-            // is the fused unboxed variant that produces (value, done_flag)
-            // without tuple allocation; it is equally safe to skip.
-            if matches!(
-                op.opcode,
-                OpCode::GetIter
-                    | OpCode::IterNext
-                    | OpCode::IterNextUnboxed
-                    | OpCode::ForIter
-                    | OpCode::ScfFor
-            ) {
-                continue;
-            }
-
-            // TypeGuard ops (runtime type checks) are non-escaping and
-            // don't prevent vectorization — they're eliminated or folded
-            // by the type guard hoist pass before codegen.
-            if op.opcode == OpCode::TypeGuard {
-                continue;
-            }
-
-            if is_disqualifying(op.opcode) {
-                vectorizable = false;
-                break;
-            }
-
-            if !is_scalar_arithmetic(op) {
-                // Any op not in our allowed arithmetic set is disqualifying.
-                vectorizable = false;
-                break;
+            let opcode_facts = opcode_vectorize_facts_table(op.opcode);
+            match vectorize_body_decision(op, opcode_facts.body_action) {
+                VectorizeBodyDecision::Skip => continue,
+                VectorizeBodyDecision::Analyze => {}
+                VectorizeBodyDecision::Reject => {
+                    vectorizable = false;
+                    break;
+                }
             }
 
             // Lane-category accumulation. Walk both operands and results;
@@ -566,19 +496,11 @@ fn analyse_loop(func: &TirFunction, body: &HashSet<BlockId>) -> VectorizationInf
             if reduction.is_none() {
                 let uses_acc = op.operands.iter().any(|v| acc_candidates.contains(v));
                 if uses_acc {
-                    reduction = match op.opcode {
-                        OpCode::Add => Some(ReductionOp::Sum),
-                        OpCode::Mul => Some(ReductionOp::Product),
-                        OpCode::BitAnd => Some(ReductionOp::And),
-                        OpCode::BitOr => Some(ReductionOp::Or),
-                        // Min/Max via comparison ops: when the accumulator is
-                        // compared (Lt/Le → Min, Gt/Ge → Max) and the result
-                        // feeds a conditional select of the accumulator, this
-                        // is a min/max reduction pattern.
-                        OpCode::Lt | OpCode::Le => Some(ReductionOp::Min),
-                        OpCode::Gt | OpCode::Ge => Some(ReductionOp::Max),
-                        _ => None,
-                    };
+                    // Min/Max via comparison ops: when the accumulator is
+                    // compared and the result feeds a conditional select of the
+                    // accumulator, this is a min/max reduction pattern. The
+                    // opcode-to-family mapping is generated from op_kinds.toml.
+                    reduction = reduction_op_for_rule(opcode_facts.reduction_rule);
                 }
             }
         }
@@ -648,12 +570,10 @@ pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
 
         // Find the first ForIter / ScfFor op in the header and annotate it.
         // If no such op exists, annotate the first arithmetic op we find.
-        let target_op = block.ops.iter_mut().find(|op| {
-            matches!(
-                op.opcode,
-                OpCode::ForIter | OpCode::ScfFor | OpCode::GetIter
-            )
-        });
+        let target_op = block
+            .ops
+            .iter_mut()
+            .find(|op| opcode_vectorize_facts_table(op.opcode).annotation_target);
 
         let op = match target_op {
             Some(o) => o,

@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::blocks::BlockId;
 use super::lir::{LirBlock, LirFunction, LirOp, LirRepr, LirTerminator, LirValue};
+use super::op_kinds_generated::{LirVerifyRule, opcode_lir_verify_rule_table};
 use super::ops::{AttrValue, OpCode};
 use super::types::TirType;
 use super::values::ValueId;
@@ -545,14 +546,16 @@ fn verify_ops(
                     "op operand",
                 );
             }
-            match op.tir_op.opcode {
-                OpCode::BoxVal => verify_box_op(*bid, op_index, op, values, errors),
-                OpCode::UnboxVal => verify_unbox_op(*bid, op_index, op, values, errors),
-                OpCode::Add | OpCode::Sub | OpCode::Mul => {
+            match opcode_lir_verify_rule_table(op.tir_op.opcode) {
+                LirVerifyRule::None => {}
+                LirVerifyRule::BoxValue => verify_box_op(*bid, op_index, op, values, errors),
+                LirVerifyRule::UnboxValue => verify_unbox_op(*bid, op_index, op, values, errors),
+                LirVerifyRule::CheckedI64Arithmetic => {
                     verify_checked_i64_arithmetic(*bid, op_index, op, errors)
                 }
-                OpCode::CallBuiltin => verify_truthy_materialization(*bid, op_index, op, errors),
-                _ => {}
+                LirVerifyRule::TruthyMaterialization => {
+                    verify_truthy_materialization(*bid, op_index, op, errors)
+                }
             }
         }
     }

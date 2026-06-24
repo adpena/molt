@@ -4,9 +4,11 @@ use super::blocks::{BlockId, Terminator, TirBlock};
 use super::dominators;
 use super::function::TirFunction;
 use super::op_kinds_generated::{
+    TypeRefineAttrResultTypeRule, TypeRefineOperandTypeRule,
     opcode_is_proven_result_type_seed_table, opcode_operand_independent_result_tir_type,
+    opcode_type_refine_attr_result_type_rule_table, opcode_type_refine_operand_type_rule_table,
 };
-use super::ops::{AttrValue, OpCode};
+use super::ops::{AttrDict, AttrValue, OpCode};
 use super::types::TirType;
 use super::values::ValueId;
 
@@ -298,58 +300,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         //         unboxed fadd path).
                         //     Everything else (transparent aliases) propagates
                         //     operand 0's type.
-                        let result_type_override = match op.opcode {
-                            OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack => {
-                                match op.attrs.get("_type_hint") {
-                                    Some(AttrValue::Str(name)) => match TirType::from_type_hint(name)
-                                    {
-                                        class_ty @ TirType::UserClass(_) => Some(class_ty),
-                                        _ => None,
-                                    },
-                                    _ => None,
-                                }
-                            }
-                            OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin => {
-                                op.attrs
-                                    .get("return_type")
-                                    .and_then(|v| match v {
-                                        AttrValue::Str(s) => parse_return_type_str(s.as_str()),
-                                        _ => None,
-                                    })
-                                    .or_else(|| {
-                                        if op.opcode == OpCode::CallBuiltin {
-                                            op.attrs.get("name").and_then(|v| match v {
-                                                AttrValue::Str(s) => {
-                                                    structural_builtin_return_type(s.as_str())
-                                                }
-                                                _ => None,
-                                            })
-                                        } else {
-                                            None
-                                        }
-                                    })
-                            }
-                            OpCode::TypeGuard => {
-                                parse_guard_type(&op.attrs)
-                            }
-                            OpCode::Copy => {
-                                let original_kind = match op.attrs.get("_original_kind") {
-                                    Some(AttrValue::Str(k)) => Some(k.as_str()),
-                                    _ => None,
-                                };
-                                crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type(
-                                    original_kind,
-                                )
-                                .or_else(|| {
-                                    original_kind
-                                        .filter(|k| {
-                                            crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(k)
-                                        })
-                                        .map(fresh_value_kind_result_type)
-                                })
-                            }
-                            _ => None,
-                        };
+                        let result_type_override = attr_result_type_override(op.opcode, &op.attrs);
                         (
                             op.opcode,
                             op.operands.clone(),
@@ -1090,6 +1041,53 @@ fn structural_builtin_return_type(name: &str) -> Option<TirType> {
     }
 }
 
+fn attr_result_type_override(opcode: OpCode, attrs: &AttrDict) -> Option<TirType> {
+    match opcode_type_refine_attr_result_type_rule_table(opcode) {
+        TypeRefineAttrResultTypeRule::None => None,
+        TypeRefineAttrResultTypeRule::ObjectTypeHint => match attrs.get("_type_hint") {
+            Some(AttrValue::Str(name)) => match TirType::from_type_hint(name) {
+                class_ty @ TirType::UserClass(_) => Some(class_ty),
+                _ => None,
+            },
+            _ => None,
+        },
+        TypeRefineAttrResultTypeRule::CallReturnType => {
+            attrs.get("return_type").and_then(|v| match v {
+                AttrValue::Str(s) => parse_return_type_str(s.as_str()),
+                _ => None,
+            })
+        }
+        TypeRefineAttrResultTypeRule::CallBuiltinReturnType => attrs
+            .get("return_type")
+            .and_then(|v| match v {
+                AttrValue::Str(s) => parse_return_type_str(s.as_str()),
+                _ => None,
+            })
+            .or_else(|| {
+                attrs.get("name").and_then(|v| match v {
+                    AttrValue::Str(s) => structural_builtin_return_type(s.as_str()),
+                    _ => None,
+                })
+            }),
+        TypeRefineAttrResultTypeRule::TypeGuard => parse_guard_type(attrs),
+        TypeRefineAttrResultTypeRule::CopyOriginalKind => {
+            let original_kind = match attrs.get("_original_kind") {
+                Some(AttrValue::Str(k)) => Some(k.as_str()),
+                _ => None,
+            };
+            crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type(original_kind).or_else(
+                || {
+                    original_kind
+                        .filter(|k| {
+                            crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(k)
+                        })
+                        .map(fresh_value_kind_result_type)
+                },
+            )
+        }
+    }
+}
+
 pub(super) fn infer_scalar_return_result_type(
     opcode: OpCode,
     operand_types: &[TirType],
@@ -1161,58 +1159,30 @@ fn infer_single_result_type_with_attrs(
     operand_types: &[TirType],
     attrs: Option<&super::ops::AttrDict>,
 ) -> Option<TirType> {
-    // Class allocation is the one `_type_hint` producer that carries structural
-    // identity: the frontend writes the allocated class id on the result.
-    // Scalar/call `_type_hint` remains non-authoritative transport metadata.
-    if matches!(opcode, OpCode::ObjectNewBound | OpCode::ObjectNewBoundStack)
-        && let Some(attrs) = attrs
-        && let Some(AttrValue::Str(name)) = attrs.get("_type_hint")
-        && let class_ty @ TirType::UserClass(_) = TirType::from_type_hint(name)
-    {
-        return Some(class_ty);
-    }
-
-    // Frontend-provided structural return type takes precedence for opaque
-    // call-like opcodes. Legacy `_type_hint` is deliberately ignored here:
-    // it is semantic transport metadata preserved for compatibility consumers,
-    // not representation or call-signature proof.
-    if matches!(
-        opcode,
-        OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
-    ) && let Some(attrs) = attrs
-        && let Some(AttrValue::Str(name)) = attrs.get("return_type")
-        && let Some(ty) = parse_return_type_str(name)
-    {
-        return Some(ty);
-    }
-    if matches!(opcode, OpCode::CallBuiltin)
-        && let Some(attrs) = attrs
-        && let Some(AttrValue::Str(name)) = attrs.get("name")
-        && let Some(ty) = structural_builtin_return_type(name)
+    if let Some(attrs) = attrs
+        && let Some(ty) = attr_result_type_override(opcode, attrs)
     {
         return Some(ty);
     }
     if let Some(ty) = opcode_operand_independent_result_tir_type(opcode) {
         return Some(ty);
     }
-    match opcode {
+    match opcode_type_refine_operand_type_rule_table(opcode) {
         // Add: numeric arithmetic + string concatenation + string/list repetition
-        OpCode::Add | OpCode::InplaceAdd => match operand_types {
+        TypeRefineOperandTypeRule::Add => match operand_types {
             [TirType::Str, TirType::Str] => Some(TirType::Str), // "a" + "b"
             _ => infer_numeric_arithmetic(operand_types),
         },
         // Mul: numeric arithmetic + string/list repetition (str * int, int * str)
-        OpCode::Mul | OpCode::InplaceMul => match operand_types {
+        TypeRefineOperandTypeRule::Mul => match operand_types {
             [TirType::Str, TirType::I64] | [TirType::I64, TirType::Str] => Some(TirType::Str),
             _ => infer_numeric_arithmetic(operand_types),
         },
         // Sub, Mod, Pow: numeric only (str-str is TypeError in Python).
         // InplaceSub mirrors Sub for typed scalars; mutable-type sequence
         // ops (list -= ...) are TypeError in CPython for these opcodes.
-        OpCode::Sub | OpCode::InplaceSub | OpCode::Mod | OpCode::Pow => {
-            infer_numeric_arithmetic(operand_types)
-        }
-        OpCode::Div => {
+        TypeRefineOperandTypeRule::NumericArithmetic => infer_numeric_arithmetic(operand_types),
+        TypeRefineOperandTypeRule::TrueDivision => {
             // Python: division always produces float unless both are DynBox.
             match operand_types {
                 [TirType::I64, TirType::I64]
@@ -1222,10 +1192,8 @@ fn infer_single_result_type_with_attrs(
                 _ => infer_numeric_arithmetic(operand_types),
             }
         }
-        OpCode::FloorDiv => infer_numeric_arithmetic(operand_types),
-
         // Unary Neg/Pos
-        OpCode::Neg | OpCode::Pos => match operand_types {
+        TypeRefineOperandTypeRule::UnaryNumeric => match operand_types {
             [TirType::I64] => Some(TirType::I64),
             [TirType::F64] => Some(TirType::F64),
             _ => None,
@@ -1233,7 +1201,7 @@ fn infer_single_result_type_with_attrs(
 
         // Boolean value-select ops remain operand-dependent: the opcode itself
         // is not enough unless both operands are Bool.
-        OpCode::And | OpCode::Or => match operand_types {
+        TypeRefineOperandTypeRule::BoolSelect => match operand_types {
             [TirType::Bool, TirType::Bool] => Some(TirType::Bool),
             _ => None,
         },
@@ -1241,19 +1209,18 @@ fn infer_single_result_type_with_attrs(
         // Bitwise ops other than shifts are closed over the inline I64 lane.
         // Shifts can promote beyond the inline range and must stay boxed until
         // the runtime operator decides whether bigint promotion is required.
-        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor => match operand_types {
+        TypeRefineOperandTypeRule::BitwiseI64 => match operand_types {
             [TirType::I64, TirType::I64] => Some(TirType::I64),
             _ => None,
         },
-        OpCode::Shl | OpCode::Shr => None,
-        OpCode::BitNot => match operand_types {
+        TypeRefineOperandTypeRule::BitNotI64 => match operand_types {
             [TirType::I64] => Some(TirType::I64),
             _ => None,
         },
 
         // Containers with operand-dependent element shape stay here.
-        OpCode::BuildTuple => Some(TirType::Tuple(operand_types.to_vec())),
-        OpCode::GetIter => match operand_types {
+        TypeRefineOperandTypeRule::BuildTuple => Some(TirType::Tuple(operand_types.to_vec())),
+        TypeRefineOperandTypeRule::GetIter => match operand_types {
             [TirType::List(elem_ty) | TirType::Set(elem_ty)] => {
                 Some(TirType::Iterator(Box::new(elem_ty.as_ref().clone())))
             }
@@ -1267,11 +1234,11 @@ fn infer_single_result_type_with_attrs(
             [TirType::Bytes] => Some(TirType::Iterator(Box::new(TirType::I64))),
             _ => None,
         },
-        OpCode::ForIter | OpCode::IterNext => match operand_types {
+        TypeRefineOperandTypeRule::IterNext => match operand_types {
             [TirType::Iterator(elem_ty)] => Some(elem_ty.as_ref().clone()),
             _ => None,
         },
-        OpCode::Index => match operand_types {
+        TypeRefineOperandTypeRule::Index => match operand_types {
             [TirType::Str, TirType::I64 | TirType::Bool] => Some(TirType::Str),
             [TirType::Bytes, TirType::I64 | TirType::Bool] => Some(TirType::I64),
             [TirType::List(elem_ty), TirType::I64 | TirType::Bool] => {
@@ -1287,53 +1254,20 @@ fn infer_single_result_type_with_attrs(
             }
             _ => None,
         },
-        // `OpCode::Copy` is overloaded: the SSA converter folds every SimpleIR op
-        // WITHOUT a dedicated opcode into `Copy`, stashing the name in
-        // `_original_kind`. A TRANSPARENT-ALIAS copy genuinely names operand 0's
-        // value, so its type IS operand 0's (int-carrier propagation through
-        // passthrough ops depends on this). Two classifier-backed overrides, in
-        // priority order:
-        //  (a) RAW-CARRIER scalar conversions (`copy_kind_raw_carrier_type`):
-        //      `int_from_obj`/`int_from_str_of_obj`/`float_from_obj`/`contains`
-        //      mint a NEW raw-register value typed by the conversion — operand-0
-        //      propagation is the round-8 native `def_var` repr mismatch (`int(t)`
-        //      with `t: float` typed F64, flooding the integer accumulator/phi
-        //      chain). NOTE the carrier-soundness rule still holds downstream:
-        //      TirType is the SEMANTIC axis; the repr planner floors `int` to
-        //      MaybeBigInt unless proven (Phase 0), so I64 here does not license
-        //      a trusted-unbox by itself. Verified on the bigint corner shapes.
-        //  (b) other fresh-value-minting kinds (`copy_kind_mints_fresh_owned_ref`)
-        //      pin their intrinsic type via `fresh_value_kind_result_type` — the
-        //      #45 fix: `complex_from_obj` typed F64 (its real-part operand) routed
-        //      `float + complex` down the unboxed `fadd` path → runtime coercion
-        //      error. Heap fresh values the TIR does not model are `DynBox`.
-        OpCode::Copy => {
-            let original_kind = attrs.and_then(|a| match a.get("_original_kind") {
-                Some(AttrValue::Str(k)) => Some(k.as_str()),
-                _ => None,
-            });
-            crate::tir::passes::alias_analysis::copy_kind_raw_carrier_type(original_kind)
-                .or_else(|| {
-                    original_kind
-                        .filter(|k| {
-                            crate::tir::passes::alias_analysis::copy_kind_mints_fresh_owned_ref(k)
-                        })
-                        .map(fresh_value_kind_result_type)
-                })
-                .or_else(|| operand_types.first().cloned())
-        }
+        // Fresh-value and raw-carrier Copy spellings are handled by the attr
+        // rule before this point. The operand rule means transparent aliasing.
+        TypeRefineOperandTypeRule::Copy => operand_types.first().cloned(),
 
         // Box/Unbox
-        OpCode::BoxVal => operand_types
+        TypeRefineOperandTypeRule::BoxVal => operand_types
             .first()
             .map(|t| TirType::Box(Box::new(t.clone()))),
-        OpCode::UnboxVal => match operand_types.first() {
+        TypeRefineOperandTypeRule::UnboxVal => match operand_types.first() {
             Some(TirType::Box(inner)) => Some(inner.as_ref().clone()),
             _ => None,
         },
 
-        // Everything else: cannot infer, leave as-is.
-        _ => None,
+        TypeRefineOperandTypeRule::None => None,
     }
 }
 

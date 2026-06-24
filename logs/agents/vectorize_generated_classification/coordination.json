@@ -1,0 +1,27 @@
+﻿{
+  "coordination": {
+    "before_long_lane": "uv run --python 3.12 python tools/agent_coordination.py check",
+    "init_template": "uv run --python 3.12 python tools/agent_coordination.py init <task> --role <role> --lane <lane>"
+  },
+  "input_paths": [
+    "runtime/molt-tir/src/tir/op_kinds.toml",
+    "tools/gen_op_kinds.py",
+    "runtime/molt-tir/src/tir/passes/vectorize.rs",
+    "tests/test_gen_op_kinds.py",
+    "docs/design/foundation/25_op_kind_registry.md",
+    "docs/spec/README.md",
+    "docs/spec/STATUS.md"
+  ],
+  "recommendations": [],
+  "chosen_lanes": [
+    "uv run --python 3.12 python tools/gen_op_kinds.py",
+    "uv run --python 3.12 pytest tests/test_gen_op_kinds.py -k \"vectorize_opcode_facts or generated_rs_is_in_sync\"",
+    "cargo test -p molt-tir vectorize",
+    "uv run --python 3.12 python tools/structural_audit.py --board"
+  ],
+  "environment_snapshot": "uv run --python 3.12 python tools/agent_coordination.py env",
+  "proof_plan_command": "uv run --python 3.12 python tools/agent_coordination.py proof-plan runtime/molt-tir/src/tir/op_kinds.toml tools/gen_op_kinds.py runtime/molt-tir/src/tir/passes/vectorize.rs tests/test_gen_op_kinds.py docs/spec/README.md docs/spec/STATUS.md docs/design/foundation/25_op_kind_registry.md",
+  "repo_root": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+  "schema_version": 1,
+  "source": "explicit"
+}

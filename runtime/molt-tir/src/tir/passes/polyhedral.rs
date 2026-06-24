@@ -5,7 +5,9 @@
 use super::PassStats;
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
+use crate::tir::op_kinds_generated::{
+    opcode_is_polyhedral_affine_body_table, opcode_is_polyhedral_loop_header_table,
+};
 use crate::tir::target_info::TargetInfo;
 
 /// Representative element size (bytes) for the numeric loop nests the polyhedral
@@ -37,7 +39,7 @@ pub fn analyze_loop_nests(func: &TirFunction, tti: &TargetInfo) -> Vec<LoopNest>
     for &bid in &block_ids {
         let block = &func.blocks[&bid];
         for op in &block.ops {
-            if matches!(op.opcode, OpCode::ForIter | OpCode::ScfFor) {
+            if opcode_is_polyhedral_loop_header_table(op.opcode) {
                 // Check if loop body contains only affine operations
                 let is_affine = check_affine_body(func, bid);
                 nests.push(LoopNest {
@@ -60,34 +62,10 @@ fn check_affine_body(func: &TirFunction, _bid: BlockId) -> bool {
     // Simplified: check if all ops in the function are arithmetic, memory,
     // loop control, or constants — no calls, builds, or side effects.
     func.blocks.values().all(|block| {
-        block.ops.iter().all(|op| {
-            matches!(
-                op.opcode,
-                OpCode::Add
-                    | OpCode::Sub
-                    | OpCode::Mul
-                    | OpCode::Div
-                    | OpCode::FloorDiv
-                    | OpCode::Mod
-                    | OpCode::Index
-                    | OpCode::StoreIndex
-                    | OpCode::ConstInt
-                    | OpCode::ConstFloat
-                    | OpCode::ConstBool
-                    | OpCode::ConstNone
-                    | OpCode::Lt
-                    | OpCode::Le
-                    | OpCode::Gt
-                    | OpCode::Ge
-                    | OpCode::Eq
-                    | OpCode::Ne
-                    | OpCode::ForIter
-                    | OpCode::ScfFor
-                    | OpCode::ScfYield
-                    | OpCode::GetIter
-                    | OpCode::IterNext
-            ) || op.is_plain_value_copy()
-        })
+        block
+            .ops
+            .iter()
+            .all(|op| opcode_is_polyhedral_affine_body_table(op.opcode) || op.is_plain_value_copy())
     })
 }
 
@@ -101,7 +79,7 @@ pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
             for &bid in &nest.loop_blocks {
                 if let Some(block) = func.blocks.get_mut(&bid) {
                     for op in &mut block.ops {
-                        if matches!(op.opcode, OpCode::ForIter | OpCode::ScfFor) {
+                        if opcode_is_polyhedral_loop_header_table(op.opcode) {
                             op.attrs.insert(
                                 "polyhedral_tileable".into(),
                                 crate::tir::ops::AttrValue::Bool(true),

@@ -65,6 +65,7 @@ SSA_RS = ROOT / "runtime/molt-tir/src/tir/ssa.rs"
 LLVM_RS = ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
 ALIAS_RS = ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs"
 NATIVE_RS = ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
+NATIVE_FC_DIR = ROOT / "runtime/molt-backend/src/native_backend/function_compiler/fc"
 WASM_RS = ROOT / "runtime/molt-backend/src/wasm.rs"
 RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
 
@@ -656,12 +657,21 @@ def extract_llvm_void_runtime_ops() -> dict[str, tuple[str, int]]:
 # preserved `Copy{_original_kind=k}` is restored to a SimpleIR op `kind=k` by
 # `lower_to_simple` (the `_original_kind` passthrough), then dispatched by these
 # backends. So the relevant per-backend coverage question is "does the backend's
-# SimpleIR dispatch contain a `"k" =>` arm?". These dispatches are sprawling
-# multi-thousand-line match-on-string functions (and there are several such
-# matches per file — `op.kind`, container-specialization, etc.), so rather than
-# locate and parse each giant match we scan the whole file for arm-shaped tokens:
-# a run of `"lit"` alternatives joined by `|` and terminated by `=>`. EVERY
-# literal in the OR-chain is captured (so `"inc_ref" | "borrow" =>` yields both).
+# SimpleIR dispatch contain a `"k" =>` arm or generated/extracted routing fact?".
+#
+# Native has moved away from one monolithic dispatch match: extracted
+# `function_compiler/fc/*` handlers declare `HANDLED_KINDS` slices, and
+# `fc/op_family.rs` derives the dispatch from those single authorities. The
+# native audit therefore consumes those slices directly, plus the inline dispatch
+# slices in `op_family.rs`, and keeps the old monolithic arm scan as a
+# compatibility/advisory backstop while the decomposition is in flight.
+#
+# WASM remains a sprawling multi-thousand-line match-on-string file (and there
+# are several such matches per file — `op.kind`, container-specialization, etc.),
+# so rather than locate and parse each giant match we scan the whole file for
+# arm-shaped tokens: a run of `"lit"` alternatives joined by `|` and terminated
+# by `=>`. EVERY literal in the OR-chain is captured (so `"inc_ref" | "borrow"
+# =>` yields both).
 #
 # CAVEAT (advisory column). This is a TEXTUAL heuristic, not a parse of the
 # dispatch's control flow: it can OVER-count (a `"k" =>` match arm in an unrelated
@@ -681,6 +691,51 @@ def extract_simpleir_arm_kinds(path: Path) -> set[str]:
     )
     for m in arm.finditer(text):
         out.update(re.findall(r'"([a-z][a-z0-9_]*)"', m.group(1)))
+    return out
+
+
+def extract_rust_str_slice_consts(path: Path, names: set[str] | None = None) -> dict[str, set[str]]:
+    """Extract Rust `const NAME: &[&str] = &[...]` string-slice definitions.
+
+    This intentionally parses only flat string slices: it is used for native
+    op-family routing facts whose authority is precisely the local
+    `HANDLED_KINDS` const, not arbitrary Rust expressions.
+    """
+    text = path.read_text(encoding="utf-8")
+    const_re = re.compile(
+        r'(?:pub(?:\([^)]*\))?\s+)?const\s+([A-Z0-9_]+)\s*:\s*&\s*\[\s*&str\s*\]'
+        r"\s*=\s*&\s*\[",
+        re.MULTILINE,
+    )
+    out: dict[str, set[str]] = {}
+    for match in const_re.finditer(text):
+        name = match.group(1)
+        if names is not None and name not in names:
+            continue
+        end = text.find("];", match.end())
+        if end == -1:
+            raise RuntimeError(f"unterminated Rust string-slice const {name} in {path}")
+        body = text[match.end() : end]
+        out[name] = set(re.findall(r'"([a-z][a-z0-9_]*)"', body))
+    return out
+
+
+def extract_native_simpleir_arm_kinds() -> set[str]:
+    """Native SimpleIR coverage from extracted op-family authorities.
+
+    `fc/*::HANDLED_KINDS` is now the native routing source of truth. The old
+    `function_compiler.rs` arm scan remains included so inline arms and any
+    not-yet-extracted residual arms stay visible during decomposition.
+    """
+    out = extract_simpleir_arm_kinds(NATIVE_RS)
+    if NATIVE_FC_DIR.exists():
+        for path in sorted(NATIVE_FC_DIR.glob("*.rs")):
+            consts = extract_rust_str_slice_consts(path)
+            for name, kinds in consts.items():
+                if name == "INLINE_DISPATCH_KINDS" or name.endswith("HANDLED_KINDS"):
+                    out.update(kinds)
+                elif name == "NATIVE_NO_CODEGEN_RESULT_KINDS":
+                    out.update(kinds)
     return out
 
 
@@ -950,7 +1005,7 @@ def run_audit() -> AuditResult:
         )
     }
     llvm_runtime_fallback |= boxed_runtime_fallback
-    native_arms = extract_simpleir_arm_kinds(NATIVE_RS)
+    native_arms = extract_native_simpleir_arm_kinds()
     wasm_arms = extract_simpleir_arm_kinds(WASM_RS)
     structural = structural_kinds_from_registry(registry)
 

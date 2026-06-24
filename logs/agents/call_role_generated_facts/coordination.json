@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "source": "explicit",
+  "repo_root": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+  "input_paths": [
+    "runtime/molt-tir/src/tir/op_kinds.toml",
+    "tools/gen_op_kinds.py",
+    "runtime/molt-tir/src/tir/op_kinds_generated.rs",
+    "runtime/molt-tir/src/tir/call_graph.rs",
+    "runtime/molt-tir/src/tir/call_facts.rs",
+    "tests/test_gen_op_kinds.py",
+    "docs/design/foundation/25_op_kind_registry.md",
+    "docs/spec/README.md",
+    "docs/spec/STATUS.md"
+  ],
+  "recommendations": [],
+  "chosen_lanes": [
+    "uv run --python 3.12 python tools/gen_op_kinds.py --check",
+    "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py::test_call_roles_delegate_to_generated_tables tests/test_gen_op_kinds.py::test_call_role_validation_rejects_drift",
+    "cargo fmt -p molt-tir --check",
+    "cargo test -p molt-tir call_graph",
+    "cargo test -p molt-tir call_facts",
+    "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py",
+    "uv run --python 3.12 python tools/audit_op_kinds.py --check",
+    "uv run --python 3.12 python tools/structural_audit.py --check"
+  ],
+  "coordination": {
+    "before_long_lane": "uv run --python 3.12 python tools/agent_coordination.py check",
+    "init_template": "uv run --python 3.12 python tools/agent_coordination.py init <task> --role <role> --lane <lane>"
+  }
+}

@@ -46,7 +46,7 @@ The structural cause is identical in every case: **N copies of one table, no com
 - **LLVM `VEC_REDUCTION_OPS`** (lowering.rs:415): the 24-entry `(kind, arity)` table — real LLVM coverage the arm-extractor misses because `vec_reduction_runtime_symbol(kind)` runs **before** the `match`.
 - **Runtime extern ABI surface:** all `pub (unsafe)? extern "C" fn molt_*` across `runtime/molt-runtime/src` (3531 symbols). LLVM fallback coverage is counted only when the parsed ABI is one the fallback can emit: boxed integer parameters plus boxed integer return for the generic path, or an explicit void-return entry in `PRESERVED_VOID_RUNTIME_OPS` whose table arity exactly matches boxed extern parameters.
 - **Structural/pre-SSA consumed kinds** (not routed through `kind_to_opcode`): **owned** by `[[simpleir_control_kind]]`, generating `tir::is_structural`, CFG block-boundary helpers, and `lower_from_simple` pre-SSA membership. (Drift-proof: a new structural/pre-SSA/SSA-only kind must be classified in the registry before generated consumers or the audit accept it.)
-- **Native/WASM SimpleIR arm presence** (advisory): a textual scan for arm-shaped `"a" | "b" … =>` tokens (every OR-alternative captured). **Advisory only** — it can over-/under-count (guards, bindings, unrelated helper arms); never a sole basis for a disposition.
+- **Native/WASM SimpleIR arm presence** (advisory): native coverage now unions the extracted `function_compiler/fc/*::HANDLED_KINDS` op-family authorities (plus inline dispatch slices) with the legacy textual `function_compiler.rs` arm scan, so decomposition does not hide real native handlers from the audit. WASM still uses a textual scan for arm-shaped `"a" | "b" … =>` tokens (every OR-alternative captured). **Advisory only** — textual scans can over-/under-count (guards, bindings, unrelated helper arms); never a sole basis for a disposition.
 
 ### Source table sizes (current worktree, 2026-06-13)
 
@@ -131,23 +131,114 @@ The same table owns opcode-intrinsic result types through
 (`Div`, shifts, arithmetic, `and`/`or`, indexing, iterators, calls, and tuple
 builders) deliberately stay absent so `type_refine.rs` proves them only from
 operand/attr facts, while `block_versioning.rs`, `branchless_count.rs`, and
-`gvn.rs` consume the generated intrinsic table instead of private opcode
-matches. GVN numbering eligibility is also table-owned as a role lattice:
+`fast_math.rs`, and `strength_reduction.rs` consume the generated intrinsic
+table instead of private opcode matches; `gvn.rs` also consumes it as part of
+value-key/type gating. GVN numbering eligibility is also table-owned as a role lattice:
 `gvn_always_numberable_opcodes`, `gvn_type_gated_numberable_opcodes`, and
-`gvn_value_keyed_constant_opcodes` generate
-`opcode_gvn_numbering_role_table`, keeping unconditional CSE, primitive-gated
-CSE, and same-block constant value keys separate while leaving `ConstBigInt`
-unnumbered until it has an exact non-colliding value-key lane. Type-refine's
+`gvn_value_keyed_constant_opcodes` plus `gvn_numberable_attr_key_opcodes` generate
+`opcode_gvn_numbering_role_table` plus
+`opcode_gvn_value_key_spec_table`, keeping unconditional CSE, primitive-gated
+CSE, same-block constant payload keys, and attr-sensitive numbered ops separate.
+`ConstBigInt` is value-keyed by its exact decimal `s_value` payload, but still
+does not seed type-refine guard proof because its result type is `DynBox`. Type-refine's
 proven-map literal seeds are separate generated facts
 (`proven_result_type_seed_opcodes` feeds
 `opcode_is_proven_result_type_seed_table`) so payload identity and guard-proof
 seeding cannot accidentally share a private pass-local opcode list.
+Type-refine result-type membership is generated as two rule lattices:
+`type_refine_attr_result_type_rules` feeds
+`opcode_type_refine_attr_result_type_rule_table` for attr-derived class, call,
+guard, and Copy-original-kind facts, while `type_refine_operand_type_rules`
+feeds `opcode_type_refine_operand_type_rule_table` for operand-dependent
+arithmetic, boolean, bitwise, iterator, indexing, tuple, Copy, BoxVal, and
+UnboxVal rules. `type_refine.rs` owns only the rule semantics and live
+operand/attr parsing, not private opcode membership.
+Call graph and call-site fact dispatch are generated as a role lattice:
+`call_opcode_roles` feeds `opcode_call_role_table` for first-class
+Call/CallMethod/CallBuiltin/Copy behavior, and
+`call_graph_user_call_kinds` feeds `simpleir_kind_is_call_graph_user_call` for
+Copy `_original_kind` fallbacks. `call_graph.rs` and `call_facts.rs` own target
+resolution, GPU runtime-symbol carve-outs, builtin no-throw proof, and fact
+lattice semantics; they do not carry private call opcode or call-kind sets.
+SCCP constant folding now follows the same shape:
+`sccp_constant_seed_rules` feeds `opcode_sccp_constant_seed_rule_table` for
+constant constructors the lattice can seed from attrs, and
+`sccp_constant_eval_rules` feeds `opcode_sccp_constant_eval_rule_table` for
+foldable arithmetic, comparison, unary, list/dict, and tuple-as-list rules.
+`sccp.rs` owns attr parsing, overflow refusal, Python division/mod/pow behavior,
+compound-size caps, and concrete fold semantics, not opcode membership.
+Value-range integer reasoning is also table-owned:
+`value_range_transfer_rules` feeds `opcode_value_range_transfer_rule_table` for
+modeled interval transfer functions, `value_range_const_fold_rules` feeds
+`opcode_value_range_const_fold_rule_table` for checked integer constant folding
+used by constant-mask and container-length derivation, and
+`value_range_cond_narrow_rules` feeds
+`opcode_value_range_cond_narrow_rule_table` for loop-guard true-edge upper-bound
+narrowing. `value_range_container_length_rules` feeds
+`opcode_value_range_container_length_rule_table` for fixed literal builders,
+list-repeat candidates, and `len(...)` calls. `value_range.rs` owns the interval
+formulas, saturation, Python shift/mod semantics, CFG polarity checks,
+symbolic-len recording, builtin-name and operand-shape validation, copy
+resolution, and raw-lane soundness boundary; it does not carry private
+opcode-membership lists.
+Range loop devirtualization pattern membership is generated too:
+`range_devirt_roles` feeds `opcode_range_devirt_role_table` for the
+CallBuiltin/GetIter/IterNextUnboxed roles in the `range(...)` iterator pattern.
+`range_devirt.rs` owns builtin-name checks, operand/result shape, loop-header
+role, dominance, and CFG validation; the registry owns only the closed
+opcode-role lattice.
+Polyhedral loop classification is generated too:
+`polyhedral_loop_header_opcodes` feeds
+`opcode_is_polyhedral_loop_header_table` for loops that may receive tiling
+annotations, while `polyhedral_affine_body_opcodes` feeds
+`opcode_is_polyhedral_affine_body_table` for the opcode-only affine body
+allowlist. `polyhedral.rs` owns body traversal and live Copy refinement; it does
+not carry private loop-header or affine-body opcode lists.
+Vectorization opcode classification is generated too:
+`vectorize_opcode_facts` feeds `opcode_vectorize_facts_table`, so
+`vectorize.rs` owns accumulator recognition, live Copy refinement, min/max
+pattern validation, lane typing, and hint emission while body eligibility,
+loop-header markers, annotation targets, and reduction-family membership live
+in the registry.
+Representation-aware LIR verifier dispatch is generated as a rule lattice:
+`lir_verify_rules` feeds `opcode_lir_verify_rule_table`, so `verify_lir.rs`
+owns BoxVal/UnboxVal/arithmetic/truthy-materialization invariant checks and
+diagnostics without carrying a private opcode dispatch list.
+The TIR pass fuzzer's fixed-shape opcode palette is registry-owned too:
+`fuzz_tir_opcode_shapes` generates `FUZZ_TIR_OPCODE_SHAPES`,
+`opcode_fuzz_tir_operand_count_table`, and
+`opcode_fuzz_tir_attr_payload_rule_table` for
+`runtime/molt-backend/fuzz/fuzz_tir_passes.rs`. That fact is deliberately
+tooling-only operand and synthetic-attr generation shape; result counts still
+come from `opcode_fixed_result_count_table`, and variable-result opcodes such as
+`Copy` are rejected from the fixed-shape palette.
+Drop-insertion suspension retain points are generated as a distinct ownership
+fact: `drop_insertion_suspension_point_opcodes` feeds
+`opcode_is_drop_insertion_suspension_point_table`, so `drop_insertion.rs`
+retains live owned values across StateYield/channel/high-level yield ops without
+using the broader state-machine legality set as a proxy.
+`drop_insertion_return_deferral_barrier_opcodes` separately feeds
+`opcode_is_drop_insertion_return_deferral_barrier_table`, keeping explicit
+IncRef/DecRef/Free rails as the single registry-owned answer for roots that
+cannot be extended to return-boundary cleanup.
+Exception metadata has separate generated facts for separate invariants:
+`exception_label_attr_opcodes` owns which ops carry a SimpleIR exception-label
+attr, `exception_transfer_edge_opcodes` owns the subset that contributes
+implicit CFG transfer edges, and `exception_region_nesting_roles` feeds
+`opcode_exception_region_nesting_role_table` for TryStart/TryEnd lexical
+nesting. DCE and SCCP own their try-depth traversal and dead-op/constant-fold
+policy; the registry owns only the Enter/Exit role for the closed opcode set,
+so nesting cannot drift into private TryStart/TryEnd matches beside the
+label/transfer facts.
 Generator poll-body eligibility is table-owned as a role lattice too:
 `generator_fusion_poll_required_yield_opcodes` and
 `generator_fusion_poll_reject_opcodes` generate
 `opcode_generator_fusion_poll_role_table`, so `generator_fusion.rs` no longer
 decides required-yield, reject, or neutral opcodes with a private `StateYield` /
-`YieldFrom` / async-state hand match.
+`YieldFrom` / async-state hand match. `generator_fusion_iter_use_roles`
+separately feeds `opcode_generator_fusion_iter_use_role_table` for the
+IterNext/Is roles in the raw-iterator use scanner; the pass owns operand
+position and terminator-use proof.
 The registry also owns `state_machine_opcodes` and generates
 `opcode_is_state_machine_table`; linear CFG transforms such as the TIR inliner
 and module-slot promotion consume that table instead of carrying private
@@ -157,21 +248,34 @@ feeds `opcode_is_lowered_state_machine_body_table`, the opcode half of
 terminator check. Raw-i64 LIR arithmetic also uses generated opcode facts:
 `i64_overflow_box_dispatch_opcodes` owns boxed-dispatch overflow custody, while
 `i64_checked_overflow_triple_opcodes` owns checked-overflow triple eligibility.
+Boxed augmented-assignment dispatch is generated too:
+`boxed_runtime_inplace_dispatch_opcodes` feeds
+`opcode_uses_boxed_runtime_inplace_dispatch_table`, so LLVM lowering asks the
+registry whether a first-class opcode's boxed runtime fallback must call
+`molt_inplace_*` and try `__i<op>__` before binary/reflected dunders. The
+preserved-Copy `inplace_*` spellings remain string namespace facts carried by
+`_original_kind`; this generated predicate owns the first-class OpCode half.
 Refcount balance accounting is generated too:
 `refcount_balance_inc_opcodes` / `refcount_balance_dec_opcodes` produce
 `opcode_refcount_balance_role_table`, so `refcount_elim.rs` consumes a typed
 Increment/Decrement/neutral role instead of private IncRef/DecRef hand-sets.
+Escape allocation-site tracking is generated as well:
+`escape_alloc_site_opcodes` produces `opcode_is_escape_alloc_site_table`, so
+`escape_analysis.rs` tracks fresh allocation roots without carrying a private
+Alloc/ObjectNewBound/Build*/AllocTask hand-set beside the registry.
 Generator poll fusion eligibility is generated as a role table too:
 `generator_fusion_poll_required_yield_opcodes` /
 `generator_fusion_poll_reject_opcodes` produce
 `opcode_generator_fusion_poll_role_table`, so `generator_fusion.rs` tests for
 required-yield and rejecting poll opcodes without a private state-machine
-hand-set.
+hand-set. `generator_fusion_iter_use_roles` produces
+`opcode_generator_fusion_iter_use_role_table`, keeping IterNext and optional
+None-guard membership out of the iterator-use scanner.
 
-1. **One table** `runtime/molt-tir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, effect ∈ {pure, observe, throw, side_effect}, backends_required[], runtime_symbol?)`.
-2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-tir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, the effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants the emitter uses).
+1. **One table** `runtime/molt-tir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, may_throw, side_effecting, purity ∈ {pure, pure_may_throw, impure}, backends_required[], runtime_symbol?)`.
+2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-tir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, generated `ALL_OPCODES`, and the typed effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants the emitter uses).
 3. **One sync test** `tests/test_gen_op_kinds.py` (modeled on `tests/test_gen_intrinsics.py`) re-renders in memory and `assert_eq`s against the checked-in generated files → **drift = build/test error**.
-4. **The effect oracle hooks the same table:** `opcode_may_throw`/`is_side_effecting` (effects.rs) are generated from the `effect` column → a new kind **requires** an explicit effect classification (kills bug-class instance #1 — the `matches!`-default-false trap — because the table has no default; every kind has an explicit `effect`).
+4. **The effect oracle hooks the same table:** `opcode_may_throw_table`, `opcode_is_side_effecting_table`, and `opcode_effects_table` are generated from the `may_throw`, `side_effecting`, and `purity` columns, then consumed by `effects.rs` with no pass-local opcode lists → a new opcode **requires** an explicit effect classification (kills bug-class instance #1 — the `matches!`-default-false trap — because the generated matches have no wildcard arm).
 5. **Deforestation fusion eligibility is table-owned too:** `fusion_barrier_opcodes` generates `opcode_is_fusion_barrier_table` for `deforestation.rs`. This is deliberately separate from side effects/may-throw because iterator-chain fusion preserves per-element evaluation order while still rejecting cross-iteration/control-state barriers.
 6. **Raw-i64 arithmetic lowering is table-owned too:** `i64_overflow_box_dispatch_opcodes` generates `opcode_requires_i64_overflow_box_dispatch_table`, `i64_checked_overflow_triple_opcodes` generates `opcode_supports_i64_checked_overflow_triple_table`, and `i64_zero_divisor_guard_opcodes` generates `opcode_requires_i64_zero_divisor_guard_table`, keeping overflow custody, checked-triple eligibility, boxed-dispatch retention, and proven-nonzero elimination on generated opcode facts.
 7. **The terminal state becomes generated-exhaustive:** the LLVM fail-loud gate and the classifier `_ =>` default survive ONLY as a defense for kinds the table forgot — and the sync test makes "the table forgot" a build failure, so the fail-loud path becomes statically unreachable for any in-table kind (it stays as the runtime backstop, now provably dead for known kinds).
@@ -209,7 +313,7 @@ The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is O
 - `runtime/molt-tir/src/tir/lower_from_simple.rs` (`rewrite_loop_index_to_store_load`) for the actual loop-index pre-SSA rewrite implementation.
 - `runtime/molt-backend/src/llvm_backend/lowering.rs:6837` (`lower_preserved_simpleir_op`), :10426 (`try_lower_preserved_runtime_call`), :2410-2502 (fail-loud gate), :415 (`VEC_REDUCTION_OPS`), :10325 (`floordiv` arm).
 - `runtime/molt-tir/src/tir/passes/alias_analysis.rs:496` (`copy_kind_mints_fresh_owned_ref`), :535 (`classify_copy_kind`), :564 (`_ => TransparentAlias`), :645 (`copy_kind_is_explicit_no_heap_move`).
-- `runtime/molt-tir/src/tir/passes/effects.rs` (`opcode_may_throw` / `is_side_effecting` — the effect oracle to hook).
+- `runtime/molt-tir/src/tir/passes/effects.rs` (`opcode_may_throw` / `is_side_effecting` / `opcode_effects` delegate to the generated effect oracle).
 - `runtime/molt-tir/src/tir/mod.rs` (`is_structural`), `runtime/molt-tir/src/tir/cfg.rs` (terminator/leader/ender/cond-branch), and `runtime/molt-tir/src/tir/lower_from_simple.rs` consume generated SimpleIR control-kind tables.
 - Precedents: `tools/gen_intrinsics.py` + `tests/test_gen_intrinsics.py` (the generator + sync-test pattern); `tools/stdlib_full_coverage_manifest.py` (the manifest-table pattern); `tools/audit_op_kinds.py` (this task's check-mode tool).
 

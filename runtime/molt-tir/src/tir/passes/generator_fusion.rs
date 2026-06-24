@@ -77,6 +77,7 @@ use super::super::blocks::{BlockId, Terminator, TirBlock};
 use super::super::call_graph::CallGraph;
 use super::super::function::{TirFunction, TirModule};
 use super::super::op_kinds_generated::{
+    GeneratorFusionIterUseRole, opcode_generator_fusion_iter_use_role_table,
     opcode_generator_fusion_poll_role_table, opcode_has_exception_label_attr_table,
 };
 use super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -575,9 +576,13 @@ fn iter_uses_are_next_and_optional_none_guard(caller: &TirFunction, iter_val: Va
             if !uses_it {
                 continue;
             }
-            match op.opcode {
-                OpCode::IterNext if op.operands.first() == Some(&iter_val) => saw_next = true,
-                OpCode::Is => { /* the `is(iter, None)` not-iterable guard — benign */ }
+            match opcode_generator_fusion_iter_use_role_table(op.opcode) {
+                GeneratorFusionIterUseRole::NextUse if op.operands.first() == Some(&iter_val) => {
+                    saw_next = true
+                }
+                GeneratorFusionIterUseRole::NoneGuard => {
+                    /* the `is(iter, None)` not-iterable guard — benign */
+                }
                 _ => return false,
             }
         }

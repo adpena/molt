@@ -68,6 +68,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use super::function::TirModule;
+use super::op_kinds_generated::{
+    CallOpcodeRole, opcode_call_role_table, simpleir_kind_is_call_graph_user_call,
+};
 use super::ops::{AttrValue, OpCode, TirOp};
 
 /// A resolved or unresolved call target referenced by one call-bearing op.
@@ -99,7 +102,7 @@ fn classify_call_op(op: &TirOp, defined: &BTreeSet<String>) -> Option<CallEdge> 
         }
     }
 
-    match op.opcode {
+    match opcode_call_role_table(op.opcode) {
         // A first-class `Call`: static-direct when its `s_value` names a defined
         // function, otherwise opaque (indirect, or a callee extern to this
         // module). The SSA lift folds `call`, `call_func`, `call_internal`,
@@ -114,7 +117,7 @@ fn classify_call_op(op: &TirOp, defined: &BTreeSet<String>) -> Option<CallEdge> 
         // leaf scan never listed their op kinds as user-level calls. Treating
         // them as a call edge would spuriously disqualify a gpu-kernel leaf from
         // leaf-ness and change codegen, so they are NOT edges.
-        OpCode::Call => {
+        CallOpcodeRole::UserCall => {
             if matches!(s_value(op), Some(s) if is_gpu_runtime_symbol(s)) {
                 None
             } else {
@@ -128,26 +131,28 @@ fn classify_call_op(op: &TirOp, defined: &BTreeSet<String>) -> Option<CallEdge> 
         }
         // Python method dispatch is always dynamic — the receiver's runtime type
         // selects the implementation. Never statically resolvable here.
-        OpCode::CallMethod => Some(CallEdge::Opaque),
+        CallOpcodeRole::DynamicMethod => Some(CallEdge::Opaque),
         // The SSA-lift fallback: a `Copy` op carrying a call-kind
         // `_original_kind` is a disguised call the lift had no first-class
         // opcode for. It lowers back to a real SimpleIR call (`lower_to_simple`),
         // so it MUST count as a call edge — missing it would mark a function
         // that actually calls as a leaf (an unsound recursion-guard skip).
-        OpCode::Copy => match op.attrs.get("_original_kind") {
-            Some(AttrValue::Str(kind)) if is_call_kind(kind) => match s_value(op) {
-                Some(name) if defined.contains(name) => {
-                    Some(CallEdge::StaticDirect(name.to_string()))
+        CallOpcodeRole::CopyOriginalKind => match op.attrs.get("_original_kind") {
+            Some(AttrValue::Str(kind)) if simpleir_kind_is_call_graph_user_call(kind) => {
+                match s_value(op) {
+                    Some(name) if defined.contains(name) => {
+                        Some(CallEdge::StaticDirect(name.to_string()))
+                    }
+                    _ => Some(CallEdge::Opaque),
                 }
-                _ => Some(CallEdge::Opaque),
-            },
+            }
             _ => None,
         },
         // `CallBuiltin` lowers to a runtime-helper call, never to a user Python
         // function (the legacy SimpleIR leaf scan likewise ignores
         // `call_builtin`); `AllocTask` is handled separately as a poll-fn
         // reference, not as a call out of the enclosing function.
-        _ => None,
+        CallOpcodeRole::RuntimeBuiltin | CallOpcodeRole::NotCall => None,
     }
 }
 
@@ -165,24 +170,6 @@ fn is_gpu_runtime_symbol(symbol: &str) -> bool {
             | "molt_gpu_block_dim"
             | "molt_gpu_grid_dim"
             | "molt_gpu_barrier"
-    )
-}
-
-/// SimpleIR op-`kind` strings that are user-level calls (the disqualifying set
-/// the legacy native leaf scan used). These can survive into a TIR `Copy`
-/// fallback carrying `_original_kind`, so the call graph must recognize them.
-fn is_call_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "call"
-            | "call_func"
-            | "call_internal"
-            | "call_indirect"
-            | "call_bind"
-            | "call_function"
-            | "call_guarded"
-            | "call_method"
-            | "invoke_ffi"
     )
 }
 
