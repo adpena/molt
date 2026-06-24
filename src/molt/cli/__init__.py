@@ -203,6 +203,7 @@ from molt.cli.command_runtime import (
     _load_cli_harness_memory_guard,
     _resolve_timeout_env,
     _run_completed_command,
+    _run_subprocess_captured_to_tempfiles,
     _with_memory_guard_env,
 )
 from molt.cli.compiler_metadata import (
@@ -24981,33 +24982,6 @@ def _resolve_output_path(
 _SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v3"
 _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION = "stdlib-manifest-v1"
 _SHARED_STDLIB_PARTITION_SCHEMA_VERSION = "stdlib-partition-v1"
-
-
-def _run_subprocess_captured_to_tempfiles(
-    cmd: Sequence[str],
-    *,
-    input: bytes | None = None,
-    cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | None = None,
-    timeout: float | None = None,
-    progress_label: str | None = None,
-    memory_guard_prefix: str = _CLI_MEMORY_GUARD_PREFIX,
-) -> subprocess.CompletedProcess[bytes]:
-    """Run a subprocess while capturing stdout/stderr via temporary files.
-
-    This avoids pipe-inheritance hangs from descendants that keep stdout/stderr
-    open after the direct child has already exited.
-    """
-    harness_memory_guard = _load_cli_harness_memory_guard(_compiler_root())
-    return harness_memory_guard.guarded_completed_process_to_tempfiles(
-        cmd,
-        prefix=memory_guard_prefix,
-        input=input,
-        cwd=cwd,
-        env=env,
-        timeout=timeout,
-        progress_label=progress_label,
-    )
 
 
 def build(

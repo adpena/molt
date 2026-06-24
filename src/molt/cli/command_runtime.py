@@ -3,13 +3,14 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from molt import process_guard as _process_guard
 
 _CLI_MEMORY_GUARD_PREFIX = _process_guard.CLI_MEMORY_GUARD_PREFIX
 _CROSS_MEMORY_GUARD_PREFIX = "MOLT_CROSS"
 _DIFF_MEMORY_GUARD_PREFIX = "MOLT_DIFF"
+_COMMAND_RUNTIME_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _load_cli_harness_memory_guard(cwd: Path | None) -> Any:
@@ -70,4 +71,27 @@ def _run_completed_command(
         input=input,
         timeout=timeout,
         guard_loader=_load_cli_harness_memory_guard,
+    )
+
+
+def _run_subprocess_captured_to_tempfiles(
+    cmd: Sequence[str],
+    *,
+    input: bytes | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+    progress_label: str | None = None,
+    memory_guard_prefix: str = _CLI_MEMORY_GUARD_PREFIX,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a subprocess while capturing stdout/stderr via temporary files."""
+    harness_memory_guard = _load_cli_harness_memory_guard(_COMMAND_RUNTIME_ROOT)
+    return harness_memory_guard.guarded_completed_process_to_tempfiles(
+        cmd,
+        prefix=memory_guard_prefix,
+        input=input,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+        progress_label=progress_label,
     )
