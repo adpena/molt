@@ -168,6 +168,12 @@ from molt.cli.command_runtime import (
     _run_completed_command,
     _with_memory_guard_env,
 )
+from molt.cli.compiler_metadata import (
+    _compiler_metadata,
+    _compiler_root,
+    _git_rev,
+    _rustc_version,
+)
 from molt.cli.capability_spec import (
     CAPABILITY_PROFILES as CAPABILITY_PROFILES,
     CAPABILITY_TOKEN_RE as CAPABILITY_TOKEN_RE,
@@ -454,16 +460,6 @@ from molt.cli.wasm import (
     _write_wasm_string,
     _write_wasm_varuint,
 )
-
-_CLI_PACKAGE_ROOT = Path(__file__).resolve().parent
-_MOLT_PACKAGE_ROOT = _CLI_PACKAGE_ROOT.parent
-_SRC_ROOT = _MOLT_PACKAGE_ROOT.parent
-_COMPILER_ROOT = _SRC_ROOT.parent
-
-
-def _compiler_root() -> Path:
-    return _COMPILER_ROOT
-
 
 Target = str
 STUB_MODULES = {"molt_buffer", "molt_cbor", "molt_json", "molt_msgpack"}
@@ -1751,31 +1747,6 @@ def _write_runtime_wasm_integrity_sidecar(path: Path) -> None:
     digest = _sha256_file(path)
     sidecar = _runtime_wasm_integrity_sidecar_path(path)
     _atomic_write_text(sidecar, f"{digest}\n")
-
-
-def _git_rev(root: Path) -> str | None:
-    try:
-        result = _run_completed_command(
-            ["git", "-C", str(root), "rev-parse", "HEAD"],
-            capture_output=True,
-            env=None,
-            cwd=root,
-            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    value = result.stdout.strip()
-    return value or None
-
-
-def _compiler_metadata() -> tuple[str | None, str | None]:
-    compiler_root = _compiler_root()
-    pyproject = _load_toml(compiler_root / "pyproject.toml")
-    version = pyproject.get("project", {}).get("version")
-    git_rev = _git_rev(compiler_root)
-    return version if isinstance(version, str) else None, git_rev
 
 
 def _sbom_component_hashes(pkg: dict[str, Any]) -> list[dict[str, str]]:
@@ -8508,23 +8479,6 @@ def _latest_mtime(paths: list[Path]) -> float:
         elif path.exists():
             latest = max(latest, path.stat().st_mtime)
     return latest
-
-
-@functools.lru_cache(maxsize=1)
-def _rustc_version() -> str | None:
-    try:
-        result = _run_completed_command(
-            ["rustc", "-Vv"],
-            capture_output=True,
-            env=None,
-            cwd=None,
-            memory_guard_prefix="MOLT_BUILD",
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip()
 
 
 @functools.lru_cache(maxsize=512)
