@@ -7439,6 +7439,22 @@ pub extern "C" fn molt_dec_ref_n(bits: u64, count: u32) {
     })
 }
 
+fn unpack_too_many_message(_py: &PyToken<'_>, expected: usize, actual: usize) -> String {
+    if crate::object::ops_sys::runtime_target_at_least(_py, 3, 14) {
+        format!(
+            "too many values to unpack (expected {}, got {})",
+            expected, actual
+        )
+    } else {
+        format!("too many values to unpack (expected {})", expected)
+    }
+}
+
+fn unpack_non_iterable_message(_py: &PyToken<'_>, seq_bits: u64) -> String {
+    let type_name = class_name_for_error(type_of_bits(_py, seq_bits));
+    format!("cannot unpack non-iterable {type_name} object")
+}
+
 /// Outlined sequence unpacking helper. Validates that the sequence length
 /// matches `expected_count`, extracts each element (with incref), and writes
 /// element bits to `output_ptr[0..expected_count]`.
@@ -7465,7 +7481,8 @@ pub unsafe extern "C" fn molt_unpack_sequence(
         let expected = expected_count as usize;
         let output_ptr = output_ptr_bits as usize as *mut u64;
         let Some(ptr) = obj.as_ptr() else {
-            raise_exception::<u64>(_py, "TypeError", "cannot unpack non-sequence");
+            let msg = unpack_non_iterable_message(_py, seq_bits);
+            raise_exception::<u64>(_py, "TypeError", &msg);
             return MoltObject::none().bits();
         };
         unsafe {
@@ -7482,10 +7499,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                     return MoltObject::none().bits();
                 }
                 if actual > expected {
-                    let msg = format!(
-                        "too many values to unpack (expected {}, got {})",
-                        expected, actual
-                    );
+                    let msg = unpack_too_many_message(_py, expected, actual);
                     raise_exception::<u64>(_py, "ValueError", &msg);
                     return MoltObject::none().bits();
                 }
@@ -7505,10 +7519,7 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                     return MoltObject::none().bits();
                 }
                 if actual > expected {
-                    let msg = format!(
-                        "too many values to unpack (expected {}, got {})",
-                        expected, actual
-                    );
+                    let msg = unpack_too_many_message(_py, expected, actual);
                     raise_exception::<u64>(_py, "ValueError", &msg);
                     return MoltObject::none().bits();
                 }
@@ -7521,7 +7532,11 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                 // Generic iterable: materialize via iter/next.
                 let iter_bits = molt_iter(seq_bits);
                 if obj_from_bits(iter_bits).is_none() {
-                    raise_exception::<u64>(_py, "TypeError", "cannot unpack non-sequence");
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
+                    let msg = unpack_non_iterable_message(_py, seq_bits);
+                    raise_exception::<u64>(_py, "TypeError", &msg);
                     return MoltObject::none().bits();
                 }
                 let out_slice = std::slice::from_raw_parts_mut(output_ptr, expected);
@@ -7550,43 +7565,8 @@ pub unsafe extern "C" fn molt_unpack_sequence(
                     }
                     count += 1;
                     if count > expected {
-                        // Try to exhaust iterator for the "got N" count.
-                        // Cap at 1024 extra iterations to avoid hanging on
-                        // infinite iterators.
-                        let mut extra = 0usize;
-                        let exhausted = loop {
-                            if extra >= 1024 {
-                                break false;
-                            }
-                            let extra_bits = molt_iter_next(iter_bits);
-                            let extra_obj = obj_from_bits(extra_bits);
-                            let Some(extra_ptr) = extra_obj.as_ptr() else {
-                                break true;
-                            };
-                            if object_type_id(extra_ptr) != TYPE_ID_TUPLE {
-                                break true;
-                            }
-                            let extra_elems = seq_vec_ref(extra_ptr);
-                            if extra_elems.len() < 2 {
-                                break true;
-                            }
-                            let done = is_truthy(_py, obj_from_bits(extra_elems[1]));
-                            if done {
-                                break true;
-                            }
-                            extra += 1;
-                        };
-                        count += extra;
                         dec_ref_bits(_py, iter_bits);
-                        let msg = if exhausted {
-                            format!(
-                                "too many values to unpack (expected {}, got {})",
-                                expected, count
-                            )
-                        } else {
-                            // Iterator didn't terminate — report without count
-                            format!("too many values to unpack (expected {})", expected)
-                        };
+                        let msg = format!("too many values to unpack (expected {})", expected);
                         raise_exception::<u64>(_py, "ValueError", &msg);
                         return MoltObject::none().bits();
                     }
