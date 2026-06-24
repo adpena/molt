@@ -233,6 +233,74 @@ def _install_oscillating_cse(gen: SimpleTIRGenerator, *, marker: int) -> None:
     )
 
 
+def _install_staged_alias_cse(
+    gen: SimpleTIRGenerator,
+    *,
+    rewrite_order: list[tuple[str, str]],
+    calls: list[str],
+) -> None:
+    def staged_cse(
+        self: SimpleTIRGenerator,
+        round_ops: list[MoltOp],
+        *,
+        allow_cross_block_const_dedupe: bool,
+        max_cse_iterations_override: int | None = None,
+        sccp_iter_cap_override: int | None = None,
+    ) -> tuple[list[MoltOp], int]:
+        del (
+            allow_cross_block_const_dedupe,
+            max_cse_iterations_override,
+            sccp_iter_cap_override,
+        )
+        for source_name, target_name in rewrite_order:
+            uses_source: set[str] = set()
+            for op in round_ops:
+                for arg in op.args:
+                    self._collect_arg_value_names(arg, uses_source)
+            if source_name not in uses_source:
+                continue
+            calls.append(source_name)
+            aliases = {source_name: MoltValue(target_name)}
+            return (
+                [
+                    MoltOp(
+                        kind=op.kind,
+                        args=[
+                            self._rewrite_aliases_in_arg(arg, aliases)
+                            for arg in op.args
+                        ],
+                        result=op.result,
+                        metadata=op.metadata,
+                        col_offset=op.col_offset,
+                        end_col_offset=op.end_col_offset,
+                    )
+                    for op in round_ops
+                ],
+                0,
+            )
+        calls.append("stable")
+        return round_ops, 0
+
+    gen._run_cse_canonicalization_round = types.MethodType(  # type: ignore[method-assign]
+        staged_cse, gen
+    )
+
+
+def _two_stage_alias_ops() -> list[MoltOp]:
+    return [
+        MoltOp(kind="CONST", args=[1], result=MoltValue("keep_a")),
+        MoltOp(kind="CONST", args=[1], result=MoltValue("dup_a")),
+        MoltOp(kind="CONST", args=[2], result=MoltValue("keep_b")),
+        MoltOp(kind="CONST", args=[2], result=MoltValue("dup_b")),
+        MoltOp(
+            kind="TUPLE_NEW",
+            args=[MoltValue("dup_a"), MoltValue("dup_b")],
+            result=MoltValue("pair"),
+        ),
+        MoltOp(kind="RETURN", args=[MoltValue("pair")], result=MoltValue("none")),
+    ]
+
+
 def test_trivial_phi_elides_and_rewrites_users() -> None:
     lowered = _lower_ops(
         [
@@ -2106,6 +2174,59 @@ def test_midend_fixed_point_non_convergence_fails_closed_by_default() -> None:
     actions = [event.get("action") for event in outcome.get("degrade_events", [])]
     assert "fail_closed_non_convergence" in actions
     assert "accept_last_verified_round" not in actions
+
+
+def test_midend_cse_dce_closure_converges_before_outer_round_cap() -> None:
+    gen = SimpleTIRGenerator()
+    rewrite_order = [("dup_a", "keep_a"), ("dup_b", "keep_b")]
+    calls: list[str] = []
+    _install_staged_alias_cse(
+        gen,
+        rewrite_order=rewrite_order,
+        calls=calls,
+    )
+
+    rewritten = gen._canonicalize_control_aware_ops_impl(
+        _two_stage_alias_ops(), allow_cross_block_const_dedupe=True
+    )
+
+    defined = {op.result.name for op in rewritten}
+    assert "dup_a" not in defined
+    assert "dup_b" not in defined
+    tuple_op = next(op for op in rewritten if op.kind == "TUPLE_NEW")
+    assert [arg.name for arg in tuple_op.args if isinstance(arg, MoltValue)] == [
+        "keep_a",
+        "keep_b",
+    ]
+    assert calls[:3] == ["dup_a", "dup_b", "stable"]
+    outcome = gen.midend_policy_outcomes_by_function["<direct>"]
+    actions = [event.get("action") for event in outcome.get("degrade_events", [])]
+    assert "fail_closed_non_convergence" not in actions
+
+
+def test_midend_cse_dce_closure_cap_env_refresh_fails_closed() -> None:
+    gen = SimpleTIRGenerator()
+    calls: list[str] = []
+    _install_staged_alias_cse(
+        gen,
+        rewrite_order=[("dup_a", "keep_a"), ("dup_b", "keep_b")],
+        calls=calls,
+    )
+
+    with _temp_env("MOLT_CSE_FP_MAX_ITERS", "1"):
+        with pytest.raises(RuntimeError, match="failed to converge"):
+            _ = gen._canonicalize_control_aware_ops_impl(
+                _two_stage_alias_ops(), allow_cross_block_const_dedupe=True
+            )
+
+    assert calls == ["dup_a"]
+    assert gen.midend_stats["cse_dce_fp_cap_hits"] >= 1
+    outcome = gen.midend_policy_outcomes_by_function["<direct>"]
+    assert outcome["degraded"] is True
+    reasons = [event.get("reason") for event in outcome.get("degrade_events", [])]
+    actions = [event.get("action") for event in outcome.get("degrade_events", [])]
+    assert "cse_dce_fixed_point_cap" in reasons
+    assert "fail_closed_non_convergence" in actions
 
 
 def test_retired_midend_hard_fail_env_does_not_control_non_convergence() -> None:
