@@ -56,9 +56,13 @@
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
 #   - literal_payload_opcodes - opcode literal payload facts consumed by
 #                  canonicalize.rs and check_exception_elim.rs.
-#   - gvn_value_keyed_constant_opcodes - constant constructors whose current
-#                  GVN key extraction records exact payload identity. ConstBigInt
-#                  stays out until it has an exact non-colliding ValueKey lane.
+#   - gvn_always_numberable_opcodes / gvn_type_gated_numberable_opcodes /
+#                  gvn_value_keyed_constant_opcodes - opcode-role facts for GVN
+#                  numbering policy. Always-numberable ops need no operand type
+#                  gate, type-gated ops require primitive operands, and
+#                  value-keyed constants get same-block local value numbers only.
+#                  ConstBigInt stays out until it has an exact non-colliding
+#                  ValueKey lane.
 #   - proven_result_type_seed_opcodes - constant constructors whose intrinsic
 #                  result type seeds type_refine.rs's proven-type map. ConstBigInt
 #                  stays out because DynBox does not narrow backend guard proof.
@@ -534,10 +538,53 @@ literal_payload_opcodes = [
     { opcode = "ConstBool", literal = "bool" },
 ]
 
-# gvn_value_keyed_constant_opcodes: constants whose payload is represented in
-# gvn.rs's ValueKey today. ConstBigInt is intentionally excluded until ValueKey
-# has a precise heap-bigint payload key; otherwise every big-int literal would
-# collide on `(None, None, None)`.
+# gvn_*_opcodes: GVN numbering roles. Always-numberable ops are pure value
+# transforms that can share the scoped dominator value table without extra
+# operand proof. Type-gated ops are deterministic computations only when all
+# operands are primitive; gvn.rs checks that per value. Value-keyed constants
+# receive same-block local value numbers only, because backend-native constant
+# materialization is representation-sensitive. ConstBigInt is intentionally
+# never keyed until ValueKey has a precise heap-bigint payload lane; otherwise
+# every big-int literal would collide on `(None, None, None)`.
+gvn_always_numberable_opcodes = [
+    "BoxVal",
+    "UnboxVal",
+]
+
+gvn_type_gated_numberable_opcodes = [
+    "Add",
+    "Sub",
+    "Mul",
+    "InplaceAdd",
+    "InplaceSub",
+    "InplaceMul",
+    "Div",
+    "FloorDiv",
+    "Mod",
+    "Pow",
+    "Neg",
+    "Pos",
+    "Eq",
+    "Ne",
+    "Lt",
+    "Le",
+    "Gt",
+    "Ge",
+    "Is",
+    "IsNot",
+    "BitAnd",
+    "BitOr",
+    "BitXor",
+    "BitNot",
+    "Shl",
+    "Shr",
+    "And",
+    "Or",
+    "Not",
+    "Bool",
+    "TypeGuard",
+]
+
 gvn_value_keyed_constant_opcodes = [
     "ConstInt",
     "ConstBool",

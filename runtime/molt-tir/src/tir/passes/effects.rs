@@ -93,8 +93,11 @@ pub(super) fn op_has_observable_effect_when_dead(op: &TirOp) -> bool {
 // LICM (hoist/sink) and GVN (value-numbering / CSE) ask a STRICTER question:
 // *"is this op a deterministic, side-effect-free computation?"* — a positive
 // purity property that `!opcode_is_side_effecting` does NOT capture. To avoid
-// three hand-maintained allowlists drifting apart, this oracle is the single
-// place that property is decided. LICM and GVN derive their predicates from it.
+// hand-maintained allowlists drifting apart, this oracle is the single place
+// that property is decided. LICM derives its movable predicate directly from
+// it; GVN's generated numbering-role table is validated against the same
+// CSE-safe purity core while retaining pass-specific roles for constants and
+// type gates.
 //
 // The classification is the same three-axis model `FunctionEffects` already
 // uses, lifted to the opcode level:
@@ -145,8 +148,8 @@ impl OpEffects {
 }
 
 /// Per-opcode purity classification — the single source of truth from which the
-/// LICM (`opcode_is_pure_movable`) and GVN (`opcode_is_type_gated_numberable`)
-/// predicates are derived.
+/// LICM (`opcode_is_pure_movable`) predicate and GVN's generated numbering-role
+/// purity invariant are derived.
 ///
 /// Only opcodes that are genuinely deterministic *computations* return a `PURE`
 /// / `PURE_MAY_THROW` triple. Everything else (calls, loads, stores, iteration,
@@ -198,11 +201,13 @@ pub(super) fn opcode_is_pure_movable(opcode: OpCode) -> bool {
 /// nonetheless raise — safe to **value-number / CSE** but NOT to hoist above a
 /// guard. CSE only ever replaces a duplicate that is *dominated* by the leader,
 /// so if the leader raises, control never reaches the replaced op; the throw is
-/// therefore preserved. This is the shared purity core GVN consumes.
+/// therefore preserved. GVN consumes generated numbering roles; test invariants
+/// keep every numbered role tied to this purity core.
 ///
 /// `opcode_is_pure_movable` ⊆ `opcode_is_cse_safe` (dropping the `nothrow`
 /// requirement only ever adds ops).
 #[inline]
+#[cfg(test)]
 pub(super) fn opcode_is_cse_safe(opcode: OpCode) -> bool {
     let e = opcode_effects(opcode);
     e.consistent && e.effect_free
@@ -223,38 +228,6 @@ pub(super) fn opcode_is_cse_safe(opcode: OpCode) -> bool {
 pub(super) fn opcode_is_pure_may_throw(opcode: OpCode) -> bool {
     let e = opcode_effects(opcode);
     e.consistent && e.effect_free && !e.nothrow
-}
-
-/// True if `opcode` belongs to the GVN *type-gated* numberable family: a
-/// CSE-safe arithmetic/comparison/bitwise/boolean computation whose purity is
-/// conditional on its operands being primitive types. GVN enforces that operand
-/// precondition separately (`is_primitive_type`); this predicate supplies only
-/// the opcode-level purity half, derived from the oracle.
-///
-/// Box/unbox (`is_always_numberable`) and constants are CSE-safe too but are
-/// handled by GVN's unconditional / const-local paths, not this type-gated one,
-/// so they are intentionally excluded here.
-#[inline]
-pub(super) fn opcode_is_type_gated_numberable(opcode: OpCode) -> bool {
-    // Exclude the ops GVN routes through its other (non-type-gated) paths:
-    // box/unbox go through `is_always_numberable`; constants through the
-    // const-local path; `BuildSlice` is not value-numbered by GVN today.
-    if matches!(
-        opcode,
-        OpCode::BoxVal
-            | OpCode::UnboxVal
-            | OpCode::ConstInt
-            | OpCode::ConstBigInt
-            | OpCode::ConstFloat
-            | OpCode::ConstStr
-            | OpCode::ConstBool
-            | OpCode::ConstNone
-            | OpCode::ConstBytes
-            | OpCode::BuildSlice
-    ) {
-        return false;
-    }
-    opcode_is_cse_safe(opcode)
 }
 
 /// Effect classification for a function or method.
@@ -411,6 +384,7 @@ pub fn method_effects(receiver_type: &str, method_name: &str) -> Option<Function
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tir::op_kinds_generated::{GvnNumberingRole, opcode_gvn_numbering_role_table};
 
     #[test]
     fn pure_builtins_are_pure() {
@@ -484,14 +458,13 @@ mod tests {
 
     // ── Unified pure-op oracle (S3) ────────────────────────────────────────
     //
-    // These tests pin the oracle-derived movable / CSE / type-gated-numberable
-    // sets to their historical values and assert the structural invariants that
-    // keep LICM and GVN sound. If a new opcode is added to one set without the
-    // other, or an op is mis-classified pure, these fail loudly — which is the
-    // entire point of collapsing the three hand-maintained allowlists into one
-    // oracle. Update the EXPECTED arrays here ONLY when you can justify, op by
-    // op, that the new classification is pure (consistent + effect-free) and —
-    // for the movable set — also never-throwing.
+    // These tests pin the oracle-derived movable / CSE sets and the generated
+    // GVN numbering roles to their historical values, then assert the structural
+    // invariants that keep LICM and GVN sound. If a new opcode is added to one
+    // set without the other, or an op is mis-classified pure, these fail loudly.
+    // Update the EXPECTED arrays here ONLY when you can justify, op by op, that
+    // the new classification is pure (consistent + effect-free) and — for the
+    // movable set — also never-throwing.
 
     /// Compile-time forcing function: an exhaustive (wildcard-free) match over
     /// `OpCode`. Adding a variant to the enum makes this fail to compile,
@@ -775,9 +748,8 @@ mod tests {
         OpCode::BuildSlice,
     ];
 
-    /// The exact `is_typed_numberable` opcode set as it stood before S3 (the
-    /// GVN type-gated allowlist).
-    const EXPECTED_TYPE_GATED_NUMBERABLE: &[OpCode] = &[
+    /// The exact GVN type-gated opcode set as it stood before S3.
+    const EXPECTED_GVN_TYPE_GATED_NUMBERABLE: &[OpCode] = &[
         OpCode::Add,
         OpCode::Sub,
         OpCode::Mul,
@@ -811,6 +783,21 @@ mod tests {
         OpCode::TypeGuard,
     ];
 
+    /// GVN's always-numberable role: pure value transformations that do not need
+    /// primitive operand proof.
+    const EXPECTED_GVN_ALWAYS_NUMBERABLE: &[OpCode] = &[OpCode::BoxVal, OpCode::UnboxVal];
+
+    /// GVN constants that are keyed by exact payload identity for same-block
+    /// local value numbering only.
+    const EXPECTED_GVN_VALUE_KEYED_CONSTANTS: &[OpCode] = &[
+        OpCode::ConstInt,
+        OpCode::ConstBool,
+        OpCode::ConstNone,
+        OpCode::ConstFloat,
+        OpCode::ConstStr,
+        OpCode::ConstBytes,
+    ];
+
     #[test]
     fn movable_set_is_byte_identical_to_historical_licm_list() {
         // Touch the forcing function so it is compiled (and so a newly added
@@ -829,14 +816,28 @@ mod tests {
     }
 
     #[test]
-    fn type_gated_numberable_set_is_byte_identical_to_historical_gvn_list() {
+    fn generated_gvn_numbering_roles_match_historical_gvn_lists() {
         for &op in all_opcodes().iter() {
-            let expected = EXPECTED_TYPE_GATED_NUMBERABLE.contains(&op);
+            let expected_role = if EXPECTED_GVN_ALWAYS_NUMBERABLE.contains(&op) {
+                GvnNumberingRole::Always
+            } else if EXPECTED_GVN_TYPE_GATED_NUMBERABLE.contains(&op) {
+                GvnNumberingRole::TypeGated
+            } else if EXPECTED_GVN_VALUE_KEYED_CONSTANTS.contains(&op) {
+                GvnNumberingRole::ValueKeyedConstant
+            } else {
+                GvnNumberingRole::Never
+            };
             assert_eq!(
-                opcode_is_type_gated_numberable(op),
-                expected,
-                "{op:?}: oracle type-gated-numberable disagrees with historical GVN is_typed_numberable list"
+                opcode_gvn_numbering_role_table(op),
+                expected_role,
+                "{op:?}: generated GVN numbering role disagrees with historical GVN role list"
             );
+            if expected_role != GvnNumberingRole::Never {
+                assert!(
+                    opcode_is_cse_safe(op),
+                    "{op:?}: generated GVN numbering role is not backed by the purity core"
+                );
+            }
         }
     }
 
