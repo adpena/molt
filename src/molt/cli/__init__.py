@@ -112,6 +112,12 @@ from molt.type_facts import (
 from molt.cli.completion import _completion_script
 from molt.cli import factgraph as _factgraph
 from molt.cli.maintenance import _load_artifact_cleanup_module, clean, show_config
+from molt.cli.config_resolution import (
+    _config_value,
+    _resolve_build_config,
+    _resolve_capabilities_config,
+    _resolve_command_config,
+)
 from molt.cli.arg_helpers import (
     _BUILD_ESSENTIAL_FLAGS,
     _BuildHelpFormatter,
@@ -10335,38 +10341,6 @@ def _load_molt_config(project_root: Path) -> dict[str, Any]:
             config["tool"].setdefault("molt", {})
             config["tool"]["molt"].update(tool_cfg)
     return config
-
-
-def _config_value(config: dict[str, Any], path: list[str]) -> Any | None:
-    current: Any = config
-    for key in path:
-        if not isinstance(current, dict) or key not in current:
-            return None
-        current = current[key]
-    return current
-
-
-def _resolve_command_config(config: dict[str, Any], command: str) -> dict[str, Any]:
-    cmd_cfg: dict[str, Any] = {}
-    direct = _config_value(config, [command])
-    if isinstance(direct, dict):
-        cmd_cfg.update(direct)
-    tool_cfg = _config_value(config, ["tool", "molt", command])
-    if isinstance(tool_cfg, dict):
-        cmd_cfg.update(tool_cfg)
-    return cmd_cfg
-
-
-def _resolve_build_config(config: dict[str, Any]) -> dict[str, Any]:
-    return _resolve_command_config(config, "build")
-
-
-def _resolve_capabilities_config(config: dict[str, Any]) -> CapabilityInput | None:
-    for path in (["capabilities"], ["tool", "molt", "capabilities"]):
-        caps = _config_value(config, path)
-        if isinstance(caps, (list, str, dict)):
-            return caps
-    return None
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
