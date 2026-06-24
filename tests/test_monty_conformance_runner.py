@@ -54,7 +54,7 @@ def _install_fake_batch_compiler(monkeypatch):
 
 def test_find_molt_prefers_repo_checkout_cli(monkeypatch, tmp_path: Path):
     repo_root = tmp_path / "repo"
-    cli_path = repo_root / "src" / "molt" / "cli.py"
+    cli_path = repo_root / "src" / "molt" / "cli" / "__init__.py"
     cli_path.parent.mkdir(parents=True)
     cli_path.write_text("print('ok')\n", encoding="utf-8")
 
@@ -402,8 +402,8 @@ def test_main_writes_json_summary_for_requested_suite(tmp_path: Path, monkeypatc
     assert rc == 0
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["suite"] == "smoke"
-    assert summary["manifest_path"] == str(smoke_manifest)
-    assert summary["corpus_root"] == str(corpus_dir)
+    assert summary["manifest_path"] == smoke_manifest.as_posix()
+    assert summary["corpus_root"] == corpus_dir.as_posix()
     assert summary["total"] == 1
     assert summary["passed"] == 1
     assert summary["failed"] == 0

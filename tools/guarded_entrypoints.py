@@ -14,7 +14,7 @@ GUARDED_ENTRYPOINT_SCAN_ROOTS = (
 )
 
 EXPLICIT_GUARDED_ENTRYPOINTS = (
-    "src/molt/cli.py",
+    "src/molt/cli/__init__.py",
     "src/molt/harness_layers.py",
 )
 

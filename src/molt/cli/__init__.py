@@ -200,6 +200,16 @@ from molt.cli.wasm import (
     _write_wasm_varuint,
 )
 
+_CLI_PACKAGE_ROOT = Path(__file__).resolve().parent
+_MOLT_PACKAGE_ROOT = _CLI_PACKAGE_ROOT.parent
+_SRC_ROOT = _MOLT_PACKAGE_ROOT.parent
+_COMPILER_ROOT = _SRC_ROOT.parent
+
+
+def _compiler_root() -> Path:
+    return _COMPILER_ROOT
+
+
 Target = str
 ParseCodec = Literal["msgpack", "cbor", "json"]
 TypeHintPolicy = Literal["ignore", "trust", "check"]
@@ -3320,7 +3330,7 @@ def _validate_extension_manifest(
 
 
 def _compiler_metadata() -> tuple[str | None, str | None]:
-    compiler_root = Path(__file__).resolve().parents[2]
+    compiler_root = _compiler_root()
     pyproject = _load_toml(compiler_root / "pyproject.toml")
     version = pyproject.get("project", {}).get("version")
     git_rev = _git_rev(compiler_root)
@@ -4155,7 +4165,7 @@ def _resolve_root_override(var: str) -> Path | None:
 
 def _has_molt_repo_markers(path: Path) -> bool:
     return (path / "runtime/molt-runtime/Cargo.toml").exists() and (
-        path / "src/molt/cli.py"
+        path / "src/molt/cli/__init__.py"
     ).exists()
 
 
@@ -7842,7 +7852,7 @@ def _stdlib_allowlist_cached(project_root_text: str | None) -> frozenset[str]:
             )
         else:
             spec_path = (
-                Path(__file__).resolve().parents[2]
+                _compiler_root()
                 / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
             )
     if not spec_path.exists():
@@ -12717,7 +12727,7 @@ def _frontend_tooling_source_paths_cached(project_root_str: str) -> tuple[Path, 
     project_root = pathlib.Path(project_root_str)
     molt_root = project_root / "src" / "molt"
     return (
-        molt_root / "cli.py",
+        molt_root / "cli",
         molt_root / "frontend",
         molt_root / "type_facts.py",
         molt_root / "capabilities.py",
@@ -28548,7 +28558,7 @@ def _ensure_runtime_wasm(
             return stdout
         return None
 
-    root = project_root or Path(__file__).resolve().parents[2]
+    root = project_root or _compiler_root()
     # MOLT_SKIP_RUNTIME_REBUILD=1 skips the fingerprint check entirely.
     if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") == "1":
         if runtime_wasm.exists():
@@ -30511,7 +30521,7 @@ def _source_tree_cache_fingerprint(
 
 
 def _cache_fingerprint() -> str:
-    root = Path(__file__).resolve().parents[2]
+    root = _compiler_root()
     rustc_info = _rustc_version() or ""
     rustflags = os.environ.get("RUSTFLAGS", "")
     # Source file hashing (below) catches backend code changes. We intentionally do NOT hash the backend
@@ -30533,7 +30543,7 @@ def _cache_fingerprint() -> str:
 
 
 def _cache_tooling_fingerprint() -> str:
-    root = Path(__file__).resolve().parents[2]
+    root = _compiler_root()
     return _source_tree_cache_fingerprint(
         root=root,
         source_paths=_frontend_tooling_source_paths(root),
@@ -30733,7 +30743,7 @@ def _run_subprocess_captured_to_tempfiles(
     open after the direct child has already exited.
     """
     harness_memory_guard = _load_cli_harness_memory_guard(
-        Path(__file__).resolve().parents[2]
+        _compiler_root()
     )
     return harness_memory_guard.guarded_completed_process_to_tempfiles(
         cmd,

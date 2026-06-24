@@ -27,7 +27,7 @@ from tests.cli.process_guard import cli_test_popen_kwargs, close_cli_test_proces
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Re-use the same protocol version constant that cli.py uses.
+# Re-use the same protocol version constant that the CLI package uses.
 _BACKEND_DAEMON_PROTOCOL_VERSION = 1
 
 # How long to wait for a single request round-trip before declaring a stall.

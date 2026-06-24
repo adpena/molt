@@ -537,7 +537,7 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "harness quality layers must guard tool subprocesses",
     ),
     TokenContract(
-        "src/molt/cli.py",
+        "src/molt/cli/__init__.py",
         (
             "_load_cli_harness_memory_guard",
             "guarded_completed_process",

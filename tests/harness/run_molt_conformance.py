@@ -95,7 +95,7 @@ def find_molt() -> list[str] | None:
     """Return the command used to invoke the Molt CLI, or None."""
     if os.environ.get("MOLT_BIN"):
         return _normalize_molt_cmd(os.environ["MOLT_BIN"])
-    if (SRC_ROOT / "molt" / "cli.py").exists():
+    if (SRC_ROOT / "molt" / "cli" / "__init__.py").exists():
         return [sys.executable, "-m", "molt.cli"]
     for candidate in ("molt", "/opt/homebrew/bin/molt", "/usr/local/bin/molt"):
         found = shutil.which(candidate)
@@ -311,8 +311,8 @@ def _stats_to_summary(
 ) -> dict[str, object]:
     summary: dict[str, object] = {
         "suite": suite,
-        "manifest_path": str(manifest_path) if manifest_path is not None else None,
-        "corpus_root": str(corpus_root),
+        "manifest_path": manifest_path.as_posix() if manifest_path is not None else None,
+        "corpus_root": corpus_root.as_posix(),
         "duration_s": duration_s,
         "total": (
             stats.passed

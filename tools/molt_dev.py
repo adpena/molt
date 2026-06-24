@@ -2003,9 +2003,9 @@ def cmd_difftest(args: argparse.Namespace) -> int:
     --output per target so a stale artifact can't be re-run.
     """
     root = Path(args.root).resolve()
-    if not (root / "src" / "molt" / "cli.py").exists():
+    if not (root / "src" / "molt" / "cli" / "__init__.py").exists():
         raise DriverError(
-            f"difftest: --root {root} is not a molt checkout (no src/molt/cli.py)",
+            f"difftest: --root {root} is not a molt checkout (no src/molt/cli/__init__.py)",
             code=EXIT_USAGE,
         )
     program = Path(args.program).resolve()
