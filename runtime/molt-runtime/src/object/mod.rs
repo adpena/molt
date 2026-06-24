@@ -225,8 +225,8 @@ fn debug_object_rc() -> bool {
 /// diagnostic that prints every refcount transition of a `TYPE_ID_EXCEPTION`
 /// object — the tool that pinned the exception-heavy retention leak (#77): a
 /// raised-and-caught exception accrues 3 inc_ref but only 2 dec_ref per
-/// iteration and ends at refcount 2, never freed (see
-/// project_exception_loop_leak_baton.md). Reading the env var inline on every
+/// iteration and ends at refcount 2, never freed. The live ownership authority
+/// is the ExceptionRegions/drop-insertion model in design 45. Reading the env
 /// refcount op would take the libc environ lock per call and tax every program,
 /// so cache it once at first use — the diagnostic is exactly zero-cost when off.
 #[inline]
