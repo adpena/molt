@@ -10,6 +10,7 @@ use crate::ir::FunctionIR;
 use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use super::cfg::CFG;
 use super::function::{TirFunction, TirModule};
+use super::op_kinds_generated::simpleir_kind_is_pre_ssa_rewritten;
 use super::ssa::{SsaOutput, convert_to_ssa_with_name_and_params};
 use super::types::TirType;
 use super::values::ValueId;
@@ -164,10 +165,8 @@ pub fn lower_to_tir(ir: &FunctionIR) -> TirFunction {
 /// ```
 ///
 /// Returns an empty Vec if no rewrites were needed (caller uses original ops).
-pub(crate) const PRE_SSA_REWRITTEN_KINDS: &[&str] = &["loop_index_start", "loop_index_next"];
-
 fn is_pre_ssa_rewritten_kind(kind: &str) -> bool {
-    PRE_SSA_REWRITTEN_KINDS.contains(&kind)
+    simpleir_kind_is_pre_ssa_rewritten(kind)
 }
 
 fn rewrite_loop_index_to_store_load(ops: &[crate::ir::OpIR]) -> Vec<crate::ir::OpIR> {

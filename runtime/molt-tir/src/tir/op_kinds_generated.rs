@@ -13,6 +13,166 @@
 use crate::tir::ops::OpCode;
 use crate::tir::types::TirType;
 
+/// Whether a SimpleIR kind is consumed as a structural CFG/SSA marker before kind_to_opcode.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_structural(kind: &str) -> bool {
+    matches!(
+        kind,
+        "label"
+            | "state_label"
+            | "if"
+            | "else"
+            | "end_if"
+            | "loop_start"
+            | "loop_end"
+            | "loop_break"
+            | "loop_continue"
+            | "jump"
+            | "goto"
+            | "br_if"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break_if_exception"
+            | "ret"
+            | "ret_void"
+            | "return"
+            | "nop"
+            | "state_switch"
+    )
+}
+
+/// Whether a SimpleIR kind terminates the current CFG block.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_terminator(kind: &str) -> bool {
+    matches!(
+        kind,
+        "loop_break" | "loop_continue" | "jump" | "goto" | "ret" | "ret_void" | "return"
+    )
+}
+
+/// Whether a SimpleIR kind is a generator/coroutine suspend point.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_suspend(kind: &str) -> bool {
+    matches!(
+        kind,
+        "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield"
+    )
+}
+
+/// Whether resume dispatch re-enters at the suspend op itself.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_repoll(kind: &str) -> bool {
+    matches!(
+        kind,
+        "state_transition" | "chan_send_yield" | "chan_recv_yield"
+    )
+}
+
+/// Whether a SimpleIR kind starts a CFG basic block.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_block_leader(kind: &str) -> bool {
+    matches!(
+        kind,
+        "label"
+            | "state_label"
+            | "if"
+            | "else"
+            | "end_if"
+            | "loop_start"
+            | "loop_end"
+            | "state_transition"
+            | "chan_send_yield"
+            | "chan_recv_yield"
+    )
+}
+
+/// Whether a SimpleIR kind ends a CFG basic block.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_block_ender(kind: &str) -> bool {
+    matches!(
+        kind,
+        "loop_start"
+            | "loop_end"
+            | "state_switch"
+            | "state_yield"
+            | "state_transition"
+            | "chan_send_yield"
+            | "chan_recv_yield"
+    )
+}
+
+/// Whether a SimpleIR kind has conditional CFG successors.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_conditional_branch(kind: &str) -> bool {
+    matches!(
+        kind,
+        "if" | "br_if" | "loop_break_if_true" | "loop_break_if_false" | "loop_break_if_exception"
+    )
+}
+
+/// Whether lower_from_simple consumes this kind before SSA.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_pre_ssa_rewritten(kind: &str) -> bool {
+    matches!(kind, "loop_index_start" | "loop_index_next")
+}
+
+/// Whether the kind is an SSA-only structural marker.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_ssa_only(kind: &str) -> bool {
+    matches!(kind, "phi")
+}
+
+/// Whether a kind is consumed structurally by CFG/SSA/pre-SSA rather than kind_to_opcode.
+/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+/// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+#[inline]
+pub fn simpleir_kind_is_cfg_or_ssa_consumed(kind: &str) -> bool {
+    matches!(
+        kind,
+        "label"
+            | "state_label"
+            | "if"
+            | "else"
+            | "end_if"
+            | "loop_start"
+            | "loop_end"
+            | "loop_break"
+            | "loop_continue"
+            | "jump"
+            | "goto"
+            | "br_if"
+            | "loop_break_if_true"
+            | "loop_break_if_false"
+            | "loop_break_if_exception"
+            | "ret"
+            | "ret_void"
+            | "return"
+            | "nop"
+            | "state_switch"
+            | "loop_index_start"
+            | "loop_index_next"
+            | "phi"
+    )
+}
+
 /// Map a SimpleIR `kind` string to its first-class TIR `OpCode`, or
 /// `None` when the kind has no first-class opcode (the caller lifts it to
 /// `OpCode::Copy{_original_kind}`). Mirrors the `|`-grouped arms in the

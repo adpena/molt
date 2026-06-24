@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -141,6 +142,17 @@ _CANONICALIZE_BINARY_ACTIONS = {
     "const_int": "int",
     "const_bool": "bool",
 }
+_SIMPLEIR_CONTROL_FACT_FIELDS = (
+    "structural",
+    "terminator",
+    "suspend",
+    "repoll",
+    "block_leader",
+    "block_ender",
+    "conditional_branch",
+    "pre_ssa_rewritten",
+    "ssa_only",
+)
 
 # The `Terminator` enum variants (blocks.rs). The [[terminator]] section MUST be
 # EXHAUSTIVE over this set (a new variant fails to render until classified —
@@ -378,6 +390,7 @@ def load_table() -> dict:
         if len(set(members)) != len(members):
             raise OpKindTableError(f"{key} has duplicate members")
 
+    _validate_simpleir_control_kinds(data)
     _validate_literal_payload_facts(data, seen_opcodes)
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
@@ -732,6 +745,56 @@ def _validate_disjoint_opcode_role_sets(
                     f"{owners[opcode]} and {key}"
                 )
             owners[opcode] = key
+
+
+def _validate_simpleir_control_kinds(data: dict) -> None:
+    rows = data.get("simpleir_control_kind", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("simpleir_control_kind must be an array of tables")
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(f"simpleir_control_kind row must be a table: {row}")
+        kind = row.get("kind")
+        if not isinstance(kind, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", kind):
+            raise OpKindTableError(
+                f"simpleir_control_kind row has invalid kind spelling: {row}"
+            )
+        if kind in seen:
+            raise OpKindTableError(f"duplicate simpleir_control_kind: {kind}")
+        seen.add(kind)
+        for field in _SIMPLEIR_CONTROL_FACT_FIELDS:
+            if not isinstance(row.get(field), bool):
+                raise OpKindTableError(
+                    f"simpleir_control_kind {kind}: {field!r} must be a bool"
+                )
+        unknown = set(row) - {"kind", *_SIMPLEIR_CONTROL_FACT_FIELDS}
+        if unknown:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: unknown fields {sorted(unknown)}"
+            )
+        if row["ssa_only"] and any(
+            row[field] for field in _SIMPLEIR_CONTROL_FACT_FIELDS if field != "ssa_only"
+        ):
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: ssa_only cannot overlap runtime facts"
+            )
+        if row["repoll"] and not (row["suspend"] and row["block_leader"]):
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: repoll requires suspend and block_leader"
+            )
+        if row["suspend"] and not row["block_ender"]:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: suspend requires block_ender"
+            )
+        if row["terminator"] and not row["structural"]:
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: terminator requires structural"
+            )
+        if not any(row[field] for field in _SIMPLEIR_CONTROL_FACT_FIELDS):
+            raise OpKindTableError(
+                f"simpleir_control_kind {kind}: at least one fact must be true"
+            )
 
 
 def _validate_alias_slot_observation_sets(data: dict) -> None:
@@ -1228,6 +1291,9 @@ def _render_rs_unformatted(data: dict) -> str:
     prefixes = data.get("classifier_fresh_value_prefixes", [])
 
     out: list[str] = [_RS_HEADER]
+
+    out.append(_render_simpleir_control_facts(data))
+    out.append("\n\n")
 
     # -- kind_to_opcode table ------------------------------------------------
     out.append(
@@ -1769,6 +1835,73 @@ def _render_matches_arm(spellings: list[str]) -> str:
         sep = "" if i == len(spellings) - 1 else " |"
         lines.append(f'        "{s}"{sep}\n')
     return "".join(lines)
+
+
+_SIMPLEIR_CONTROL_FN_DOCS = {
+    "structural": (
+        "Whether a SimpleIR kind is consumed as a structural CFG/SSA marker "
+        "before kind_to_opcode."
+    ),
+    "terminator": "Whether a SimpleIR kind terminates the current CFG block.",
+    "suspend": "Whether a SimpleIR kind is a generator/coroutine suspend point.",
+    "repoll": "Whether resume dispatch re-enters at the suspend op itself.",
+    "block_leader": "Whether a SimpleIR kind starts a CFG basic block.",
+    "block_ender": "Whether a SimpleIR kind ends a CFG basic block.",
+    "conditional_branch": "Whether a SimpleIR kind has conditional CFG successors.",
+    "pre_ssa_rewritten": "Whether lower_from_simple consumes this kind before SSA.",
+    "ssa_only": "Whether the kind is an SSA-only structural marker.",
+}
+
+
+def _simpleir_control_members(data: dict, field: str) -> list[str]:
+    return [
+        row["kind"]
+        for row in data.get("simpleir_control_kind", [])
+        if row.get(field, False)
+    ]
+
+
+def _render_simpleir_kind_bool_fn(fn_name: str, members: list[str], doc: str) -> str:
+    lines = [
+        f"/// {doc}\n",
+        "/// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,\n",
+        "/// SSA, pre-SSA lowering, and the op-kind audit share one authority.\n",
+        "#[inline]\n",
+        f"pub fn {fn_name}(kind: &str) -> bool {{\n",
+        "    matches!(\n",
+        "        kind,\n",
+    ]
+    lines.append(_render_matches_arm(members))
+    lines.append("    )\n}\n")
+    return "".join(lines)
+
+
+def _render_simpleir_control_facts(data: dict) -> str:
+    out: list[str] = []
+    for field in _SIMPLEIR_CONTROL_FACT_FIELDS:
+        members = _simpleir_control_members(data, field)
+        out.append(
+            _render_simpleir_kind_bool_fn(
+                f"simpleir_kind_is_{field}",
+                members,
+                _SIMPLEIR_CONTROL_FN_DOCS[field],
+            )
+        )
+        out.append("\n")
+
+    consumed = [
+        row["kind"]
+        for row in data.get("simpleir_control_kind", [])
+        if row["structural"] or row["pre_ssa_rewritten"] or row["ssa_only"]
+    ]
+    out.append(
+        _render_simpleir_kind_bool_fn(
+            "simpleir_kind_is_cfg_or_ssa_consumed",
+            consumed,
+            "Whether a kind is consumed structurally by CFG/SSA/pre-SSA rather than kind_to_opcode.",
+        )
+    )
+    return "".join(out)
 
 
 def _render_opcode_bool_arms(opcodes: list[dict], truthy: list[str]) -> str:

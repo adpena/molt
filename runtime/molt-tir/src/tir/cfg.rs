@@ -11,6 +11,11 @@
 //! - Loop control: `loop_break`, `loop_break_if_true`, `loop_break_if_false`, `loop_continue`
 
 use crate::ir::OpIR;
+use crate::tir::op_kinds_generated::{
+    simpleir_kind_is_block_ender, simpleir_kind_is_block_leader,
+    simpleir_kind_is_conditional_branch, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
+    simpleir_kind_is_terminator,
+};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 // ---------------------------------------------------------------------------
@@ -74,73 +79,25 @@ pub struct CFG {
 /// Returns `true` if the op is a control-flow terminator that ends a basic
 /// block (i.e. no fall-through to the next instruction).
 fn is_terminator(kind: &str) -> bool {
-    matches!(
-        kind,
-        "jump" | "goto" | "ret" | "ret_void" | "return" | "loop_break" | "loop_continue"
-    )
-}
-
-/// Returns `true` if the op is a generator/coroutine *suspend* op: it `ret`s
-/// from the `_poll` function and the suspended continuation (the op immediately
-/// after it) is reached ONLY via the `state_switch` dispatch on resume — never
-/// by ordinary fall-through.  `state_yield` is a pure suspend (the post-yield
-/// continuation runs on the next resume); `state_transition` / `chan_*_yield`
-/// suspend on the pending path but also fall through on the ready path, so they
-/// are *also* re-poll ops (see `is_repoll_op`).
-fn is_suspend_op(kind: &str) -> bool {
-    matches!(
-        kind,
-        "state_yield" | "state_transition" | "chan_send_yield" | "chan_recv_yield"
-    )
-}
-
-/// Returns `true` if the op re-polls from its *own* position on resume — i.e.
-/// the `state_switch` dispatch may re-enter at the op itself (not the op after
-/// it).  `state_transition` / `chan_*_yield` register a wakeup and `ret` on the
-/// pending path; when resumed they re-poll the awaitable/channel from the same
-/// op.  `state_yield` does NOT re-poll (its continuation is strictly the op
-/// after it), so it is a suspend op but not a re-poll op.
-fn is_repoll_op(kind: &str) -> bool {
-    matches!(
-        kind,
-        "state_transition" | "chan_send_yield" | "chan_recv_yield"
-    )
+    simpleir_kind_is_terminator(kind)
 }
 
 /// Returns `true` if the op starts a new block boundary (the op itself is the
 /// first instruction of the new block).
 fn is_block_leader(kind: &str) -> bool {
-    // Re-poll ops are block leaders: the `state_switch` dispatch can re-enter at
-    // the op itself, so it must begin its own block to receive the dispatch edge.
-    is_repoll_op(kind)
-        || matches!(
-            kind,
-            "label" | "state_label" | "if" | "else" | "end_if" | "loop_start" | "loop_end"
-        )
+    simpleir_kind_is_block_leader(kind)
 }
 
 /// Returns `true` if the op ends a block and the next instruction should start
 /// a new block (even if it's not itself a leader type).
 fn is_block_ender(kind: &str) -> bool {
-    // A suspend op ends its block: it `ret`s, and the op after it is a resume
-    // continuation reached only via the `state_switch` dispatch (modeled by
-    // `state_resume_edges`), never by fall-through from the suspend op.
-    //
-    // `state_switch` ends its block: the op after it is the state=0 initial-entry
-    // continuation (the `StateDispatch` terminator's default target), and the
-    // resume continuations are the dispatch cases.  Without this split, the
-    // `state_switch` would be a mid-block op and could not become a first-class
-    // multi-target dispatch terminator.
-    is_suspend_op(kind) || matches!(kind, "loop_start" | "loop_end" | "state_switch")
+    simpleir_kind_is_block_ender(kind)
 }
 
 /// Returns `true` if the op is a conditional branch that causes a block split
 /// (has both fall-through and a taken path).
 fn is_conditional_branch(kind: &str) -> bool {
-    matches!(
-        kind,
-        "br_if" | "if" | "loop_break_if_true" | "loop_break_if_false" | "loop_break_if_exception"
-    )
+    simpleir_kind_is_conditional_branch(kind)
 }
 
 /// Build a map from label-id → op-index for all `label` / `state_label` ops.
@@ -353,19 +310,12 @@ fn build_edges(
             // Return — no successors.
             "ret" | "ret_void" | "return" => {}
 
-            // `state_yield` is a pure suspend: it `ret`s the yielded pair and
-            // has NO regular successor.  Its post-yield continuation (the op
-            // after it) is reached only via the `state_switch` dispatch, modeled
-            // by `state_resume_edges` and folded into the SSA augmented CFG —
-            // NOT by ordinary fall-through.
-            "state_yield" => {}
+            // Pure suspend: it `ret`s and has no regular successor. Its
+            // continuation is reached only via `state_resume_edges`.
+            _ if simpleir_kind_is_suspend(kind) && !simpleir_kind_is_repoll(kind) => {}
 
-            // `state_transition` / `chan_*_yield` suspend on the pending path
-            // (register a wakeup + `ret`) but fall through on the ready path to
-            // the next op (the post-await/recv continuation).  Model the ready
-            // path as ordinary fall-through; the pending re-poll re-entry is a
-            // `state_resume_edge` back to the op itself.
-            "state_transition" | "chan_send_yield" | "chan_recv_yield" => {
+            // Re-poll suspend: pending path `ret`s, ready path falls through.
+            _ if simpleir_kind_is_repoll(kind) => {
                 if let Some(target_bid) =
                     structured_fallthrough_target(ops, blocks, &else_end_if_map, bid)
                 {
@@ -887,11 +837,11 @@ fn compute_state_resume_edges(ops: &[OpIR], blocks: &[BasicBlock]) -> Vec<(usize
     for (idx, op) in ops.iter().enumerate() {
         let kind = op.kind.as_str();
         match kind {
-            // (1) pure `state_yield`: dispatch lands on an explicit
-            // `state_label <saved-state>` when the stream carries one. TIR
-            // roundtrips are free to linearize blocks in RPO, so physical
-            // adjacency is only a source-stream fallback.
-            "state_yield" => {
+            // (1) pure suspend: dispatch lands on an explicit `state_label
+            // <saved-state>` when the stream carries one. TIR roundtrips are
+            // free to linearize blocks in RPO, so physical adjacency is only a
+            // source-stream fallback.
+            _ if simpleir_kind_is_suspend(kind) && !simpleir_kind_is_repoll(kind) => {
                 if let Some(state_id) = op.value {
                     if let Some(&resume_bid) = state_label_block.get(&state_id) {
                         push_edge(resume_bid, state_id);
@@ -907,11 +857,10 @@ fn compute_state_resume_edges(ops: &[OpIR], blocks: &[BasicBlock]) -> Vec<(usize
             }
             // (2) re-poll suspend: the pending-state operand names a `const`
             // whose value is a `state_label` id; on resume the dispatch lands on
-            // that label's block (re-poll re-entry).  The pending state is the
-            // LAST operand for `state_transition`/`chan_send_yield` (args
-            // `[future, (slot,) pending]` / `[chan, val, pending]`) and the 2nd
-            // for `chan_recv_yield` (args `[chan, pending]`).
-            "state_transition" | "chan_send_yield" | "chan_recv_yield" => {
+            // that label's block (re-poll re-entry). The pending operand position
+            // is op shape, so membership is table-owned while the operand lookup
+            // stays explicit here.
+            _ if simpleir_kind_is_repoll(kind) => {
                 if let Some(args) = &op.args
                     && let Some(pending_name) = args.last()
                     && let Some(&pending_state) = const_values.get(pending_name.as_str())
