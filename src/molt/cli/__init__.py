@@ -189,6 +189,13 @@ from molt.cli.cache_keys import (
     _json_ir_default,
     _sorted_ir_functions,
 )
+from molt.cli.cargo_execution import (
+    _build_slot,
+    _cargo_build_env,
+    _maybe_enable_native_cpu,
+    _maybe_enable_sccache,
+    _run_cargo_with_sccache_retry,
+)
 from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
     _CROSS_MEMORY_GUARD_PREFIX,
@@ -8397,92 +8404,6 @@ def _runtime_intrinsic_symbols_digest(symbols_file: Path | None) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _maybe_enable_native_cpu(env: dict[str, str]) -> None:
-    """Enable target-cpu=native for the Rust runtime compilation.
-
-    When MOLT_NATIVE_CPU=1 is set (or when building for the local machine
-    in release mode), add -C target-cpu=native to RUSTFLAGS.  This enables
-    AVX2/NEON/etc. in the compiled runtime for maximum performance.
-    Skipped for cross-compilation and WASM targets.
-    """
-    if env.get("MOLT_NATIVE_CPU", "").strip().lower() in ("1", "true", "yes"):
-        existing = env.get("CARGO_BUILD_RUSTFLAGS", env.get("RUSTFLAGS", ""))
-        if "target-cpu" not in existing:
-            flags = f"{existing} -C target-cpu=native".strip()
-            env["CARGO_BUILD_RUSTFLAGS"] = flags
-
-
-def _maybe_enable_sccache(env: dict[str, str]) -> None:
-    if env.get("RUSTC_WRAPPER"):
-        return
-    mode = env.get("MOLT_USE_SCCACHE", "auto").strip().lower()
-    if mode in {"0", "false", "no", "off"}:
-        return
-    sccache = shutil.which("sccache")
-    if sccache is None:
-        return
-    env["RUSTC_WRAPPER"] = sccache
-
-
-def _cargo_build_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.setdefault("CARGO_INCREMENTAL", "0")
-    if sys.executable:
-        env.setdefault("MOLT_BUILD_PYTHON", sys.executable)
-    return env
-
-
-def _is_sccache_wrapper_failure(result: subprocess.CompletedProcess[str]) -> bool:
-    stderr = result.stderr or ""
-    stdout = result.stdout or ""
-    combined = f"{stderr}\n{stdout}"
-    return "sccache: error:" in combined or (
-        "process didn't exit successfully" in combined and "sccache" in combined
-    )
-
-
-def _run_cargo_with_sccache_retry(
-    cmd: list[str],
-    *,
-    cwd: Path,
-    env: dict[str, str],
-    timeout: float | None,
-    json_output: bool,
-    label: str,
-) -> subprocess.CompletedProcess[str]:
-    build = _run_completed_command(
-        cmd,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        memory_guard_prefix="MOLT_BUILD",
-        timeout=timeout,
-    )
-    wrapper = env.get("RUSTC_WRAPPER", "")
-    if (
-        build.returncode != 0
-        and wrapper
-        and Path(wrapper).name == "sccache"
-        and _is_sccache_wrapper_failure(build)
-    ):
-        retry_env = env.copy()
-        retry_env.pop("RUSTC_WRAPPER", None)
-        if not json_output:
-            print(
-                f"{label}: sccache wrapper failure detected; retrying without sccache.",
-                file=sys.stderr,
-            )
-        build = _run_completed_command(
-            cmd,
-            cwd=cwd,
-            env=retry_env,
-            capture_output=True,
-            memory_guard_prefix="MOLT_BUILD",
-            timeout=timeout,
-        )
-    return build
-
-
 @functools.lru_cache(maxsize=64)
 def _shared_cache_lock_dir_cached(cache_root_str: str) -> Path:
     return Path(cache_root_str) / "locks"
@@ -9178,51 +9099,6 @@ def _rotate_backend_daemon_log_if_large(log_path: Path) -> None:
                 pass
         except OSError:
             pass
-
-
-_MAX_CONCURRENT_BUILDS = 2
-
-
-def _build_slot_dir() -> Path:
-    ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if ext_root:
-        return Path(ext_root).expanduser() / "tmp" / "molt-build-slots"
-    root = _find_molt_root(Path.cwd())
-    if root is None:
-        root = Path.cwd()
-    return root / "tmp" / "molt-build-slots"
-
-
-@contextlib.contextmanager
-def _build_slot():
-    """Acquire one of N build slots before running cargo build.
-
-    Uses a cross-platform file-lock semaphore to hard-cap concurrent cargo builds.
-    Each build peaks at ~16GB RSS, so MAX_CONCURRENT_BUILDS=2 keeps
-    total below 32GB even on machines with 128GB RAM (leaves room for
-    daemon, tests, and OS).  Without this, 5+ concurrent builds from
-    multi-agent sessions OOM the machine.
-    """
-    build_slot_dir = _build_slot_dir()
-    max_slots_raw = os.environ.get("MOLT_MAX_CONCURRENT_BUILDS", "").strip()
-    try:
-        max_slots = int(max_slots_raw) if max_slots_raw else _MAX_CONCURRENT_BUILDS
-    except ValueError:
-        max_slots = _MAX_CONCURRENT_BUILDS
-    max_slots = max(1, max_slots)
-
-    while True:
-        for slot_idx in range(max_slots):
-            slot_path = build_slot_dir / f"slot-{slot_idx}.lock"
-            handle = _try_acquire_file_lock(slot_path)
-            if handle is None:
-                continue
-            try:
-                yield slot_idx
-            finally:
-                _release_file_lock(handle)
-            return
-        time.sleep(0.05)
 
 
 def _session_target_dir(project_root: Path) -> Path | None:
