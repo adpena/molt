@@ -2120,6 +2120,145 @@ pub fn opcode_is_fusion_barrier_table(opcode: OpCode) -> bool {
     }
 }
 
+/// Generator-fusion poll-body opcode role. Phase-1 fusion requires at
+/// least one RequiredYield and rejects any Reject opcode; Neutral opcodes
+/// do not decide eligibility by themselves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeneratorFusionPollRole {
+    Neutral,
+    RequiredYield,
+    Reject,
+}
+
+impl GeneratorFusionPollRole {
+    #[inline]
+    pub fn is_required_yield(self) -> bool {
+        matches!(self, GeneratorFusionPollRole::RequiredYield)
+    }
+
+    #[inline]
+    pub fn rejects_fusion(self) -> bool {
+        matches!(self, GeneratorFusionPollRole::Reject)
+    }
+}
+
+/// Generator-fusion poll role by opcode. EXHAUSTIVE over OpCode so a new
+/// generator/state opcode cannot silently become fusable through a neutral
+/// default in generator_fusion.rs.
+#[inline]
+pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusionPollRole {
+    match opcode {
+        OpCode::Add => GeneratorFusionPollRole::Neutral,
+        OpCode::Sub => GeneratorFusionPollRole::Neutral,
+        OpCode::Mul => GeneratorFusionPollRole::Neutral,
+        OpCode::CheckedAdd => GeneratorFusionPollRole::Neutral,
+        OpCode::InplaceAdd => GeneratorFusionPollRole::Neutral,
+        OpCode::InplaceSub => GeneratorFusionPollRole::Neutral,
+        OpCode::InplaceMul => GeneratorFusionPollRole::Neutral,
+        OpCode::Div => GeneratorFusionPollRole::Neutral,
+        OpCode::FloorDiv => GeneratorFusionPollRole::Neutral,
+        OpCode::Mod => GeneratorFusionPollRole::Neutral,
+        OpCode::Pow => GeneratorFusionPollRole::Neutral,
+        OpCode::Neg => GeneratorFusionPollRole::Neutral,
+        OpCode::Pos => GeneratorFusionPollRole::Neutral,
+        OpCode::Eq => GeneratorFusionPollRole::Neutral,
+        OpCode::Ne => GeneratorFusionPollRole::Neutral,
+        OpCode::Lt => GeneratorFusionPollRole::Neutral,
+        OpCode::Le => GeneratorFusionPollRole::Neutral,
+        OpCode::Gt => GeneratorFusionPollRole::Neutral,
+        OpCode::Ge => GeneratorFusionPollRole::Neutral,
+        OpCode::Is => GeneratorFusionPollRole::Neutral,
+        OpCode::IsNot => GeneratorFusionPollRole::Neutral,
+        OpCode::In => GeneratorFusionPollRole::Neutral,
+        OpCode::NotIn => GeneratorFusionPollRole::Neutral,
+        OpCode::BitAnd => GeneratorFusionPollRole::Neutral,
+        OpCode::BitOr => GeneratorFusionPollRole::Neutral,
+        OpCode::BitXor => GeneratorFusionPollRole::Neutral,
+        OpCode::BitNot => GeneratorFusionPollRole::Neutral,
+        OpCode::Shl => GeneratorFusionPollRole::Neutral,
+        OpCode::Shr => GeneratorFusionPollRole::Neutral,
+        OpCode::And => GeneratorFusionPollRole::Neutral,
+        OpCode::Or => GeneratorFusionPollRole::Neutral,
+        OpCode::Not => GeneratorFusionPollRole::Neutral,
+        OpCode::Bool => GeneratorFusionPollRole::Neutral,
+        OpCode::Alloc => GeneratorFusionPollRole::Neutral,
+        OpCode::StackAlloc => GeneratorFusionPollRole::Neutral,
+        OpCode::ObjectNewBound => GeneratorFusionPollRole::Neutral,
+        OpCode::ObjectNewBoundStack => GeneratorFusionPollRole::Neutral,
+        OpCode::Free => GeneratorFusionPollRole::Neutral,
+        OpCode::LoadAttr => GeneratorFusionPollRole::Neutral,
+        OpCode::StoreAttr => GeneratorFusionPollRole::Neutral,
+        OpCode::DelAttr => GeneratorFusionPollRole::Neutral,
+        OpCode::Index => GeneratorFusionPollRole::Neutral,
+        OpCode::StoreIndex => GeneratorFusionPollRole::Neutral,
+        OpCode::DelIndex => GeneratorFusionPollRole::Neutral,
+        OpCode::DeleteVar => GeneratorFusionPollRole::Neutral,
+        OpCode::Call => GeneratorFusionPollRole::Neutral,
+        OpCode::CallMethod => GeneratorFusionPollRole::Neutral,
+        OpCode::CallBuiltin => GeneratorFusionPollRole::Neutral,
+        OpCode::OrdAt => GeneratorFusionPollRole::Neutral,
+        OpCode::BoxVal => GeneratorFusionPollRole::Neutral,
+        OpCode::UnboxVal => GeneratorFusionPollRole::Neutral,
+        OpCode::TypeGuard => GeneratorFusionPollRole::Neutral,
+        OpCode::IncRef => GeneratorFusionPollRole::Neutral,
+        OpCode::DecRef => GeneratorFusionPollRole::Neutral,
+        OpCode::DelBoundary => GeneratorFusionPollRole::Neutral,
+        OpCode::BuildList => GeneratorFusionPollRole::Neutral,
+        OpCode::BuildDict => GeneratorFusionPollRole::Neutral,
+        OpCode::BuildTuple => GeneratorFusionPollRole::Neutral,
+        OpCode::BuildSet => GeneratorFusionPollRole::Neutral,
+        OpCode::BuildSlice => GeneratorFusionPollRole::Neutral,
+        OpCode::GetIter => GeneratorFusionPollRole::Neutral,
+        OpCode::IterNext => GeneratorFusionPollRole::Neutral,
+        OpCode::IterNextUnboxed => GeneratorFusionPollRole::Neutral,
+        OpCode::ForIter => GeneratorFusionPollRole::Neutral,
+        OpCode::AllocTask => GeneratorFusionPollRole::Reject,
+        OpCode::StateSwitch => GeneratorFusionPollRole::Neutral,
+        OpCode::StateTransition => GeneratorFusionPollRole::Reject,
+        OpCode::StateYield => GeneratorFusionPollRole::RequiredYield,
+        OpCode::ChanSendYield => GeneratorFusionPollRole::Reject,
+        OpCode::ChanRecvYield => GeneratorFusionPollRole::Reject,
+        OpCode::ClosureLoad => GeneratorFusionPollRole::Neutral,
+        OpCode::ClosureStore => GeneratorFusionPollRole::Neutral,
+        OpCode::Yield => GeneratorFusionPollRole::Reject,
+        OpCode::YieldFrom => GeneratorFusionPollRole::Reject,
+        OpCode::Raise => GeneratorFusionPollRole::Neutral,
+        OpCode::CheckException => GeneratorFusionPollRole::Neutral,
+        OpCode::ExceptionPending => GeneratorFusionPollRole::Neutral,
+        OpCode::FunctionDefaultsVersion => GeneratorFusionPollRole::Neutral,
+        OpCode::TryStart => GeneratorFusionPollRole::Neutral,
+        OpCode::TryEnd => GeneratorFusionPollRole::Neutral,
+        OpCode::StateBlockStart => GeneratorFusionPollRole::Reject,
+        OpCode::StateBlockEnd => GeneratorFusionPollRole::Reject,
+        OpCode::ConstInt => GeneratorFusionPollRole::Neutral,
+        OpCode::ConstBigInt => GeneratorFusionPollRole::Neutral,
+        OpCode::ConstFloat => GeneratorFusionPollRole::Neutral,
+        OpCode::ConstStr => GeneratorFusionPollRole::Neutral,
+        OpCode::ConstBool => GeneratorFusionPollRole::Neutral,
+        OpCode::ConstNone => GeneratorFusionPollRole::Neutral,
+        OpCode::ConstBytes => GeneratorFusionPollRole::Neutral,
+        OpCode::Copy => GeneratorFusionPollRole::Neutral,
+        OpCode::Import => GeneratorFusionPollRole::Neutral,
+        OpCode::ImportFrom => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleCacheGet => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleCacheSet => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleCacheDel => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleGetAttr => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleImportFrom => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleGetGlobal => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleGetName => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleSetAttr => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleDelGlobal => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleDelGlobalIfPresent => GeneratorFusionPollRole::Neutral,
+        OpCode::WarnStderr => GeneratorFusionPollRole::Neutral,
+        OpCode::ScfIf => GeneratorFusionPollRole::Neutral,
+        OpCode::ScfFor => GeneratorFusionPollRole::Neutral,
+        OpCode::ScfWhile => GeneratorFusionPollRole::Neutral,
+        OpCode::ScfYield => GeneratorFusionPollRole::Neutral,
+        OpCode::Deopt => GeneratorFusionPollRole::Neutral,
+    }
+}
+
 /// Whether an opcode belongs to generator/async/coroutine state-machine
 /// control. Linear CFG transforms must refuse functions containing these
 /// opcodes unless they reconstruct suspension machinery. EXHAUSTIVE over

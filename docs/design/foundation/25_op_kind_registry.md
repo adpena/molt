@@ -135,10 +135,16 @@ operand/attr facts, while `block_versioning.rs`, `branchless_count.rs`, and
 matches. GVN constant-key eligibility is also a generated fact:
 `gvn_value_keyed_constant_opcodes` feeds
 `opcode_is_gvn_value_keyed_constant_table`, keeping `ConstBigInt` out until it
-has an exact non-colliding value-key lane. Type-refine's proven map consumes
-the same intrinsic result-type oracle while ignoring plain `DynBox`, so payload
-identity and guard-proof seeding no longer share a private pass-local opcode
-list.
+has an exact non-colliding value-key lane. Type-refine's proven-map literal
+seeds are separate generated facts (`proven_result_type_seed_opcodes` feeds
+`opcode_is_proven_result_type_seed_table`) so payload identity and guard-proof
+seeding cannot accidentally share a private pass-local opcode list.
+Generator poll-body eligibility is table-owned as a role lattice too:
+`generator_fusion_poll_required_yield_opcodes` and
+`generator_fusion_poll_reject_opcodes` generate
+`opcode_generator_fusion_poll_role_table`, so `generator_fusion.rs` no longer
+decides required-yield, reject, or neutral opcodes with a private `StateYield` /
+`YieldFrom` / async-state hand match.
 The registry also owns `state_machine_opcodes` and generates
 `opcode_is_state_machine_table`; linear CFG transforms such as the TIR inliner
 and module-slot promotion consume that table instead of carrying private
@@ -152,6 +158,12 @@ Refcount balance accounting is generated too:
 `refcount_balance_inc_opcodes` / `refcount_balance_dec_opcodes` produce
 `opcode_refcount_balance_role_table`, so `refcount_elim.rs` consumes a typed
 Increment/Decrement/neutral role instead of private IncRef/DecRef hand-sets.
+Generator poll fusion eligibility is generated as a role table too:
+`generator_fusion_poll_required_yield_opcodes` /
+`generator_fusion_poll_reject_opcodes` produce
+`opcode_generator_fusion_poll_role_table`, so `generator_fusion.rs` tests for
+required-yield and rejecting poll opcodes without a private state-machine
+hand-set.
 
 1. **One table** `runtime/molt-tir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, effect ∈ {pure, observe, throw, side_effect}, backends_required[], runtime_symbol?)`.
 2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-tir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, the effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants the emitter uses).

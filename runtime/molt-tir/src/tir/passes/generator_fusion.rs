@@ -76,7 +76,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use super::super::blocks::{BlockId, Terminator, TirBlock};
 use super::super::call_graph::CallGraph;
 use super::super::function::{TirFunction, TirModule};
-use super::super::op_kinds_generated::opcode_has_exception_label_attr_table;
+use super::super::op_kinds_generated::{
+    opcode_generator_fusion_poll_role_table, opcode_has_exception_label_attr_table,
+};
 use super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::target_info::TargetInfo;
 use super::super::types::TirType;
@@ -290,17 +292,12 @@ fn is_poll_fusable(poll: &TirFunction, call_graph: &CallGraph) -> bool {
     let mut has_yield = false;
     for block in poll.blocks.values() {
         for op in &block.ops {
-            match op.opcode {
-                OpCode::StateYield => has_yield = true,
-                OpCode::YieldFrom
-                | OpCode::Yield
-                | OpCode::StateBlockStart
-                | OpCode::StateBlockEnd
-                | OpCode::ChanSendYield
-                | OpCode::ChanRecvYield
-                | OpCode::StateTransition
-                | OpCode::AllocTask => return false,
-                _ => {}
+            let role = opcode_generator_fusion_poll_role_table(op.opcode);
+            if role.rejects_fusion() {
+                return false;
+            }
+            if role.is_required_yield() {
+                has_yield = true;
             }
         }
     }
@@ -779,7 +776,7 @@ fn apply_fusion(
         .blocks
         .values()
         .flat_map(|b| b.ops.iter())
-        .filter(|op| op.opcode == OpCode::StateYield)
+        .filter(|op| opcode_generator_fusion_poll_role_table(op.opcode).is_required_yield())
         .count();
     if yield_count != 1 {
         // Multi-yield-site (sequential `yield a; yield b; ...`) needs a

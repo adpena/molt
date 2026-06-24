@@ -916,7 +916,7 @@ def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
     assert set(data["fusion_barrier_opcodes"]) == expected
 
     table_block = rendered.split("fn opcode_is_fusion_barrier_table")[1].split(
-        "enum AliasTypedSlotRole"
+        "enum GeneratorFusionPollRole"
     )[0]
     for opcode in expected:
         assert f"OpCode::{opcode} => true," in table_block
@@ -943,6 +943,60 @@ def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
     assert "opcode_is_fusion_barrier_table(opcode)" in body
     assert "matches!" not in body
     assert "OpCode::" not in body
+
+
+def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
+    """Generator poll-body eligibility has one opcode-role authority."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    generator_fusion = (
+        ROOT / "runtime/molt-tir/src/tir/passes/generator_fusion.rs"
+    ).read_text(encoding="utf-8")
+
+    required = {"StateYield"}
+    reject = {
+        "AllocTask",
+        "ChanRecvYield",
+        "ChanSendYield",
+        "StateBlockEnd",
+        "StateBlockStart",
+        "StateTransition",
+        "Yield",
+        "YieldFrom",
+    }
+    assert set(data["generator_fusion_poll_required_yield_opcodes"]) == required
+    assert set(data["generator_fusion_poll_reject_opcodes"]) == reject
+    assert required.isdisjoint(reject)
+    assert "StateSwitch" not in required | reject
+
+    assert "pub enum GeneratorFusionPollRole" in rendered
+    assert "pub fn opcode_generator_fusion_poll_role_table" in rendered
+    table_block = rendered.split("fn opcode_generator_fusion_poll_role_table")[1].split(
+        "fn opcode_is_state_machine_table"
+    )[0]
+    for row in data["opcode"]:
+        if row["name"] in required:
+            role = "GeneratorFusionPollRole::RequiredYield"
+        elif row["name"] in reject:
+            role = "GeneratorFusionPollRole::Reject"
+        else:
+            role = "GeneratorFusionPollRole::Neutral"
+        assert f"OpCode::{row['name']} => {role}," in table_block
+
+    production = generator_fusion.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_generator_fusion_poll_role_table" in production
+    body = production.split("fn is_poll_fusable", maxsplit=1)[1].split(
+        "fn entry_has_predecessor", maxsplit=1
+    )[0]
+    assert "opcode_generator_fusion_poll_role_table(op.opcode)" in body
+    assert "rejects_fusion()" in body
+    assert "is_required_yield()" in body
+    assert "match op.opcode" not in body
+    assert "OpCode::StateYield" not in body
+    assert "OpCode::YieldFrom" not in body
+    assert "OpCode::AllocTask" not in body
+    assert ".filter(|op| op.opcode == OpCode::StateYield)" not in production
 
 
 def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> None:
