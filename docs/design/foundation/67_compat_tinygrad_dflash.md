@@ -3,7 +3,7 @@ arc: TINYGRAD + DFLASH FIDELITY (CLAUDE.md "Top Priority", turn-blocking)
 author: portfolio-architect
 date: 2026-06-23
 status: design only / executable plan
-doc: 53
+doc: 67
 companions: docs/superpowers/specs/2026-04-14-tinygrad-gpu-primitives-design.md;
   docs/superpowers/plans/2026-04-14-tinygrad-gpu-primitives-plan-{1..4}.md;
   docs/superpowers/archive/2026-04-25-tinygrad-gpu-canonicalization{,-design}.md;
@@ -15,7 +15,7 @@ companions: docs/superpowers/specs/2026-04-14-tinygrad-gpu-primitives-design.md;
 note: design only. Do NOT build or commit from this doc; the lead integrates.
 -->
 
-# 53 — Tinygrad + DFlash Fidelity: the parity-as-a-fact compression ladder
+# 67 — Tinygrad + DFlash Fidelity: the parity-as-a-fact compression ladder
 
 **Arc owner role:** `compat/ml` (tinygrad public contract + DFlash algorithmic fidelity).
 **Constitution anchor:** CLAUDE.md §"Top Priority: Tinygrad + DFlash Fidelity"

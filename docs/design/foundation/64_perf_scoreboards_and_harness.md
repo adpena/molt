@@ -5,11 +5,11 @@
   Author: portfolio-architect
   Date: 2026-06-23
   Status: DESIGN ONLY / EXECUTABLE PLAN (no code in this change; the lead integrates).
-  Assigned number was 50; 50_finalizer_lifetime_closure.md already exists, so this took
-  the next free number in the 50-69 range: 53.
+  Assigned path: docs/design/foundation/64_perf_scoreboards_and_harness.md in the
+  active 54-67 portfolio route cluster.
 -->
 
-# 53 — The Perf Measurement Plane: Five CI-Gated Scoreboards + the pyperf Harness
+# 64 — The Perf Measurement Plane: Five CI-Gated Scoreboards + the pyperf Harness
 
 > **One-line thesis.** Today molt *can* measure speed (`tools/perf_scoreboard.py`,
 > 4903 lines, is excellent) but speed is **not gated**: no CI job runs the gate, the
