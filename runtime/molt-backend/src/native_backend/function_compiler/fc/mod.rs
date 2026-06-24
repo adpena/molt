@@ -61,6 +61,7 @@ pub(in crate::native_backend::function_compiler) mod memoryview_buffer;
 pub(in crate::native_backend::function_compiler) mod modules;
 pub(in crate::native_backend::function_compiler) mod object_construct;
 pub(in crate::native_backend::function_compiler) mod parse_ops;
+pub(in crate::native_backend::function_compiler) mod ret_jump;
 pub(in crate::native_backend::function_compiler) mod scalar_builtins;
 pub(in crate::native_backend::function_compiler) mod set_ops;
 pub(in crate::native_backend::function_compiler) mod statistics;
