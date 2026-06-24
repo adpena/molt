@@ -27,6 +27,41 @@ For the canonical vision and scope, read [spec/areas/core/0000-vision.md](spec/a
 - Do not add compatibility for <=3.11.
 - When 3.12/3.13/3.14 diverge, document the target in specs/tests.
 
+## Work Granularity
+
+Molt engineering work is sized by invariant, not by visible issue count. Before
+starting a fix, identify the full bug class or duplicated-authority cluster:
+all sibling classifiers, call sites, generated facts, backend/frontend/tooling
+consumers, docs, and proof lanes that govern the same semantic fact. Avoiding
+the larger abstraction by landing one match arm, one file-local patch, one test
+case, or one easy audit decrement leaves the system worse.
+
+Carve work smaller only along real subsystem boundaries. A valid cut removes all
+parallel sources of truth inside that subsystem and leaves a stronger
+end-state-compatible foundation for the next subsystem. If a proposed cut leaves
+the same class of duplicate authority beside it, widen the cut before writing
+code.
+
+Convenient tiny-chip progress is an anti-pattern. It feels safe because each
+step is easy to prove, but it silently preserves the wrong architecture. If an
+operator or reviewer says the work is being sliced too small, treat that as a
+binding correction: stop defending the local plan, widen the design radius, and
+close the coherent structural class.
+
+## Verification Budget
+
+Verification exists to prove the structural invariant being moved. During
+implementation, use one bounded static or targeted check that can catch
+integration mistakes in the owned arc, then return to code. Do not spin broad
+conformance, regrtest, benchmark, or validation lanes unless you are making the
+corresponding compatibility/performance/release claim or a maintainer asks for
+that proof.
+
+If a targeted proof fails, fix the structural cause and rerun that specific
+proof once. Expand the proof radius only when the failure reveals a genuine
+cross-layer contract risk. Repeated lint/test loops are a velocity failure when
+the architecture is still mid-move.
+
 ## Cross-Platform Notes
 - **macOS**: install Xcode CLT (`xcode-select --install`) and LLVM via Homebrew.
 - **Linux**: install LLVM/Clang, CMake, and Ninja via your package manager.
@@ -112,8 +147,8 @@ Interpretation:
 - `molt validate --check --json` emits the exact planned commands, their
   memory-guard family prefixes, and the adaptive guard budgets that will apply
   to the run. Check-only mode does not write a sidecar unless `--summary-out`
-  is provided. Use this payload as the machine-readable handoff for choosing
-  the smallest convincing proof matrix.
+  is provided. Use this payload only when you intentionally need broad proof;
+  ordinary structural implementation should use a bounded targeted check.
 - The smoke validation plan includes
   `tools/check_subprocess_guard_coverage.py` and
   `tools/check_memory_guard_wiring.py`, so raw subprocess launches and broader
@@ -362,7 +397,9 @@ Use this checklist to ensure you touch the right layers and docs.
 - Keep the architecture order intact while closing parity gaps: primitive -> intrinsic -> builtin/stdlib API.
 - For remaining stdlib coverage, favor moving semantics into runtime intrinsics and keep Python wrappers to argument normalization, error mapping, and capability gating.
 - For optimization, prioritize wins at primitive/intrinsic layers (fewer crossings, less dynamic dispatch, more deterministic behavior); avoid Python-shim micro-optimizations that duplicate runtime logic.
-- Before sign-off, run/verify the minimum gate matrix in `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`.
+- Before release, merge, or broad support claims, run/verify the minimum gate
+  matrix in `docs/spec/areas/testing/0008_MINIMUM_MUST_PASS_MATRIX.md`.
+  Day-to-day structural work should use the bounded verification budget above.
 - For release/publish policy checks, use `docs/spec/areas/tooling/0014_DETERMINISM_SECURITY_ENFORCEMENT_CHECKLIST.md`.
 
 ## Getting Started for Developers
