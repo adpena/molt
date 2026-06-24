@@ -66,6 +66,8 @@ PUBLIC_SURFACE = [
 # Mixins extracted from SimpleTIRGenerator (extend as more families move).
 EXPECTED_MIXINS = [
     "SerializationMixin",
+    "AnalysisCollectStaticMixin",
+    "AnalysisPatternMixin",
     "AsyncGenVisitorMixin",
     "PatternMatchMixin",
     "CallVisitorMixin",
@@ -146,12 +148,19 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_AugAssign")
     assert hasattr(SimpleTIRGenerator, "visit_For")
     assert hasattr(SimpleTIRGenerator, "visit_TryStar")
+    # analysis helpers
+    assert hasattr(SimpleTIRGenerator, "_collect_assigned_names")
+    assert hasattr(SimpleTIRGenerator, "_collect_free_vars")
+    assert hasattr(SimpleTIRGenerator, "_match_vector_reduction_loop")
+    assert hasattr(SimpleTIRGenerator, "_match_taq_ingest_loop_body")
 
 
 def test_mixin_modules_import_standalone() -> None:
     """Mixin modules import without triggering an __init__ <-> mixin cycle."""
     for mod in (
         "molt.frontend._types",
+        "molt.frontend.lowering.analysis_collect_static",
+        "molt.frontend.lowering.analysis_patterns",
         "molt.frontend.lowering.serialization",
         "molt.frontend.visitors.async_gen",
         "molt.frontend.visitors.pattern_match",
