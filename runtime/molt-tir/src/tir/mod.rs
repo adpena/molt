@@ -22,6 +22,7 @@ pub mod module_phase;
 pub mod op_kinds_generated;
 pub mod ops;
 pub mod parallel;
+pub mod pass_delta;
 pub mod pass_manager;
 pub mod passes;
 pub mod printer;
