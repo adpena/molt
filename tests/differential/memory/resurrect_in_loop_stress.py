@@ -9,16 +9,9 @@
 # objects (each round fully drains) and crash-free; under MOLT_ASSERT_NO_LEAK the
 # `live` count must NOT grow with the iteration count.
 #
-# STATUS: the IC SIGSEGV is FIXED (this high-churn loop runs crash-free). The
-# remaining byte-divergence is the SEPARATE loop-body finalizer-drop gap (task
-# #58 / design-27, parallel-session-owned): the per-round construct+del inside the
-# `while` loop never lowers a per-iteration finalizer-aware DecRef, so `__del__`
-# never fires and the round-drain finds nothing in `box`. NOT the IC bug.
-# Marked xfail against #58 until loop-body drop placement lands; auto-flips to
-# xpass-failure when fixed.
-# NOTE: byte-identical on the LLVM backend (which lowers loop-body finalizer
-# drops correctly) — the gap is NATIVE-Cranelift-specific drop lowering.
-# MOLT_META: xfail=molt xfail_reason=#58-loop-body-finalizer-drop-gap-NATIVE-cranelift-only-not-the-IC-fix
+# STATUS: native differential pass. The high-churn loop runs crash-free, each
+# round's loop-local object finalizes and resurrects, and the immediate drain
+# keeps the workload O(1) in live objects.
 import gc
 
 box = []

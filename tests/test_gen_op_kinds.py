@@ -576,28 +576,45 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
     lower_to_lir = (ROOT / "runtime/molt-backend/src/tir/lower_to_lir.rs").read_text(
         encoding="utf-8"
     )
+    licm = (ROOT / "runtime/molt-backend/src/tir/passes/licm.rs").read_text(
+        encoding="utf-8"
+    )
     check_exception = (
         ROOT / "runtime/molt-backend/src/tir/passes/check_exception_elim.rs"
     ).read_text(encoding="utf-8")
 
-    expected = {"Div", "FloorDiv", "Mod"}
-    assert set(data["i64_zero_divisor_guard_opcodes"]) == expected
+    zero_divisor_guards = {"Div", "FloorDiv", "Mod"}
+    shift_count_guards = {"Shl", "Shr"}
+    assert set(data["i64_zero_divisor_guard_opcodes"]) == zero_divisor_guards
+    assert set(data["i64_shift_count_guard_opcodes"]) == shift_count_guards
 
-    table_block = rendered.split(
+    zero_table_block = rendered.split(
         "fn opcode_requires_i64_zero_divisor_guard_table"
-    )[1].split("enum AliasTypedSlotRole")[0]
-    for opcode in expected:
-        assert f"OpCode::{opcode} => true," in table_block
+    )[1].split("fn opcode_requires_i64_shift_count_guard_table")[0]
+    for opcode in zero_divisor_guards:
+        assert f"OpCode::{opcode} => true," in zero_table_block
     for opcode in {"Add", "Mul", "Pow"}:
-        assert f"OpCode::{opcode} => false," in table_block
+        assert f"OpCode::{opcode} => false," in zero_table_block
 
-    table_name = "opcode_requires_i64_zero_divisor_guard_table"
-    assert table_name in lower_to_lir
-    assert table_name in check_exception
+    shift_table_block = rendered.split(
+        "fn opcode_requires_i64_shift_count_guard_table"
+    )[1].split("fn opcode_has_exception_label_attr_table")[0]
+    for opcode in shift_count_guards:
+        assert f"OpCode::{opcode} => true," in shift_table_block
+    for opcode in {"Div", "Mod", "Pow"}:
+        assert f"OpCode::{opcode} => false," in shift_table_block
+
+    zero_table_name = "opcode_requires_i64_zero_divisor_guard_table"
+    shift_table_name = "opcode_requires_i64_shift_count_guard_table"
+    assert zero_table_name in lower_to_lir
+    assert zero_table_name in check_exception
+    assert zero_table_name in licm
+    assert shift_table_name in licm
 
     for source, fn_name in (
         (lower_to_lir, "fn lower_op("),
         (check_exception, "fn op_may_raise("),
+        (licm, "fn throw_condition_disproven("),
     ):
         start = source.index(fn_name)
         brace = source.index("{", start)
@@ -612,8 +629,11 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
                     end = i + 1
                     break
         body = source[start:end]
-        assert table_name in body
+        assert zero_table_name in body
         assert "OpCode::Div | OpCode::FloorDiv | OpCode::Mod" not in body
+        if source == licm:
+            assert shift_table_name in body
+            assert "OpCode::Shl | OpCode::Shr" not in body
 
 
 def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
