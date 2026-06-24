@@ -220,7 +220,12 @@ The Tier B splice happens at TIR. TIR is the common representation that feeds al
 
 Because all four backends already lower TIR with Switch/CondBranch/Branch/ClosureLoad correctly, no backend-specific changes are required for Tier B.
 
-**LLVM state-resume dominance fix (in-flight).** The LLVM LLVM state-resume SSA dominance issue documented in the session memory (`0fd0e9794`) is the substrate for correct Tier D LLVM codegen. It is not a blocker for Tier A/B because Tier A/B eliminates the state machine before LLVM sees it.
+**LLVM StateDispatch substrate (landed).** TIR now models `_poll` re-entry with
+first-class `StateDispatch` terminators, and LLVM lowers those terminators to
+the real resume blocks with branch arguments. This remains orthogonal to Tier
+A/B fusion, which eliminates the state machine before backend lowering, but the
+old Tier-D dominance baton is no longer an open prerequisite for generator
+`.throw()` resumption.
 
 **WASM relooper constraints.** The WASM relooper models the `STATE_SWITCH` as a loop+`br_table`. After Tier B fusion, the fused loop is a standard structured loop with a `Switch` on the state phi — which the relooper handles as a normal `block` + `br_table`. The WASM path for Tier B is structurally correct without changes to the relooper.
 
@@ -486,24 +491,22 @@ Frontend files whose output the fusion pass consumes:
 
 Phase 1 (Tier B, `tir/passes/generator_fusion.rs`) landed the **single-yield-site,
 module-scope** generator-fusion keystone, byte-identical vs CPython 3.12 on
-native (all 10 differential tests) and LLVM (9/10; t3_throw fails on a
-pre-existing Tier-D LLVM bug, below). What the blueprint (parts 07/26 above)
-assumed and what the real lowering actually does diverged in three load-bearing
-ways; the implementation handles all three, and two scoped sub-cases remain as
-Finding #1.
+native (all 10 differential tests). The original LLVM evidence was 9/10 because
+`t3_throw` predated the StateDispatch closure; the Tier-D `.throw()` gap is now
+covered by `tests/differential/basic/generator_throw_resumption.py`. What the
+blueprint (parts 07/26 above) assumed and what the Phase-1 lowering did diverged
+in three load-bearing ways; the implementation handles all three, and two scoped
+sub-cases remain as Finding #1.
 
-### Structural reality vs the blueprint
+### Structural reality vs the blueprint at Phase-1 landing
 
-1. **No explicit resume CFG at TIR.** The blueprint assumed `STATE_SWITCH →
-   [resume blocks]` is an explicit TIR `Switch` with the frame slots already as
-   block-arg phis. The real lowering has NEITHER: a generator `_poll` lowers to a
-   **linear / structured** TIR body where `state_switch`/`state_yield` are
-   in-block ops with NO CFG edges to resume points (the resume dispatch is
-   reconstructed at *backend* lowering from the `state_yield` next-state ids —
-   `cfg.rs` `build_edges` has no `state_*` arm; native via a `state_label_ids`
-   `BTreeSet`, LLVM via `state_resume_blocks`). For the single-yield-site case the
-   resume-after-yield is the fall-through, so the splice is a straight-line
-   interleave: no return-dispatch `Switch` is needed.
+1. **No explicit resume CFG at TIR in the Phase-1 baseline.** The blueprint
+   assumed `STATE_SWITCH → [resume blocks]` was already an explicit TIR `Switch`
+   with the frame slots as block-arg phis. The Phase-1 baseline still lowered a
+   generator `_poll` as a **linear / structured** TIR body and reconstructed
+   resume dispatch in backend lowering. Current Tier-D lowering has since gained
+   first-class `StateDispatch`; this finding remains relevant only to why the
+   original single-yield-site fusion could be a straight-line interleave.
 
 2. **Frame slots are MEMORY, not phis.** The slots (`closure_load`/`closure_store`
    on the `self` frame pointer, byte offset in the `value` attr) are memory ops,
@@ -564,17 +567,16 @@ already-correct single-yield-site splice), then (a) (the return-dispatch, which
 also unblocks doc-26 Phase-1 test 2's "zero AllocTask" TIR-evidence requirement
 for sequential multi-yield).
 
-### Pre-existing bug surfaced (not introduced by fusion)
+### Resolved #51 follow-up: Tier-D `.throw()` resumption
 
-`t3_throw` (a generator with `try/except` consumed with `.throw()`) fails LLVM
-codegen with an `%exception_stack_enter` phi error. This is a pre-existing Tier-D
-generator state-machine LLVM-lowering bug (the `_poll` exception-stack phi at a
-state-resume edge), in the same dominance class as the LLVM state-resume issue
-documented in `07`/session memory (commit `0fd0e9794`). The fusion pass bails on
-this shape (it has a real exception HANDLER), so the bug is orthogonal; it is
-recorded here as the next Tier-D LLVM correctness item. Generator fusion has no
-process-global environment rollback; this evidence must be reproved through the
-refusal predicate and the emitted TIR, not by disabling the pass.
+The earlier Phase-1 notes recorded `t3_throw` (a generator with `try/except`
+consumed with `.throw()`) as a pre-existing LLVM state-resume phi failure. That
+failure is now superseded by the landed StateDispatch substrate and by the
+tracked regression `tests/differential/basic/generator_throw_resumption.py`,
+which covers throws before first yield, caught throws after yield, uncaught and
+reraised exceptions, `finally`/`close()`, and handler continuation via `send()`.
+Keep this test in the native and LLVM differential lanes whenever changing
+generator state-machine lowering or the `.throw()` runtime slot protocol.
 
 ### Gate evidence (native, release-fast)
 
@@ -583,7 +585,10 @@ refusal predicate and the emitted TIR, not by disabling the pass.
   verified via the `single_yield_in_loop_recognized_and_spliced` unit test:
   zero `AllocTask`/`StateYield`/`IterNext` in the fused caller, `verify_function`
   clean).
-- 9/10 byte-identical on LLVM (t3 pre-existing, above).
+- Historical LLVM Phase-1 evidence was 9/10 because `t3_throw` predated the
+  StateDispatch closure. Current Tier-D `.throw()` resumption is pinned by
+  `tests/differential/basic/generator_throw_resumption.py` and passes native and
+  LLVM differential lanes.
 - 1126 backend lib tests pass, 0 warnings (all features), no regression.
 
 ### Phase-1 perf finding — module-scope fusion is masked by the module-dict accumulator
