@@ -100,6 +100,7 @@ GATE_FAILING_VERDICTS = frozenset(
     }
 )
 
+
 def verdict_fails_gate(verdict: str, *, fail_stale: bool = True) -> bool:
     """Return whether a verdict is a hard gate failure for the current policy."""
 
@@ -279,6 +280,12 @@ class PerfCell:
     codon_ratio: float | None
     codon_equivalent: bool | None
     log_artifact: str | None
+    fact_class: str | None
+    suspected_missing_fact: str | None
+    pypy_advantage_class: str | None
+    reference_class: str | None
+    codon_semantics: str | None
+    attribution_confidence: float | None
 
     @staticmethod
     def from_payload(payload: Mapping[str, Any]) -> "PerfCell":
@@ -302,6 +309,14 @@ class PerfCell:
             codon_ratio=_optional_float(payload.get("codon_ratio")),
             codon_equivalent=_optional_bool(payload.get("codon_equivalent")),
             log_artifact=_optional_str(payload.get("log_artifact")),
+            fact_class=_optional_str(payload.get("fact_class")),
+            suspected_missing_fact=_optional_str(payload.get("suspected_missing_fact")),
+            pypy_advantage_class=_optional_str(payload.get("pypy_advantage_class")),
+            reference_class=_optional_str(payload.get("reference_class")),
+            codon_semantics=_optional_str(payload.get("codon_semantics")),
+            attribution_confidence=_optional_float(
+                payload.get("attribution_confidence")
+            ),
         )
 
 
@@ -339,9 +354,7 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
         )
     log_artifact = cell.get("log_artifact")
     if not isinstance(log_artifact, str) or not log_artifact:
-        problems.append(
-            f"cell {cell.get('benchmark')} has missing log_artifact"
-        )
+        problems.append(f"cell {cell.get('benchmark')} has missing log_artifact")
     if cell.get("verdict") not in _ALL_VERDICTS:
         problems.append(
             f"cell {cell.get('benchmark')} has unknown verdict {cell.get('verdict')!r}"
@@ -375,6 +388,31 @@ def validate_cell(cell: Mapping[str, Any]) -> list[str]:
         problems.append(
             f"cell {cell.get('benchmark')} has unknown codon_semantics "
             f"{codon_semantics!r}"
+        )
+    suspected_missing_fact = cell.get("suspected_missing_fact")
+    if suspected_missing_fact is not None and (
+        not isinstance(suspected_missing_fact, str)
+        or not suspected_missing_fact.strip()
+    ):
+        problems.append(
+            f"cell {cell.get('benchmark')} has invalid suspected_missing_fact "
+            f"{suspected_missing_fact!r}"
+        )
+    attribution_confidence = cell.get("attribution_confidence")
+    if attribution_confidence is not None:
+        if not _is_number(attribution_confidence):
+            problems.append(
+                f"cell {cell.get('benchmark')} has non-numeric "
+                f"attribution_confidence {attribution_confidence!r}"
+            )
+        elif not 0.0 <= float(attribution_confidence) <= 1.0:
+            problems.append(
+                f"cell {cell.get('benchmark')} has out-of-range "
+                f"attribution_confidence {attribution_confidence!r}"
+            )
+    if fact_class is not None and not cell.get("suspected_missing_fact"):
+        problems.append(
+            f"cell {cell.get('benchmark')} has fact_class without suspected_missing_fact"
         )
     verdict = str(cell.get("verdict"))
     if verdict in _MEASURED_RUN_VERDICTS:
@@ -446,7 +484,9 @@ def _validate_host_payload(host: Mapping[str, Any]) -> list[str]:
     if not isinstance(arch, str) or not arch:
         problems.append("host field arch must be a non-empty string")
     if not _is_pointer_width(pointer_bits):
-        problems.append(f"host field pointer_bits must be 32 or 64, got {pointer_bits!r}")
+        problems.append(
+            f"host field pointer_bits must be 32 or 64, got {pointer_bits!r}"
+        )
 
     oracle = _mapping(host.get("cpython_oracle"))
     if not oracle:
@@ -465,7 +505,14 @@ def _validate_cpython_oracle(
         problems.append(f"host.cpython_oracle missing fields: {sorted(missing)}")
         return problems
 
-    for field in ("executable", "implementation", "version", "sys_platform", "machine", "arch"):
+    for field in (
+        "executable",
+        "implementation",
+        "version",
+        "sys_platform",
+        "machine",
+        "arch",
+    ):
         value = oracle.get(field)
         if not isinstance(value, str) or not value:
             problems.append(f"host.cpython_oracle.{field} must be a non-empty string")
@@ -520,7 +567,9 @@ def _validate_measured_run_cell(cell: Mapping[str, Any], verdict: str) -> list[s
     problems: list[str] = []
     benchmark = cell.get("benchmark")
     if cell.get("build_ok") is not True:
-        problems.append(f"cell {benchmark} has measured verdict {verdict} without build_ok")
+        problems.append(
+            f"cell {benchmark} has measured verdict {verdict} without build_ok"
+        )
     if cell.get("run_blocked") is not False:
         problems.append(
             f"cell {benchmark} has measured verdict {verdict} while run_blocked"
@@ -579,7 +628,9 @@ def _validate_red_stable_cell(cell: Mapping[str, Any]) -> list[str]:
     problems: list[str] = []
     benchmark = cell.get("benchmark")
     if cell.get("measured_quiescent") is not True:
-        problems.append(f"cell {benchmark} is RED_STABLE without measured_quiescent=true")
+        problems.append(
+            f"cell {benchmark} is RED_STABLE without measured_quiescent=true"
+        )
     lo = cell.get("repeat_ci_lo")
     hi = cell.get("repeat_ci_hi")
     if not _is_number(lo) or not _is_number(hi):
