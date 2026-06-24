@@ -16,6 +16,7 @@ from tests.cli.process_guard import run_cli_test_process
 ROOT = Path(__file__).resolve().parents[2]
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
+CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
 NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
 
@@ -477,14 +478,14 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
         raise AssertionError("cargo helper used raw subprocess.run")
 
     monkeypatch.setenv("MOLT_BUILD_MAX_PROCESS_RSS_GB", "0.25")
-    monkeypatch.setattr(cli.subprocess, "run", fail_raw_subprocess_run)
+    monkeypatch.setattr(COMMAND_RUNTIME.subprocess, "run", fail_raw_subprocess_run)
     _patch_memory_guard_loader(
         monkeypatch,
         cli,
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
     )
 
-    result = cli._run_cargo_with_sccache_retry(
+    result = CARGO_EXECUTION._run_cargo_with_sccache_retry(
         ["cargo", "build"],
         cwd=ROOT,
         env={"PATH": "/usr/bin", "RUSTC_WRAPPER": "/usr/bin/sccache"},
