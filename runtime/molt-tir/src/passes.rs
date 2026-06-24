@@ -4673,7 +4673,6 @@ mod tests {
             source_file: None,
             is_extern: false,
             ops,
-            ..Default::default()
         }
     }
 
