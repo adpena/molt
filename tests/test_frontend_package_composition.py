@@ -66,6 +66,7 @@ PUBLIC_SURFACE = [
 # Mixins extracted from SimpleTIRGenerator (extend as more families move).
 EXPECTED_MIXINS = [
     "SerializationMixin",
+    "AsyncGenVisitorMixin",
     "PatternMatchMixin",
     "CallVisitorMixin",
     "ClassDefVisitorMixin",
@@ -122,6 +123,13 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_FunctionDef")
     assert hasattr(SimpleTIRGenerator, "visit_Lambda")
     assert hasattr(SimpleTIRGenerator, "visit_Return")
+    # async/generator
+    assert hasattr(SimpleTIRGenerator, "visit_AsyncFunctionDef")
+    assert hasattr(SimpleTIRGenerator, "visit_AsyncFor")
+    assert hasattr(SimpleTIRGenerator, "visit_AsyncWith")
+    assert hasattr(SimpleTIRGenerator, "visit_Await")
+    assert hasattr(SimpleTIRGenerator, "visit_Yield")
+    assert hasattr(SimpleTIRGenerator, "visit_YieldFrom")
 
 
 def test_mixin_modules_import_standalone() -> None:
@@ -129,6 +137,7 @@ def test_mixin_modules_import_standalone() -> None:
     for mod in (
         "molt.frontend._types",
         "molt.frontend.lowering.serialization",
+        "molt.frontend.visitors.async_gen",
         "molt.frontend.visitors.pattern_match",
         "molt.frontend.visitors.calls",
         "molt.frontend.visitors.classes",
