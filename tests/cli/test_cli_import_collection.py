@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -31,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_STATE = importlib.import_module("molt.cli.artifact_state")
 CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
+COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
 RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
@@ -1483,20 +1485,28 @@ def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
         "import time\ntime.sleep(2.0)\n",
         encoding="utf-8",
     )
+    child_pid_file = tmp_path / "sleeper.pid"
     parent = tmp_path / "parent.py"
     parent.write_text(
-        "import subprocess, sys\n"
-        f"subprocess.Popen([sys.executable, {str(sleeper)!r}], stdout=sys.stdout, stderr=sys.stderr)\n"
+        "import pathlib, subprocess, sys\n"
+        f"child = subprocess.Popen([sys.executable, {str(sleeper)!r}], stdout=sys.stdout, stderr=sys.stderr)\n"
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
         "print('parent-done', flush=True)\n",
         encoding="utf-8",
     )
 
-    start = time.perf_counter()
-    result = cli._run_subprocess_captured_to_tempfiles(
-        [sys.executable, str(parent)],
-        timeout=0.5,
-    )
-    elapsed = time.perf_counter() - start
+    try:
+        start = time.perf_counter()
+        result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
+            [sys.executable, str(parent)],
+            timeout=0.5,
+        )
+        elapsed = time.perf_counter() - start
+    finally:
+        if child_pid_file.exists():
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+            with contextlib.suppress(OSError):
+                os.kill(child_pid, signal.SIGTERM)
 
     assert result.returncode == 0
     assert "parent-done" in cli._subprocess_output_text(result.stdout)
@@ -11834,7 +11844,7 @@ def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("MOLT_SUBPROCESS_KEEPALIVE_SECS", "0.01")
-    result = cli._run_subprocess_captured_to_tempfiles(
+    result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
         [
             sys.executable,
             "-c",
