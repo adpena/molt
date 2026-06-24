@@ -29,6 +29,7 @@ from tests.cli.process_guard import (
 
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_STATE = importlib.import_module("molt.cli.artifact_state")
+CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
@@ -5542,12 +5543,12 @@ def test_runtime_source_paths_are_cached(tmp_path: Path) -> None:
 
 
 def test_backend_source_paths_are_cached(tmp_path: Path) -> None:
-    cli._backend_source_paths_cached.cache_clear()
+    CACHE_FINGERPRINTS._backend_source_paths_cached.cache_clear()
 
-    first = cli._backend_source_paths(tmp_path, ("wasm-backend",))
-    second = cli._backend_source_paths(tmp_path, ("wasm-backend",))
+    first = CACHE_FINGERPRINTS._backend_source_paths(tmp_path, ("wasm-backend",))
+    second = CACHE_FINGERPRINTS._backend_source_paths(tmp_path, ("wasm-backend",))
 
-    info = cli._backend_source_paths_cached.cache_info()
+    info = CACHE_FINGERPRINTS._backend_source_paths_cached.cache_info()
     assert first == second
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -5556,15 +5557,15 @@ def test_backend_source_paths_are_cached(tmp_path: Path) -> None:
 def test_backend_source_paths_are_feature_aware() -> None:
     native_paths = {
         path.relative_to(ROOT).as_posix()
-        for path in cli._backend_source_paths(ROOT, ())
+        for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ())
     }
     wasm_paths = {
         path.relative_to(ROOT).as_posix()
-        for path in cli._backend_source_paths(ROOT, ("wasm-backend",))
+        for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("wasm-backend",))
     }
     rust_paths = {
         path.relative_to(ROOT).as_posix()
-        for path in cli._backend_source_paths(ROOT, ("rust-backend",))
+        for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("rust-backend",))
     }
 
     # Source-path tracking is intentionally feature-agnostic now: the whole

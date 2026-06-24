@@ -9,6 +9,7 @@ import pytest
 
 import molt.cli as cli
 
+CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 
 
@@ -35,12 +36,12 @@ def isolated_compiler_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     source.write_text("pub fn marker() -> u8 { 1 }\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        cli,
+        CACHE_FINGERPRINTS,
         "_backend_source_paths",
         lambda root, backend_features: [source],
     )
-    monkeypatch.setattr(cli, "_runtime_source_paths", lambda root: [])
-    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc-test")
+    monkeypatch.setattr(CACHE_FINGERPRINTS, "_runtime_source_paths", lambda root: [])
+    monkeypatch.setattr(CACHE_FINGERPRINTS, "_rustc_version", lambda: "rustc-test")
     monkeypatch.setattr(cli, "_cache_tooling_fingerprint", lambda: "tooling-test")
     return source
 
@@ -87,11 +88,11 @@ def test_cache_tooling_fingerprint_changes_when_tooling_source_changes_in_proces
 
     monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
 
-    first = cli._cache_tooling_fingerprint()
+    first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
     cli_source.write_text("CLI_MARKER = 2\n", encoding="utf-8")
 
-    second = cli._cache_tooling_fingerprint()
+    second = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
     assert second != first
 
@@ -111,13 +112,13 @@ def test_cache_tooling_fingerprint_tracks_frontend_helper_modules(
 
     monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
 
-    first = cli._cache_tooling_fingerprint()
+    first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
     cfg_analysis.write_text("CFG_ANALYSIS_MARKER = 2\n", encoding="utf-8")
     tv_hooks.write_text("TV_HOOKS_MARKER = 2\n", encoding="utf-8")
     type_facts.write_text("TYPE_FACTS_MARKER = 2\n", encoding="utf-8")
 
-    second = cli._cache_tooling_fingerprint()
+    second = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
     assert second != first
 
@@ -142,10 +143,10 @@ def test_cache_tooling_fingerprint_ignores_frontend_bytecode_cache(
 
     monkeypatch.setattr(COMPILER_METADATA, "_COMPILER_ROOT", root)
 
-    first = cli._cache_tooling_fingerprint()
+    first = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
     pycache.write_bytes(b"marker-2\n")
 
-    second = cli._cache_tooling_fingerprint()
+    second = CACHE_FINGERPRINTS._cache_tooling_fingerprint()
 
     assert second == first
