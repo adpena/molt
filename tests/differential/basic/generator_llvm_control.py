@@ -8,15 +8,10 @@ This complements generator_llvm_lifecycle.py: that one pins creation/drop, this
 one pins the suspend/resume state machine and the explicit generator protocol
 once a frame has been correctly allocated.
 
-NOTE (orthogonal pre-existing gap, intentionally NOT exercised here): gen.throw()
-that resumes into a `try/except` *inside the generator body* is currently broken
-INDEPENDENTLY OF THIS FIX and on BOTH backends — native miscompiles it (the
-injected exception is dropped: a re-`next()`-style `tick` is produced instead of
-the `except` branch's `caught:…`), and LLVM fails module verification with an
-SSA "Instruction does not dominate all uses!" on the in-handler closure-load phi
-(the generator exception-resumption state machine, not AllocTask). It is a
-distinct, backend-independent generator-throw-resumption bug; tracked separately.
-The send()/close()/try-finally protocol below does NOT touch that path.
+NOTE: generator.throw() resumption through an active generator-body
+try/except is covered separately by generator_throw_resumption.py. The
+send()/close()/try-finally protocol below intentionally stays focused on the
+frame allocation and suspend/resume paths.
 """
 
 
