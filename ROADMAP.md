@@ -361,7 +361,11 @@ lowering and exception-check elimination.
   `check_exception` exception-control lowering now live under
   `native_backend/function_compiler/fc/exception_control.rs`; explicit
   refcount, release, conversion-alias, identity-alias, and binding-alias custody
-  transfer now live under `native_backend/function_compiler/fc/value_transfer.rs`.
+  transfer now live under `native_backend/function_compiler/fc/value_transfer.rs`;
+  runtime state probes and side-effecting helper shims (`env_get`,
+  `exception_pending`, `function_defaults_version`, `print`, `warn_stderr`,
+  `print_newline`, `block_on`, `bridge_unavailable`) now live under
+  `native_backend/function_compiler/fc/runtime_ops.rs`.
   Residual inline compiler-codegen clusters should move only as complete
   semantic authorities.
 - Keep the TIR pipeline unconditional for backend-facing lowering; debugging
