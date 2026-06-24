@@ -2447,7 +2447,7 @@ pub extern "C" fn molt_os_readlink_at(path_bits: u64, dir_fd_bits: u64) -> u64 {
         }
         #[cfg(not(unix))]
         {
-            let _ = dir_fd_bits;
+            let _ = (path, dir_fd_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "readlink")
         }
     })
@@ -2505,7 +2505,7 @@ pub extern "C" fn molt_os_symlink_at(src_bits: u64, dst_bits: u64, dir_fd_bits: 
         }
         #[cfg(not(unix))]
         {
-            let _ = dir_fd_bits;
+            let _ = (src, dst, dir_fd_bits);
             raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "symlink")
         }
     })
@@ -2579,6 +2579,7 @@ pub extern "C" fn molt_os_utime_at(
         #[cfg(not(unix))]
         {
             let _ = (
+                path,
                 dir_fd_bits,
                 atime_sec_bits,
                 atime_nsec_bits,
