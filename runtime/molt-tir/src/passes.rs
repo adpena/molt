@@ -1,5 +1,5 @@
 use crate::representation_plan::{ScalarKind, ScalarRepresentationPlan};
-use crate::tir::passes::effects::simple_ir_has_static_module_class_binding_effect_proof;
+use crate::tir::effect_proof::simple_ir_has_static_module_class_binding_effect_proof;
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -4618,7 +4618,7 @@ fn is_candidate_intrinsic_name(name: &str, runtime_intrinsic_symbols: &BTreeSet<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tir::passes::effects::EffectProof;
+    use crate::tir::effect_proof::EffectProof;
 
     fn make_op(kind: &str) -> OpIR {
         OpIR {

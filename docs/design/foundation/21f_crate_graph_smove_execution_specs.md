@@ -201,8 +201,9 @@ keeps passes+lowering+repr-plan-logic and gains `molt-ir = { path = "../molt-ir"
 Pure renames via `git mv` (these are whole-file moves -- highest fidelity):
 - **From `molt-tir/src/tir/` -> `molt-ir/src/tir/`** (the vocabulary; 21b Layer-0 list):
   `types.rs` (650), `ops.rs` (347), `op_kinds_generated.rs` (3,906), `op_kinds.toml` (the
-  generator input -- moves with it), `values.rs` (20), `blocks.rs` (176), `function.rs` (336),
-  `cfg.rs` (1,453), `dominators.rs` (721), `ssa.rs` (3,676), `serialize.rs` (254), `printer.rs`
+  generator input -- moves with it), `effect_proof.rs` (the validated effect-proof vocabulary
+  consumed by SimpleIR schema and TIR passes), `values.rs` (20), `blocks.rs` (176), `function.rs`
+  (336), `cfg.rs` (1,453), `dominators.rs` (721), `ssa.rs` (3,676), `serialize.rs`, `printer.rs`
   (879), `verify.rs` (1,210). Plus the `tir/mod.rs` `is_structural` helper (:52) + the primary-
   type re-exports (:82-99) -- but mod.rs is SHARED with S2's modules, so S1 moves the vocab
   `pub mod` lines + re-exports and LEAVES the passes/lowering `pub mod` lines as
@@ -226,6 +227,13 @@ Pure renames via `git mv` (these are whole-file moves -- highest fidelity):
 intrinsic_symbols, process_diagnostics, debug_artifacts}`, `pub use crate::ir::{...}`, `pub use
 crate::repr::Repr`, `MOLT_CLOSURE_PARAM_NAME`). New `pub mod repr;`. New `pub mod
 stdlib_module_symbols;`.
+
+**Landed pre-S1 cleanup:** `effect_proof.rs` now owns `EffectProof`,
+`simple_ir_effect_proof`, and the TIR proof recognizers outside `tir::passes`. This removes the
+old upward dependency from `ir_schema.rs` into the pass module; S1 must move `effect_proof.rs`
+with the vocabulary and make only the downstream-consumed proof API public across the new crate
+boundary. `printer.rs` is now TIR-only; LIR formatting lives in `lir_printer.rs` and must stay
+with the residual lower/LIR layer until S2 moves it.
 
 ### 3.2 Cargo.toml + feature wiring
 - New `runtime/molt-ir/Cargo.toml`: `[dependencies]` = `serde`, `serde_json`, `rmp-serde`, `libc`,
