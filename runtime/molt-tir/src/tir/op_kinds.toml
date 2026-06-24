@@ -30,6 +30,10 @@
 #                  key merely borrowed).
 #   - [[kind]]     — the kind_to_opcode mapper: OpCode-equivalence groups
 #                  (canonical + aliases, the |-grouped arms).
+#   - [[simpleir_control_kind]] — SimpleIR CFG/SSA/pre-SSA control facts for
+#                  kinds consumed structurally before kind_to_opcode. These rows
+#                  generate tir::is_structural, cfg.rs block-boundary helpers,
+#                  and lower_from_simple.rs pre-SSA rewrite membership.
 #   - [[consuming_kind]] — per-SPELLING operand-consume overrides (design 27
 #                  §2.3): the Copy-lifted `_original_kind` spellings that free an
 #                  operand internally (the CallArgs builder), finer than the
@@ -976,6 +980,330 @@ classifier_no_heap_move = [
     "load_var",
     "store_var",
 ]
+
+[[simpleir_control_kind]]
+kind = "label"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "state_label"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "if"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "else"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "end_if"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_start"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_end"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_break"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_continue"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "jump"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "goto"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "br_if"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_break_if_true"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_break_if_false"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_break_if_exception"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = true
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "ret"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "ret_void"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "return"
+structural = true
+terminator = true
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "nop"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "state_switch"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "state_yield"
+structural = false
+terminator = false
+suspend = true
+repoll = false
+block_leader = false
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "state_transition"
+structural = false
+terminator = false
+suspend = true
+repoll = true
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "chan_send_yield"
+structural = false
+terminator = false
+suspend = true
+repoll = true
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "chan_recv_yield"
+structural = false
+terminator = false
+suspend = true
+repoll = true
+block_leader = true
+block_ender = true
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_index_start"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = true
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "loop_index_next"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = true
+ssa_only = false
+
+[[simpleir_control_kind]]
+kind = "phi"
+structural = false
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = true
 
 [[absorbing_kind]]
 kind = "dict_new"
