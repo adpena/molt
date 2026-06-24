@@ -5380,8 +5380,28 @@ impl SimpleBackend {
                     );
                 }
                 // handle_value_transfer_op family - extracted to fc::value_transfer (M1)
+                //
+                // `copy` is grouped with the args-based alias ops here. The
+                // frontend emits `{kind:"copy", args:[src], out:result}` (a
+                // pure SSA value move), and `rewrite_copy_aliases`
+                // (ir_rewrites.rs) collapses it to `nop` ONLY when neither
+                // `out` nor `src` is a mutable-storage name — a `copy` whose
+                // result/source is a reassigned local SURVIVES with kind
+                // "copy" and reaches codegen. Omitting it routes the op to the
+                // silent `_ => {}` arm below, which emits no codegen and leaves
+                // the result SSA value undefined (resolving to the None
+                // sentinel) — the same silent-miscompile class as the vec_*
+                // dispatch drop fixed in 0323ad28c. `copy` shares the
+                // args-based `identity_alias`/`binding_alias` lowering (result
+                // = inc_ref'd alias of args[0]); the TIR ownership model
+                // classifies all three as `CopyLowering::TransparentAlias`
+                // (alias_analysis.rs), so the inc_ref + alias treatment is
+                // RC-correct. WASM (wasm.rs) and Luau (luau.rs) group `copy`
+                // with the alias ops the same way; native must not be the
+                // asymmetric outlier. Keep in sync with the `copy` arm in
+                // fc::value_transfer::handle_value_transfer_op.
                 "inc_ref" | "borrow" | "dec_ref" | "release" | "box" | "unbox" | "cast"
-                | "widen" | "identity_alias" | "binding_alias" => {
+                | "widen" | "identity_alias" | "binding_alias" | "copy" => {
                     fc::value_transfer::handle_value_transfer_op(
                         &op,
                         op_idx,
