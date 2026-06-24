@@ -25,9 +25,11 @@ the implementation. For forward-looking priorities, use
   operations), dict mutation (`dict_set`, `dict_update_missing`), exception
   control (`raise`, `check_exception`), and value-custody transfer (`inc_ref`,
   `borrow`, `dec_ref`, `release`, `box`, `unbox`, `cast`, `widen`,
-  `identity_alias`, `binding_alias`). The remaining inline shell is limited to
-  residual constant, runtime-probe, print/warn/newline, bridge-unavailable, and
-  block-on clusters pending fresh structural contracts.
+  `identity_alias`, `binding_alias`), plus runtime probes and side-effecting
+  helper shims (`env_get`, `exception_pending`, `function_defaults_version`,
+  `print`, `warn_stderr`, `print_newline`, `block_on`, `bridge_unavailable`).
+  The remaining inline opcode shell is limited to residual constant/literal
+  materialization and hoisting pending a fresh structural contract.
 - Plain-local alias rebinding now lowers through the `binding_alias` owned-alias
   lane, with generated op-kind classifier tables and TIR ownership/representation
   analyses treating it as source bits plus an independent droppable reference.

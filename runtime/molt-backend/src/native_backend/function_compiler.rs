@@ -4961,45 +4961,32 @@ impl SimpleBackend {
                         &nbc,
                     );
                 }
-                "env_get" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let key = var_get_boxed_overflow_safe(
+                // handle_runtime_op family - extracted to fc::runtime_ops (M1)
+                "env_get"
+                | "exception_pending"
+                | "function_defaults_version"
+                | "print"
+                | "warn_stderr"
+                | "print_newline"
+                | "block_on"
+                | "bridge_unavailable" => {
+                    fc::runtime_ops::handle_runtime_op(
+                        &op,
+                        &func_ir.name,
+                        is_block_filled,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
                         &mut import_refs,
                         &mut sealed_blocks,
                         &vars,
-                        &args[0],
                         &int_primary_vars,
                         &float_primary_vars,
-                    )
-                    .expect("Env key not found");
-                    let default = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[1],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .expect("Env default not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_env_get",
-                        &[types::I64, types::I64],
-                        &[types::I64],
+                        &bool_primary_vars,
+                        local_exc_pending_fast,
+                        exc_flag_ptr_slot,
+                        &nbc,
                     );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*key, *default]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
                 }
                 // handle_statistics_op family — extracted to fc::statistics (M1)
                 "statistics_mean_slice" | "statistics_stdev_slice" => {
@@ -5103,75 +5090,6 @@ impl SimpleBackend {
                         &nbc,
                     );
                 }
-                "exception_pending" => {
-                    // Read the runtime exception-pending flag as a boolean
-                    // value: `molt_exception_pending_fast() != 0`.  Produced by
-                    // the TIR `ExceptionPending` op (lowered from a
-                    // `loop_break_if_exception`); consumed as the condition of
-                    // the loop-exit `br_if` that breaks an iterator-consumer
-                    // loop on a mid-iteration raise.  Non-foldable: it observes
-                    // mutable runtime state, so the value is always recomputed.
-                    let cond_bool = emit_exception_pending_condition(
-                        &mut builder,
-                        local_exc_pending_fast,
-                        exc_flag_ptr_slot,
-                    );
-                    // `cond_bool` is an i8 (0/1) from icmp.  Extend to the raw
-                    // i64 bool lane and define the result on whichever lane the
-                    // consumer expects.
-                    let raw_bool = builder.ins().uextend(types::I64, cond_bool);
-                    if let Some(out__) = op.out {
-                        def_raw_bool_value(
-                            &mut builder,
-                            &vars,
-                            &bool_primary_vars,
-                            &out__,
-                            raw_bool,
-                            &nbc,
-                        );
-                    }
-                }
-                "function_defaults_version" => {
-                    // Read a function object's __defaults__/__kwdefaults__
-                    // mutation version stamp (a single slot load wrapped in
-                    // `molt_function_defaults_version`).  Produced by the TIR
-                    // `FunctionDefaultsVersion` op; consumed by the
-                    // defaults-devirt deopt guard's `== 0` compare.  The arg is
-                    // the boxed function object; the result is a boxed inline
-                    // int.  Non-foldable (the slot is mutable runtime state),
-                    // so it is always recomputed at its program point.
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let func_boxed = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .expect("FunctionDefaultsVersion arg not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_function_defaults_version",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*func_boxed]);
-                    let boxed_res = builder.inst_results(call)[0];
-                    if let Some(ref out__) = op.out {
-                        if int_primary_vars.contains(out__) {
-                            let raw_res = unbox_int(&mut builder, boxed_res, &nbc);
-                            def_var_named(&mut builder, &vars, out__, raw_res);
-                        } else {
-                            def_var_named(&mut builder, &vars, out__, boxed_res);
-                        }
-                    }
-                }
                 // handle_unary_logic_op family - extracted to fc::unary_logic (M1)
                 "is" | "not" | "neg" | "unary_neg" | "pos" | "unary_pos" | "abs" | "invert"
                 | "bool" | "cast_bool" | "builtin_bool" | "and" | "or" | "contains" => {
@@ -5198,75 +5116,6 @@ impl SimpleBackend {
                         fc::OpFlow::Proceed => {}
                     }
                 }
-                "print" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let val = if let Some(val) = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    ) {
-                        *val
-                    } else {
-                        builder.ins().iconst(types::I64, box_none())
-                    };
-
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_print_obj",
-                        &[types::I64],
-                        &[],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[val]);
-                }
-                "warn_stderr" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    if std::env::var("MOLT_DEBUG_WARN_BACKEND").is_ok() {
-                        eprintln!(
-                            "[WARN_BACKEND] warn_stderr op in func={} args={:?} is_block_filled={}",
-                            func_ir.name, args, is_block_filled
-                        );
-                    }
-                    let val = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .expect("warn_stderr arg");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_warn_stderr",
-                        &[types::I64],
-                        &[],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[*val]);
-                }
-                "print_newline" => {
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_print_newline",
-                        &[],
-                        &[],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    builder.ins().call(local_callee, &[]);
-                }
                 // handle_parse_op family — extracted to fc::parse_ops (M1)
                 "json_parse" | "msgpack_parse" | "cbor_parse" => {
                     fc::parse_ops::handle_parse_op(
@@ -5282,34 +5131,6 @@ impl SimpleBackend {
                         &bool_primary_vars,
                         &nbc,
                     );
-                }
-                "block_on" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let task = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .expect("Task not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_block_on",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*task]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
                 }
                 // handle_coroutine_op family - extracted to fc::coroutine (M1)
                 "state_switch"
@@ -5778,34 +5599,6 @@ impl SimpleBackend {
                         &bool_primary_vars,
                         &nbc,
                     );
-                }
-                "bridge_unavailable" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let msg = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .expect("Message not found");
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_bridge_unavailable",
-                        &[types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder.ins().call(local_callee, &[*msg]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
                 }
                 // handle_control_flow_op family - extracted to fc::control_flow (M1)
                 "if" | "else" | "end_if" => {
