@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import shutil
@@ -1028,15 +1029,16 @@ def test_cli_install_uses_memory_guard_for_venv_and_uv(
 ) -> None:
     from molt import cli
 
+    deps = importlib.import_module("molt.cli.deps")
     calls: list[dict[str, object]] = []
 
     def fake_run_completed(cmd, **kwargs):
         calls.append({"cmd": list(cmd), **kwargs})
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_ensure_uv", lambda: "uv", raising=True)
-    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: tmp_path, raising=True)
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed, raising=True)
+    monkeypatch.setattr(deps, "_ensure_uv", lambda: "uv", raising=True)
+    monkeypatch.setattr(deps, "_find_molt_root", lambda _cwd: tmp_path, raising=True)
+    monkeypatch.setattr(deps, "_run_completed_command", fake_run_completed, raising=True)
 
     assert cli.install(["attrs"], json_output=True) == 0
 
