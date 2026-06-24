@@ -1,9 +1,9 @@
 # Parallel-Build Architecture: maximizing dev velocity + incremental throughput
 
-Status: live routing doc / partially landed (refreshed 2026-06-20).
+Status: live routing doc / partially landed (refreshed 2026-06-24).
 The live codebase and executable Cargo metadata remain authoritative.
 
-## Live State Snapshot (2026-06-20)
+## Live State Snapshot (2026-06-24)
 
 - The build-iteration profile fix from this document has already landed in the
   root `Cargo.toml`: `release-fast` uses thin LTO with high codegen-unit
@@ -21,6 +21,14 @@ The live codebase and executable Cargo metadata remain authoritative.
   `molt_html_*`, `molt_unicodedata_*`, and `molt_zoneinfo_*` resolver arms are
   link-affecting feature gates, and feature-on/feature-off checks prove the
   facade no longer carries duplicate authorities for those domains.
+- `molt-tir` is now a workspace member and the backend-agnostic lower layer:
+  TIR, SimpleIR transport/schema, backend-neutral passes, representation facts,
+  debug/process diagnostics, and intrinsic-symbol utilities live in
+  `runtime/molt-tir/`. `runtime/molt-backend/Cargo.toml` depends on it and
+  activates `molt-tir/native-backend`, `molt-tir/llvm`, and
+  `molt-tir/wasm-backend` through backend features. The old dx Phase-3 baton
+  predated this cut; use this document, not that standalone baton, for the
+  remaining backend-native extraction route.
 - The extraction is not complete. `molt-runtime` is still the facade plus a
   large implementation owner, `runtime/molt-backend/src/native_backend/function_compiler.rs`
   remains a ~28K-line codegen lock, and `src/molt/frontend/__init__.py` remains
