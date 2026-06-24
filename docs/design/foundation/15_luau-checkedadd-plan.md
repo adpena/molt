@@ -4,7 +4,7 @@
 
 **Status (2026-06-23): implemented.** Current authority: `runtime/molt-backend/src/luau.rs`
 emits `checked_add` via the conditional `molt_checked_i64_add` helper,
-`runtime/molt-backend/src/tir/lower_to_simple.rs` round-trips `OpCode::CheckedAdd`
+`runtime/molt-tir/src/tir/lower_to_simple.rs` round-trips `OpCode::CheckedAdd`
 as SimpleIR `checked_add`, `test_compile_checked_lowers_checked_add_helper`
 guards checked Luau emission, and
 `docs/spec/areas/compiler/luau_support_matrix.generated.md` lists `checked_add`
@@ -139,7 +139,7 @@ Because the PLAN doc's `overflow_peel` was explicitly designed as a portable TIR
 
 | File | Current authority |
 |---|---|
-| `runtime/molt-backend/src/tir/lower_to_simple.rs` | `OpCode::CheckedAdd` lowers to SimpleIR `checked_add` with `var` as sum and `out` as overflow flag; guarded by `checked_add_two_result_round_trip_survives_relift`. |
+| `runtime/molt-tir/src/tir/lower_to_simple.rs` | `OpCode::CheckedAdd` lowers to SimpleIR `checked_add` with `var` as sum and `out` as overflow flag; guarded by `checked_add_two_result_round_trip_survives_relift`. |
 | `runtime/molt-backend/src/luau.rs` | `emit_op` handles `checked_add` with Luau multi-return destructuring from `molt_checked_i64_add`; guarded by `test_compile_checked_lowers_checked_add_helper`. |
 | `docs/spec/areas/compiler/luau_support_matrix.generated.md` | Generated from `luau.rs`; lists `checked_add` as `implemented-exact`. |
 
@@ -183,15 +183,15 @@ Per the PLAN doc's warning and the MEMORY.md lesson from import-error parity wor
   and `test_compile_checked_lowers_checked_add_helper`.
 - `runtime/molt-backend/src/main.rs` — Luau lifts source-emission IR through the
   shared TIR module pipeline before checked source emission.
-- `runtime/molt-backend/src/tir/lower_to_simple.rs` — exhaustive `OpCode` lowering
+- `runtime/molt-tir/src/tir/lower_to_simple.rs` — exhaustive `OpCode` lowering
   plus `CheckedAdd` two-result round-trip coverage.
-- `runtime/molt-backend/src/tir/op_kinds.toml` — canonical generated opcode
+- `runtime/molt-tir/src/tir/op_kinds.toml` — canonical generated opcode
   authority; `CheckedAdd` is registered and generated into backend/frontend
   tables.
-- `runtime/molt-backend/src/tir/passes/effects.rs` — `CheckedAdd` remains pure,
+- `runtime/molt-tir/src/tir/passes/effects.rs` — `CheckedAdd` remains pure,
   non-throwing, and non-side-effecting by deliberate omission from throwing and
   side-effecting oracles.
-- `runtime/molt-backend/src/tir/target_info.rs` — Luau has explicit target info;
+- `runtime/molt-tir/src/tir/target_info.rs` — Luau has explicit target info;
   avoid target-gating portable TIR transforms when a backend semantic helper can
   preserve the operation contract.
 - `runtime/molt-backend/src/ir.rs` — `OpIR.out` + `OpIR.var` are the two-result

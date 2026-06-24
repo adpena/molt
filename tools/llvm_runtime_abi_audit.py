@@ -32,7 +32,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SERIALIZATION_PY = ROOT / "src/molt/frontend/lowering/serialization.py"
-OP_KINDS_GENERATED_RS = ROOT / "runtime/molt-backend/src/tir/op_kinds_generated.rs"
+OP_KINDS_GENERATED_RS = ROOT / "runtime/molt-tir/src/tir/op_kinds_generated.rs"
 RUNTIME_IMPORTS_RS = ROOT / "runtime/molt-backend/src/llvm_backend/runtime_imports.rs"
 RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
 

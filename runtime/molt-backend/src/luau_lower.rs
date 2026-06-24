@@ -714,7 +714,6 @@ fn python_type_to_luau_type(hint: &str) -> LuauType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::*;
     use crate::luau_ir::emit_luau;
 
     #[test]

@@ -153,7 +153,7 @@ consumption paths:
   the default.
 
 Backend-neutral TIR now has `ExceptionRegions` analysis + verification in
-`runtime/molt-backend/src/tir/exception_regions.rs`. It recognizes the current
+`runtime/molt-tir/src/tir/exception_regions.rs`. It recognizes the current
 `Copy` + `_original_kind` exception carriers, computes path-state reachable
 `exception_pop` release boundaries for handler MatchRefs, emits diagnostics for
 missing/ambiguous/too-early releases, is registered with the analysis

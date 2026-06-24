@@ -30,6 +30,7 @@ use crate::tir::analysis::{AnalysisManager, ImmediateDoms, PredMap};
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_is_refcount_heap_exposure_table;
 use crate::tir::ops::OpCode;
 use crate::tir::passes::alias_analysis::{
     AliasAnalysis, AliasAnalysisResult, build_alias_union_find,
@@ -61,29 +62,7 @@ fn build_def_map(func: &TirFunction) -> HashMap<ValueId, BlockId> {
 /// Returns `true` if the opcode causes its operands to have heap exposure
 /// (the value may escape the stack frame via this operation).
 fn is_heap_exposing(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Call
-            | OpCode::CallMethod
-            | OpCode::CallBuiltin
-            | OpCode::StoreAttr
-            | OpCode::StoreIndex
-            | OpCode::ClosureStore
-            | OpCode::Yield
-            | OpCode::YieldFrom
-            | OpCode::Raise
-            | OpCode::BuildList
-            | OpCode::BuildDict
-            | OpCode::BuildTuple
-            | OpCode::BuildSet
-            | OpCode::BuildSlice
-            | OpCode::AllocTask
-            | OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            | OpCode::Import
-            | OpCode::ImportFrom
-    )
+    opcode_is_refcount_heap_exposure_table(opcode)
 }
 
 /// Build the set of ValueIds that have "heap exposure" — they appear as

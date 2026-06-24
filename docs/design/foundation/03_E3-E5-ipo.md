@@ -175,7 +175,7 @@ When a parameter's `TirType` is `TirType::Union(variants)`, the specializer addi
 
 ## 3. Exact Files to Create / Modify
 
-### CREATE: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/specializer.rs`
+### CREATE: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/specializer.rs`
 
 ```
 Purpose: E5 — representation specialization engine.
@@ -196,7 +196,7 @@ Internal:
   run_pipeline() on each clone after Repr seeding
 ```
 
-### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/ip_summary.rs`
+### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/ip_summary.rs`
 
 Lines 22–36: extend `FunctionSummary`:
 - Add `pub does_not_capture_param: Vec<bool>` (empty = unknown / not yet computed)
@@ -214,7 +214,7 @@ pub fn compute(
 ```
 Existing callers pass `None`; the module_phase rebuilds with `Some(per_function_repr_plans)` in step 5.
 
-### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/escape_analysis.rs`
+### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/escape_analysis.rs`
 
 Line 220 — `analyze` signature: add `summaries: Option<&ModuleSummaries>`.
 
@@ -222,7 +222,7 @@ Line 367 — `OpCode::Call` arm: use `does_not_capture_param` from summary when 
 
 Line 771 — `run` convenience function: pass `None` as summaries (backward-compatible).
 
-### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/pass_manager.rs`
+### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/pass_manager.rs`
 
 The per-function pipeline's `escape_analysis` pass currently calls `escape_analysis::run(func)`. It needs to optionally receive an `Arc<ModuleSummaries>` to pass through. Two options:
 
@@ -235,7 +235,7 @@ pub module_summaries: Option<Arc<ModuleSummaries>>,
 
 The escape analysis `TirPass::run` impl reads `self.module_summaries.as_deref()`.
 
-### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/target_info.rs`
+### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/target_info.rs`
 
 Add to `TargetInfo`:
 ```rust
@@ -261,7 +261,7 @@ pub fn is_specialization_enabled(&self) -> bool {
 }
 ```
 
-### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/module_phase.rs`
+### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/module_phase.rs`
 
 `run_module_pipeline` (line 110): add E5 call between E1 and the rebuild:
 
@@ -287,11 +287,11 @@ pub fn run_module_pipeline(module: &mut TirModule, tti: &TargetInfo) -> ModuleAn
 }
 ```
 
-### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/passes/mod.rs`
+### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/passes/mod.rs`
 
 Add `pub mod specializer;` (line ~34, after `pub mod sccp;`).
 
-### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-backend/src/tir/parallel.rs`
+### MODIFY: `/Users/adpena/Projects/molt/runtime/molt-tir/src/tir/parallel.rs`
 
 The per-function `compile_module_parallel` currently creates a `PassManager` with no module summaries. Thread `Arc<ModuleSummaries>` from the `ModuleAnalysis` returned by `run_module_pipeline` into each per-function `PassManager`:
 

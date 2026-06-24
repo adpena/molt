@@ -332,6 +332,7 @@ impl OwnershipRootFacts {
     /// Alias roots whose result bits are valid only on a specific outgoing edge
     /// (currently the `IterNextUnboxed` value-out). These roots are never
     /// unconditionally droppable at joins or retained from the invalid edge.
+    #[allow(dead_code)]
     pub(crate) fn conditionally_valid_result_roots(&self) -> &HashSet<ValueId> {
         &self.conditionally_valid_result_roots
     }
@@ -539,15 +540,16 @@ impl PythonLifetimeFacts {
 
 /// The minimal ownership-lattice slice for finalizer ordering (#58).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StatementReleaseFinalizerBoundary {
-    pub block: BlockId,
-    pub op_index: usize,
-    pub root: ValueId,
+pub(crate) struct StatementReleaseFinalizerBoundary {
+    pub(crate) block: BlockId,
+    pub(crate) op_index: usize,
+    pub(crate) root: ValueId,
 }
 
-pub struct OwnershipLattice {
+pub(crate) struct OwnershipLattice {
     root_facts: OwnershipRootFacts,
     finalizer_sensitive_roots: HashSet<ValueId>,
+    #[allow(dead_code)]
     statement_release_finalizer_roots: HashSet<ValueId>,
     statement_release_finalizer_boundaries: Vec<StatementReleaseFinalizerBoundary>,
 }
@@ -555,7 +557,8 @@ pub struct OwnershipLattice {
 impl OwnershipLattice {
     /// Compute the FinalizerSensitive set: every value whose release would
     /// (transitively) fire a `__del__`.
-    pub fn compute(func: &TirFunction, aliases: &AliasUnionFind) -> Self {
+    #[allow(dead_code)]
+    pub(crate) fn compute(func: &TirFunction, aliases: &AliasUnionFind) -> Self {
         Self::compute_with_root_facts(func, aliases, OwnershipRootFacts::compute(func, aliases))
     }
 
@@ -678,32 +681,35 @@ impl OwnershipLattice {
 
     /// True iff releasing `root` would (transitively) fire a `__del__`, so its
     /// release must land at the Python lifetime boundary, NOT its SSA last-use.
-    pub fn is_finalizer_sensitive_root(&self, root: ValueId) -> bool {
+    pub(crate) fn is_finalizer_sensitive_root(&self, root: ValueId) -> bool {
         self.finalizer_sensitive_roots.contains(&root)
     }
 
     /// The full FinalizerSensitive set (the gate the ordering fix consumes).
-    pub fn finalizer_sensitive_roots(&self) -> &HashSet<ValueId> {
+    pub(crate) fn finalizer_sensitive_roots(&self) -> &HashSet<ValueId> {
         &self.finalizer_sensitive_roots
     }
 
     /// Alias roots whose result bits are valid only on a specific outgoing edge
     /// (currently the `IterNextUnboxed` value-out). These roots are never
     /// unconditionally droppable at joins or retained from the invalid edge.
-    pub fn conditionally_valid_result_roots(&self) -> &HashSet<ValueId> {
+    #[allow(dead_code)]
+    pub(crate) fn conditionally_valid_result_roots(&self) -> &HashSet<ValueId> {
         self.root_facts.conditionally_valid_result_roots()
     }
 
-    pub fn is_conditionally_valid_result_root(&self, root: ValueId) -> bool {
+    pub(crate) fn is_conditionally_valid_result_root(&self, root: ValueId) -> bool {
         self.root_facts.is_conditionally_valid_result_root(root)
     }
 
     /// Alias roots for `Copy` results that do not own an independent heap ref.
-    pub fn non_owning_copy_result_roots(&self) -> &HashSet<ValueId> {
+    #[allow(dead_code)]
+    pub(crate) fn non_owning_copy_result_roots(&self) -> &HashSet<ValueId> {
         self.root_facts.non_owning_copy_result_roots()
     }
 
-    pub fn is_non_owning_copy_result_root(&self, root: ValueId) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn is_non_owning_copy_result_root(&self, root: ValueId) -> bool {
         self.root_facts.is_non_owning_copy_result_root(root)
     }
 
@@ -711,7 +717,8 @@ impl OwnershipLattice {
     /// release at the statement boundary unless Python-bound. This includes
     /// producer refs retained by a container owner and fresh extracted results
     /// such as discarded `list_pop`.
-    pub fn statement_release_finalizer_roots(&self) -> &HashSet<ValueId> {
+    #[allow(dead_code)]
+    pub(crate) fn statement_release_finalizer_roots(&self) -> &HashSet<ValueId> {
         &self.statement_release_finalizer_roots
     }
 

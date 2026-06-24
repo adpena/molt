@@ -60,9 +60,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 SERIALIZATION_PY = ROOT / "src/molt/frontend/lowering/serialization.py"
-SSA_RS = ROOT / "runtime/molt-backend/src/tir/ssa.rs"
+SSA_RS = ROOT / "runtime/molt-tir/src/tir/ssa.rs"
 LLVM_RS = ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
-ALIAS_RS = ROOT / "runtime/molt-backend/src/tir/passes/alias_analysis.rs"
+ALIAS_RS = ROOT / "runtime/molt-tir/src/tir/passes/alias_analysis.rs"
 NATIVE_RS = ROOT / "runtime/molt-backend/src/native_backend/function_compiler.rs"
 WASM_RS = ROOT / "runtime/molt-backend/src/wasm.rs"
 RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
@@ -79,7 +79,7 @@ RUNTIME_SRC = ROOT / "runtime/molt-runtime/src"
 # tests/test_gen_op_kinds.py; the registry⇄enum exhaustiveness by the Rust
 # compiler. (LLVM arms, runtime symbols, and native/WASM SimpleIR dispatch are
 # still extracted directly from source — they are not generated.)
-OP_KINDS_TOML = ROOT / "runtime/molt-backend/src/tir/op_kinds.toml"
+OP_KINDS_TOML = ROOT / "runtime/molt-tir/src/tir/op_kinds.toml"
 
 BASELINE_PATH = ROOT / "tools/op_kinds_baseline.json"
 
@@ -697,14 +697,14 @@ def extract_simpleir_arm_kinds(path: Path) -> set[str]:
 # consumed by the SSA builder, not `kind_to_opcode`, but is not in the CFG
 # leader/terminator helpers.)
 _STRUCTURAL_CLASSIFIER_FNS = (
-    (Path("runtime/molt-backend/src/tir/mod.rs"), "is_structural"),
-    (Path("runtime/molt-backend/src/tir/cfg.rs"), "is_terminator"),
-    (Path("runtime/molt-backend/src/tir/cfg.rs"), "is_block_leader"),
-    (Path("runtime/molt-backend/src/tir/cfg.rs"), "is_block_ender"),
-    (Path("runtime/molt-backend/src/tir/cfg.rs"), "is_conditional_branch"),
+    (Path("runtime/molt-tir/src/tir/mod.rs"), "is_structural"),
+    (Path("runtime/molt-tir/src/tir/cfg.rs"), "is_terminator"),
+    (Path("runtime/molt-tir/src/tir/cfg.rs"), "is_block_leader"),
+    (Path("runtime/molt-tir/src/tir/cfg.rs"), "is_block_ender"),
+    (Path("runtime/molt-tir/src/tir/cfg.rs"), "is_conditional_branch"),
 )
 _PRE_SSA_REWRITTEN_KIND_TABLE = (
-    Path("runtime/molt-backend/src/tir/lower_from_simple.rs"),
+    Path("runtime/molt-tir/src/tir/lower_from_simple.rs"),
     "PRE_SSA_REWRITTEN_KINDS",
 )
 _EXTRA_STRUCTURAL = {"phi"}

@@ -3013,6 +3013,7 @@ dependencies = [
  "libc",
  "metal 0.33.0",
  "mlx-rs",
+ "molt-tir",
  "objc",
  "pollster",
  "rayon",
@@ -3402,6 +3403,18 @@ dependencies = [
 [[package]]
 name = "molt-tier"
 version = "0.1.0"
+
+[[package]]
+name = "molt-tir"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rayon",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "wasm-encoder 0.245.1",
+]
 
 [[package]]
 name = "molt-wasm-host"

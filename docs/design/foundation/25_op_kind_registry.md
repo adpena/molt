@@ -13,10 +13,10 @@
 A `MoltOp` produced by the frontend visitors is serialized to a JSON op whose `"kind"` string is the **wire contract** between the Python frontend and the Rust backend. Five independent components must agree on that vocabulary, and each keeps its **own private copy** of the table:
 
 1. **Frontend emitter** — `src/molt/frontend/lowering/serialization.py`, the giant `map_ops_to_json` if/elif chain (line 396). Emits the JSON `"kind"` string (lowercase). **This is the authoritative wire vocabulary** (see §3).
-2. **TIR SSA mapper** — `kind_to_opcode` in `runtime/molt-backend/src/tir/ssa.rs:1902`, backed by `op_kinds_generated.rs:20`. Maps a kind string → `OpCode`. Unknown kinds deliberately fall back to `OpCode::Copy`, stashing the spelling in `_original_kind`, as the runtime backstop behind the generated registry.
+2. **TIR SSA mapper** — `kind_to_opcode` in `runtime/molt-tir/src/tir/ssa.rs:1902`, backed by `op_kinds_generated.rs:20`. Maps a kind string → `OpCode`. Unknown kinds deliberately fall back to `OpCode::Copy`, stashing the spelling in `_original_kind`, as the runtime backstop behind the generated registry.
 3. **LLVM lowering** — `lower_preserved_simpleir_op` (`runtime/molt-backend/src/llvm_backend/lowering.rs:6837`) dedicated arms + the ABI-exact `molt_<kind>` runtime fallback `try_lower_preserved_runtime_call` (lowering.rs:10426), guarded by a **terminal fail-loud** state (lowering.rs:2410-2502).
-4. **RC/alias classifier** — `classify_copy_kind` / `copy_kind_mints_fresh_owned_ref` / `copy_kind_is_explicit_no_heap_move` in `runtime/molt-backend/src/tir/passes/alias_analysis.rs:535/496/645`. **Its `_ => CopyLowering::TransparentAlias` default (alias_analysis.rs:564) is the UAF-escalation precondition.**
-5. **Native + WASM SimpleIR dispatch** — `function_compiler.rs` / `wasm.rs`, reached via the `lower_to_simple` `_original_kind` restoration (`runtime/molt-backend/src/tir/lower_to_simple.rs:1547`).
+4. **RC/alias classifier** — `classify_copy_kind` / `copy_kind_mints_fresh_owned_ref` / `copy_kind_is_explicit_no_heap_move` in `runtime/molt-tir/src/tir/passes/alias_analysis.rs:535/496/645`. **Its `_ => CopyLowering::TransparentAlias` default (alias_analysis.rs:564) is the UAF-escalation precondition.**
+5. **Native + WASM SimpleIR dispatch** — `function_compiler.rs` / `wasm.rs`, reached via the `lower_to_simple` `_original_kind` restoration (`runtime/molt-tir/src/tir/lower_to_simple.rs:1547`).
 
 The proven failures:
 
@@ -118,8 +118,8 @@ Closed in the current audit: the repr-identity ops (`cast`, `widen`, `copy_var`)
 
 ## 5. Phase-2 mechanism (the recommendation, 5 lines)
 
-1. **One table** `runtime/molt-backend/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, effect ∈ {pure, observe, throw, side_effect}, backends_required[], runtime_symbol?)`.
-2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-backend/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, the effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants the emitter uses).
+1. **One table** `runtime/molt-tir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, effect ∈ {pure, observe, throw, side_effect}, backends_required[], runtime_symbol?)`.
+2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-tir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, the effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants the emitter uses).
 3. **One sync test** `tests/test_gen_op_kinds.py` (modeled on `tests/test_gen_intrinsics.py`) re-renders in memory and `assert_eq`s against the checked-in generated files → **drift = build/test error**.
 4. **The effect oracle hooks the same table:** `opcode_may_throw`/`is_side_effecting` (effects.rs) are generated from the `effect` column → a new kind **requires** an explicit effect classification (kills bug-class instance #1 — the `matches!`-default-false trap — because the table has no default; every kind has an explicit `effect`).
 5. **Deforestation fusion eligibility is table-owned too:** `fusion_barrier_opcodes` generates `opcode_is_fusion_barrier_table` for `deforestation.rs`. This is deliberately separate from side effects/may-throw because iterator-chain fusion preserves per-element evaluation order while still rejecting cross-iteration/control-state barriers.
@@ -153,13 +153,13 @@ The unit of work is the complete structural change (per CLAUDE.md). Phase 2 is O
 ### 6.3 Anchors phase 2 edits (verified 2026-06-06)
 
 - `src/molt/frontend/lowering/serialization.py:672` (`floordiv` emission), :267 (`copy_var` fusion), :2330 (BOX/UNBOX/CAST/WIDEN).
-- `runtime/molt-backend/src/tir/ssa.rs:1902` (`kind_to_opcode` generated-table entry point), `runtime/molt-backend/src/tir/op_kinds_generated.rs:20` (`kind_to_opcode_table`), :29 (`floordiv`/`floor_div` alias arm).
-- `runtime/molt-backend/src/tir/lower_to_simple.rs:1547` (`_original_kind` restoration), :1644 (`OpCode::FloorDiv => "floordiv"`).
-- `runtime/molt-backend/src/tir/lower_from_simple.rs` (`PRE_SSA_REWRITTEN_KINDS`, `rewrite_loop_index_to_store_load`) for loop-index pre-SSA consumption.
+- `runtime/molt-tir/src/tir/ssa.rs:1902` (`kind_to_opcode` generated-table entry point), `runtime/molt-tir/src/tir/op_kinds_generated.rs:20` (`kind_to_opcode_table`), :29 (`floordiv`/`floor_div` alias arm).
+- `runtime/molt-tir/src/tir/lower_to_simple.rs:1547` (`_original_kind` restoration), :1644 (`OpCode::FloorDiv => "floordiv"`).
+- `runtime/molt-tir/src/tir/lower_from_simple.rs` (`PRE_SSA_REWRITTEN_KINDS`, `rewrite_loop_index_to_store_load`) for loop-index pre-SSA consumption.
 - `runtime/molt-backend/src/llvm_backend/lowering.rs:6837` (`lower_preserved_simpleir_op`), :10426 (`try_lower_preserved_runtime_call`), :2410-2502 (fail-loud gate), :415 (`VEC_REDUCTION_OPS`), :10325 (`floordiv` arm).
-- `runtime/molt-backend/src/tir/passes/alias_analysis.rs:496` (`copy_kind_mints_fresh_owned_ref`), :535 (`classify_copy_kind`), :564 (`_ => TransparentAlias`), :645 (`copy_kind_is_explicit_no_heap_move`).
-- `runtime/molt-backend/src/tir/passes/effects.rs` (`opcode_may_throw` / `is_side_effecting` — the effect oracle to hook).
-- `runtime/molt-backend/src/tir/mod.rs:48` (`is_structural`), `runtime/molt-backend/src/tir/cfg.rs:59/68/77/83` (terminator/leader/ender/cond-branch).
+- `runtime/molt-tir/src/tir/passes/alias_analysis.rs:496` (`copy_kind_mints_fresh_owned_ref`), :535 (`classify_copy_kind`), :564 (`_ => TransparentAlias`), :645 (`copy_kind_is_explicit_no_heap_move`).
+- `runtime/molt-tir/src/tir/passes/effects.rs` (`opcode_may_throw` / `is_side_effecting` — the effect oracle to hook).
+- `runtime/molt-tir/src/tir/mod.rs:48` (`is_structural`), `runtime/molt-tir/src/tir/cfg.rs:59/68/77/83` (terminator/leader/ender/cond-branch).
 - Precedents: `tools/gen_intrinsics.py` + `tests/test_gen_intrinsics.py` (the generator + sync-test pattern); `tools/stdlib_full_coverage_manifest.py` (the manifest-table pattern); `tools/audit_op_kinds.py` (this task's check-mode tool).
 
 ---

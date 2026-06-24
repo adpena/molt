@@ -777,7 +777,7 @@ impl IndexedContainerFacts {
 
 /// Scalar lane derived from the backend-facing TIR/LIR contract.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum ScalarKind {
+pub enum ScalarKind {
     Int,
     Bool,
     Float,
@@ -787,7 +787,7 @@ pub(crate) enum ScalarKind {
 
 /// Container dispatch lane derived from the backend-facing TIR/LIR contract.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum ContainerKind {
+pub enum ContainerKind {
     List,
     Dict,
     Set,
@@ -797,7 +797,7 @@ pub(crate) enum ContainerKind {
 
 /// Physical container storage proof derived from structural producers.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum ContainerStorageKind {
+pub enum ContainerStorageKind {
     FlatListInt,
 }
 
@@ -888,7 +888,7 @@ impl Repr {
     /// admitted int carrier is `RawI64Safe` — the `primary_names.int` view
     /// (design §2.1). Phase 2 widens the `primary_names.int` view to also admit
     /// the boxed-but-proven-inline `InlineInt47` operands.
-    pub(crate) fn is_raw_i64_safe(self) -> bool {
+    pub fn is_raw_i64_safe(self) -> bool {
         matches!(self, Repr::RawI64Safe)
     }
 }
@@ -1015,7 +1015,7 @@ impl ScalarRepresentationFact {
 /// run. It deliberately does not trust transport hints (`fast_int`,
 /// `fast_float`, or `type_hint`) as representation authority.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ScalarRepresentationPlan {
+pub struct ScalarRepresentationPlan {
     facts_by_name: PlanHashMap<String, ScalarRepresentationFact>,
     conflicted_names: PlanHashSet<String>,
     /// Names whose current fact came from a SYNTHETIC (canonical fallback)
@@ -1048,10 +1048,10 @@ pub(crate) struct ScalarRepresentationPlan {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ScalarPrimaryNameSets {
-    pub(crate) int: BTreeSet<String>,
-    pub(crate) bool_: BTreeSet<String>,
-    pub(crate) float: BTreeSet<String>,
+pub struct ScalarPrimaryNameSets {
+    pub int: BTreeSet<String>,
+    pub bool_: BTreeSet<String>,
+    pub float: BTreeSet<String>,
 }
 
 /// Per-function representation facts consumed by the LLVM backend.
@@ -1234,7 +1234,7 @@ pub(crate) fn name_by_value_for(tir_func: &TirFunction) -> HashMap<ValueId, Stri
 /// post-pipeline TIR the backend is lowering, and `vr` (when present) MUST have
 /// been computed on that same `tir_func` so its `ValueId`s line up.
 #[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-pub(crate) fn repr_by_value_for(
+pub fn repr_by_value_for(
     _func_ir: &FunctionIR,
     tir_func: &TirFunction,
     vr: Option<&crate::tir::passes::value_range::ValueRangeResult>,
@@ -1273,7 +1273,7 @@ pub(crate) fn repr_by_value_for(
 /// value-keyed (WASM/LLVM) `RawI64Safe` promotion. Computed on the SAME TIR the
 /// backend lowers so its `ValueId`s line up with [`repr_by_value_for`].
 #[cfg(any(feature = "llvm", feature = "wasm-backend", test))]
-pub(crate) fn value_range_for(
+pub fn value_range_for(
     tir_func: &TirFunction,
 ) -> crate::tir::passes::value_range::ValueRangeResult {
     let scev = crate::tir::passes::scev::compute_scev(tir_func);
@@ -1602,7 +1602,7 @@ impl ScalarRepresentationPlan {
         }
     }
 
-    pub(crate) fn for_function_ir(func_ir: &FunctionIR) -> Self {
+    pub fn for_function_ir(func_ir: &FunctionIR) -> Self {
         if is_cold_module_chunk_function(&func_ir.name) {
             return Self::with_capacity(func_ir.ops.len());
         }
@@ -1721,7 +1721,7 @@ impl ScalarRepresentationPlan {
         self.float_primary_names = primary.float.into_iter().collect();
     }
 
-    pub(crate) fn scalar_name_sets(
+    pub fn scalar_name_sets(
         &self,
     ) -> (
         BTreeSet<String>,
@@ -1758,8 +1758,8 @@ impl ScalarRepresentationPlan {
         (int_like, bool_like, float_like, str_like, none_like)
     }
 
-    #[cfg(test)]
-    pub(crate) fn integer_family_names(&self) -> BTreeSet<String> {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn integer_family_names(&self) -> BTreeSet<String> {
         self.integer_family_names.iter().cloned().collect()
     }
 
@@ -1770,7 +1770,7 @@ impl ScalarRepresentationPlan {
     /// the int view is exactly the names raised to `RawI64Safe` in
     /// [`Self::seed_repr_by_name`].
     #[cfg(any(feature = "native-backend", feature = "llvm", test))]
-    pub(crate) fn primary_name_sets(&self) -> ScalarPrimaryNameSets {
+    pub fn primary_name_sets(&self) -> ScalarPrimaryNameSets {
         ScalarPrimaryNameSets {
             int: self.int_carrier_names(),
             bool_: self.bool_primary_names.iter().cloned().collect(),
@@ -1783,7 +1783,7 @@ impl ScalarRepresentationPlan {
     /// set, the LLVM `overflow_safe_values` seed, and the WASM/LIR `RawI64Safe`
     /// derivation (via [`repr_by_value_for`]). Unconditionally compiled because
     /// [`repr_by_value_for`] consumes it on the backend-neutral path.
-    pub(crate) fn int_carrier_names(&self) -> BTreeSet<String> {
+    pub fn int_carrier_names(&self) -> BTreeSet<String> {
         self.repr_by_name
             .iter()
             .filter(|(_, repr)| repr.is_raw_i64_safe())
@@ -1793,19 +1793,19 @@ impl ScalarRepresentationPlan {
 
     #[cfg(any(feature = "native-backend", test))]
     #[cfg_attr(not(feature = "native-backend"), allow(dead_code))]
-    pub(crate) fn scalar_slot_exclusion_unsafe(&self) -> BTreeSet<String> {
+    pub fn scalar_slot_exclusion_unsafe(&self) -> BTreeSet<String> {
         self.scalar_slot_exclusion_unsafe.iter().cloned().collect()
     }
 
     #[cfg(any(feature = "native-backend", test))]
-    pub(crate) fn scalar_store_targets(&self, kind: ScalarKind) -> BTreeSet<String> {
+    pub fn scalar_store_targets(&self, kind: ScalarKind) -> BTreeSet<String> {
         self.scalar_store_targets_by_kind
             .get(&kind)
             .cloned()
             .unwrap_or_default()
     }
 
-    pub(crate) fn op_scalar_lane(&self, op: &OpIR) -> Option<ScalarKind> {
+    pub fn op_scalar_lane(&self, op: &OpIR) -> Option<ScalarKind> {
         self.infer_scalar_lane(op)
     }
 
@@ -1815,7 +1815,7 @@ impl ScalarRepresentationPlan {
             .map(|fact| fact.kind)
     }
 
-    pub(crate) fn op_has_container_storage(
+    pub fn op_has_container_storage(
         &self,
         op_index: usize,
         op: &OpIR,
@@ -1831,7 +1831,7 @@ impl ScalarRepresentationPlan {
                 .is_some_and(|fact| fact.kind == kind)
     }
 
-    pub(crate) fn op_prefers_integer_runtime_lane(&self, op: &OpIR) -> bool {
+    pub fn op_prefers_integer_runtime_lane(&self, op: &OpIR) -> bool {
         matches!(
             op.kind.as_str(),
             "add"
@@ -1867,7 +1867,7 @@ impl ScalarRepresentationPlan {
         })
     }
 
-    pub(crate) fn op_index_key_is_integer_family(&self, op: &OpIR) -> bool {
+    pub fn op_index_key_is_integer_family(&self, op: &OpIR) -> bool {
         matches!(op.kind.as_str(), "index" | "store_index" | "dict_set")
             && op.args.as_ref().is_some_and(|args| {
                 args.get(1)
@@ -2541,24 +2541,24 @@ impl ScalarRepresentationPlan {
             .and_then(ScalarRepresentationFact::scalar_kind)
     }
 
-    pub(crate) fn name_container_kind(&self, name: &str) -> Option<ContainerKind> {
+    pub fn name_container_kind(&self, name: &str) -> Option<ContainerKind> {
         self.facts_by_name
             .get(name)
             .and_then(ScalarRepresentationFact::container_kind)
     }
 
-    pub(crate) fn op_container_kind(&self, op: &OpIR) -> Option<ContainerKind> {
+    pub fn op_container_kind(&self, op: &OpIR) -> Option<ContainerKind> {
         op.args
             .as_ref()
             .and_then(|args| args.first())
             .and_then(|name| self.name_container_kind(name))
     }
 
-    pub(crate) fn op_has_container_kind(&self, op: &OpIR, kind: ContainerKind) -> bool {
+    pub fn op_has_container_kind(&self, op: &OpIR, kind: ContainerKind) -> bool {
         self.op_container_kind(op) == Some(kind)
     }
 
-    pub(crate) fn name_is_integer_family(&self, name: &str) -> bool {
+    pub fn name_is_integer_family(&self, name: &str) -> bool {
         if self.non_scalar_names.contains(name) {
             return false;
         }
@@ -2567,7 +2567,7 @@ impl ScalarRepresentationPlan {
     }
 
     #[cfg_attr(not(feature = "wasm-backend"), allow(dead_code))]
-    pub(crate) fn op_args_are_integer_family(&self, op: &OpIR) -> bool {
+    pub fn op_args_are_integer_family(&self, op: &OpIR) -> bool {
         op.args.as_ref().is_some_and(|args| {
             !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
         })

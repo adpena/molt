@@ -332,13 +332,13 @@ impl CompilationCache {
     }
 
     /// Return the number of entries currently in the cache.
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn len(&self) -> usize {
         self.index.len()
     }
 
-    #[cfg(test)]
-    pub(crate) fn memory_bytes(&self) -> usize {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn memory_bytes(&self) -> usize {
         self.memory_bytes
     }
 

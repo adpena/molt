@@ -34,7 +34,7 @@ readers must understand its boundaries before drawing conclusions:
    unboxing, escape analysis, refcount elision, dead-store elimination,
    strength reduction, bounds-check elimination, type guard hoisting,
    vectorization, polyhedral, and the lowering/canonicalization phases — are
-   unproven. The pipeline body in `runtime/molt-backend/src/tir/passes/mod.rs`
+   unproven. The pipeline body in `runtime/molt-tir/src/tir/passes/mod.rs`
    `run_pipeline` is the canonical source of pass identity and ordering.
 
 5. **The native (Cranelift) backend has zero formal proofs.** This is the production
