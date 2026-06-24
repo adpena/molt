@@ -561,6 +561,7 @@ class SimpleTIRGenerator(
             "cfg_structural_failures": 0,
             "cfg_structural_canonicalizations": 0,
             "sccp_iteration_cap_hits": 0,
+            "cse_dce_fp_cap_hits": 0,
             "sccp_branch_prunes": 0,
             "loop_edge_thread_prunes": 0,
             "try_edge_thread_prunes": 0,
@@ -21379,6 +21380,7 @@ class SimpleTIRGenerator(
             "cfg_structural_failures",
             "cfg_structural_canonicalizations",
             "sccp_iteration_cap_hits",
+            "cse_dce_fp_cap_hits",
             "sccp_branch_prunes",
             "loop_edge_thread_prunes",
             "try_edge_thread_prunes",
@@ -26514,6 +26516,7 @@ class SimpleTIRGenerator(
         converged = False
         round_index = 0
         round_snapshots: list[dict[str, Any]] = []
+        cse_dce_closure_failed = False
         while round_index < max_rounds:
             round_index += 1
             maybe_apply_budget_degrade(
@@ -26886,33 +26889,65 @@ class SimpleTIRGenerator(
 
                 # 7) CSE
                 if enable_cse:
-                    pass_start = time.perf_counter()
-                    cse_input = step_ops
-                    cse_candidate, cse_phi_trims = self._run_cse_canonicalization_round(
-                        step_ops,
-                        allow_cross_block_const_dedupe=allow_cross_block_const_dedupe,
-                        max_cse_iterations_override=cse_iter_cap,
-                        sccp_iter_cap_override=sccp_iter_cap,
-                    )
-                    total_phi_edge_trims += cse_phi_trims
-                    cse_predefined = self._infer_predefined_value_names(cse_candidate)
-                    cse_failures = self._verify_definite_assignment_in_ops(
-                        cse_candidate, predefined_value_names=cse_predefined
-                    )
-                    if not cse_failures:
+                    cse_dce_closure_converged = False
+                    cse_dce_fp_max_iters = max(1, self.midend_env.cse_fp_max_iters)
+                    for cse_dce_fp_iter in range(1, cse_dce_fp_max_iters + 1):
+                        pass_start = time.perf_counter()
+                        cse_input = step_ops
+                        cse_candidate, cse_phi_trims = (
+                            self._run_cse_canonicalization_round(
+                                step_ops,
+                                allow_cross_block_const_dedupe=(
+                                    allow_cross_block_const_dedupe
+                                ),
+                                max_cse_iterations_override=cse_iter_cap,
+                                sccp_iter_cap_override=sccp_iter_cap,
+                            )
+                        )
+                        total_phi_edge_trims += cse_phi_trims
+                        cse_failures = self._verify_definite_assignment_in_ops(
+                            cse_candidate, predefined_value_names=round_predefined
+                        )
+                        cse_accepted = (not cse_failures) and (
+                            cse_candidate != cse_input or cse_phi_trims > 0
+                        )
+                        self._record_midend_pass_sample(
+                            "cse",
+                            elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
+                            accepted=cse_accepted,
+                            degraded=degraded,
+                        )
+                        if cse_failures:
+                            cse_dce_closure_converged = True
+                            break
                         step_ops = cse_candidate
-                    self._record_midend_pass_sample(
-                        "cse",
-                        elapsed_ms=(time.perf_counter() - pass_start) * 1000.0,
-                        accepted=(not cse_failures)
-                        and (step_ops != cse_input or cse_phi_trims > 0),
-                        degraded=degraded,
-                    )
-                    if not cse_failures:
-                        step_ops, _post_cse_dce_accepted = run_verified_dce(
+                        step_ops, post_cse_dce_accepted = run_verified_dce(
                             step_ops, pass_name="post_cse_dce"
                         )
                         post_cse_dce_ran = True
+                        if cse_dce_fp_iter > 1:
+                            charge_work(max(1, len(step_ops)))
+                        if not cse_accepted and not post_cse_dce_accepted:
+                            cse_dce_closure_converged = True
+                            break
+                    if not cse_dce_closure_converged:
+                        cse_dce_closure_failed = True
+                        self.midend_stats["cse_dce_fp_cap_hits"] = (
+                            self.midend_stats.get("cse_dce_fp_cap_hits", 0) + 1
+                        )
+                        add_degrade_event(
+                            "cse_dce_fixed_point_cap",
+                            "cse_dce_closure",
+                            "fail_closed_non_convergence",
+                            value=cse_dce_fp_max_iters,
+                        )
+                        degraded = True
+                        self._record_midend_pass_sample(
+                            "cse_dce_closure",
+                            elapsed_ms=0.0,
+                            accepted=False,
+                            degraded=True,
+                        )
                 else:
                     self._record_midend_pass_sample(
                         "cse",
@@ -26953,6 +26988,8 @@ class SimpleTIRGenerator(
                     "changed": round_changed,
                 }
             )
+            if cse_dce_closure_failed:
+                break
             if not round_changed:
                 converged = True
                 break
