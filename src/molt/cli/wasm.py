@@ -4,7 +4,6 @@ import functools
 import importlib
 import json
 import re
-import shutil
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -15,6 +14,10 @@ def _cli_module() -> Any:
 
 def _run_completed_command(*args: Any, **kwargs: Any) -> Any:
     return _cli_module()._run_completed_command(*args, **kwargs)
+
+
+def _which(executable: str) -> str | None:
+    return _cli_module().shutil.which(executable)
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -311,7 +314,7 @@ def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
 def _wasm_import_function_result_kinds(
     path: Path, *, module_name: str
 ) -> dict[str, str]:
-    wasm_objdump = shutil.which("wasm-objdump")
+    wasm_objdump = _which("wasm-objdump")
     if wasm_objdump is None:
         return {}
     result = _run_completed_command(
@@ -351,7 +354,7 @@ def _wasm_import_function_result_kinds(
 def _wasm_import_function_signatures(
     path: Path, *, module_name: str
 ) -> dict[str, dict[str, object]]:
-    wasm_objdump = shutil.which("wasm-objdump")
+    wasm_objdump = _which("wasm-objdump")
     if wasm_objdump is None:
         return {}
     result = _run_completed_command(
@@ -397,7 +400,7 @@ def _wasm_import_function_signatures(
 def _wasm_export_function_signatures(
     path: Path, *, export_name_prefix: str
 ) -> dict[str, dict[str, object]]:
-    wasm_objdump = shutil.which("wasm-objdump")
+    wasm_objdump = _which("wasm-objdump")
     if wasm_objdump is None:
         return {}
     result = _run_completed_command(

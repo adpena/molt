@@ -55,6 +55,7 @@ def _completion_script(shell: str) -> str:
             "--type-hints",
             "--fallback",
             "--type-facts",
+            "--python-version",
             "--pgo-profile",
             "--output",
             "--out-dir",
@@ -96,6 +97,7 @@ def _completion_script(shell: str) -> str:
         "run": [
             "--module",
             "--build-arg",
+            "--python-version",
             "--profile",
             "--build-profile",
             "--rebuild",
