@@ -19,6 +19,8 @@ COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
 NATIVE_LINK_DEPS = importlib.import_module("molt.cli.native_link_deps")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
+RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
+RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validation")
 
 
 def _base_env() -> dict[str, str]:
@@ -585,10 +587,16 @@ def test_cli_build_toolchain_probes_use_memory_guard(
         return subprocess.CompletedProcess(cmd, 0, stdout, "")
 
     monkeypatch.setattr(
-        cli, "_run_completed_command", fake_run_completed_command, raising=True
+        RUNTIME_BUILD, "_run_completed_command", fake_run_completed_command, raising=True
     )
     monkeypatch.setattr(
         COMPILER_METADATA,
+        "_run_completed_command",
+        fake_run_completed_command,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        RUNTIME_WASM_VALIDATION,
         "_run_completed_command",
         fake_run_completed_command,
         raising=True,
@@ -624,12 +632,12 @@ def test_cli_build_toolchain_probes_use_memory_guard(
     archive_path.write_bytes(b"")
 
     COMPILER_METADATA._rustc_version.cache_clear()
-    cli._rust_target_libdir.cache_clear()
+    RUNTIME_BUILD._rust_target_libdir.cache_clear()
 
     assert cli._git_rev(ROOT) == "abc123"
     assert COMPILER_METADATA._rustc_version() == "rustc 1.91.0"
     assert cli._validate_wasm_structural(wasm_path) is None
-    assert cli._rust_target_libdir("wasm32-wasip1") == Path("/rust/target/lib")
+    assert RUNTIME_BUILD._rust_target_libdir("wasm32-wasip1") == Path("/rust/target/lib")
     assert cli._is_valid_cached_backend_artifact(obj_path, is_wasm=False) is False
     assert cli._runtime_archive_crate_names(archive_path) == frozenset()
     assert cli._detect_macos_arch(obj_path) is None
