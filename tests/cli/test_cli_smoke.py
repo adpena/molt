@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import importlib
 import json
 import os
 import platform
@@ -19,6 +20,8 @@ import pytest
 import molt.cli as cli
 
 from tests.cli.process_guard import run_cli_test_process
+
+DEFAULT_PATHS = importlib.import_module("molt.cli.default_paths")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -447,7 +450,7 @@ def test_default_molt_cache_uses_ext_root_when_home_is_unavailable(
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
     monkeypatch.setattr(
-        cli.Path,
+        DEFAULT_PATHS.Path,
         "home",
         staticmethod(
             lambda: (_ for _ in ()).throw(

@@ -5,6 +5,7 @@ import builtins as py_builtins
 import contextlib
 import hashlib
 import io
+import importlib
 import importlib.util
 import json
 import os
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import time
 import types
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, Sequence, cast
 
 import molt.cli as cli
 import pytest
@@ -27,6 +28,7 @@ from tests.cli.process_guard import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
 
 
 def _rewrite_preserving_mtime(
@@ -1537,7 +1539,7 @@ def test_find_project_root_is_cached(
         return path == tmp_path
 
     monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
-    monkeypatch.setattr(cli, "_has_project_markers", fake_has_project_markers)
+    monkeypatch.setattr(PROJECT_ROOTS, "_has_project_markers", fake_has_project_markers)
     first = cli._find_project_root(start)
     first_calls = calls
     second = cli._find_project_root(start)
@@ -1561,7 +1563,11 @@ def test_find_molt_root_is_cached(
         return path == repo_root
 
     monkeypatch.delenv("MOLT_PROJECT_ROOT", raising=False)
-    monkeypatch.setattr(cli, "_has_molt_repo_markers", fake_has_molt_repo_markers)
+    monkeypatch.setattr(
+        PROJECT_ROOTS,
+        "_has_molt_repo_markers",
+        fake_has_molt_repo_markers,
+    )
     first = cli._find_molt_root(candidate)
     first_calls = calls
     second = cli._find_molt_root(candidate)
