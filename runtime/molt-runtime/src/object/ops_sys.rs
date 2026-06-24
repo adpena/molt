@@ -1451,7 +1451,7 @@ pub(crate) fn tzname_native() -> Result<(String, String), String> {
             .unwrap_or(info.DaylightName.len());
         let std_name = String::from_utf16_lossy(&info.StandardName[..std_len]);
         let dst_name = String::from_utf16_lossy(&info.DaylightName[..dst_len]);
-        return Ok((std_name, dst_name));
+        Ok((std_name, dst_name))
     }
 }
 
@@ -1485,7 +1485,7 @@ pub(crate) fn timezone_native() -> Result<i64, String> {
             return Err("timezone unavailable".to_string());
         }
         let bias = info.Bias + info.StandardBias;
-        return Ok((bias as i64) * 60);
+        Ok((bias as i64) * 60)
     }
 }
 
@@ -1518,7 +1518,7 @@ pub(crate) fn daylight_native() -> Result<i64, String> {
         if status == TIME_ZONE_ID_INVALID {
             return Err("daylight unavailable".to_string());
         }
-        return Ok(if info.DaylightDate.wMonth != 0 { 1 } else { 0 });
+        Ok(if info.DaylightDate.wMonth != 0 { 1 } else { 0 })
     }
 }
 
@@ -1554,7 +1554,7 @@ pub(crate) fn altzone_native() -> Result<i64, String> {
             return Err("altzone unavailable".to_string());
         }
         let bias = info.Bias + info.DaylightBias;
-        return Ok((bias as i64) * 60);
+        Ok((bias as i64) * 60)
     }
     #[cfg(unix)]
     {

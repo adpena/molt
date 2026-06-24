@@ -6,6 +6,7 @@
 //! `molt-runtime/src/ipaddress_bridge.rs`.
 
 use molt_runtime_core::prelude::*;
+pub use molt_runtime_core::prelude::{opaque_handle_bits, opaque_handle_ptr_from_bits};
 use num_bigint::{BigInt, Sign};
 
 // ---------------------------------------------------------------------------

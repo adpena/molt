@@ -2297,7 +2297,7 @@ pub extern "C" fn molt_sum_builtin(iter_bits: u64, start_bits: u64) -> u64 {
                 let type_id = unsafe { object_type_id(ptr) };
                 if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
                     let elems = unsafe { seq_vec_ref(ptr) };
-                    if elems.len() == 0 && SumExactInt::from_obj(start_obj).is_some() {
+                    if elems.is_empty() && SumExactInt::from_obj(start_obj).is_some() {
                         return sum_return_original_start(_py, start_bits);
                     }
                     if let Some(mut acc) = SumExactInt::from_obj(start_obj) {

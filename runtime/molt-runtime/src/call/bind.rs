@@ -3977,7 +3977,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
             if let Some(bound_self_bits) = self_bits {
                 let target_obj = obj_from_bits(func_bits);
                 let target_ptr = target_obj.as_ptr();
-                if !target_ptr.is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_FUNCTION) {
+                if target_ptr.is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_FUNCTION) {
                     if builder_ptr.is_null() {
                         return MoltObject::none().bits();
                     }

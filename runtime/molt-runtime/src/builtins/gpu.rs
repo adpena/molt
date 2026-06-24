@@ -4397,7 +4397,6 @@ unsafe fn linear_squared_relu_gate_interleaved_f32(
                 hidden_idx += 1;
             }
         }
-        return;
     }
 
     #[cfg(not(any(

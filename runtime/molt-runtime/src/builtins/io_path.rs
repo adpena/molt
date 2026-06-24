@@ -1510,10 +1510,7 @@ pub(crate) fn glob_parse_args(
         return Err(raise_exception::<_>(_py, "TypeError", msg));
     }
 
-    let dir_fd = match glob_dir_fd_arg_from_bits(_py, dir_fd_bits) {
-        Err(bits) => return Err(bits),
-        Ok(value) => value,
-    };
+    let dir_fd = glob_dir_fd_arg_from_bits(_py, dir_fd_bits)?;
 
     let bytes_mode = pathname_flavor == PathFlavor::Bytes;
     #[cfg(target_arch = "wasm32")]
@@ -1756,8 +1753,8 @@ pub extern "C" fn molt_getcwd() -> u64 {
 fn unix_seconds_from_system_time(value: std::time::SystemTime) -> i128 {
     use std::time::UNIX_EPOCH;
     match value.duration_since(UNIX_EPOCH) {
-        Ok(duration) => i128::from(duration.as_secs() as u64),
-        Err(err) => -i128::from(err.duration().as_secs() as u64),
+        Ok(duration) => i128::from(duration.as_secs()),
+        Err(err) => -i128::from(err.duration().as_secs()),
     }
 }
 
@@ -2622,7 +2619,7 @@ pub extern "C" fn molt_os_close(fd_bits: u64) -> u64 {
                     }
                     return raise_os_error::<u64>(_py, err, "close");
                 }
-                return raise_os_error_errno::<u64>(_py, sock_err as i64, "close");
+                raise_os_error_errno::<u64>(_py, sock_err as i64, "close")
             }
         }
     })
@@ -2793,7 +2790,7 @@ pub extern "C" fn molt_os_pipe() -> u64 {
             }
             #[cfg(not(unix))]
             {
-                return raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "pipe");
+                raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "pipe")
             }
         }
     })
@@ -2879,7 +2876,7 @@ pub extern "C" fn molt_os_get_inheritable(fd_bits: u64) -> u64 {
                     }
                     return raise_os_error::<u64>(_py, err, "get_inheritable");
                 }
-                return MoltObject::from_bool((flags & HANDLE_FLAG_INHERIT) != 0).bits();
+                MoltObject::from_bool((flags & HANDLE_FLAG_INHERIT) != 0).bits()
             }
             #[cfg(not(any(unix, windows)))]
             {
@@ -2958,7 +2955,7 @@ pub extern "C" fn molt_os_set_inheritable(fd_bits: u64, inheritable_bits: u64) -
                     }
                     return raise_os_error::<u64>(_py, err, "set_inheritable");
                 }
-                return MoltObject::none().bits();
+                MoltObject::none().bits()
             }
             #[cfg(not(any(unix, windows)))]
             {
