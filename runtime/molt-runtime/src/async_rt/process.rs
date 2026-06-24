@@ -425,7 +425,7 @@ fn stdio_from_fd(fd: i32) -> Option<Stdio> {
             return None;
         }
         let file = unsafe { std::fs::File::from_raw_handle(handle as *mut _) };
-        return Some(Stdio::from(file));
+        Some(Stdio::from(file))
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -2521,7 +2521,7 @@ impl ProcessRegistry {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix, not(target_arch = "wasm32")))]
     fn live_count(&self) -> usize {
         self.inner.lock().unwrap().entries.len()
     }

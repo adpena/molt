@@ -8881,7 +8881,7 @@ unsafe fn simd_bytes_eq_short_neon(a: *const u8, b: *const u8, len: usize) -> bo
 unsafe fn simd_bytes_eq_short_sse2(a: *const u8, b: *const u8, len: usize) -> bool {
     unsafe {
         use std::arch::x86_64::*;
-        debug_assert!(len >= 16 && len < 32);
+        debug_assert!((16..32).contains(&len));
         // Load from the start
         let va0 = _mm_loadu_si128(a as *const __m128i);
         let vb0 = _mm_loadu_si128(b as *const __m128i);
@@ -9977,7 +9977,7 @@ pub(crate) unsafe fn set_replace_entries(_py: &PyToken<'_>, ptr: *mut u8, entrie
         for entry in entries {
             inc_ref_bits(_py, *entry);
         }
-        let removed: Vec<u64> = order.drain(..).collect();
+        let removed: Vec<u64> = std::mem::take(order);
         hashes.clear();
         order.extend_from_slice(entries);
         hashes.extend_from_slice(&replacement_hashes);
@@ -10056,7 +10056,7 @@ pub(crate) unsafe fn dict_clear_in_place(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
         crate::gil_assert();
         let order = dict_order(ptr);
-        let removed: Vec<u64> = order.drain(..).collect();
+        let removed: Vec<u64> = std::mem::take(order);
         let hashes = dict_hashes(ptr);
         hashes.clear();
         let table = dict_table(ptr);
@@ -10073,7 +10073,7 @@ pub(crate) unsafe fn dict_clear_in_place_shutdown(_py: &PyToken<'_>, ptr: *mut u
     unsafe {
         crate::gil_assert();
         let order = dict_order(ptr);
-        let removed: Vec<u64> = order.drain(..).collect();
+        let removed: Vec<u64> = std::mem::take(order);
         let hashes = dict_hashes(ptr);
         hashes.clear();
         let table = dict_table(ptr);

@@ -342,7 +342,7 @@ fn read_dir_recursive(
                     .strip_prefix(base_path)
                     .unwrap_or(&path)
                     .to_string_lossy()
-                    .into_owned();
+                    .replace('\\', "/");
                 quota.reserve_entry(&rel, expected_len)?;
                 let data =
                     std::fs::read(&path).map_err(|err| VfsError::IoError(err.to_string()))?;

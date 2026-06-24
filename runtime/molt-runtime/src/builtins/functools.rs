@@ -1997,103 +1997,6 @@ pub(crate) fn functools_drop_instance(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     false
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        cacheinfo_class, cmpkey_class, functools_clear_runtime_state, kwd_mark_bits,
-        lru_factory_class, lru_wrapper_class, molt_functools_kwd_mark,
-        molt_functools_singledispatch_drop, molt_functools_singledispatch_new, partial_class,
-    };
-    use crate::{MoltObject, dec_ref_bits, inc_ref_bits, obj_from_bits, runtime_state, to_i64};
-    use std::sync::atomic::Ordering;
-
-    #[test]
-    fn functools_runtime_state_is_owned_and_clearable() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            let state = runtime_state(_py);
-            functools_clear_runtime_state(_py, state);
-
-            let kwd_mark = kwd_mark_bits(_py);
-            let partial = partial_class(_py);
-            let cmpkey = cmpkey_class(_py);
-            let lru_wrapper = lru_wrapper_class(_py);
-            let lru_factory = lru_factory_class(_py);
-            let cacheinfo = cacheinfo_class(_py);
-            for bits in [
-                kwd_mark,
-                partial,
-                cmpkey,
-                lru_wrapper,
-                lru_factory,
-                cacheinfo,
-            ] {
-                assert!(!obj_from_bits(bits).is_none());
-            }
-            for slot in state.functools.object_slots() {
-                assert_ne!(slot.load(Ordering::Acquire), 0);
-            }
-
-            let first = molt_functools_singledispatch_new(MoltObject::none().bits());
-            let second = molt_functools_singledispatch_new(MoltObject::none().bits());
-            assert_eq!(to_i64(obj_from_bits(first)), Some(1));
-            assert_eq!(to_i64(obj_from_bits(second)), Some(2));
-            assert_eq!(
-                state
-                    .functools
-                    .singledispatch_registry
-                    .lock()
-                    .unwrap()
-                    .len(),
-                2
-            );
-
-            functools_clear_runtime_state(_py, state);
-            for slot in state.functools.object_slots() {
-                assert_eq!(slot.load(Ordering::Acquire), 0);
-            }
-            assert_eq!(
-                state
-                    .functools
-                    .next_singledispatch_handle
-                    .load(Ordering::Acquire),
-                1
-            );
-            assert!(
-                state
-                    .functools
-                    .singledispatch_registry
-                    .lock()
-                    .unwrap()
-                    .is_empty()
-            );
-
-            let reset = molt_functools_singledispatch_new(MoltObject::none().bits());
-            assert_eq!(to_i64(obj_from_bits(reset)), Some(1));
-            let _ = molt_functools_singledispatch_drop(reset);
-        });
-    }
-
-    #[test]
-    fn functools_kwd_mark_public_return_is_owned_without_releasing_runtime_root() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            let state = runtime_state(_py);
-            functools_clear_runtime_state(_py, state);
-
-            let root_bits = kwd_mark_bits(_py);
-            let owned_bits = molt_functools_kwd_mark();
-            assert_eq!(root_bits, owned_bits);
-            dec_ref_bits(_py, owned_bits);
-
-            inc_ref_bits(_py, root_bits);
-            dec_ref_bits(_py, root_bits);
-
-            functools_clear_runtime_state(_py, state);
-        });
-    }
-}
-
 // ─── singledispatch state ──────────────────────────────────────────────────
 
 struct SingleDispatchState {
@@ -2354,4 +2257,101 @@ pub extern "C" fn molt_functools_singledispatch_drop(handle_bits: u64) -> u64 {
         }
         MoltObject::none().bits()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        cacheinfo_class, cmpkey_class, functools_clear_runtime_state, kwd_mark_bits,
+        lru_factory_class, lru_wrapper_class, molt_functools_kwd_mark,
+        molt_functools_singledispatch_drop, molt_functools_singledispatch_new, partial_class,
+    };
+    use crate::{MoltObject, dec_ref_bits, inc_ref_bits, obj_from_bits, runtime_state, to_i64};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn functools_runtime_state_is_owned_and_clearable() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            functools_clear_runtime_state(_py, state);
+
+            let kwd_mark = kwd_mark_bits(_py);
+            let partial = partial_class(_py);
+            let cmpkey = cmpkey_class(_py);
+            let lru_wrapper = lru_wrapper_class(_py);
+            let lru_factory = lru_factory_class(_py);
+            let cacheinfo = cacheinfo_class(_py);
+            for bits in [
+                kwd_mark,
+                partial,
+                cmpkey,
+                lru_wrapper,
+                lru_factory,
+                cacheinfo,
+            ] {
+                assert!(!obj_from_bits(bits).is_none());
+            }
+            for slot in state.functools.object_slots() {
+                assert_ne!(slot.load(Ordering::Acquire), 0);
+            }
+
+            let first = molt_functools_singledispatch_new(MoltObject::none().bits());
+            let second = molt_functools_singledispatch_new(MoltObject::none().bits());
+            assert_eq!(to_i64(obj_from_bits(first)), Some(1));
+            assert_eq!(to_i64(obj_from_bits(second)), Some(2));
+            assert_eq!(
+                state
+                    .functools
+                    .singledispatch_registry
+                    .lock()
+                    .unwrap()
+                    .len(),
+                2
+            );
+
+            functools_clear_runtime_state(_py, state);
+            for slot in state.functools.object_slots() {
+                assert_eq!(slot.load(Ordering::Acquire), 0);
+            }
+            assert_eq!(
+                state
+                    .functools
+                    .next_singledispatch_handle
+                    .load(Ordering::Acquire),
+                1
+            );
+            assert!(
+                state
+                    .functools
+                    .singledispatch_registry
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+
+            let reset = molt_functools_singledispatch_new(MoltObject::none().bits());
+            assert_eq!(to_i64(obj_from_bits(reset)), Some(1));
+            let _ = molt_functools_singledispatch_drop(reset);
+        });
+    }
+
+    #[test]
+    fn functools_kwd_mark_public_return_is_owned_without_releasing_runtime_root() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            let state = runtime_state(_py);
+            functools_clear_runtime_state(_py, state);
+
+            let root_bits = kwd_mark_bits(_py);
+            let owned_bits = molt_functools_kwd_mark();
+            assert_eq!(root_bits, owned_bits);
+            dec_ref_bits(_py, owned_bits);
+
+            inc_ref_bits(_py, root_bits);
+            dec_ref_bits(_py, root_bits);
+
+            functools_clear_runtime_state(_py, state);
+        });
+    }
 }

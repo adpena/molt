@@ -619,22 +619,21 @@ pub unsafe extern "C" fn molt_getattr_ic(
 
                     if let Some((class_bits, _class_ptr, class_version)) =
                         attr_ic_class_key(obj_ptr)
+                        && let Some(cached_offset) = ic.probe(class_bits, class_version)
                     {
-                        if let Some(cached_offset) = ic.probe(class_bits, class_version) {
-                            let offset = cached_offset as usize;
-                            // Bounds-check the offset against the object's payload.
-                            let payload = object_payload_size(obj_ptr);
-                            if offset.saturating_add(std::mem::size_of::<u64>()) <= payload {
-                                let slot = obj_ptr.add(offset) as *const u64;
-                                let bits = *slot;
-                                // A cached offset might point at an uninitialised /
-                                // "missing" sentinel slot (e.g. the field was deleted
-                                // after the IC was written). Treat that as a miss and
-                                // fall through to the slow path.
-                                if !is_missing_bits(_py, bits) && bits != 0 {
-                                    inc_ref_bits(_py, bits);
-                                    return bits as i64;
-                                }
+                        let offset = cached_offset as usize;
+                        // Bounds-check the offset against the object's payload.
+                        let payload = object_payload_size(obj_ptr);
+                        if offset.saturating_add(std::mem::size_of::<u64>()) <= payload {
+                            let slot = obj_ptr.add(offset) as *const u64;
+                            let bits = *slot;
+                            // A cached offset might point at an uninitialised /
+                            // "missing" sentinel slot (e.g. the field was deleted
+                            // after the IC was written). Treat that as a miss and
+                            // fall through to the slow path.
+                            if !is_missing_bits(_py, bits) && bits != 0 {
+                                inc_ref_bits(_py, bits);
+                                return bits as i64;
                             }
                         }
                     }
@@ -648,20 +647,18 @@ pub unsafe extern "C" fn molt_getattr_ic(
                     if result != 0
                         && !obj_from_bits(result as u64).is_none()
                         && !exception_pending(_py)
-                    {
-                        if let Some((class_bits, class_ptr, class_version)) =
+                        && let Some((class_bits, class_ptr, class_version)) =
                             attr_ic_class_key(obj_ptr)
-                        {
-                            let attr_len = usize_from_bits(attr_name_len_bits);
-                            let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
-                            if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
-                                if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
-                                    && offset <= u32::MAX as usize
-                                {
-                                    ic.update(class_bits, offset as u32, class_version);
-                                }
-                                dec_ref_bits(_py, attr_bits);
+                    {
+                        let attr_len = usize_from_bits(attr_name_len_bits);
+                        let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
+                        if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+                            if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
+                                && offset <= u32::MAX as usize
+                            {
+                                ic.update(class_bits, offset as u32, class_version);
                             }
+                            dec_ref_bits(_py, attr_bits);
                         }
                     }
 
@@ -780,19 +777,18 @@ pub unsafe extern "C" fn molt_getattr_ic_slow(
                 && result != 0
                 && !obj_from_bits(result as u64).is_none()
                 && !exception_pending(_py)
+                && let Some((class_bits, class_ptr, class_version)) = attr_ic_class_key(obj_ptr)
             {
-                if let Some((class_bits, class_ptr, class_version)) = attr_ic_class_key(obj_ptr) {
-                    let attr_len = usize_from_bits(attr_name_len_bits);
-                    let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
-                    if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
-                        if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
-                            && offset <= u32::MAX as usize
-                        {
-                            let ic = global_ic_table().get(idx);
-                            ic.update(class_bits, offset as u32, class_version);
-                        }
-                        dec_ref_bits(_py, attr_bits);
+                let attr_len = usize_from_bits(attr_name_len_bits);
+                let slice = std::slice::from_raw_parts(attr_name_ptr, attr_len);
+                if let Some(attr_bits) = attr_name_bits_from_bytes(_py, slice) {
+                    if let Some(offset) = class_field_offset(_py, class_ptr, attr_bits)
+                        && offset <= u32::MAX as usize
+                    {
+                        let ic = global_ic_table().get(idx);
+                        ic.update(class_bits, offset as u32, class_version);
                     }
+                    dec_ref_bits(_py, attr_bits);
                 }
             }
 

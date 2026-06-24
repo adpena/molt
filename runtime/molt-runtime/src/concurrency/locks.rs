@@ -16,7 +16,6 @@ use crate::{
     molt_is_callable, monotonic_now_secs, obj_from_bits, opaque_handle_bits, ptr_from_bits,
     raise_exception, release_ptr, to_f64,
 };
-
 #[cfg(not(target_arch = "wasm32"))]
 struct MoltLock {
     state: Mutex<LockState>,
@@ -2079,7 +2078,8 @@ use std::time::Instant as WasmInstant;
 use crate::{
     attr_name_bits_from_bytes, call_callable0, call_callable1, dec_ref_bits, exception_pending,
     inc_ref_bits, is_truthy, missing_bits, molt_getattr_builtin, molt_is_callable,
-    monotonic_now_secs, obj_from_bits, ptr_from_bits, raise_exception, release_ptr, to_f64,
+    monotonic_now_secs, obj_from_bits, opaque_handle_bits, ptr_from_bits, raise_exception,
+    release_ptr, to_f64,
 };
 
 #[cfg(target_arch = "wasm32")]

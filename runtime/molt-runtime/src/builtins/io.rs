@@ -1889,16 +1889,12 @@ fn open_impl(
         }
     }
     #[cfg(windows)]
-    if crt_fd.is_none() {
-        if let Some(file_ref) = file.as_ref() {
-            use std::os::windows::io::AsRawHandle;
-            let handle = file_ref.as_raw_handle();
-            crt_fd = windows_crt_fd_from_handle(
-                handle as *mut std::ffi::c_void,
-                mode_info.readable,
-                mode_info.writable,
-            );
-        }
+    if crt_fd.is_none()
+        && let Some(file_ref) = file.as_ref()
+    {
+        use std::os::windows::io::AsRawHandle;
+        let handle = file_ref.as_raw_handle();
+        crt_fd = windows_crt_fd_from_handle(handle, mode_info.readable, mode_info.writable);
     }
     let Some(file) = file else {
         return raise_exception::<_>(_py, "OSError", "open failed");
@@ -6270,7 +6266,7 @@ pub extern "C" fn molt_file_isatty(handle_bits: u64) -> u64 {
                         }
                         use std::os::windows::io::AsRawHandle;
                         let handle = file.as_raw_handle();
-                        let isatty = windows_handle_isatty(handle as *mut std::ffi::c_void);
+                        let isatty = windows_handle_isatty(handle);
                         MoltObject::from_bool(isatty).bits()
                     }
                     #[cfg(not(any(unix, windows)))]
@@ -6754,12 +6750,27 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
 
+    fn safe_temp_component(value: &str) -> String {
+        value
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
     fn temp_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
+        let current_thread = std::thread::current();
+        let thread_name = current_thread.name().unwrap_or("t");
         path.push(format!(
             "molt_io_{name}_{}_{}.bin",
             std::process::id(),
-            std::thread::current().name().unwrap_or("t")
+            safe_temp_component(thread_name)
         ));
         path
     }

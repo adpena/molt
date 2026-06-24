@@ -2647,91 +2647,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod stream_tests {
-    use super::{
-        MoltStream, STREAM_MIN_MAX_QUEUED_BYTES, molt_stream_drop, molt_stream_recv,
-        molt_stream_send, stream_enqueue_bytes_blocking, stream_new_with_byte_budget,
-        stream_release_queued_bytes,
-    };
-    use crate::{MoltObject, dec_ref_bits, obj_from_bits, pending_bits_i64, ptr_from_bits};
-    use std::sync::mpsc;
-    use std::thread;
-    use std::time::Duration;
-
-    #[test]
-    fn stream_byte_budget_returns_pending_until_recv_releases_bytes() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
-        let full = vec![1u8; STREAM_MIN_MAX_QUEUED_BYTES];
-        let one = [2u8; 1];
-
-        let first = unsafe { molt_stream_send(stream_bits, full.as_ptr(), full.len() as u64) };
-        assert_eq!(first, 0);
-        let blocked = unsafe { molt_stream_send(stream_bits, one.as_ptr(), one.len() as u64) };
-        assert_eq!(blocked, pending_bits_i64());
-
-        crate::with_gil_entry_nopanic!(_py, {
-            let recv_bits = unsafe { molt_stream_recv(stream_bits) as u64 };
-            assert!(!obj_from_bits(recv_bits).is_none());
-            dec_ref_bits(_py, recv_bits);
-        });
-
-        let unblocked = unsafe { molt_stream_send(stream_bits, one.as_ptr(), one.len() as u64) };
-        assert_eq!(unblocked, 0);
-        unsafe { molt_stream_drop(stream_bits) };
-    }
-
-    #[test]
-    fn stream_blocking_enqueue_waits_for_byte_budget_release() {
-        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
-        let stream_ptr = ptr_from_bits(stream_bits);
-        assert!(!stream_ptr.is_null());
-        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
-        assert!(
-            super::stream_enqueue_bytes(stream, vec![1u8; STREAM_MIN_MAX_QUEUED_BYTES]).is_ok()
-        );
-
-        let (started_tx, started_rx) = mpsc::channel();
-        let (done_tx, done_rx) = mpsc::channel();
-        let worker_bits = stream_bits;
-        let worker = thread::spawn(move || {
-            started_tx.send(()).unwrap();
-            let ptr = ptr_from_bits(worker_bits);
-            let stream = unsafe { &*(ptr as *mut MoltStream) };
-            let ok = stream_enqueue_bytes_blocking(stream, vec![2u8; 1]);
-            done_tx.send(ok).unwrap();
-        });
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
-
-        let first = stream.receiver.try_recv().unwrap();
-        stream_release_queued_bytes(stream, first.len());
-        assert!(done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
-        worker.join().unwrap();
-        let second = stream.receiver.try_recv().unwrap();
-        assert_eq!(second, vec![2u8; 1]);
-        stream_release_queued_bytes(stream, second.len());
-        unsafe { molt_stream_drop(stream_bits) };
-    }
-
-    #[test]
-    fn stream_oversized_single_message_can_make_forward_progress() {
-        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
-        let oversized = vec![3u8; STREAM_MIN_MAX_QUEUED_BYTES + 1];
-        let sent =
-            unsafe { molt_stream_send(stream_bits, oversized.as_ptr(), oversized.len() as u64) };
-        assert_eq!(sent, 0);
-        crate::with_gil_entry_nopanic!(_py, {
-            let recv_bits = unsafe { molt_stream_recv(stream_bits) as u64 };
-            assert_ne!(recv_bits, pending_bits_i64() as u64);
-            assert_ne!(recv_bits, MoltObject::none().bits());
-            dec_ref_bits(_py, recv_bits);
-        });
-        unsafe { molt_stream_drop(stream_bits) };
-    }
-}
-
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 fn ws_connect_error(_py: &PyToken<'_>, code: i32) -> u64 {
     match code {
@@ -3479,4 +3394,89 @@ pub unsafe extern "C" fn molt_ws_drop(ws_bits: u64) {
         }
         ws_ref_dec(_py, ws_ptr as *mut MoltWebSocket);
     })
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::{
+        MoltStream, STREAM_MIN_MAX_QUEUED_BYTES, molt_stream_drop, molt_stream_recv,
+        molt_stream_send, stream_enqueue_bytes_blocking, stream_new_with_byte_budget,
+        stream_release_queued_bytes,
+    };
+    use crate::{MoltObject, dec_ref_bits, obj_from_bits, pending_bits_i64, ptr_from_bits};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn stream_byte_budget_returns_pending_until_recv_releases_bytes() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
+        let full = vec![1u8; STREAM_MIN_MAX_QUEUED_BYTES];
+        let one = [2u8; 1];
+
+        let first = unsafe { molt_stream_send(stream_bits, full.as_ptr(), full.len() as u64) };
+        assert_eq!(first, 0);
+        let blocked = unsafe { molt_stream_send(stream_bits, one.as_ptr(), one.len() as u64) };
+        assert_eq!(blocked, pending_bits_i64());
+
+        crate::with_gil_entry_nopanic!(_py, {
+            let recv_bits = unsafe { molt_stream_recv(stream_bits) as u64 };
+            assert!(!obj_from_bits(recv_bits).is_none());
+            dec_ref_bits(_py, recv_bits);
+        });
+
+        let unblocked = unsafe { molt_stream_send(stream_bits, one.as_ptr(), one.len() as u64) };
+        assert_eq!(unblocked, 0);
+        unsafe { molt_stream_drop(stream_bits) };
+    }
+
+    #[test]
+    fn stream_blocking_enqueue_waits_for_byte_budget_release() {
+        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
+        let stream_ptr = ptr_from_bits(stream_bits);
+        assert!(!stream_ptr.is_null());
+        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
+        assert!(
+            super::stream_enqueue_bytes(stream, vec![1u8; STREAM_MIN_MAX_QUEUED_BYTES]).is_ok()
+        );
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_bits = stream_bits;
+        let worker = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let ptr = ptr_from_bits(worker_bits);
+            let stream = unsafe { &*(ptr as *mut MoltStream) };
+            let ok = stream_enqueue_bytes_blocking(stream, vec![2u8; 1]);
+            done_tx.send(ok).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+        let first = stream.receiver.try_recv().unwrap();
+        stream_release_queued_bytes(stream, first.len());
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        worker.join().unwrap();
+        let second = stream.receiver.try_recv().unwrap();
+        assert_eq!(second, vec![2u8; 1]);
+        stream_release_queued_bytes(stream, second.len());
+        unsafe { molt_stream_drop(stream_bits) };
+    }
+
+    #[test]
+    fn stream_oversized_single_message_can_make_forward_progress() {
+        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
+        let oversized = vec![3u8; STREAM_MIN_MAX_QUEUED_BYTES + 1];
+        let sent =
+            unsafe { molt_stream_send(stream_bits, oversized.as_ptr(), oversized.len() as u64) };
+        assert_eq!(sent, 0);
+        crate::with_gil_entry_nopanic!(_py, {
+            let recv_bits = unsafe { molt_stream_recv(stream_bits) as u64 };
+            assert_ne!(recv_bits, pending_bits_i64() as u64);
+            assert_ne!(recv_bits, MoltObject::none().bits());
+            dec_ref_bits(_py, recv_bits);
+        });
+        unsafe { molt_stream_drop(stream_bits) };
+    }
 }

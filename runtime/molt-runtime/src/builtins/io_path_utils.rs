@@ -2360,7 +2360,7 @@ pub(crate) fn path_splitroot_text(path: &str, sep: char) -> (String, String, Str
             root = sep.to_string();
             rest = rest.trim_start_matches('\\');
         }
-        return (drive, root, rest.to_string());
+        (drive, root, rest.to_string())
     }
     #[cfg(not(windows))]
     {

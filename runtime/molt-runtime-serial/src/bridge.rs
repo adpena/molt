@@ -4,6 +4,7 @@
 //! The only extern "C" symbol is `__molt_serial_get_vtable`.
 
 use molt_runtime_core::prelude::*;
+pub use molt_runtime_core::prelude::{opaque_handle_bits, opaque_handle_ptr_from_bits};
 use molt_runtime_core::{
     HashContextCode, RuntimeExtensionStateClear, RuntimeExtensionStateDrop,
     RuntimeExtensionStateInit, RuntimeVtable,

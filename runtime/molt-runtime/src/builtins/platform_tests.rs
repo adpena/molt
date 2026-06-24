@@ -27,6 +27,19 @@ fn with_env_state<R>(entries: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
     out
 }
 
+fn platform_test_path(parts: &[&str]) -> String {
+    let sep = bootstrap_path_sep();
+    let mut path = if sep == '\\' {
+        "C:\\tmp".to_string()
+    } else {
+        "/tmp".to_string()
+    };
+    for part in parts {
+        path = path_join_text(path, part, sep);
+    }
+    path
+}
+
 // Each test gets a fresh runtime by resetting the one-shot shutdown flag
 // before re-initializing.  The `molt_runtime_reset_for_testing()` call is
 // `#[cfg(test)]`-gated and safe here because `TEST_MUTEX` serializes access.
@@ -590,29 +603,37 @@ fn sys_bootstrap_state_ignores_virtual_env_site_packages_when_present() {
 
 #[test]
 fn runpy_resolve_path_uses_bootstrap_pwd_for_relative_paths() {
+    let sep = bootstrap_path_sep();
+    let pwd = platform_test_path(&["bootstrap_pwd"]);
+    let rel_path = path_join_text(path_join_text("pkg".to_string(), "..", sep), "mod.py", sep);
+    let expected = path_join_text(pwd.clone(), "mod.py", sep);
     with_env_state(
         &[
             ("PYTHONPATH", ""),
             ("MOLT_MODULE_ROOTS", ""),
             ("MOLT_DEV_TRUSTED", "1"),
-            ("PWD", "/tmp/bootstrap_pwd"),
+            ("PWD", &pwd),
         ],
         || {
-            let resolved =
-                bootstrap_resolve_abspath("pkg/../mod.py", Some(bootstrap_module_file()));
-            assert_eq!(resolved, "/tmp/bootstrap_pwd/mod.py");
+            let resolved = bootstrap_resolve_abspath(&rel_path, Some(bootstrap_module_file()));
+            assert_eq!(resolved, expected);
         },
     );
 }
 
 #[test]
 fn importlib_source_loader_resolution_marks_packages() {
-    let package = source_loader_resolution("demo.pkg", "/tmp/demo/pkg/__init__.py", false);
+    let package_path = platform_test_path(&["demo", "pkg", "__init__.py"]);
+    let package = source_loader_resolution("demo.pkg", &package_path, false);
     assert!(package.is_package);
     assert_eq!(package.module_package, "demo.pkg");
-    assert_eq!(package.package_root, Some("/tmp/demo/pkg".to_string()));
+    assert_eq!(
+        package.package_root,
+        Some(path_dirname_text(&package_path, bootstrap_path_sep()))
+    );
 
-    let module = source_loader_resolution("demo.pkg.mod", "/tmp/demo/pkg/mod.py", false);
+    let module_path = platform_test_path(&["demo", "pkg", "mod.py"]);
+    let module = source_loader_resolution("demo.pkg.mod", &module_path, false);
     assert!(!module.is_package);
     assert_eq!(module.module_package, "demo.pkg");
     assert_eq!(module.package_root, None);
@@ -646,11 +667,18 @@ fn importlib_source_exec_payload_reads_source_and_resolution() {
 
 #[test]
 fn importlib_cache_from_source_matches_cpython_layout() {
+    let sep = bootstrap_path_sep();
+    let module_path = platform_test_path(&["pkg", "mod.py"]);
+    let cache_dir = path_join_text(path_dirname_text(&module_path, sep), "__pycache__", sep);
     assert_eq!(
-        importlib_cache_from_source("/tmp/pkg/mod.py"),
-        "/tmp/pkg/__pycache__/mod.pyc"
+        importlib_cache_from_source(&module_path),
+        path_join_text(cache_dir, "mod.pyc", sep)
     );
-    assert_eq!(importlib_cache_from_source("/tmp/pkg/mod"), "/tmp/pkg/modc");
+    let extensionless = platform_test_path(&["pkg", "mod"]);
+    assert_eq!(
+        importlib_cache_from_source(&extensionless),
+        format!("{extensionless}c")
+    );
 }
 
 #[test]

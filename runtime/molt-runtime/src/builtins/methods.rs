@@ -279,38 +279,6 @@ fn special_singleton_bits(_py: &PyToken<'_>, slot: &AtomicU64, type_id: u32) -> 
     bits
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::Ordering as AtomicOrdering;
-
-    fn assert_immortal_singleton(_py: &PyToken<'_>, bits: u64, type_id: u32) {
-        let ptr = obj_from_bits(bits)
-            .as_ptr()
-            .expect("special singleton must be heap allocated");
-        unsafe {
-            let header = header_from_obj_ptr(ptr);
-            assert_eq!(object_type_id(ptr), type_id);
-            assert_ne!((*header).flags & crate::object::HEADER_FLAG_IMMORTAL, 0);
-            let refcount = (*header).ref_count.load(AtomicOrdering::Acquire);
-            dec_ref_bits(_py, bits);
-            dec_ref_bits(_py, bits);
-            assert_eq!(object_type_id(ptr), type_id);
-            assert_eq!((*header).ref_count.load(AtomicOrdering::Acquire), refcount);
-        }
-    }
-
-    #[test]
-    fn special_singletons_are_immortal_process_roots() {
-        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        crate::with_gil_entry_nopanic!(_py, {
-            assert_immortal_singleton(_py, missing_bits(_py), TYPE_ID_OBJECT);
-            assert_immortal_singleton(_py, not_implemented_bits(_py), TYPE_ID_NOT_IMPLEMENTED);
-            assert_immortal_singleton(_py, ellipsis_bits(_py), TYPE_ID_ELLIPSIS);
-        });
-    }
-}
-
 pub(crate) fn slice_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     match name {
         "indices" => Some(builtin_func_bits(
@@ -2620,5 +2588,37 @@ pub(crate) fn asyncgen_method_bits(_py: &PyToken<'_>, name: &str) -> Option<u64>
             1,
         )),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering as AtomicOrdering;
+
+    fn assert_immortal_singleton(_py: &PyToken<'_>, bits: u64, type_id: u32) {
+        let ptr = obj_from_bits(bits)
+            .as_ptr()
+            .expect("special singleton must be heap allocated");
+        unsafe {
+            let header = header_from_obj_ptr(ptr);
+            assert_eq!(object_type_id(ptr), type_id);
+            assert_ne!((*header).flags & crate::object::HEADER_FLAG_IMMORTAL, 0);
+            let refcount = (*header).ref_count.load(AtomicOrdering::Acquire);
+            dec_ref_bits(_py, bits);
+            dec_ref_bits(_py, bits);
+            assert_eq!(object_type_id(ptr), type_id);
+            assert_eq!((*header).ref_count.load(AtomicOrdering::Acquire), refcount);
+        }
+    }
+
+    #[test]
+    fn special_singletons_are_immortal_process_roots() {
+        let _guard = crate::TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        crate::with_gil_entry_nopanic!(_py, {
+            assert_immortal_singleton(_py, missing_bits(_py), TYPE_ID_OBJECT);
+            assert_immortal_singleton(_py, not_implemented_bits(_py), TYPE_ID_NOT_IMPLEMENTED);
+            assert_immortal_singleton(_py, ellipsis_bits(_py), TYPE_ID_ELLIPSIS);
+        });
     }
 }

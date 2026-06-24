@@ -557,7 +557,7 @@ pub extern "C" fn molt_string_index_slice(
         let needle = obj_from_bits(needle_bits);
         let needle_is_str = needle
             .as_ptr()
-            .map_or(false, |p| unsafe { object_type_id(p) == TYPE_ID_STRING });
+            .is_some_and(|p| unsafe { object_type_id(p) == TYPE_ID_STRING });
         if !needle_is_str {
             let msg = str_sub_arg_type_msg(_py, "index", needle);
             return raise_exception::<_>(_py, "TypeError", &msg);
@@ -594,7 +594,7 @@ pub extern "C" fn molt_string_rindex_slice(
         let needle = obj_from_bits(needle_bits);
         let needle_is_str = needle
             .as_ptr()
-            .map_or(false, |p| unsafe { object_type_id(p) == TYPE_ID_STRING });
+            .is_some_and(|p| unsafe { object_type_id(p) == TYPE_ID_STRING });
         if !needle_is_str {
             let msg = str_sub_arg_type_msg(_py, "rindex", needle);
             return raise_exception::<_>(_py, "TypeError", &msg);
@@ -2596,11 +2596,8 @@ pub(crate) fn explicit_split_field_args(
     index_bits: u64,
 ) -> Option<(*mut u8, *mut u8, usize)> {
     unsafe {
-        let Some((hay_ptr, needle_ptr)) =
-            validate_explicit_string_split_args(_py, hay_bits, needle_bits)
-        else {
-            return None;
-        };
+        let (hay_ptr, needle_ptr) =
+            validate_explicit_string_split_args(_py, hay_bits, needle_bits)?;
         let Some(index) = to_i64(obj_from_bits(index_bits)) else {
             let msg = format!(
                 "list indices must be integers or slices, not {}",

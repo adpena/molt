@@ -478,7 +478,7 @@ pub extern "C" fn molt_list_clear(list_bits: u64) -> u64 {
                 promote_specialized_list_to_list(_py, list_ptr);
                 if object_type_id(list_ptr) == TYPE_ID_LIST {
                     let elems = seq_vec(list_ptr);
-                    let removed: Vec<u64> = elems.drain(..).collect();
+                    let removed: Vec<u64> = std::mem::take(elems);
                     (*header_from_obj_ptr(list_ptr)).flags &=
                         !crate::object::HEADER_FLAG_CONTAINS_REFS;
                     for elem in removed {

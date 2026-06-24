@@ -2032,11 +2032,14 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
             }
             MoltObject::none().bits()
         }
-        #[cfg(all(not(unix), not(target_arch = "wasm32")))]
+        #[cfg(windows)]
         {
             let atime_obj = obj_from_bits(atime_bits);
             let (atime, mtime) = if atime_obj.is_none() {
-                let now = filetime::FileTime::from_system_time(std::time::SystemTime::now());
+                let now = match windows_filetime_now(_py) {
+                    Ok(v) => v,
+                    Err(bits) => return bits,
+                };
                 (now, now)
             } else {
                 let atime_f = match to_f64(atime_obj) {
@@ -2059,30 +2062,55 @@ pub extern "C" fn molt_os_utime(path_bits: u64, atime_bits: u64, mtime_bits: u64
                         );
                     }
                 };
-                let atime = match filetime_from_seconds(_py, atime_f, "atime") {
+                let atime = match windows_filetime_from_seconds(_py, atime_f, "atime") {
                     Ok(v) => v,
                     Err(bits) => return bits,
                 };
-                let mtime = match filetime_from_seconds(_py, mtime_f, "mtime") {
+                let mtime = match windows_filetime_from_seconds(_py, mtime_f, "mtime") {
                     Ok(v) => v,
                     Err(bits) => return bits,
                 };
                 (atime, mtime)
             };
-            if let Err(err) = filetime::set_file_times(&path, atime, mtime) {
+            if let Err(err) = set_windows_file_times(&path, atime, mtime) {
                 return raise_os_error::<u64>(_py, err, "utime");
             }
             MoltObject::none().bits()
         }
+        #[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
+        {
+            let _ = (path, atime_bits, mtime_bits);
+            raise_os_error_errno::<u64>(_py, libc::ENOSYS as i64, "utime")
+        }
     })
 }
 
-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
-fn filetime_from_seconds(
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WindowsFileTime {
+    dw_low_date_time: u32,
+    dw_high_date_time: u32,
+}
+
+#[cfg(windows)]
+#[allow(non_snake_case)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn SetFileTime(
+        hfile: *mut std::ffi::c_void,
+        lpcreationtime: *const WindowsFileTime,
+        lplastaccesstime: *const WindowsFileTime,
+        lplastwritetime: *const WindowsFileTime,
+    ) -> i32;
+}
+
+#[cfg(windows)]
+fn windows_filetime_from_seconds(
     _py: &CoreGilToken,
     seconds: f64,
     label: &str,
-) -> Result<filetime::FileTime, u64> {
+) -> Result<WindowsFileTime, u64> {
     if !seconds.is_finite() {
         return Err(raise_exception::<u64>(
             _py,
@@ -2120,7 +2148,108 @@ fn filetime_from_seconds(
         })?;
         nanos += 1_000_000_000;
     }
-    Ok(filetime::FileTime::from_unix_time(secs, nanos as u32))
+    windows_filetime_from_unix_parts(secs, nanos as u32).ok_or_else(|| {
+        raise_exception::<u64>(
+            _py,
+            "OverflowError",
+            &format!("utime: {label} out of range"),
+        )
+    })
+}
+
+#[cfg(windows)]
+fn windows_filetime_now(_py: &CoreGilToken) -> Result<WindowsFileTime, u64> {
+    let now = std::time::SystemTime::now();
+    let (secs, nanos) = match now.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => (
+            i64::try_from(duration.as_secs()).map_err(|_| {
+                raise_exception::<u64>(_py, "OverflowError", "utime: current time out of range")
+            })?,
+            duration.subsec_nanos(),
+        ),
+        Err(err) => {
+            let duration = err.duration();
+            let secs = i64::try_from(duration.as_secs()).map_err(|_| {
+                raise_exception::<u64>(_py, "OverflowError", "utime: current time out of range")
+            })?;
+            let nanos = duration.subsec_nanos();
+            if nanos == 0 {
+                (
+                    secs.checked_neg().ok_or_else(|| {
+                        raise_exception::<u64>(
+                            _py,
+                            "OverflowError",
+                            "utime: current time out of range",
+                        )
+                    })?,
+                    0,
+                )
+            } else {
+                (
+                    secs.checked_neg()
+                        .and_then(|v| v.checked_sub(1))
+                        .ok_or_else(|| {
+                            raise_exception::<u64>(
+                                _py,
+                                "OverflowError",
+                                "utime: current time out of range",
+                            )
+                        })?,
+                    1_000_000_000 - nanos,
+                )
+            }
+        }
+    };
+    windows_filetime_from_unix_parts(secs, nanos).ok_or_else(|| {
+        raise_exception::<u64>(_py, "OverflowError", "utime: current time out of range")
+    })
+}
+
+#[cfg(windows)]
+fn windows_filetime_from_unix_parts(secs: i64, nanos: u32) -> Option<WindowsFileTime> {
+    const WINDOWS_EPOCH_OFFSET_SECS: i128 = 11_644_473_600;
+    const WINDOWS_TICKS_PER_SEC: i128 = 10_000_000;
+    let intervals = (secs as i128)
+        .checked_add(WINDOWS_EPOCH_OFFSET_SECS)?
+        .checked_mul(WINDOWS_TICKS_PER_SEC)?
+        .checked_add((nanos as i128) / 100)?;
+    if !(0..=u64::MAX as i128).contains(&intervals) {
+        return None;
+    }
+    let intervals = intervals as u64;
+    Some(WindowsFileTime {
+        dw_low_date_time: intervals as u32,
+        dw_high_date_time: (intervals >> 32) as u32,
+    })
+}
+
+#[cfg(windows)]
+fn set_windows_file_times(
+    path: &Path,
+    atime: WindowsFileTime,
+    mtime: WindowsFileTime,
+) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    let result = unsafe {
+        SetFileTime(
+            file.as_raw_handle().cast(),
+            std::ptr::null(),
+            &atime,
+            &mtime,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

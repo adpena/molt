@@ -10,7 +10,8 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use crate::object::ops::{is_truthy, string_obj_to_owned};
 use crate::{
     PyToken, alloc_string, alloc_tuple, dec_ref_bits, int_bits_from_bigint, int_bits_from_i64,
-    obj_from_bits, opaque_handle_bits, ptr_from_bits, raise_exception, release_ptr, to_bigint,
+    obj_from_bits, opaque_handle_bits, opaque_handle_ptr_from_bits, raise_exception, release_ptr,
+    to_bigint,
 };
 
 const MPD_CLAMPED: u32 = 0x00000001;
@@ -127,19 +128,11 @@ fn context_dec(ptr: *mut DecimalContextHandle) {
 }
 
 fn context_ptr_from_bits(bits: u64) -> Option<*mut DecimalContextHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr as *mut DecimalContextHandle)
-    }
+    opaque_handle_ptr_from_bits(bits).map(|ptr| ptr as *mut DecimalContextHandle)
 }
 
 fn decimal_handle_from_bits(bits: u64) -> Option<&'static mut DecimalHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
-    }
+    let ptr = opaque_handle_ptr_from_bits(bits)?;
     // SAFETY: bits encode a DecimalHandle pointer owned by this runtime.
     Some(unsafe { &mut *(ptr as *mut DecimalHandle) })
 }
@@ -670,10 +663,9 @@ pub extern "C" fn molt_decimal_context_copy(ctx_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_drop(ctx_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let ptr = ptr_from_bits(ctx_bits) as *mut DecimalContextHandle;
-        if ptr.is_null() {
+        let Some(ptr) = context_ptr_from_bits(ctx_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         context_dec(ptr);
         MoltObject::none().bits()
     })
@@ -904,10 +896,9 @@ pub extern "C" fn molt_decimal_clone(value_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_drop(value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let ptr = ptr_from_bits(value_bits);
-        if ptr.is_null() {
+        let Some(ptr) = opaque_handle_ptr_from_bits(value_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         release_ptr(ptr);
         // SAFETY: pointer is owned by this runtime.
         unsafe {
@@ -1256,8 +1247,8 @@ pub extern "C" fn molt_decimal_exp(ctx_bits: u64, a_bits: u64) -> u64 {
 
 // ── Binary arithmetic ────────────────────────────────────────────────────
 
-fn binary_arith_setup<'a>(
-    _py: &PyToken<'a>,
+fn binary_arith_setup(
+    _py: &PyToken,
     ctx_bits: u64,
     a_bits: u64,
     b_bits: u64,

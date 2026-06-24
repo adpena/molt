@@ -35,6 +35,27 @@ pub fn bits_from_ptr(ptr: *mut u8) -> u64 {
     register_ptr(ptr)
 }
 
+/// Register an opaque runtime-owned handle and return its immediate-int bits.
+#[inline]
+pub fn opaque_handle_bits(ptr: *mut u8) -> u64 {
+    let addr = bits_from_ptr(ptr);
+    debug_assert!(
+        addr <= ((1_u64 << 46) - 1),
+        "opaque runtime handle address exceeds Molt immediate int range"
+    );
+    MoltObject::from_int(addr as i64).bits()
+}
+
+/// Resolve an opaque runtime-owned handle from its immediate-int bits.
+#[inline]
+pub fn opaque_handle_ptr_from_bits(bits: u64) -> Option<*mut u8> {
+    let addr = obj_from_bits(bits).as_int()?;
+    if addr < 0 {
+        return None;
+    }
+    resolve_ptr(addr as u64)
+}
+
 // ---------------------------------------------------------------------------
 // Type ID constants (canonical copies — values must match molt-runtime)
 // ---------------------------------------------------------------------------
@@ -922,8 +943,9 @@ pub mod prelude {
     pub use crate::HashContextCode;
     pub use crate::{
         bits_from_ptr, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, bridge_owned_u8_buffer,
-        bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, obj_from_bits, ptr_from_bits,
-        CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, PyToken,
+        bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, obj_from_bits,
+        opaque_handle_bits, opaque_handle_ptr_from_bits, ptr_from_bits, CoreGilGuard,
+        CoreGilToken, GilReleaseGuard, MoltObject, PyToken,
     };
 
     // Safe runtime wrappers
