@@ -1093,11 +1093,11 @@ pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
         #[cfg(not(feature = "stdlib_fs_extra"))]
         {
             let _ = &full_pattern;
-            return raise_exception::<u64>(
+            raise_exception::<u64>(
                 _py,
                 "RuntimeError",
                 "pathlib.glob requires the stdlib_fs_extra feature",
-            );
+            )
         }
         #[cfg(feature = "stdlib_fs_extra")]
         {
@@ -1154,11 +1154,11 @@ pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
         #[cfg(not(feature = "stdlib_fs_extra"))]
         {
             let _ = &full_pattern;
-            return raise_exception::<u64>(
+            raise_exception::<u64>(
                 _py,
                 "RuntimeError",
                 "pathlib.rglob requires the stdlib_fs_extra feature",
-            );
+            )
         }
         #[cfg(feature = "stdlib_fs_extra")]
         {
