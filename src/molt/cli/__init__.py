@@ -268,6 +268,7 @@ from molt.cli.package_registry import (
     _upload_registry_file,
     _validate_registry_url,
 )
+from molt.cli.package_distribution import _resolve_sidecar_path
 from molt.cli.lockfiles import (
     _LOCK_CHECK_CACHE_VERSION,
     _cargo_lock_manifest_paths,
@@ -29473,15 +29474,6 @@ def _resolve_extension_manifest_for_verify(
     manifest_path = Path(tmpdir.name) / "extension_manifest.json"
     _atomic_write_json(manifest_path, decoded, sort_keys=True, indent=2)
     return manifest_path, tmpdir, None
-
-
-def _resolve_sidecar_path(output_path: Path, override: str | None, suffix: str) -> Path:
-    if override:
-        path = Path(override).expanduser()
-        if not path.is_absolute():
-            path = (output_path.parent / path).absolute()
-        return path
-    return output_path.with_name(output_path.stem + suffix)
 
 
 def package(
