@@ -138,6 +138,13 @@ from molt.cli.arg_helpers import (
     _strip_leading_double_dash,
     completion,
 )
+from molt.cli.backend_diagnostics import (
+    _BACKEND_DIAGNOSTIC_ENV_KNOBS as _BACKEND_DIAGNOSTIC_ENV_KNOBS,
+    _FALSY_ENV_VALUES,
+    _PYTHON_WARNING_RE as _PYTHON_WARNING_RE,
+    _env_requests_backend_diagnostics,
+    _forward_compilation_warnings,
+)
 from molt.cli.capability_spec import (
     CAPABILITY_PROFILES as CAPABILITY_PROFILES,
     CAPABILITY_TOKEN_RE as CAPABILITY_TOKEN_RE,
@@ -517,44 +524,6 @@ def _scoped_environ_updates(updates: Mapping[str, str]) -> Iterator[None]:
 
 
 
-_PYTHON_WARNING_RE = re.compile(
-    r"^.+:\d+: (?:Syntax|Deprecation|Runtime|User|Future|Pending\s*Deprecation)Warning: "
-)
-
-# Subset of `_BACKEND_REQUEST_ENV_KNOBS` whose presence causes the backend to
-# emit diagnostic output to stderr (TIR dumps, pass-stats, IR dumps, timing,
-# debug bind traces). When the wrapper invokes the build subprocess with any
-# of these set, it must stream the subprocess stderr through to the user —
-# otherwise the env knob is silently a no-op from the user's perspective,
-# which defeats the purpose of having the knob.
-_BACKEND_DIAGNOSTIC_ENV_KNOBS = frozenset(
-    {
-        "TIR_DUMP",
-        "TIR_OPT_STATS",
-        "MOLT_DUMP_CLIF",
-        "MOLT_DUMP_CLIF_ON_ERROR",
-        "MOLT_DUMP_CLIF_ON_CFG_ERROR",
-        "MOLT_DUMP_CLIF_FUNC",
-        "MOLT_DUMP_CLIF_FILE",
-        "MOLT_DUMP_CLIF_FILE_FILTER",
-        "MOLT_DUMP_FINAL_FUNC_IR",
-        "MOLT_DUMP_IR",
-        "MOLT_OVERFLOW_PEEL_STATS",
-        "MOLT_PROMOTE_DEBUG",
-        "MOLT_INLINE_STATS",
-        "MOLT_DEBUG_BIND",
-        "MOLT_DEBUG_CHECK_EXC",
-        "MOLT_DEBUG_CHECK_EXCEPTION",
-        "MOLT_LLVM_DUMP_IR",
-        "MOLT_BACKEND_TIMING",
-        "MOLT_MEMGVN_REPORT",
-        "MOLT_MEMGVN_REPORT_BASELINE",
-        "MOLT_MEMGVN_DIAG",
-        "MOLT_MEMGVN_DUMP",
-        "MOLT_DEBUG_DROP",
-    }
-)
-_FALSY_ENV_VALUES = frozenset({"", "0", "false", "no", "off"})
 _VALIDATE_PROOF_BYPASS_ENV = frozenset(
     {
         "MOLT_SKIP_BINARY_VALIDITY_CHECK",
@@ -570,43 +539,6 @@ _VALIDATE_SUITE_CHOICES = (
     "bench",
     "custody-proof",
 )
-
-
-def _env_requests_backend_diagnostics(env: Mapping[str, str]) -> bool:
-    """True if any backend-diagnostic env knob is truthy in ``env``.
-
-    The build subprocess captures stderr (to keep it out of stdout's JSON
-    contract), so any diagnostic output the user explicitly opted into via
-    ``TIR_OPT_STATS=1`` or similar would be silently dropped without an
-    explicit pass-through. This predicate detects user intent so the caller
-    can stream the subprocess stderr verbatim.
-    """
-    for key in _BACKEND_DIAGNOSTIC_ENV_KNOBS:
-        value = env.get(key)
-        if value is None:
-            continue
-        if value.strip().lower() not in _FALSY_ENV_VALUES:
-            return True
-    return False
-
-
-def _forward_compilation_warnings(stderr: str) -> None:
-    """Forward Python warnings from build subprocess stderr to the user.
-
-    Matches CPython's warning format: ``path:line: CategoryWarning: message``
-    followed by an optional source-line context line (2-space indented).
-    Only forwards recognized Python warning categories, not build noise.
-    """
-    lines = stderr.splitlines(keepends=True)
-    i = 0
-    while i < len(lines):
-        if _PYTHON_WARNING_RE.match(lines[i]):
-            sys.stderr.write(lines[i])
-            # Forward the following source-context line if present
-            if i + 1 < len(lines) and lines[i + 1].startswith("  "):
-                sys.stderr.write(lines[i + 1])
-                i += 1
-        i += 1
 
 
 def _emit_wrapper_build_success_signals(payload: Mapping[str, Any]) -> None:
