@@ -127,8 +127,12 @@ one complete A+B change:
 - **MatchRef:** `exception_last*` / active-exception match refs are released at
   `ExceptionPop` / handler-region exit on every exit path.
 
-Recovered WIP under `memory/recovery/stall_20260608/` is a baton, not accepted
-implementation. Do not land the CreationRef half without the MatchRef half.
+The old recovered WIP under `memory/recovery/stall_20260608/` is superseded by
+the live `runtime/molt-tir/src/tir/call_facts.rs` authority and module-phase
+seeding in `runtime/molt-tir/src/tir/module_phase.rs`. Do not reintroduce a
+CreationRef-only or local-call-fact carrier: the accepted path is the shared
+ExceptionRegions/drop-insertion model tracked in design 45 and the module-owned
+CallFacts table.
 
 ### RC-2 — LLVM exception-CFG handler reachability — **DONE**
 
