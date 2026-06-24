@@ -54,6 +54,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import platform
 import statistics
 import subprocess
 import sys
@@ -87,7 +88,9 @@ from perf_schema import (  # noqa: E402
     CLASS_TIE,
     CLASSIFY_STATES as CLASSIFY_STATES,
     GATE_FAILING_VERDICTS,
+    RED_THRESHOLD,
     SCHEMA_VERSION,
+    UNSTABLE_CV,
     VERDICT_BUILD_FAILED,
     VERDICT_CPY_INCOMPAT,
     VERDICT_FAIL_COLD_BUDGET,
@@ -99,7 +102,8 @@ from perf_schema import (  # noqa: E402
     VERDICT_UNSTABLE,
     VERDICT_WARN_COLD_FLOOR,
     flatten_cells,
-    validate_scoreboard_doc,
+    validate_board,
+    verdict_fails_gate,
 )
 
 SAFE_RUN = TOOLS_ROOT / "safe_run.py"
@@ -109,17 +113,9 @@ COLD_START_BUDGET_PATH = SCOREBOARD_DIR / "cold_start_budget.json"
 # The constitution's session isolation (must be set before any build command).
 PERFSCORE_SESSION_ID = "perfscore"
 
-# RED threshold: a molt speedup strictly below this vs CPython is a contract
-# violation. 1.00x means "exactly CPython"; anything below is slower => RED.
-RED_THRESHOLD = 1.00
-
-# Coefficient-of-variation (stdev/median) above this flags a run as unstable.
-# The constitution requires instability detection; an unstable cell cannot be
-# trusted to be GREEN and is gated like a RED.
-UNSTABLE_CV = 0.20
-
-# Verdict/classification vocabularies live in perf_schema.py so board
-# projections and gates share one JSON contract authority.
+# Verdict/classification vocabularies and gate thresholds live in
+# perf_schema.py so board projections and gates share one JSON contract
+# authority.
 
 # --- Quiescence-guard thresholds (#69 Rule 2) -------------------------------
 # A run is AUTHORITATIVE only on a quiet machine. The dominant contamination
@@ -1678,26 +1674,17 @@ class Cell:
     # COLD: first cold-cache sample for each runtime.
     cold_molt_s: float | None = None
     cold_cpython_s: float | None = None
-    cold_ratio: float | None = None  # cpython / molt (>1 = molt faster)
 
     # WARM: steady-state median for each runtime.
     warm_molt_s: float | None = None
     warm_cpython_s: float | None = None
-    warm_ratio: float | None = None
-
-    # Headline speedup = warm cpython / warm molt (the constitution's column).
-    cpython_ratio: float | None = None
 
     # Peak RSS (the worse of cold/warm samples) for each runtime.
     molt_peak_rss_mib: float | None = None
     cpython_peak_rss_mib: float | None = None
 
-    # Stability + status.
+    # Stability + diagnostic note.
     stable: bool = False
-    red: bool = False
-    status: str = (
-        "pending"  # green | red | unstable | run-blocked | build-failed | error
-    )
     note: str | None = None
 
     # --- Two-dimensional verdict (council ruling A) ----------------------
@@ -1770,16 +1757,15 @@ class Cell:
         budget_ms: float | None = None,
         authoritative: bool = True,
     ) -> None:
-        """Derive ratios + the TWO-DIMENSIONAL verdict from the collected facts.
+        """Derive speedups + the TWO-DIMENSIONAL verdict from collected facts.
 
         ``budget_ms`` is the cold-start tax budget for this (backend, profile)
         cell (None = no budget recorded yet; FAIL_COLD_BUDGET cannot fire).
         ``authoritative`` False stamps every cell FAIL_STALE (the tree is not
         origin/main) — overriding all other verdicts per council ruling A.
 
-        Sets ``verdict`` (the VERDICT_* vocabulary) AND keeps ``status`` + the
-        legacy ``red`` bool in sync so older consumers (diff, JSON readers) keep
-        working. ``status`` mirrors the verdict in lowercase-legacy form.
+        Sets ``verdict`` (the VERDICT_* vocabulary), the single gate authority
+        consumed by summaries, rebuilds, merges, and CI.
         """
         self.cold_budget_ms = budget_ms
 
@@ -1787,47 +1773,32 @@ class Cell:
         # are not the origin/main contract, full stop.
         if not authoritative:
             self.verdict = VERDICT_FAIL_STALE
-            self.status = "stale"
-            self.red = True
             if self.note is None:
                 self.note = "non-authoritative tree (local != origin/main or dirty)"
             return
 
         if self.run_blocked:
             self.verdict = VERDICT_RUN_BLOCKED
-            self.status = "run-blocked"
-            self.red = False
             return
         if not self.build_ok:
             self.verdict = VERDICT_BUILD_FAILED
-            self.status = "build-failed"
-            self.red = True
             return
         # CPython baseline can't run -> no valid floor; not gated.
         if not self.cpython_ok:
             self.cpython_incompatible = True
             self.verdict = VERDICT_CPY_INCOMPAT
-            self.status = "cpython-incompatible"
-            self.red = False
             if self.note is None:
                 self.note = "CPython baseline could not run this script standalone"
             return
         # CPython runs but molt does not -> a real molt run failure.
         if not self.molt_ok:
             self.verdict = VERDICT_RUN_ERROR
-            self.status = "error"
-            self.red = True
             if self.note is None:
                 self.note = "molt run failed/unmeasurable while CPython ran"
             return
 
-        # Ratios. cold/warm "ratio" == cpython/molt (legacy column names);
-        # the council's "speedup" is the same quantity — we expose both names.
-        self.cold_ratio = _safe_ratio(self.cold_cpython_s, self.cold_molt_s)
-        self.warm_ratio = _safe_ratio(self.warm_cpython_s, self.warm_molt_s)
-        self.cpython_ratio = self.warm_ratio
-        self.warm_speedup = self.warm_ratio
-        self.cold_speedup = self.cold_ratio
+        self.warm_speedup = _safe_ratio(self.warm_cpython_s, self.warm_molt_s)
+        self.cold_speedup = _safe_ratio(self.cold_cpython_s, self.cold_molt_s)
 
         # startup_tax_ms = the fixed cold-start cost molt pays that the warm
         # steady state does not (cold_total - warm_total). This is the quantity
@@ -1840,8 +1811,6 @@ class Cell:
         # Unstable cell: cannot be trusted in EITHER direction -> gated.
         if not self.stable:
             self.verdict = VERDICT_UNSTABLE
-            self.status = "unstable"
-            self.red = True
             return
 
         warm_below = (
@@ -1862,8 +1831,6 @@ class Cell:
         #    failure (if the engine is slow, fix the engine first).
         if warm_below:
             self.verdict = VERDICT_FAIL_ENGINE
-            self.status = "red"
-            self.red = True
             self.suspected_missing_fact = self.suspected_missing_fact or _suspect_fact(
                 self.benchmark
             )
@@ -1873,8 +1840,6 @@ class Cell:
         #    engine red; routes to the cold-start lane.
         if over_budget:
             self.verdict = VERDICT_FAIL_COLD_BUDGET
-            self.status = "red"
-            self.red = True
             self.suspected_startup_component = (
                 self.suspected_startup_component
                 or _suspect_startup_component(self.benchmark)
@@ -1885,8 +1850,6 @@ class Cell:
         #    does not fail the gate unless --strict-cold.
         if cold_below:
             self.verdict = VERDICT_WARN_COLD_FLOOR
-            self.status = "warn-cold"
-            self.red = False  # not a hard red — fixed tax, within budget
             self.suspected_startup_component = (
                 self.suspected_startup_component
                 or _suspect_startup_component(self.benchmark)
@@ -1894,8 +1857,36 @@ class Cell:
             return
         # 4. GREEN — warm fast, cold fast, within budget.
         self.verdict = VERDICT_GREEN
-        self.status = "green"
-        self.red = False
+
+
+@dataclass(frozen=True)
+class CpythonOracle:
+    """Host-native CPython interpreter chosen for the perf floor."""
+
+    cmd: tuple[str, ...]
+    executable: str
+    version: str
+    implementation: str
+    sys_platform: str
+    machine: str
+    arch: str
+    pointer_bits: int
+
+    @property
+    def display(self) -> str:
+        return " ".join(self.cmd)
+
+    def host_metadata(self) -> dict:
+        return {
+            "cmd": list(self.cmd),
+            "executable": self.executable,
+            "implementation": self.implementation,
+            "version": self.version,
+            "sys_platform": self.sys_platform,
+            "machine": self.machine,
+            "arch": self.arch,
+            "pointer_bits": self.pointer_bits,
+        }
 
 
 def _safe_ratio(numerator: float | None, denominator: float | None) -> float | None:
@@ -2255,7 +2246,7 @@ def measure_cell(
     rss_mb: int,
     timeout_s: float,
     batch_server: bench._BenchBatchBuildServer | None,
-    cpython_bin: str,
+    cpython_cmd: tuple[str, ...],
     log_dir: Path,
     budget_ms: float | None = None,
     authoritative: bool = True,
@@ -2345,7 +2336,7 @@ def measure_cell(
         capture_stdout=True,
     )
     cold_cpy = _safe_run_json(
-        [cpython_bin, str(script_path), *run_args],
+        [*cpython_cmd, str(script_path), *run_args],
         env=_cpython_run_env(),
         rss_mb=rss_mb,
         timeout_s=timeout_s,
@@ -2382,7 +2373,7 @@ def measure_cell(
         ]
         for _ in range(warmup):
             _safe_run_json(
-                [cpython_bin, str(script_path), *run_args],
+                [*cpython_cmd, str(script_path), *run_args],
                 env=_cpython_run_env(),
                 rss_mb=rss_mb,
                 timeout_s=timeout_s,
@@ -2390,7 +2381,7 @@ def measure_cell(
             )
         cpy_runs = [
             _safe_run_json(
-                [cpython_bin, str(script_path), *run_args],
+                [*cpython_cmd, str(script_path), *run_args],
                 env=_cpython_run_env(),
                 rss_mb=rss_mb,
                 timeout_s=timeout_s,
@@ -3155,14 +3146,14 @@ def build_scoreboard_doc(
     samples: int,
     warmup: int,
     provenance: dict | None = None,
+    cpython_identity: dict | None = None,
     pypy_version: str | None = None,
     codon_version: str | None = None,
 ) -> dict:
     """Assemble the nested machine-readable scoreboard (schema 3).
 
     Shape: ``benchmark -> target -> backend -> profile -> {cell fields}``.
-    Adds the two-dimensional verdict breakdown + the provenance block; keeps
-    every legacy field so schema-2 readers still work.
+    Adds the two-dimensional verdict breakdown + the provenance block.
     """
     git_rev = _git_rev()
     nested: dict = {}
@@ -3188,19 +3179,26 @@ def build_scoreboard_doc(
     # (--classify was used). When inactive the breakdown is empty (no-op for the
     # 2-D-only callers).
     classify_active = any(c.classification is not None for c in cells)
+    host = {
+        "platform": sys.platform,
+        "machine": platform.machine(),
+        "arch": _host_arch(),
+        "pointer_bits": _host_pointer_bits(),
+        "python_runner": sys.version.split()[0],
+        "cpython_baseline": cpython_version,
+        "pypy": pypy_version,
+        "codon": codon_version,
+    }
+    if cpython_identity is not None:
+        host["cpython_oracle"] = cpython_identity
+
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "cpython_floor_scoreboard",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_rev": git_rev,
         "provenance": provenance or {},
-        "host": {
-            "platform": sys.platform,
-            "python_runner": sys.version.split()[0],
-            "cpython_baseline": cpython_version,
-            "pypy": pypy_version,
-            "codon": codon_version,
-        },
+        "host": host,
         "direction": "speedup = cpython_time / molt_time; >1.0 = molt faster; <=1.0 = engine/cold red",
         "red_threshold": RED_THRESHOLD,
         "unstable_cv_threshold": UNSTABLE_CV,
@@ -3249,8 +3247,6 @@ def build_scoreboard_doc(
         "summary": {
             "cells_total": len(cells),
             "cells_green": sum(1 for c in cells if c.verdict == VERDICT_GREEN),
-            # cells_red = the legacy "anything gated" count (back-compat).
-            "cells_red": sum(1 for c in cells if c.red),
             "cells_unstable": sum(1 for c in cells if c.verdict == VERDICT_UNSTABLE),
             "cells_build_failed": sum(
                 1 for c in cells if c.verdict == VERDICT_BUILD_FAILED
@@ -3273,7 +3269,6 @@ def build_scoreboard_doc(
                 1 for c in cells if c.verdict == VERDICT_WARN_COLD_FLOOR
             ),
             "cells_fail_stale": len(stale_cells),
-            "any_red": bool(gate_failing),
             "gate_fails": bool(gate_failing),
             # The two-dimensional breakdown (council ruling A) — every cell
             # keyed by its verdict so a reader routes warm reds to the IR-fact
@@ -3288,16 +3283,6 @@ def build_scoreboard_doc(
                 "RUN_ERROR": keys_with(VERDICT_RUN_ERROR),
                 "CPY_INCOMPATIBLE": keys_with(VERDICT_CPY_INCOMPAT),
                 "GREEN": keys_with(VERDICT_GREEN),
-            },
-            # Legacy alias kept for any downstream that still reads it.
-            "red_breakdown": {
-                "warm_red": keys_with(VERDICT_FAIL_ENGINE),
-                "cold_only_red": keys_with(VERDICT_FAIL_COLD_BUDGET)
-                + keys_with(VERDICT_WARN_COLD_FLOOR),
-                "unstable": keys_with(VERDICT_UNSTABLE),
-                "build_failed_or_error": keys_with(VERDICT_BUILD_FAILED)
-                + keys_with(VERDICT_RUN_ERROR),
-                "cpython_incompatible": keys_with(VERDICT_CPY_INCOMPAT),
             },
             # --- #69 5-state classification breakdown (--classify) ----------
             # The measurement-hygiene-aware verdict: TRUE target vs artifact.
@@ -3329,7 +3314,7 @@ def build_scoreboard_doc(
 
 
 # ---------------------------------------------------------------------------
-# Human-readable summary (RED rows first)
+# Human-readable summary (gate-failing rows first)
 # ---------------------------------------------------------------------------
 
 
@@ -3395,7 +3380,7 @@ def print_summary(doc: dict) -> None:
     cells.sort(
         key=lambda c: (
             rank.get(c.get("verdict"), 7),
-            -(c.get("warm_speedup") or c.get("cpython_ratio") or 0.0),
+            -(c.get("warm_speedup") or 0.0),
             c["benchmark"],
         )
     )
@@ -3660,13 +3645,14 @@ def diff_against_baseline(
         old = prior_cells.get(key)
         if old is None:
             continue
-        # Prefer the warm_speedup axis (the engine fact); fall back to the
-        # legacy cpython_ratio for boards measured by the schema-2 tool.
-        new_ratio = c.get("warm_speedup") or c.get("cpython_ratio")
-        old_ratio = old.get("warm_speedup") or old.get("cpython_ratio")
+        new_ratio = c.get("warm_speedup")
+        old_ratio = old.get("warm_speedup")
         # "Newly gating" = a green-or-warn cell that became a hard gate fail.
-        was_green = not old.get("red") or old.get("verdict") == VERDICT_WARN_COLD_FLOOR
-        now_fails = c.get("verdict") in GATE_FAILING_VERDICTS
+        was_green = not verdict_fails_gate(str(old.get("verdict", "")))
+        now_fails = verdict_fails_gate(
+            str(c.get("verdict", "")),
+            fail_stale=False,
+        )
         if now_fails and was_green:
             newly_red.append(
                 f"{key}: NEWLY {c.get('verdict', 'RED')}  "
@@ -3861,7 +3847,7 @@ def _rebuild_summary(
     # Re-derive the deferred list from cpython-incompatible cells.
     deferred = list(prior.get("benchmarks_deferred", []))
     for cell in cells:
-        if cell.status == "cpython-incompatible":
+        if cell.verdict == VERDICT_CPY_INCOMPAT:
             dkey = f"{cell.benchmark} [{cell.backend}/{cell.profile}]"
             if not any(d.get("benchmark") == dkey for d in deferred):
                 deferred.append(
@@ -3955,7 +3941,7 @@ def _merge_boards(
         allow_nonauthoritative=allow_nonauthoritative,
     )
     for cell in cells:
-        if cell.status == "cpython-incompatible":
+        if cell.verdict == VERDICT_CPY_INCOMPAT:
             dkey = f"{cell.benchmark} [{cell.backend}/{cell.profile}]"
             if not any(x.get("benchmark") == dkey for x in deferred):
                 deferred.append(
@@ -4225,10 +4211,18 @@ def main(argv: list[str]) -> int:
         print("[self-test] bench_fib x native x release-fast, samples=%d" % ns.samples)
 
     scripts = _resolve_benchmark_set(ns.set, ns.benchmark)
-    cpython_bin = _resolve_system_cpython(ns.cpython)
-    cpython_version = _probe_cpython_version(cpython_bin)
+    try:
+        cpython_oracle = _resolve_system_cpython(ns.cpython)
+    except RuntimeError as exc:
+        print(f"[scoreboard] {exc}", file=sys.stderr)
+        return 2
+    cpython_version = cpython_oracle.version
+    cpython_identity = cpython_oracle.host_metadata()
     print(
-        f"[scoreboard] CPython oracle: {cpython_bin} ({cpython_version})",
+        "[scoreboard] CPython oracle: "
+        f"{cpython_oracle.display} "
+        f"({cpython_oracle.version}, {cpython_oracle.sys_platform}/"
+        f"{cpython_oracle.arch}, {cpython_oracle.pointer_bits}-bit)",
         file=sys.stderr,
     )
 
@@ -4396,7 +4390,7 @@ def main(argv: list[str]) -> int:
                         rss_mb=ns.rss_mb,
                         timeout_s=ns.timeout,
                         batch_server=batch_server,
-                        cpython_bin=cpython_bin,
+                        cpython_cmd=cpython_oracle.cmd,
                         log_dir=log_dir,
                         budget_ms=cell_budget_ms,
                         authoritative=effective_authoritative,
@@ -4411,7 +4405,7 @@ def main(argv: list[str]) -> int:
                     # CPython-incompatible benchmarks have no valid floor and
                     # are excluded from the gate — record the exclusion
                     # explicitly (no silent truncation).
-                    if cell.status == "cpython-incompatible":
+                    if cell.verdict == VERDICT_CPY_INCOMPAT:
                         dkey = f"{key} [{backend_name}/{profile}]"
                         if not any(d["benchmark"] == dkey for d in benchmarks_deferred):
                             benchmarks_deferred.append(
@@ -4431,6 +4425,7 @@ def main(argv: list[str]) -> int:
                         ns.samples,
                         ns.warmup,
                         provenance=provenance,
+                        cpython_identity=cpython_identity,
                         pypy_version=pypy_version,
                         codon_version=codon_version,
                     )
@@ -4477,6 +4472,7 @@ def main(argv: list[str]) -> int:
         samples=ns.samples,
         warmup=ns.warmup,
         provenance=provenance,
+        cpython_identity=cpython_identity,
         pypy_version=pypy_version,
         codon_version=codon_version,
     )
@@ -4497,7 +4493,7 @@ def main(argv: list[str]) -> int:
         # It inherently dirties the tree (the tool under test is modified), so
         # subjecting it to FAIL_STALE would be circular — it validates the
         # SCHEMA and returns on that alone.
-        problems = validate_scoreboard_doc(doc)
+        problems = validate_board(doc)
         print_summary(doc)
         if problems:
             print("[self-test] SCHEMA VALIDATION FAILED:", file=sys.stderr)
@@ -4643,6 +4639,7 @@ def _checkpoint(
     warmup: int,
     *,
     provenance: dict | None = None,
+    cpython_identity: dict | None = None,
     pypy_version: str | None = None,
     codon_version: str | None = None,
 ) -> None:
@@ -4654,6 +4651,7 @@ def _checkpoint(
         samples=samples,
         warmup=warmup,
         provenance=provenance,
+        cpython_identity=cpython_identity,
         pypy_version=pypy_version,
         codon_version=codon_version,
     )
@@ -4713,46 +4711,247 @@ def _probe_codon_version(codon_bin: str | None) -> str | None:
     return f"codon {out}" if out else None
 
 
-def _resolve_system_cpython(explicit: str | None) -> str:
-    """Resolve the CPython oracle/baseline to the SYSTEM python3 (3.14).
+_CPYTHON_IDENTITY_PROBE = "\n".join(
+    [
+        "import json",
+        "import platform",
+        "import struct",
+        "import sys",
+        "print(json.dumps({",
+        "    'implementation': platform.python_implementation(),",
+        "    'version': platform.python_version(),",
+        "    'executable': sys.executable,",
+        "    'sys_platform': sys.platform,",
+        "    'machine': platform.machine(),",
+        "    'pointer_bits': struct.calcsize('P') * 8,",
+        "}, sort_keys=True))",
+    ]
+)
 
-    The constitution pins the CPython floor to the system interpreter, NOT the
-    runner's venv. When this tool is launched under ``uv run --python 3.12`` the
-    venv python (3.12) would otherwise leak in via ``sys.executable`` and quietly
-    move the floor. We therefore resolve the real system python3 explicitly and
-    canonicalize it through the harness guard so the spawn boundary sees an
-    absolute path.
-    """
-    import shutil
 
-    if explicit:
-        resolved = explicit
-    else:
-        # Prefer the homebrew system python3 (3.14 on this host); fall back to
-        # whatever PATH calls python3 — but never the molt venv interpreter.
-        candidates = [
+def _resolve_system_cpython(explicit: str | None) -> CpythonOracle:
+    """Resolve the host-native CPython oracle used as the performance floor."""
+
+    candidates = [(explicit,)] if explicit else _default_cpython_candidate_cmds()
+    failures: list[str] = []
+    for raw_cmd in candidates:
+        oracle, reason = _probe_cpython_candidate(raw_cmd)
+        if oracle is not None:
+            return oracle
+        if reason:
+            failures.append(f"{_format_cmd(raw_cmd)}: {reason}")
+
+    source = f"explicit --cpython {explicit!r}" if explicit else "default CPython"
+    target = f"{sys.platform}/{_host_arch()}/{_host_pointer_bits()}-bit"
+    detail = "; ".join(failures[:8]) if failures else "no candidates found"
+    if len(failures) > 8:
+        detail += f"; ... {len(failures) - 8} more rejected"
+    raise RuntimeError(f"could not resolve {source} oracle for {target}: {detail}")
+
+
+def _probe_cpython_candidate(
+    raw_cmd: tuple[str, ...],
+) -> tuple[CpythonOracle | None, str]:
+    try:
+        probe_cmd = _canonical_interpreter_cmd(raw_cmd)
+    except (FileNotFoundError, OSError) as exc:
+        return None, str(exc)
+
+    res = _metadata_probe([*probe_cmd, "-c", _CPYTHON_IDENTITY_PROBE], timeout_s=30)
+    if res is None:
+        return None, "identity probe failed"
+    if res.returncode != 0:
+        return None, f"identity probe exited {res.returncode}: {_probe_tail(res)}"
+
+    lines = [line for line in (res.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return None, "identity probe emitted no JSON"
+    try:
+        payload = json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        return None, f"identity probe emitted invalid JSON: {exc}"
+
+    implementation = str(payload.get("implementation", ""))
+    version = str(payload.get("version", ""))
+    executable = str(payload.get("executable", ""))
+    sys_platform = str(payload.get("sys_platform", ""))
+    machine = str(payload.get("machine", ""))
+    arch = _normalize_arch(machine)
+    try:
+        pointer_bits = int(payload.get("pointer_bits"))
+    except (TypeError, ValueError):
+        return None, f"invalid pointer width {payload.get('pointer_bits')!r}"
+
+    if implementation != "CPython":
+        return None, f"implementation is {implementation!r}, not CPython"
+    if _python_version_key(version) < (3, 12, 0):
+        return None, f"CPython {version} is below the 3.12 floor"
+    if sys_platform != sys.platform:
+        return None, f"platform {sys_platform!r} != host {sys.platform!r}"
+    if arch != _host_arch():
+        return None, f"arch {arch!r} != host {_host_arch()!r}"
+    if pointer_bits != _host_pointer_bits():
+        return None, f"pointer width {pointer_bits} != host {_host_pointer_bits()}"
+    if _is_project_managed_interpreter(executable):
+        return None, f"project-managed interpreter cannot be baseline: {executable}"
+
+    try:
+        runtime_executable = bench._canonical_interpreter(executable)
+    except (FileNotFoundError, OSError) as exc:
+        return None, f"probed executable is not runnable: {exc}"
+
+    return (
+        CpythonOracle(
+            cmd=(runtime_executable,),
+            executable=runtime_executable,
+            version=version,
+            implementation=implementation,
+            sys_platform=sys_platform,
+            machine=machine,
+            arch=arch,
+            pointer_bits=pointer_bits,
+        ),
+        "",
+    )
+
+
+def _default_cpython_candidate_cmds() -> list[tuple[str, ...]]:
+    """Return host-aware CPython candidates, newest first, no project venvs."""
+
+    candidates: list[tuple[str, ...]] = []
+
+    def add(cmd: tuple[str, ...]) -> None:
+        if cmd and cmd not in candidates:
+            candidates.append(cmd)
+
+    def add_path_name(name: str) -> None:
+        for path in _path_executable_candidates(name):
+            if not _is_project_managed_interpreter(path):
+                add((path,))
+
+    if sys.platform == "darwin":
+        for path in (
             "/opt/homebrew/bin/python3",
             "/usr/local/bin/python3",
-            shutil.which("python3") or "",
+            "/opt/homebrew/bin/python3.14",
+            "/usr/local/bin/python3.14",
+            "/opt/homebrew/bin/python3.13",
+            "/usr/local/bin/python3.13",
+            "/opt/homebrew/bin/python3.12",
+            "/usr/local/bin/python3.12",
+        ):
+            add((path,))
+
+    for name in ("python3.14", "python3.13", "python3.12", "python3", "python"):
+        add_path_name(name)
+
+    if os.name == "nt":
+        for launcher in _path_executable_candidates("py"):
+            for version in ("-3.14", "-3.13", "-3.12"):
+                add((launcher, version))
+    else:
+        for path in (
+            "/usr/local/bin/python3.14",
+            "/usr/local/bin/python3.13",
+            "/usr/local/bin/python3.12",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3.14",
+            "/usr/bin/python3.13",
+            "/usr/bin/python3.12",
             "/usr/bin/python3",
+        ):
+            add((path,))
+
+    return candidates
+
+
+def _path_executable_candidates(name: str) -> list[str]:
+    path = Path(name)
+    if path.is_absolute() or path.parent != Path("."):
+        return [name]
+
+    suffixes = [""]
+    if os.name == "nt" and not path.suffix:
+        suffixes = [
+            ext.lower()
+            for ext in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(
+                os.pathsep
+            )
+            if ext
         ]
-        resolved = next(
-            (
-                c
-                for c in candidates
-                if c and Path(c).exists() and ".venv" not in c and "/sessions/" not in c
-            ),
-            "python3",
-        )
-    return bench._canonical_interpreter(resolved)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        for suffix in suffixes:
+            candidate = Path(directory) / f"{name}{suffix}"
+            key = str(candidate).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.is_file():
+                out.append(str(candidate))
+    return out
 
 
-def _probe_cpython_version(cpython_bin: str) -> str:
-    res = _metadata_probe([cpython_bin, "--version"], timeout_s=30)
-    if res is None:
-        return "unknown"
-    out = (res.stdout or res.stderr or "").strip()
-    return out.replace("Python ", "") or "unknown"
+def _canonical_interpreter_cmd(raw_cmd: tuple[str, ...]) -> tuple[str, ...]:
+    if not raw_cmd or not raw_cmd[0]:
+        raise FileNotFoundError("empty CPython candidate command")
+    return (bench._canonical_interpreter(raw_cmd[0]), *raw_cmd[1:])
+
+
+def _is_project_managed_interpreter(path: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    return (
+        "/.venv/" in normalized
+        or "/target/sessions/" in normalized
+        or "/sessions/" in normalized
+    )
+
+
+def _normalize_arch(machine: str) -> str:
+    normalized = machine.strip().lower().replace("-", "_").replace(" ", "")
+    if normalized in {"amd64", "x64", "x86_64"}:
+        return "x86_64"
+    if normalized in {"arm64", "aarch64"}:
+        return "aarch64"
+    if normalized in {"i386", "i486", "i586", "i686", "x86"}:
+        return "x86"
+    return normalized or "unknown"
+
+
+def _host_arch() -> str:
+    return _normalize_arch(platform.machine())
+
+
+def _host_pointer_bits() -> int:
+    return 64 if sys.maxsize > 2**32 else 32
+
+
+def _python_version_key(version: str) -> tuple[int, int, int]:
+    parts: list[int] = []
+    for raw in version.split(".")[:3]:
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2])
+
+
+def _format_cmd(cmd: tuple[str, ...]) -> str:
+    return " ".join(cmd)
+
+
+def _probe_tail(res: subprocess.CompletedProcess[str]) -> str:
+    lines = [
+        line.strip()
+        for text in (res.stdout, res.stderr)
+        for line in (text or "").splitlines()
+        if line.strip()
+    ]
+    return " | ".join(lines[-2:])[:240] or "no output"
 
 
 if __name__ == "__main__":
