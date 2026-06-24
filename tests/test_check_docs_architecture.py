@@ -141,6 +141,8 @@ def _seed_valid_repo(root: Path) -> None:
         root / "docs/design/foundation/51_ten_year_roadmap.md",
         "\n".join(
             [
+                "# 51 — Ten-year roadmap",
+                "",
                 "Status: NORTH STAR",
                 "",
                 "Faster than CPython.",
@@ -154,6 +156,8 @@ def _seed_valid_repo(root: Path) -> None:
         root / "docs/design/foundation/52_autonomous_operating_charter.md",
         "\n".join(
             [
+                "# 52 — Autonomous operating charter",
+                "",
                 "Status: BINDING OPERATING DOCTRINE",
                 "",
                 "RECON: design docs go stale in hours.",
@@ -299,6 +303,34 @@ def test_checker_requires_planning_authority_manifest(
     errors = module.check_repo()
 
     assert any("authority_manifest.toml" in error for error in errors)
+
+
+def test_checker_requires_foundation_portfolio_numbering_to_match_filename(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_file(
+        tmp_path / "docs/design/foundation/64_perf_scoreboards_and_harness.md",
+        "\n".join(
+            [
+                "<!-- Foundation blueprint 53.",
+                "doc: 53",
+                "-->",
+                "",
+                "# 53 — The Perf Measurement Plane",
+                "",
+            ]
+        ),
+    )
+    module.ROOT = tmp_path
+
+    errors = module.check_repo()
+
+    assert any("64_perf_scoreboards_and_harness.md" in error for error in errors)
+    assert any("heading number must match filename prefix 64" in error for error in errors)
+    assert any("Foundation blueprint metadata" in error for error in errors)
+    assert any("doc metadata" in error for error in errors)
 
 
 def test_checker_passes_for_valid_repo(
