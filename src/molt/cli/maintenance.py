@@ -7,6 +7,12 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from molt.cli.config_resolution import (
+    _resolve_build_config,
+    _resolve_capabilities_config,
+    _resolve_command_config,
+)
+
 
 def _cli_module() -> Any:
     import importlib
@@ -36,18 +42,6 @@ def _default_molt_bin() -> Path:
 
 def _default_molt_cache() -> Path:
     return _cli_module()._default_molt_cache()
-
-
-def _resolve_build_config(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._resolve_build_config(*args, **kwargs)
-
-
-def _resolve_command_config(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._resolve_command_config(*args, **kwargs)
-
-
-def _resolve_capabilities_config(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._resolve_capabilities_config(*args, **kwargs)
 
 
 def _format_capabilities_input(*args: Any, **kwargs: Any) -> Any:
