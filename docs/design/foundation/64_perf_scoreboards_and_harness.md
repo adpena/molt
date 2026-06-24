@@ -87,7 +87,7 @@ not raw measurement. Authoritative inventory (verified against the tree, 2026-06
 | Existing boards (data) | `bench/scoreboard/{quiet_native,quiet_llvm,hot_profile_native,cold_start_budget,cold_start_decomposition}.json` + two historical `cpython_*.json` | Real measured data, schema v3; the first authoritative quiet board | The seed for the history index (§Phase 4); the budget files are the cold/size/RSS ceilings |
 | CI workflows | `.github/workflows/perf-validation.yml`, `perf_demo.yml`, `pr_trust_gate.yml`, `nightly.yml`, `ci.yml` | `perf-validation.yml` runs **`bench.py`** (not the gate-capable scoreboard), is **`workflow_dispatch`-only**, uploads an artifact with **no gate step** | **The single biggest gap: there is no CI job that runs the gate and blocks on it.** |
 | Unified CI driver | `tools/ci_gate.py` (1088 ln) | Tiered (Tier 1/2/3) correctness pipeline, memory-guarded, JSON | **Zero references to perf** — perf is not a tier. Add a perf tier (§Phase 3). |
-| Structural audit | `docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md` | Older audit state named `tools/perf_causality.py` and `tools/pass_delta_dashboard.py` as **MISSING**; the current tree now has the cycle/taxonomy `perf_causality.py` rung plus the `MOLT_EMIT_PASS_DELTA=1` emitter / `tools/pass_delta_dashboard.py` dashboard, while the fact-graph dump and final census/pass-delta join remain pending | Phase 5 completes the census/pass-delta join and keeps `perf_causality.py` as the attribution authority |
+| Structural audit | `docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md` | Older audit state named `tools/perf_causality.py` and `tools/pass_delta_dashboard.py` as **MISSING**; the current tree now has the cycle/taxonomy `perf_causality.py` rung, the `MOLT_EMIT_PASS_DELTA=1` emitter / `tools/pass_delta_dashboard.py` dashboard, and the census/pass-delta evidence join in `perf_causality.py`, while the fact-graph dump remains pending | Phase 5 keeps `perf_causality.py` as the attribution authority and next joins value-level fact-graph provenance |
 
 **North-star alignment.** Doc 51 ("10-year roadmap", NORTH STAR) §3 *names this exact
 deliverable*: "The four+1 scoreboards (kept green, CI-gated): 1 CPython, 2 PyPy, 3
@@ -139,16 +139,18 @@ Work backward from the §0 end-state to the mechanisms that make it inevitable.
      (a) **cycle profile** (#76, exists) — which symbol burns cycles;
      (b) **representation census** (`call_fact_coverage.py`, exists) — which calls/values
          are un-specialized (boxed / generic-dispatch / missing CallFacts);
-     (c) **pass-delta ledger** (`pass_delta_dashboard.py`, MISSING) — which pass
-         *introduced* the box / lost the Repr / added the generic call between baseline
-         and current.
+     (c) **pass-delta ledger** (`pass_delta_dashboard.py`, exists; fed by
+         `MOLT_EMIT_PASS_DELTA=1`) — which pass *introduced* the box / lost the
+         Repr / added the generic call between baseline and current.
   → **FACT NEEDED:** a **fact-class taxonomy** (the doc-51 fact families: `op_kinds ·
      operand-ownership · FinalizerSensitive · CallFacts · Typed CallableTarget ·
      ShapeFacts · ownership lattice · ExceptionRegion · Repr/TirType lattice · class
      identity/version`) and a deterministic mapping `hot-symbol-pattern → fact-class`.
-     The current first rung is `tools/perf_causality.py` (cycle-symbol evidence with a
-     schema-vetted benchmark-taxonomy fallback); Phase 5 still adds the census and
-     pass-delta inputs.
+     The current authority is `tools/perf_causality.py`: it chooses the primary
+     attribution from cycle-symbol evidence with a schema-vetted benchmark-taxonomy
+     fallback, then joins optional call-fact census and pass-delta dashboard evidence
+     for source/confidence support without letting secondary inputs override the
+     primary fact class.
 
 - **END:** "regressions gate, not just absolute reds."
   → **requires** a **durable board history** keyed by content-addressed identity so
@@ -239,7 +241,7 @@ PerfCell:
   cycle_profile: {top_symbols:[...], launch_fraction, available, refused}|None
   suspected_missing_fact: str|None       # DERIVED in Phase 5
   fact_class: str|None                   # the doc-51 fact family enum (Phase 5)
-  attribution_confidence: float|None     # 0.0..1.0, cycle-only now; joined confidence in Phase 5
+  attribution_confidence: float|None     # 0.0..1.0, joined when evidence artifacts exist
   # provenance / artifact
   output_parity: bool; log_artifact: str
 ```
@@ -463,9 +465,11 @@ Complete the derived-attribution stack the STRUCTURAL_AUDIT_BOARD routes:
 - `tools/perf_causality.py`: the existing first rung consumes #76 cycle-profile rows
   (`in_binary_top` / `top_symbols`), owns deterministic `hot-symbol-pattern → fact_class`
   attribution plus a schema-vetted benchmark-taxonomy fallback, then writes the cell's
-  `fact_class` + `suspected_missing_fact` + `attribution_confidence`. The remaining
-  Phase 5 work extends that authority with the `call_fact_coverage.py` census for that
-  benchmark and the `pass_delta_dashboard.py` delta vs baseline.
+  `fact_class` + `suspected_missing_fact` + `attribution_confidence`. It now also joins
+  optional `tools/call_fact_coverage.py --json` census output plus
+  `tools/pass_delta_dashboard.py --json` evidence when those secondary inputs support
+  the primary fact class or an explicitly compatible adjacent class; they cannot
+  override the cycle/taxonomy authority.
 
 Wire the result back into `PerfCell.suspected_missing_fact`/`fact_class` so the board's
 triage hint is *derived evidence*, not a human guess. This realizes CLAUDE.md "Perf work's
@@ -477,10 +481,10 @@ assert `perf_causality.py` classifies `bench_exception_heavy` → `ExceptionRegi
 SCOREBOARD.md) and `bench_etl_orders` → `ShapeFacts/string-repr` (matches the documented
 "per-row split + UTF-8 decode + dataclass construction"). This is a **falsifiable** gate:
 the tool must reproduce the human attributions the council already verified. The current
-Tier 1 contract covers the cycle rung in `tests/tools/test_perf_causality.py` and the
-pass-delta dashboard schema/aggregation in `tests/tools/test_pass_delta_dashboard.py`;
-the remaining census/pass-delta join into `perf_causality.py` must add its own
-falsification fixtures before replacing cycle-only confidence with joined confidence.
+Tier 1 contract covers the cycle rung and census/pass-delta evidence join in
+`tests/tools/test_perf_causality.py` plus the pass-delta dashboard schema/aggregation in
+`tests/tools/test_pass_delta_dashboard.py`; incompatible pass-delta signals are pinned to
+not override the primary attribution.
 
 ### Phase 6 — PyPy/Codon mechanism taxonomy + reference-class suite tags + canonical bridge
 
@@ -758,10 +762,9 @@ becomes a release-gating correctness property in fact, not just in the constitut
   `workflow_dispatch`, runs `bench.py`, no gate) → `pull_request`+`push:[main]`, runs the
   smoke gate, blocks on nonzero exit.
 - Phase 5 pass-delta substrate now exists: `MOLT_EMIT_PASS_DELTA=1` in the TIR pass
-  manager writes JSONL rows and `tools/pass_delta_dashboard.py` summarizes them. The
-  remaining Phase 5 work is the census/pass-delta join into `tools/perf_causality.py`;
-  `perf_causality.py` remains the cycle/taxonomy attribution authority until that joined
-  confidence gate lands.
+  manager writes JSONL rows and `tools/pass_delta_dashboard.py` summarizes them.
+  `tools/perf_causality.py` now joins that dashboard with the call-fact census while
+  preserving cycle/taxonomy attribution as the authority.
 - Census join input (Phase 5): `tools/call_fact_coverage.py` (exists).
 - Cycle-profile join input (Phase 5): `bench/scoreboard/hot_profile_native.json` (the
   committed #68/#76 attributions — the Phase-5 falsification fixture).
