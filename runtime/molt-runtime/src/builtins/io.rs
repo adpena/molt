@@ -6624,7 +6624,18 @@ pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
         let Some(ptr) = handle_obj.as_ptr() else {
             return raise_exception::<_>(_py, "TypeError", "expected file handle");
         };
-        unsafe {
+        // CPython's `TextIOWrapper.flush()` first flushes its own encode buffer
+        // and then flushes the underlying buffered stream. molt flattens the
+        // text wrapper and its binary buffer into sibling `MoltFileHandle`s that
+        // share one backend, each with its own `write_buf`. A text-mode write
+        // lands in this handle's `write_buf`, but a `sys.stdout.buffer.write(...)`
+        // lands in the *child* buffer handle's `write_buf`. Flushing only the
+        // parent would silently drop the child's buffered bytes (e.g. a
+        // sub-blocksize binary write that never fills a block, then process
+        // exit), so we must cascade the flush into the `buffer_bits` child after
+        // releasing the shared backend lock. The child has `buffer_bits == 0`,
+        // so the cascade terminates after one hop.
+        let buffer_bits = unsafe {
             if object_type_id(ptr) != TYPE_ID_FILE_HANDLE {
                 return raise_exception::<_>(_py, "TypeError", "expected file handle");
             }
@@ -6637,19 +6648,31 @@ pub extern "C" fn molt_file_flush(handle_bits: u64) -> u64 {
             if file_handle_is_closed(handle) {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             }
+            let buffer_bits = handle.buffer_bits;
             let backend_state = Arc::clone(&handle.state);
             let mut guard = backend_state.backend.lock().unwrap();
             let Some(backend) = guard.as_mut() else {
                 return raise_exception::<_>(_py, "ValueError", "I/O operation on closed file");
             };
-            if let MoltFileBackend::Text(_) = backend {
-                return MoltObject::none().bits();
+            // A `Text` backend (e.g. StringIO) holds its content directly and has
+            // no raw write buffer to drain, so its own flush is a no-op. We still
+            // fall through to cascade into any `buffer_bits` child below.
+            if !matches!(backend, MoltFileBackend::Text(_)) {
+                if let Err(bits) = flush_write_buffer(_py, handle, backend) {
+                    return bits;
+                }
+                if let Err(bits) = backend_flush(_py, backend) {
+                    return bits;
+                }
             }
-            if let Err(bits) = flush_write_buffer(_py, handle, backend) {
-                return bits;
-            }
-            if let Err(bits) = backend_flush(_py, backend) {
-                return bits;
+            buffer_bits
+            // `guard` (the shared backend lock) is released here, before the
+            // cascade below — the child handle locks this same mutex.
+        };
+        if buffer_bits != 0 && !obj_from_bits(buffer_bits).is_none() {
+            let res = molt_file_flush(buffer_bits);
+            if exception_pending(_py) {
+                return res;
             }
         }
         MoltObject::none().bits()
@@ -6673,23 +6696,24 @@ pub extern "C" fn molt_file_close(handle_bits: u64) -> u64 {
             }
             let handle = &*handle_ptr;
             file_handle_require_attached!(_py, handle);
-        }
-        let flush_result = unsafe {
-            if let Some(handle_ptr) = file_handle_ptr(ptr).as_mut() {
-                let handle = &mut *handle_ptr;
-                let backend_state = Arc::clone(&handle.state);
-                let mut guard = backend_state.backend.lock().unwrap();
-                if let Some(backend) = guard.as_mut() {
-                    flush_write_buffer(_py, handle, backend)
-                } else {
-                    Ok(())
-                }
-            } else {
-                Ok(())
+            // `close()` on an already-closed stream is a silent no-op in
+            // CPython (no flush, no error). Short-circuit before the
+            // flush-on-close below, which would otherwise raise
+            // "I/O operation on closed file" on a second close.
+            if file_handle_is_closed(handle) {
+                return MoltObject::none().bits();
             }
-        };
-        if let Err(bits) = flush_result {
-            return bits;
+        }
+        // CPython closes a stream by flushing it first; for a `TextIOWrapper`
+        // that flush cascades into the underlying buffered binary stream. Use
+        // the buffer-aware `molt_file_flush` so a `sys.stdout.buffer.write(...)`
+        // (or any binary write into a text wrapper's child buffer) is drained
+        // before the shared backend is taken below — not just the parent
+        // handle's own `write_buf`. This mirrors the exit-time flush path and
+        // keeps `close()`/`flush()` symmetric for the binary buffer child.
+        let res = molt_file_flush(handle_bits);
+        if exception_pending(_py) {
+            return res;
         }
 
         // ── VFS writeback ────────────────────────────────────────────
