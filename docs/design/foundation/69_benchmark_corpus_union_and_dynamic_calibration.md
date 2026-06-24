@@ -200,6 +200,11 @@ reference engine on the reference's own benchmarks with the reference's own meth
 across the full matrix — and a "win" is claimed only where semantics are equivalent.
 
 ## Appendix A — corpus-research catalog
-*(Enumerated by the corpus-research sweep — the complete external-suite landscape:
-per-suite benchmark lists, methodology, acquisition, license, semantic tier, cross-suite
-overlap, and pinned commits. Appended when the research lands; seeds R + S1–S6.)*
+The complete external-suite landscape — full pyperformance v1.14.0 inventory (~120 IDs),
+CLBG kernel roots, PyPy/Pyston/Codon suites, the NPBench/numba scientific tiers,
+web/serialization/async axes, the hard/stress + ML (tinygrad/DFlash) corpus, per-suite
+methodology, the cross-suite **dedup map**, the three **Codon-non-equivalent zones** (bignum,
+Unicode, C-semantics numerics — never scored as wins/losses), and **pinned `repo_ref`s +
+licenses** (all vendorable except PyPy per-benchmark and Codon current-Apache) — is
+**[69A_benchmark_corpus_catalog.md](69A_benchmark_corpus_catalog.md)**. It seeds the registry
+`R` and the adapters `S1`–`S6`.
