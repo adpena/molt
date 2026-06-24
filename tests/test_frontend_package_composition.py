@@ -71,6 +71,7 @@ EXPECTED_MIXINS = [
     "CallVisitorMixin",
     "ClassDefVisitorMixin",
     "ComprehensionMixin",
+    "ExpressionVisitorMixin",
     "FunctionVisitorMixin",
 ]
 
@@ -130,6 +131,11 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_Await")
     assert hasattr(SimpleTIRGenerator, "visit_Yield")
     assert hasattr(SimpleTIRGenerator, "visit_YieldFrom")
+    # expressions
+    assert hasattr(SimpleTIRGenerator, "visit_Name")
+    assert hasattr(SimpleTIRGenerator, "visit_BinOp")
+    assert hasattr(SimpleTIRGenerator, "visit_TemplateStr")
+    assert hasattr(SimpleTIRGenerator, "visit_BoolOp")
 
 
 def test_mixin_modules_import_standalone() -> None:
@@ -142,6 +148,7 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.visitors.calls",
         "molt.frontend.visitors.classes",
         "molt.frontend.visitors.comprehensions",
+        "molt.frontend.visitors.expressions",
         "molt.frontend.visitors.functions",
     ):
         assert importlib.import_module(mod) is not None
@@ -159,14 +166,12 @@ def test_mixin_modules_import_standalone() -> None:
 # fail the moment the Protocol and the assembled class diverge.
 # ---------------------------------------------------------------------------
 
-# Names provided by ast.NodeVisitor/object that are NOT part of the generator's
-# own protocol surface. The dispatcher methods are intentionally retained:
-# visitor mixins call ``self.visit(...)`` / ``self.generic_visit(...)`` through
-# the MRO, so the Protocol must model them.
+# Names provided by object that are NOT part of the generator's own protocol
+# surface. Project-owned methods that shadow ast.NodeVisitor helpers (for
+# example visit_Constant) must remain on the protocol; only untouched
+# NodeVisitor helpers are filtered at collection time.
 _NODE_VISITOR_DISPATCH_METHODS = {"generic_visit", "visit"}
-_BUILTIN_NAMES = (set(dir(ast.NodeVisitor)) - _NODE_VISITOR_DISPATCH_METHODS) | set(
-    dir(object)
-)
+_BUILTIN_NAMES = set(dir(object))
 
 
 def _protocol_methods() -> set[str]:
@@ -193,6 +198,8 @@ def _assembled_class_methods() -> set[str]:
             continue
         for name, val in vars(klass).items():
             if name.startswith("__"):
+                continue
+            if klass is ast.NodeVisitor and name not in _NODE_VISITOR_DISPATCH_METHODS:
                 continue
             if callable(val):
                 names.add(name)
