@@ -33,6 +33,8 @@ CACHE_FINGERPRINTS = importlib.import_module("molt.cli.cache_fingerprints")
 CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
+RUNTIME_BUILD = importlib.import_module("molt.cli.runtime_build")
+RUNTIME_PATHS = importlib.import_module("molt.cli.runtime_paths")
 RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 
 
@@ -5804,13 +5806,13 @@ def test_runtime_lib_path_includes_target_triple(
 def test_runtime_wasm_artifact_path_is_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._runtime_wasm_artifact_path_cached.cache_clear()
+    RUNTIME_PATHS._runtime_wasm_artifact_path_cached.cache_clear()
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path))
 
-    first = cli._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
-    second = cli._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
+    first = RUNTIME_PATHS._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
+    second = RUNTIME_PATHS._runtime_wasm_artifact_path(tmp_path, "molt_runtime.wasm")
 
-    info = cli._runtime_wasm_artifact_path_cached.cache_info()
+    info = RUNTIME_PATHS._runtime_wasm_artifact_path_cached.cache_info()
     assert first == second == (tmp_path / "wasm" / "molt_runtime.wasm")
     assert info.hits >= 1
     assert info.currsize >= 1
@@ -5819,11 +5821,13 @@ def test_runtime_wasm_artifact_path_is_cached(
 def test_runtime_wasm_artifact_path_uses_explicit_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cli._runtime_wasm_artifact_path_cached.cache_clear()
+    RUNTIME_PATHS._runtime_wasm_artifact_path_cached.cache_clear()
     override = tmp_path / "custom-wasm"
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(override))
 
-    runtime_wasm = cli._runtime_wasm_artifact_path(tmp_path, "molt_runtime_reloc.wasm")
+    runtime_wasm = RUNTIME_PATHS._runtime_wasm_artifact_path(
+        tmp_path, "molt_runtime_reloc.wasm"
+    )
 
     assert runtime_wasm == (override / "molt_runtime_reloc.wasm")
 
@@ -10700,7 +10704,7 @@ def test_prepare_backend_setup_stages_runtime_intrinsics_for_object_emit_without
 def test_initialize_runtime_artifact_state_assigns_native_object_runtime_lib(
     tmp_path: Path,
 ) -> None:
-    state = cli._initialize_runtime_artifact_state(
+    state = RUNTIME_BUILD._initialize_runtime_artifact_state(
         is_rust_transpile=False,
         is_wasm=False,
         emit_mode="obj",
@@ -10736,7 +10740,7 @@ def test_ensure_native_runtime_lib_ready_before_link_awaits_async_future(
         runtime_lib_ready_future=fake_future,
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_ensure_runtime_lib_ready",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("sync runtime build should not run when async future exists")
@@ -10744,7 +10748,7 @@ def test_ensure_native_runtime_lib_ready_before_link_awaits_async_future(
     )
     phase_starts: dict[str, float] = {}
 
-    ready = cli._ensure_native_runtime_lib_ready_before_link(
+    ready = RUNTIME_BUILD._ensure_native_runtime_lib_ready_before_link(
         runtime_state,
         target_triple=None,
         json_output=True,
@@ -10769,7 +10773,7 @@ def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
     captured: list[frozenset[str]] = []
 
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_ensure_runtime_lib_ready",
         lambda runtime_state, **kwargs: (
             captured.append(frozenset(cast(set[str], kwargs["resolved_modules"])))
@@ -10777,7 +10781,7 @@ def test_ensure_native_runtime_lib_ready_before_link_passes_resolved_modules(
         ),
     )
 
-    ready = cli._ensure_native_runtime_lib_ready_before_link(
+    ready = RUNTIME_BUILD._ensure_native_runtime_lib_ready_before_link(
         runtime_state,
         target_triple=None,
         json_output=True,
@@ -11851,16 +11855,20 @@ def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint
     runtime_lib.write_bytes(b"archive")
     fingerprint = {"hash": "ok"}
     monkeypatch.setattr(
-        cli, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
+        RUNTIME_BUILD, "_runtime_fingerprint", lambda *args, **kwargs: fingerprint
     )
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint_path",
         lambda *args, **kwargs: tmp_path / "fingerprint.json",
     )
-    monkeypatch.setattr(cli, "_read_runtime_fingerprint", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
+        "_read_runtime_fingerprint",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        RUNTIME_BUILD,
         "_build_lock",
         lambda *args, **kwargs: contextlib.nullcontext(),
     )
@@ -11881,19 +11889,19 @@ def test_ensure_runtime_lib_native_path_does_not_require_wasm_export_fingerprint
         return True
 
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_artifact_fingerprint_matches",
         fake_runtime_artifact_fingerprint_matches,
     )
     monkeypatch.setattr(
-        cli,
-        "_run_completed_command",
+        RUNTIME_BUILD,
+        "_run_cargo_with_sccache_retry",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unexpected runtime rebuild")
         ),
     )
 
-    assert cli._ensure_runtime_lib(
+    assert RUNTIME_BUILD._ensure_runtime_lib(
         runtime_lib,
         target_triple=None,
         json_output=True,
@@ -12137,11 +12145,11 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
 ) -> None:
     runtime_lib = tmp_path / "libmolt_runtime.a"
     runtime_lib.write_bytes(b"archive")
-    cli._RUNTIME_LIB_VERIFIED.clear()
+    RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
     verification_calls: list[frozenset[str]] = []
 
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_fingerprint",
         lambda project_root, **kwargs: {
             "runtime_features": tuple(cast(tuple[str, ...], kwargs["runtime_features"]))
@@ -12164,13 +12172,13 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
         return True
 
     monkeypatch.setattr(
-        cli,
+        RUNTIME_BUILD,
         "_runtime_artifact_fingerprint_matches",
         fake_runtime_artifact_fingerprint_matches,
     )
 
     try:
-        assert cli._ensure_runtime_lib(
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             runtime_lib,
             target_triple=None,
             json_output=True,
@@ -12180,8 +12188,8 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
             stdlib_profile="micro",
             resolved_modules={"json"},
         )
-        cli._RUNTIME_LIB_VERIFIED.clear()
-        assert cli._ensure_runtime_lib(
+        RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
+        assert RUNTIME_BUILD._ensure_runtime_lib(
             runtime_lib,
             target_triple=None,
             json_output=True,
@@ -12192,7 +12200,7 @@ def test_ensure_runtime_lib_verified_key_is_stable_across_user_import_graph(
             resolved_modules={"socket"},
         )
     finally:
-        cli._RUNTIME_LIB_VERIFIED.clear()
+        RUNTIME_BUILD._RUNTIME_LIB_VERIFIED.clear()
 
     assert len(verification_calls) == 2
     assert verification_calls[0] == verification_calls[1]
