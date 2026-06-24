@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import molt.cli as cli
+import molt.cli.native_link_deps as NATIVE_LINK_DEPS
 from tests.cli.process_guard import run_cli_test_process
 
 
@@ -128,7 +129,7 @@ def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli,
+        NATIVE_LINK_DEPS,
         "_runtime_archive_crate_names",
         lambda _runtime_lib: frozenset({"getrandom"}),
     )
