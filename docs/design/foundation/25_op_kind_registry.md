@@ -124,6 +124,13 @@ Current schema note: `op_kinds.toml` now also owns `result_arity`
 instead of maintaining a parallel opcode-to-result-count match. The generator
 rejects `variable` unless the opcode is on the audited context-dependent
 whitelist, so fixed-result opcodes cannot quietly escape verifier coverage.
+The registry also owns `state_machine_opcodes` and generates
+`opcode_is_state_machine_table`; linear CFG transforms such as the TIR inliner
+and module-slot promotion consume that table instead of carrying private
+generator/async opcode sets. `lowered_state_machine_body_opcodes` separately
+feeds `opcode_is_lowered_state_machine_body_table`, the opcode half of
+`TirFunction::has_state_machine` beside the non-opcode `StateDispatch`
+terminator check.
 
 1. **One table** `runtime/molt-tir/src/tir/op_kinds.toml` — rows `(canonical_kind, aliases[], semantics_class, arity, mapper_opcode|"copy", classifier_class ∈ {fresh_value, transparent_alias, inert_marker, structural}, effect ∈ {pure, observe, throw, side_effect}, backends_required[], runtime_symbol?)`.
 2. **One generator** `tools/gen_op_kinds.py` (modeled on `tools/gen_intrinsics.py`) renders `runtime/molt-tir/src/tir/op_kinds_generated.rs` (the `kind_to_opcode` arms, the `classify_copy_kind`/`copy_kind_mints_fresh_owned_ref` arms, the effect-oracle arms) AND `src/molt/frontend/lowering/op_kinds_generated.py` (the canonical-spelling constants the emitter uses).

@@ -11,7 +11,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | --- | --- |
 | hand_classified_matches | 41 |
 | critical_hand_classifications | 0 |
-| handset_classifications | 29 |
+| handset_classifications | 26 |
 | debt_markers_total | 526 |
 | god_files | 57 |
 | max_god_file_lines | 41267 |
@@ -37,19 +37,18 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | god_file | `runtime/molt-backend/src/native_backend/simple_backend.rs` | 7860 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-runtime-http/src/functions_http.rs` | 7521 lines (ceiling 4000) |
 
-## TOP DELETION CANDIDATES (26) — replace, don't just delete
+## TOP DELETION CANDIDATES (25) — replace, don't just delete
 
 | where | what | replacement authority | equivalence gate |
 | --- | --- | --- | --- |
 | `runtime/molt-tir/src/tir/type_refine.rs:1218` | hand-classified `match` over 56 opcodes (s | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
-| `runtime/molt-tir/src/tir/passes/inliner.rs:1209` | hand-classified `match` over 4 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
+| `runtime/molt-tir/src/tir/passes/inliner.rs:1199` | hand-classified `match` over 4 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/passes/refcount_elim.rs:689` | hand-classified `match` over 3 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/passes/block_versioning.rs:…` | hand-classified `match` over 38 opcodes (s | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/passes/sccp.rs:446` | hand-classified `match` over 18 opcodes (s | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/passes/branchless_count.rs:78` | hand-classified `match` over 15 opcodes (s | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_pass…` | hand-classified `match` over 11 opcodes (s | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/passes/effects.rs:242` | `matches!` hand-set of 10 opcodes (implici | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
-| `runtime/molt-tir/src/tir/passes/inliner.rs:182` | `matches!` hand-set of 10 opcodes (implici | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/passes/value_range.rs:1253` | hand-classified `match` over 10 opcodes (s | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/lower_to_lir.rs:250` | `matches!` hand-set of 9 opcodes (implicit | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/passes/generator_fusion.rs:…` | hand-classified `match` over 9 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
@@ -61,7 +60,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | `runtime/molt-tir/src/tir/type_refine.rs:992` | hand-classified `match` over 6 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/verify_lir.rs:548` | hand-classified `match` over 6 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-tir/src/tir/passes/gvn.rs:101` | hand-classified `match` over 6 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
-| … | _6 more_ | | |
+| `runtime/molt-tir/src/tir/passes/gvn.rs:201` | hand-classified `match` over 6 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
+| … | _5 more_ | | |
 
 ## TOP TOOLING GAPS
 
@@ -119,19 +119,18 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 5709 lines (ceiling 4000) | `runtime/molt-runtime-regex/src/regex.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | … | _17 more_ | | run `--json` for full list |
 
-### semantic_fallthrough (70)
+### semantic_fallthrough (67)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
 | medium | hand-classified `match` over 56 opcodes (silent default) | `runtime/molt-tir/src/tir/type_refine.rs:1218` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| medium | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/inliner.rs:1209` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
+| medium | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/inliner.rs:1199` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 3 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/refcount_elim.rs:689` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 38 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/block_versioning.rs:135` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 18 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/sccp.rs:446` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 15 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/branchless_count.rs:78` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 11 opcodes (silent default) | `runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs:127` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | `matches!` hand-set of 10 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/effects.rs:242` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| medium | `matches!` hand-set of 10 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/inliner.rs:182` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | medium | hand-classified `match` over 10 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/value_range.rs:1253` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | `matches!` hand-set of 9 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/lower_to_lir.rs:250` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | medium | hand-classified `match` over 9 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/generator_fusion.rs:293` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
@@ -145,7 +144,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | hand-classified `match` over 6 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/gvn.rs:101` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 6 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/gvn.rs:201` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | `matches!` hand-set of 5 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/drop_insertion.rs:740` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| medium | `matches!` hand-set of 4 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/inliner.rs:2566` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
+| medium | `matches!` hand-set of 4 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/inliner.rs:2556` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | medium | `matches!` hand-set of 3 opcodes (implicit-false default) | `runtime/molt-backend/src/llvm_backend/lowering.rs:5080` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | medium | `matches!` hand-set of 3 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/lower_to_lir.rs:314` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | medium | `matches!` hand-set of 3 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/drop_insertion.rs:2329` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
@@ -154,16 +153,17 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | `matches!` hand-set of 22 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/vectorize.rs:147` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 19 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/block_versioning.rs:136` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 15 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/block_versioning.rs:159` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | `matches!` hand-set of 10 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:224` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 8 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/overflow_peel.rs:147` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 8 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/value_range.rs:1327` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 8 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/vectorize.rs:129` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | `matches!` hand-set of 6 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/function.rs:198` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 6 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/ssa.rs:1382` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 6 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/gvn.rs:61` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 5 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/lower_from_simple.rs:391` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| low | hand-classified `match` over 5 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:209` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| … | _30 more_ | | run `--json` for full list |
+| low | hand-classified `match` over 5 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/module_slot_promotion.rs:210` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
+| low | hand-classified `match` over 5 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/sccp.rs:157` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
+| low | hand-classified `match` over 5 opcodes (silent default) | `runtime/molt-tir/src/tir/passes/sccp.rs:265` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
+| low | `matches!` hand-set of 5 opcodes (implicit-false default) | `runtime/molt-tir/src/tir/passes/vectorize.rs:511` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
+| … | _27 more_ | | run `--json` for full list |
 
 ### debt_marker (393)
 

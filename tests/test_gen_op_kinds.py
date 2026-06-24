@@ -702,6 +702,114 @@ def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
     assert "OpCode::" not in body
 
 
+def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> None:
+    """Lowered coroutine body detection belongs to the op-kind registry."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    function = (ROOT / "runtime/molt-tir/src/tir/function.rs").read_text(
+        encoding="utf-8"
+    )
+
+    expected = {
+        "AllocTask",
+        "ChanRecvYield",
+        "ChanSendYield",
+        "StateSwitch",
+        "StateTransition",
+        "StateYield",
+    }
+    assert set(data["lowered_state_machine_body_opcodes"]) == expected
+    assert expected < set(data["state_machine_opcodes"])
+    assert {"StateBlockStart", "StateBlockEnd", "Yield", "YieldFrom"}.isdisjoint(
+        expected
+    )
+
+    table_block = rendered.split("fn opcode_is_lowered_state_machine_body_table")[
+        1
+    ].split("fn opcode_is_fusion_barrier_table")[0]
+    for row in data["opcode"]:
+        expected_bool = "true" if row["name"] in expected else "false"
+        assert f"OpCode::{row['name']} => {expected_bool}," in table_block
+
+    table_name = "opcode_is_lowered_state_machine_body_table"
+    assert table_name in function
+    marker = "pub fn has_state_machine("
+    start = function.index(marker)
+    brace = function.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(function)):
+        if function[i] == "{":
+            depth += 1
+        elif function[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = function[start:end]
+    assert "Terminator::StateDispatch" in body
+    assert f"{table_name}(op.opcode)" in body
+    assert "OpCode::" not in body
+
+
+def test_state_machine_opcodes_delegate_to_generated_table() -> None:
+    """Linear transform state-machine exclusions belong to the op-kind registry."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    inliner = (ROOT / "runtime/molt-tir/src/tir/passes/inliner.rs").read_text(
+        encoding="utf-8"
+    )
+    promotion = (
+        ROOT / "runtime/molt-tir/src/tir/passes/module_slot_promotion.rs"
+    ).read_text(encoding="utf-8")
+
+    expected = {
+        "AllocTask",
+        "ChanRecvYield",
+        "ChanSendYield",
+        "StateBlockEnd",
+        "StateBlockStart",
+        "StateSwitch",
+        "StateTransition",
+        "StateYield",
+        "Yield",
+        "YieldFrom",
+    }
+    assert set(data["state_machine_opcodes"]) == expected
+
+    table_block = rendered.split("fn opcode_is_state_machine_table")[1].split(
+        "fn opcode_requires_i64_zero_divisor_guard_table"
+    )[0]
+    for row in data["opcode"]:
+        expected_bool = "true" if row["name"] in expected else "false"
+        assert f"OpCode::{row['name']} => {expected_bool}," in table_block
+
+    table_name = "opcode_is_state_machine_table"
+    for source, helper in (
+        (inliner, "fn is_generator_or_async_op("),
+        (promotion, "fn is_state_machine_op("),
+    ):
+        assert table_name in source
+        start = source.index(helper)
+        brace = source.index("{", start)
+        depth = 0
+        end = brace
+        for i in range(brace, len(source)):
+            if source[i] == "{":
+                depth += 1
+            elif source[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        body = source[start:end]
+        assert f"{table_name}(opcode)" in body
+        assert "matches!" not in body
+        assert "OpCode::" not in body
+
+
 def test_refcount_heap_exposure_delegates_to_generated_table() -> None:
     """Deferred-RC heap exposure has one opcode authority."""
     gen = _gen()
