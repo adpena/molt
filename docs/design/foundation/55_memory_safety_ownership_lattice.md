@@ -236,6 +236,28 @@ across block-arg transfers; M2 only widens *which* roots are boundary-deferred.
 This is the structural-vs-hack line: M2 adds a fact-plane input; it does not add
 a placement special-case.
 
+> **VERIFIED OPEN SUB-CASE (2026-06-24, measured).** Beyond *which* roots defer
+> (the M2 gate widening), there is a placement *gap*: the boundary release is
+> missing on the **exception-transfer edge** even for an already-finalizer-
+> sensitive root. `tests/differential/memory/resurrect_during_exception_unwind.py`
+> fails today — molt prints `box_len 0` vs CPython `1`. This is **fail-closed
+> (a dropped finalizer = LEAK), NOT corruption**: measured under
+> `MOLT_ASSERT_NO_LEAK` with 0 SIGSEGV / 0 UAF / 0 double-free (the memory-
+> corruption axis is GREEN on all 6 resurrection/finalizer repros; this is the
+> lone parity+leak failure). Root cause: a frame-local `obj = R()`
+> (`MayFinalize ∧ MayResurrect`) that dies on a `raise` with no local handler gets
+> its finalizer-aware `DecRef` placed on the *normal-flow* last-use
+> (`drop_insertion.rs:1130-1135`); the exception-transfer edge leaves the block
+> first, and `exception_arcs_for_block` (`:1099-1106`, `:1468-1499`) inserts
+> retain/release only for *phi-edge payloads into handler blocks* — never the
+> dying frame-local's finalizer release on the exception-transfer-to-**EXIT** arc.
+> **Fix:** rung-3 placement must emit `boundary_release_roots` on EVERY exit edge,
+> *including the exception-transfer-to-exit arc*, not only normal-flow + phi-handler
+> edges. This is the "not released at all on the exception edge" instance of §0's
+> "lifetime-significant object released at the wrong place." The repro is a live
+> (un-suppressed) differential gate — it flips green when this lands; do NOT
+> suppress it.
+
 **Class retired:** "a weakref-significant or field-ordered object released early
 (at SSA-last-read) so a weakref deref or a `__del__` field read dangles."
 
