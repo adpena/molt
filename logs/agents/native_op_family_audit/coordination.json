@@ -1,0 +1,40 @@
+{
+  "task": "native_op_family_audit",
+  "timestamp_utc": "20260624T194124Z",
+  "host": {
+    "os": "Windows 11 AMD64",
+    "shell": "powershell",
+    "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt"
+  },
+  "touched_authority": [
+    "tools/audit_op_kinds.py",
+    "tests/test_gen_op_kinds.py",
+    "docs/design/foundation/25_op_kind_registry.md"
+  ],
+  "proof": [
+    {
+      "command": "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py",
+      "result": "passed: 86 passed"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/audit_op_kinds.py --check",
+      "result": "passed: dangerous-cell baseline is exact"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/gen_op_kinds.py --check",
+      "result": "passed: op-kind generated files in sync"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/structural_audit.py --check",
+      "result": "passed: 495 findings; 4 metrics improved"
+    }
+  ],
+  "structural_result": "audit_op_kinds native_arm coverage now reads extracted native op-family HANDLED_KINDS authorities plus inline/legacy dispatch scans",
+  "unowned_work_observed": [
+    "runtime/molt-backend/src/native_backend/function_compiler*.rs",
+    "runtime/molt-backend/src/native_backend/function_compiler/fc/*.rs",
+    "src/molt/cli/*.py",
+    "tests/cli/*.py",
+    "tests/differential/basic/vec_reduction_in_function.py"
+  ]
+}

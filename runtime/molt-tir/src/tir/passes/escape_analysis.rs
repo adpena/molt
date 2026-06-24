@@ -10,7 +10,7 @@ use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     copy_kind_is_explicit_no_heap_move_table, kind_result_absorbs_operand_ownership_table,
-    opcode_result_absorbs_operand_ownership_table,
+    opcode_is_escape_alloc_site_table, opcode_result_absorbs_operand_ownership_table,
 };
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
@@ -185,16 +185,7 @@ fn is_borrowing_method_call(attrs: &AttrDict) -> bool {
 ///   stack-promoted.
 #[inline]
 fn is_alloc_site(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::Alloc
-            | OpCode::ObjectNewBound
-            | OpCode::BuildList
-            | OpCode::BuildDict
-            | OpCode::BuildTuple
-            | OpCode::BuildSet
-            | OpCode::AllocTask
-    )
+    opcode_is_escape_alloc_site_table(opcode)
 }
 
 /// Return the operand that carries the stored value for StoreAttr-family ops.

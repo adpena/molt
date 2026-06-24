@@ -1,0 +1,82 @@
+{
+  "task": "fuzz_tir_generated_opcode_shapes",
+  "timestamp_utc": "20260624T210930Z",
+  "environment": {
+    "host": "Windows 11 AMD64",
+    "shell": "powershell",
+    "repo": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+    "python": "C:\\Users\\adpen\\OneDrive\\Documents\\molt\\.venv\\Scripts\\python.exe",
+    "uv": "C:\\Users\\adpen\\.local\\bin\\uv.exe",
+    "posix_shell": "C:\\Program Files\\Git\\bin\\bash.exe"
+  },
+  "proof_plan": {
+    "source": "tools/agent_coordination.py proof-plan",
+    "recommendations": 0,
+    "paths": [
+      "runtime/molt-tir/src/tir/op_kinds.toml",
+      "runtime/molt-tir/src/tir/op_kinds_generated.rs",
+      "runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs",
+      "tests/test_gen_op_kinds.py",
+      "tools/gen_op_kinds.py",
+      "docs/design/foundation/25_op_kind_registry.md",
+      "docs/spec/README.md",
+      "docs/spec/STATUS.md"
+    ]
+  },
+  "owned_changes": [
+    "Added fuzz_tir_opcode_shapes to op_kinds.toml as the registry-owned fixed-shape fuzz palette.",
+    "Rendered FUZZ_TIR_OPCODE_SHAPES and opcode_fuzz_tir_operand_count_table from tools/gen_op_kinds.py.",
+    "Migrated fuzz_tir_passes.rs off local opcode/operand/result matches and onto generated facts.",
+    "Repaired fuzz_tir_passes.rs to pass explicit TargetInfo::native_release_fast to the live TIR pipeline.",
+    "Refreshed runtime/molt-backend/fuzz/Cargo.lock so the fuzz workspace lock matches current manifests.",
+    "Pinned generator and consumer contracts in tests/test_gen_op_kinds.py and routed docs/status."
+  ],
+  "proof": [
+    {
+      "command": "uv run --python 3.12 python tools/gen_op_kinds.py --check",
+      "result": "passed",
+      "summary": "op-kind generated files: in sync"
+    },
+    {
+      "command": "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py::test_fuzz_tir_passes_uses_generated_opcode_shapes tests/test_gen_op_kinds.py::test_fuzz_tir_opcode_shape_validation_rejects_variable_result_opcodes",
+      "result": "passed",
+      "summary": "2 passed"
+    },
+    {
+      "command": "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py",
+      "result": "passed",
+      "summary": "97 passed"
+    },
+    {
+      "command": "cargo fmt --manifest-path runtime/molt-backend/fuzz/Cargo.toml --check",
+      "result": "passed",
+      "summary": "rustfmt check clean for fuzz workspace"
+    },
+    {
+      "command": "cargo check --manifest-path runtime/molt-backend/fuzz/Cargo.toml --bin fuzz_tir_passes",
+      "result": "passed",
+      "summary": "fuzz target compiled after lock refresh; emitted pre-existing INLINE_DISPATCH_KINDS dead-code warning"
+    },
+    {
+      "command": "cargo check --locked --manifest-path runtime/molt-backend/fuzz/Cargo.toml --bin fuzz_tir_passes",
+      "result": "passed",
+      "summary": "locked fuzz target compile passed; emitted pre-existing INLINE_DISPATCH_KINDS dead-code warning"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/audit_op_kinds.py --check",
+      "result": "passed",
+      "summary": "op-kind drift check: OK"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/structural_audit.py --check",
+      "result": "passed",
+      "summary": "structural ratchet OK (484 findings; 4 metrics improved)"
+    }
+  ],
+  "structural_audit": {
+    "before_findings": 485,
+    "after_findings": 484,
+    "board_regenerated": "docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md"
+  },
+  "known_nonblocking_warning": "runtime/molt-backend/src/native_backend/function_compiler/fc/op_family.rs:215 INLINE_DISPATCH_KINDS is never used during fuzz cargo check"
+}

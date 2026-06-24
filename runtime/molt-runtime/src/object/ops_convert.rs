@@ -7,6 +7,7 @@ use crate::const_data_cache::{
 use crate::object::accessors::object_field_init_ptr_raw;
 use crate::object::inc_ref_ptr;
 use crate::object::ops::{as_float_extended, float_result_bits, is_float_extended};
+use crate::object::ops_format::{format_bytes, format_string_repr_bytes};
 use crate::*;
 use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
@@ -546,8 +547,12 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                     if let Ok(parsed) = parse_float_from_bytes(bytes) {
                         return float_result_bits(_py, parsed);
                     }
-                    let rendered = String::from_utf8_lossy(bytes);
-                    let msg = format!("could not convert string to float: '{rendered}'");
+                    // CPython embeds `repr(arg)`: a str renders with quote
+                    // selection and escapes (`"it's"`, `'a\nb'`), not raw bytes.
+                    let msg = format!(
+                        "could not convert string to float: {}",
+                        format_string_repr_bytes(bytes)
+                    );
                     return raise_exception::<_>(_py, "ValueError", &msg);
                 }
                 if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
@@ -556,8 +561,14 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                     if let Ok(parsed) = parse_float_from_bytes(bytes) {
                         return float_result_bits(_py, parsed);
                     }
-                    let rendered = String::from_utf8_lossy(bytes);
-                    let msg = format!("could not convert string to float: '{rendered}'");
+                    // CPython embeds `repr(arg)`: `b'...'` for bytes,
+                    // `bytearray(b'...')` for bytearray, with byte-wise `\xNN`.
+                    let rendered = if type_id == TYPE_ID_BYTEARRAY {
+                        format!("bytearray({})", format_bytes(bytes))
+                    } else {
+                        format_bytes(bytes)
+                    };
+                    let msg = format!("could not convert string to float: {rendered}");
                     return raise_exception::<_>(_py, "ValueError", &msg);
                 }
                 let float_name_bits =
@@ -601,11 +612,11 @@ pub extern "C" fn molt_float_from_obj(val_bits: u64) -> u64 {
                 }
             }
         }
-        raise_exception::<_>(
-            _py,
-            "TypeError",
-            "float() argument must be a string or a number",
-        )
+        let msg = format!(
+            "float() argument must be a string or a real number, not '{}'",
+            type_name(_py, obj)
+        );
+        raise_exception::<_>(_py, "TypeError", &msg)
     })
 }
 

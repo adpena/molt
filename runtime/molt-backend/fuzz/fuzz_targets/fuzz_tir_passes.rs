@@ -3,12 +3,16 @@ use libfuzzer_sys::fuzz_target;
 
 use std::collections::HashMap;
 
-use molt_backend::tir::blocks::{BlockId, LoopRole, TirBlock, Terminator};
+use molt_backend::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
-use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use molt_backend::tir::op_kinds_generated::{
+    FUZZ_TIR_OPCODE_SHAPES, FuzzTirAttrPayloadRule, opcode_fixed_result_count_table,
+};
+use molt_backend::tir::ops::{AttrDict, AttrValue, Dialect, TirOp};
 use molt_backend::tir::passes;
+use molt_backend::tir::target_info::TargetInfo;
 use molt_backend::tir::types::TirType;
-use molt_backend::tir::values::{ValueId, TirValue};
+use molt_backend::tir::values::{TirValue, ValueId};
 
 // --------------------------------------------------------------------------
 // Fuzz target: build random TIR functions from structured fuzz data and run
@@ -16,30 +20,6 @@ use molt_backend::tir::values::{ValueId, TirValue};
 // loops, or memory corruption in passes like DCE, SCCP, unboxing, escape
 // analysis, strength reduction, and BCE.
 // --------------------------------------------------------------------------
-
-/// Small palette of opcodes that operate on 0-2 operands and produce 0-1
-/// results, suitable for generating without needing complex invariants.
-const OPCODES: &[OpCode] = &[
-    OpCode::Add,
-    OpCode::Sub,
-    OpCode::Mul,
-    OpCode::Neg,
-    OpCode::Not,
-    OpCode::Eq,
-    OpCode::Lt,
-    OpCode::BitAnd,
-    OpCode::BitOr,
-    OpCode::Shl,
-    OpCode::ConstInt,
-    OpCode::ConstFloat,
-    OpCode::ConstBool,
-    OpCode::ConstNone,
-    OpCode::Copy,
-    OpCode::IncRef,
-    OpCode::DecRef,
-    OpCode::BoxVal,
-    OpCode::UnboxVal,
-];
 
 const TYPES: &[TirType] = &[
     TirType::I64,
@@ -57,6 +37,24 @@ fn eat(data: &mut &[u8]) -> Option<u8> {
         let b = data[0];
         *data = &data[1..];
         Some(b)
+    }
+}
+
+fn populate_fuzz_attrs(rule: FuzzTirAttrPayloadRule, data: &mut &[u8], attrs: &mut AttrDict) {
+    match rule {
+        FuzzTirAttrPayloadRule::None => {}
+        FuzzTirAttrPayloadRule::I64Value => {
+            let val = eat(data).unwrap_or(0) as i64 - 128;
+            attrs.insert("value".to_string(), AttrValue::Int(val));
+        }
+        FuzzTirAttrPayloadRule::F64Value => {
+            let byte = eat(data).unwrap_or(0);
+            attrs.insert("f_value".to_string(), AttrValue::Float(byte as f64 / 10.0));
+        }
+        FuzzTirAttrPayloadRule::BoolValue => {
+            let b = (eat(data).unwrap_or(0) & 1) != 0;
+            attrs.insert("value".to_string(), AttrValue::Bool(b));
+        }
     }
 }
 
@@ -120,16 +118,10 @@ fn build_function(data: &mut &[u8]) -> Option<TirFunction> {
         let mut ops = Vec::with_capacity(num_ops);
 
         for _ in 0..num_ops {
-            let op_idx = (eat(data).unwrap_or(0) as usize) % OPCODES.len();
-            let opcode = OPCODES[op_idx];
-
-            // Determine operand count based on opcode.
-            let num_operands = match opcode {
-                OpCode::ConstInt | OpCode::ConstFloat | OpCode::ConstBool | OpCode::ConstNone => 0,
-                OpCode::Neg | OpCode::Not | OpCode::Copy | OpCode::IncRef | OpCode::DecRef
-                | OpCode::BoxVal | OpCode::UnboxVal => 1,
-                _ => 2,
-            };
+            let op_idx = (eat(data).unwrap_or(0) as usize) % FUZZ_TIR_OPCODE_SHAPES.len();
+            let shape = FUZZ_TIR_OPCODE_SHAPES[op_idx];
+            let opcode = shape.opcode;
+            let num_operands = shape.operands;
 
             let mut operands = Vec::with_capacity(num_operands);
             for _ in 0..num_operands {
@@ -140,41 +132,18 @@ fn build_function(data: &mut &[u8]) -> Option<TirFunction> {
                 operands.push(all_values[idx]);
             }
 
-            // Result: most ops produce one value.
-            let has_result = !matches!(
-                opcode,
-                OpCode::IncRef | OpCode::DecRef
-            );
-
-            let results = if has_result {
+            let result_count = opcode_fixed_result_count_table(opcode)
+                .expect("fuzz TIR opcode palette must contain fixed-result opcodes");
+            let mut results = Vec::with_capacity(result_count);
+            for _ in 0..result_count {
                 let vid = ValueId(func.next_value);
                 func.next_value += 1;
                 all_values.push(vid);
-                vec![vid]
-            } else {
-                vec![]
-            };
-
-            // Attributes for const ops.
-            let mut attrs: AttrDict = HashMap::new();
-            match opcode {
-                OpCode::ConstInt => {
-                    let val = eat(data).unwrap_or(0) as i64 - 128;
-                    attrs.insert("value".to_string(), AttrValue::Int(val));
-                }
-                OpCode::ConstFloat => {
-                    let byte = eat(data).unwrap_or(0);
-                    attrs.insert(
-                        "value".to_string(),
-                        AttrValue::Float(byte as f64 / 10.0),
-                    );
-                }
-                OpCode::ConstBool => {
-                    let b = (eat(data).unwrap_or(0) & 1) != 0;
-                    attrs.insert("value".to_string(), AttrValue::Bool(b));
-                }
-                _ => {}
+                results.push(vid);
             }
+
+            let mut attrs: AttrDict = HashMap::new();
+            populate_fuzz_attrs(shape.attr_payload, data, &mut attrs);
 
             ops.push(TirOp {
                 dialect: Dialect::Molt,
@@ -233,8 +202,7 @@ fn build_function(data: &mut &[u8]) -> Option<TirFunction> {
     if block_ids.len() >= 3 {
         let role_byte = eat(data).unwrap_or(0);
         if (role_byte & 0x01) != 0 {
-            func.loop_roles
-                .insert(block_ids[1], LoopRole::LoopHeader);
+            func.loop_roles.insert(block_ids[1], LoopRole::LoopHeader);
             if block_ids.len() > 2 {
                 func.loop_roles
                     .insert(block_ids[block_ids.len() - 1], LoopRole::LoopEnd);
@@ -254,7 +222,7 @@ fuzz_target!(|data: &[u8]| {
     // Run the full optimization pipeline.  We catch panics to distinguish
     // them from expected verification failures (which return empty stats).
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        passes::run_pipeline(&mut func)
+        passes::run_pipeline(&mut func, &TargetInfo::native_release_fast())
     }));
 
     match result {
@@ -263,10 +231,7 @@ fuzz_target!(|data: &[u8]| {
             // random input.  Non-empty = passes completed successfully.
             for s in &stats {
                 // Sanity: pass names should be non-empty.
-                assert!(
-                    !s.name.is_empty(),
-                    "optimization pass returned empty name"
-                );
+                assert!(!s.name.is_empty(), "optimization pass returned empty name");
             }
         }
         Err(panic_info) => {

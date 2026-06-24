@@ -82,7 +82,8 @@ use std::collections::BTreeMap;
 use super::analysis::{Analysis, AnalysisId};
 use super::call_graph::CallGraph;
 use super::function::{TirFunction, TirModule};
-use super::ops::{AttrValue, OpCode, TirOp};
+use super::op_kinds_generated::{CallOpcodeRole, opcode_call_role_table};
+use super::ops::{AttrValue, TirOp};
 use super::passes::inliner::classify_inline_eligibility;
 use super::passes::ip_summary::ModuleSummaries;
 use super::target_info::TargetInfo;
@@ -427,18 +428,18 @@ impl CallFactsTable {
 /// `CallBuiltin`), if it is a call op that produces a value. Returns `None` for
 /// non-call ops and for a (rare) result-less call. The key the side-table uses.
 fn call_op_result(op: &TirOp) -> Option<ValueId> {
-    if !is_call_op(op.opcode) {
+    if !call_role_records_facts(opcode_call_role_table(op.opcode)) {
         return None;
     }
     op.results.first().copied()
 }
 
-/// Whether `opcode` is one of the three call-bearing opcodes CallFacts records.
+/// Whether this generated call role is one CallFacts records.
 #[inline]
-fn is_call_op(opcode: OpCode) -> bool {
+fn call_role_records_facts(role: CallOpcodeRole) -> bool {
     matches!(
-        opcode,
-        OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin
+        role,
+        CallOpcodeRole::UserCall | CallOpcodeRole::DynamicMethod | CallOpcodeRole::RuntimeBuiltin
     )
 }
 
@@ -495,8 +496,8 @@ fn builtin_is_no_throw(name: &str) -> bool {
 /// `call_graph::classify_call_op` exactly — same `s_value`/defined predicate, same
 /// gpu-runtime carve-out — but returns the *typed* fact rather than a `CallEdge`.
 fn target_for_module(op: &TirOp, call_graph: &CallGraph) -> CallTargetFact {
-    match op.opcode {
-        OpCode::Call => match s_value(op) {
+    match opcode_call_role_table(op.opcode) {
+        CallOpcodeRole::UserCall => match s_value(op) {
             // A gpu_* runtime symbol lifts to `Call` but is a runtime helper, not
             // a user function — the call graph excludes it as an edge, so it is
             // not a static-direct user target here either.
@@ -507,8 +508,8 @@ fn target_for_module(op: &TirOp, call_graph: &CallGraph) -> CallTargetFact {
             _ => CallTargetFact::Opaque,
         },
         // Method dispatch is always dynamic; a builtin is always a runtime helper.
-        OpCode::CallMethod | OpCode::CallBuiltin => CallTargetFact::Opaque,
-        _ => CallTargetFact::Opaque,
+        CallOpcodeRole::DynamicMethod | CallOpcodeRole::RuntimeBuiltin => CallTargetFact::Opaque,
+        CallOpcodeRole::CopyOriginalKind | CallOpcodeRole::NotCall => CallTargetFact::Opaque,
     }
 }
 
@@ -638,8 +639,10 @@ fn no_throw_for(op: &TirOp, resolved_callee: Option<&TirFunction>) -> FactValue 
         return FactValue::Proven;
     }
     // (3) A no-throw-allowlisted builtin.
-    if op.opcode == OpCode::CallBuiltin
-        && let Some(name) = builtin_name(op)
+    if matches!(
+        opcode_call_role_table(op.opcode),
+        CallOpcodeRole::RuntimeBuiltin
+    ) && let Some(name) = builtin_name(op)
         && builtin_is_no_throw(name)
     {
         return FactValue::Proven;

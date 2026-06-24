@@ -1579,6 +1579,48 @@ fn scalar_handle_helpers_roundtrip() {
 }
 
 #[test]
+fn scalar_extractors_preserve_pending_exception() {
+    // A scalar extractor (`molt_float_as_f64` / `molt_int_as_i64`) is chained by
+    // native codegen onto the result of a fallible boxing call (e.g.
+    // `molt_float_from_obj` for `float(x)` feeding a raw-f64 lane). When that
+    // prior call raised — e.g. `float("nope")` raised `ValueError` and returned
+    // the `None` sentinel — the extractor receives the sentinel and fails its
+    // type check. It must NOT clobber the already-pending exception with its
+    // generic "X-compatible object expected" TypeError. Regression for
+    // `float("nope")` surfacing `TypeError` instead of the real `ValueError`.
+    let _guard = CApiTestGuard::new();
+    crate::with_gil_entry_nopanic!(_py, {
+        // Arrange a known pending exception, standing in for the prior raise.
+        let runtime_error = runtime_error_type_bits(_py);
+        let msg = b"prior-boom";
+        assert_eq!(
+            unsafe { molt_err_set(runtime_error, msg.as_ptr(), msg.len() as u64) },
+            0
+        );
+        assert_eq!(molt_err_pending(), 1);
+        let before_bits = molt_err_peek();
+
+        // The float extractor returns its sentinel WITHOUT raising over the
+        // pending exception — the current exception object stays identical.
+        assert_eq!(molt_float_as_f64(molt_none()), -1.0);
+        assert_eq!(molt_err_pending(), 1);
+        let after_float = molt_err_peek();
+        assert_eq!(after_float, before_bits);
+        dec_ref_bits(_py, after_float);
+
+        // Same invariant for the integer extractor.
+        assert_eq!(molt_int_as_i64(molt_none()), -1);
+        assert_eq!(molt_err_pending(), 1);
+        let after_int = molt_err_peek();
+        assert_eq!(after_int, before_bits);
+        dec_ref_bits(_py, after_int);
+
+        let _ = molt_err_clear();
+        dec_ref_bits(_py, before_bits);
+    });
+}
+
+#[test]
 fn object_bytes_compare_and_contains_helpers() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {

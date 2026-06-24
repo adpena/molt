@@ -1332,7 +1332,7 @@ mod tests {
     }
 }
 
-fn format_bytes(bytes: &[u8]) -> String {
+pub(crate) fn format_bytes(bytes: &[u8]) -> String {
     // Match CPython: use double quotes when bytes contain single quote but not double
     let use_double = bytes.contains(&b'\'') && !bytes.contains(&b'"');
     let quote = if use_double { '"' } else { '\'' };
@@ -1384,7 +1384,7 @@ fn type_name_for_format_error(obj: MoltObject) -> &'static str {
     }
 }
 
-fn format_string_repr_bytes(bytes: &[u8]) -> String {
+pub(crate) fn format_string_repr_bytes(bytes: &[u8]) -> String {
     let use_double = bytes.contains(&b'\'') && !bytes.contains(&b'"');
     let quote = if use_double { '"' } else { '\'' };
     let mut out = String::new();

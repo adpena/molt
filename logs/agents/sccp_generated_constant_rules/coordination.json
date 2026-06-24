@@ -1,0 +1,58 @@
+{
+  "task": "sccp_generated_constant_rules",
+  "timestamp_utc": "20260624T193159Z",
+  "host": {
+    "os": "Windows 11 AMD64",
+    "shell": "powershell",
+    "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt"
+  },
+  "touched_authority": [
+    "runtime/molt-tir/src/tir/op_kinds.toml",
+    "tools/gen_op_kinds.py",
+    "runtime/molt-tir/src/tir/passes/sccp.rs",
+    "runtime/molt-tir/src/tir/op_kinds_generated.rs",
+    "tests/test_gen_op_kinds.py",
+    "docs/design/foundation/25_op_kind_registry.md",
+    "docs/spec/README.md",
+    "docs/spec/STATUS.md",
+    "docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md"
+  ],
+  "proof": [
+    {
+      "command": "uv run --python 3.12 python tools/gen_op_kinds.py --check",
+      "result": "passed: op-kind generated files in sync"
+    },
+    {
+      "command": "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py::test_sccp_constant_rules_delegate_to_generated_tables tests/test_gen_op_kinds.py::test_sccp_constant_rule_validation_rejects_drift",
+      "result": "passed: 2 passed"
+    },
+    {
+      "command": "cargo test -p molt-tir sccp --lib",
+      "result": "passed: 40 passed"
+    },
+    {
+      "command": "cargo fmt -p molt-tir --check",
+      "result": "passed"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/audit_op_kinds.py --check",
+      "result": "passed: dangerous-cell baseline is exact"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/structural_audit.py --check",
+      "result": "passed: 495 findings; 4 metrics improved"
+    }
+  ],
+  "known_external_noise": [
+    {
+      "command": "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py",
+      "result": "failed outside this slice: test_guarded_field_init_has_one_wire_spelling saw native_arm=false under current native-backend WIP"
+    }
+  ],
+  "unowned_work_observed": [
+    "runtime/molt-backend/src/native_backend/function_compiler*.rs",
+    "runtime/molt-backend/src/native_backend/function_compiler/fc/*.rs",
+    "src/molt/cli/*.py",
+    "tests/differential/basic/vec_reduction_in_function.py"
+  ]
+}
