@@ -766,6 +766,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         level: int = 0,
     ) -> MoltValue: ...
 
+    def _emit_source_import_alias_binding(self, module_name: str) -> MoltValue: ...
+
     def _emit_module_load(self, module_name: str) -> MoltValue: ...
 
     def _emit_module_import_from_value(
@@ -773,6 +775,21 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue: ...
 
     def _source_imports_use_transaction(self) -> bool: ...
+
+    @staticmethod
+    def _normalize_func_kind(kind: object) -> str | None: ...
+
+    def _lookup_func_kind(self, module_name: str | None, func_id: str) -> str | None: ...
+
+    def _imported_attr_name(self, bind_name: str) -> str: ...
+
+    def _known_function_symbol_target(
+        self, func_symbol: str
+    ) -> tuple[str, str] | None: ...
+
+    def _known_module_function_type_hint(
+        self, module_name: str | None, func_id: str
+    ) -> str | None: ...
 
     def _lookup_func_defaults(
         self, module_name: str | None, func_id: str
@@ -1268,6 +1285,19 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         node: ast.Call,
         *,
         needs_bind: bool,
+    ) -> MoltValue | None: ...
+
+    def _try_emit_imported_module_direct_or_task_call(
+        self,
+        target_module: str | None,
+        original_attr: str,
+        node: ast.Call,
+        *,
+        imported_from: str | None,
+        normalized: str | None,
+        needs_bind: bool,
+        force_bind: bool,
+        direct_registry_authorized: bool,
     ) -> MoltValue | None: ...
 
     def _emit_call_args_builder(self, node: ast.Call) -> MoltValue: ...
@@ -2036,9 +2066,16 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, awaitable: MoltValue, *, raise_pending: bool = True
     ) -> MoltValue: ...
 
+    def _emit_state_yield_resume_try_starts(self) -> None: ...
+
+    def _emit_state_yield_resume_entry(self, state_id: int) -> None: ...
+
     def visit_Yield(self, node: ast.Yield) -> Any: ...
 
     def visit_YieldFrom(self, node: ast.YieldFrom) -> Any: ...
+
+    @staticmethod
+    def _require_async_poll_target(kind: str, target: Any) -> str: ...
 
     @staticmethod
     def _scalarize_string_split_fields_json(
