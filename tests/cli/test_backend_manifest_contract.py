@@ -229,7 +229,7 @@ def test_cli_micro_base_mirror_does_not_drift_from_cargo_stdlib_micro() -> None:
     the moment P0 #50 made class-body control flow execute.  This guard turns
     the drift into a CI failure instead of a latent silent refusal (task #85).
     """
-    from molt.cli import _MICRO_BASE_RUNTIME_FEATURES
+    from molt.cli.runtime_features import _MICRO_BASE_RUNTIME_FEATURES
 
     runtime_manifest_path = ROOT / "runtime" / "molt-runtime" / "Cargo.toml"
     with runtime_manifest_path.open("rb") as handle:
@@ -252,7 +252,7 @@ def test_cli_profile_availability_covers_every_always_linked_micro_feature() -> 
     of ``_runtime_builtin_features_for_profile`` (non-micro / micro-wasm /
     micro-native).
     """
-    from molt.cli import (
+    from molt.cli.runtime_features import (
         _MICRO_BASE_RUNTIME_FEATURES,
         _runtime_builtin_features_for_profile,
     )

@@ -13,6 +13,7 @@ from pathlib import Path
 import tomllib
 
 import molt.cli as cli
+from molt.cli import runtime_features as RUNTIME_FEATURES
 from molt._runtime_feature_gates import (
     LINK_AFFECTING_FEATURES,
     feature_gate_for_symbol,
@@ -26,13 +27,17 @@ STDLIB_ROOT = MOLT_ROOT / "src" / "molt" / "stdlib"
 
 def _micro_features() -> frozenset[str]:
     return frozenset(
-        cli._runtime_builtin_features_for_profile("micro", target_triple=None)
+        RUNTIME_FEATURES._runtime_builtin_features_for_profile(
+            "micro", target_triple=None
+        )
     )
 
 
 def _full_features() -> frozenset[str]:
     return frozenset(
-        cli._runtime_builtin_features_for_profile("full", target_triple=None)
+        RUNTIME_FEATURES._runtime_builtin_features_for_profile(
+            "full", target_triple=None
+        )
     )
 
 
@@ -336,7 +341,7 @@ def test_wasm_micro_uses_wasm_feature_surface_and_refuses_ast() -> None:
 
 def test_wasm_micro_excludes_sqlite_and_refuses_sqlite3() -> None:
     wasm_micro = frozenset(
-        cli._runtime_builtin_features_for_profile(
+        RUNTIME_FEATURES._runtime_builtin_features_for_profile(
             "micro", target_triple="wasm32-wasip1"
         )
     )
@@ -352,7 +357,9 @@ def test_wasm_micro_excludes_sqlite_and_refuses_sqlite3() -> None:
 
 def test_wasm_full_excludes_sqlite_and_refuses_sqlite3() -> None:
     wasm_full = frozenset(
-        cli._runtime_builtin_features_for_profile("full", target_triple="wasm32-wasip1")
+        RUNTIME_FEATURES._runtime_builtin_features_for_profile(
+            "full", target_triple="wasm32-wasip1"
+        )
     )
     assert "sqlite" not in wasm_full
     rc, message = _run_pass([("_sqlite3", STDLIB_ROOT / "_sqlite3.py")], "full", "wasm")
@@ -368,7 +375,7 @@ def test_wasm_micro_includes_crypto_so_hashlib_is_allowed() -> None:
     # refused on wasm — proving the refusal tracks the per-target feature set
     # rather than a single hardcoded exclusion list.
     wasm_micro = frozenset(
-        cli._runtime_builtin_features_for_profile(
+        RUNTIME_FEATURES._runtime_builtin_features_for_profile(
             "micro", target_triple="wasm32-wasip1"
         )
     )

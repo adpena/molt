@@ -10,6 +10,7 @@ from typing import Any
 
 from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.compiler_metadata import _compiler_root
+from molt.cli.config_resolution import _coerce_bool
 
 
 def _cli_module() -> Any:
@@ -26,10 +27,6 @@ def _emit_json(*args: Any, **kwargs: Any) -> Any:
 
 def _json_payload(*args: Any, **kwargs: Any) -> Any:
     return _cli_module()._json_payload(*args, **kwargs)
-
-
-def _coerce_bool(*args: Any, **kwargs: Any) -> bool:
-    return _cli_module()._coerce_bool(*args, **kwargs)
 
 
 def _codesign_binary(binary_path: Path) -> None:
