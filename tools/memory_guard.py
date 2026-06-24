@@ -106,6 +106,7 @@ from tools.memory_guard_core.windows_snapshot import (  # noqa: E402
     _windows_process_needs_full_command_line as _windows_process_needs_full_command_line,
     _windows_process_snapshot_rows as _windows_process_snapshot_rows,
 )
+from tools.memory_guard_core import repro_context as _repro_context  # noqa: E402
 PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
 GUARD_RETURN_CODE = 137
 TIMEOUT_RETURN_CODE = 124
@@ -2636,67 +2637,18 @@ def run_guarded(
         _restore_guard_signal_handlers()
 
 
-_REPRO_ENV_KEYS = {
-    "CARGO_TARGET_DIR",
-    "CI",
-    "CODEX_SESSION_ID",
-    "CODEX_WORKSPACE",
-    "MOLT_CACHE",
-    "MOLT_DIFF_CARGO_TARGET_DIR",
-    "MOLT_DIFF_ROOT",
-    "MOLT_EXT_ROOT",
-    "MOLT_GUARD_PROFILE",
-    "MOLT_GUARD_PROFILE_LOG",
-    "MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC",
-    "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-    "MOLT_SESSION_ID",
-    "PYTEST_CURRENT_TEST",
-    "PYTEST_XDIST_WORKER",
-    "PYTHONHASHSEED",
-    "PYTHONPATH",
-    "RUSTFLAGS",
-    "RUSTC_WRAPPER",
-    "TMPDIR",
-    "UV_CACHE_DIR",
-    "VIRTUAL_ENV",
-}
-_REPRO_ENV_PREFIXES = ("CODEX_", "GITHUB_", "MOLT_", "PYTEST_")
-_SECRET_ENV_TOKENS = (
-    "AUTH",
-    "COOKIE",
-    "CREDENTIAL",
-    "KEY",
-    "PASS",
-    "SECRET",
-    "TOKEN",
-)
+_REPRO_ENV_KEYS = _repro_context.REPRO_ENV_KEYS
+_REPRO_ENV_PREFIXES = _repro_context.REPRO_ENV_PREFIXES
+_SECRET_ENV_TOKENS = _repro_context.SECRET_ENV_TOKENS
 _PYTEST_CURRENT_TEST_FILE_ENV = "MOLT_PYTEST_CURRENT_TEST_FILE"
-_PYTEST_CURRENT_TEST_FILE_MAX_BYTES = 16 * 1024
-_PYTEST_CURRENT_TEST_WORKER_MAX_FILES = 128
-_PYTEST_COMMAND_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
-
-
-def _safe_repro_env_key(key: str) -> bool:
-    upper = key.upper()
-    if any(token in upper for token in _SECRET_ENV_TOKENS):
-        return False
-    return key in _REPRO_ENV_KEYS or any(
-        key.startswith(prefix) for prefix in _REPRO_ENV_PREFIXES
-    )
-
-
-def _safe_repro_env_value(value: object) -> str:
-    text = str(value)
-    return text if len(text) <= 512 else f"{text[:512]}...<truncated>"
-
-
-def _safe_repro_env(environ: Mapping[str, str]) -> dict[str, str]:
-    payload: dict[str, str] = {}
-    for key in sorted(environ):
-        if not _safe_repro_env_key(key):
-            continue
-        payload[key] = _safe_repro_env_value(environ.get(key, ""))
-    return payload
+_PYTEST_CURRENT_TEST_FILE_MAX_BYTES = _repro_context.PYTEST_CURRENT_TEST_FILE_MAX_BYTES
+_PYTEST_CURRENT_TEST_WORKER_MAX_FILES = (
+    _repro_context.PYTEST_CURRENT_TEST_WORKER_MAX_FILES
+)
+_PYTEST_COMMAND_NAMES = _repro_context.PYTEST_COMMAND_NAMES
+_safe_repro_env_key = _repro_context._safe_repro_env_key
+_safe_repro_env_value = _repro_context._safe_repro_env_value
+_safe_repro_env = _repro_context._safe_repro_env
 
 
 def _safe_repro_env_delta(
@@ -2704,30 +2656,10 @@ def _safe_repro_env_delta(
     *,
     baseline: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
-    base = os.environ if baseline is None else baseline
-    added: dict[str, str] = {}
-    changed: dict[str, dict[str, str]] = {}
-    removed: list[str] = []
-    for key in sorted(set(base) | set(environ)):
-        if not _safe_repro_env_key(key):
-            continue
-        in_base = key in base
-        in_env = key in environ
-        if in_env and not in_base:
-            added[key] = _safe_repro_env_value(environ[key])
-        elif in_base and not in_env:
-            removed.append(key)
-        elif in_base and in_env and base[key] != environ[key]:
-            changed[key] = {
-                "from": _safe_repro_env_value(base[key]),
-                "to": _safe_repro_env_value(environ[key]),
-            }
-    return {
-        "baseline": "guard_parent_environment",
-        "added": added,
-        "changed": changed,
-        "removed": removed,
-    }
+    return _repro_context._safe_repro_env_delta(
+        environ,
+        baseline=os.environ if baseline is None else baseline,
+    )
 
 
 def _safe_getpgrp() -> int | None:
@@ -2758,14 +2690,7 @@ def _safe_getsid(pid: int) -> int | None:
 
 
 def _process_sample_payload(sample: ProcessSample) -> dict[str, object]:
-    return {
-        "pid": sample.pid,
-        "ppid": sample.ppid,
-        "pgid": sample.pgid,
-        "rss_kb": sample.rss_kb,
-        "elapsed_sec": sample.elapsed_sec,
-        "command": sample.command,
-    }
+    return _repro_context._process_sample_payload(sample)
 
 
 def process_sample_payload(sample: ProcessSample) -> dict[str, object]:
@@ -2777,11 +2702,10 @@ def _bounded_process_sample_payload(
     *,
     max_command_chars: int = 512,
 ) -> dict[str, object]:
-    payload = _process_sample_payload(sample)
-    command = str(payload["command"])
-    if len(command) > max_command_chars:
-        payload["command"] = f"{command[:max_command_chars]}...<truncated>"
-    return payload
+    return _repro_context._bounded_process_sample_payload(
+        sample,
+        max_command_chars=max_command_chars,
+    )
 
 
 def _host_control_plane_payload(
@@ -2789,30 +2713,13 @@ def _host_control_plane_payload(
     *,
     max_samples: int = 32,
 ) -> dict[str, object] | None:
-    host_pgids = {
-        _sample_pgid(sample)
-        for sample in samples.values()
-        if is_host_control_plane_process(sample)
-    }
-    protected_pgids = _current_protected_process_group_ids(samples)
-    if not host_pgids and not protected_pgids:
-        return None
-    host_samples = [
-        sample
-        for sample in sorted(samples.values(), key=lambda item: item.pid)
-        if _sample_pgid(sample) in host_pgids
-    ]
-    payload: dict[str, object] = {
-        "protected_pgids": sorted(protected_pgids),
-        "host_pgids": sorted(host_pgids),
-        "samples": [
-            _bounded_process_sample_payload(sample)
-            for sample in host_samples[:max_samples]
-        ],
-    }
-    if len(host_samples) > max_samples:
-        payload["truncated_samples"] = len(host_samples) - max_samples
-    return payload
+    return _repro_context._host_control_plane_payload(
+        samples,
+        sample_pgid=_sample_pgid,
+        is_host_control_plane_process=is_host_control_plane_process,
+        protected_process_group_ids=_current_protected_process_group_ids,
+        max_samples=max_samples,
+    )
 
 
 def _process_lineage_payload(
@@ -2821,30 +2728,15 @@ def _process_lineage_payload(
     pid: int,
     max_depth: int = 8,
 ) -> list[dict[str, object]]:
-    lineage: list[dict[str, object]] = []
-    seen: set[int] = set()
-    current = pid
-    for _ in range(max_depth):
-        if current <= 0 or current in seen:
-            break
-        seen.add(current)
-        sample = samples.get(current)
-        if sample is None:
-            lineage.append({"pid": current, "sample_missing": True})
-            break
-        lineage.append(_process_sample_payload(sample))
-        if sample.ppid <= 0 or sample.ppid == current:
-            break
-        current = sample.ppid
-    return lineage
+    return _repro_context._process_lineage_payload(
+        samples,
+        pid=pid,
+        max_depth=max_depth,
+    )
 
 
 def _path_is_under(path: Path, root: Path) -> bool:
-    try:
-        path.resolve(strict=False).relative_to(root.resolve(strict=False))
-    except ValueError:
-        return False
-    return True
+    return _repro_context._path_is_under(path, root)
 
 
 def _pytest_custody_artifact_path(
@@ -2853,40 +2745,25 @@ def _pytest_custody_artifact_path(
     *,
     pid: int | None = None,
 ) -> Path:
-    safe_kind = "".join(ch if ch.isalnum() else "-" for ch in kind.lower()).strip("-")
-    safe_suffix = "".join(ch if ch.isalnum() else "-" for ch in suffix.lower()).strip(
-        "-"
-    )
-    return PYTEST_OUTER_GUARD_SUMMARY_DIR / (
-        f"{safe_kind or 'pytest'}-{os.getpid() if pid is None else pid}_"
-        f"{safe_suffix}.json"
+    return _repro_context._pytest_custody_artifact_path(
+        kind,
+        suffix,
+        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
+        pid=os.getpid() if pid is None else pid,
     )
 
 
 def _canonical_pytest_current_test_file_path(raw_path: str | None = None) -> Path:
-    path = Path(raw_path).expanduser() if raw_path else None
-    if path is None:
-        return _pytest_custody_artifact_path("test-custody", "current-test")
-    if not path.is_absolute():
-        path = ROOT / path
-    path = path.resolve(strict=False)
-    if not _path_is_under(path, PYTEST_OUTER_GUARD_SUMMARY_DIR):
-        return _pytest_custody_artifact_path("test-custody", "current-test")
-    return path
+    return _repro_context._canonical_pytest_current_test_file_path(
+        raw_path,
+        root=ROOT,
+        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
+        fallback_pid=os.getpid(),
+    )
 
 
 def _looks_like_repo_test_path(raw: str, cwd: str | Path | None) -> bool:
-    if not raw or raw == "-" or raw.startswith("-") or not raw.endswith(".py"):
-        return False
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        root = Path.cwd() if cwd is None else Path(cwd).expanduser()
-        path = root / path
-    try:
-        path.resolve(strict=False).relative_to((ROOT / "tests").resolve(strict=False))
-    except ValueError:
-        return False
-    return True
+    return _repro_context._looks_like_repo_test_path(raw, cwd, root=ROOT)
 
 
 def _command_requests_test_custody(
@@ -2894,17 +2771,11 @@ def _command_requests_test_custody(
     *,
     cwd: str | Path | None = None,
 ) -> bool:
-    args = tuple(str(arg) for arg in command)
-    for idx, arg in enumerate(args):
-        if Path(arg).name in _PYTEST_COMMAND_NAMES:
-            return True
-        if _looks_like_repo_test_path(arg, cwd):
-            return True
-        if arg == "-m" and idx + 1 < len(args):
-            module = args[idx + 1]
-            if module == "pytest" or module == "tests" or module.startswith("tests."):
-                return True
-    return False
+    return _repro_context._command_requests_test_custody(
+        command,
+        cwd=cwd,
+        root=ROOT,
+    )
 
 
 def test_custody_launch_env(
@@ -2913,41 +2784,19 @@ def test_custody_launch_env(
     environ: Mapping[str, str] | None = None,
     cwd: str | Path | None = None,
 ) -> dict[str, str]:
-    env = dict(os.environ if environ is None else environ)
-    if not _command_requests_test_custody(command, cwd=cwd):
-        return env
-    PYTEST_OUTER_GUARD_SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
-    env[_PYTEST_CURRENT_TEST_FILE_ENV] = str(
-        _canonical_pytest_current_test_file_path(env.get(_PYTEST_CURRENT_TEST_FILE_ENV))
+    return _repro_context.test_custody_launch_env(
+        command,
+        environ=os.environ if environ is None else environ,
+        cwd=cwd,
+        root=ROOT,
+        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
+        fallback_pid=os.getpid(),
+        current_test_file_env=_PYTEST_CURRENT_TEST_FILE_ENV,
     )
-    return env
 
 
 def _read_pytest_current_test_json(path: Path) -> dict[str, object]:
-    payload: dict[str, object] = {"path": str(path)}
-    try:
-        data = path.read_bytes()
-    except FileNotFoundError:
-        payload["missing"] = True
-        return payload
-    except OSError as exc:
-        payload["read_error"] = str(exc)
-        return payload
-    if len(data) > _PYTEST_CURRENT_TEST_FILE_MAX_BYTES:
-        payload["truncated"] = True
-        data = data[:_PYTEST_CURRENT_TEST_FILE_MAX_BYTES]
-    try:
-        text = data.decode("utf-8", errors="replace")
-    except Exception as exc:
-        payload["decode_error"] = str(exc)
-        return payload
-    try:
-        decoded = json.loads(text)
-    except json.JSONDecodeError:
-        payload["raw"] = text[:_PYTEST_CURRENT_TEST_FILE_MAX_BYTES]
-    else:
-        payload["payload"] = decoded
-    return payload
+    return _repro_context._read_pytest_current_test_json(path)
 
 
 def _lineage_pid_set(
@@ -2956,19 +2805,11 @@ def _lineage_pid_set(
     pid: int,
     max_depth: int = 16,
 ) -> set[int]:
-    lineage: set[int] = set()
-    seen: set[int] = set()
-    current = pid
-    for _ in range(max_depth):
-        if current <= 0 or current in seen:
-            break
-        seen.add(current)
-        lineage.add(current)
-        sample = samples.get(current)
-        if sample is None or sample.ppid <= 0 or sample.ppid == current:
-            break
-        current = sample.ppid
-    return lineage
+    return _repro_context._lineage_pid_set(
+        samples,
+        pid=pid,
+        max_depth=max_depth,
+    )
 
 
 def _pytest_worker_record_payloads(
@@ -2977,40 +2818,11 @@ def _pytest_worker_record_payloads(
     samples: Mapping[int, ProcessSample],
     incident_pid: int | None,
 ) -> list[dict[str, object]]:
-    worker_dir = aggregate_path.with_name(f"{aggregate_path.name}.d")
-    try:
-        paths = sorted(
-            (path for path in worker_dir.glob("*.json") if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return []
-    incident_lineage = (
-        _lineage_pid_set(samples, pid=incident_pid)
-        if incident_pid is not None
-        else set()
+    return _repro_context._pytest_worker_record_payloads(
+        aggregate_path,
+        samples=samples,
+        incident_pid=incident_pid,
     )
-    records: list[dict[str, object]] = []
-    for path in paths[:_PYTEST_CURRENT_TEST_WORKER_MAX_FILES]:
-        record = _read_pytest_current_test_json(path)
-        decoded = record.get("payload")
-        if isinstance(decoded, dict) and incident_lineage:
-            try:
-                record_pid = int(decoded.get("pid", 0) or 0)
-            except (TypeError, ValueError):
-                record_pid = 0
-            if record_pid in incident_lineage:
-                record["incident_match"] = "pid_lineage"
-        records.append(record)
-    if len(paths) > _PYTEST_CURRENT_TEST_WORKER_MAX_FILES:
-        records.append(
-            {
-                "truncated_worker_records": len(paths)
-                - _PYTEST_CURRENT_TEST_WORKER_MAX_FILES
-            }
-        )
-    return records
 
 
 def _pytest_current_test_file_payload(
@@ -3019,28 +2831,14 @@ def _pytest_current_test_file_payload(
     samples: Mapping[int, ProcessSample],
     incident_pid: int | None = None,
 ) -> dict[str, object] | None:
-    raw_path = environ.get(_PYTEST_CURRENT_TEST_FILE_ENV, "").strip()
-    if not raw_path:
-        return None
-    path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        path = ROOT / path
-    path = path.resolve(strict=False)
-    if not _path_is_under(path, PYTEST_OUTER_GUARD_SUMMARY_DIR):
-        return {
-            "path": str(path),
-            "rejected": "noncanonical",
-            "canonical_root": str(PYTEST_OUTER_GUARD_SUMMARY_DIR),
-        }
-    payload = _read_pytest_current_test_json(path)
-    worker_records = _pytest_worker_record_payloads(
-        path,
+    return _repro_context._pytest_current_test_file_payload(
+        environ,
         samples=samples,
         incident_pid=incident_pid,
+        root=ROOT,
+        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
+        current_test_file_env=_PYTEST_CURRENT_TEST_FILE_ENV,
     )
-    if worker_records:
-        payload["worker_records"] = worker_records
-    return payload
 
 
 def repro_context_payload(
@@ -3058,84 +2856,45 @@ def repro_context_payload(
     incident_pid: int | None = None,
 ) -> dict[str, object]:
     source = os.environ if environ is None else environ
-    cwd_path = Path.cwd() if cwd is None else Path(cwd).expanduser()
     samples = sample_processes()
     pid = os.getpid()
     parent_pid = os.getppid()
-    pytest_payload: dict[str, object] = {
-        "current_test": source.get("PYTEST_CURRENT_TEST", ""),
-        "xdist_worker": source.get("PYTEST_XDIST_WORKER", ""),
-    }
-    current_test_file = _pytest_current_test_file_payload(
-        source,
+    return _repro_context.repro_context_payload(
+        command=command,
+        cwd=cwd,
+        source_environ=source,
+        baseline_environ=os.environ,
+        root=ROOT,
+        summary_dir=PYTEST_OUTER_GUARD_SUMMARY_DIR,
+        current_test_file_env=_PYTEST_CURRENT_TEST_FILE_ENV,
         samples=samples,
+        pid=pid,
+        parent_pid=parent_pid,
+        current_process_group_id=_safe_getpgrp(),
+        current_session_id=_safe_getsid(0),
+        parent_process_group_id=_safe_getpgid(parent_pid),
+        argv=sys.argv,
+        python_executable=sys.executable,
+        python_version=sys.version.split()[0],
+        platform_name=sys.platform,
+        platform_detail=platform.platform(),
+        machine=platform.machine(),
+        sample_pgid=_sample_pgid,
+        is_host_control_plane_process=is_host_control_plane_process,
+        protected_process_group_ids=_current_protected_process_group_ids,
+        max_process_rss_kb=max_process_rss_kb,
+        max_total_rss_kb=max_total_rss_kb,
+        max_global_rss_kb=max_global_rss_kb,
+        child_rlimit_kb=child_rlimit_kb,
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+        summary_json=summary_json,
         incident_pid=incident_pid,
     )
-    if current_test_file is not None:
-        pytest_payload["current_test_file"] = current_test_file
-    payload: dict[str, object] = {
-        "command": list(command),
-        "cwd": str(cwd_path.resolve(strict=False)),
-        "env": _safe_repro_env(source),
-        "env_delta": _safe_repro_env_delta(source),
-        "guard_process": {
-            "pid": pid,
-            "ppid": parent_pid,
-            "pgid": _safe_getpgrp(),
-            "sid": _safe_getsid(0),
-            "argv": list(sys.argv),
-        },
-        "host": {
-            "python_executable": sys.executable,
-            "python_version": sys.version.split()[0],
-            "platform": sys.platform,
-            "platform_detail": platform.platform(),
-            "machine": platform.machine(),
-        },
-        "limits": {
-            "max_process_rss_kb": max_process_rss_kb,
-            "max_process_rss_gb": (
-                None
-                if max_process_rss_kb is None
-                else max_process_rss_kb / (1024 * 1024)
-            ),
-            "max_total_rss_kb": max_total_rss_kb,
-            "max_total_rss_gb": (
-                None if max_total_rss_kb is None else max_total_rss_kb / (1024 * 1024)
-            ),
-            "max_global_rss_kb": max_global_rss_kb,
-            "max_global_rss_gb": (
-                None if max_global_rss_kb is None else max_global_rss_kb / (1024 * 1024)
-            ),
-            "child_rlimit_kb": child_rlimit_kb,
-            "child_rlimit_gb": (
-                None if child_rlimit_kb is None else child_rlimit_kb / (1024 * 1024)
-            ),
-            "timeout_s": timeout_s,
-            "poll_interval_s": poll_interval_s,
-        },
-        "parent_lineage": _process_lineage_payload(samples, pid=pid),
-        "pytest": pytest_payload,
-    }
-    host_control_plane = _host_control_plane_payload(samples)
-    if host_control_plane is not None:
-        payload["host_control_plane"] = host_control_plane
-    if summary_json:
-        payload["summary_json"] = str(Path(summary_json).expanduser())
-    parent_sample = samples.get(parent_pid)
-    if parent_sample is not None:
-        payload["parent_process"] = _process_sample_payload(parent_sample)
-    else:
-        payload["parent_process"] = {
-            "pid": parent_pid,
-            "pgid": _safe_getpgid(parent_pid),
-            "sample_missing": True,
-        }
-    return payload
 
 
 def repro_context_line(payload: Mapping[str, object]) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return _repro_context.repro_context_line(payload)
 
 
 def exit_signal_payload(returncode: int) -> dict[str, object] | None:
