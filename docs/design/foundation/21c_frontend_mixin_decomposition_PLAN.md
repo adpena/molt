@@ -6,28 +6,29 @@ Companion to 21 (program), 21b (crate graph). Design only. -->
 # 21c — Decompose `SimpleTIRGenerator` into Visitor Mixins (Move #2 / F1)
 
 ## Verdict
-Move #2 is **partially complete, but the mega-class is still the mega-class.** Four mixins
-exist and are wired into the MRO, yet `src/molt/frontend/__init__.py` is **27,939 lines** and
-`SimpleTIRGenerator` still defines **~570 methods inline**, including **50 of ~58 top-level
-`visit_*` handlers** and **158 `_emit_*` primitives**. The recent refactor extracted the
-infrastructure (`_types.py` leaf, `_protocol.py` typing shim, `_MixinBase` pattern) + 3 visitor
-families + serialization (~10-15% by method count). The remaining ~85% is this move. This is a
-Python package refactor (no compile step) — the win is edit-locality + parallel-ownership, NOT
-build time. Constraint: move-only, ZERO behavior change.
+Move #2 is **partially complete, but the mega-class is still the mega-class.** Six mixins
+exist and are wired into the MRO, yet `src/molt/frontend/__init__.py` remains a god file and
+`SimpleTIRGenerator` still defines the large emit/analysis surface plus the statement,
+expression, and async/generator visitor families inline. The recent refactor extracted the
+infrastructure (`_types.py` leaf, `_protocol.py` typing shim, `_MixinBase` pattern) +
+serialization, pattern matching, calls, classes, comprehensions, and function/lambda/return
+visitors. The remaining move is still a Python package refactor (no compile step): the win is
+edit-locality + parallel ownership, NOT build time. Constraint: move-only, ZERO behavior change.
 
 ## Current state (verified)
 - `__init__.py` L243: `class SimpleTIRGenerator(SerializationMixin, PatternMatchMixin,
-  CallVisitorMixin, ClassDefVisitorMixin, ast.NodeVisitor)`. `ast.NodeVisitor` is correctly
-  LAST. The class overrides `visit()` (L1179) and calls `super().visit(node)` (L1197, L1200) →
+  CallVisitorMixin, ClassDefVisitorMixin, ComprehensionMixin, FunctionVisitorMixin,
+  ast.NodeVisitor)`. `ast.NodeVisitor` is correctly LAST. The class overrides `visit()` and
+  calls `super().visit(node)` →
   resolves to `NodeVisitor.visit` (the dispatcher). **This ordering is load-bearing — every
   iteration must keep `ast.NodeVisitor` last.**
-- Inline census: ~570 methods; 50 `visit_*`; 158 `_emit_*`; 38 `_collect_*`; 19 `_match_*`
-  (loop recognizers); 6 `_midend_*`; 4 `_static_*`; 33 `@staticmethod`; 1 `@contextmanager`.
-- Already extracted: `visitors/calls.py` (CallVisitorMixin, 71 defs), `visitors/classes.py`
-  (ClassDefVisitorMixin, 20), `visitors/pattern_match.py` (PatternMatchMixin, owns
-  `visit_Match`), `lowering/serialization.py` (SerializationMixin, to_json). `_types.py` (data
-  leaf), `_protocol.py`+`_protocol_attrs.py` (the `_GeneratorProtocol` self-typing shim,
-  GENERATED — regenerate, never hand-edit), `lowering/op_kinds_generated.py` (generated).
+- Already extracted: `visitors/calls.py` (CallVisitorMixin), `visitors/classes.py`
+  (ClassDefVisitorMixin), `visitors/pattern_match.py` (PatternMatchMixin, owns
+  `visit_Match`), `visitors/comprehensions.py` (ComprehensionMixin), `visitors/functions.py`
+  (FunctionVisitorMixin), and `lowering/serialization.py` (SerializationMixin, to_json).
+  `_types.py` (data leaf), `_protocol.py`+`_protocol_attrs.py` (the `_GeneratorProtocol`
+  self-typing shim, GENERATED — regenerate, never hand-edit), and
+  `lowering/op_kinds_generated.py` (generated) remain the support surface.
 
 ### The 50 inline `visit_*` grouped (with line numbers)
 - **Expressions** → `visitors/expressions.py` (17): visit_Name(5873), BinOp(11197),
@@ -39,22 +40,22 @@ build time. Constraint: move-only, ZERO behavior change.
   AugAssign(14591), If(15069), With(15150), For(15491), While(15965), Try(16620),
   TryStar(17037), Raise(17864), Assert(18005), Break(18050), Continue(18080), Import(19865),
   ImportFrom(19911).
-- **Functions** → `visitors/functions.py` (3): visit_FunctionDef(18809), Lambda(19400),
-  Return(18123).
-- **Comprehensions** → `visitors/comprehensions.py` (4): visit_ListComp(12469), SetComp(12496),
-  DictComp(12512), GeneratorExp(12535).
+- **Functions** → `visitors/functions.py` (3): landed for `visit_FunctionDef`,
+  `visit_Lambda`, and `visit_Return`.
+- **Comprehensions** → `visitors/comprehensions.py` (4): landed for `visit_ListComp`,
+  `visit_SetComp`, `visit_DictComp`, and `visit_GeneratorExp`.
 - **Async/generators** → `visitors/async_gen.py` (6): visit_AsyncFunctionDef(18188),
   AsyncWith(15320), AsyncFor(15865), Await(20288), Yield(20592), YieldFrom(20655).
 
 ## Target layout
 New mixins (each `class XxxMixin(_MixinBase):` with the verbatim `_MixinBase` shim header from
 `calls.py` L41-47 — `if TYPE_CHECKING: _MixinBase = _GeneratorProtocol else: _MixinBase = object`):
-`visitors/{expressions, statements, functions, comprehensions, async_gen}.py` (the visitor
+`visitors/{expressions, statements, async_gen}.py` (the remaining visitor
 families) + `lowering/{emit, analysis}.py` (emit = the family-agnostic `_emit_*` primitives;
 analysis = `_collect_*` + `_static_*` + `_midend_*` + the 19 loop-recognizer `_match_*`).
 
 Final assembly in `__init__.py` keeps `__init__`/shared state/overridden `visit()` + the public
-`compile_to_tir`, with the base tuple `class SimpleTIRGenerator(<11 mixins, alphabetical>,
+`compile_to_tir`, with the base tuple `class SimpleTIRGenerator(<remaining mixins>,
 ast.NodeVisitor)`. Target __init__.py < 2,500 lines (the shared per-instance state block
 L273-660+ is irreducible — do not force <800).
 
@@ -99,9 +100,9 @@ PEP-634. **Route them to `lowering/analysis.py`, NOT `pattern_match.py`.**
 2. `lowering/analysis.py` (38 `_collect_*` + 6 `_midend_*` + 4 `_static_*` + the 19 loop `_match_*`).
 3. `visitors/statements.py` (20 handlers incl. the giants For/While/Try/Assign).
 4. `visitors/expressions.py` (17).
-5. `visitors/functions.py` (FunctionDef/Lambda/Return).
-6. `visitors/async_gen.py` (6 async/gen).
-7. `visitors/comprehensions.py` (4 — smallest, last).
+5. `visitors/async_gen.py` (6 async/gen).
+6. DONE: `visitors/functions.py` (FunctionDef/Lambda/Return).
+7. DONE: `visitors/comprehensions.py` (4).
 
 **Parallel-ownership win:** after steps 1-2 land (stable emit/analysis surface), steps 3-7 touch
 disjoint files → separate agents can own them in parallel; only the base-tuple line + the
