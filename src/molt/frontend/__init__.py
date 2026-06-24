@@ -7919,7 +7919,7 @@ class SimpleTIRGenerator(
             )
         )
 
-    def _emit_plain_local_alias_retain(self, name: str, value: MoltValue) -> None:
+    def _emit_plain_local_alias_retain(self, name: str, value: MoltValue) -> MoltValue:
         if (
             value.name in ("none", "")
             or value.type_hint == "missing"
@@ -7929,7 +7929,7 @@ class SimpleTIRGenerator(
             or name in self.boxed_locals
             or self.is_async()
         ):
-            return
+            return value
         producer = self._op_by_result.get(value.name)
         loaded_plain_local = False
         if producer is not None and producer.kind == "LOAD_VAR":
@@ -7946,11 +7946,13 @@ class SimpleTIRGenerator(
             for other_name, other_value in self.locals.items()
         )
         if not has_existing_binding and not loaded_plain_local:
-            return
+            return value
         # `alias = local` gives the alias its own frame-owned reference in
-        # CPython. SimpleIR otherwise stores the same SSA bits in both names, so
-        # later rebinding/del boundaries would release one shared owner twice.
-        self.emit(MoltOp(kind="INC_REF", args=[value], result=MoltValue("none")))
+        # CPython. Model that as a value-producing alias so TIR ownership sees a
+        # distinct droppable root instead of a side-effect retain on shared bits.
+        retained = MoltValue(self.next_var(), type_hint=value.type_hint)
+        self.emit(MoltOp(kind="BINDING_ALIAS", args=[value], result=retained))
+        return retained
 
     def _plain_local_scope_exit_bindings(self) -> list[tuple[str, MoltValue]]:
         if (
@@ -8125,7 +8127,7 @@ class SimpleTIRGenerator(
         else:
             self.bytearray_len_hints.pop(name, None)
         if emit_rebind_boundary:
-            self._emit_plain_local_alias_retain(name, value)
+            value = self._emit_plain_local_alias_retain(name, value)
             previous = self.locals.get(name)
             if (
                 previous is not None

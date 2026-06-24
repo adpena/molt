@@ -130,6 +130,7 @@ _TERMINATOR_VARIANTS = (
 _CLASSIFIER_SETS = (
     "classifier_fresh_value",
     "classifier_exception_creation_ref",
+    "classifier_owned_alias",
     "classifier_inert_marker",
     "classifier_transparent_alias",
     "classifier_no_heap_move",
@@ -1119,6 +1120,21 @@ def _render_rs_unformatted(data: dict) -> str:
         "        kind,\n"
     )
     out.append(_render_matches_arm(fresh))
+    out.append("    )\n}\n\n")
+
+    # -- owned-alias classifier exact set -------------------------------------
+    owned_alias = list(data.get("classifier_owned_alias", []))
+    out.append(
+        "/// EXACT-match arm of `copy_kind_mints_owned_alias_ref`: kinds whose\n"
+        "/// result aliases operand 0's object bits but whose lowering mints a new\n"
+        "/// +1 owned reference, so ownership treats the result as an independent\n"
+        "/// droppable root.\n"
+        "#[inline]\n"
+        "pub fn copy_kind_mints_owned_alias_ref_table(kind: &str) -> bool {\n"
+        "    matches!(\n"
+        "        kind,\n"
+    )
+    out.append(_render_matches_arm(owned_alias))
     out.append("    )\n}\n\n")
 
     # -- exception CreationRef classifier exact set ---------------------------

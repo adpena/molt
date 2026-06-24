@@ -373,6 +373,7 @@ CHECK_EXCEPTION_SKIP_KINDS: frozenset[str] = frozenset(
         "COPY",
         "INC_REF",
         "DEC_REF",
+        "BINDING_ALIAS",
         "DELETE_VAR",
         "RAISE",
         "STATE_TRANSITION",

@@ -68,6 +68,7 @@ REQUIRED_BACKEND_KINDS = {
     "guard_type",
     "guard_layout",
     "identity_alias",
+    "binding_alias",
 }
 
 REQUIRED_DIFF_PROBES = (

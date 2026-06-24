@@ -1,4 +1,4 @@
-﻿use super::super::*;
+use super::super::*;
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -231,7 +231,8 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 &[types::I64, types::I64],
                 &[types::I64],
             );
-            let tuple_from_values_local = module.declare_func_in_func(tuple_from_values, builder.func);
+            let tuple_from_values_local =
+                module.declare_func_in_func(tuple_from_values, builder.func);
             let tuple_call = builder
                 .ins()
                 .call(tuple_from_values_local, &[values_ptr, len]);

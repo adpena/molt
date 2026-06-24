@@ -1522,7 +1522,7 @@ impl LuauBackend {
                     self.emit_line(&format!("__closure_{slot} = {value}"));
                 }
             }
-            "identity_alias" => {
+            "identity_alias" | "binding_alias" => {
                 let out = self.out_var(op);
                 if let Some(ref args) = op.args
                     && let Some(src) = args.first()

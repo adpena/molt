@@ -180,6 +180,9 @@ def test_generated_classifier_matches_table() -> None:
     gen_fresh = set(
         audit.extract_matches_macro(OUT_RS, "copy_kind_mints_fresh_owned_ref_table")
     )
+    gen_owned_alias = set(
+        audit.extract_matches_macro(OUT_RS, "copy_kind_mints_owned_alias_ref_table")
+    )
     gen_inert = set(
         audit.extract_matches_macro(OUT_RS, "copy_kind_is_inert_marker_table")
     )
@@ -193,6 +196,9 @@ def test_generated_classifier_matches_table() -> None:
     )
     assert gen_fresh == set(data["classifier_fresh_value"]), (
         "generated fresh-value table drifted from classifier_fresh_value"
+    )
+    assert gen_owned_alias == set(data["classifier_owned_alias"]), (
+        "generated owned-alias table drifted from classifier_owned_alias"
     )
     assert gen_inert == set(data["classifier_inert_marker"]), (
         "generated inert-marker table drifted from classifier_inert_marker"
@@ -305,6 +311,7 @@ def test_audit_sources_backend_vocab_from_registry() -> None:
 
     assert res.mapper_kinds == table_spellings
     assert res.fresh_value == set(data["classifier_fresh_value"])
+    assert res.owned_alias == set(data["classifier_owned_alias"])
     assert res.inert_marker == set(data["classifier_inert_marker"])
     assert res.transparent_alias == set(data["classifier_transparent_alias"])
     assert res.no_heap_move == set(data["classifier_no_heap_move"])
@@ -1435,6 +1442,9 @@ def test_render_detects_classifier_mutation() -> None:
     rendered = gen.render_rs(data)
     mutated = json.loads(json.dumps(data))
     mutated["classifier_fresh_value"].append("zzz_synthetic_kind")
+    assert gen.render_rs(mutated) != rendered
+    mutated = json.loads(json.dumps(data))
+    mutated["classifier_owned_alias"].append("zzz_synthetic_alias")
     assert gen.render_rs(mutated) != rendered
 
 

@@ -15,7 +15,8 @@ copy of the table:
   3. the LLVM ``lower_preserved_simpleir_op`` dedicated arms + its ABI-exact
      ``molt_<kind>`` runtime fallback (``llvm_backend/lowering.rs``),
   4. the RC/alias ``CopyLowering`` classifier ``classify_copy_kind`` /
-     ``copy_kind_mints_fresh_owned_ref`` / ``copy_kind_is_explicit_no_heap_move``
+     ``copy_kind_mints_fresh_owned_ref`` / ``copy_kind_mints_owned_alias_ref`` /
+     ``copy_kind_is_explicit_no_heap_move``
      (``alias_analysis.rs``) — whose ``_ => TransparentAlias`` default is the
      UAF-escalation precondition,
   5. the native + WASM SimpleIR dispatch (``function_compiler.rs`` / ``wasm.rs``),
@@ -765,7 +766,7 @@ class KindRow:
     llvm_dedicated_arm: bool
     llvm_vec_table: bool  # in VEC_REDUCTION_OPS (lowered before the match)
     llvm_runtime_fallback_eligible: bool
-    classifier_class: str  # FreshValue / TransparentAlias / InertMarker
+    classifier_class: str  # FreshValue / OwnedAlias / TransparentAlias / InertMarker
     native_arm: bool
     wasm_arm: bool
     structural: bool
@@ -806,6 +807,7 @@ class AuditResult:
     llvm_vec_table: set[str]
     fresh_value: set[str]
     fresh_value_prefixes: list[str]
+    owned_alias: set[str]
     inert_marker: set[str]
     transparent_alias: set[str]
     no_heap_move: set[str]
@@ -874,13 +876,14 @@ class AuditResult:
             explicit_classified = (
                 kind in self.fresh_value
                 or any(kind.startswith(p) for p in self.fresh_value_prefixes)
+                or kind in self.owned_alias
                 or kind in self.inert_marker
                 or kind in self.transparent_alias
                 or kind in self.no_heap_move
             )
             if emitted_unmapped and not row.llvm_covered:
                 cats["llvm_coverage_gap"].append(kind)
-            if row.classifier_class == "FreshValue" and not row.llvm_covered:
+            if row.classifier_class in {"FreshValue", "OwnedAlias"} and not row.llvm_covered:
                 cats["freshvalue_llvm_gap"].append(kind)
             if (
                 emitted_unmapped
@@ -906,12 +909,15 @@ def classify(
     kind: str,
     fresh_value: set[str],
     fresh_prefixes: list[str],
+    owned_alias: set[str],
     inert: set[str],
     transparent_alias: set[str],
     no_heap_move: set[str],
 ) -> str:
     if kind in fresh_value or any(kind.startswith(p) for p in fresh_prefixes):
         return "FreshValue"
+    if kind in owned_alias:
+        return "OwnedAlias"
     if kind in inert:
         return "InertMarker"
     if kind in transparent_alias:
@@ -932,6 +938,7 @@ def run_audit() -> AuditResult:
     mapper = mapper_kinds_from_registry(registry)
     fresh = set(registry.get("classifier_fresh_value", []))
     fresh_prefixes = list(registry.get("classifier_fresh_value_prefixes", []))
+    owned_alias = set(registry.get("classifier_owned_alias", []))
     inert = set(registry.get("classifier_inert_marker", []))
     transparent_alias = set(registry.get("classifier_transparent_alias", []))
     no_heap = set(registry.get("classifier_no_heap_move", []))
@@ -970,6 +977,7 @@ def run_audit() -> AuditResult:
         | llvm_vec
         | llvm_runtime_fallback
         | fresh
+        | owned_alias
         | inert
         | transparent_alias
         | no_heap
@@ -985,7 +993,7 @@ def run_audit() -> AuditResult:
             llvm_vec_table=kind in llvm_vec,
             llvm_runtime_fallback_eligible=kind in llvm_runtime_fallback,
             classifier_class=classify(
-                kind, fresh, fresh_prefixes, inert, transparent_alias, no_heap
+                kind, fresh, fresh_prefixes, owned_alias, inert, transparent_alias, no_heap
             ),
             native_arm=kind in native_arms,
             wasm_arm=kind in wasm_arms,
@@ -1000,6 +1008,7 @@ def run_audit() -> AuditResult:
         llvm_vec_table=llvm_vec,
         fresh_value=fresh,
         fresh_value_prefixes=fresh_prefixes,
+        owned_alias=owned_alias,
         inert_marker=inert,
         transparent_alias=transparent_alias,
         no_heap_move=no_heap,
@@ -1073,6 +1082,11 @@ def self_validate(res: AuditResult) -> list[str]:
         and res.rows["guard_int"].classifier_class == "InertMarker",
         "'guard_int' must classify InertMarker",
     )
+    check(
+        res.rows.get("binding_alias") is not None
+        and res.rows["binding_alias"].classifier_class == "OwnedAlias",
+        "'binding_alias' must classify OwnedAlias",
+    )
     return fails
 
 
@@ -1104,6 +1118,7 @@ def print_report(res: AuditResult) -> None:
     print(f"  llvm VEC_REDUCTION_OPS table              : {len(res.llvm_vec_table)}")
     print(f"  classifier FreshValue allow-list         : {len(res.fresh_value)}")
     print(f"    + prefix rules                         : {res.fresh_value_prefixes}")
+    print(f"  classifier OwnedAlias allow-list         : {len(res.owned_alias)}")
     print(f"  classifier InertMarker arms              : {len(res.inert_marker)}")
     print(f"  classifier transparent-alias set         : {len(res.transparent_alias)}")
     print(f"  classifier no-heap-move (alias) set      : {len(res.no_heap_move)}")
