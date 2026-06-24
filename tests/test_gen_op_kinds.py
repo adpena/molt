@@ -77,6 +77,22 @@ def _generated_arm_region(rendered: str, marker: str, next_prefix: str) -> str:
     return rendered[start:next_start]
 
 
+def _rust_fn_body(src: str, marker: str) -> str:
+    start = src.index(marker)
+    brace = src.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    return src[start:end]
+
+
 # ---------------------------------------------------------------------------
 # 1. Freshness: the checked-in generated files match a fresh render.
 # ---------------------------------------------------------------------------
@@ -145,6 +161,137 @@ def test_generated_py_is_in_sync() -> None:
     )
 
 
+def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
+    """SimpleIR CFG/SSA/pre-SSA control facts live in the registry."""
+    gen = _gen()
+    audit_mod = _audit()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    mod_rs = (ROOT / "runtime/molt-tir/src/tir/mod.rs").read_text(encoding="utf-8")
+    cfg_rs = (ROOT / "runtime/molt-tir/src/tir/cfg.rs").read_text(encoding="utf-8")
+    lower_from_simple = (
+        ROOT / "runtime/molt-tir/src/tir/lower_from_simple.rs"
+    ).read_text(encoding="utf-8")
+    audit = (ROOT / "tools/audit_op_kinds.py").read_text(encoding="utf-8")
+
+    expected = {
+        "label": {"structural", "block_leader"},
+        "state_label": {"structural", "block_leader"},
+        "if": {"structural", "block_leader", "conditional_branch"},
+        "else": {"structural", "block_leader"},
+        "end_if": {"structural", "block_leader"},
+        "loop_start": {"structural", "block_leader", "block_ender"},
+        "loop_end": {"structural", "block_leader", "block_ender"},
+        "loop_break": {"structural", "terminator"},
+        "loop_continue": {"structural", "terminator"},
+        "jump": {"structural", "terminator"},
+        "goto": {"structural", "terminator"},
+        "br_if": {"structural", "conditional_branch"},
+        "loop_break_if_true": {"structural", "conditional_branch"},
+        "loop_break_if_false": {"structural", "conditional_branch"},
+        "loop_break_if_exception": {"structural", "conditional_branch"},
+        "ret": {"structural", "terminator"},
+        "ret_void": {"structural", "terminator"},
+        "return": {"structural", "terminator"},
+        "nop": {"structural"},
+        "state_switch": {"structural", "block_ender"},
+        "state_yield": {"suspend", "block_ender"},
+        "state_transition": {"suspend", "repoll", "block_leader", "block_ender"},
+        "chan_send_yield": {"suspend", "repoll", "block_leader", "block_ender"},
+        "chan_recv_yield": {"suspend", "repoll", "block_leader", "block_ender"},
+        "loop_index_start": {"pre_ssa_rewritten"},
+        "loop_index_next": {"pre_ssa_rewritten"},
+        "phi": {"ssa_only"},
+    }
+    fields = gen._SIMPLEIR_CONTROL_FACT_FIELDS
+    actual = {
+        row["kind"]: {field for field in fields if row[field]}
+        for row in data["simpleir_control_kind"]
+    }
+    assert actual == expected
+
+    for field in fields:
+        fn_name = f"simpleir_kind_is_{field}"
+        assert _rust_pub_fn(rendered, fn_name)
+        body = _rust_fn_body(rendered, f"pub fn {fn_name}(")
+        for kind, facts in expected.items():
+            assert (f'"{kind}"' in body) == (field in facts)
+
+    consumed_body = _rust_fn_body(
+        rendered, "pub fn simpleir_kind_is_cfg_or_ssa_consumed("
+    )
+    audit_exempt = audit_mod.structural_kinds_from_registry(data)
+    assert audit_exempt == {
+        kind
+        for kind, facts in expected.items()
+        if facts & {"structural", "pre_ssa_rewritten", "ssa_only"}
+    }
+    for kind in audit_exempt:
+        assert f'"{kind}"' in consumed_body
+    for mapped_suspend in {
+        "state_yield",
+        "state_transition",
+        "chan_send_yield",
+        "chan_recv_yield",
+    }:
+        assert f'"{mapped_suspend}"' not in consumed_body
+        assert mapped_suspend not in audit_exempt
+
+    assert "op_kinds_generated::simpleir_kind_is_structural(kind)" in _rust_fn_body(
+        mod_rs, "pub(crate) fn is_structural("
+    )
+    for marker, table in (
+        ("fn is_terminator(", "simpleir_kind_is_terminator(kind)"),
+        ("fn is_block_leader(", "simpleir_kind_is_block_leader(kind)"),
+        ("fn is_block_ender(", "simpleir_kind_is_block_ender(kind)"),
+        ("fn is_conditional_branch(", "simpleir_kind_is_conditional_branch(kind)"),
+    ):
+        body = _rust_fn_body(cfg_rs, marker)
+        assert table in body
+        assert "matches!" not in body
+        assert "loop_start" not in body
+
+    pre_ssa_body = _rust_fn_body(lower_from_simple, "fn is_pre_ssa_rewritten_kind(")
+    assert "simpleir_kind_is_pre_ssa_rewritten(kind)" in pre_ssa_body
+    assert "PRE_SSA_REWRITTEN_KINDS" not in lower_from_simple
+
+    assert "structural_kinds_from_registry(registry)" in audit
+    assert "_STRUCTURAL_CLASSIFIER_FNS" not in audit
+    assert "extract_rust_str_slice_const" not in audit
+
+
+def test_simpleir_control_kind_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+
+    duplicate = json.loads(json.dumps(data))
+    duplicate["simpleir_control_kind"].append(duplicate["simpleir_control_kind"][0])
+    try:
+        gen._validate_simpleir_control_kinds(duplicate)
+    except gen.OpKindTableError as e:
+        assert "duplicate simpleir_control_kind" in str(e)
+    else:
+        raise AssertionError("duplicate simpleir_control_kind was accepted")
+
+    invalid = json.loads(json.dumps(data))
+    invalid["simpleir_control_kind"][0]["repoll"] = True
+    try:
+        gen._validate_simpleir_control_kinds(invalid)
+    except gen.OpKindTableError as e:
+        assert "repoll requires suspend and block_leader" in str(e)
+    else:
+        raise AssertionError("repoll without suspend/block_leader was accepted")
+
+    ssa_overlap = json.loads(json.dumps(data))
+    ssa_overlap["simpleir_control_kind"][-1]["structural"] = True
+    try:
+        gen._validate_simpleir_control_kinds(ssa_overlap)
+    except gen.OpKindTableError as e:
+        assert "ssa_only cannot overlap runtime facts" in str(e)
+    else:
+        raise AssertionError("ssa_only/runtime overlap was accepted")
+
+
 # ---------------------------------------------------------------------------
 # 2. The table mirrors the Rust reality the audit extracts from source.
 # ---------------------------------------------------------------------------
@@ -171,6 +318,55 @@ def test_generated_mapper_matches_table() -> None:
         f"gen-only={sorted(gen_spellings - table_spellings)} "
         f"table-only={sorted(table_spellings - gen_spellings)}"
     )
+
+
+def test_simpleir_control_kind_tables_match_registry_and_consumers() -> None:
+    """CFG/pre-SSA/SSA-only SimpleIR control facts are registry-owned."""
+    gen = _gen()
+    audit = _audit()
+    data = gen.load_table()
+
+    rows = data["simpleir_control_kind"]
+    for field in gen._SIMPLEIR_CONTROL_FACT_FIELDS:
+        expected = {row["kind"] for row in rows if row[field]}
+        generated = set(
+            audit.extract_matches_macro(OUT_RS, f"simpleir_kind_is_{field}")
+        )
+        assert generated == expected, (
+            f"simpleir_kind_is_{field} drifted from [[simpleir_control_kind]]"
+        )
+
+    consumed_expected = {
+        row["kind"]
+        for row in rows
+        if row["structural"] or row["pre_ssa_rewritten"] or row["ssa_only"]
+    }
+    consumed_generated = set(
+        audit.extract_matches_macro(OUT_RS, "simpleir_kind_is_cfg_or_ssa_consumed")
+    )
+    assert consumed_generated == consumed_expected
+
+    tir_mod = (ROOT / "runtime/molt-tir/src/tir/mod.rs").read_text(encoding="utf-8")
+    cfg = (ROOT / "runtime/molt-tir/src/tir/cfg.rs").read_text(encoding="utf-8")
+    lower_from_simple = (
+        ROOT / "runtime/molt-tir/src/tir/lower_from_simple.rs"
+    ).read_text(encoding="utf-8")
+    audit_source = (ROOT / "tools/audit_op_kinds.py").read_text(encoding="utf-8")
+
+    assert "op_kinds_generated::simpleir_kind_is_structural(kind)" in tir_mod
+    assert "simpleir_kind_is_terminator(kind)" in cfg
+    assert "simpleir_kind_is_block_leader(kind)" in cfg
+    assert "simpleir_kind_is_block_ender(kind)" in cfg
+    assert "simpleir_kind_is_conditional_branch(kind)" in cfg
+    assert "fn is_suspend_op" not in cfg
+    assert "fn is_repoll_op" not in cfg
+    assert "simpleir_kind_is_suspend" in cfg
+    assert "simpleir_kind_is_repoll" in cfg
+    assert "simpleir_kind_is_pre_ssa_rewritten(kind)" in lower_from_simple
+    assert "PRE_SSA_REWRITTEN_KINDS" not in lower_from_simple
+    assert "structural_kinds_from_registry(registry)" in audit_source
+    assert "derive_structural_kinds" not in audit_source
+    assert "_STRUCTURAL_CLASSIFIER_FNS" not in audit_source
 
 
 def test_generated_classifier_matches_table() -> None:
@@ -1683,6 +1879,68 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert "opcode_alias_typed_slot_role_table" in typed_body
     assert "match op.opcode" not in typed_body
     assert "OpCode::" not in typed_body
+
+
+def test_simpleir_control_kind_validation_rejects_invalid_rows() -> None:
+    gen = _gen()
+    data = gen.load_table()
+
+    def expect_error(mutated: dict, needle: str) -> None:
+        try:
+            gen._validate_simpleir_control_kinds(mutated)
+        except gen.OpKindTableError as exc:
+            assert needle in str(exc)
+        else:
+            raise AssertionError(
+                f"invalid simpleir_control_kind row accepted: {needle}"
+            )
+
+    duplicate = json.loads(json.dumps(data))
+    duplicate["simpleir_control_kind"].append(
+        json.loads(json.dumps(duplicate["simpleir_control_kind"][0]))
+    )
+    expect_error(duplicate, "duplicate simpleir_control_kind")
+
+    bad_bool = json.loads(json.dumps(data))
+    bad_bool["simpleir_control_kind"][0]["structural"] = "yes"
+    expect_error(bad_bool, "must be a bool")
+
+    unknown = json.loads(json.dumps(data))
+    unknown["simpleir_control_kind"][0]["ambient"] = True
+    expect_error(unknown, "unknown fields")
+
+    ssa_overlap = json.loads(json.dumps(data))
+    for row in ssa_overlap["simpleir_control_kind"]:
+        if row["kind"] == "phi":
+            row["structural"] = True
+            break
+    expect_error(ssa_overlap, "ssa_only cannot overlap")
+
+    repoll_without_suspend = json.loads(json.dumps(data))
+    for row in repoll_without_suspend["simpleir_control_kind"]:
+        if row["kind"] == "state_transition":
+            row["suspend"] = False
+            break
+    expect_error(repoll_without_suspend, "repoll requires suspend")
+
+    suspend_without_ender = json.loads(json.dumps(data))
+    for row in suspend_without_ender["simpleir_control_kind"]:
+        if row["kind"] == "state_yield":
+            row["block_ender"] = False
+            break
+    expect_error(suspend_without_ender, "suspend requires block_ender")
+
+    terminator_without_structural = json.loads(json.dumps(data))
+    for row in terminator_without_structural["simpleir_control_kind"]:
+        if row["kind"] == "ret":
+            row["structural"] = False
+            break
+    expect_error(terminator_without_structural, "terminator requires structural")
+
+    no_fact = json.loads(json.dumps(data))
+    for field in gen._SIMPLEIR_CONTROL_FACT_FIELDS:
+        no_fact["simpleir_control_kind"][0][field] = False
+    expect_error(no_fact, "at least one fact must be true")
 
 
 def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:

@@ -560,7 +560,10 @@ def extract_runtime_molt_externs() -> dict[str, RuntimeExtern]:
             continue
         for m in pat.finditer(text):
             symbol = m.group(1)
-            params = tuple(_normalize_runtime_type(t, aliases) for t in _runtime_param_types(m.group(2)))
+            params = tuple(
+                _normalize_runtime_type(t, aliases)
+                for t in _runtime_param_types(m.group(2))
+            )
             ret = _normalize_runtime_type((m.group(3) or "()").strip(), aliases)
             out[symbol] = RuntimeExtern(symbol, params, ret, p.relative_to(ROOT))
     return out
@@ -578,16 +581,20 @@ def _is_boxed_runtime_type(ty: str) -> bool:
 
 
 def runtime_extern_has_boxed_params(ext: RuntimeExtern, arity: int) -> bool:
-    return len(ext.params) == arity and all(_is_boxed_runtime_type(t) for t in ext.params)
-
-
-def runtime_extern_is_boxed_i64_fallback_eligible(ext: RuntimeExtern) -> bool:
-    return all(_is_boxed_runtime_type(t) for t in ext.params) and _is_boxed_runtime_type(
-        ext.return_ty
+    return len(ext.params) == arity and all(
+        _is_boxed_runtime_type(t) for t in ext.params
     )
 
 
-def runtime_extern_is_boxed_void_fallback_eligible(ext: RuntimeExtern, arity: int) -> bool:
+def runtime_extern_is_boxed_i64_fallback_eligible(ext: RuntimeExtern) -> bool:
+    return all(
+        _is_boxed_runtime_type(t) for t in ext.params
+    ) and _is_boxed_runtime_type(ext.return_ty)
+
+
+def runtime_extern_is_boxed_void_fallback_eligible(
+    ext: RuntimeExtern, arity: int
+) -> bool:
     return ext.return_ty == "()" and runtime_extern_has_boxed_params(ext, arity)
 
 
@@ -681,58 +688,29 @@ def extract_simpleir_arm_kinds(path: Path) -> set[str]:
 # Matrix assembly
 # ---------------------------------------------------------------------------
 
-# Kinds that are NOT cross-component op kinds in the `kind_to_opcode` sense — the
-# CFG/SSA or pre-SSA lowering layer consumes them STRUCTURALLY rather than
-# dispatching them through `kind_to_opcode`. They
-# legitimately have no mapper arm and are excluded from the "emitted-but-unmapped"
-# danger categories.
+# Kinds that are NOT cross-component op kinds in the `kind_to_opcode` sense: the
+# CFG/SSA or pre-SSA lowering layer consumes them structurally. They legitimately
+# have no mapper arm and are excluded from the emitted-but-unmapped danger cells.
 #
-# DERIVED FROM SOURCE (drift-proof): the union of the five authoritative Rust
-# classifiers `is_structural` (tir/mod.rs), `is_terminator`, `is_block_leader`,
-# `is_block_ender`, `is_conditional_branch` (tir/cfg.rs), plus the
-# `PRE_SSA_REWRITTEN_KINDS` authority in lower_from_simple.rs. A new structural
-# kind added to those authorities automatically leaves this audit's "unmapped" alarm,
-# and a new EMITTED kind that is NOT in those functions and NOT in `kind_to_opcode`
-# is flagged — exactly the drift contract. (`phi` is the SSA block-argument op the
-# converter materializes internally; it is added explicitly because it is
-# consumed by the SSA builder, not `kind_to_opcode`, but is not in the CFG
-# leader/terminator helpers.)
-_STRUCTURAL_CLASSIFIER_FNS = (
-    (Path("runtime/molt-tir/src/tir/mod.rs"), "is_structural"),
-    (Path("runtime/molt-tir/src/tir/cfg.rs"), "is_terminator"),
-    (Path("runtime/molt-tir/src/tir/cfg.rs"), "is_block_leader"),
-    (Path("runtime/molt-tir/src/tir/cfg.rs"), "is_block_ender"),
-    (Path("runtime/molt-tir/src/tir/cfg.rs"), "is_conditional_branch"),
+# The authority is the registry's [[simpleir_control_kind]] section, not the Rust
+# helper bodies. Runtime helpers delegate to generated tables; this audit reads
+# the same table directly so implementation shape cannot alter the semantic
+# exemption set.
+_SIMPLEIR_CONTROL_CONSUMED_FIELDS = (
+    "structural",
+    "pre_ssa_rewritten",
+    "ssa_only",
 )
-_PRE_SSA_REWRITTEN_KIND_TABLE = (
-    Path("runtime/molt-tir/src/tir/lower_from_simple.rs"),
-    "PRE_SSA_REWRITTEN_KINDS",
-)
-_EXTRA_STRUCTURAL = {"phi"}
 
 
-def extract_rust_str_slice_const(path: Path, const_name: str) -> set[str]:
-    text = path.read_text(encoding="utf-8")
-    m = re.search(
-        rf"{re.escape(const_name)}\s*:\s*&\[\s*&str\s*\]\s*=\s*&\[(.*?)\];",
-        text,
-        re.S,
-    )
-    if m is None:
-        raise RuntimeError(f"{const_name} not found in {path}")
-    return set(re.findall(r'"([a-z][a-z0-9_]*)"', m.group(1)))
-
-
-def derive_pre_ssa_rewritten_kinds() -> set[str]:
-    rel, const_name = _PRE_SSA_REWRITTEN_KIND_TABLE
-    return extract_rust_str_slice_const(ROOT / rel, const_name)
-
-
-def derive_structural_kinds() -> set[str]:
-    out: set[str] = set(_EXTRA_STRUCTURAL)
-    for rel, fn in _STRUCTURAL_CLASSIFIER_FNS:
-        out |= set(extract_matches_macro(ROOT / rel, fn))
-    out |= derive_pre_ssa_rewritten_kinds()
+def structural_kinds_from_registry(data: dict) -> set[str]:
+    out: set[str] = set()
+    for row in data.get("simpleir_control_kind", []):
+        kind = row.get("kind")
+        if not isinstance(kind, str):
+            raise RuntimeError(f"malformed simpleir_control_kind row: {row}")
+        if any(row.get(field, False) for field in _SIMPLEIR_CONTROL_CONSUMED_FIELDS):
+            out.add(kind)
     return out
 
 
@@ -883,7 +861,10 @@ class AuditResult:
             )
             if emitted_unmapped and not row.llvm_covered:
                 cats["llvm_coverage_gap"].append(kind)
-            if row.classifier_class in {"FreshValue", "OwnedAlias"} and not row.llvm_covered:
+            if (
+                row.classifier_class in {"FreshValue", "OwnedAlias"}
+                and not row.llvm_covered
+            ):
                 cats["freshvalue_llvm_gap"].append(kind)
             if (
                 emitted_unmapped
@@ -953,7 +934,8 @@ def run_audit() -> AuditResult:
     boxed_runtime_fallback = {
         symbol.removeprefix("molt_")
         for symbol, ext in runtime_externs.items()
-        if symbol.startswith("molt_") and runtime_extern_is_boxed_i64_fallback_eligible(ext)
+        if symbol.startswith("molt_")
+        and runtime_extern_is_boxed_i64_fallback_eligible(ext)
     }
     void_runtime_ops = extract_llvm_void_runtime_ops()
     void_runtime_mismatches = llvm_void_runtime_abi_mismatches(
@@ -963,12 +945,14 @@ def run_audit() -> AuditResult:
         kind
         for kind, (symbol, arity) in void_runtime_ops.items()
         if symbol in runtime_externs
-        and runtime_extern_is_boxed_void_fallback_eligible(runtime_externs[symbol], arity)
+        and runtime_extern_is_boxed_void_fallback_eligible(
+            runtime_externs[symbol], arity
+        )
     }
     llvm_runtime_fallback |= boxed_runtime_fallback
     native_arms = extract_simpleir_arm_kinds(NATIVE_RS)
     wasm_arms = extract_simpleir_arm_kinds(WASM_RS)
-    structural = derive_structural_kinds()
+    structural = structural_kinds_from_registry(registry)
 
     universe = (
         fk.all
@@ -993,7 +977,13 @@ def run_audit() -> AuditResult:
             llvm_vec_table=kind in llvm_vec,
             llvm_runtime_fallback_eligible=kind in llvm_runtime_fallback,
             classifier_class=classify(
-                kind, fresh, fresh_prefixes, owned_alias, inert, transparent_alias, no_heap
+                kind,
+                fresh,
+                fresh_prefixes,
+                owned_alias,
+                inert,
+                transparent_alias,
+                no_heap,
             ),
             native_arm=kind in native_arms,
             wasm_arm=kind in wasm_arms,
@@ -1209,8 +1199,8 @@ def check_against_baseline(res: AuditResult) -> int:
         print(
             "\nA new op kind drifted across the frontend/backend boundary. "
             "Add a mapper arm in ssa.rs kind_to_opcode (or, for a CFG/SSA-consumed "
-            "control kind, add it to is_structural/the cfg.rs leader/terminator "
-            "helpers), classify it in alias_analysis.rs, ensure LLVM coverage "
+            "control kind, add a [[simpleir_control_kind]] row in op_kinds.toml), "
+            "classify it in alias_analysis.rs, ensure LLVM coverage "
             "(dedicated arm or molt_<kind> symbol), and refresh the baseline once "
             "the fix lands. If the error is stale baseline-only danger, refresh "
             "the baseline from the current audit after verifying the removal is "
