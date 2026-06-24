@@ -135,6 +135,43 @@ def _rustup_setup_advice(system: str) -> list[str]:
     return ["curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"]
 
 
+def _ensure_rustup_target(target_triple: str, warnings: list[str]) -> bool:
+    rustup_path = shutil.which("rustup")
+    if not rustup_path:
+        warnings.append(f"rustup not found; cannot ensure target {target_triple}")
+        return False
+    try:
+        result = _run_completed_command(
+            [rustup_path, "target", "list", "--installed"],
+            capture_output=True,
+            env=None,
+            cwd=None,
+            memory_guard_prefix="MOLT_BUILD",
+        )
+    except OSError as exc:
+        warnings.append(f"Failed to query rustup targets: {exc}")
+        return False
+    installed = result.stdout.split()
+    if target_triple in installed:
+        return True
+    try:
+        add = _run_completed_command(
+            [rustup_path, "target", "add", target_triple],
+            capture_output=True,
+            env=None,
+            cwd=None,
+            memory_guard_prefix="MOLT_BUILD",
+        )
+    except OSError as exc:
+        warnings.append(f"Failed to install rustup target {target_triple}: {exc}")
+        return False
+    if add.returncode != 0:
+        detail = (add.stderr or add.stdout).strip() or "unknown error"
+        warnings.append(f"rustup target add failed for {target_triple}: {detail}")
+        return False
+    return True
+
+
 def _cargo_setup_advice(system: str) -> list[str]:
     return _rustup_setup_advice(system) + ["source $HOME/.cargo/env (Unix)"]
 
