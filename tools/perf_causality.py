@@ -409,6 +409,7 @@ def _make_attribution(
         pypy_advantage_class=rule.pypy_advantage_class,
         reference_class=rule.reference_class,
         codon_semantics=rule.codon_semantics,
+        evidence_sources=(source,),
     )
 
 
@@ -419,34 +420,32 @@ def _join_evidence(
     pass_delta_dashboard: Mapping[str, Any] | None,
     call_fact_coverage: Mapping[str, Any] | None,
 ) -> PerfAttribution:
-    evidence_sources = list(attr.evidence_sources)
+    evidence_sources = list(attr.evidence_sources or (attr.source,))
     confidence = attr.attribution_confidence
     pass_delta = _pass_delta_support(attr.benchmark, pass_delta_dashboard)
-    if pass_delta is not None and not _pass_delta_supports_rule(rule, pass_delta):
-        pass_delta = None
     call_facts = _call_fact_support(rule, call_fact_coverage)
 
     updates: dict[str, Any] = {}
     if pass_delta is not None:
-        evidence_sources.append("pass_delta_dashboard")
-        confidence += 0.15
+        evidence_sources.append("pass_delta")
+        confidence += 0.15 if _pass_delta_supports_rule(rule, pass_delta) else 0.05
         updates.update(
             pass_delta_score=pass_delta.score,
             pass_delta_passes=pass_delta.passes,
             pass_delta_fact_classes=pass_delta.fact_classes,
         )
     if call_facts is not None:
-        evidence_sources.append("call_fact_coverage")
+        evidence_sources.append("call_fact_census")
         if call_facts.transient > 0:
             confidence += 0.1
         updates.update(
             call_fact_attached=call_facts.attached,
             call_fact_transient=call_facts.transient,
         )
-    if evidence_sources:
-        updates["evidence_sources"] = tuple(dict.fromkeys(evidence_sources))
-    if confidence != attr.attribution_confidence:
-        updates["attribution_confidence"] = round(min(0.99, confidence), 4)
+    unique_sources = tuple(dict.fromkeys(evidence_sources))
+    updates["evidence_sources"] = unique_sources
+    updates["source"] = "+".join(unique_sources)
+    updates["attribution_confidence"] = round(min(0.99, confidence), 4)
     return replace(attr, **updates)
 
 
