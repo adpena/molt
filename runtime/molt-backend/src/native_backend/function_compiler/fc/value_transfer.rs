@@ -14,6 +14,7 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "widen",
     "identity_alias",
     "binding_alias",
+    "copy",
 ];
 use super::var_get_boxed_overflow_safe_fn;
 
@@ -219,8 +220,20 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
             if let Some(out_name) = op.out.as_ref()
                 && out_name != "none"
             {
+                // The unboxed-scalar primary lanes (`int_primary_vars`,
+                // `bool_primary_vars`, `float_primary_vars`) each carry a RAW
+                // machine value in the destination's Cranelift Variable — raw
+                // i64, raw 0/1, raw f64 respectively (see `int_raw_value` /
+                // `bool_raw_value` / `float_value_for`). An alias whose OUT is a
+                // primary-lane carrier must therefore transfer the RAW value, NOT
+                // a NaN-boxed value: storing a boxed value into a raw-lane
+                // Variable makes every downstream raw read reinterpret the
+                // NaN-box bits as a scalar (the chained-init `a = b = 0` →
+                // float-accumulator freeze: `b`'s `binding_alias` seed landed
+                // boxed in an int-primary slot, so the loop carried garbage).
+                // Unboxed scalars are not heap objects, so no inc_ref is taken
+                // (mirroring the raw-scalar arms of `merge_rebind_value_for_storage`).
                 if float_primary_vars.contains(out_name) {
-                    // Float-primary: transfer raw f64 directly.
                     let raw_f64 =
                         float_value_for(&mut *builder, vars, float_primary_vars, src_name)
                             .unwrap_or_else(|| {
@@ -236,9 +249,57 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                                     float_primary_vars,
                                 )
                                 .expect("alias source not found");
-                                builder.ins().bitcast(types::F64, MemFlags::new(), *boxed)
+                                float_value_from_boxed_extended(
+                                    &mut *module,
+                                    &mut *import_ids,
+                                    &mut *builder,
+                                    &mut *import_refs,
+                                    *boxed,
+                                )
                             });
                     def_var_named(&mut *builder, vars, out_name.clone(), raw_f64);
+                } else if int_primary_vars.contains(out_name) {
+                    // Int-primary: transfer raw i64 directly.
+                    let raw_i64 = int_raw_value(&mut *builder, vars, int_primary_vars, src_name)
+                        .or_else(|| {
+                            bool_raw_value(&mut *builder, vars, bool_primary_vars, src_name)
+                        })
+                        .unwrap_or_else(|| {
+                            let boxed = var_get_boxed_overflow_safe(
+                                &mut *module,
+                                &mut *import_ids,
+                                &mut *builder,
+                                &mut *import_refs,
+                                &mut *sealed_blocks,
+                                vars,
+                                src_name,
+                                int_primary_vars,
+                                float_primary_vars,
+                            )
+                            .expect("alias source not found");
+                            unbox_int_or_bool(&mut *builder, *boxed, nbc)
+                        });
+                    def_var_named(&mut *builder, vars, out_name.clone(), raw_i64);
+                } else if bool_primary_vars.contains(out_name) {
+                    // Bool-primary: transfer raw 0/1 directly.
+                    let raw_bool = bool_raw_value(&mut *builder, vars, bool_primary_vars, src_name)
+                        .or_else(|| int_raw_value(&mut *builder, vars, int_primary_vars, src_name))
+                        .unwrap_or_else(|| {
+                            let boxed = var_get_boxed_overflow_safe(
+                                &mut *module,
+                                &mut *import_ids,
+                                &mut *builder,
+                                &mut *import_refs,
+                                &mut *sealed_blocks,
+                                vars,
+                                src_name,
+                                int_primary_vars,
+                                float_primary_vars,
+                            )
+                            .expect("alias source not found");
+                            unbox_int_or_bool(&mut *builder, *boxed, nbc)
+                        });
+                    def_var_named(&mut *builder, vars, out_name.clone(), raw_bool);
                 } else {
                     let src = *var_get_boxed_overflow_safe(
                         &mut *module,
