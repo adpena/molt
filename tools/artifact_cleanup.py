@@ -25,6 +25,7 @@ DEFAULT_PATHS: tuple[str, ...] = (
     ".mypy_cache/",
     "bench/results/",
     "bench/friends/repos/",
+    "bench/scoreboard/host_calibration/",
     "bin/",
     "build/",
     "deploy/browser/simd-ops-rs/target/",

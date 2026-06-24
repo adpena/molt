@@ -58,6 +58,7 @@ def test_default_pathspecs_cover_canonical_local_artifact_roots() -> None:
         "bin/",
         "logs/",
         "bench/results/",
+        "bench/scoreboard/host_calibration/",
         "wasm/molt_runtime.wasm",
         "wasm/molt_runtime_reloc.wasm",
     }.issubset(set(module.default_pathspecs()))

@@ -664,7 +664,18 @@ uv run --python 3.12 python3 -m molt.cli run --profile dev --trusted \
 ```
 
 Notes:
-- `molt_profile ...` (text) and `molt_profile_json {...}` (JSON) are emitted on stderr.
+- `molt_profile ...` (text) and `molt_profile_json {...}` (JSON) are emitted on
+  the runtime diagnostics channel — stderr by default, so the profiler can scrape
+  them from a captured stderr log as shown above.
+- The diagnostics channel is out-of-band: it carries the `molt_profile*` lines
+  and the `MOLT_ASSERT_NO_LEAK` leak report, neither of which is program output.
+  Set `MOLT_DIAGNOSTICS_FILE=<path>` to redirect the whole channel to a file
+  instead of stderr. The differential harness (`tests/molt_diff.py`) sets this
+  per run so runtime diagnostics never pollute the stderr it compares for
+  exception-signature parity — this is what lets the `MOLT_ASSERT_NO_LEAK`
+  memory-safety profile and the differential parity gate run together. The
+  standalone `safe_run.py` leak-assert workflow leaves it unset, keeping the leak
+  report on stderr for the developer.
 - For file-driven Codon cases, pass explicit input paths:
   - `word_count.py <input_file>`
   - `taq.py <input_file>`

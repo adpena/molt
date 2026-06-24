@@ -596,7 +596,7 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
     sample_peak_rss();
     let peak_rss = PEAK_RSS_BYTES.load(AtomicOrdering::Relaxed);
     let current_rss = current_rss_bytes();
-    eprintln!(
+    crate::diagnostics::emit_line(&format!(
         "molt_profile call_dispatch={} string_count_cache_hit={} string_count_cache_miss={} struct_field_store={} attr_lookup={} handle_resolve={} layout_guard={} layout_guard_fail={} alloc_count={} alloc_object={} alloc_exception={} alloc_dict={} alloc_tuple={} alloc_string={} alloc_callargs={} alloc_bytes_callargs={} tb_builds={} tb_frames={} tb_suppressed={} async_polls={} async_pending={} async_wakeups={} async_sleep_register={} call_bind_ic_hit={} call_bind_ic_miss={} call_indirect_noncallable_deopt={} invoke_ffi_bridge_capability_denied={} guard_tag_type_mismatch_deopt={} guard_dict_shape_layout_mismatch_deopt={} attr_site_name_hit={} attr_site_name_miss={} split_ws_ascii={} split_ws_unicode={} dict_str_int_prehash_hit={} dict_str_int_prehash_miss={} dict_str_int_prehash_deopt={} taq_ingest_calls={} taq_ingest_skip_marker={} ascii_i64_parse_fail={} alloc_bytes_total={} alloc_bytes_string={} alloc_bytes_dict={} alloc_bytes_tuple={} alloc_bytes_list={} peak_rss_bytes={} current_rss_bytes={}",
         call_dispatch,
         cache_hit,
@@ -644,7 +644,7 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
         alloc_bytes_list,
         peak_rss,
         current_rss,
-    );
+    ));
     // RC drop-insertion substrate (design 20): the leak report. `live` is the
     // count of objects whose final dec-ref never fired by process exit — the
     // immortal bootstrap roots (module dict, builtin types) legitimately survive
@@ -652,7 +652,7 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
     // EXPECTED_LIVE_OBJECTS` and a leaking one reports far more.
     let live_objects = allocs.saturating_sub(deallocs);
     let live_bytes = alloc_bytes_total.saturating_sub(dealloc_bytes_total);
-    eprintln!(
+    crate::diagnostics::emit_line(&format!(
         "molt_profile_mem dealloc_count={} dealloc_bytes_total={} dealloc_object={} dealloc_bigint={} dealloc_string={} dealloc_dict={} dealloc_tuple={} live_objects={} live_bytes={} expected_live={}",
         deallocs,
         dealloc_bytes_total,
@@ -664,13 +664,13 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
         live_objects,
         live_bytes,
         crate::EXPECTED_LIVE_OBJECTS,
-    );
+    ));
     if live_objects > crate::EXPECTED_LIVE_OBJECTS {
-        eprintln!(
+        crate::diagnostics::emit_line(&format!(
             "[MOLT_PROFILE] LEAK WARNING: {} objects not freed at process exit (expected_live={})",
             live_objects.saturating_sub(crate::EXPECTED_LIVE_OBJECTS),
             crate::EXPECTED_LIVE_OBJECTS,
-        );
+        ));
     }
     let payload = serde_json::json!({
         "schema_version": 1,
@@ -737,7 +737,7 @@ pub(crate) fn profile_dump_with_gil(_py: &PyToken<'_>) {
         },
     });
     if env_flag_enabled("MOLT_PROFILE_JSON") {
-        eprintln!("molt_profile_json {}", payload);
+        crate::diagnostics::emit_line(&format!("molt_profile_json {}", payload));
     }
     maybe_emit_runtime_feedback_file(&payload);
 }
@@ -778,15 +778,15 @@ pub(crate) fn assert_no_leak_at_exit(_py: &PyToken<'_>) {
     let alloc_strings = ALLOC_STRING_COUNT.load(AtomicOrdering::Relaxed);
     let alloc_dicts = ALLOC_DICT_COUNT.load(AtomicOrdering::Relaxed);
     let alloc_tuples = ALLOC_TUPLE_COUNT.load(AtomicOrdering::Relaxed);
-    eprintln!(
+    crate::diagnostics::emit_line(&format!(
         "[MOLT_ASSERT_NO_LEAK] FAIL: live_objects={} exceeds expected_live={} \
          (alloc={} dealloc={})",
         live,
         crate::EXPECTED_LIVE_OBJECTS,
         allocs,
         deallocs,
-    );
-    eprintln!(
+    ));
+    crate::diagnostics::emit_line(&format!(
         "[MOLT_ASSERT_NO_LEAK] per-type (alloc/dealloc/live): \
          object={}/{}/{} string={}/{}/{} dict={}/{}/{} tuple={}/{}/{} bigint=?/{}/?",
         alloc_objects,
@@ -802,7 +802,7 @@ pub(crate) fn assert_no_leak_at_exit(_py: &PyToken<'_>) {
         dealloc_tuples,
         alloc_tuples.saturating_sub(dealloc_tuples),
         dealloc_bigints,
-    );
+    ));
     {
         use std::io::Write;
         let _ = std::io::stdout().flush();

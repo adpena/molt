@@ -106,10 +106,12 @@ active board file.
   `--recalibrate` or fingerprint change. (Resolves the 6 Windows `FAIL_COLD_BUDGET` false
   reds: ~1000ms Windows first-run page-in is the host floor, not a regression; the
   footprint lever (doc 62) attacks the floor, the budget bounds regression from it.)
-- **Cross-platform quiescence (sophisticated).** Replace `pgrep`/loadavg (Unix-only;
-  fail-closed → false `UNSTABLE` on Windows) with **psutil**: system + per-core CPU%,
-  competing-process detection, thermal-throttle state — Windows/macOS/Linux uniformly.
-  Not binary fail-closed: report the measured contention; gate a *promotion to RED* on
+- **Cross-platform quiescence (sophisticated).** Replace `pgrep`/loadavg as the only
+  authority (Unix-only; fail-closed → false `UNSTABLE` on Windows) with a
+  cross-platform calibration probe. The first landing stays zero-dependency:
+  stdlib/ctypes on Windows/macOS/Linux, competing-process detection everywhere, and
+  explicit "uncertified" output when a host lacks a load primitive. Not binary
+  fail-closed: report the measured contention; gate a *promotion to RED* on
   quiescence, never a measured WIN (load only slows molt — a win under load is
   conservative).
 - **Adaptive sampling + CI (pyperf-grade).** Auto-calibrate inner-loop count to a target
@@ -149,9 +151,10 @@ beyond wall-time:
 
 **Harden memory measurement cross-platform (a found gap).** The native board reported
 `RSS = 0` on Windows — `safe_run.py`'s poll does not capture peak there. Fix in the
-calibration subsystem (C4): uniform peak-RSS via **psutil** (peak working set on Windows,
-`ru_maxrss` on macOS, `/proc/self/status` `VmHWM` on Linux) + the runtime's allocation
-counters. Memory measured identically on every OS, or it is not a gate.
+calibration subsystem (C4): uniform peak-RSS with Windows `GetProcessMemoryInfo` plus
+a Job Object process-tree peak, `ru_maxrss` on macOS, `/proc/<pid>/status` `VmHWM` on
+Linux, and the runtime's allocation counters. Memory measured identically on every
+OS, or it is not a gate.
 
 ## 4. Integration into the five scoreboards + CI
 
@@ -166,9 +169,13 @@ budgets. Every cell carries: `benchmark → canonical id → source suite → ba
 
 **Calibration substrate (new module + thin coordinated hooks):**
 - **C1** `perf_calibration.py`: host fingerprint + per-host cold-budget calibration; migrate `cold_start_budget.json` to host-keyed. *(coordinate the `perf_scoreboard.py` hook with the swarm.)*
-- **C2** cross-platform quiescence via psutil (replace the Unix-only probe).
+- **C2** cross-platform quiescence via the calibration probe (replace the Unix-only
+  probe; keep the first landing zero-dependency and fail-open as uncertified when a
+  host cannot expose a load primitive).
 - **C3** adaptive sampling + CI (extend `perf_inner_repeat`); board reports median+CI+CV.
-- **C4** multi-dimensional measurement: uniform cross-platform peak-RSS (psutil) + alloc counters + size/compile/cold per cell — fixes the Windows `RSS=0` gap; memory becomes a gate.
+- **C4** multi-dimensional measurement: uniform cross-platform peak-RSS (Windows
+  process/job peak, macOS `ru_maxrss`, Linux `VmHWM`) + alloc counters +
+  size/compile/cold per cell — fixes the Windows `RSS=0` gap; memory becomes a gate.
 - **C5** the cross-`(os, arch, python_version)` matrix runner + version gating across native/LLVM/WASM/Luau × profiles (reuse `suite_honesty` version dims + the doc-66 oracle).
 
 **Corpus union (extend `bench_friends`; mostly new adapters — non-colliding):**

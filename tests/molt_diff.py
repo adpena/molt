@@ -3096,6 +3096,9 @@ def _run_molt(
     env["TMPDIR"] = str(tmp_root)
     env["TEMP"] = str(tmp_root)
     env["TMP"] = str(tmp_root)
+    env.setdefault(
+        "MOLT_DIAGNOSTICS_FILE", str(output_root / "runtime_diagnostics.log")
+    )
     # Keep wrappers disabled by default for reproducibility; opt in explicitly
     # when the host wrapper cache is known-good for this environment.
     if not _diff_allow_rustc_wrapper():

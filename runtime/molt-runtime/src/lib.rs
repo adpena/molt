@@ -139,6 +139,7 @@ pub use molt_runtime_tk;
 pub mod audit;
 #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
 pub mod cpython_abi_hooks;
+mod diagnostics;
 mod intrinsics;
 #[cfg(target_arch = "wasm32")]
 mod libc_compat;
