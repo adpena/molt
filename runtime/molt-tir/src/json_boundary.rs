@@ -26,11 +26,7 @@ pub fn required_string(obj: &JsonObject, key: &str, ctx: &str) -> Result<String,
         .ok_or_else(|| format!("{ctx}.{key} must be a string"))
 }
 
-pub fn optional_string(
-    obj: &JsonObject,
-    key: &str,
-    ctx: &str,
-) -> Result<Option<String>, String> {
+pub fn optional_string(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<String>, String> {
     match obj.get(key) {
         None | Some(JsonValue::Null) => Ok(None),
         Some(value) => value
@@ -40,11 +36,7 @@ pub fn optional_string(
     }
 }
 
-pub fn optional_bool(
-    obj: &JsonObject,
-    key: &str,
-    ctx: &str,
-) -> Result<Option<bool>, String> {
+pub fn optional_bool(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<bool>, String> {
     match obj.get(key) {
         None | Some(JsonValue::Null) => Ok(None),
         Some(value) => value
@@ -101,11 +93,7 @@ pub fn optional_u32(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<u32
     }
 }
 
-pub fn required_string_list(
-    obj: &JsonObject,
-    key: &str,
-    ctx: &str,
-) -> Result<Vec<String>, String> {
+pub fn required_string_list(obj: &JsonObject, key: &str, ctx: &str) -> Result<Vec<String>, String> {
     parse_string_list(required_field(obj, key, ctx)?, &format!("{ctx}.{key}"))
 }
 
@@ -120,11 +108,7 @@ pub fn optional_string_list(
     }
 }
 
-pub fn optional_bytes(
-    obj: &JsonObject,
-    key: &str,
-    ctx: &str,
-) -> Result<Option<Vec<u8>>, String> {
+pub fn optional_bytes(obj: &JsonObject, key: &str, ctx: &str) -> Result<Option<Vec<u8>>, String> {
     let Some(value) = obj.get(key) else {
         return Ok(None);
     };
