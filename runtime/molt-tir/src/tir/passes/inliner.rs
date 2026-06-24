@@ -82,7 +82,9 @@ use super::super::call_facts::{InlineEligibility, InlineWhyNot};
 use super::super::call_graph::CallGraph;
 use super::super::dominators::{CfgEdgePolicy, reachable_blocks_with};
 use super::super::function::{TirFunction, TirModule};
-use super::super::op_kinds_generated::opcode_has_exception_label_attr_table;
+use super::super::op_kinds_generated::{
+    opcode_has_exception_label_attr_table, opcode_is_state_machine_table,
+};
 use super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use super::super::target_info::TargetInfo;
 use super::super::types::TirType;
@@ -179,19 +181,7 @@ fn is_gpu_runtime_symbol(symbol: &str) -> bool {
 /// caller without reconstructing the suspension machinery; it is excluded from
 /// inlining this arc (and likely permanently — these are never simple leaves).
 fn is_generator_or_async_op(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::AllocTask
-            | OpCode::StateSwitch
-            | OpCode::StateTransition
-            | OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            | OpCode::Yield
-            | OpCode::YieldFrom
-            | OpCode::StateBlockStart
-            | OpCode::StateBlockEnd
-    )
+    opcode_is_state_machine_table(opcode)
 }
 
 /// Whether `callee` may be inlined under phases a + b.

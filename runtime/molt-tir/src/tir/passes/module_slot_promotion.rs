@@ -61,6 +61,7 @@ use super::super::dominators::{
     reachable_blocks_with,
 };
 use super::super::function::{TirFunction, TirModule};
+use super::super::op_kinds_generated::opcode_is_state_machine_table;
 use super::super::ops::{AttrValue, OpCode, TirOp};
 use super::super::values::{TirValue, ValueId};
 use super::alias_analysis::{AliasAnalysisResult, MemRegion};
@@ -221,19 +222,7 @@ fn is_wildcard_module_op(op: &TirOp, names: &HashMap<ValueId, String>) -> bool {
 /// Generator/async state-machine opcodes — functions containing one are
 /// skipped (mirrors the inliner's exclusion).
 fn is_state_machine_op(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::AllocTask
-            | OpCode::StateSwitch
-            | OpCode::StateTransition
-            | OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            | OpCode::Yield
-            | OpCode::YieldFrom
-            | OpCode::StateBlockStart
-            | OpCode::StateBlockEnd
-    )
+    opcode_is_state_machine_table(opcode)
 }
 
 /// One natural loop selected for promotion analysis.

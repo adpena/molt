@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
+use super::op_kinds_generated::opcode_is_lowered_state_machine_body_table;
 use super::ops::AttrDict;
 use super::types::TirType;
 use super::values::ValueId;
@@ -188,23 +189,15 @@ impl TirFunction {
     /// [`has_exception_handlers`]: TirFunction::has_exception_handlers
     pub fn has_state_machine(&self) -> bool {
         use super::blocks::Terminator;
-        use super::ops::OpCode;
         self.blocks.values().any(|block| {
             // The `state_switch` dispatch is now a first-class `StateDispatch`
             // terminator (not a body op), so detect it there; the suspend ops
             // (`StateYield`/`StateTransition`/`Chan*Yield`) remain body ops.
             matches!(block.terminator, Terminator::StateDispatch { .. })
-                || block.ops.iter().any(|op| {
-                    matches!(
-                        op.opcode,
-                        OpCode::StateSwitch
-                            | OpCode::StateTransition
-                            | OpCode::StateYield
-                            | OpCode::ChanSendYield
-                            | OpCode::ChanRecvYield
-                            | OpCode::AllocTask
-                    )
-                })
+                || block
+                    .ops
+                    .iter()
+                    .any(|op| opcode_is_lowered_state_machine_body_table(op.opcode))
         })
     }
 }
