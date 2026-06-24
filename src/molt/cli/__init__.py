@@ -161,6 +161,12 @@ from molt.cli.backend_daemon_config import (
     _backend_daemon_enabled,
     _backend_daemon_enabled_cached,
 )
+from molt.cli.backend_daemon_paths import (
+    _backend_daemon_paths as _backend_daemon_paths_bundle,
+    _backend_daemon_socket_path_error,
+    _short_backend_daemon_socket_dir as _short_backend_daemon_socket_dir_impl,
+    _unix_socket_path_exceeds_limit as _unix_socket_path_exceeds_limit,
+)
 from molt.cli.backend_diagnostics import (
     _BACKEND_DIAGNOSTIC_ENV_KNOBS as _BACKEND_DIAGNOSTIC_ENV_KNOBS,
     _FALSY_ENV_VALUES,
@@ -8921,38 +8927,10 @@ def _session_target_dir(project_root: Path) -> Path | None:
     return project_root / "target" / "sessions" / _session_artifact_component(sid)
 
 
-_BACKEND_DAEMON_SOCKET_BASENAME = "moltbd.ffffffffffffffff.sock"
-_UNIX_SOCKET_PATH_MAX_BYTES = 104
-
-
-def _unix_socket_path_exceeds_limit(path: Path) -> bool:
-    if os.name == "nt":
-        return False
-    return len(os.fsencode(os.fspath(path))) >= _UNIX_SOCKET_PATH_MAX_BYTES
-
-
 def _short_backend_daemon_socket_dir(default_dir: Path) -> Path:
-    if os.name == "nt":
-        return default_dir
-    probe = default_dir / _BACKEND_DAEMON_SOCKET_BASENAME
-    if not _unix_socket_path_exceeds_limit(probe):
-        return default_dir
-    for root in (Path("/tmp"), Path("/private/tmp")):
-        candidate = root / "molt-backend-daemon"
-        if not _unix_socket_path_exceeds_limit(
-            candidate / _BACKEND_DAEMON_SOCKET_BASENAME
-        ):
-            return candidate
-    return default_dir
-
-
-def _backend_daemon_socket_path_error(socket_path: Path) -> str:
-    path_len = len(os.fsencode(os.fspath(socket_path)))
-    return (
-        "Backend daemon unix socket path is too long "
-        f"({path_len} bytes; limit {_UNIX_SOCKET_PATH_MAX_BYTES - 1}). "
-        "Use a shorter path or set MOLT_BACKEND_DAEMON_SOCKET_DIR to a short local "
-        "directory such as /tmp/molt-backend-daemon."
+    return _short_backend_daemon_socket_dir_impl(
+        default_dir,
+        path_exceeds_limit=_unix_socket_path_exceeds_limit,
     )
 
 
@@ -8979,49 +8957,21 @@ def _backend_daemon_paths_cached(
     session_id: str = "",  # Must be in cache key for session isolation
 ) -> tuple[Path, Path, Path]:
     project_root = Path(project_root_str)
-    build_state_root = Path(build_state_root_str)
-    session_id = (session_id or "").strip()
-
-    def _sidecar_label(raw: str) -> str:
-        cleaned = _OUTPUT_BASE_SAFE_RE.sub("-", raw).strip("._-")
-        return cleaned[:32]
-
-    if explicit_socket:
-        socket_path = Path(explicit_socket).expanduser()
-        if not socket_path.is_absolute():
-            socket_path = (project_root / socket_path).absolute()
-        sidecar_suffix = hashlib.sha256(
-            os.fspath(socket_path).encode("utf-8")
-        ).hexdigest()[:16]
-        sidecar_label = ""
-    else:
-        default_dir = _short_backend_daemon_socket_dir(
-            Path(tempdir_str) / "molt-backend-daemon"
-        )
-        if socket_dir_override:
-            socket_dir = Path(socket_dir_override).expanduser()
-            if not socket_dir.is_absolute():
-                socket_dir = (Path.cwd() / socket_dir).absolute()
-        else:
-            socket_dir = default_dir
-        daemon_digest = config_digest or _backend_daemon_config_digest(
-            project_root, cargo_profile
-        )
-        # Include session ID in the socket key so each session gets
-        # its own daemon (no kill/restart conflicts between agents).
-        key = f"{project_root.resolve()}|{build_state_root}|{cargo_profile}|{daemon_digest}|{session_id}"
-        sidecar_suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-        socket_path = socket_dir / f"moltbd.{sidecar_suffix}.sock"
-        sidecar_label = _sidecar_label(session_id)
-    daemon_root = build_state_root / "backend_daemon"
-    sidecar_stem = f"molt-backend.{cargo_profile}"
-    if sidecar_label:
-        sidecar_stem = f"{sidecar_stem}.{sidecar_label}"
-    sidecar_stem = f"{sidecar_stem}.{sidecar_suffix}"
-    return (
-        socket_path,
-        daemon_root / f"{sidecar_stem}.log",
-        daemon_root / f"{sidecar_stem}.identity.json",
+    daemon_digest = config_digest or _backend_daemon_config_digest(
+        project_root,
+        cargo_profile,
+    )
+    return _backend_daemon_paths_bundle(
+        project_root_str=project_root_str,
+        cargo_profile=cargo_profile,
+        config_digest=daemon_digest,
+        explicit_socket=explicit_socket,
+        socket_dir_override=socket_dir_override,
+        build_state_root_str=build_state_root_str,
+        tempdir_str=tempdir_str,
+        session_id=session_id,
+        cwd=Path.cwd(),
+        path_exceeds_limit=_unix_socket_path_exceeds_limit,
     )
 
 
