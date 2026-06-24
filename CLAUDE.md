@@ -243,6 +243,27 @@ deleted-plan) or it didn't count.
 - **Always `git add` immediately** after writing any file. Linter hooks can silently revert unstaged changes.
 - **Atomic operations**: write file + git add in the same step using `&&` chaining.
 
+## Crash Recovery Tiny-Slice Mode
+
+When Codex, Claude, Desktop, WSL bridging, MCP/tool discovery, subagents,
+process custody, or a guarded command has crashed, stalled, disappeared, or
+been manually killed in the current session, override the broad-work default.
+Land the smallest complete structural primitive that can be written, staged,
+focused-tested, and committed before the next risky lane.
+
+Tiny does not mean hacky. The slice must still remove a real source of drift,
+avoid duplicate authority, and leave no dangling legacy lane. Before risky
+commands, leave a death capsule: command, cwd, guard pid, child pid when known,
+status, timestamp, and evidence path. Prefer `tmp/memory_guard/active/`,
+`tmp/memory_guard/incidents/`, pytest outer-guard summaries, and
+`logs/agents/codex_stall/*.json`.
+
+If a process disappears, inspect git status, active guard markers, incidents,
+pytest outer guards, codex-stall records, and host-control-plane classification
+before guessing. Manual killing of a Molt-owned child/helper must stay scoped to
+that child; never broaden cleanup to Codex, Claude, app-server, renderer,
+node-repl, ancestors, or unrelated host control-plane processes.
+
 ## Build & Test
 
 - Build with `cargo build --profile release-fast -p molt-backend --features native-backend`

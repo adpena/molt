@@ -366,13 +366,47 @@ Read these first instead of rediscovering project structure:
   current `main`, and converge useful changes back without preserving legacy
   compatibility lanes.
 
+## Crash Recovery Tiny-Slice Mode (Non-Negotiable)
+- This mode overrides broad-arc execution whenever Codex, Claude, the desktop
+  app, WSL bridging, MCP/tool discovery, subagent orchestration, process
+  custody, or a guarded command has crashed, stalled, disappeared, or been
+  manually killed during the current session.
+- In this mode, force the smallest complete structural primitive that can be
+  written, staged, focused-tested, and committed before the next risky lane.
+  Tiny means short feedback and durable recovery; complete means no hack, no
+  duplicate authority, no dangling legacy lane, and no half-migrated invariant.
+- Before every risky command in recovery mode, leave a death capsule under the
+  canonical evidence roots: command, cwd, guard pid, expected child pid when
+  known, status, timestamp, and the evidence path. Prefer
+  `tools/memory_guard.py` active markers in `tmp/memory_guard/active/`,
+  incident summaries in `tmp/memory_guard/incidents/`, pytest outer-guard
+  summaries, and `logs/agents/codex_stall/*.json`.
+- If the agent, child command, or helper process disappears, the next agent must
+  inspect `git status`, active guard markers, incident summaries, pytest
+  outer-guard summaries, codex-stall records, and host-control-plane
+  classification before resuming. Do not infer the cause from the last chat
+  line alone.
+- Manual killing of a Molt-owned child/helper is a supported failure mode. The
+  guard must record it as child interruption/failure and must not broaden
+  cleanup to Codex, Claude, app-server, renderer, node-repl, ancestors, or any
+  unrelated host control-plane process. If custody is uncertain, patch custody
+  first.
+- Re-enable multi-hour broad execution only after at least one tiny complete
+  slice has landed with focused evidence and the active death-capsule state
+  explains the previous failure mode.
+
 ## Default Execution Mode (Non-Negotiable)
-- Default to multi-hour autonomous execution behavior: work in long uninterrupted bursts, batch multiple related structural arcs per turn, and use minimal but high-leverage worker orchestration.
+- Outside Crash Recovery Tiny-Slice Mode, default to multi-hour autonomous
+  execution behavior: work in long uninterrupted bursts, batch multiple related
+  structural arcs per turn, and use minimal but high-leverage worker
+  orchestration.
 - Proactively clean stale Molt-owned worker groups when needed to keep execution
   stable and deterministic, but never terminate Claude, the Codex app,
   app-server, renderer, node-repl, or any ancestor/host control-plane process
   group as cleanup collateral.
-- Do not stop at neat local checkpoints or tiny slices. Only stop for a real blocker, a safety constraint, or when remote proof on tertiary is the next required step.
+- Do not stop at neat local checkpoints or tiny slices outside recovery mode.
+  Only stop for a real blocker, a safety constraint, or when remote proof on
+  tertiary is the next required step.
 - Do not emit tranche summaries after every small fix. Keep going until a
   substantial bundled burndown is complete, and prefer whole bug-class or
   authority-cluster closure over isolated issue-count reduction.

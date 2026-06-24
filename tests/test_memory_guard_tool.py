@@ -55,6 +55,49 @@ def test_parse_process_table_keeps_commands_with_spaces() -> None:
     assert samples[11].command == "/bin/sh -c echo hi"
 
 
+def test_active_guard_marker_records_death_capsule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker_dir = tmp_path / "active"
+    monkeypatch.setattr(memory_guard, "ACTIVE_GUARD_MARKER_DIR", marker_dir)
+
+    token, marker = memory_guard._write_active_guard_marker(
+        os.getpid(),
+        command=("python", "-c", "print('ok')"),
+        cwd=tmp_path,
+    )
+
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["pid"] == os.getpid()
+    assert payload["token"] == token
+    assert payload["command"] == ["python", "-c", "print('ok')"]
+    assert payload["cwd"] == str(tmp_path.resolve(strict=False))
+    assert payload["status"] == "guard_starting"
+    assert payload["created_at"]
+    assert payload["updated_at"]
+
+    memory_guard._update_active_guard_marker(
+        marker,
+        "wrong-token",
+        status="corrupted",
+    )
+    assert json.loads(marker.read_text(encoding="utf-8"))["status"] == (
+        "guard_starting"
+    )
+
+    memory_guard._update_active_guard_marker(
+        marker,
+        token,
+        status="child_running",
+        child_process={"pid": 123, "command": ["python"]},
+    )
+    updated = json.loads(marker.read_text(encoding="utf-8"))
+    assert updated["status"] == "child_running"
+    assert updated["child_process"]["pid"] == 123
+
+
 def test_parse_process_table_reads_process_group_ids() -> None:
     samples = memory_guard.parse_process_table(
         """

@@ -48,6 +48,23 @@ operator or reviewer says the work is being sliced too small, treat that as a
 binding correction: stop defending the local plan, widen the design radius, and
 close the coherent structural class.
 
+### Crash Recovery Tiny-Slice Mode
+
+If Codex, Claude, Desktop, WSL bridging, MCP/tool discovery, subagents, process
+custody, or a guarded command has crashed, stalled, disappeared, or been
+manually killed in the current session, switch to tiny complete structural
+primitives until stability is proven. Each primitive should be small enough to
+write, stage, focused-test, and commit before the next risky lane, while still
+removing a real source of drift or custody ambiguity.
+
+Before risky commands in this mode, leave a death capsule: command, cwd, guard
+pid, expected child pid when known, status, timestamp, and evidence path. Use
+`tmp/memory_guard/active/`, `tmp/memory_guard/incidents/`, pytest outer-guard
+summaries, and `logs/agents/codex_stall/*.json` before relying on chat history.
+Manual killing of a Molt-owned child/helper must be recorded as child failure or
+interruption; cleanup must not expand to Codex, Claude, app-server, renderer,
+node-repl, ancestors, or unrelated host control-plane processes.
+
 ## Verification Budget
 
 Verification exists to prove the structural invariant being moved. During
