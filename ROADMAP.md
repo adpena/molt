@@ -352,10 +352,12 @@ lowering and exception-check elimination.
 - Continue backend-native function decomposition by complete op-family handlers
   that are independent codegen units. The current live code has moved full
   subscript/indexing read-write lowering (`index`, `store_index`, `del_index`,
-  `slice`, `slice_new`) under `native_backend/function_compiler/fc/indexing.rs`;
-  scalar builtin runtime-call dispatch (`id`, `ord`, fused `ord_at`, `chr`) and
-  `len` remain inline until they can move as complete structural units without
-  splitting semantic ownership or representation-plan specialization.
+  `slice`, `slice_new`) under `native_backend/function_compiler/fc/indexing.rs`
+  and sequence/iterator lowering (`len`, tuple/range construction, unpacking,
+  iterator-next fusion) under
+  `native_backend/function_compiler/fc/sequence_ops.rs`. Residual inline
+  compiler-codegen clusters should move only as complete semantic authorities,
+  starting with the remaining dict mutation helpers.
 - Keep the TIR pipeline unconditional for backend-facing lowering; debugging
   uses dumps and verifier evidence rather than an environment-variable bypass,
   and frontend midend fixed-point/idempotence verification must fail closed
