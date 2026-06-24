@@ -175,6 +175,11 @@ from molt.cli.build_locks import (
     _release_file_lock,
     _try_acquire_file_lock,
 )
+from molt.cli.cache_fingerprints import (
+    _backend_source_paths,
+    _cache_fingerprint,
+    _cache_tooling_fingerprint,
+)
 from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
     _CROSS_MEMORY_GUARD_PREFIX,
@@ -354,8 +359,6 @@ from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
     _runtime_artifact_fingerprint_matches,
     _runtime_fingerprint,
-    _runtime_source_paths,
-    _source_fingerprint_files,
     _stored_fingerprint_matches_source_metadata,
     _write_runtime_fingerprint,
 )
@@ -8841,52 +8844,6 @@ def _parse_type_gate_flag(enabled: bool) -> dict[str, str]:
     if enabled:
         return {"MOLT_TYPE_GATE": "1"}
     return {}
-
-
-@functools.lru_cache(maxsize=256)
-def _backend_source_paths_cached(
-    project_root_str: str,
-    backend_features: tuple[str, ...],
-) -> tuple[Path, ...]:
-    project_root = Path(project_root_str)
-    backend_root = project_root / "runtime/molt-backend"
-    # Include the entire src/ directory so that new files (e.g. tir/*.rs,
-    # native_backend/*.rs, llvm_backend/*.rs) are automatically covered
-    # without having to enumerate them individually.
-    source_paths: list[Path] = [
-        backend_root / "src",
-        backend_root / "Cargo.toml",
-        backend_root / "build.rs",
-        project_root / "Cargo.toml",
-        project_root / "Cargo.lock",
-    ]
-    return tuple(source_paths)
-
-
-def _backend_source_paths(
-    project_root: Path,
-    backend_features: tuple[str, ...] = (),
-) -> list[Path]:
-    return list(_backend_source_paths_cached(os.fspath(project_root), backend_features))
-
-
-@functools.lru_cache(maxsize=128)
-def _frontend_tooling_source_paths_cached(project_root_str: str) -> tuple[Path, ...]:
-    project_root = pathlib.Path(project_root_str)
-    molt_root = project_root / "src" / "molt"
-    return (
-        molt_root / "cli",
-        molt_root / "frontend",
-        molt_root / "type_facts.py",
-        molt_root / "capabilities.py",
-        molt_root / "capability_manifest.py",
-        molt_root / "compat.py",
-        molt_root / "_wasm_runtime_exports.py",
-    )
-
-
-def _frontend_tooling_source_paths(project_root: Path) -> list[Path]:
-    return list(_frontend_tooling_source_paths_cached(os.fspath(project_root)))
 
 
 _DEFAULT_BACKEND_FEATURES: tuple[str, ...] = ("native-backend",)
@@ -25866,108 +25823,11 @@ def _resolve_output_path(
     return path
 
 
-_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v2"
 _CACHE_KEY_SCHEMA_VERSION = "v4"
 _FUNCTION_CACHE_KEY_SCHEMA_VERSION = "func-v2"
 _SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v3"
 _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION = "stdlib-manifest-v1"
 _SHARED_STDLIB_PARTITION_SCHEMA_VERSION = "stdlib-partition-v1"
-
-
-def _source_fingerprint_path_keys(paths: Sequence[Path]) -> tuple[str, ...]:
-    return tuple(
-        str(path.resolve())
-        for path in sorted(set(paths), key=lambda candidate: str(candidate))
-    )
-
-
-@functools.lru_cache(maxsize=64)
-def _source_tree_content_digest_cached(
-    root_str: str,
-    path_keys: tuple[str, ...],
-    metadata_digest: str,
-    scope: str,
-    extra_fingerprint_inputs: str,
-) -> str:
-    root = pathlib.Path(root_str)
-    hasher = hashlib.sha256()
-    hasher.update(_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(scope.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(extra_fingerprint_inputs.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(metadata_digest.encode("utf-8"))
-    hasher.update(b"\0")
-    for path_key in path_keys:
-        path = pathlib.Path(path_key)
-        for item in _source_fingerprint_files(path):
-            _hash_runtime_file(item, root, hasher)
-    return hasher.hexdigest()
-
-
-def _source_tree_cache_fingerprint(
-    *,
-    root: Path,
-    source_paths: Sequence[Path],
-    scope: str,
-    extra_fingerprint_inputs: str,
-) -> str:
-    path_keys = _source_fingerprint_path_keys(source_paths)
-    normalized_paths = [pathlib.Path(path_key) for path_key in path_keys]
-    metadata = _hash_source_tree_metadata(normalized_paths, root)
-    metadata_digest = metadata[0] if metadata is not None else "metadata-unavailable"
-    file_count = metadata[1] if metadata is not None else -1
-    content_digest = _source_tree_content_digest_cached(
-        str(root),
-        path_keys,
-        metadata_digest,
-        scope,
-        extra_fingerprint_inputs,
-    )
-    hasher = hashlib.sha256()
-    hasher.update(_CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(scope.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(f"files:{file_count}".encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(metadata_digest.encode("utf-8"))
-    hasher.update(b"\0")
-    hasher.update(content_digest.encode("utf-8"))
-    return hasher.hexdigest()
-
-
-def _cache_fingerprint() -> str:
-    root = _compiler_root()
-    rustc_info = _rustc_version() or ""
-    rustflags = os.environ.get("RUSTFLAGS", "")
-    # Source file hashing (below) catches backend code changes. We intentionally do NOT hash the backend
-    # binary itself — that over-invalidates on every incremental
-    # rebuild even without source changes, destroying the user's
-    # cached binaries and causing 30s+ cold starts.
-    # Keep cache invalidation scoped to runtime/backend codegen sources.
-    # Frontend/stdlib semantics already flow into the IR payload hash, so
-    # hashing the entire stdlib tree here would over-invalidate unrelated builds.
-    source_paths = _backend_source_paths(
-        root, ("egraphs", "luau-backend", "rust-backend", "wasm-backend")
-    ) + _runtime_source_paths(root)
-    return _source_tree_cache_fingerprint(
-        root=root,
-        source_paths=source_paths,
-        scope="compiler-runtime-backend",
-        extra_fingerprint_inputs=(f"rustc:{rustc_info}\nrustflags:{rustflags}\n"),
-    )
-
-
-def _cache_tooling_fingerprint() -> str:
-    root = _compiler_root()
-    return _source_tree_cache_fingerprint(
-        root=root,
-        source_paths=_frontend_tooling_source_paths(root),
-        scope="frontend-tooling",
-        extra_fingerprint_inputs="",
-    )
 
 
 def _json_ir_default(value: Any) -> Any:
