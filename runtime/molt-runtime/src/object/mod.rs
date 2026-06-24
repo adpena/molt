@@ -1872,10 +1872,28 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     // resolve/call __del__, so resurrection is possible without raw-header
     // aliasing against later attribute lookup.
     inc_ref_bits(py, self_bits);
+    // CPython `PyObject_CallFinalizer` runs the finalizer with a CLEAN exception
+    // state: `_PyErr_GetRaisedException` FETCHES (saves AND clears) any in-flight
+    // exception before `tp_finalize`, then `_PyErr_SetRaisedException` restores it
+    // afterward. The fetch-and-clear is load-bearing: when an exception is
+    // unwinding the frame (a frame-local whose last reference dies on a `raise`
+    // with no local handler), CPython still runs `__del__` during that unwind — it
+    // does NOT skip the finalizer because an exception is pending. molt previously
+    // SAVED the surrounding exception (below) but never cleared it, so the
+    // `!exception_pending` gate guarding the `__del__` call — whose real purpose is
+    // to detect a binding-time raise from `descriptor_bind` — wrongly suppressed
+    // `__del__` on EVERY exception-unwind path (`resurrect_during_exception_unwind`:
+    // the finalizer-aware DecRef is correctly placed and runs, but `__del__` never
+    // fired → a dropped finalizer == leak, `box_len 0` vs CPython `1`). Mirror
+    // CPython exactly: capture the in-flight exception, keep it alive across the
+    // clear, then CLEAR so the binding + call run clean. It is restored after the
+    // finalizer (the unraisable-write + restore block below).
     let prior_exc_bits = crate::builtins::exceptions::exception_last_bits_noinc(py)
         .filter(|bits| !obj_from_bits(*bits).is_none());
     if let Some(bits) = prior_exc_bits {
         inc_ref_bits(py, bits);
+        crate::clear_exception(py);
+        crate::builtins::exceptions::clear_exception_state(py);
     }
     // Run `__del__` lookup/binding/call under a SYNTHETIC exception-handler frame
     // so an uncaught raise inside it is recorded VALUE-BASED and swallowed below,
@@ -1912,39 +1930,35 @@ unsafe fn maybe_run_object_finalizer(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     if !obj_from_bits(del_bits).is_none() {
         dec_ref_bits(py, del_bits);
     }
-    // CPython ignores exceptions raised during finalization and preserves any already-active
-    // exception from surrounding bytecode.
+    // CPython `PyObject_CallFinalizer` tail: an exception raised DURING the
+    // finalizer (`__del__` itself, or the `descriptor_bind` above) is ignored —
+    // `PyErr_WriteUnraisable` writes it to stderr and clears it — and only THEN is
+    // any saved surrounding exception restored (`_PyErr_SetRaisedException`). The
+    // prior exception was fetched-and-cleared before the finalizer ran, so any
+    // pending exception here is unambiguously the finalizer's own raise: write it
+    // unraisable and clear, regardless of whether a surrounding exception existed.
+    // `__del__` ran under the synthetic handler frame above, so `molt_raise`
+    // recorded the raise value-based rather than running the uncaught-exception
+    // process-exit terminator (#65) — this branch is reachable.
+    if crate::exception_pending(py) {
+        if let Some(exc_bits) = crate::builtins::exceptions::exception_last_bits_noinc(py)
+            && let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr()
+        {
+            let formatted =
+                crate::builtins::exceptions::format_exception_with_traceback(py, exc_ptr);
+            eprintln!("Exception ignored while calling deallocator:");
+            if !formatted.is_empty() {
+                eprint!("{formatted}");
+            }
+        }
+        crate::clear_exception(py);
+        crate::builtins::exceptions::clear_exception_state(py);
+    }
+    // Restore the surrounding exception saved before the finalizer ran, so it
+    // continues to unwind the frame exactly as in CPython.
     if let Some(bits) = prior_exc_bits {
-        let same_as_prior =
-            crate::builtins::exceptions::exception_last_bits_noinc(py) == Some(bits);
-        let pending = crate::exception_pending(py);
-        if !same_as_prior || !pending {
-            if pending {
-                crate::clear_exception(py);
-            }
-            crate::builtins::exceptions::exception_set_last_bits_raw(py, bits);
-        }
+        crate::builtins::exceptions::exception_set_last_bits_raw(py, bits);
         dec_ref_bits(py, bits);
-    } else {
-        // No surrounding exception: the finalizer's raise (if any) must become
-        // UNRAISABLE — written to stderr and CLEARED so it cannot propagate. This
-        // branch is reachable because `__del__` ran under the synthetic handler
-        // frame above, so `molt_raise` recorded the exception value-based instead
-        // of running the uncaught-exception terminator (#65).
-        if crate::exception_pending(py) {
-            if let Some(exc_bits) = crate::builtins::exceptions::exception_last_bits_noinc(py)
-                && let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr()
-            {
-                let formatted =
-                    crate::builtins::exceptions::format_exception_with_traceback(py, exc_ptr);
-                eprintln!("Exception ignored while calling deallocator:");
-                if !formatted.is_empty() {
-                    eprint!("{formatted}");
-                }
-            }
-            crate::clear_exception(py);
-            crate::builtins::exceptions::clear_exception_state(py);
-        }
     }
     let prev = unsafe { (*header_ptr).ref_count.fetch_sub(1, AtomicOrdering::AcqRel) };
     if prev > 1 {

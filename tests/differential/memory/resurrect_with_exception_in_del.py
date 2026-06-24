@@ -9,14 +9,15 @@
 # exception SIGNATURE (type+message) since the traceback frame/address formatting
 # differs across engines.
 #
-# STATUS: the #59 IC marker SIGSEGV is fixed. Any remaining failure here is a
-# separate finalizer resurrection / finalizer exception-state defect, not the IC
-# fast-path marker-transmute crash: the object must be appended before mainline
-# observes `box`, and a `__del__` exception must be swallowed even when
-# resurrection and gc collection compose. Keep this xfail until both boundaries
-# match CPython; the harness turns a real fix into XPASS-failure instead of
-# silently weakening the contract.
-# MOLT_META: stderr=exception_signature xfail=molt xfail_reason=finalizer-resurrection-exception-state-boundary-not-ic-marker
+# STATUS: PASSING. The #59 IC marker SIGSEGV was fixed earlier; the remaining
+# finalizer exception-state boundary was closed by aligning
+# `maybe_run_object_finalizer` with CPython `PyObject_CallFinalizer`
+# (fetch-and-clear the in-flight exception before `__del__`, restore it after):
+# the object is appended before mainline observes `box`, and the `__del__`
+# ValueError is swallowed (written unraisable) even when resurrection and
+# gc.collect compose. stdout is byte-identical and stderr matches by exception
+# signature; the prior `xfail=molt` is removed now that both boundaries match.
+# MOLT_META: stderr=exception_signature
 import gc
 
 box = []
