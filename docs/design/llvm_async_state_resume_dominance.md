@@ -1,12 +1,12 @@
-# LLVM async/coroutine state-resume SSA-dominance class — diagnosis + fix design
+# LLVM async/coroutine state-resume SSA-dominance class - implemented design record
 
-Status: **diagnosed, fix direction validated (Part 1), NOT landed.** The complete
-fix is a delicate rework of the LLVM `_poll` state-machine lowering that must be
-differentially verified across native/wasm/llvm; this note is the baton. Nothing
-is committed because a half-applied structural change (Part 1 without Part 2) is
-worse than nothing — it changes the TIR block structure all backends consume and
-leaves the LLVM async lane *more* broken (dominance + a const-resolution panic),
-which the zero-workaround / complete-structural-change policy forbids.
+Status: **implemented.** TIR now models `_poll` re-entry with
+`CFG.state_resume_edges` and the first-class `Terminator::StateDispatch`; LLVM
+lowers that terminator to the real resume blocks and no longer relies on
+synthetic `state_resume_*` continuation blocks. This document is retained as the
+diagnosis and design record, not as a baton. The retired #51 generator `.throw()`
+recovery is covered by `tests/differential/basic/generator_throw_resumption.py`
+on native and LLVM.
 
 ## Symptom
 
@@ -83,7 +83,7 @@ folded into the augmented CFG.
 
 ## Fix design
 
-### Part 1 — model the dispatch CFG for SSA (VALIDATED: 1125 lib tests pass, 0 warn; reverted, not committed)
+### Part 1 — model the dispatch CFG for SSA (landed)
 
 `tir/cfg.rs`:
 - New `is_suspend_op` (`state_yield`/`state_transition`/`chan_send_yield`/
@@ -107,22 +107,17 @@ folded into the augmented CFG.
   liveness successors of the `state_switch` block (the dispatch supplies the
   resume block's live-in on re-entry — mirror the exception-handler edge).
 
-Measured: generator `yield`-in-try repro LLVM dominance errors 18 → 0; all 1125
-`molt-backend` lib tests pass; 0 warnings. **No shippable value alone** — async
-still fails (Part 2). One limb of one structural change; do not land alone.
+The CFG/SSA half is live in `runtime/molt-tir`: `state_resume_edges` are folded
+into SSA predecessor/liveness reasoning and become the source for the entry
+block's `StateDispatch` terminator. This is no longer a standalone half-change.
 
-### Part 2 — LLVM lane must DISPATCH TO THE REAL RESUME BLOCKS and SUPPLY THEIR PHIS (the remaining, correctness-critical work)
+### Part 2 — LLVM dispatches to real resume blocks and supplies their phis (landed)
 
-After Part 1 splits the TIR blocks, the resume continuations are **real TIR
-blocks** (in `block_map`), but `llvm_backend/lowering.rs` still creates *synthetic*
-`state_resume_*` blocks (`initialize_state_resume_blocks`) and dispatches
-`state_switch` to those now-empty blocks, while the real continuation TIR blocks
-are reached only on the normal-flow path → their phis are missing the dispatch
-incoming (post-Part-1 async failure: `%phi_71 = phi i64 [ 24, %bb10 ]` with no
-entry for the `state_resume` predecessor). The `StateYield`/`StateTransition`/
-`Chan*Yield` arms also `ret` then `position_at_end(synthetic_resume_bb)` and emit
-the continuation inline — but the continuation is now its own TIR block lowered by
-the main loop, so the synthetic block is dead and the reposition is wrong.
+After the CFG split, resume continuations are real TIR blocks in `block_map`.
+The LLVM lane now consumes the `StateDispatch` terminator built by SSA, records
+per-resume branch arguments for those real blocks, and finalizes their phis from
+the same edge data used by other terminators. The old synthetic
+`state_resume_*` continuation blocks are not part of the current design.
 
 **The load-bearing obstacle (why this is a representation change, not an arm
 tweak).** Splitting at the suspend op gives the suspend block NO regular
@@ -138,7 +133,7 @@ continuation is a real block, the `state_switch` needs an explicit
   bail on `has_state_machine`/`has_exception_handlers`, but relying on that is the
   kind of cross-pass invariant the zero-tech-debt policy rejects (one future pass
   that renumbers a `_poll` block silently miscompiles).
-- **Robust (recommended)**: make `state_switch` a **first-class multi-target
+- **Robust (landed)**: make `state_switch` a **first-class multi-target
   dispatch terminator** — extend `tir/blocks.rs::Terminator` with a
   `StateDispatch { default, cases: Vec<(state_id, BlockId, args)> }` (shape mirrors
   `Switch`), built by the SSA terminator builder for the entry block, updated by
@@ -151,7 +146,7 @@ continuation is a real block, the `state_switch` needs an explicit
   reposition arms are deleted, not patched. This is the larger but correct unit of
   work; it also subsumes the dispatch-arg-supply below.
 
-Required rework:
+Landed rework:
 - `initialize_state_resume_blocks` → map each state-id to the **real** TIR block
   holding its resume op (post-yield continuation = block of op K+1; re-poll = the
   block of the `state_transition`/`chan_*_yield` op itself), not a fresh synthetic
@@ -168,7 +163,7 @@ Required rework:
   then fills the resume-block phis on the dispatch edge.
 - `StateYield`/`StateTransition`/`Chan*Yield` arms → drop the synthetic-block
   reposition. `StateYield` emits `ret` as the suspend block's exit; the LLVM
-  lowering must SKIP that block's TIR terminator (the block is terminated by the
+  lowering skips that block's TIR terminator (the block is terminated by the
   `ret`). `StateTransition`/`Chan*Yield` keep their pending(`ret`)/ready split,
   but the ready path branches to the **real** next-state continuation TIR block.
 - State-id const operands: after Part 1 the `pending_state` const is threaded
@@ -176,23 +171,17 @@ Required rework:
   syntactic `const_i64_operand` (lowering.rs:10148) panics. Resolve it through the
   SSA def-chain (direct `ConstInt`, `Copy`-forwarded, or a block arg whose
   terminator incomings all resolve to the same constant — a state id is constant
-  on every edge). A scratch `try_const_i64_operand` removes the panic but is moot
-  until the dispatch-supply lands (the phi is malformed regardless).
+  on every edge).
 
-### Part 3 — verify the SimpleIR round-trip for native/wasm
+### Part 3 — SimpleIR round-trip for native/wasm
 
-Part 1 changes `cfg.blocks` (block-split at suspend points), which feeds the TIR
-block structure `lower_to_simple` re-emits for native/wasm. `lower_to_simple`
-already has an "external-reentry guard" (lower_to_simple.rs:635) that declines
-structured-loop reconstruction when a resume `jump` re-enters a loop region from
-outside, falling back to label-preserving lowering — the split should land in
-that generic path, but confirm e2e (native + wasm suites, 20-sample native, the
-memory corpus), not just by lib tests. Many async tests are already broken on
-native independent of this work (e.g. `async_for_with_exception_propagation` →
-`InvalidStateError` on stock `main`), so the byte-identical oracle is only
-meaningful where native already passes — a constraint that makes verifying this
-state-machine codegen rework genuinely hard and is the main reason it was batoned
-rather than rushed.
+The block split feeds the TIR block structure that `lower_to_simple` re-emits for
+native/wasm. `lower_to_simple` keeps the external-reentry guard that declines
+structured-loop reconstruction when a resume jump re-enters a loop region from
+outside, falling back to label-preserving lowering. Keep native, wasm, and async
+corpus proof lanes as the acceptance evidence for future state-machine changes;
+the retired #51 generator `.throw()` resumption matrix is now a tracked
+differential test and passes the native and LLVM lanes.
 
 ## Scope discipline / connection to the drop pass
 
@@ -203,13 +192,10 @@ the StateSwitch-aware liveness extension the RC drop-insertion pass deferred
 `state_resume_edges` is a first-class CFG citizen, the drop pass can consume it to
 become sound over `_poll` bodies (a separate follow-up).
 
-## Gate checklist for the completed fix
+## Regression gates
 
-`cargo test -p molt-backend --features llvm,native-backend,wasm-backend --lib`
-(0 warnings); peel matrix 9/9 llvm + 9/9 native; `nested_try_handler_reraise` +
-`inline_llvm_module_phase_activation` byte-identical on llvm; memory corpus green
-on native; compliance `-n 4` zero failures; async/generator llvm BUILDFAIL count
-for this class → 0 (60-file async/generator sweep + 25-file exception sweep); no
-native/wasm regression (suites + 20-sample native). Commit prefix:
-`backend: fix LLVM async/coroutine state-resume dominance class — <mechanism>`.
-Add differential pins (must pass native baseline) for the minimal repros.
+For future edits in this area, rerun the targeted generator/coroutine
+differentials plus the relevant backend lib lane before widening claims. The #51
+generator `.throw()` recovery is pinned by
+`tests/differential/basic/generator_throw_resumption.py`; any regression here
+must fail closed on both native and LLVM.
