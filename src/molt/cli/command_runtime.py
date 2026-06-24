@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,19 @@ def _with_memory_guard_env(
     memory_guard_prefix: str,
 ) -> dict[str, str] | None:
     return _process_guard.with_memory_guard_env(env, memory_guard_prefix)
+
+
+def _resolve_timeout_env(env_name: str) -> tuple[float | None, str | None]:
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return None, None
+    try:
+        timeout = float(raw)
+    except ValueError:
+        return None, f"Invalid {env_name} value: {raw}"
+    if timeout <= 0:
+        return None, f"{env_name} must be greater than zero."
+    return timeout, None
 
 
 def _run_completed_command(
