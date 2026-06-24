@@ -26,6 +26,12 @@ Molt expects production-grade changes, not opportunistic patches.
   authority while pretending to create velocity. When a maintainer says a change
   is too narrow, widen the work to the coherent structural class instead of
   defending or renaming the narrow cut.
+- Crash recovery is the exception that proves the rule: after Codex, Claude,
+  Desktop, WSL bridging, process custody, subagent orchestration, or a guarded
+  command crashes, stalls, disappears, or gets manually killed, use tiny complete
+  structural primitives. Each primitive must be staged, focused-tested, and
+  committed before the next risky lane, with a death capsule in the canonical
+  evidence roots.
 - Keep repo-facing docs and examples accurate after every move or rename.
 - Verify only the claims you make. Fresh command output is required for
   correctness/performance/support claims, but broad proof lanes are not a
