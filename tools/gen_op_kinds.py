@@ -49,7 +49,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools import harness_memory_guard
+from tools import harness_memory_guard  # noqa: E402
 
 TABLE = ROOT / "runtime/molt-tir/src/tir/op_kinds.toml"
 OUT_RS = ROOT / "runtime/molt-tir/src/tir/op_kinds_generated.rs"
@@ -135,6 +135,21 @@ _CLASSIFIER_SETS = (
     "classifier_transparent_alias",
     "classifier_no_heap_move",
 )
+_PASS_DELTA_FACT_FIELDS = (
+    ("pass_delta_box_opcodes", "box_op"),
+    ("pass_delta_unbox_opcodes", "unbox_op"),
+    ("pass_delta_generic_call_opcodes", "generic_call"),
+    ("pass_delta_direct_call_opcodes", "direct_call"),
+    ("pass_delta_method_call_opcodes", "method_call"),
+    ("pass_delta_runtime_helper_call_opcodes", "runtime_helper_call"),
+    ("pass_delta_rc_event_opcodes", "rc_event"),
+    ("pass_delta_inc_ref_opcodes", "inc_ref"),
+    ("pass_delta_dec_ref_opcodes", "dec_ref"),
+    ("pass_delta_del_boundary_opcodes", "del_boundary"),
+    ("pass_delta_exception_event_opcodes", "exception_event"),
+    ("pass_delta_type_guard_opcodes", "type_guard"),
+    ("pass_delta_heap_alloc_opcodes", "heap_alloc"),
+)
 _OPCODE_FACT_SETS = (
     "alias_rc_barrier_opcodes",
     "alias_heap_barrier_opcodes",
@@ -155,6 +170,7 @@ _OPCODE_FACT_SETS = (
     "i64_shift_count_guard_opcodes",
     "exception_label_attr_opcodes",
     "exception_transfer_edge_opcodes",
+    *(key for key, _field in _PASS_DELTA_FACT_FIELDS),
 )
 _ALIAS_TYPED_SLOT_ROLE_SETS = (
     "alias_typed_slot_load_opcodes",
@@ -284,6 +300,7 @@ def load_table() -> dict:
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
+    _validate_pass_delta_opcode_facts(data)
     _validate_alias_opcode_role_sets(
         data, _ALIAS_TYPED_SLOT_ROLE_SETS, "alias typed-slot role"
     )
@@ -347,7 +364,9 @@ def load_table() -> dict:
 def _validate_literal_payload_facts(data: dict, opcodes: set[str]) -> None:
     rows = data.get("literal_payload_opcodes", [])
     if not isinstance(rows, list) or not rows:
-        raise OpKindTableError("literal_payload_opcodes must be a non-empty array of tables")
+        raise OpKindTableError(
+            "literal_payload_opcodes must be a non-empty array of tables"
+        )
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
@@ -360,7 +379,9 @@ def _validate_literal_payload_facts(data: dict, opcodes: set[str]) -> None:
                 f"literal_payload_opcodes opcode {opcode!r} is not a known OpCode"
             )
         if opcode in seen:
-            raise OpKindTableError(f"duplicate literal_payload_opcodes opcode: {opcode}")
+            raise OpKindTableError(
+                f"duplicate literal_payload_opcodes opcode: {opcode}"
+            )
         seen.add(opcode)
         literal = row.get("literal")
         if literal not in _LITERAL_PAYLOAD_KINDS:
@@ -510,10 +531,14 @@ def _validate_canonicalize_facts(data: dict, opcodes: set[str]) -> None:
     seen_binary_rules: set[tuple[object, ...]] = set()
     for row in binary_rows:
         if not isinstance(row, dict):
-            raise OpKindTableError("canonicalize_binary_rules rows must be inline tables")
+            raise OpKindTableError(
+                "canonicalize_binary_rules rows must be inline tables"
+            )
         opcode = row.get("opcode")
         if not isinstance(opcode, str) or not opcode:
-            raise OpKindTableError(f"canonicalize_binary_rules row missing opcode: {row}")
+            raise OpKindTableError(
+                f"canonicalize_binary_rules row missing opcode: {row}"
+            )
         if opcode not in opcodes:
             raise OpKindTableError(
                 f"canonicalize_binary_rules opcode {opcode!r} is not a known OpCode"
@@ -628,6 +653,32 @@ def _validate_alias_slot_observation_sets(data: dict) -> None:
                     f"{owners[opcode]} and {key}"
                 )
             owners[opcode] = key
+
+
+def _validate_pass_delta_opcode_facts(data: dict) -> None:
+    generic = set(data.get("pass_delta_generic_call_opcodes", []))
+    for key in (
+        "pass_delta_direct_call_opcodes",
+        "pass_delta_method_call_opcodes",
+        "pass_delta_runtime_helper_call_opcodes",
+    ):
+        extra = sorted(set(data.get(key, [])) - generic)
+        if extra:
+            raise OpKindTableError(
+                f"{key} must be a subset of pass_delta_generic_call_opcodes: {extra}"
+            )
+
+    rc_events = set(data.get("pass_delta_rc_event_opcodes", []))
+    for key in (
+        "pass_delta_inc_ref_opcodes",
+        "pass_delta_dec_ref_opcodes",
+        "pass_delta_del_boundary_opcodes",
+    ):
+        extra = sorted(set(data.get(key, [])) - rc_events)
+        if extra:
+            raise OpKindTableError(
+                f"{key} must be a subset of pass_delta_rc_event_opcodes: {extra}"
+            )
 
 
 def _validate_alias_memory_region_sets(data: dict) -> None:
@@ -822,7 +873,9 @@ def _validate_explicit_release_operands(data: dict, opcodes: dict[str, dict]) ->
     """
     rows = data.get("explicit_release_operand", [])
     if not isinstance(rows, list):
-        raise OpKindTableError("[[explicit_release_operand]] must be an array of tables")
+        raise OpKindTableError(
+            "[[explicit_release_operand]] must be an array of tables"
+        )
     seen: set[str] = set()
     for row in rows:
         opcode = row.get("opcode")
@@ -1363,11 +1416,12 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("\n")
     out.append(_render_alias_slot_observation(opcodes, data))
     out.append("\n")
+    out.append(_render_pass_delta_opcode_facts(opcodes, data))
+    out.append("\n")
 
     # -- literal payload facts: exhaustive over OpCode ----------------------
     literal_kinds = {
-        row["opcode"]: row["literal"]
-        for row in data.get("literal_payload_opcodes", [])
+        row["opcode"]: row["literal"] for row in data.get("literal_payload_opcodes", [])
     }
     out.append(
         "/// Literal payload kind consumers may record for an opcode.\n"
@@ -1391,7 +1445,9 @@ def _render_rs_unformatted(data: dict) -> str:
             out.append(f"        OpCode::{opcode} => None,\n")
         else:
             variant = _LITERAL_PAYLOAD_KINDS[literal]
-            out.append(f"        OpCode::{opcode} => Some(LiteralPayloadKind::{variant}),\n")
+            out.append(
+                f"        OpCode::{opcode} => Some(LiteralPayloadKind::{variant}),\n"
+            )
     out.append("    }\n}\n\n")
 
     # -- canonicalize facts: exhaustive over OpCode -------------------------
@@ -1421,7 +1477,9 @@ def _render_rs_unformatted(data: dict) -> str:
         ") -> Option<CanonicalizeCommutativeDomain> {\n"
         "    match opcode {\n"
     )
-    out.append(_render_canonicalize_commutative_domain_arms(opcodes, commutative_domains))
+    out.append(
+        _render_canonicalize_commutative_domain_arms(opcodes, commutative_domains)
+    )
     out.append("    }\n}\n\n")
 
     out.append(
@@ -1534,6 +1592,54 @@ def _render_opcode_bool_arms(opcodes: list[dict], truthy: list[str]) -> str:
     for row in opcodes:
         name = row["name"]
         lines.append(f"        OpCode::{name} => {_rs_bool(name in truthy_set)},\n")
+    return "".join(lines)
+
+
+def _render_pass_delta_opcode_facts(opcodes: list[dict], data: dict) -> str:
+    fact_sets = {
+        field: set(data.get(key, [])) for key, field in _PASS_DELTA_FACT_FIELDS
+    }
+    lines = [
+        "/// Pass-delta dashboard opcode facts. These are diagnostic categories,\n",
+        "/// not optimizer legality facts, but they still live in op_kinds.toml so\n",
+        "/// TIR diagnostics do not grow a second hand-classified opcode registry.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub struct PassDeltaOpcodeFacts {\n",
+    ]
+    for _key, field in _PASS_DELTA_FACT_FIELDS:
+        lines.append(f"    pub {field}: bool,\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "const PASS_DELTA_OPCODE_FACTS_NONE: PassDeltaOpcodeFacts = PassDeltaOpcodeFacts {\n",
+        ]
+    )
+    for _key, field in _PASS_DELTA_FACT_FIELDS:
+        lines.append(f"    {field}: false,\n")
+    lines.extend(
+        [
+            "};\n\n",
+            "/// Per-OpCode pass-delta diagnostic facts. EXHAUSTIVE over OpCode so a\n",
+            "/// new opcode cannot silently disappear from pass-delta attribution.\n",
+            "#[inline]\n",
+            "pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        enabled = [
+            field for _key, field in _PASS_DELTA_FACT_FIELDS if name in fact_sets[field]
+        ]
+        if not enabled:
+            lines.append(f"        OpCode::{name} => PASS_DELTA_OPCODE_FACTS_NONE,\n")
+            continue
+        lines.append(f"        OpCode::{name} => PassDeltaOpcodeFacts {{\n")
+        for field in enabled:
+            lines.append(f"            {field}: true,\n")
+        lines.append("            ..PASS_DELTA_OPCODE_FACTS_NONE\n")
+        lines.append("        },\n")
+    lines.append("    }\n}\n")
     return "".join(lines)
 
 
@@ -1752,7 +1858,9 @@ def _render_alias_slot_observation(opcodes: list[dict], data: dict) -> str:
     )
     for row in opcodes:
         name = row["name"]
-        variant = class_by_opcode.get(name, "AliasSlotObservation::ConservativeObserver")
+        variant = class_by_opcode.get(
+            name, "AliasSlotObservation::ConservativeObserver"
+        )
         out.append(f"        OpCode::{name} => {variant},\n")
     out.append("    }\n}\n")
     return "".join(out)

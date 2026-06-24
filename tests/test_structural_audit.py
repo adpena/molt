@@ -67,6 +67,51 @@ def test_structural_debt_does_not_exceed_baseline():
     )
 
 
+def test_tooling_gaps_reflect_current_fact_attribution_tools(tmp_path: Path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "call_fact_coverage.py").write_text("", encoding="utf-8")
+    (tools / "perf_causality.py").write_text("", encoding="utf-8")
+
+    gaps = dict(SA._tooling_gaps(tmp_path))
+
+    assert "PARTIAL: fact-by-benchmark attribution" in gaps
+    assert (
+        "tools/perf_causality.py (#76 cycle-profile attribution"
+        in gaps["PARTIAL: fact-by-benchmark attribution"]
+    )
+    assert "MISSING: pass-delta ledger" in gaps
+    assert "perf_causality.py (not built)" not in "\n".join(gaps.values())
+
+
+def test_tooling_gaps_credit_pass_delta_when_present(tmp_path: Path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for rel in (
+        "call_fact_coverage.py",
+        "perf_causality.py",
+        "pass_delta_dashboard.py",
+    ):
+        (tools / rel).write_text("", encoding="utf-8")
+
+    gaps = dict(SA._tooling_gaps(tmp_path))
+
+    assert "BUILT: fact-by-benchmark attribution substrate" in gaps
+    assert "MISSING: pass-delta ledger" not in gaps
+
+
+def test_format_board_uses_root_specific_tooling_gaps(tmp_path: Path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "call_fact_coverage.py").write_text("", encoding="utf-8")
+    (tools / "perf_causality.py").write_text("", encoding="utf-8")
+
+    board = SA.format_board([], SA.ratchet_metrics([]), root=tmp_path)
+
+    assert "**PARTIAL: fact-by-benchmark attribution**" in board
+    assert "perf_causality.py (not built)" not in board
+
+
 # --- 2. robustness of the scanning helpers --------------------------------
 
 

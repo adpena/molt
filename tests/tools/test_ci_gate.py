@@ -252,6 +252,7 @@ def test_ci_gate_tier1_includes_perf_scoreboard_contract() -> None:
     assert check.needs_rust is False
     assert check.timeout == 120
     assert str(module.TESTS / "tools" / "test_perf_causality.py") in check.cmd
+    assert str(module.TESTS / "tools" / "test_pass_delta_dashboard.py") in check.cmd
     assert str(module.TESTS / "tools" / "test_perf_schema.py") in check.cmd
     assert str(module.TESTS / "tools" / "test_perf_scoreboard.py") in check.cmd
 

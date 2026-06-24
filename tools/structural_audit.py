@@ -672,33 +672,88 @@ _DELETION_PLAYBOOK = {
     ),
 }
 
-# Tooling gaps the tool knows about ITSELF and its siblings (council: the audit
-# must name its own limitations + the missing instruments). This encodes the
-# binding discovery-vs-authority rule.
-_TOOLING_GAPS = [
-    (
-        "RULE: discovery may be heuristic; authority may not",
-        "this tool's regex discovery RANKS candidates only; it asserts no semantic "
-        "correctness. The authoritative gate stays tools/gen_op_kinds.py --check "
-        "(consumes the generated registry). A future version should parse the Rust "
-        "AST / consume compiler-emitted facts for any claim that gates behavior.",
-    ),
-    (
-        "MISSING: fact-by-benchmark attribution",
-        "MISSING-FACT-by-benchmark impact needs tools/call_fact_coverage.py (built) "
-        "+ tools/perf_causality.py (not built) joined to #76 hot profiles.",
-    ),
-    (
-        "MISSING: pass-delta ledger",
-        "tools/pass_delta_dashboard.py (not built) — which pass loses Repr / adds "
-        "boxing / increases generic calls / RC events. Needed to attribute drift.",
-    ),
-    (
-        "MISSING: fact graph",
-        "runtime/.../fact_graph.rs + tools/fact_graph_dump.py (not built) — per-value "
-        "provenance (producer/consumer/invalidator) to explain 'why is this boxed?'.",
-    ),
-]
+
+def _tooling_gaps(root: Path) -> list[tuple[str, str]]:
+    """Return audit limitations from the current tree, not stale prose."""
+
+    call_fact_built = _repo_file_exists(root, "tools/call_fact_coverage.py")
+    causality_built = _repo_file_exists(root, "tools/perf_causality.py")
+    pass_delta_built = _repo_file_exists(root, "tools/pass_delta_dashboard.py")
+    fact_graph_built = _repo_file_exists(root, "runtime/molt-tir/src/tir/fact_graph.rs")
+    fact_dump_built = _repo_file_exists(root, "tools/fact_graph_dump.py")
+
+    gaps = [
+        (
+            "RULE: discovery may be heuristic; authority may not",
+            "this tool's regex discovery RANKS candidates only; it asserts no semantic "
+            "correctness. The authoritative gate stays tools/gen_op_kinds.py --check "
+            "(consumes the generated registry). A future version should parse the Rust "
+            "AST / consume compiler-emitted facts for any claim that gates behavior.",
+        )
+    ]
+
+    if call_fact_built and causality_built and not pass_delta_built:
+        gaps.append(
+            (
+                "PARTIAL: fact-by-benchmark attribution",
+                "MISSING-FACT-by-benchmark impact has tools/call_fact_coverage.py "
+                "(representation census) and tools/perf_causality.py (#76 cycle-profile "
+                "attribution plus taxonomy fallback). The missing closure is the "
+                "census/pass-delta join and pass-delta dashboard.",
+            )
+        )
+    elif call_fact_built and causality_built:
+        gaps.append(
+            (
+                "BUILT: fact-by-benchmark attribution substrate",
+                "tools/call_fact_coverage.py, tools/perf_causality.py, and "
+                "tools/pass_delta_dashboard.py are present; keep their gates wired so "
+                "attribution stays derived from evidence.",
+            )
+        )
+    else:
+        missing = [
+            rel
+            for rel, built in (
+                ("tools/call_fact_coverage.py", call_fact_built),
+                ("tools/perf_causality.py", causality_built),
+            )
+            if not built
+        ]
+        gaps.append(
+            (
+                "MISSING: fact-by-benchmark attribution",
+                "MISSING-FACT-by-benchmark impact needs "
+                + " + ".join(missing)
+                + " joined to #76 hot profiles.",
+            )
+        )
+
+    if not pass_delta_built:
+        gaps.append(
+            (
+                "MISSING: pass-delta ledger",
+                "tools/pass_delta_dashboard.py (not built) — which pass loses Repr / "
+                "adds boxing / increases generic calls / RC events. Needed to "
+                "attribute drift.",
+            )
+        )
+
+    if not (fact_graph_built and fact_dump_built):
+        gaps.append(
+            (
+                "MISSING: fact graph",
+                "runtime/molt-tir/src/tir/fact_graph.rs + tools/fact_graph_dump.py "
+                "(not both built) — per-value provenance "
+                "(producer/consumer/invalidator) to explain 'why is this boxed?'.",
+            )
+        )
+
+    return gaps
+
+
+def _repo_file_exists(root: Path, rel: str) -> bool:
+    return (root / rel).is_file()
 
 
 def _deletion_candidates(findings: list[Finding]) -> list[tuple[str, str, str, str]]:
@@ -715,7 +770,9 @@ def _deletion_candidates(findings: list[Finding]) -> list[tuple[str, str, str, s
     return out
 
 
-def format_board(findings: list[Finding], metrics: dict[str, float]) -> str:
+def format_board(
+    findings: list[Finding], metrics: dict[str, float], *, root: Path = ROOT_DEFAULT
+) -> str:
     lines = [
         "<!-- @generated by tools/structural_audit.py --write-board. DO NOT EDIT. -->",
         "# Structural audit board",
@@ -769,7 +826,7 @@ def format_board(findings: list[Finding], metrics: dict[str, float]) -> str:
     # TOP TOOLING GAPS — the tool's own limits + missing instruments.
     lines.append("## TOP TOOLING GAPS")
     lines.append("")
-    for title, detail in _TOOLING_GAPS:
+    for title, detail in _tooling_gaps(root):
         lines.append(f"- **{title}** — {detail}")
     lines.append("")
     lines.append(
@@ -849,7 +906,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.write_board:
         board_path = root / BOARD_PATH_REL
         board_path.write_text(
-            format_board(findings, metrics) + "\n", encoding="utf-8"
+            format_board(findings, metrics, root=root) + "\n", encoding="utf-8"
         )
         print(f"board written: {board_path}")
         return 0
@@ -901,7 +958,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # default: human board to stdout
-    print(format_board(findings, metrics))
+    print(format_board(findings, metrics, root=root))
     return 0
 
 

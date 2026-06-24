@@ -259,6 +259,7 @@ def _build_checks() -> list[Check]:
             tier=1,
             cmd=_uv_pytest(
                 str(TESTS / "tools" / "test_perf_causality.py"),
+                str(TESTS / "tools" / "test_pass_delta_dashboard.py"),
                 str(TESTS / "tools" / "test_perf_schema.py"),
                 str(TESTS / "tools" / "test_perf_scoreboard.py"),
                 "-q",

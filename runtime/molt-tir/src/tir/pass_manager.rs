@@ -211,9 +211,14 @@ impl PassManager {
             dump_tir_artifact(func, "pre", &[]);
         }
 
+        let emit_pass_delta = super::pass_delta::emit_enabled();
+        let mut pass_delta_before =
+            emit_pass_delta.then(|| super::pass_delta::FactProfile::capture(func));
+
         let mut am = AnalysisManager::new();
 
         for p in &self.passes {
+            let before_delta = pass_delta_before.take();
             let trace_this = trace_func_enabled(&func.name);
             if trace_this {
                 eprintln!(
@@ -246,7 +251,8 @@ impl PassManager {
             // CFG-structure analyses (op rewrites don't change edges, and the
             // OpsOnly passes provably never add/remove exception-edge-bearing
             // ops — see `build_default_pipeline`); `ReadOnly` keeps everything.
-            match p.mutation_class() {
+            let mutation_class = p.mutation_class();
+            match mutation_class {
                 Mutates::Cfg => am.invalidate_cfg(),
                 Mutates::OpsOnly => am.invalidate_ops(),
                 Mutates::ReadOnly => {}
@@ -257,6 +263,20 @@ impl PassManager {
             // CFG but declared OpsOnly/ReadOnly would diverge here.
             if verify_analysis {
                 assert_analyses_fresh(func, &mut am, p.name());
+            }
+
+            if let Some(before) = before_delta {
+                let after = super::pass_delta::FactProfile::capture(func);
+                super::pass_delta::emit_pass_delta(
+                    func,
+                    p.name(),
+                    mutation_class,
+                    &self.target_info,
+                    &stat,
+                    &before,
+                    &after,
+                );
+                pass_delta_before = Some(after);
             }
 
             stats.push(stat);
