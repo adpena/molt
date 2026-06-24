@@ -7868,10 +7868,10 @@ class SimpleTIRGenerator(
             return res
         return cached
 
-    def _plain_local_del_boundary_enabled(
+    def _plain_local_del_boundary_value(
         self, name: str, value: MoltValue | None
-    ) -> bool:
-        return not (
+    ) -> MoltValue | None:
+        if (
             value is None
             or value.name in ("none", "")
             or value.type_hint == "missing"
@@ -7880,18 +7880,28 @@ class SimpleTIRGenerator(
             or name in self.closure_locals
             or name in self.boxed_locals
             or self.is_async()
-        )
+        ):
+            return None
+        return value
+
+    def _plain_local_del_boundary_enabled(
+        self, name: str, value: MoltValue | None
+    ) -> bool:
+        return self._plain_local_del_boundary_value(name, value) is not None
 
     def _emit_plain_local_del_boundary(
         self, name: str, value: MoltValue | None
     ) -> None:
-        if not self._plain_local_del_boundary_enabled(name, value):
+        boundary_source = self._plain_local_del_boundary_value(name, value)
+        if boundary_source is None:
             return
         # `self.locals[name]` is the syntactic cached producer. Across loop
         # phis the current frame slot may be a block argument, so make the
         # boundary read the slot at the release point instead of retaining a
         # stale pre-loop SSA value.
-        boundary_value = MoltValue(self.next_var(), type_hint=value.type_hint)
+        boundary_value = MoltValue(
+            self.next_var(), type_hint=boundary_source.type_hint
+        )
         self.emit(
             MoltOp(
                 kind="LOAD_VAR",

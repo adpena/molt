@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from molt.cli_completion import _completion_script
+from molt.cli.completion import _completion_script
 
 
 def _cli_module() -> Any:

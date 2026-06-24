@@ -949,14 +949,12 @@ class CallVisitorMixin(_MixinBase):
                 kind = raw_kind
         if kind is None:
             return None
-        positional_only_kind_fact = info is None
-        decorated = bool(info.get("has_decorators")) if info is not None else False
         result_hint = {
             "async": "Future",
             "asyncgen": "async_generator",
             "gen": "generator",
         }[kind]
-        if positional_only_kind_fact:
+        if info is None:
             if needs_bind or node.keywords:
                 return self._emit_call_bind_for_known_module_func(
                     node,
@@ -964,25 +962,27 @@ class CallVisitorMixin(_MixinBase):
                 )
             args = self._emit_call_args(node.args)
             params = len(args)
-        elif needs_bind or decorated or info.get("has_vararg"):
-            bind_hint = "Any" if decorated else result_hint
-            return self._emit_call_bind_for_known_module_func(
-                node,
-                result_hint=bind_hint,
-            )
         else:
-            params = info.get("params")
-            if not isinstance(params, int):
+            decorated = bool(info.get("has_decorators"))
+            if needs_bind or decorated or info.get("has_vararg"):
+                bind_hint = "Any" if decorated else result_hint
                 return self._emit_call_bind_for_known_module_func(
                     node,
-                    result_hint=result_hint,
+                    result_hint=bind_hint,
                 )
-            args = self._emit_direct_call_args(target_module, func_id, node)
-            if args is None:
-                return self._emit_call_bind_for_known_module_func(
-                    node,
-                    result_hint=result_hint,
-                )
+            else:
+                params = info.get("params")
+                if not isinstance(params, int):
+                    return self._emit_call_bind_for_known_module_func(
+                        node,
+                        result_hint=result_hint,
+                    )
+                args = self._emit_direct_call_args(target_module, func_id, node)
+                if args is None:
+                    return self._emit_call_bind_for_known_module_func(
+                        node,
+                        result_hint=result_hint,
+                    )
         poll_func = f"{self._sanitize_module_name(target_module)}__{func_id}_poll"
         include_gen_control = kind != "async"
         closure_size = self._task_closure_size(
