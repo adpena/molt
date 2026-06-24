@@ -12,7 +12,7 @@ god-file killer; satisfy both the Pythonista and Rustacean lenses; fix a represe
 ## The nodes
 - **Doctrine:** [DESIGN_DOCTRINE](DESIGN_DOCTRINE.md) — governs all.
 - **Decomposition (the god-file spine):** [21a](21a_function_compiler_function_split_PLAN.md) function-split · [21b](21b_crate_graph_blueprint.md) crate-graph (molt-ir←molt-passes←molt-lower, per-backend crates, codegen-abi) · [21f](21f_crate_graph_smove_execution_specs.md) per-S-move crate execution specs · [21c](21c_frontend_mixin_decomposition_PLAN.md) frontend mixins · [21d](21d_cli_package_decomposition_PLAN.md) cli/ package · [21e](21e_runtime_satellite_dedup_PLAN.md) runtime satellite dedup.
-- **Infra (Lane C):** [64](64_perf_scoreboards_and_harness.md) perf scoreboards+harness · [59](59_semantic_fact_plane.md) semantic fact-plane.
+- **Infra (Lane C):** [64](64_perf_scoreboards_and_harness.md) perf scoreboards+harness · [59](59_semantic_fact_plane.md) semantic fact-plane · [69](69_benchmark_corpus_union_and_dynamic_calibration.md) benchmark-corpus union + dynamic calibration.
 - **Perf frontier (Lane B):** [65](65_perf_compression_ladder.md) compression-ladder (9 rungs) · [68](68_shapefacts_rung4_class_layout.md) ShapeFacts class layout (Rung 4) · [63](63_deforestation_fusion.md) deforestation/fusion · [60](60_tree_shaking_whole_program_dce.md) tree-shaking · [61](61_binary_size_and_output_optimization.md) binary-size · [62](62_startup_cold_start.md) startup/cold-start.
 - **Safety (Lane A, P0):** [55](55_memory_safety_ownership_lattice.md) ownership-lattice.
 - **Compat:** [66](66_compat_cpython_parity.md) CPython parity · [67](67_compat_tinygrad_dflash.md) tinygrad/DFlash.
