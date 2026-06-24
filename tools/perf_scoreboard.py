@@ -78,6 +78,7 @@ if str(SRC_ROOT) not in sys.path:
 import bench  # noqa: E402
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
+import perf_causality  # noqa: E402
 import perf_inner_repeat  # noqa: E402  (#76 inner-repeat transform)
 from perf_schema import (  # noqa: E402
     CLASS_DIMENSIONAL_WIN,
@@ -1710,6 +1711,11 @@ class Cell:
     # The single most-likely missing fact / startup component, for triage.
     suspected_missing_fact: str | None = None
     suspected_startup_component: str | None = None
+    fact_class: str | None = None
+    pypy_advantage_class: str | None = None
+    reference_class: str | None = None
+    codon_semantics: str | None = None
+    attribution_confidence: float | None = None
 
     # --- PyPy / Codon comparator lanes (council Lane C; nullable) ---------
     # pypy_ratio = pypy_warm / molt_warm  (>1 = molt faster than PyPy).
@@ -1842,9 +1848,7 @@ class Cell:
         #    failure (if the engine is slow, fix the engine first).
         if warm_below:
             self.verdict = VERDICT_FAIL_ENGINE
-            self.suspected_missing_fact = self.suspected_missing_fact or _suspect_fact(
-                self.benchmark
-            )
+            _apply_perf_attribution(self)
             return
         # 2. FAIL_COLD_BUDGET — warm is fine but the fixed startup tax exceeds
         #    the recorded budget for this lane. A startup regression, not an
@@ -2134,55 +2138,17 @@ def apply_classification(
         cell.measured_quiescent = quiescent
 
 
-# --- Triage hints (council "what FACT is missing from IR?" doctrine) --------
-# These are NAME-pattern heuristics that point a perf agent at the most likely
-# missing IR fact per the council triage doctrine. They are HINTS for the
-# summary, never gating logic — the real diagnosis is the per-benchmark
-# one-page representation analysis (ruling G).
-_FACT_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (
-        ("csv", "split", "field", "substr", "slice"),
-        "substring/slice repr (alloc-free field extraction)",
-    ),
-    (
-        ("exception", "raise", "try", "except"),
-        "zero-cost happy-path exception-state + handler-region ownership",
-    ),
-    (
-        ("etl", "orders", "record", "row"),
-        "record/dict value-slot shape + borrow/ownership of stable field flow",
-    ),
-    (
-        ("dict", "set", "map", "counter"),
-        "hash-table value-slot Repr + key identity/borrow",
-    ),
-    (("tuple", "pack", "index"), "tuple element Repr + unboxed-lane stability"),
-    (
-        ("attr", "method", "dispatch", "class"),
-        "class identity/method shape/version guard/call target (devirt)",
-    ),
-    (
-        ("fib", "loop", "sum", "range", "sieve"),
-        "induction/range/overflow/lane-stability (counted-loop facts)",
-    ),
-    (
-        ("generator", "gen", "yield", "async", "await", "coro"),
-        "frame ownership/resumable-state/fusion",
-    ),
-    (
-        ("bytes", "bytearray", "str", "format"),
-        "string/bytes Repr + borrowed-view extraction",
-    ),
-    (("json", "parse", "roundtrip"), "parse buffer ownership + value-slot Repr"),
-)
-
-
-def _suspect_fact(benchmark: str) -> str:
-    name = Path(benchmark).stem.lower()
-    for needles, fact in _FACT_HINTS:
-        if any(n in name for n in needles):
-            return fact
-    return "representation/ownership fact (run the one-page diagnosis)"
+# --- Derived warm-red attribution (cycle facts before taxonomy fallback) -----
+def _apply_perf_attribution(cell: Cell) -> None:
+    attribution = perf_causality.derive_cell_attribution(
+        {"benchmark": cell.benchmark, "cycle_profile": cell.cycle_profile}
+    )
+    cell.fact_class = attribution.fact_class
+    cell.suspected_missing_fact = attribution.suspected_missing_fact
+    cell.pypy_advantage_class = attribution.pypy_advantage_class
+    cell.reference_class = attribution.reference_class
+    cell.codon_semantics = attribution.codon_semantics
+    cell.attribution_confidence = attribution.attribution_confidence
 
 
 def _suspect_startup_component(benchmark: str) -> str:

@@ -5,7 +5,8 @@ Runs ALL correctness verification tools in dependency order across three tiers:
 
   Tier 1 — Fast (< 60s, every commit):
     Linting, formatting, correspondence checks, layout checks, coverage
-    analysis, property/mutation/fuzz smoke tests.
+    analysis, perf-scoreboard contract checks, property/mutation/fuzz smoke
+    tests.
 
   Tier 2 — Medium (< 10min, on PR):
     Quint simulation, translation validation, full property tests,
@@ -250,6 +251,20 @@ def _build_checks() -> list[Check]:
             tier=1,
             cmd=_uv_run(str(TOOLS / "diff_coverage_analysis.py"), "--json"),
             timeout=60,
+        )
+    )
+    checks.append(
+        Check(
+            name="perf-scoreboard-contract",
+            tier=1,
+            cmd=_uv_pytest(
+                str(TESTS / "tools" / "test_perf_causality.py"),
+                str(TESTS / "tools" / "test_perf_schema.py"),
+                str(TESTS / "tools" / "test_perf_scoreboard.py"),
+                "-q",
+            ),
+            timeout=120,
+            needs_pytest=True,
         )
     )
     checks.append(
