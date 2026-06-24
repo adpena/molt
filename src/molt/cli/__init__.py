@@ -202,6 +202,7 @@ from molt.cli.deps import (
     install_add as install_add_command,
     vendor as vendor_command,
 )
+from molt.cli.file_hashing import _sha256_file
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
     _codesign_binary,
@@ -1506,14 +1507,6 @@ def _format_duration(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds:.3f} s"
     return f"{seconds / 60:.2f} min"
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _stat_ctime_ns(stat: os.stat_result) -> int:
