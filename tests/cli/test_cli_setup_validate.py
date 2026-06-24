@@ -15,6 +15,7 @@ from tests.cli.process_guard import run_cli_test_process
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
+TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
 
 
 def _base_env() -> dict[str, str]:
@@ -47,6 +48,12 @@ def _patch_memory_guard_loader(
     )
     monkeypatch.setattr(
         COMMAND_RUNTIME,
+        "_load_cli_harness_memory_guard",
+        loader,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
         "_load_cli_harness_memory_guard",
         loader,
         raising=True,
@@ -811,9 +818,14 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
         ),
     ]
 
-    monkeypatch.setattr(cli, "_find_molt_root", lambda *args: ROOT, raising=True)
     monkeypatch.setattr(
-        cli,
+        TOOLCHAIN_VALIDATION,
+        "_find_molt_root",
+        lambda *args: ROOT,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
         "_planned_validate_steps",
         lambda root, suite, backend, profile: steps,
         raising=True,
@@ -895,10 +907,20 @@ def test_cli_validate_defaults_execution_summary_to_logs(
         )
     ]
 
-    monkeypatch.setattr(cli, "_find_molt_root", lambda *args: tmp_path, raising=True)
-    monkeypatch.setattr(cli, "_require_molt_root", lambda *args: None, raising=True)
     monkeypatch.setattr(
-        cli,
+        TOOLCHAIN_VALIDATION,
+        "_find_molt_root",
+        lambda *args: tmp_path,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_require_molt_root",
+        lambda *args: None,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
         "_planned_validate_steps",
         lambda root, suite, backend, profile: steps,
         raising=True,
@@ -989,14 +1011,24 @@ def test_cli_update_steps_use_memory_guard(monkeypatch: pytest.MonkeyPatch) -> N
         calls.append({"cmd": list(cmd), **kwargs})
         return subprocess.CompletedProcess(cmd, 0, "ok\n", "")
 
-    monkeypatch.setattr(cli, "_find_molt_root", lambda _cwd: ROOT, raising=True)
     monkeypatch.setattr(
-        cli,
+        TOOLCHAIN_VALIDATION,
+        "_find_molt_root",
+        lambda _cwd: ROOT,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
         "_planned_update_steps",
         lambda *_args, **_kwargs: ([step], []),
         raising=True,
     )
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run_completed, raising=True)
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION,
+        "_run_completed_command",
+        fake_run_completed,
+        raising=True,
+    )
 
     assert cli.update_repo(json_output=True) == 0
     assert calls == [
