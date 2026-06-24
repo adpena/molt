@@ -152,7 +152,10 @@ def _protocol_methods() -> set[str]:
 
 
 def _protocol_attrs() -> set[str]:
-    return set(getattr(_GeneratorProtocol, "__annotations__", {}))
+    attrs: set[str] = set()
+    for klass in _GeneratorProtocol.__mro__:
+        attrs.update(getattr(klass, "__annotations__", {}))
+    return attrs
 
 
 def _assembled_class_methods() -> set[str]:
