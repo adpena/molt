@@ -63,6 +63,7 @@ pub(in crate::native_backend::function_compiler) mod text_predicates;
 pub(in crate::native_backend::function_compiler) mod text_transform;
 pub(in crate::native_backend::function_compiler) mod type_checks;
 pub(in crate::native_backend::function_compiler) mod type_conversions;
+pub(in crate::native_backend::function_compiler) mod unary_logic;
 pub(in crate::native_backend::function_compiler) mod vec_reductions;
 
 /// Free-function form of `compile_func_inner`'s op-local
