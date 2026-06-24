@@ -11,6 +11,7 @@ from molt.debug import (
     render_debug_text_summary,
     write_debug_manifest,
 )
+from molt.debug.reduce import normalize_failure_oracle
 
 
 def _cli_module() -> Any:
