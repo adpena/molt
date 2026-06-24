@@ -37,6 +37,7 @@ pub(in crate::native_backend::function_compiler) enum OpFlow {
     Continue,
 }
 
+pub(in crate::native_backend::function_compiler) mod arith;
 pub(in crate::native_backend::function_compiler) mod attrs;
 pub(in crate::native_backend::function_compiler) mod callargs;
 pub(in crate::native_backend::function_compiler) mod class_ops;
