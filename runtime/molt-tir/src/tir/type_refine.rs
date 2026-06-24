@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet};
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::dominators;
 use super::function::TirFunction;
+use super::op_kinds_generated::{
+    opcode_is_proven_result_type_seed_table, opcode_operand_independent_result_tir_type,
+};
 use super::ops::{AttrValue, OpCode};
 use super::types::TirType;
 use super::values::ValueId;
@@ -989,38 +992,12 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
             if op.results.is_empty() {
                 continue;
             }
-            match op.opcode {
-                OpCode::ConstInt => {
-                    for &r in &op.results {
-                        proven.insert(r, TirType::I64);
-                    }
+            if opcode_is_proven_result_type_seed_table(op.opcode)
+                && let Some(ty) = opcode_operand_independent_result_tir_type(op.opcode)
+            {
+                for &r in &op.results {
+                    proven.insert(r, ty.clone());
                 }
-                OpCode::ConstFloat => {
-                    for &r in &op.results {
-                        proven.insert(r, TirType::F64);
-                    }
-                }
-                OpCode::ConstStr => {
-                    for &r in &op.results {
-                        proven.insert(r, TirType::Str);
-                    }
-                }
-                OpCode::ConstBool => {
-                    for &r in &op.results {
-                        proven.insert(r, TirType::Bool);
-                    }
-                }
-                OpCode::ConstNone => {
-                    for &r in &op.results {
-                        proven.insert(r, TirType::None);
-                    }
-                }
-                OpCode::ConstBytes => {
-                    for &r in &op.results {
-                        proven.insert(r, TirType::Bytes);
-                    }
-                }
-                _ => {}
             }
         }
     }
@@ -1215,20 +1192,10 @@ fn infer_single_result_type_with_attrs(
     {
         return Some(ty);
     }
+    if let Some(ty) = opcode_operand_independent_result_tir_type(opcode) {
+        return Some(ty);
+    }
     match opcode {
-        // Constants — always produce a known type regardless of operands.
-        OpCode::ConstInt => Some(TirType::I64),
-        // ConstBigInt is semantically `int` but its value exceeds the raw
-        // i64 window — the carrier is ALWAYS boxed (DynBox; repr axis says
-        // MaybeBigInt). Typing it I64 would license trusted-unbox on a heap
-        // BigInt pointer, the exact bug class the Repr lattice forbids.
-        OpCode::ConstBigInt => Some(TirType::DynBox),
-        OpCode::ConstFloat => Some(TirType::F64),
-        OpCode::ConstStr => Some(TirType::Str),
-        OpCode::ConstBool => Some(TirType::Bool),
-        OpCode::ConstNone => Some(TirType::None),
-        OpCode::ConstBytes => Some(TirType::Bytes),
-
         // Add: numeric arithmetic + string concatenation + string/list repetition
         OpCode::Add | OpCode::InplaceAdd => match operand_types {
             [TirType::Str, TirType::Str] => Some(TirType::Str), // "a" + "b"
@@ -1264,25 +1231,12 @@ fn infer_single_result_type_with_attrs(
             _ => None,
         },
 
-        // Comparisons always produce Bool.
-        OpCode::Eq
-        | OpCode::Ne
-        | OpCode::Lt
-        | OpCode::Le
-        | OpCode::Gt
-        | OpCode::Ge
-        | OpCode::Is
-        | OpCode::IsNot
-        | OpCode::In
-        | OpCode::NotIn => Some(TirType::Bool),
-
-        // Boolean ops
+        // Boolean value-select ops remain operand-dependent: the opcode itself
+        // is not enough unless both operands are Bool.
         OpCode::And | OpCode::Or => match operand_types {
             [TirType::Bool, TirType::Bool] => Some(TirType::Bool),
             _ => None,
         },
-        OpCode::Not => Some(TirType::Bool),
-        OpCode::Bool => Some(TirType::Bool),
 
         // Bitwise ops other than shifts are closed over the inline I64 lane.
         // Shifts can promote beyond the inline range and must stay boxed until
@@ -1297,13 +1251,7 @@ fn infer_single_result_type_with_attrs(
             _ => None,
         },
 
-        // Containers
-        OpCode::BuildList => Some(TirType::List(Box::new(TirType::DynBox))),
-        OpCode::BuildDict => Some(TirType::Dict(
-            Box::new(TirType::DynBox),
-            Box::new(TirType::DynBox),
-        )),
-        OpCode::BuildSet => Some(TirType::Set(Box::new(TirType::DynBox))),
+        // Containers with operand-dependent element shape stay here.
         OpCode::BuildTuple => Some(TirType::Tuple(operand_types.to_vec())),
         OpCode::GetIter => match operand_types {
             [TirType::List(elem_ty) | TirType::Set(elem_ty)] => {
@@ -1339,8 +1287,6 @@ fn infer_single_result_type_with_attrs(
             }
             _ => None,
         },
-        OpCode::OrdAt => Some(TirType::I64),
-
         // `OpCode::Copy` is overloaded: the SSA converter folds every SimpleIR op
         // WITHOUT a dedicated opcode into `Copy`, stashing the name in
         // `_original_kind`. A TRANSPARENT-ALIAS copy genuinely names operand 0's
@@ -1376,14 +1322,6 @@ fn infer_single_result_type_with_attrs(
                 })
                 .or_else(|| operand_types.first().cloned())
         }
-
-        // Module lookup operations return arbitrary runtime values. Their
-        // result type must not inherit the module/name operand type.
-        OpCode::ModuleCacheGet
-        | OpCode::ModuleGetAttr
-        | OpCode::ModuleImportFrom
-        | OpCode::ModuleGetGlobal
-        | OpCode::ModuleGetName => Some(TirType::DynBox),
 
         // Box/Unbox
         OpCode::BoxVal => operand_types

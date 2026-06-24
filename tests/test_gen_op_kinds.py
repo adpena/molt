@@ -514,6 +514,201 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
     assert "OpCode::ConstInt\n                | OpCode::ConstBigInt" not in verify
 
 
+def test_operand_independent_result_types_delegate_to_generated_table() -> None:
+    """Intrinsic result-type facts live in op_kinds.toml and generated Rust.
+
+    Operand-dependent producers must stay absent: type_refine.rs can prove them
+    only after it sees operand facts, and block_versioning.rs must not resurrect
+    its old opcode-only arithmetic proof list.
+    """
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    block_versioning = (
+        ROOT / "runtime/molt-tir/src/tir/passes/block_versioning.rs"
+    ).read_text(encoding="utf-8")
+    type_refine = (ROOT / "runtime/molt-tir/src/tir/type_refine.rs").read_text(
+        encoding="utf-8"
+    )
+    branchless = (
+        ROOT / "runtime/molt-tir/src/tir/passes/branchless_count.rs"
+    ).read_text(encoding="utf-8")
+    gvn = (ROOT / "runtime/molt-tir/src/tir/passes/gvn.rs").read_text(encoding="utf-8")
+
+    expected = {
+        "ConstInt": "i64",
+        "ConstBigInt": "dynbox",
+        "ConstFloat": "f64",
+        "ConstStr": "str",
+        "ConstBool": "bool",
+        "ConstNone": "none",
+        "ConstBytes": "bytes",
+        "Eq": "bool",
+        "Ne": "bool",
+        "Lt": "bool",
+        "Le": "bool",
+        "Gt": "bool",
+        "Ge": "bool",
+        "Is": "bool",
+        "IsNot": "bool",
+        "In": "bool",
+        "NotIn": "bool",
+        "Not": "bool",
+        "Bool": "bool",
+        "OrdAt": "i64",
+        "BuildList": "list_dynbox",
+        "BuildDict": "dict_dynbox_dynbox",
+        "BuildSet": "set_dynbox",
+        "ModuleCacheGet": "dynbox",
+        "ModuleGetAttr": "dynbox",
+        "ModuleImportFrom": "dynbox",
+        "ModuleGetGlobal": "dynbox",
+        "ModuleGetName": "dynbox",
+    }
+    table = {
+        row["name"]: row["operand_independent_result_type"]
+        for row in data["opcode"]
+        if "operand_independent_result_type" in row
+    }
+    assert table == expected
+
+    variant = {
+        "i64": "OperandIndependentResultType::I64",
+        "f64": "OperandIndependentResultType::F64",
+        "bool": "OperandIndependentResultType::Bool",
+        "str": "OperandIndependentResultType::Str",
+        "none": "OperandIndependentResultType::None",
+        "bytes": "OperandIndependentResultType::Bytes",
+        "dynbox": "OperandIndependentResultType::DynBox",
+        "list_dynbox": "OperandIndependentResultType::ListDynBox",
+        "dict_dynbox_dynbox": "OperandIndependentResultType::DictDynBoxDynBox",
+        "set_dynbox": "OperandIndependentResultType::SetDynBox",
+    }
+    table_block = rendered.split("fn opcode_operand_independent_result_type_table")[
+        1
+    ].split("fn opcode_operand_independent_result_tir_type")[0]
+    for opcode, ty in expected.items():
+        assert f"OpCode::{opcode} => Some({variant[ty]})," in table_block
+
+    unsafe_opcode_only_facts = {
+        "Add",
+        "Sub",
+        "Mul",
+        "Div",
+        "FloorDiv",
+        "Mod",
+        "Pow",
+        "Neg",
+        "Pos",
+        "BitAnd",
+        "BitOr",
+        "BitXor",
+        "BitNot",
+        "Shl",
+        "Shr",
+        "And",
+        "Or",
+        "BuildTuple",
+        "GetIter",
+        "Index",
+        "Copy",
+        "TypeGuard",
+        "CallBuiltin",
+        "CheckedAdd",
+        "IterNextUnboxed",
+    }
+    assert unsafe_opcode_only_facts.isdisjoint(table)
+    for opcode in unsafe_opcode_only_facts:
+        assert f"OpCode::{opcode} => None," in table_block
+
+    table_name = "opcode_operand_independent_result_tir_type"
+    value_proves_body = block_versioning.split("fn value_proves_type", 1)[1].split(
+        "fn clone_block_with_fresh_values", 1
+    )[0]
+    assert table_name in value_proves_body
+    for stale in ("OpCode::Div", "OpCode::Shl", "OpCode::Shr", "OpCode::And"):
+        assert stale not in value_proves_body
+
+    infer_body = type_refine.split("fn infer_single_result_type_with_attrs", 1)[
+        1
+    ].split("fn fresh_value_kind_result_type", 1)[0]
+    assert table_name in infer_body
+    assert "OpCode::ConstInt => Some(TirType::I64)" not in infer_body
+    assert "OpCode::BuildList => Some(TirType::List" not in infer_body
+    assert "OpCode::ModuleCacheGet" not in infer_body
+    for source in (branchless, gvn):
+        production = source.split("#[cfg(test)]", maxsplit=1)[0]
+        assert table_name in production
+
+    branchless_production = branchless.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "OpCode::Eq\n                | OpCode::Ne" not in branchless_production
+    assert "OpCode::ConstFloat =>" not in branchless_production
+
+    gvn_production = gvn.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_is_gvn_value_keyed_constant_table(op.opcode)" in gvn_production
+    assert "OpCode::ConstInt\n            | OpCode::ConstBool" not in gvn_production
+
+
+def test_operand_independent_result_type_validation_rejects_drift(
+    tmp_path, monkeypatch
+) -> None:
+    gen = _gen()
+    table = ROOT / "runtime/molt-tir/src/tir/op_kinds.toml"
+    original = table.read_text(encoding="utf-8")
+
+    bad_type = original.replace(
+        'name = "ConstInt"\n'
+        "may_throw = false\n"
+        "side_effecting = false\n"
+        'purity = "pure"\n'
+        'result_arity = "one"\n'
+        'operand_independent_result_type = "i64"',
+        'name = "ConstInt"\n'
+        "may_throw = false\n"
+        "side_effecting = false\n"
+        'purity = "pure"\n'
+        'result_arity = "one"\n'
+        'operand_independent_result_type = "bigint_maybe"',
+        1,
+    )
+    tmp_table = tmp_path / "op_kinds_bad_type.toml"
+    tmp_table.write_text(bad_type, encoding="utf-8", newline="\n")
+    monkeypatch.setattr(gen, "TABLE", tmp_table)
+    try:
+        gen.load_table()
+    except gen.OpKindTableError as exc:
+        assert "operand_independent_result_type must be one of" in str(exc)
+    else:  # pragma: no cover - explicit fail branch for pytest output clarity
+        raise AssertionError("invalid operand_independent_result_type was accepted")
+
+    bad_arity = original.replace(
+        'name = "ConstBool"\n'
+        "may_throw = false\n"
+        "side_effecting = false\n"
+        'purity = "pure"\n'
+        'result_arity = "one"\n'
+        'operand_independent_result_type = "bool"',
+        'name = "ConstBool"\n'
+        "may_throw = false\n"
+        "side_effecting = false\n"
+        'purity = "pure"\n'
+        'result_arity = "zero"\n'
+        'operand_independent_result_type = "bool"',
+        1,
+    )
+    tmp_table = tmp_path / "op_kinds_bad_arity.toml"
+    tmp_table.write_text(bad_arity, encoding="utf-8", newline="\n")
+    monkeypatch.setattr(gen, "TABLE", tmp_table)
+    try:
+        gen.load_table()
+    except gen.OpKindTableError as exc:
+        assert "operand_independent_result_type requires result_arity = 'one'" in str(
+            exc
+        )
+    else:  # pragma: no cover - explicit fail branch for pytest output clarity
+        raise AssertionError("multi-result intrinsic result-type fact was accepted")
+
+
 def test_result_arity_rejects_unreviewed_variable_opcode(tmp_path, monkeypatch) -> None:
     """`variable` is an audited escape hatch, not a default for uncertain ops."""
     gen = _gen()
@@ -541,6 +736,54 @@ def test_result_arity_rejects_unreviewed_variable_opcode(tmp_path, monkeypatch) 
         assert "result_arity = 'variable' is reserved" in str(exc)
     else:  # pragma: no cover - explicit fail branch for pytest output clarity
         raise AssertionError("unreviewed variable result_arity opcode was accepted")
+
+
+def test_gvn_and_proven_type_seed_constants_delegate_to_generated_tables() -> None:
+    """Constant-keyability and proven-type seeds are generated distinct facts."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    type_refine = (ROOT / "runtime/molt-tir/src/tir/type_refine.rs").read_text(
+        encoding="utf-8"
+    )
+    gvn = (ROOT / "runtime/molt-tir/src/tir/passes/gvn.rs").read_text(encoding="utf-8")
+
+    expected = {
+        "ConstInt",
+        "ConstBool",
+        "ConstNone",
+        "ConstFloat",
+        "ConstStr",
+        "ConstBytes",
+    }
+    assert set(data["gvn_value_keyed_constant_opcodes"]) == expected
+    assert set(data["proven_result_type_seed_opcodes"]) == expected
+    assert "ConstBigInt" not in expected
+
+    gvn_block = rendered.split("fn opcode_is_gvn_value_keyed_constant_table")[1].split(
+        "fn opcode_is_proven_result_type_seed_table"
+    )[0]
+    proven_block = rendered.split("fn opcode_is_proven_result_type_seed_table")[
+        1
+    ].split("fn opcode_is_alias_rc_barrier_table")[0]
+    for row in data["opcode"]:
+        expected_bool = "true" if row["name"] in expected else "false"
+        assert f"OpCode::{row['name']} => {expected_bool}," in gvn_block
+        assert f"OpCode::{row['name']} => {expected_bool}," in proven_block
+    assert "OpCode::ConstBigInt => false," in gvn_block
+    assert "OpCode::ConstBigInt => false," in proven_block
+
+    type_refine_production = type_refine.split("#[cfg(test)]", maxsplit=1)[0]
+    assert (
+        "opcode_is_proven_result_type_seed_table(op.opcode)" in type_refine_production
+    )
+    extract_proven_map = type_refine_production.split(
+        "pub fn extract_proven_map", maxsplit=1
+    )[1].split("fn parse_return_type_str", maxsplit=1)[0]
+    assert "match op.opcode" not in extract_proven_map
+    gvn_production = gvn.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_is_gvn_value_keyed_constant_table(op.opcode)" in gvn_production
+    assert "fn is_const_opcode" not in gvn_production
 
 
 def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
