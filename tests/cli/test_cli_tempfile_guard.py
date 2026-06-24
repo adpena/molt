@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-import molt.cli as cli
+from molt.cli import command_runtime as COMMAND_RUNTIME
 
 
 def test_run_subprocess_captured_to_tempfiles_delegates_to_shared_guard(
@@ -21,12 +21,12 @@ def test_run_subprocess_captured_to_tempfiles_delegates_to_shared_guard(
             return subprocess.CompletedProcess(list(cmd), 0, b"out", b"err")
 
     monkeypatch.setattr(
-        cli,
+        COMMAND_RUNTIME,
         "_load_cli_harness_memory_guard",
         lambda cwd: FakeHarnessMemoryGuard(),
     )
 
-    result = cli._run_subprocess_captured_to_tempfiles(
+    result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
         ["backend", "--emit"],
         input=b"ir",
         cwd=tmp_path,
