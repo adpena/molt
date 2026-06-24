@@ -15,7 +15,7 @@ is free (50-59 taken by the concurrent portfolio arcs; 53 is multiply-occupied b
 perf-scoreboards/compression-ladder/cpython-parity, all design-only). This is the
 first 60-79 doc.
 
-DEEPENS: 53_perf_compression_ladder.md Rung 8 (artifact-footprint facts) +
+DEEPENS: 65_perf_compression_ladder.md Rung 8 (artifact-footprint facts) +
 59_semantic_fact_plane.md (one generated authority per invariant) and FEEDS the
 binary-size dimension of the Performance Constitution. Composes with 21b
 (crate-graph), 21d (cli package), 21e (satellite link-only-what's-used). -->
@@ -60,7 +60,7 @@ Concretely, at the destination:
 
 - **The artifact is provably minimal, measured.** Binary size (native stripped/
   unstripped; WASM raw/gzip/brotli), function count, import count, and cold-start
-  page-in are scoreboard dimensions (doc 53 Rung 8, `docs/perf/SCOREBOARD.md`),
+  page-in are scoreboard dimensions (doc 65 Rung 8, `docs/perf/SCOREBOARD.md`),
   green vs the CPython floor and ratcheted down. A symbol that survives is a
   *reachability fact*, not a linker accident.
 
@@ -72,14 +72,14 @@ Concretely, at the destination:
   kept (fail-closed); what they *can* prove dead is gone everywhere.
 
 This document is the executable plan that builds that one fact and routes every
-tier through it. It is **Rung 8's reachability substrate** (doc 53 §3 Rung 8
+tier through it. It is **Rung 8's reachability substrate** (doc 65 §3 Rung 8
 names "whole-program reachability/DCE → <2MB binary + per-attr liveness" and
 "address-taken-intrinsics" as the facts; this doc *is* those facts) and a **doc 59
 fact-family** (one generated authority per invariant, drift uncompilable).
 
 ### 0.1 What this doc is NOT (anti-duplication contract)
 
-- It does **not** re-derive the perf compression ladder (doc 53). It supplies the
+- It does **not** re-derive the perf compression ladder (doc 65). It supplies the
   *reachability fact* Rung 8 consumes; Rungs 1–7 (RC/dispatch/boxing/shape/loop/
   generator/portable-IR) are referenced, not restated.
 - It does **not** re-specify the fact-plane machinery (doc 59). It *uses* the
@@ -133,7 +133,7 @@ and reachability is answered exactly once":
    fact carries, per symbol, *why* it is live (`StaticCall` / `AddressTaken` /
    `DynRoot` / `RuntimeEntrypoint` / `Export`), and each backend's
    root/export/keep set is *derived from the fact*, never re-scraped from
-   backend-local state (doc 53 Rung 7, the portable-IR-fact-parity rule; doc 46
+   backend-local state (doc 65 Rung 7, the portable-IR-fact-parity rule; doc 46
    §4.7 "a native win shadowed by a WASM regression is a portable-IR fact gap").
 
 5. **For the fact to be TRUSTED (not a heuristic that silently keeps too much or
@@ -148,13 +148,13 @@ and reachability is answered exactly once":
 6. **For the win to be real and durable, the size/footprint dimensions must be
    measured against the CPython floor and ratcheted.** → Each tier's landing
    reports binary size / function count / import count / cold page-in vs CPython,
-   classified GREEN/RED_STABLE/DIMENSIONAL_WIN (doc 53 §1, CLAUDE.md tranche
+   classified GREEN/RED_STABLE/DIMENSIONAL_WIN (doc 65 §1, CLAUDE.md tranche
    standard); a regression is a failed landing.
 
 Items 1–2 are the **core structural collapse** (§3 F1/F2). Item 3 is the **dynamic
 reachability completeness** generalizing the intrinsic-manifest template (§3 F3).
 Item 4 is the **portable-IR closure** across backends (§3 F4). Item 5 is the
-**fail-closed validator** (§3 F5). Item 6 is the **measurement bridge** to doc 53
+**fail-closed validator** (§3 F5). Item 6 is the **measurement bridge** to doc 65
 Rung 8 (§7).
 
 ---
@@ -409,8 +409,8 @@ fact*, and a backend that emits a symbol absent from the fact fails a gate.
   functions in `reachability.live` are emitted to the Luau output. The same fact
   drives "which `local function` definitions appear." (Luau has no linker; the IR
   DFE is the *only* tier, so the fact is load-bearing there with no linker
-  backstop — making F2 correctness-critical for Luau, per doc 53 Rung 7.)
-- **The generated backend support matrix (doc 53 Rung 7 / doc 46 §4.7):** a
+  backstop — making F2 correctness-critical for Luau, per doc 65 Rung 7.)
+- **The generated backend support matrix (doc 65 Rung 7 / doc 46 §4.7):** a
   `tools/backend_reachability_audit.py` checks each backend's *actual* emitted
   symbol set against `reachability.live` — a symbol emitted but not live, or live
   but not emitted, is a drift failure (the dual of `audit_op_kinds.py`). This is
@@ -424,7 +424,7 @@ The checkable obligation that makes a wrong shake a *build error*, not a runtime
 crash or a silent size regression.
 
 - **Drop-soundness (the corruption guard):** a `MOLT_VERIFY_REACHABILITY=1`
-  self-check (mirroring `MOLT_VERIFY_ANALYSIS=1`, doc 53 §1) that, after DFE,
+  self-check (mirroring `MOLT_VERIFY_ANALYSIS=1`, doc 65 §1) that, after DFE,
   re-scans the retained IR for any reference (via the F1 edge vocabulary) to a
   *removed* symbol — a dangling reference is a panic-in-debug / hard-fail-in-CI,
   never a silent emit. This is the generalization of the intrinsic-manifest's
@@ -447,7 +447,7 @@ crash or a silent size regression.
 ## 4. Phases (dependency order; each independently landable with green gates)
 
 Each phase is a **complete structural piece** (CLAUDE.md unit-of-work rule).
-Lane assignment per the council three-lane model (doc 53 §6): mostly **lane C**
+Lane assignment per the council three-lane model (doc 65 §6): mostly **lane C**
 (infra/footprint) with a **lane B** (perf-frontier) bridge for the backend
 lowering; the IR-correctness pieces touch the safety-adjacent DFE so carry
 A-lane discipline (differential parity on every backend).
@@ -463,7 +463,7 @@ A-lane discipline (differential parity on every backend).
   reference-kind sets + root rules match (parse both, diff). (b) Wire the size
   scoreboard dimensions (binary size native stripped/unstripped, WASM raw/gzip,
   function count, import count) into `tools/perf_scoreboard.py` for a baseline
-  artifact set (doc 53 Rung 8, `docs/perf/SCOREBOARD.md` schema) so every later
+  artifact set (doc 65 Rung 8, `docs/perf/SCOREBOARD.md` schema) so every later
   phase reports a size delta. (c) `MOLT_DEBUG_DEAD_FUNC_ELIM` /
   `MOLT_DEBUG_DEAD_IMPORT_ELIM` (`passes.rs:2627`/`:3506`) already exist — confirm
   they emit removed-count; add a one-line "live/total + reason histogram" debug
@@ -539,7 +539,7 @@ A-lane discipline (differential parity on every backend).
   `globaldce` in `llvm_backend/mod.rs`; drive the WASM import strip + exports from
   the fact; make Luau emit only `reachability.live`. Build
   `tools/backend_reachability_audit.py` (emitted-symbols ⊆ live ∪ runtime, per
-  backend) and gate it in CI. Register the backend matrix rows (doc 53 Rung 7).
+  backend) and gate it in CI. Register the backend matrix rows (doc 65 Rung 7).
 - **Files:** `cli/__init__.py` (link/export derivation), `llvm_backend/mod.rs`
   (internalize/globaldce), `wasm.rs` (import strip from fact), the Luau emitter,
   `backend_reachability_audit.py` (new), `.github/workflows/ci.yml` (gate).
@@ -548,23 +548,23 @@ A-lane discipline (differential parity on every backend).
   WASM (import strip) AND Luau (emit shake), each classified; full differential
   parity all backends; the LLVM lane size delta recorded (the
   `0931_LINKER_OPTIMIZATION_CONTRACT.md` before/after discipline); cold-start
-  page-in DIMENSIONAL check (smaller artifact → fewer pages, doc 53 Rung 8).
+  page-in DIMENSIONAL check (smaller artifact → fewer pages, doc 65 Rung 8).
 
 ### Phase 5 (ongoing, composes with 21e) — per-attribute / per-method liveness + crate-granularity.
 - **Do:** extend reachability below the function granularity to *methods* and
-  *fields* (a dead method on a live class; a never-read field — ties doc 53 Rung 4
+  *fields* (a dead method on a live class; a never-read field — ties doc 65 Rung 4
   ShapeFacts `FieldSlot` and doc 09/13 dead-field) and compose with 21e's
   `LINK_AFFECTING_FEATURES` so a satellite crate links into a tier ONLY when the
   reachability fact shows a live symbol from it (the symbol-granularity fact
   *informs* the crate-granularity gate — doc 21e §1.3, §5 here). This is the
-  "<2MB binary + per-attr liveness" terminus (doc 53 Rung 8 / doc 51 §6).
+  "<2MB binary + per-attr liveness" terminus (doc 65 Rung 8 / doc 51 §6).
 - **Gate per increment:** `reach_coverage.py` UP; the relevant size dimension
   DOWN; differential parity; the 21e satellite-parity guard
   (`check_satellite_parity.py`) unaffected (this *reduces* what links, never
   changes satellite/in-tree equivalence). **Unbounded** — the monthly cadence
-  (doc 53 §7) for the footprint class.
+  (doc 65 §7) for the footprint class.
 
-**Landing report format (every phase — doc 53 §1 + CLAUDE.md PERF/SPEED block):**
+**Landing report format (every phase — doc 65 §1 + CLAUDE.md PERF/SPEED block):**
 "tests green; the named gate(s) green; binary size / function count / import count
 delta vs CPython floor AND vs prior phase, classified GREEN/RED_STABLE/
 DIMENSIONAL_WIN; cold page-in delta; zero new hand-mirrored reachability code;
@@ -574,16 +574,16 @@ zero dropped-live-symbol differential failures (the correctness floor)."
 
 ## 5. Composition with the decomposition (21a–e) and the 50–69 arcs
 
-- **Doc 53 (perf compression ladder) Rung 8 — the primary parent.** Rung 8 names
+- **Doc 65 (perf compression ladder) Rung 8 — the primary parent.** Rung 8 names
   "whole-program reachability/DCE → <2MB binary + per-attr liveness" and
-  "address-taken-intrinsics" as its facts (doc 53 §3 Rung 8). This arc *builds
+  "address-taken-intrinsics" as its facts (doc 65 §3 Rung 8). This arc *builds
   those facts*: F2 is the reachability fact Rung 8 consumes; F3's `AddressTaken`
   reason IS the address-taken-intrinsics fact; Phase 5 IS per-attr liveness. The
   cross-arc dependency: **Rung 8 depends on this arc's `Reachability` fact**, and
-  this arc depends on Rung 8's scoreboard cold/size dimensions (doc 53 Rung 0) for
+  this arc depends on Rung 8's scoreboard cold/size dimensions (doc 65 Rung 0) for
   its gates. Per-attr liveness (Phase 5) *also* depends on Rung 4 ShapeFacts
   (`FieldSlot`) and Rung 2 CallFacts targets (to know which methods are reachable)
-  — so Phase 5 co-schedules after those rungs (doc 53 §7 M4/M9).
+  — so Phase 5 co-schedules after those rungs (doc 65 §7 M4/M9).
 - **Doc 59 (semantic fact plane) — the machinery.** F1's generated edge/root
   vocabulary follows doc 59 §5.2 (open-domain fact: table + `--check` + producer
   drift audit). F2/F3 register in the generator manifest (doc 59 §3 F1). F5's
@@ -627,9 +627,9 @@ zero dropped-live-symbol differential failures (the correctness floor)."
 4. **One validator discipline.** Each tier's "done" ships the F5 obligations:
    `MOLT_VERIFY_REACHABILITY=1` drop-soundness, `backend_reachability_audit.py`
    emit-cross-check, `reach_coverage.py` proven-coverage ratchet. A shake without
-   a validator is a half-fact (doc 53 §1).
+   a validator is a half-fact (doc 65 §1).
 5. **One measurement contract.** Each tier's win is a GREEN size/cold scoreboard
-   row vs the CPython floor (doc 53 §1), classified; a size or cold regression is
+   row vs the CPython floor (doc 65 §1), classified; a size or cold regression is
    a failed landing.
 6. **No second authority** (doc 59 §0). The `AddressTaken` reason IS the intrinsic
    manifest; the IPO `reachable_from` IS the DFE BFS; the linker export set IS
@@ -641,7 +641,7 @@ zero dropped-live-symbol differential failures (the correctness floor)."
 
 Per CLAUDE.md, binary size, peak RSS, compile time, and COLD vs WARM start are
 tracked dimensions; cold-start is an *artifact-footprint/page-in/codesign*
-problem (NOT runtime-init, measured 0.127ms — doc 53 Rung 8). This arc's product
+problem (NOT runtime-init, measured 0.127ms — doc 65 Rung 8). This arc's product
 is a *smaller artifact*, so its primary dimensions are **footprint**, not warm
 throughput.
 
@@ -661,7 +661,7 @@ The standing gates (CI):
 - `reach_coverage.py --check` (F5) — proven dynamic-reachability coverage UP.
 - `MOLT_VERIFY_REACHABILITY=1` on the differential corpus (F5) — zero dangling refs.
 - The size scoreboard ratchet — binary size / import count DOWN (or DIMENSIONAL
-  justification), never silently UP (doc 53 Rung 8, the silent-footprint-regression
+  justification), never silently UP (doc 65 Rung 8, the silent-footprint-regression
   class).
 
 **The correctness floor (non-negotiable, gates every phase):** the full
@@ -680,10 +680,10 @@ dropped-live symbol is a P0 correctness bug (CLAUDE.md), not a size tradeoff.
 | **Aggressive shake breaks the runtime's extern-`C` entrypoints** (`molt_isolate_*`, importlib helpers) | Phase 2/F2 | The `reachability_root` table (F1) is the *generated* authority for protected entrypoints (replacing the hand `is_protected_runtime_entrypoint`); a missing root is a table edit + a differential failure, not a silent strip. The native-bootstrap regressions (`tests/test_native_import_bootstrap_regressions.py`) gate the import paths (CLAUDE.md Bootstrap Authority). |
 | **LLVM `internalize`/`globaldce` strips an address-taken intrinsic** | Phase 4/F4 | `internalize` mask is *derived from* `LiveReason::Export ∪ RuntimeEntrypoint ∪ AddressTaken` — the same fact that already keeps intrinsics alive on native (`llvm_backend/mod.rs:308`); `backend_reachability_audit.py` cross-checks the emitted set. An internalized-then-deleted live symbol is a gate failure, caught pre-link. |
 | **The stdlib-cache key changes** when the Python BFS is replaced by the FFI call (cache invalidation storm) | Phase 2/F2 | The gate proves byte-identity (old-Python-impl vs new-FFI on saved IR) BEFORE the swap; the key is computed from the *same* reachable set, so the cache stays valid. If the sets differ, the Python impl had a bug (the deliverable). |
-| **WASM/Luau lose a shake that native keeps (or vice versa)** | Phase 4/F4 | Rung 7 portable-IR-fact-parity rule (doc 53): the fact lives in portable TIR (F2, SimpleIR scope before backend split); `backend_reachability_audit.py` gates all four backends on the SAME fact. A backend-only gap is a portable-IR-fact-gap (doc 46 §4.7), gated, not excepted. |
+| **WASM/Luau lose a shake that native keeps (or vice versa)** | Phase 4/F4 | Rung 7 portable-IR-fact-parity rule (doc 65): the fact lives in portable TIR (F2, SimpleIR scope before backend split); `backend_reachability_audit.py` gates all four backends on the SAME fact. A backend-only gap is a portable-IR-fact-gap (doc 46 §4.7), gated, not excepted. |
 | **`reach_coverage.py` becomes a Goodhart target** (mark families `Unknown` to dodge a miss, inflating "kept" but hiding precision loss) | Phase 3/F5 | The ratchet is proven-coverage (DOWN-fails), so a blunt `Unknown` regression DROPS coverage and fails the gate; it is the dual of the size ratchet (more `Unknown` ⇒ bigger artifact ⇒ size ratchet also reds). Two ratchets in opposition make the dodge fail both. |
-| **Per-attr liveness (Phase 5) is a large greenfield; risk of a partial system** | Phase 5 | The `FactValue` fail-closed lattice makes partiality SOUND (doc 53 §8): an un-analyzed method/field is `Unknown`=kept (current behavior). Coverage grows monotonically via `reach_coverage.py`; no program is miscompiled by a missing per-attr fact, only un-shrunk. Composes with doc 53 Rung 4 (`FieldSlot`) — no second authority for field liveness. |
-| **Compile-time regression** from running the unified BFS + dyn-root analysis | all phases | The BFS already runs (it is `eliminate_dead_functions`, every native/WASM build); unifying does not add a traversal, it removes three. Dyn-root analysis is frontend-time over data already walked. Compile-time is a tracked dimension (§7); a regression is reported and budgeted, never hidden (doc 53 §1). |
+| **Per-attr liveness (Phase 5) is a large greenfield; risk of a partial system** | Phase 5 | The `FactValue` fail-closed lattice makes partiality SOUND (doc 65 §8): an un-analyzed method/field is `Unknown`=kept (current behavior). Coverage grows monotonically via `reach_coverage.py`; no program is miscompiled by a missing per-attr fact, only un-shrunk. Composes with doc 65 Rung 4 (`FieldSlot`) — no second authority for field liveness. |
+| **Compile-time regression** from running the unified BFS + dyn-root analysis | all phases | The BFS already runs (it is `eliminate_dead_functions`, every native/WASM build); unifying does not add a traversal, it removes three. Dyn-root analysis is frontend-time over data already walked. Compile-time is a tracked dimension (§7); a regression is reported and budgeted, never hidden (doc 65 §1). |
 
 ---
 

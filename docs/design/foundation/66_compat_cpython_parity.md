@@ -1,8 +1,7 @@
-<!-- Foundation blueprint 53. Arc: full deterministic CPython >=3.12 PARITY across ALL
+<!-- Foundation blueprint 66. Arc: full deterministic CPython >=3.12 PARITY across ALL
 backends (native/WASM/LLVM/Luau). Author: portfolio-architect. Date: 2026-06-23.
-Status: design only / executable plan. NOTE: assigned slot was 52, but
-52_autonomous_operating_charter.md is already taken; this is the next free number
-in the 50-69 range (53). This doc is the PARITY-PLANE counterpart to the
+Status: design only / executable plan. Assigned path:
+docs/design/foundation/66_compat_cpython_parity.md. This doc is the PARITY-PLANE counterpart to the
 language-semantics audit (doc 30), the stdlib/surface audit (doc 16), the
 ecosystem audit (doc 17/24), and the differential-fuzzing lane (doc 31). It does
 NOT duplicate those: it builds the MATRIX, the single multi-backend ORACLE, and
@@ -10,7 +9,7 @@ the structural "parity fact" plane that makes backend-divergence UNEXPRESSIBLE,
 then routes docs 16/24/30/31's per-case findings through that plane as CI-gated
 debts. Read-only investigation + this one Write; the lead integrates. -->
 
-# Foundation Blueprint 53 — Full Deterministic CPython >=3.12 Parity Across All Backends
+# Foundation Blueprint 66 — Full Deterministic CPython >=3.12 Parity Across All Backends
 
 **Arc owner surface:** frontend semantics + runtime stdlib + differential harness + CI gates
 **Author:** portfolio-architect

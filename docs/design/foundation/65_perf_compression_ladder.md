@@ -1,20 +1,18 @@
 <!--
-Foundation blueprint 53 — The Performance Compression Ladder.
+Foundation blueprint 65 — The Performance Compression Ladder.
 Arc: the ordered roadmap of IR FACTS, each rung retiring one CLASS of slowness.
 Author: portfolio-architect.
 Date: 2026-06-24 (scoped 2026-06-23).
 Status: DESIGN ONLY / EXECUTABLE PLAN. No implementation landed by this doc.
 
-NUMBERING NOTE: the assigned path was `51_perf_compression_ladder.md`, but slot 51
-is already taken by `51_ten_year_roadmap.md` (the north star this doc details out)
-and 52 by `52_autonomous_operating_charter.md`. This is the next free slot in the
-50–69 range: **53**.
+NUMBERING NOTE: the assigned path is `65_perf_compression_ladder.md` in the
+active 54-67 portfolio route cluster.
 
-All file:line anchors verified read-only against the worktree at branch `main`
-(HEAD `1d92bc5cf`) on 2026-06-24. Code beats this doc when it drifts.
+All file:line anchors were verified read-only against the worktree snapshot
+available on 2026-06-24. Code beats this doc when it drifts.
 -->
 
-# 53 — The Performance Compression Ladder: one IR fact per class of slowness
+# 65 — The Performance Compression Ladder: one IR fact per class of slowness
 
 ## 0. End-state outcome (the time-traveler's destination)
 

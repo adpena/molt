@@ -112,7 +112,7 @@ ordering the artifact, and gating the result** — not re-measuring.
 | **Runtime-init trace** | `runtime/molt-runtime/src/state/runtime_state.rs` `molt_runtime_init` + `trace_runtime_init` (lines 668–818) | The 12-phase `MOLT_TRACE_RUNTIME_INIT` ladder (0.127 ms total); eager capability load (security-required, not deferrable) | No micro-budget guard so a future phase can't silently regress init (§3.4); confirms NO snapshot is warranted |
 | **WASM launch (host/JS)** | `wasm/run_wasm.js` (`new WebAssembly.Module(buffer)` ~4552, `WebAssembly.instantiate(runtimeBuffer/wasmBuffer)` ~5584/5612); `deploy/cloudflare/worker.js` (serves 13.4 MB `falcon-ocr.wasm`) | Eager compile + instantiate from a fully-downloaded buffer | No `compileStreaming`/`instantiateStreaming`; no compiled-`Module` cache across cold invokes (§3.3) |
 | **Cargo ship profiles** | `Cargo.toml` `[profile.release-output]` (opt-`z`, `lto="fat"`, `codegen-units=1`, `panic="abort"`, `strip=true`) | Already size-optimal for the shipped runtime | The page-in lever is *post-compile layout*, not a profile change — release-output is already correct (§3.2) |
-| **Cold-start measurement core (53)** | `tools/perf_scoreboard.py` `startup_tax_ms` / `cold_*` fields, `FAIL_COLD_BUDGET`/`WARN_COLD_FLOOR` verdicts | The board that *records* cold + warm per cell (schema v3) | Arc 64 gates it in CI; **this arc supplies the new `first-launch` dimension + the codesign-isolated cell + the order-file before/after** that 53's board projects |
+| **Cold-start measurement core (64)** | `tools/perf_scoreboard.py` `startup_tax_ms` / `cold_*` fields, `FAIL_COLD_BUDGET`/`WARN_COLD_FLOOR` verdicts | The board that *records* cold + warm per cell (schema v3) | Arc 64 gates it in CI; **this arc supplies the new `first-launch` dimension + the codesign-isolated cell + the order-file before/after** that 64's board projects |
 
 **North-star alignment.** Doc 51 §2 names the matrix dimension ("4 profiles × 5
 dimensions: warm, **cold #62**, RSS, size <2 MB, compile") and §3 the Y3 deliverable
@@ -651,7 +651,7 @@ benefits from but doesn't require the size arc).
 
 ### Composition with arc 64 (perf scoreboards + harness — cold+warm measurement)
 
-Arc 53 (`64_perf_scoreboards_and_harness.md`) **already owns** the `startup_tax_ms` /
+Arc 64 (`64_perf_scoreboards_and_harness.md`) **already owns** the `startup_tax_ms` /
 `cold_*` schema-v3 fields, `FAIL_COLD_BUDGET`/`WARN_COLD_FLOOR` verdicts, and
 explicitly carves out cold as a distinct gated dimension (its §8 Risk 8: "cold-start
 / size / RSS conflated with warm speed — #62 lesson… each dimension is a distinct
