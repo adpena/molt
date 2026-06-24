@@ -76,6 +76,31 @@ Deterministic enforcement:
 - Runs `cargo metadata --locked` to verify `Cargo.lock` is current.
 - When `--deterministic-warn` is set, lockfile verification errors become warnings.
 
+### 2.1.1 `molt factgraph`
+**Status:** Implemented.
+
+Purpose: Run the frontend and TIR module pipeline for an entry, then emit a
+compiler fact graph JSON artifact for one selected TIR function. This is a
+semantic-control-plane inspection command, not a build output format.
+
+Key flags:
+- positional `file` or `--module <name>` (exactly one entry source)
+- positional `function` (post-module-pipeline function name)
+- `--output <path>` (required; relative paths resolve under the project root)
+- `--target {native,wasm,luau,llvm}` (target semantics for the TIR pipeline)
+- `--backend {auto,cranelift,llvm}` (native backend fact selection)
+- `--profile {dev,release}`
+- `--type-hints {ignore,trust,check}`
+- `--fallback {error,bridge}`
+- `--python-version <ver>`
+- `--capabilities <file|profile|list>`
+- `--trusted/--no-trusted`
+
+Outputs:
+- `molt_tir_fact_graph` JSON with schema version, function name, per-value
+  producers/consumers, fact provenance, and summary counts.
+- JSON command status when `--json` is set.
+
 ### 2.2 `molt check`
 **Status:** Implemented.
 
