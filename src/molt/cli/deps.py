@@ -22,6 +22,7 @@ from packaging.markers import InvalidMarker, Marker
 from packaging.requirements import InvalidRequirement, Requirement
 
 from molt import process_guard as _process_guard
+from molt.cli.atomic_io import _atomic_copy_file
 from molt.cli.lockfiles import _check_lockfiles
 
 MOLT_VENV_DIR = ".molt-venv"
@@ -62,10 +63,6 @@ def _fail(*args: Any, **kwargs: Any) -> Any:
 
 def _replace_directory_tree_from_source(*args: Any, **kwargs: Any) -> Any:
     return _cli_module()._replace_directory_tree_from_source(*args, **kwargs)
-
-
-def _atomic_copy_file(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._atomic_copy_file(*args, **kwargs)
 
 
 def _atomic_write_bytes(*args: Any, **kwargs: Any) -> Any:

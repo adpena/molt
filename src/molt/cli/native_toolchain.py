@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from molt.cli.atomic_io import _atomic_copy_file
+
 
 def _cli_module() -> Any:
     return importlib.import_module("molt.cli")
@@ -15,10 +17,6 @@ def _cli_module() -> Any:
 
 def _run_completed_command(*args: Any, **kwargs: Any) -> Any:
     return _cli_module()._run_completed_command(*args, **kwargs)
-
-
-def _atomic_copy_file(*args: Any, **kwargs: Any) -> Any:
-    return _cli_module()._atomic_copy_file(*args, **kwargs)
 
 
 def _emit_json(*args: Any, **kwargs: Any) -> Any:
