@@ -79,10 +79,18 @@
 #   - refcount_heap_exposure_opcodes - opcode-only deferred-RC fact for ops
 #                  whose operands become heap/external roots and therefore cannot
 #                  be treated as non-escaping by refcount_elim.rs.
+#   - lowered_state_machine_body_opcodes - body-op half of
+#                  TirFunction::has_state_machine. StateDispatch terminators
+#                  are the other half, so this remains distinct from the broad
+#                  state-machine pass-exclusion fact below.
 #   - fusion_barrier_opcodes - opcode-only deforestation.rs fusion-eligibility
 #                  fact: ops that make a comprehension/generator body ineligible
 #                  for iterator-chain fusion. A DISTINCT fact from side_effecting
 #                  (see its own comment below). Rendered exhaustively over OpCode.
+#   - state_machine_opcodes - opcode-only linear-transform legality fact: ops
+#                  that belong to generator/async/coroutine state machines and
+#                  therefore cannot be linearly spliced by the TIR function
+#                  inliner or module-slot promotion.
 #   - i64_zero_divisor_guard_opcodes - opcode-only raw-i64 division-family fact.
 #                  These ops require a nonzero divisor proof before raw i64 LIR
 #                  can be used or before CheckException can be proven redundant.
@@ -345,6 +353,22 @@ refcount_heap_exposure_opcodes = [
     "YieldFrom",
 ]
 
+# lowered_state_machine_body_opcodes: body-op half of
+# TirFunction::has_state_machine(). StateDispatch is a terminator, not an
+# opcode, so it remains checked by function.rs while these body ops are owned
+# here. This is deliberately narrower than state_machine_opcodes:
+# high-level `Yield`/`YieldFrom` and StateBlock delimiters are coroutine markers,
+# but not by themselves proof of the lowered re-entrant dispatch shape that the
+# drop-insertion state-machine bail guards.
+lowered_state_machine_body_opcodes = [
+    "AllocTask",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
+]
+
 # fusion_barrier_opcodes: deforestation.rs's loop/genexpr fusion barrier set.
 # An op in this set makes a candidate comprehension/generator body INELIGIBLE
 # for iterator-chain fusion (`sum`/`list`/`map`/`filter`/`any`/`all`/`min`/`max`
@@ -377,6 +401,28 @@ fusion_barrier_opcodes = [
     "StateYield",
     "StoreAttr",
     "StoreIndex",
+    "Yield",
+    "YieldFrom",
+]
+
+# state_machine_opcodes: generator/async/coroutine suspension machinery that
+# linear CFG transforms must refuse. A callee/loop-containing function with one
+# of these ops cannot be spliced or promoted without rebuilding the surrounding
+# state machine. This is NOT the same as fusion barriers or side effects:
+# `ClosureLoad`/`ClosureStore` and opaque calls block fusion but are not
+# state-machine control, while `AllocTask` creates task state and must block
+# inlining/promotion even though it is not side_effecting for DCE. Generated
+# exhaustively over OpCode so a new suspension/control opcode cannot silently
+# become inlinable or promotable through a default-false hand-set.
+state_machine_opcodes = [
+    "AllocTask",
+    "ChanRecvYield",
+    "ChanSendYield",
+    "StateBlockEnd",
+    "StateBlockStart",
+    "StateSwitch",
+    "StateTransition",
+    "StateYield",
     "Yield",
     "YieldFrom",
 ]

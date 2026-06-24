@@ -185,7 +185,9 @@ _OPCODE_FACT_SETS = (
     "alias_slot_typed_store_opcodes",
     "alias_slot_never_observer_opcodes",
     "refcount_heap_exposure_opcodes",
+    "lowered_state_machine_body_opcodes",
     "fusion_barrier_opcodes",
+    "state_machine_opcodes",
     "i64_zero_divisor_guard_opcodes",
     "i64_shift_count_guard_opcodes",
     "exception_label_attr_opcodes",
@@ -1385,6 +1387,21 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, refcount_heap_exposures))
     out.append("    }\n}\n\n")
 
+    lowered_state_machine_body = list(
+        data.get("lowered_state_machine_body_opcodes", [])
+    )
+    out.append(
+        "/// Whether an opcode is the body-op half of TirFunction::has_state_machine.\n"
+        "/// StateDispatch is a terminator and is checked in function.rs beside this\n"
+        "/// table. EXHAUSTIVE over OpCode so lowered coroutine body ops cannot drift\n"
+        "/// away from the drop-insertion state-machine bail contract.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, lowered_state_machine_body))
+    out.append("    }\n}\n\n")
+
     fusion_barriers = list(data.get("fusion_barrier_opcodes", []))
     out.append(
         "/// Whether an opcode makes a comprehension/generator body ineligible for\n"
@@ -1400,6 +1417,20 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, fusion_barriers))
+    out.append("    }\n}\n\n")
+
+    state_machine_opcodes = list(data.get("state_machine_opcodes", []))
+    out.append(
+        "/// Whether an opcode belongs to generator/async/coroutine state-machine\n"
+        "/// control. Linear CFG transforms must refuse functions containing these\n"
+        "/// opcodes unless they reconstruct suspension machinery. EXHAUSTIVE over\n"
+        "/// OpCode so a new state-machine opcode cannot silently become inlinable or\n"
+        "/// promotable.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, state_machine_opcodes))
     out.append("    }\n}\n\n")
 
     i64_zero_divisor_guards = list(data.get("i64_zero_divisor_guard_opcodes", []))
