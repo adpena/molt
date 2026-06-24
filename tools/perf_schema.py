@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 SCHEMA_VERSION = 3
+RED_THRESHOLD = 1.00
+UNSTABLE_CV = 0.20
 
 VERDICT_GREEN = "GREEN"
 VERDICT_FAIL_ENGINE = "FAIL_ENGINE"
@@ -43,6 +45,50 @@ CLASSIFY_STATES = frozenset(
     }
 )
 
+FACT_CLASSES = frozenset(
+    {
+        "op_kinds",
+        "operand_ownership",
+        "finalizer_sensitive",
+        "call_facts",
+        "typed_callable_target",
+        "shape_facts",
+        "ownership_lattice",
+        "exception_region",
+        "repr_tir_type_lattice",
+        "class_identity_version",
+    }
+)
+
+PYPY_ADVANTAGE_CLASSES = frozenset(
+    {
+        "ic_tiering",
+        "class_version_guard",
+        "borrow_inference",
+        "generator_fusion",
+        "shape_propagation",
+        "loop_specialization",
+    }
+)
+
+REFERENCE_CLASSES = frozenset(
+    {
+        "dynamic",
+        "static_equiv",
+        "numeric",
+        "io",
+        "molt_internal",
+    }
+)
+
+CODON_SEMANTICS = frozenset(
+    {
+        "equivalent",
+        "non_equivalent",
+        "n/a",
+    }
+)
+
 GATE_FAILING_VERDICTS = frozenset(
     {
         VERDICT_FAIL_ENGINE,
@@ -52,6 +98,14 @@ GATE_FAILING_VERDICTS = frozenset(
         VERDICT_UNSTABLE,
     }
 )
+
+def verdict_fails_gate(verdict: str, *, fail_stale: bool = True) -> bool:
+    """Return whether a verdict is a hard gate failure for the current policy."""
+
+    return verdict in GATE_FAILING_VERDICTS or (
+        fail_stale and verdict == VERDICT_FAIL_STALE
+    )
+
 
 REQUIRED_TOP_LEVEL_KEYS = frozenset(
     {
@@ -103,9 +157,14 @@ REQUIRED_CELL_FIELDS = frozenset(
         "target",
         "backend",
         "profile",
-        "cpython_ratio",
-        "cold_ratio",
-        "warm_ratio",
+        "build_ok",
+        "run_blocked",
+        "molt_ok",
+        "cpython_ok",
+        "cold_molt_s",
+        "cold_cpython_s",
+        "warm_molt_s",
+        "warm_cpython_s",
         "warm_speedup",
         "cold_speedup",
         "startup_tax_ms",
@@ -114,11 +173,11 @@ REQUIRED_CELL_FIELDS = frozenset(
         "molt_peak_rss_mib",
         "compile_time_s",
         "stable",
-        "red",
-        "status",
         "pypy_ratio",
         "codon_ratio",
         "codon_equivalent",
+        "cpython_peak_rss_mib",
+        "output_parity",
         "log_artifact",
     }
 )
@@ -138,6 +197,30 @@ _ALL_VERDICTS = frozenset(
     }
 )
 
+_MEASURED_RUN_VERDICTS = frozenset(
+    {
+        VERDICT_GREEN,
+        VERDICT_FAIL_ENGINE,
+        VERDICT_FAIL_COLD_BUDGET,
+        VERDICT_WARN_COLD_FLOOR,
+        VERDICT_UNSTABLE,
+    }
+)
+
+_MEASURED_RUN_FACT_FIELDS = frozenset(
+    {
+        "cold_molt_s",
+        "cold_cpython_s",
+        "warm_molt_s",
+        "warm_cpython_s",
+        "warm_speedup",
+        "cold_speedup",
+        "startup_tax_ms",
+        "molt_peak_rss_mib",
+        "cpython_peak_rss_mib",
+    }
+)
+
 
 @dataclass(frozen=True)
 class PerfCell:
@@ -152,12 +235,7 @@ class PerfCell:
     backend: str
     profile: str
     verdict: str
-    red: bool
-    status: str
     stable: bool
-    cpython_ratio: float | None
-    cold_ratio: float | None
-    warm_ratio: float | None
     warm_speedup: float | None
     cold_speedup: float | None
     startup_tax_ms: float | None
@@ -171,7 +249,7 @@ class PerfCell:
 
     @staticmethod
     def from_payload(payload: Mapping[str, Any]) -> "PerfCell":
-        problems = validate_cell_payload(payload)
+        problems = validate_cell(payload)
         if problems:
             raise ValueError("; ".join(problems))
         return PerfCell(
@@ -180,12 +258,7 @@ class PerfCell:
             backend=str(payload["backend"]),
             profile=str(payload["profile"]),
             verdict=str(payload["verdict"]),
-            red=bool(payload["red"]),
-            status=str(payload["status"]),
             stable=bool(payload["stable"]),
-            cpython_ratio=_optional_float(payload.get("cpython_ratio")),
-            cold_ratio=_optional_float(payload.get("cold_ratio")),
-            warm_ratio=_optional_float(payload.get("warm_ratio")),
             warm_speedup=_optional_float(payload.get("warm_speedup")),
             cold_speedup=_optional_float(payload.get("cold_speedup")),
             startup_tax_ms=_optional_float(payload.get("startup_tax_ms")),
@@ -219,7 +292,7 @@ def flatten_cells(doc: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return out
 
 
-def validate_cell_payload(cell: Mapping[str, Any]) -> list[str]:
+def validate_cell(cell: Mapping[str, Any]) -> list[str]:
     problems: list[str] = []
     missing = REQUIRED_CELL_FIELDS - set(cell)
     if missing:
@@ -240,10 +313,40 @@ def validate_cell_payload(cell: Mapping[str, Any]) -> list[str]:
         problems.append(
             f"cell {cell.get('benchmark')} has unknown classification {classification!r}"
         )
+    fact_class = cell.get("fact_class")
+    if fact_class is not None and fact_class not in FACT_CLASSES:
+        problems.append(
+            f"cell {cell.get('benchmark')} has unknown fact_class {fact_class!r}"
+        )
+    pypy_advantage_class = cell.get("pypy_advantage_class")
+    if (
+        pypy_advantage_class is not None
+        and pypy_advantage_class not in PYPY_ADVANTAGE_CLASSES
+    ):
+        problems.append(
+            f"cell {cell.get('benchmark')} has unknown pypy_advantage_class "
+            f"{pypy_advantage_class!r}"
+        )
+    reference_class = cell.get("reference_class")
+    if reference_class is not None and reference_class not in REFERENCE_CLASSES:
+        problems.append(
+            f"cell {cell.get('benchmark')} has unknown reference_class {reference_class!r}"
+        )
+    codon_semantics = cell.get("codon_semantics")
+    if codon_semantics is not None and codon_semantics not in CODON_SEMANTICS:
+        problems.append(
+            f"cell {cell.get('benchmark')} has unknown codon_semantics "
+            f"{codon_semantics!r}"
+        )
+    verdict = str(cell.get("verdict"))
+    if verdict in _MEASURED_RUN_VERDICTS:
+        problems.extend(_validate_measured_run_cell(cell, verdict))
+    if classification == CLASS_RED_STABLE:
+        problems.extend(_validate_red_stable_cell(cell))
     return problems
 
 
-def validate_scoreboard_doc(doc: Mapping[str, Any]) -> list[str]:
+def validate_board(doc: Mapping[str, Any]) -> list[str]:
     """Return schema contract violations for a scoreboard document."""
 
     problems: list[str] = []
@@ -264,7 +367,7 @@ def validate_scoreboard_doc(doc: Mapping[str, Any]) -> list[str]:
     if not cells:
         problems.append("no cells emitted")
     for cell in cells:
-        cell_problems = validate_cell_payload(cell)
+        cell_problems = validate_cell(cell)
         if cell_problems:
             problems.extend(cell_problems)
             break
@@ -275,10 +378,90 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _validate_measured_run_cell(cell: Mapping[str, Any], verdict: str) -> list[str]:
+    problems: list[str] = []
+    benchmark = cell.get("benchmark")
+    if cell.get("build_ok") is not True:
+        problems.append(f"cell {benchmark} has measured verdict {verdict} without build_ok")
+    if cell.get("run_blocked") is not False:
+        problems.append(
+            f"cell {benchmark} has measured verdict {verdict} while run_blocked"
+        )
+    if cell.get("molt_ok") is not True or cell.get("cpython_ok") is not True:
+        problems.append(
+            f"cell {benchmark} has measured verdict {verdict} without both runtimes ok"
+        )
+    missing = sorted(
+        field for field in _MEASURED_RUN_FACT_FIELDS if not _is_number(cell.get(field))
+    )
+    if missing:
+        problems.append(
+            f"cell {benchmark} has measured verdict {verdict} missing numeric facts: "
+            f"{missing}"
+        )
+        return problems
+    warm = float(cell["warm_speedup"])
+    cold = float(cell["cold_speedup"])
+    stable = cell.get("stable")
+    if not isinstance(stable, bool):
+        problems.append(f"cell {benchmark} has non-bool stable flag {stable!r}")
+    if verdict == VERDICT_GREEN:
+        if stable is not True:
+            problems.append(f"cell {benchmark} is GREEN without stable=true")
+        if warm <= RED_THRESHOLD or cold <= RED_THRESHOLD:
+            problems.append(
+                f"cell {benchmark} is GREEN with warm/cold speedup at-or-below floor"
+            )
+    elif verdict == VERDICT_FAIL_ENGINE and warm > RED_THRESHOLD:
+        problems.append(
+            f"cell {benchmark} is FAIL_ENGINE with warm_speedup above floor"
+        )
+    elif verdict == VERDICT_FAIL_COLD_BUDGET:
+        budget = cell.get("cold_budget_ms")
+        tax = float(cell["startup_tax_ms"])
+        if not _is_number(budget):
+            problems.append(
+                f"cell {benchmark} is FAIL_COLD_BUDGET without numeric cold_budget_ms"
+            )
+        elif tax <= float(budget):
+            problems.append(
+                f"cell {benchmark} is FAIL_COLD_BUDGET without tax above budget"
+            )
+    elif verdict == VERDICT_WARN_COLD_FLOOR:
+        if warm <= RED_THRESHOLD or cold > RED_THRESHOLD:
+            problems.append(
+                f"cell {benchmark} is WARN_COLD_FLOOR without warm win and cold floor loss"
+            )
+    elif verdict == VERDICT_UNSTABLE and stable is not False:
+        problems.append(f"cell {benchmark} is UNSTABLE without stable=false")
+    return problems
+
+
+def _validate_red_stable_cell(cell: Mapping[str, Any]) -> list[str]:
+    problems: list[str] = []
+    benchmark = cell.get("benchmark")
+    if cell.get("measured_quiescent") is not True:
+        problems.append(f"cell {benchmark} is RED_STABLE without measured_quiescent=true")
+    lo = cell.get("repeat_ci_lo")
+    hi = cell.get("repeat_ci_hi")
+    if not _is_number(lo) or not _is_number(hi):
+        problems.append(f"cell {benchmark} is RED_STABLE without numeric repeat CI")
+        return problems
+    if float(lo) >= RED_THRESHOLD or float(hi) >= RED_THRESHOLD:
+        problems.append(
+            f"cell {benchmark} is RED_STABLE without repeat CI clearing below floor"
+        )
+    return problems
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
-    if isinstance(value, (int, float)):
+    if _is_number(value):
         return float(value)
     raise ValueError(f"expected number or null, got {value!r}")
 

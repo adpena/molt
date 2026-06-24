@@ -16,8 +16,8 @@ is never *"which peephole recovers it"* but *"which FACT is missing from IR?"*.
 
 ## Two-dimensional gating (council ruling A) — warm ≠ cold
 
-The single legacy `red` bool blended two structurally different failures. The
-board now emits one **verdict** per cell:
+The retired `red` bool blended two structurally different failures. The board
+now emits one **verdict** per cell:
 
 | verdict | condition | meaning / lane |
 |---------|-----------|----------------|
@@ -321,11 +321,13 @@ per-iteration leak past the RSS cap. `--profile-build` (implied by
 `--sample-hot-only`) builds with `MOLT_KEEP_SYMBOLS=1` so molt user-fn symbols are
 retained — additive, never changes a normal build or any speedup number.
 
-- The **CPython oracle is the system `python3` (3.14)**, resolved explicitly via
-  `--cpython` (default: `/opt/homebrew/bin/python3`), **never** the `.venv`
-  interpreter the tool itself is launched under. The constitution pins the floor
-  to the system interpreter; letting the 3.12 venv leak in would silently move
-  the floor.
+- The **CPython oracle is a probed host-native CPython 3.12+ interpreter**,
+  resolved explicitly via `--cpython` or by OS-aware candidate discovery on
+  Windows, macOS, and Linux. The resolver rejects non-CPython, wrong-OS,
+  wrong-arch, wrong-pointer-width, too-old, broken launcher, and project
+  `.venv`/session interpreters before any benchmark cell runs. The accepted
+  executable, OS, normalized architecture, and pointer width are recorded in
+  `host.cpython_oracle`.
 - `MOLT_SESSION_ID=perfscore` + `CARGO_TARGET_DIR=target/sessions/perfscore`
   isolate the build cache (the constitution's concurrent-dev contract).
 - The LLVM lane forces `MOLT_BACKEND=llvm` and `LLVM_SYS_211_PREFIX`
@@ -378,8 +380,15 @@ partial is a valid scoreboard document.
 ## The scoreboard JSON schema
 
 `tools/perf_schema.py` is the schema authority: it owns the schema version, the
-verdict/classification vocabularies, required top-level/provenance/summary/cell
-fields, and the validation helpers used by `tools/perf_scoreboard.py`.
+verdict/classification vocabularies, the `RED_THRESHOLD` and `UNSTABLE_CV`
+gate constants, required top-level/provenance/summary/cell fields, and the
+`validate_cell()` / `validate_board()` helpers used by
+`tools/perf_scoreboard.py`. For measured verdicts (`GREEN`, `FAIL_ENGINE`,
+`FAIL_COLD_BUDGET`, `WARN_COLD_FLOOR`, `UNSTABLE`), `validate_cell()` now
+fails closed unless the build/run booleans, cold and warm timings, speedups,
+startup tax, RSS peaks, and log artifact are present. A `RED_STABLE`
+classification must also carry `measured_quiescent=true` plus a numeric repeat
+CI clearing below the CPython floor.
 
 Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 `bench/scoreboard/logs_<gitrev>/`.
@@ -393,8 +402,21 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
   "provenance": { /* see the Provenance section above */ },
   "host": {
     "platform": "darwin",
+    "machine": "arm64",
+    "arch": "aarch64",
+    "pointer_bits": 64,
     "python_runner": "3.12.x",        // interpreter the TOOL ran under
-    "cpython_baseline": "3.14.5",     // the CPython ORACLE (system python3)
+    "cpython_baseline": "3.14.5",     // the accepted CPython oracle version
+    "cpython_oracle": {
+      "cmd": ["/opt/homebrew/bin/python3"],
+      "executable": "/opt/homebrew/bin/python3",
+      "implementation": "CPython",
+      "version": "3.14.5",
+      "sys_platform": "darwin",
+      "machine": "arm64",
+      "arch": "aarch64",
+      "pointer_bits": 64
+    },
     "pypy": "3.10.14 (… PyPy 7.3.17)",// null if --pypy not used
     "codon": "codon 0.19.6"           // null if --codon not used
   },
@@ -414,11 +436,10 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
     "cells_fail_engine", "cells_fail_cold_budget", "cells_warn_cold_floor",
     "cells_fail_stale", "cells_unstable", "cells_build_failed",
     "cells_run_blocked", "cells_error", "cells_cpython_incompatible",
-    "any_red", "gate_fails",
+    "gate_fails",
     // every cell keyed by its verdict (route warm vs cold reds) ---
     "verdict_breakdown": { "FAIL_ENGINE": [...], "FAIL_COLD_BUDGET": [...],
-                           "WARN_COLD_FLOOR": [...], "GREEN": [...], … },
-    "red_breakdown": { … legacy alias … }
+                           "WARN_COLD_FLOOR": [...], "GREEN": [...], … }
   },
   "benchmarks_run":      [ "tests/benchmarks/…", … ],
   "benchmarks_deferred": [ { "benchmark": "…", "reason": "…" }, … ],
@@ -429,10 +450,9 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
       "build_ok": true, "binary_size_kib": 4256.3, "compile_time_s": 3.08,
       // --- run facts ---
       "run_blocked": false, "molt_ok": true, "cpython_ok": true,
-      // COLD / WARM (cpython/molt; legacy ratio names) ---
-      "cold_molt_s": 0.253, "cold_cpython_s": 0.068, "cold_ratio": 0.27,
-      "warm_molt_s": 0.069, "warm_cpython_s": 0.070, "warm_ratio": 1.01,
-      "cpython_ratio": 1.01,
+      // COLD / WARM ---
+      "cold_molt_s": 0.253, "cold_cpython_s": 0.068,
+      "warm_molt_s": 0.069, "warm_cpython_s": 0.070,
       // --- TWO-DIMENSIONAL verdict (council ruling A) ---
       "warm_speedup": 1.01,            // = cpython_warm / molt_warm (engine axis)
       "cold_speedup": 0.27,            // = cpython_cold / molt_cold
@@ -441,9 +461,9 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
       "verdict": "WARN_COLD_FLOOR",    // GREEN|FAIL_ENGINE|FAIL_COLD_BUDGET|WARN_COLD_FLOOR|…
       "suspected_missing_fact": "…",   // triage hint for a warm red
       "suspected_startup_component": "…", // triage hint for a cold red
-      // peak RSS + stability + legacy status ---
+      // peak RSS + stability ---
       "molt_peak_rss_mib": 8.0, "cpython_peak_rss_mib": 15.0,
-      "stable": true, "red": false, "status": "warn-cold", "note": null,
+      "stable": true, "note": null,
       // --- PyPy / Codon comparator lanes (null unless --pypy/--codon) ---
       "pypy_ratio": 0.51, "pypy_warm_s": 0.035,       // pypy_warm/molt_warm
       "codon_ratio": 0.30, "codon_warm_s": 0.018,     // codon_warm/molt_warm
