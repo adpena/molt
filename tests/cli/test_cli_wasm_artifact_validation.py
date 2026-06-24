@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import os
 import shutil
 import subprocess
@@ -9,6 +10,8 @@ from pathlib import Path
 import pytest
 import molt.cli as cli
 from tests.cli.process_guard import run_cli_test_process
+
+RUNTIME_FINGERPRINTS = importlib.import_module("molt.cli.runtime_fingerprints")
 
 
 def test_is_valid_wasm_binary_accepts_wasm_magic(tmp_path: Path) -> None:
@@ -373,7 +376,9 @@ def test_ensure_runtime_wasm_rebuilds_prebuilt_missing_shared_import_abi(
     built_src.write_bytes(b"\x00asm\x01\x00\x00\x00shared-imports")
 
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_root))
-    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: [runtime_source])
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: [runtime_source]
+    )
     monkeypatch.setattr(
         cli, "_runtime_fingerprint", lambda *args, **kwargs: {"hash": "new"}
     )
@@ -606,14 +611,18 @@ def test_runtime_fingerprint_recomputes_when_rustflags_change(
     project_root = tmp_path / "repo"
     project_root.mkdir()
 
-    monkeypatch.setattr(cli, "_runtime_source_paths", lambda _root: (), raising=True)
     monkeypatch.setattr(
-        cli,
+        RUNTIME_FINGERPRINTS, "_runtime_source_paths", lambda _root: (), raising=True
+    )
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS,
         "_hash_source_tree_metadata",
         lambda *args, **kwargs: ("same-inputs", 0),
         raising=True,
     )
-    monkeypatch.setattr(cli, "_rustc_version", lambda: "rustc test", raising=True)
+    monkeypatch.setattr(
+        RUNTIME_FINGERPRINTS, "_rustc_version", lambda: "rustc test", raising=True
+    )
 
     first = cli._runtime_fingerprint(
         project_root,
