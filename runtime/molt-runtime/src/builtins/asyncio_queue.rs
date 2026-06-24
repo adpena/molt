@@ -501,13 +501,11 @@ pub extern "C" fn molt_asyncio_queue_shutdown(handle_bits: u64, immediate_bits: 
             state.shutdown = true;
             state.shutdown_immediate = immediate;
 
-            let items = if immediate {
+            if immediate {
                 state.drain_all()
             } else {
                 Vec::new()
-            };
-
-            items
+            }
         };
 
         for item in items_to_free {

@@ -1105,13 +1105,14 @@ pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
         return pending;
     }
     let pending = global_last_exception_pending_slot(_py).is_some();
-    if debug_pending && pending {
-        if let Some(ptr) = global_last_exception_raw_slot(_py) {
-            let kind_bits = unsafe { exception_kind_bits(ptr.0) };
-            let kind = string_obj_to_owned(obj_from_bits(kind_bits))
-                .unwrap_or_else(|| "<unknown>".to_string());
-            eprintln!("molt exc pending task=0x0 kind={}", kind);
-        }
+    if debug_pending
+        && pending
+        && let Some(ptr) = global_last_exception_raw_slot(_py)
+    {
+        let kind_bits = unsafe { exception_kind_bits(ptr.0) };
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        eprintln!("molt exc pending task=0x0 kind={}", kind);
     }
     pending
 }

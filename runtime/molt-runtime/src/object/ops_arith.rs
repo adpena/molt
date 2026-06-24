@@ -1194,20 +1194,20 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         // (int / bool / BigInt); a non-numeric object falls through to dunder
         // dispatch. Floats and complexes are already handled above, so `to_bigint`
         // here only matches genuine integers.
-        if bigint_ptr_from_bits(a).is_some() || bigint_ptr_from_bits(b).is_some() {
-            if let (Some(la), Some(lb)) = (to_bigint(lhs), to_bigint(rhs)) {
-                if lb.is_zero() {
-                    return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
-                }
-                match bigint_true_divide(&la, &lb) {
-                    Some(q) => return float_result_bits(_py, q),
-                    None => {
-                        return raise_exception::<_>(
-                            _py,
-                            "OverflowError",
-                            "integer division result too large for a float",
-                        );
-                    }
+        if (bigint_ptr_from_bits(a).is_some() || bigint_ptr_from_bits(b).is_some())
+            && let (Some(la), Some(lb)) = (to_bigint(lhs), to_bigint(rhs))
+        {
+            if lb.is_zero() {
+                return raise_exception::<_>(_py, "ZeroDivisionError", "division by zero");
+            }
+            match bigint_true_divide(&la, &lb) {
+                Some(q) => return float_result_bits(_py, q),
+                None => {
+                    return raise_exception::<_>(
+                        _py,
+                        "OverflowError",
+                        "integer division result too large for a float",
+                    );
                 }
             }
         }

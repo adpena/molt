@@ -803,6 +803,32 @@ pub extern "C" fn molt_concurrent_wait(
     })
 }
 
+// ── Constants ──────────────────────────────────────────────────────────────
+
+fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
+    let ptr = alloc_string(_py, s.as_bytes());
+    if ptr.is_null() {
+        raise_exception::<u64>(_py, "MemoryError", "out of memory")
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_concurrent_first_completed() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "FIRST_COMPLETED") })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_concurrent_first_exception() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "FIRST_EXCEPTION") })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_concurrent_all_completed() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "ALL_COMPLETED") })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -850,30 +876,4 @@ mod tests {
             let _ = molt_concurrent_threadpool_shutdown(reset_pool, true_bits, false_bits);
         });
     }
-}
-
-// ── Constants ──────────────────────────────────────────────────────────────
-
-fn return_str(_py: &PyToken<'_>, s: &str) -> u64 {
-    let ptr = alloc_string(_py, s.as_bytes());
-    if ptr.is_null() {
-        raise_exception::<u64>(_py, "MemoryError", "out of memory")
-    } else {
-        MoltObject::from_ptr(ptr).bits()
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_first_completed() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "FIRST_COMPLETED") })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_first_exception() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "FIRST_EXCEPTION") })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_concurrent_all_completed() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { return_str(_py, "ALL_COMPLETED") })
 }

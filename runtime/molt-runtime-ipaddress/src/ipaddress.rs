@@ -5,7 +5,8 @@
 
 use crate::bridge::{
     alloc_bytes, alloc_list, alloc_string, dec_ref_bits, int_bits_from_bigint, int_bits_from_i64,
-    raise_exception, release_ptr, string_obj_to_owned, to_i64,
+    opaque_handle_bits, opaque_handle_ptr_from_bits, raise_exception, release_ptr,
+    string_obj_to_owned, to_i64,
 };
 use molt_obj_model::MoltObject;
 use molt_runtime_core::prelude::*;
@@ -159,42 +160,33 @@ fn parse_ipv4_network(s: &str) -> Result<(Ipv4Addr, u8), &'static str> {
 // ---------------------------------------------------------------------------
 
 fn ipv4_handle_from_bits(bits: u64) -> Option<&'static mut Ipv4Handle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
-    }
+    let ptr = opaque_handle_ptr_from_bits(bits)?;
     // SAFETY: pointer from Box::into_raw for an Ipv4Handle.
     Some(unsafe { &mut *(ptr as *mut Ipv4Handle) })
 }
 
 fn ipv6_handle_from_bits(bits: u64) -> Option<&'static mut Ipv6Handle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
-    }
+    let ptr = opaque_handle_ptr_from_bits(bits)?;
     // SAFETY: pointer from Box::into_raw for an Ipv6Handle.
     Some(unsafe { &mut *(ptr as *mut Ipv6Handle) })
 }
 
 fn ipv4_network_handle_from_bits(bits: u64) -> Option<&'static mut Ipv4NetworkHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
-    }
+    let ptr = opaque_handle_ptr_from_bits(bits)?;
     // SAFETY: pointer from Box::into_raw for an Ipv4NetworkHandle.
     Some(unsafe { &mut *(ptr as *mut Ipv4NetworkHandle) })
 }
 
 fn ipv4_bits(handle: Ipv4Handle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
 fn ipv6_bits(handle: Ipv6Handle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
 fn ipv4_network_bits(handle: Ipv4NetworkHandle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
 // Parse address from string or integer bits.
@@ -637,10 +629,9 @@ pub extern "C" fn molt_ipaddress_v4_network_broadcast(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_drop(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
+        let Some(ptr) = opaque_handle_ptr_from_bits(handle_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         unsafe { release_ptr(ptr) };
         // SAFETY: caller must pass the correct handle type.
         // Since IPv4, IPv6, and network handles are independent heap allocs,
@@ -662,10 +653,9 @@ pub extern "C" fn molt_ipaddress_drop(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v6_drop(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
+        let Some(ptr) = opaque_handle_ptr_from_bits(handle_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         unsafe { release_ptr(ptr) };
         // SAFETY: pointer from Box::into_raw for Ipv6Handle.
         unsafe {
@@ -678,10 +668,9 @@ pub extern "C" fn molt_ipaddress_v6_drop(handle_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_ipaddress_v4_network_drop(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if ptr.is_null() {
+        let Some(ptr) = opaque_handle_ptr_from_bits(handle_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         unsafe { release_ptr(ptr) };
         // SAFETY: pointer from Box::into_raw for Ipv4NetworkHandle.
         unsafe {

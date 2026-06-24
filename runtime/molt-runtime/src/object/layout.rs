@@ -227,10 +227,8 @@ impl ListIntStorage {
     /// `self` must be a valid, heap-allocated `ListIntStorage` whose `data`
     /// pointer owns its buffer (as established by `from_vec`).
     pub unsafe fn push(&mut self, value: i64) -> bool {
-        if self.len == self.cap {
-            if !unsafe { self.reserve_for_len(self.len.saturating_add(1)) } {
-                return false;
-            }
+        if self.len == self.cap && !unsafe { self.reserve_for_len(self.len.saturating_add(1)) } {
+            return false;
         }
         unsafe {
             std::ptr::write(self.data.add(self.len), value);
@@ -493,10 +491,8 @@ impl ListBoolStorage {
     /// `self` must be a valid, heap-allocated `ListBoolStorage` whose `data`
     /// pointer owns its buffer (as established by `from_vec`).
     pub unsafe fn push(&mut self, value: u8) -> bool {
-        if self.len == self.cap {
-            if !unsafe { self.reserve_for_len(self.len.saturating_add(1)) } {
-                return false;
-            }
+        if self.len == self.cap && !unsafe { self.reserve_for_len(self.len.saturating_add(1)) } {
+            return false;
         }
         unsafe {
             std::ptr::write(self.data.add(self.len), value);

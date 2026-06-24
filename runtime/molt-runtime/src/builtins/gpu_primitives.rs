@@ -245,6 +245,11 @@ pub unsafe extern "C" fn molt_gpu_prim_zeros(shape_ptr: *const usize, shape_len:
 /// Create a typed zero-filled tensor.
 ///
 /// MXFP storage is rejected until the block/exponent layout contract is explicit.
+///
+/// # Safety
+///
+/// `shape_ptr` must point to `shape_len` contiguous initialized `usize` values
+/// for the duration of this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_gpu_prim_zeros_dtype(
     dtype_code: u32,
@@ -549,12 +554,11 @@ fn leaf_bytes_from_store(buf_id: usize) -> Option<Vec<u8>> {
     TENSOR_STORE.with(|store| {
         let store = store.borrow();
         for slot in store.iter().flatten() {
-            if let LazyOp::Buffer { buf: ref b, .. } = *slot.lazy {
-                if b.id == buf_id {
-                    if let Some(ref data) = slot.data {
-                        return Some(data.clone());
-                    }
-                }
+            if let LazyOp::Buffer { buf: ref b, .. } = *slot.lazy
+                && b.id == buf_id
+                && let Some(ref data) = slot.data
+            {
+                return Some(data.clone());
             }
         }
         None
@@ -694,8 +698,13 @@ pub extern "C" fn molt_gpu_prim_nbytes(handle: u64) -> u64 {
 /// The caller must provide the expected dtype code and enough byte capacity for
 /// the whole tensor. Partial copies are rejected to avoid silently publishing
 /// truncated tensor state.
+///
+/// # Safety
+///
+/// `out_ptr` must be valid for writes of at least `out_len` bytes for the
+/// duration of this call.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_read_data_raw(
+pub unsafe extern "C" fn molt_gpu_prim_read_data_raw(
     handle: u64,
     expected_dtype_code: u32,
     out_ptr: *mut u8,
@@ -1397,8 +1406,17 @@ pub extern "C" fn molt_gpu_prim_contiguous(src_handle: u64) -> u64 {
 /// `out_len`: capacity of output array
 ///
 /// Returns the number of dimensions, or u64::MAX on failure.
+///
+/// # Safety
+///
+/// `out_ptr` must be valid for writes of at least `out_len` contiguous `usize`
+/// values for the duration of this call.
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_gpu_prim_shape(handle: u64, out_ptr: *mut usize, out_len: usize) -> u64 {
+pub unsafe extern "C" fn molt_gpu_prim_shape(
+    handle: u64,
+    out_ptr: *mut usize,
+    out_len: usize,
+) -> u64 {
     if out_ptr.is_null() {
         return u64::MAX;
     }
@@ -1874,6 +1892,28 @@ mod cpu_realize_value_tests {
         }
     }
 
+    fn read_data_raw(handle: u64, expected_dtype_code: u32, out: &mut [u8]) -> u64 {
+        read_data_raw_len(handle, expected_dtype_code, out, out.len())
+    }
+
+    fn read_data_raw_len(
+        handle: u64,
+        expected_dtype_code: u32,
+        out: &mut [u8],
+        out_len: usize,
+    ) -> u64 {
+        // SAFETY: `out` supplies writable storage; tests may intentionally pass
+        // a shorter logical length to exercise rejection without invalid memory.
+        unsafe {
+            molt_gpu_prim_read_data_raw(handle, expected_dtype_code, out.as_mut_ptr(), out_len)
+        }
+    }
+
+    fn read_shape(handle: u64, out: &mut [usize]) -> u64 {
+        // SAFETY: `out` supplies writable storage for its full length.
+        unsafe { molt_gpu_prim_shape(handle, out.as_mut_ptr(), out.len()) }
+    }
+
     #[test]
     fn cpu_materialize_copy_broadcast_view_reads_source_offsets() {
         let kernel = FusedKernel {
@@ -1944,10 +1984,7 @@ mod cpu_realize_value_tests {
         assert_eq!(f32_out, [99.0f32; 2]);
 
         let mut out = [0u8; 4];
-        assert_eq!(
-            molt_gpu_prim_read_data_raw(handle, 6, out.as_mut_ptr(), out.len()),
-            4
-        );
+        assert_eq!(read_data_raw(handle, 6, &mut out), 4);
         assert_eq!(out.as_slice(), bytes.as_slice());
 
         molt_gpu_prim_free(handle);
@@ -1986,10 +2023,7 @@ mod cpu_realize_value_tests {
         assert_eq!(molt_gpu_prim_nbytes(handle), 12);
 
         let mut out = [0xa5u8; 12];
-        assert_eq!(
-            molt_gpu_prim_read_data_raw(handle, 7, out.as_mut_ptr(), out.len()),
-            12
-        );
+        assert_eq!(read_data_raw(handle, 7, &mut out), 12);
         assert_eq!(out, [0u8; 12]);
 
         molt_gpu_prim_free(handle);
@@ -2018,10 +2052,7 @@ mod cpu_realize_value_tests {
         assert_eq!(molt_gpu_prim_realize(hc), 0);
 
         let mut out = [0u8; 16];
-        assert_eq!(
-            molt_gpu_prim_read_data_raw(hc, 3, out.as_mut_ptr(), out.len()),
-            16
-        );
+        assert_eq!(read_data_raw(hc, 3, &mut out), 16);
         assert_eq!(bytes_to_i32(&out), vec![5, 3, -1, i32::MAX - 1]);
 
         molt_gpu_prim_free(ha);
@@ -2082,17 +2113,11 @@ mod cpu_realize_value_tests {
         assert_eq!(molt_gpu_prim_dtype(hcast), 3);
         assert_eq!(molt_gpu_prim_nbytes(hcast), 16);
         let mut pre_realize = [0u8; 16];
-        assert_eq!(
-            molt_gpu_prim_read_data_raw(hcast, 3, pre_realize.as_mut_ptr(), pre_realize.len()),
-            0
-        );
+        assert_eq!(read_data_raw(hcast, 3, &mut pre_realize), 0);
         assert_eq!(molt_gpu_prim_realize(hcast), 0);
 
         let mut out = [0u8; 16];
-        assert_eq!(
-            molt_gpu_prim_read_data_raw(hcast, 3, out.as_mut_ptr(), out.len()),
-            16
-        );
+        assert_eq!(read_data_raw(hcast, 3, &mut out), 16);
         assert_eq!(bytes_to_i32(&out), vec![1, -2, 0, 7]);
 
         molt_gpu_prim_free(ha);
@@ -2111,10 +2136,7 @@ mod cpu_realize_value_tests {
         assert_ne!(hreshape, u64::MAX);
         assert_eq!(molt_gpu_prim_numel(hreshape), 6);
         let mut shape_out = [0usize; 2];
-        assert_eq!(
-            molt_gpu_prim_shape(hreshape, shape_out.as_mut_ptr(), shape_out.len()),
-            2
-        );
+        assert_eq!(read_shape(hreshape, &mut shape_out), 2);
         assert_eq!(shape_out, reshaped_shape);
 
         let order = [1usize, 0];
@@ -2197,20 +2219,14 @@ mod cpu_realize_value_tests {
         assert_eq!(molt_gpu_prim_realize(hcast), 0);
 
         let mut out = [0xa5u8; 16];
+        assert_eq!(read_data_raw(hcast, 11 /* Float32 */, &mut out), u64::MAX);
+        assert_eq!(out, [0xa5u8; 16]);
         assert_eq!(
-            molt_gpu_prim_read_data_raw(hcast, 11 /* Float32 */, out.as_mut_ptr(), out.len()),
+            read_data_raw_len(hcast, 3 /* Int32 */, &mut out, 15),
             u64::MAX
         );
         assert_eq!(out, [0xa5u8; 16]);
-        assert_eq!(
-            molt_gpu_prim_read_data_raw(hcast, 3 /* Int32 */, out.as_mut_ptr(), 15),
-            u64::MAX
-        );
-        assert_eq!(out, [0xa5u8; 16]);
-        assert_eq!(
-            molt_gpu_prim_read_data_raw(hcast, 99 /* invalid */, out.as_mut_ptr(), out.len()),
-            u64::MAX
-        );
+        assert_eq!(read_data_raw(hcast, 99 /* invalid */, &mut out), u64::MAX);
 
         molt_gpu_prim_free(ha);
         molt_gpu_prim_free(hcast);
@@ -2308,10 +2324,7 @@ mod cpu_realize_value_tests {
         assert_ne!(hred, u64::MAX);
 
         let mut shape = [usize::MAX; 2];
-        assert_eq!(
-            molt_gpu_prim_shape(hred, shape.as_mut_ptr(), shape.len()),
-            2
-        );
+        assert_eq!(read_shape(hred, &mut shape), 2);
         assert_eq!(shape, [2, 1]);
 
         let expanded_shape = [2usize, 3];
@@ -2387,10 +2400,7 @@ mod cpu_realize_value_tests {
         let r2 = molt_gpu_prim_reduce_all(24 /* ReduceSum */, h2);
         assert_ne!(r2, u64::MAX);
         let mut shape2 = [usize::MAX; 1];
-        assert_eq!(
-            molt_gpu_prim_shape(r2, shape2.as_mut_ptr(), shape2.len()),
-            1
-        );
+        assert_eq!(read_shape(r2, &mut shape2), 1);
         assert_eq!(shape2, [1]);
         assert_eq!(realize_cpu_values(r2), vec![10.0]);
 
@@ -2399,10 +2409,7 @@ mod cpu_realize_value_tests {
         let r3 = molt_gpu_prim_reduce_all(25 /* ReduceMax */, h3);
         assert_ne!(r3, u64::MAX);
         let mut shape3 = [usize::MAX; 1];
-        assert_eq!(
-            molt_gpu_prim_shape(r3, shape3.as_mut_ptr(), shape3.len()),
-            1
-        );
+        assert_eq!(read_shape(r3, &mut shape3), 1);
         assert_eq!(shape3, [1]);
         assert_eq!(realize_cpu_values(r3), vec![6.0]);
 

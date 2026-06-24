@@ -857,14 +857,16 @@ fn importlib_loader_exec_module_apply(
 
         importlib_set_module_state_impl(
             _py,
-            module_bits,
-            ctx.module_name_bits,
-            loader_bits,
-            origin_bits,
-            state.is_package,
-            module_package_bits,
-            package_root_bits,
-            module_spec_cls_bits,
+            ImportlibModuleStateArgs {
+                module_bits,
+                module_name_bits: ctx.module_name_bits,
+                loader_bits,
+                origin_bits,
+                is_package: state.is_package,
+                module_package_bits,
+                package_root_bits,
+                module_spec_cls_bits,
+            },
         )?;
 
         let namespace_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
@@ -1071,7 +1073,7 @@ pub extern "C" fn molt_importlib_sourceless_loader_exec_module(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let out = (|| -> Result<(), u64> {
+        let out = {
             let resolution =
                 sourceless_loader_resolution(&ctx.module_name, &path, ctx.spec_is_package);
             importlib_loader_exec_module_apply(
@@ -1088,7 +1090,7 @@ pub extern "C" fn molt_importlib_sourceless_loader_exec_module(
                     body: ImportlibLoaderExecBody::Sourceless,
                 },
             )
-        })();
+        };
         importlib_loader_exec_context_release(_py, &ctx);
         match out {
             Ok(()) => MoltObject::none().bits(),
@@ -2235,6 +2237,7 @@ fn importlib_import_module_resolved_name(
     importlib_resolve_join(_py, &name, &package_name)
 }
 
+#[cfg(not(target_os = "windows"))]
 fn importlib_canonical_codecs_file_path(path: &str) -> String {
     const MARKER: &str = "/cpython-3.12.";
     let Some(idx) = path.find(MARKER) else {
@@ -2257,6 +2260,7 @@ fn importlib_canonical_codecs_file_path(path: &str) -> String {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn importlib_codecs_file_display(_py: &PyToken<'_>, codecs_bits: u64) -> Result<String, u64> {
     let file_name = intern_runtime_static_name(_py, b"__file__");
     let Some(file_bits) = getattr_optional_bits(_py, codecs_bits, file_name)? else {
@@ -2333,6 +2337,18 @@ fn importlib_import_module_reject_missing_oem_codec(
         let _ = (_py, resolved, modules_ptr);
         Ok(())
     }
+}
+
+#[derive(Clone, Copy)]
+struct ImportlibModuleStateArgs {
+    module_bits: u64,
+    module_name_bits: u64,
+    loader_bits: u64,
+    origin_bits: u64,
+    is_package: bool,
+    module_package_bits: u64,
+    package_root_bits: u64,
+    module_spec_cls_bits: u64,
 }
 
 fn importlib_import_resolved_transaction(
@@ -8176,15 +8192,18 @@ pub extern "C" fn molt_importlib_spec_from_file_location(
 
 fn importlib_set_module_state_impl(
     _py: &PyToken<'_>,
-    module_bits: u64,
-    module_name_bits: u64,
-    loader_bits: u64,
-    origin_bits: u64,
-    is_package: bool,
-    module_package_bits: u64,
-    package_root_bits: u64,
-    module_spec_cls_bits: u64,
+    args: ImportlibModuleStateArgs,
 ) -> Result<(), u64> {
+    let ImportlibModuleStateArgs {
+        module_bits,
+        module_name_bits,
+        loader_bits,
+        origin_bits,
+        is_package,
+        module_package_bits,
+        package_root_bits,
+        module_spec_cls_bits,
+    } = args;
     let mut spec_bits = MoltObject::none().bits();
     let mut spec_owned = false;
     let mut module_path_bits = MoltObject::none().bits();
@@ -8367,14 +8386,16 @@ pub extern "C" fn molt_importlib_set_module_state(
 
         match importlib_set_module_state_impl(
             _py,
-            module_bits,
-            module_name_bits,
-            loader_bits,
-            origin_bits,
-            is_package,
-            module_package_bits,
-            package_root_bits,
-            module_spec_cls_bits,
+            ImportlibModuleStateArgs {
+                module_bits,
+                module_name_bits,
+                loader_bits,
+                origin_bits,
+                is_package,
+                module_package_bits,
+                package_root_bits,
+                module_spec_cls_bits,
+            },
         ) {
             Ok(()) => MoltObject::none().bits(),
             Err(err) => err,

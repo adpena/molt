@@ -299,30 +299,25 @@ fn limit_denominator(f: &FractionHandle, max_den: &BigInt) -> FractionHandle {
 // ---------------------------------------------------------------------------
 
 fn fraction_handle_from_bits(bits: u64) -> Option<&'static mut FractionHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
-    }
+    let ptr = opaque_handle_ptr_from_bits(bits)?;
     // SAFETY: pointer originates from Box::into_raw for a FractionHandle.
     Some(unsafe { &mut *(ptr as *mut FractionHandle) })
 }
 
 fn fraction_bits(handle: FractionHandle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(handle)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(handle)) as *mut u8)
 }
 
 fn fraction_from_obj_bits(_py: &PyToken, bits: u64) -> Result<FractionHandle, u64> {
-    // Accept a handle pointer directly (NaN-boxed pointer).
-    let ptr = ptr_from_bits(bits);
-    if !ptr.is_null() {
-        let h = unsafe { &*(ptr as *const FractionHandle) };
-        return Ok(h.clone());
-    }
-    Err(raise_exception::<u64>(
-        _py,
-        "TypeError",
-        "expected Fraction handle",
-    ))
+    let Some(ptr) = opaque_handle_ptr_from_bits(bits) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "expected Fraction handle",
+        ));
+    };
+    let h = unsafe { &*(ptr as *const FractionHandle) };
+    Ok(h.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -647,10 +642,9 @@ pub extern "C" fn molt_fraction_hash(a_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fraction_drop(a_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(a_bits);
-        if ptr.is_null() {
+        let Some(ptr) = opaque_handle_ptr_from_bits(a_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         unsafe { release_ptr(ptr) };
         // SAFETY: pointer is owned by this runtime.
         unsafe {

@@ -7,8 +7,8 @@
 use crate::object::ops::string_obj_to_owned;
 use crate::{
     MoltObject, PyToken, alloc_string, alloc_tuple, dec_ref_bits, int_bits_from_bigint,
-    int_bits_from_i64, obj_from_bits, opaque_handle_bits, ptr_from_bits, raise_exception,
-    release_ptr, to_bigint, to_f64, to_i64,
+    int_bits_from_i64, obj_from_bits, opaque_handle_bits, opaque_handle_ptr_from_bits,
+    raise_exception, release_ptr, to_bigint, to_f64, to_i64,
 };
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -305,10 +305,7 @@ fn limit_denominator(f: &FractionHandle, max_den: &BigInt) -> FractionHandle {
 // ---------------------------------------------------------------------------
 
 fn fraction_handle_from_bits(bits: u64) -> Option<&'static mut FractionHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
-    }
+    let ptr = opaque_handle_ptr_from_bits(bits)?;
     // SAFETY: pointer originates from Box::into_raw for a FractionHandle.
     Some(unsafe { &mut *(ptr as *mut FractionHandle) })
 }
@@ -318,17 +315,15 @@ fn fraction_bits(handle: FractionHandle) -> u64 {
 }
 
 fn fraction_from_obj_bits(_py: &PyToken<'_>, bits: u64) -> Result<FractionHandle, u64> {
-    // Accept a handle pointer directly (NaN-boxed pointer).
-    let ptr = ptr_from_bits(bits);
-    if !ptr.is_null() {
-        let h = unsafe { &*(ptr as *const FractionHandle) };
-        return Ok(h.clone());
-    }
-    Err(raise_exception::<u64>(
-        _py,
-        "TypeError",
-        "expected Fraction handle",
-    ))
+    let Some(ptr) = opaque_handle_ptr_from_bits(bits) else {
+        return Err(raise_exception::<u64>(
+            _py,
+            "TypeError",
+            "expected Fraction handle",
+        ));
+    };
+    let h = unsafe { &*(ptr as *const FractionHandle) };
+    Ok(h.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -653,10 +648,9 @@ pub extern "C" fn molt_fraction_hash(a_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_fraction_drop(a_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let ptr = ptr_from_bits(a_bits);
-        if ptr.is_null() {
+        let Some(ptr) = opaque_handle_ptr_from_bits(a_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         release_ptr(ptr);
         // SAFETY: pointer is owned by this runtime.
         unsafe {

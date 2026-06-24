@@ -123,19 +123,11 @@ fn context_dec(ptr: *mut DecimalContextHandle) {
 }
 
 fn context_ptr_from_bits(bits: u64) -> Option<*mut DecimalContextHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        None
-    } else {
-        Some(ptr as *mut DecimalContextHandle)
-    }
+    opaque_handle_ptr_from_bits(bits).map(|ptr| ptr as *mut DecimalContextHandle)
 }
 
 fn decimal_handle_from_bits(bits: u64) -> Option<&'static mut DecimalHandle> {
-    let ptr = ptr_from_bits(bits);
-    if ptr.is_null() {
-        return None;
-    }
+    let ptr = opaque_handle_ptr_from_bits(bits)?;
     // SAFETY: bits encode a DecimalHandle pointer owned by this runtime.
     Some(unsafe { &mut *(ptr as *mut DecimalHandle) })
 }
@@ -607,14 +599,14 @@ fn decimal_from_cmp(value: i64) -> DecimalHandle {
 }
 
 fn decimal_bits(dec: DecimalHandle) -> u64 {
-    bits_from_ptr(Box::into_raw(Box::new(dec)) as *mut u8)
+    opaque_handle_bits(Box::into_raw(Box::new(dec)) as *mut u8)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_new() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let handle = Box::new(default_context());
-        bits_from_ptr(Box::into_raw(handle) as *mut u8)
+        opaque_handle_bits(Box::into_raw(handle) as *mut u8)
     })
 }
 
@@ -623,7 +615,7 @@ pub extern "C" fn molt_decimal_context_get_current() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ensure_current_context();
         context_inc(ptr);
-        bits_from_ptr(ptr as *mut u8)
+        opaque_handle_bits(ptr as *mut u8)
     })
 }
 
@@ -643,7 +635,7 @@ pub extern "C" fn molt_decimal_context_set_current(ctx_bits: u64) -> u64 {
         if !old_ptr.is_null() {
             context_inc(old_ptr);
             context_dec(old_ptr);
-            return bits_from_ptr(old_ptr as *mut u8);
+            return opaque_handle_bits(old_ptr as *mut u8);
         }
         MoltObject::none().bits()
     })
@@ -659,17 +651,16 @@ pub extern "C" fn molt_decimal_context_copy(ctx_bits: u64) -> u64 {
         // SAFETY: pointer validated above.
         let mut cloned = unsafe { (*ctx_ptr).clone() };
         cloned.refs = 1;
-        bits_from_ptr(Box::into_raw(Box::new(cloned)) as *mut u8)
+        opaque_handle_bits(Box::into_raw(Box::new(cloned)) as *mut u8)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_context_drop(ctx_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(ctx_bits) as *mut DecimalContextHandle;
-        if ptr.is_null() {
+        let Some(ptr) = context_ptr_from_bits(ctx_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         context_dec(ptr);
         MoltObject::none().bits()
     })
@@ -900,10 +891,9 @@ pub extern "C" fn molt_decimal_clone(value_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_decimal_drop(value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let ptr = ptr_from_bits(value_bits);
-        if ptr.is_null() {
+        let Some(ptr) = opaque_handle_ptr_from_bits(value_bits) else {
             return MoltObject::none().bits();
-        }
+        };
         unsafe { release_ptr(ptr) };
         // SAFETY: pointer is owned by this runtime.
         unsafe {
