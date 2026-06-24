@@ -17209,6 +17209,23 @@ def test_rotate_backend_daemon_log_if_large_keeps_small_log(
     assert not (log_path.with_name("daemon.log.old")).exists()
 
 
+def test_backend_daemon_log_tail_mark_and_since_are_bounded(tmp_path: Path) -> None:
+    log_path = tmp_path / "daemon.log"
+    log_path.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    assert cli._backend_daemon_log_tail(log_path, max_lines=2) == "two\nthree"
+    mark = cli._backend_daemon_log_mark(log_path)
+
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("four\n")
+
+    assert cli._backend_daemon_log_since(log_path, mark) == "four"
+    truncated = cli._backend_daemon_log_since(log_path, 0, max_bytes=9)
+    assert truncated is not None
+    assert truncated.startswith("...(daemon log truncated to recent output)")
+    assert "four" in truncated
+
+
 def test_backend_daemon_skip_output_sync_flags_track_artifact_state(
     tmp_path: Path,
 ) -> None:
