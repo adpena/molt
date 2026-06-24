@@ -880,10 +880,10 @@ pub extern "C" fn molt_os_getlogin() -> u64 {
         }
         #[cfg(windows)]
         {
-            if let Ok(val) = std::env::var("USERNAME") {
-                if !val.is_empty() {
-                    return str_bits(_py, &val);
-                }
+            if let Ok(val) = std::env::var("USERNAME")
+                && !val.is_empty()
+            {
+                return str_bits(_py, &val);
             }
             raise_exception::<u64>(_py, "OSError", "getlogin failed")
         }
