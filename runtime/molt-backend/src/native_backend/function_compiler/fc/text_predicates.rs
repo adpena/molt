@@ -1,4 +1,34 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_text_predicate`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "bytes_find",
+    "bytes_find_slice",
+    "bytearray_find",
+    "bytearray_find_slice",
+    "string_find",
+    "string_find_slice",
+    "string_startswith",
+    "string_startswith_slice",
+    "bytes_startswith",
+    "bytes_startswith_slice",
+    "bytearray_startswith",
+    "bytearray_startswith_slice",
+    "string_endswith",
+    "string_endswith_slice",
+    "bytes_endswith",
+    "bytes_endswith_slice",
+    "bytearray_endswith",
+    "bytearray_endswith_slice",
+    "string_count",
+    "bytes_count",
+    "bytearray_count",
+    "string_count_slice",
+    "bytes_count_slice",
+    "bytearray_count_slice",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for text search/predicate ops: `find`/`startswith`/`endswith`/`count` (and their `_slice` variants) over `str`, `bytes`, and `bytearray`.

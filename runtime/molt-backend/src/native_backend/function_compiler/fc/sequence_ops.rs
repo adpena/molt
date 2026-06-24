@@ -1,4 +1,20 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_sequence_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "len",
+    "range_new",
+    "tuple_new",
+    "unpack_sequence",
+    "tuple_count",
+    "tuple_index",
+    "iter",
+    "enumerate",
+    "iter_next_unboxed",
+    "iter_next",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

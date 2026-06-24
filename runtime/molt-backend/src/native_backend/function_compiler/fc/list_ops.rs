@@ -1,4 +1,26 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_list_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "list_new",
+    "list_int_new",
+    "list_fill_new",
+    "list_from_range",
+    "list_append",
+    "list_pop",
+    "list_extend",
+    "list_insert",
+    "list_remove",
+    "list_clear",
+    "list_copy",
+    "list_reverse",
+    "list_count",
+    "list_index",
+    "list_index_range",
+    "tuple_from_list",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

@@ -1,4 +1,31 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_exception_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "exception_match_builtin",
+    "exception_last",
+    "exception_last_pending",
+    "exception_finally_pending_observer",
+    "exception_active",
+    "exception_current",
+    "exception_new",
+    "exception_new_builtin",
+    "exception_new_builtin_empty",
+    "exception_new_builtin_one",
+    "exception_new_from_class",
+    "exceptiongroup_match",
+    "exceptiongroup_combine",
+    "exception_clear",
+    "exception_kind",
+    "exception_class",
+    "exception_message",
+    "exception_set_cause",
+    "exception_set_last",
+    "exception_set_value",
+    "exception_context_set",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for exception-object ops: construction (`exception_new`/`exception_new_builtin*`/`exception_new_from_class`), field access (`kind`/`class`/`message`/`last`/`active`/`current`), mutation (`set_cause`/`set_last`/`set_value`/`context_set`/`clear`), and matching (`match_builtin`/`exceptiongroup_match`/`exceptiongroup_combine`).

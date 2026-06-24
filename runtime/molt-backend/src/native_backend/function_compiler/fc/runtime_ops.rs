@@ -1,4 +1,18 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_runtime_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "env_get",
+    "exception_pending",
+    "function_defaults_version",
+    "print",
+    "warn_stderr",
+    "print_newline",
+    "block_on",
+    "bridge_unavailable",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for residual runtime probe/call shims. These ops

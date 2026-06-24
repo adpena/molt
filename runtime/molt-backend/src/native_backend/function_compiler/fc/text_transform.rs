@@ -1,4 +1,38 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_text_transform`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "bytearray_fill_range",
+    "string_format",
+    "string_join",
+    "string_split",
+    "string_split_validate",
+    "string_split_field",
+    "string_split_field_len",
+    "string_split_field_eq",
+    "string_split_field_start",
+    "string_split_field_end",
+    "string_split_field_is_ascii",
+    "string_split_field_len_from_bounds",
+    "string_split_field_ord_at_bounds",
+    "string_split_field_to_int",
+    "string_split_max",
+    "string_lower",
+    "string_upper",
+    "string_capitalize",
+    "string_strip",
+    "string_lstrip",
+    "string_rstrip",
+    "string_replace",
+    "bytes_split",
+    "bytes_split_max",
+    "bytearray_split",
+    "bytearray_split_max",
+    "bytes_replace",
+    "bytearray_replace",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for text transform ops: `format`/`join`/`split`(+field/max/validate)/`lower`/`upper`/`capitalize`/`strip`/`replace` over `str`, plus `split`/`replace`/`fill_range` over `bytes`/`bytearray`.

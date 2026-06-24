@@ -1,4 +1,19 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_exception_stack_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "exception_push",
+    "exception_pop",
+    "exception_stack_clear",
+    "exception_stack_depth",
+    "exception_stack_enter",
+    "exception_stack_exit",
+    "exception_stack_set_depth",
+    "exception_enter_handler",
+    "exception_resolve_captured",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for the exception-stack runtime ops: `push`/`pop`/`clear`/`depth`/`enter`/`exit`/`set_depth`/`enter_handler`/`resolve_captured`.

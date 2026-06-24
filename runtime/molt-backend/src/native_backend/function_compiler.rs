@@ -4368,6 +4368,13 @@ impl SimpleBackend {
                 None
             };
 
+            // Single routing decision for this op, derived from each handler's
+            // `HANDLED_KINDS` authority (see `fc::op_family`). The family arms
+            // below guard on this instead of re-listing kinds, so the dispatch
+            // can never drop a kind a handler owns — the 8b5773878 drift class is
+            // unexpressible. `None` means an inline arm (below) or no native
+            // codegen (handled by the loud catch-all).
+            let op_family = fc::native_op_family(op.kind.as_str());
             match op.kind.as_str() {
                 "const" => {
                     let val = op.value.unwrap_or(0);
@@ -4618,31 +4625,15 @@ impl SimpleBackend {
                     def_var_named(&mut builder, &vars, out_name, boxed);
                     rc_skip_dec.insert(out_name_clone);
                 }
-                // handle_arith_op family - extracted to fc::arith (M1)
-                "add" | "checked_add" | "inplace_add" | "sub" | "inplace_sub" | "mul"
-                | "inplace_mul" | "bit_or" | "inplace_bit_or" | "bit_and" | "inplace_bit_and"
-                | "bit_xor" | "inplace_bit_xor" | "lshift" | "shl" | "inplace_lshift"
-                | "rshift" | "shr" | "inplace_rshift" | "matmul" | "inplace_matmul" | "div"
-                | "inplace_div" | "floordiv" | "inplace_floordiv" | "mod" | "inplace_mod"
-                | "floor_div" | "binop_floor_div" | "pow" | "inplace_pow" | "pow_mod" | "round"
-                | "trunc"
-                // The vec_* reduction family is handled INSIDE handle_arith_op
-                // (fc/arith.rs:818-841 delegates to fc::vec_reductions), so these
-                // kinds MUST be listed here to reach that handler. Omitting them
-                // routes the op to the silent `_ => {}` arm below, which emits no
-                // call and leaves the result SSA value undefined (resolving to the
-                // None sentinel) -- the loop-accumulator miscompile regressed by
-                // 8b5773878's asymmetric handler extraction. Keep in exact sync
-                // with the vec_* arm in fc/arith.rs.
-                | "vec_sum_int" | "vec_sum_int_trusted" | "vec_sum_int_range"
-                | "vec_sum_int_range_trusted" | "vec_sum_int_range_iter"
-                | "vec_sum_int_range_iter_trusted" | "vec_sum_float" | "vec_sum_float_trusted"
-                | "vec_sum_float_range" | "vec_sum_float_range_trusted"
-                | "vec_sum_float_range_iter" | "vec_sum_float_range_iter_trusted"
-                | "vec_prod_int" | "vec_prod_int_trusted" | "vec_prod_int_range"
-                | "vec_prod_int_range_trusted" | "vec_min_int" | "vec_min_int_trusted"
-                | "vec_min_int_range" | "vec_min_int_range_trusted" | "vec_max_int"
-                | "vec_max_int_trusted" | "vec_max_int_range" | "vec_max_int_range_trusted" => {
+                // Arithmetic family (fc::arith), INCLUDING the 24 `vec_*`
+                // reductions `handle_arith_op` delegates to `fc::vec_reductions`.
+                // Both kind sets route here via `op_family`: the scalar authority
+                // is `fc::arith::HANDLED_KINDS`, the reduction authority is
+                // `fc::vec_reductions::HANDLED_KINDS`, and the dispatch table maps
+                // both to `NativeOpFamily::Arith`. Dropping the dispatch's copy of
+                // the `vec_*` list was the 8b5773878 regression (fixed 0323ad28c);
+                // there is no longer a copy here to drop.
+                _ if op_family == Some(fc::NativeOpFamily::Arith) => {
                     let __flow = fc::arith::handle_arith_op(
                         &op,
                         op_idx,
@@ -4669,8 +4660,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_sequence_op family - extracted to fc::sequence_ops (M1)
-                "len" | "range_new" | "tuple_new" | "unpack_sequence" | "tuple_count"
-                | "tuple_index" | "iter" | "enumerate" | "iter_next_unboxed" | "iter_next" => {
+                _ if op_family == Some(fc::NativeOpFamily::Sequence) => {
                     let __flow = fc::sequence_ops::handle_sequence_op(
                         &op,
                         ops,
@@ -4695,9 +4685,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_generator_op family - extracted to fc::generators (M1)
-                "aiter" | "anext" | "asyncgen_new" | "asyncgen_shutdown" | "gen_send"
-                | "gen_throw" | "gen_close" | "is_generator" | "is_bound_method"
-                | "is_callable" => {
+                _ if op_family == Some(fc::NativeOpFamily::Generators) => {
                     fc::generators::handle_generator_op(
                         &op,
                         &mut self.module,
@@ -4712,7 +4700,7 @@ impl SimpleBackend {
                         &nbc,
                     );
                 }
-                "id" | "ord" | "ord_at" | "chr" => {
+                _ if op_family == Some(fc::NativeOpFamily::ScalarBuiltins) => {
                     fc::scalar_builtins::handle_scalar_builtin(
                         &op,
                         &mut self.module,
@@ -4728,11 +4716,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_callargs_op family — extracted to fc::callargs (M1)
-                "callargs_new"
-                | "callargs_push_pos"
-                | "callargs_push_kw"
-                | "callargs_expand_star"
-                | "callargs_expand_kwstar" => {
+                _ if op_family == Some(fc::NativeOpFamily::Callargs) => {
                     let __flow = fc::callargs::handle_callargs_op(
                         &op,
                         &mut self.module,
@@ -4752,10 +4736,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_list_op family — extracted to fc::list_ops (M1)
-                "list_new" | "list_int_new" | "list_fill_new" | "list_from_range"
-                | "list_append" | "list_pop" | "list_extend" | "list_insert" | "list_remove"
-                | "list_clear" | "list_copy" | "list_reverse" | "list_count" | "list_index"
-                | "list_index_range" | "tuple_from_list" => {
+                _ if op_family == Some(fc::NativeOpFamily::ListOps) => {
                     let __flow = fc::list_ops::handle_list_op(
                         &op,
                         op_idx,
@@ -4784,27 +4765,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_dict_op family — extracted to fc::dict_ops (M1)
-                "dict_new"
-                | "dict_from_obj"
-                | "dict_get"
-                | "dict_set"
-                | "dict_update_missing"
-                | "dict_inc"
-                | "dict_str_int_inc"
-                | "string_split_ws_dict_inc"
-                | "taq_ingest_line"
-                | "string_split_sep_dict_inc"
-                | "dict_pop"
-                | "dict_setdefault"
-                | "dict_setdefault_empty_list"
-                | "dict_update"
-                | "dict_clear"
-                | "dict_copy"
-                | "dict_popitem"
-                | "dict_update_kwstar"
-                | "dict_keys"
-                | "dict_values"
-                | "dict_items" => {
+                _ if op_family == Some(fc::NativeOpFamily::DictOps) => {
                     let __flow = fc::dict_ops::handle_dict_op(
                         &op,
                         op_idx,
@@ -4828,18 +4789,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_set_op family — extracted to fc::set_ops (M1)
-                "set_new"
-                | "frozenset_new"
-                | "set_add"
-                | "set_add_probe"
-                | "frozenset_add"
-                | "set_discard"
-                | "set_remove"
-                | "set_pop"
-                | "set_update"
-                | "set_intersection_update"
-                | "set_difference_update"
-                | "set_symdiff_update" => {
+                _ if op_family == Some(fc::NativeOpFamily::SetOps) => {
                     let __flow = fc::set_ops::handle_set_op(
                         &op,
                         op_idx,
@@ -4861,7 +4811,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_indexing_op family - extracted to fc::indexing (M1)
-                "index" | "store_index" | "del_index" | "slice" | "slice_new" => {
+                _ if op_family == Some(fc::NativeOpFamily::Indexing) => {
                     fc::indexing::handle_indexing_op(
                         &op,
                         op_idx,
@@ -4896,30 +4846,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_text_predicate family — extracted to fc::text_predicates (M1)
-                "bytes_find"
-                | "bytes_find_slice"
-                | "bytearray_find"
-                | "bytearray_find_slice"
-                | "string_find"
-                | "string_find_slice"
-                | "string_startswith"
-                | "string_startswith_slice"
-                | "bytes_startswith"
-                | "bytes_startswith_slice"
-                | "bytearray_startswith"
-                | "bytearray_startswith_slice"
-                | "string_endswith"
-                | "string_endswith_slice"
-                | "bytes_endswith"
-                | "bytes_endswith_slice"
-                | "bytearray_endswith"
-                | "bytearray_endswith_slice"
-                | "string_count"
-                | "bytes_count"
-                | "bytearray_count"
-                | "string_count_slice"
-                | "bytes_count_slice"
-                | "bytearray_count_slice" => {
+                _ if op_family == Some(fc::NativeOpFamily::TextPredicates) => {
                     fc::text_predicates::handle_text_predicate(
                         &op,
                         &mut self.module,
@@ -4935,34 +4862,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_text_transform family — extracted to fc::text_transform (M1)
-                "bytearray_fill_range"
-                | "string_format"
-                | "string_join"
-                | "string_split"
-                | "string_split_validate"
-                | "string_split_field"
-                | "string_split_field_len"
-                | "string_split_field_eq"
-                | "string_split_field_start"
-                | "string_split_field_end"
-                | "string_split_field_is_ascii"
-                | "string_split_field_len_from_bounds"
-                | "string_split_field_ord_at_bounds"
-                | "string_split_field_to_int"
-                | "string_split_max"
-                | "string_lower"
-                | "string_upper"
-                | "string_capitalize"
-                | "string_strip"
-                | "string_lstrip"
-                | "string_rstrip"
-                | "string_replace"
-                | "bytes_split"
-                | "bytes_split_max"
-                | "bytearray_split"
-                | "bytearray_split_max"
-                | "bytes_replace"
-                | "bytearray_replace" => {
+                _ if op_family == Some(fc::NativeOpFamily::TextTransform) => {
                     fc::text_transform::handle_text_transform(
                         &op,
                         &mut self.module,
@@ -4978,14 +4878,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_runtime_op family - extracted to fc::runtime_ops (M1)
-                "env_get"
-                | "exception_pending"
-                | "function_defaults_version"
-                | "print"
-                | "warn_stderr"
-                | "print_newline"
-                | "block_on"
-                | "bridge_unavailable" => {
+                _ if op_family == Some(fc::NativeOpFamily::RuntimeOps) => {
                     fc::runtime_ops::handle_runtime_op(
                         &op,
                         &func_ir.name,
@@ -5005,7 +4898,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_statistics_op family — extracted to fc::statistics (M1)
-                "statistics_mean_slice" | "statistics_stdev_slice" => {
+                _ if op_family == Some(fc::NativeOpFamily::Statistics) => {
                     fc::statistics::handle_statistics_op(
                         &op,
                         &mut self.module,
@@ -5021,18 +4914,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_type_conversion family — extracted to fc::type_conversions (M1)
-                "bytes_from_obj"
-                | "bytes_from_str"
-                | "bytearray_from_obj"
-                | "bytearray_from_str"
-                | "float_from_obj"
-                | "int_from_obj"
-                | "int_from_str_of_obj"
-                | "complex_from_obj"
-                | "intarray_from_seq"
-                | "str_from_obj"
-                | "repr_from_obj"
-                | "ascii_from_obj" => {
+                _ if op_family == Some(fc::NativeOpFamily::TypeConversions) => {
                     fc::type_conversions::handle_type_conversion(
                         &op,
                         &mut self.module,
@@ -5048,8 +4930,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_memoryview_buffer_op family — extracted to fc::memoryview_buffer (M1)
-                "memoryview_new" | "memoryview_tobytes" | "memoryview_cast" | "buffer2d_new"
-                | "buffer2d_get" | "buffer2d_set" | "buffer2d_matmul" => {
+                _ if op_family == Some(fc::NativeOpFamily::MemoryviewBuffer) => {
                     fc::memoryview_buffer::handle_memoryview_buffer_op(
                         &op,
                         &mut self.module,
@@ -5065,11 +4946,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_dataclass_op family — extracted to fc::dataclass (M1)
-                "dataclass_new"
-                | "dataclass_new_values"
-                | "dataclass_get"
-                | "dataclass_set"
-                | "dataclass_set_class" => {
+                _ if op_family == Some(fc::NativeOpFamily::Dataclass) => {
                     fc::dataclass::handle_dataclass_op(
                         &op,
                         &mut self.module,
@@ -5085,7 +4962,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_compare_op family - extracted to fc::compare (M1)
-                "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "string_eq" => {
+                _ if op_family == Some(fc::NativeOpFamily::Compare) => {
                     fc::compare::handle_compare_op(
                         &op,
                         &mut self.module,
@@ -5107,8 +4984,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_unary_logic_op family - extracted to fc::unary_logic (M1)
-                "is" | "not" | "neg" | "unary_neg" | "pos" | "unary_pos" | "abs" | "invert"
-                | "bool" | "cast_bool" | "builtin_bool" | "and" | "or" | "contains" => {
+                _ if op_family == Some(fc::NativeOpFamily::UnaryLogic) => {
                     let __flow = fc::unary_logic::handle_unary_logic_op(
                         &op,
                         &mut self.module,
@@ -5133,7 +5009,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_parse_op family — extracted to fc::parse_ops (M1)
-                "json_parse" | "msgpack_parse" | "cbor_parse" => {
+                _ if op_family == Some(fc::NativeOpFamily::ParseOps) => {
                     fc::parse_ops::handle_parse_op(
                         &op,
                         &mut self.module,
@@ -5149,24 +5025,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_coroutine_op family - extracted to fc::coroutine (M1)
-                "state_switch"
-                | "state_transition"
-                | "state_yield"
-                | "chan_send_yield"
-                | "chan_recv_yield"
-                | "chan_new"
-                | "chan_drop"
-                | "spawn"
-                | "cancel_token_new"
-                | "cancel_token_clone"
-                | "cancel_token_drop"
-                | "cancel_token_cancel"
-                | "cancel_token_is_cancelled"
-                | "cancel_token_set_current"
-                | "cancel_token_get_current"
-                | "cancelled"
-                | "cancel_current"
-                | "call_async" => {
+                _ if op_family == Some(fc::NativeOpFamily::Coroutine) => {
                     let __flow = fc::coroutine::handle_coroutine_op(
                         &op,
                         ops,
@@ -5208,14 +5067,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_future_promise_op family — extracted to fc::future_promise (M1)
-                "future_cancel"
-                | "future_cancel_msg"
-                | "future_cancel_clear"
-                | "promise_new"
-                | "promise_set_result"
-                | "promise_set_exception"
-                | "thread_submit"
-                | "task_register_token_owned" => {
+                _ if op_family == Some(fc::NativeOpFamily::FuturePromise) => {
                     fc::future_promise::handle_future_promise_op(
                         &op,
                         &mut self.module,
@@ -5231,21 +5083,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_funcobj_op family - extracted to fc::funcobj (M1)
-                "builtin_func"
-                | "func_new"
-                | "func_new_closure"
-                | "code_new"
-                | "code_slot_set"
-                | "fn_ptr_code_set"
-                | "asyncgen_locals_register"
-                | "gen_locals_register"
-                | "code_slots_init"
-                | "trace_enter_slot"
-                | "trace_exit"
-                | "frame_locals_set"
-                | "line"
-                | "missing"
-                | "function_closure_bits" => {
+                _ if op_family == Some(fc::NativeOpFamily::Funcobj) => {
                     let __flow = fc::funcobj::handle_funcobj_op(
                         &op,
                         op_idx,
@@ -5286,14 +5124,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_object_construct_op family — extracted to fc::object_construct (M1)
-                "bound_method_new"
-                | "object_new"
-                | "object_new_bound"
-                | "object_new_bound_stack"
-                | "super_new"
-                | "classmethod_new"
-                | "staticmethod_new"
-                | "property_new" => {
+                _ if op_family == Some(fc::NativeOpFamily::ObjectConstruct) => {
                     fc::object_construct::handle_object_construct_op(
                         &op,
                         &mut self.module,
@@ -5309,8 +5140,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_gpu_intrinsic_op family - extracted to fc::funcobj (M1)
-                "gpu_thread_id" | "gpu_block_id" | "gpu_block_dim" | "gpu_grid_dim"
-                | "gpu_barrier" => {
+                _ if op_family == Some(fc::NativeOpFamily::GpuIntrinsic) => {
                     fc::funcobj::handle_gpu_intrinsic_op(
                         &op,
                         &mut self.module,
@@ -5321,19 +5151,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_call_op family - extracted to fc::calls (M1)
-                "call"
-                | "call_internal"
-                | "call_guarded"
-                | "call_func"
-                | "invoke_ffi"
-                | "call_bind"
-                | "call_indirect"
-                | "call_method_ic"
-                | "call_super_method_ic"
-                | "call_method"
-                | "getargv"
-                | "getframe"
-                | "sys_executable" => {
+                _ if op_family == Some(fc::NativeOpFamily::Calls) => {
                     fc::calls::handle_call_op(
                         &op,
                         op_idx,
@@ -5400,8 +5218,7 @@ impl SimpleBackend {
                 // with the alias ops the same way; native must not be the
                 // asymmetric outlier. Keep in sync with the `copy` arm in
                 // fc::value_transfer::handle_value_transfer_op.
-                "inc_ref" | "borrow" | "dec_ref" | "release" | "box" | "unbox" | "cast"
-                | "widen" | "identity_alias" | "binding_alias" | "copy" => {
+                _ if op_family == Some(fc::NativeOpFamily::ValueTransfer) => {
                     fc::value_transfer::handle_value_transfer_op(
                         &op,
                         op_idx,
@@ -5430,19 +5247,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_module_op family — extracted to fc::modules (M1)
-                "module_new"
-                | "module_cache_get"
-                | "module_import"
-                | "module_cache_set"
-                | "module_cache_del"
-                | "module_get_attr"
-                | "module_import_from"
-                | "module_get_global"
-                | "module_del_global"
-                | "module_del_global_if_present"
-                | "module_get_name"
-                | "module_set_attr"
-                | "module_import_star" => {
+                _ if op_family == Some(fc::NativeOpFamily::Modules) => {
                     fc::modules::handle_module_op(
                         &op,
                         op_idx,
@@ -5462,14 +5267,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_class_op family — extracted to fc::class_ops (M1)
-                "class_new"
-                | "class_def"
-                | "class_layout_version"
-                | "class_set_layout_version"
-                | "class_merge_layout"
-                | "class_set_base"
-                | "class_apply_set_name"
-                | "object_set_class" => {
+                _ if op_family == Some(fc::NativeOpFamily::ClassOps) => {
                     fc::class_ops::handle_class_op(
                         &op,
                         &mut self.module,
@@ -5486,11 +5284,7 @@ impl SimpleBackend {
                 }
                 // Outlined class definition via molt_guarded_class_def
                 // handle_type_check_op family — extracted to fc::type_checks (M1)
-                "builtin_type"
-                | "type_of"
-                | "is_native_awaitable"
-                | "isinstance"
-                | "issubclass" => {
+                _ if op_family == Some(fc::NativeOpFamily::TypeChecks) => {
                     fc::type_checks::handle_type_check_op(
                         &op,
                         &mut self.module,
@@ -5506,27 +5300,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_exception_op family — extracted to fc::exceptions (M1)
-                "exception_match_builtin"
-                | "exception_last"
-                | "exception_last_pending"
-                | "exception_finally_pending_observer"
-                | "exception_active"
-                | "exception_current"
-                | "exception_new"
-                | "exception_new_builtin"
-                | "exception_new_builtin_empty"
-                | "exception_new_builtin_one"
-                | "exception_new_from_class"
-                | "exceptiongroup_match"
-                | "exceptiongroup_combine"
-                | "exception_clear"
-                | "exception_kind"
-                | "exception_class"
-                | "exception_message"
-                | "exception_set_cause"
-                | "exception_set_last"
-                | "exception_set_value"
-                | "exception_context_set" => {
+                _ if op_family == Some(fc::NativeOpFamily::Exceptions) => {
                     fc::exceptions::handle_exception_op(
                         &op,
                         &mut self.module,
@@ -5542,8 +5316,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_context_op family — extracted to fc::context_mgmt (M1)
-                "context_null" | "context_enter" | "context_exit" | "context_closing"
-                | "context_unwind" | "context_depth" | "context_unwind_to" => {
+                _ if op_family == Some(fc::NativeOpFamily::ContextMgmt) => {
                     fc::context_mgmt::handle_context_op(
                         &op,
                         &mut self.module,
@@ -5559,15 +5332,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_exception_stack_op family — extracted to fc::exception_stack (M1)
-                "exception_push"
-                | "exception_pop"
-                | "exception_stack_clear"
-                | "exception_stack_depth"
-                | "exception_stack_enter"
-                | "exception_stack_exit"
-                | "exception_stack_set_depth"
-                | "exception_enter_handler"
-                | "exception_resolve_captured" => {
+                _ if op_family == Some(fc::NativeOpFamily::ExceptionStack) => {
                     fc::exception_stack::handle_exception_stack_op(
                         &op,
                         &mut self.module,
@@ -5583,7 +5348,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_exception_control_op family - extracted to fc::exception_control (M1)
-                "raise" | "check_exception" => {
+                _ if op_family == Some(fc::NativeOpFamily::ExceptionControl) => {
                     fc::exception_control::handle_exception_control_op(
                         &op,
                         op_idx,
@@ -5621,7 +5386,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_file_io_op family — extracted to fc::file_io (M1)
-                "file_open" | "file_read" | "file_write" | "file_close" | "file_flush" => {
+                _ if op_family == Some(fc::NativeOpFamily::FileIo) => {
                     fc::file_io::handle_file_io_op(
                         &op,
                         &mut self.module,
@@ -5637,7 +5402,7 @@ impl SimpleBackend {
                     );
                 }
                 // handle_control_flow_op family - extracted to fc::control_flow (M1)
-                "if" | "else" | "end_if" => {
+                _ if op_family == Some(fc::NativeOpFamily::ControlFlow) => {
                     let __flow = fc::control_flow::handle_control_flow_op(
                         &op,
                         op_idx,
@@ -5689,15 +5454,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_loop_op family - extracted to fc::loops (M1)
-                "loop_start"
-                | "loop_index_start"
-                | "loop_break_if_exception"
-                | "loop_break_if_true"
-                | "loop_break_if_false"
-                | "loop_break"
-                | "loop_index_next"
-                | "loop_continue"
-                | "loop_end" => {
+                _ if op_family == Some(fc::NativeOpFamily::Loops) => {
                     let __flow = fc::loops::handle_loop_op(
                         &op,
                         op_idx,
@@ -5748,25 +5505,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_memory_op family - extracted to fc::memory (M1)
-                "alloc"
-                | "stack_alloc"
-                | "alloc_class"
-                | "alloc_class_trusted"
-                | "alloc_class_static"
-                | "alloc_task"
-                | "store"
-                | "store_init"
-                | "load"
-                | "closure_load"
-                | "closure_store"
-                | "guarded_load"
-                | "guarded_field_get"
-                | "guarded_field_set"
-                | "guarded_field_init"
-                | "guard_type"
-                | "guard_tag"
-                | "guard_layout"
-                | "guard_dict_shape" => {
+                _ if op_family == Some(fc::NativeOpFamily::Memory) => {
                     let __flow = fc::memory::handle_memory_op(
                         &op,
                         op_idx,
@@ -5811,18 +5550,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_attr_op family — extracted to fc::attrs (M1)
-                "get_attr_generic_ptr"
-                | "get_attr_generic_obj"
-                | "get_attr_special_obj"
-                | "get_attr_name"
-                | "get_attr_name_default"
-                | "has_attr_name"
-                | "set_attr_name"
-                | "set_attr_generic_ptr"
-                | "set_attr_generic_obj"
-                | "del_attr_generic_ptr"
-                | "del_attr_generic_obj"
-                | "del_attr_name" => {
+                _ if op_family == Some(fc::NativeOpFamily::Attrs) => {
                     let __flow = fc::attrs::handle_attr_op(
                         &op,
                         op_idx,
@@ -5845,8 +5573,7 @@ impl SimpleBackend {
                     }
                 }
                 // handle_ret_jump_op family - extracted to fc::ret_jump (M1)
-                "ret" | "ret_void" | "jump" | "br_if" | "label" | "state_label" | "phi"
-                | "store_var" | "delete_var" | "load_var" | "copy_var" | "load_param" => {
+                _ if op_family == Some(fc::NativeOpFamily::RetJump) => {
                     let __flow = fc::ret_jump::handle_ret_jump_op(
                         &op,
                         op_idx,
@@ -5899,7 +5626,31 @@ impl SimpleBackend {
                         fc::OpFlow::Proceed => {}
                     }
                 }
-                _ => {}
+                // Loud single-source-of-truth backstop for the dispatch<->handler
+                // mirror. Routing above is derived from each handler's
+                // `HANDLED_KINDS` via `op_family`, so a handler's kind can never be
+                // silently dropped from the dispatch (the 8b5773878 regression).
+                // This arm catches the residual case: a result-producing kind that
+                // NO inline arm and NO family claims. Leaving it unhandled would
+                // leave its result SSA value undefined (resolving to the None
+                // sentinel) -> the exact silent miscompile fixed in 0323ad28c. Fail
+                // loud here, just as every fc::* handler's own `_ => unreachable!`.
+                _ => {
+                    if op.out.is_some()
+                        && !fc::NATIVE_NO_CODEGEN_RESULT_KINDS.contains(&op.kind.as_str())
+                    {
+                        panic!(
+                            "native backend: no codegen for result-producing op kind `{}` \
+                             (out={:?}) in function `{}`. It is claimed by no inline dispatch \
+                             arm and no fc::* family (HANDLED_KINDS) — the dispatch<->handler \
+                             mirror drift class regressed by 8b5773878 / fixed 0323ad28c. Add \
+                             the kind to the owning handler's HANDLED_KINDS, or to \
+                             op_family::NATIVE_NO_CODEGEN_RESULT_KINDS if it legitimately needs \
+                             no native codegen.",
+                            op.kind, op.out, func_ir.name,
+                        );
+                    }
+                }
             }
 
             // ── Emit dec_ref for the old value of loop-body reassigned vars ──

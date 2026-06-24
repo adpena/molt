@@ -1,4 +1,22 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_attr_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "get_attr_generic_ptr",
+    "get_attr_generic_obj",
+    "get_attr_special_obj",
+    "get_attr_name",
+    "get_attr_name_default",
+    "has_attr_name",
+    "set_attr_name",
+    "set_attr_generic_ptr",
+    "set_attr_generic_obj",
+    "del_attr_generic_ptr",
+    "del_attr_generic_obj",
+    "del_attr_name",
+];
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 

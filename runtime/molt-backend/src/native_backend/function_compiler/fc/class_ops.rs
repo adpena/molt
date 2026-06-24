@@ -1,4 +1,18 @@
 use super::super::*;
+
+/// Single-source kind authority for [`handle_class_op`], consulted by
+/// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = &[
+    "class_new",
+    "class_def",
+    "class_layout_version",
+    "class_set_layout_version",
+    "class_merge_layout",
+    "class_set_base",
+    "class_apply_set_name",
+    "object_set_class",
+];
 use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for class-object ops: `class_new`/`class_def`/`set_base`/`apply_set_name`/`layout_version`/`set_layout_version`/`merge_layout` and `object_set_class`.
