@@ -70,7 +70,7 @@ The 38,510-line file is split into sub-modules within `runtime/molt-backend/src/
 **`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_arith.rs`**
 - Responsibility: all arithmetic ops — `IAdd`, `ISub`, `IMul`, `IDiv`, `IMod`, `IPow`, `FAdd`, `FSub`, `FMul`, `FDiv`, `IShift`, `IBitwise`, `IUnary`, `FUnary`, `IComp`, `FComp`, and the NaN-box mixed-type arithmetic bridge.
 - Estimated size: ~6,000 lines.
-- Dependencies: `NanBoxConsts`, `representation_plan::Repr`, `VarValue`, `block_has_terminator`.
+- Dependencies: `NanBoxConsts`, `repr::Repr`, `VarValue`, `block_has_terminator`.
 
 **`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_control.rs`**
 - Responsibility: control flow — `If`/`Else`/`EndIf`, `Jump`, `BrIf`, `LoopStart`/`LoopEnd`, `LoopBreakIfTrue`/`LoopBreakIfException`/`LoopContinue`, `Ret`, `StateTransition`/`StateYield`.
@@ -80,7 +80,7 @@ The 38,510-line file is split into sub-modules within `runtime/molt-backend/src/
 **`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_collections.rs`**
 - Responsibility: list/dict/set/tuple ops — `ListAppend`, `ListPop`, `ListIndex`, `ListStoreIndex`, `DictGet`, `DictSet`, `TupleIndex`, `SetAdd`, `Contains`, `Unpack`.
 - Estimated size: ~5,000 lines.
-- Dependencies: `vec_layout::vec_u64_layout`, `representation_plan::ContainerKind`.
+- Dependencies: `vec_layout::vec_u64_layout`, `repr::ContainerKind`.
 
 **`/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/fc_exceptions.rs`**
 - Responsibility: exception handling — `TryStart`/`TryEnd`, `CheckException`, `Raise`, `ExceptionPending`, `LoopBreakIfException`, exception-stack push/pop intrinsic calls.

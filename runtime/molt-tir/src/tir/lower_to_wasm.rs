@@ -1646,7 +1646,7 @@ fn peephole_set_get_to_tee(instructions: Vec<Instruction<'static>>) -> Vec<Instr
 #[cfg(feature = "wasm-backend")]
 mod tests {
     use super::*;
-    use crate::representation_plan::Repr;
+    use crate::repr::Repr;
     use crate::tir::blocks::{Terminator, TirBlock};
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::ir::{FunctionIR, OpIR};
+use crate::repr::{ContainerKind, ContainerStorageFact, ContainerStorageKind, Repr, ScalarKind};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::lir::{LirRepr, LirValue};
@@ -772,124 +773,6 @@ impl IndexedContainerFacts {
                 }
             }
         }
-    }
-}
-
-/// Scalar lane derived from the backend-facing TIR/LIR contract.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ScalarKind {
-    Int,
-    Bool,
-    Float,
-    Str,
-    NoneValue,
-}
-
-/// Container dispatch lane derived from the backend-facing TIR/LIR contract.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ContainerKind {
-    List,
-    Dict,
-    Set,
-    Tuple,
-    Str,
-}
-
-/// Physical container storage proof derived from structural producers.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ContainerStorageKind {
-    FlatListInt,
-}
-
-/// A proven physical storage layout for a container value.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ContainerStorageFact {
-    pub(crate) kind: ContainerStorageKind,
-    pub(crate) elem_ty: TirType,
-}
-
-/// The **representation lattice** — the second, orthogonal axis to `TirType`.
-///
-/// `TirType` answers *"what Python type is this value?"*; `Repr` answers *"what
-/// is the physical carrier, and which unbox / raw-machine ops are sound on it?"*.
-/// The trusted-unbox truncation bug-class (an `int`-*typed* value that is
-/// physically a heap `BigInt` behind `TAG_PTR`, fed to the `<<17 >>17` inline
-/// unbox) lives entirely on this second axis and is invisible to the first. See
-/// `tmp/design_typed_ir_convergence.md` §1.
-///
-/// This is a join-semilattice (least-upper-bound at control-flow merges; the
-/// `join` operation lands in Phase 1, where phi-edge derivation consumes it).
-/// Top is [`Repr::DynBox`] (the universal NaN-box carrier; every value may
-/// legally be `DynBox`, no raw op is sound on it). Bottom is [`Repr::Never`]
-/// (unreachable). Ordering from most-proven (most ops legal) to least:
-/// `RawI64Safe`/`Bool` < `InlineInt47` (Phase 2) < `MaybeBigInt` < `DynBox`, with
-/// `FloatUnboxed` a disjoint scalar family.
-///
-/// This enum grows by phase (each variant lands in the phase that *constructs*
-/// it, so no variant is ever dead): Phase 0 (this commit) reifies the integer
-/// raw-carrier classification — `RawI64Safe`/`MaybeBigInt` plus the floor
-/// neighbours `Bool`/`FloatUnboxed`/`DynBox`/`Never`. The target §1.2 lattice
-/// additionally has `InlineInt47` (the boxed-but-proven-inline operand at unbox
-/// sites — added by Phase 2 with its proof token) and `Ref64(class)` (a proven
-/// non-null class instance — added by Phase 4). `Bool`/`FloatUnboxed` floor here
-/// but their *carrier* decisions still flow through the legacy
-/// `bool_primary`/`float_primary` sets until Phase 4 folds them in.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Repr {
-    /// ⊥ — unreachable value.
-    Never,
-    /// Bare `i64` register/Variable, interval- or OSC-proven non-wrapping in
-    /// `[-2^63, 2^63)`; physically **not** NaN-boxed. Native carries it via
-    /// `int_raw_value`/`use_var`; raw machine `add`/`sub`/`mul` are legal
-    /// (overflow→BigInt deferred to the escape boundary). This is exactly the
-    /// population of native `primary_names.int` / LLVM `overflow_safe_values`.
-    RawI64Safe,
-    /// Exactly `0` or `1`. Value-exact for integer arith/bitwise; NOT for the
-    /// bit-level eq/ne compare lowering (`True`/TAG_BOOL ≠ `1`/TAG_INT at the
-    /// bit level — see design §5.3). Phase 4 routes the bool carrier here.
-    Bool,
-    /// NaN-box that is **either** `TAG_INT` (inline) **or** `TAG_PTR` (heap
-    /// `BigInt`) — a Python `int` of unknown magnitude. **This is the
-    /// un-expressible state: the trusted unbox is illegal, raw machine ops are
-    /// illegal; only the boxed runtime helpers (`molt_add`…), which dispatch on
-    /// the tag and are BigInt-correct, are sound.** `TirType::I64` maps here by
-    /// default. The name carries the proof obligation (design §1.3).
-    MaybeBigInt,
-    /// Bare `f64` register (not NaN-boxed). Float lane.
-    FloatUnboxed,
-    /// ⊤ — NaN-box with fully unknown tag (could be int/float/str/ptr/None). No
-    /// raw op is sound; full runtime dispatch.
-    DynBox,
-}
-
-impl Repr {
-    /// The conservative representation *floor* for a semantic type (design §2.1
-    /// step 2). Every Python `int` starts [`Repr::MaybeBigInt`] (boxed,
-    /// BigInt-safe, the un-unboxable state) and is only ever *raised* to
-    /// [`Repr::RawI64Safe`] by a proof — never asserted raw from the type alone.
-    /// `UserClass` floors to `DynBox` in Phase 0 (no non-null proof yet); Phase 4
-    /// raises proven instances to `Ref64(class)`.
-    pub(crate) fn default_for(ty: &TirType) -> Repr {
-        match ty {
-            TirType::I64 | TirType::BigInt => Repr::MaybeBigInt,
-            TirType::Bool => Repr::Bool,
-            TirType::F64 => Repr::FloatUnboxed,
-            TirType::Never => Repr::Never,
-            // Str/Bytes/List/Dict/Set/Tuple/Iterator/Box/DynBox/UserClass/Func/
-            // Ptr/Union/None — the universal NaN-box carrier; no raw op sound.
-            _ => Repr::DynBox,
-        }
-    }
-
-    /// Whether this is a bare-i64 raw carrier (native `int_primary` / LLVM
-    /// `overflow_safe_values`): raw machine arithmetic is legal and the value is
-    /// not NaN-boxed. The strongest proven integer element. This is both the
-    /// `overflow_safe_values` view (design §3.2) and — in Phase 0, where the only
-    /// admitted int carrier is `RawI64Safe` — the `primary_names.int` view
-    /// (design §2.1). Phase 2 widens the `primary_names.int` view to also admit
-    /// the boxed-but-proven-inline `InlineInt47` operands.
-    pub fn is_raw_i64_safe(self) -> bool {
-        matches!(self, Repr::RawI64Safe)
     }
 }
 
@@ -4503,68 +4386,6 @@ mod tests {
             param_types: param_types.map(|types| types.into_iter().map(str::to_string).collect()),
             source_file: None,
             is_extern: false,
-        }
-    }
-
-    /// The representation floor (design §2.1 step 2): every Python `int` (and a
-    /// known `BigInt`) starts at the conservative, sound `MaybeBigInt` carrier —
-    /// the un-unboxable state — never `RawI64Safe`/`InlineInt47`. The floor can
-    /// only ever be *raised* by a proof, so an unproven int can never reach a
-    /// trusted-unbox-legal element. This is the soundness invariant of the whole
-    /// design expressed at the type-to-representation boundary.
-    #[test]
-    fn repr_default_for_floors_int_to_maybe_bigint() {
-        assert_eq!(Repr::default_for(&TirType::I64), Repr::MaybeBigInt);
-        assert_eq!(Repr::default_for(&TirType::BigInt), Repr::MaybeBigInt);
-        assert_eq!(Repr::default_for(&TirType::Bool), Repr::Bool);
-        assert_eq!(Repr::default_for(&TirType::F64), Repr::FloatUnboxed);
-        assert_eq!(Repr::default_for(&TirType::Never), Repr::Never);
-        // Non-scalar / reference / unknown types all floor to the universal
-        // NaN-box carrier (no raw op sound).
-        assert_eq!(Repr::default_for(&TirType::Str), Repr::DynBox);
-        assert_eq!(Repr::default_for(&TirType::None), Repr::DynBox);
-        assert_eq!(
-            Repr::default_for(&TirType::List(Box::new(TirType::I64))),
-            Repr::DynBox
-        );
-        assert_eq!(
-            Repr::default_for(&TirType::UserClass("m.Point".into())),
-            Repr::DynBox
-        );
-        assert_eq!(Repr::default_for(&TirType::DynBox), Repr::DynBox);
-        // The floor never mints the raw-i64 carrier element from a type alone —
-        // that requires a proof (interval/OSC), applied in `seed_repr_by_name`.
-        for ty in [
-            TirType::I64,
-            TirType::BigInt,
-            TirType::Str,
-            TirType::None,
-            TirType::DynBox,
-            TirType::UserClass("m.C".into()),
-        ] {
-            assert!(
-                !Repr::default_for(&ty).is_raw_i64_safe(),
-                "type {ty:?} must not floor to a raw i64 carrier"
-            );
-        }
-    }
-
-    /// The carrier-view predicate that re-expresses the legacy sets: only
-    /// `RawI64Safe` is `is_raw_i64_safe` (the `overflow_safe_values` view, and in
-    /// Phase 0 the `primary_names.int` view). The floor neighbours
-    /// `MaybeBigInt`/`Bool`/`FloatUnboxed`/`DynBox`/`Never` are never raw int
-    /// carriers, so the byte-identical view excludes them.
-    #[test]
-    fn repr_carrier_view_predicates() {
-        assert!(Repr::RawI64Safe.is_raw_i64_safe());
-        for repr in [
-            Repr::MaybeBigInt,
-            Repr::Bool,
-            Repr::FloatUnboxed,
-            Repr::DynBox,
-            Repr::Never,
-        ] {
-            assert!(!repr.is_raw_i64_safe(), "{repr:?} is not raw-i64-safe");
         }
     }
 

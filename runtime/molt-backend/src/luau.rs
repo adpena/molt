@@ -8,7 +8,8 @@
 //! reject lowered output that still contains comment-only control-flow markers
 //! or stub markers for unsupported semantics.
 
-use crate::representation_plan::{ContainerKind, ScalarKind, ScalarRepresentationPlan};
+use crate::repr::{ContainerKind, ScalarKind};
+use crate::representation_plan::ScalarRepresentationPlan;
 use crate::{FunctionIR, OpIR, SimpleIR};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;

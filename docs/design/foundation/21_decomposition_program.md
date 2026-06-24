@@ -140,7 +140,7 @@ Sibling frontend files are tiny (`cfg_analysis.py` 416, `tv_hooks.py` 260) — t
 | `native_backend/simple_backend.rs` | 6,268 | `molt-backend-native` |
 | `passes.rs` (SimpleIR passes) | 5,837 | `molt-tir` (or `molt-backend` core) |
 | `rust.rs` (transpiler) | 4,854 | `molt-backend-rust` |
-| `representation_plan.rs` | 4,631 | split: `Repr`→`molt-tir`, plan logic→`molt-backend` core |
+| `representation_plan.rs` + `repr.rs` | 4,631 | split: repr vocabulary -> `molt-tir`, plan logic -> backend/lower core |
 | **subtree: `tir/`** | **72,041** | **`molt-tir`** (clean lower layer) |
 | **subtree: `native_backend/`** | **45,429** | **`molt-backend-native`** |
 | **subtree: `llvm_backend/`** | **12,821** | **`molt-backend-native`** |
@@ -201,20 +201,19 @@ All verified by `grep -rE 'crate::<mod>' <subtree>`:
 - **`tir/` → `ir`: 31 edges** (TIR consumes the SimpleIR transport type). `ir.rs` → only
   `json_boundary`, `ir_schema`. So `ir` is a leaf that `molt-tir` depends on → `ir` joins
   `molt-tir`.
-- **The `Repr` cycle (surgical):** `representation_plan` → `tir` (22 edges) AND `tir` →
-  `representation_plan` (2 edges). The 2 reverse edges are *only* `use crate::representation_plan::Repr`
-  in `tir/lower_to_wasm.rs:1530` and `tir/lower_to_lir.rs:13`. **Cut = move the `Repr` enum
-  into `molt-tir`** (it is a representation lattice *over TIR values* — it belongs there;
-  `lib.rs:36-42` already documents `Repr` as the orthogonal carrier axis to `TirType`). The
-  richer `representation_plan` *logic* (LlvmReprFacts, ScalarRepresentationPlan, value_range_for)
-  stays in the `molt-backend` orchestrator core, which depends on `molt-tir`. Cycle eliminated.
+- **The `repr` vocabulary cut (surgical):** `repr.rs` owns the carrier lattice and lane
+  vocabulary (`Repr`, `ScalarKind`, `ContainerKind`, and container-storage facts). TIR analyses,
+  lowerers, and backend crates import that vocabulary through `crate::repr`; the richer
+  `representation_plan` *logic* (LlvmReprFacts, ScalarRepresentationPlan, value_range_for) consumes
+  it instead of owning it. This keeps the physical-carrier facts backend-neutral and leaves the
+  planner as planner logic only.
 - **Backend → shared deps (verified `grep crate::`):**
   - `function_compiler.rs`: `debug_artifacts`, `passes::ReturnAliasSummary`, `representation_plan`,
     `switch_to_block_tracking`, `block_has_terminator`, `unbox_int` (NaN-box helpers in `lib.rs`).
   - `wasm.rs`: heavy `tir::*` (lower_to_wasm, lower_to_simple, type_refine, serialize, cache,
     target_info), `passes::*`, `wasm_imports`, `representation_plan`.
-  - `llvm_backend/lowering.rs`: `tir::ops/values/types/function/blocks`, `representation_plan::{Repr,
-    LlvmReprFacts,ContainerKind}`, `pending_bits`/`stable_ic_site_id` (lib.rs NaN-box).
+  - `llvm_backend/lowering.rs`: `tir::ops/values/types/function/blocks`, `repr::{Repr, ContainerKind}`,
+    `representation_plan::LlvmReprFacts`, `pending_bits`/`stable_ic_site_id` (lib.rs NaN-box).
   - `luau.rs`, `rust.rs`: only `representation_plan` (minimal coupling — easiest to extract).
 - **`native_backend/` privacy mechanism:** uses `use super::*` glob (module-ancestry privacy;
   verified `native_backend/mod.rs:1`, `simple_backend.rs` 6 `super::` refs). The `lib.rs` split
@@ -299,7 +298,7 @@ real Phase 2) and the per-pair drift is reconciled; see §3 Phase R.**
                           │  molt-tir   (lower layer, no backends)│
                           │  = tir/ + ir/ + ir_schema + json_     │
                           │    boundary + passes.rs (SimpleIR     │
-                          │    passes) + Repr enum + ops/values/  │
+                          │    passes) + repr.rs + ops/values/    │
                           │    types/function/blocks/cfg/dom/     │
                           │    pass_manager/analysis/* + all       │
                           │    tir/passes/* optimizer passes       │
@@ -561,12 +560,13 @@ interleave anytime. N1 must wait for the LLVM partner's arc (§0.3). C1/O are cl
 
 **T1 — extract `molt-tir`:**
 - New crate `runtime/molt-tir` = `tir/` + `ir.rs` + `ir_schema.rs` + `json_boundary.rs` +
-  `passes.rs` + the `Repr` enum (moved out of `representation_plan.rs`).
+  `passes.rs` + `repr.rs` (the representation vocabulary: `Repr`, scalar lanes, container
+  lanes, and container-storage facts).
 - `molt-backend` adds `molt-tir = { path = "../molt-tir" }`; `lib.rs` re-exports `pub use
   molt_tir::{...}` to preserve the public API surface (§1.3).
-- The `Repr` cycle cut: `tir/lower_to_wasm.rs` and `tir/lower_to_lir.rs` change
-  `use crate::representation_plan::Repr` → `use crate::Repr` (now local to molt-tir). The
-  `representation_plan` *logic* stays in `molt-backend` and imports `molt_tir::Repr`.
+- The `repr` cycle cut: TIR, lower-to-LIR/WASM, call facts, liveness, and pass-delta import
+  `crate::repr::Repr`; backend crates import `crate::repr::{...}` through the `molt_tir::repr`
+  re-export. The `representation_plan` *logic* consumes that vocabulary instead of owning it.
 - pub-surface contract: enumerate exactly which `tir::*` items `wasm.rs`/`main.rs`/`function_compiler.rs`
   consume (the §1.3 list) and make precisely those `pub` in `molt-tir` — no more (pub-creep risk §4).
 - **matches!-oracle audit (CRITICAL, §4):** when ops/opcodes move crates, audit every
@@ -654,7 +654,7 @@ T1).
 | **pub-boundary creep** | T1/N1/W1: making items `pub` to satisfy a cross-crate call, then more, until the boundary is meaningless | Enumerate the EXACT consumed surface (§1.3 lists) before extraction; make precisely those `pub`, no more. CI: a `pub`-surface snapshot test (count `pub` items in the crate's lib.rs; fail on unexplained growth). |
 | **matches!-oracle silent miscompile** | T1/N1 when ops/opcodes move crates | Audit every `matches!(op.kind/opcode, ...)` (default-false on miss). Convert side-effect/throw/movability oracles to exhaustive `match`. This is a hard phase gate, not advice (MEMORY.md: caught a real silent-miscompile). |
 | **feature-unification trap** | R (satellite default-on), N1 (llvm inside -native) | `cargo tree -f '{p} {f}'` diff before/after every default-feature change; verify no transitive feature silently flips. |
-| **circular-dep landmine** | T1 (`representation_plan`↔`tir` Repr cycle); F1 (`__init__`↔mixin) | Repr→molt-tir (cut verified, only 2 reverse edges, both just `use Repr`). Frontend: dataclasses→`_types.py` leaf; mixins import `_types`, never `__init__`. |
+| **circular-dep landmine** | T1 (`representation_plan`/`tir` vocabulary ownership); F1 (`__init__`/mixin) | `repr.rs` is the molt-tir vocabulary authority; `representation_plan` consumes it. Frontend: dataclasses -> `_types.py` leaf; mixins import `_types`, never `__init__`. |
 | **`use super::*` glob breakage** | N1/W1/L1 (native_backend relies on module-ancestry privacy) | Replace globs with explicit `use molt_tir::{...}`. This is mechanical but touch-heavy; budget it as the main cost of N1. Do NOT widen everything to `pub` to dodge it (pub-creep). |
 | **byte-identical regression** | Any phase claiming move-only | G3 artifact diff is mandatory. If artifacts differ, the move changed behavior → it is not move-only → reject and find what leaked (usually an inlining/ordering change from a crate boundary; acceptable ONLY if proven semantically identical and documented). |
 | **extracting a crate from under an active editor** | N1 vs LLVM partner | Sequence N1 after the partner's arc; or freeze-window coordinate. Never `git mv` files another agent is mid-edit on. |

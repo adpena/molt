@@ -45,7 +45,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::representation_plan::{Repr, raw_i64_safe_values_for};
+use crate::repr::Repr;
+use crate::representation_plan::raw_i64_safe_values_for;
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;

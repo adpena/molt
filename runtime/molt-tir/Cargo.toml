@@ -8,7 +8,8 @@ license = "Apache-2.0"
 # molt-tir is the backend-agnostic lower layer extracted from molt-backend
 # (decomposition program doc 21, move T1): the typed IR (tir/), the SimpleIR
 # transport (ir/ir_schema/json_boundary), the SimpleIR passes (passes.rs), the
-# representation lattice (representation_plan + Repr), and the leaf utilities
+# representation vocabulary (repr.rs), planner logic (representation_plan.rs),
+# and the leaf utilities
 # (debug_artifacts/process_diagnostics/intrinsic_symbols). It has ZERO
 # dependencies on any backend (native/wasm/luau/llvm/rust); every backend crate
 # depends on molt-tir, not the reverse. Editing a TIR pass recompiles molt-tir

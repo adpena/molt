@@ -201,7 +201,7 @@ Internal:
 Lines 22–36: extend `FunctionSummary`:
 - Add `pub does_not_capture_param: Vec<bool>` (empty = unknown / not yet computed)
 - Add `pub is_pure: bool`
-- Add `pub return_repr: Option<Repr>` (import `crate::representation_plan::Repr`)
+- Add `pub return_repr: Option<Repr>` (import `crate::repr::Repr`)
 - Add `pub return_alias: ReturnAliasSummary` (import from passes.rs, see below)
 
 Lines 55–82: extend `ModuleSummaries::compute` to populate the new fields. The function gains a signature parameter:
