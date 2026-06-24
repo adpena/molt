@@ -145,6 +145,8 @@ class _GeneratorProtocolAttrs(Protocol):
     known_modules: Any
     lambda_counter: Any
     local_class_names: set[str]
+    local_imported_modules: set[str]
+    local_imported_names: set[str]
     local_intrinsic_wrappers: set[str]
     locals: dict[str, MoltValue]
     locals_cache_val: MoltValue | None
