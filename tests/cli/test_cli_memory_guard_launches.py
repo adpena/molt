@@ -10,6 +10,7 @@ import molt.cli as cli
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
+TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
 
 
 def test_uv_lock_check_uses_build_memory_guard(
@@ -102,8 +103,12 @@ def test_rustup_target_install_uses_build_memory_guard(monkeypatch) -> None:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         return subprocess.CompletedProcess(cmd, 0, "installed", "")
 
-    monkeypatch.setattr(cli.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+    monkeypatch.setattr(
+        TOOLCHAIN_VALIDATION.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(TOOLCHAIN_VALIDATION, "_run_completed_command", fake_run)
 
     warnings: list[str] = []
     assert cli._ensure_rustup_target("wasm32-wasip1", warnings) is True
