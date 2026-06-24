@@ -78,16 +78,33 @@ import bench  # noqa: E402
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
 import perf_inner_repeat  # noqa: E402  (#76 inner-repeat transform)
+from perf_schema import (  # noqa: E402
+    CLASS_DIMENSIONAL_WIN,
+    CLASS_GREEN,
+    CLASS_INFRA,
+    CLASS_RED_NOISY,
+    CLASS_RED_STABLE,
+    CLASS_TIE,
+    CLASSIFY_STATES as CLASSIFY_STATES,
+    GATE_FAILING_VERDICTS,
+    SCHEMA_VERSION,
+    VERDICT_BUILD_FAILED,
+    VERDICT_CPY_INCOMPAT,
+    VERDICT_FAIL_COLD_BUDGET,
+    VERDICT_FAIL_ENGINE,
+    VERDICT_FAIL_STALE,
+    VERDICT_GREEN,
+    VERDICT_RUN_BLOCKED,
+    VERDICT_RUN_ERROR,
+    VERDICT_UNSTABLE,
+    VERDICT_WARN_COLD_FLOOR,
+    flatten_cells,
+    validate_scoreboard_doc,
+)
 
 SAFE_RUN = TOOLS_ROOT / "safe_run.py"
 SCOREBOARD_DIR = REPO_ROOT / "bench" / "scoreboard"
 COLD_START_BUDGET_PATH = SCOREBOARD_DIR / "cold_start_budget.json"
-
-# Schema 3 adds the two-dimensional verdict (warm vs cold), full provenance
-# metadata (origin/local/merge-base SHAs, tool identity, backend binary
-# identity, stdlib cache key, authoritative flag), and the cold-start budget
-# fields. Boards written by schema-2 tools still load (missing fields default).
-SCHEMA_VERSION = 3
 
 # The constitution's session isolation (must be set before any build command).
 PERFSCORE_SESSION_ID = "perfscore"
@@ -101,52 +118,8 @@ RED_THRESHOLD = 1.00
 # trusted to be GREEN and is gated like a RED.
 UNSTABLE_CV = 0.20
 
-# --- Two-dimensional verdict vocabulary (council ruling A) ------------------
-# warm ≠ cold. A warm-slow cell is an EXECUTION-ENGINE red (needs an IR fact);
-# a cold-slow-but-warm-fast cell is a fixed STARTUP TAX (needs runtime/artifact
-# work) and must NOT be conflated with engine slowness. The single legacy
-# ``red`` bool blended both — these verdicts split them.
-VERDICT_GREEN = "GREEN"
-VERDICT_FAIL_ENGINE = "FAIL_ENGINE"  # warm_speedup <= 1.00  (release blocker)
-VERDICT_FAIL_COLD_BUDGET = "FAIL_COLD_BUDGET"  # startup_tax_ms > budget_ms
-VERDICT_WARN_COLD_FLOOR = "WARN_COLD_FLOOR"  # cold<=1 & warm>1, tax is sole cause
-VERDICT_FAIL_STALE = "FAIL_STALE"  # non-authoritative tree — overrides all
-# Infrastructure verdicts (not engine/cold slowness — routed to their own lane).
-VERDICT_BUILD_FAILED = "BUILD_FAILED"
-VERDICT_RUN_ERROR = "RUN_ERROR"  # cpython ran, molt did not
-VERDICT_UNSTABLE = "UNSTABLE"  # CV too high to trust either direction
-VERDICT_RUN_BLOCKED = "RUN_BLOCKED"  # wasm run-path gap (build/link only)
-VERDICT_CPY_INCOMPAT = "CPY_INCOMPATIBLE"  # no CPython floor to compare against
-
-# --- The council's 5-state CLASSIFICATION vocabulary (#69) ------------------
-# This is the ORTHOGONAL, measurement-hygiene-aware classification that replaces
-# the single warm verdict when --classify is set. Where the 2-D ``verdict``
-# above answers "is this warm/cold/stale/infra", these 5 states answer the
-# council's actual question: "is this a TRUE compiler target, or a measurement
-# artifact?" The decisive new inputs are (a) machine QUIESCENCE and (b) the
-# repeat-pass CONFIDENCE INTERVAL — a warm-red is only a real target if it is
-# stable AND quiescent AND its CI sits clear below 1.00.
-CLASS_RED_STABLE = "RED_STABLE"  # warm<1.00, CI below 1.0, quiescent — TRUE target
-CLASS_RED_NOISY = "RED_NOISY"  # warm<1.00 BUT contaminated/unstable/CI-straddles
-CLASS_TIE = "TIE"  # CI crosses 1.00 — neither a win nor a loss
-CLASS_GREEN = "GREEN_STABLE"  # stable warm>1.00 (kept distinct from 2-D GREEN)
-CLASS_DIMENSIONAL_WIN = (
-    "DIMENSIONAL_WIN"  # warm gate flat, but alloc/RSS/size/cold/backend improved
-)
-# Infra states pass through unchanged (no warm number to classify).
-CLASS_INFRA = "INFRA"  # BUILD_FAILED / RUN_ERROR / RUN_BLOCKED / CPY_INCOMPAT / STALE
-
-# The full set, for schema validation / legends.
-CLASSIFY_STATES = frozenset(
-    {
-        CLASS_RED_STABLE,
-        CLASS_RED_NOISY,
-        CLASS_TIE,
-        CLASS_GREEN,
-        CLASS_DIMENSIONAL_WIN,
-        CLASS_INFRA,
-    }
-)
+# Verdict/classification vocabularies live in perf_schema.py so board
+# projections and gates share one JSON contract authority.
 
 # --- Quiescence-guard thresholds (#69 Rule 2) -------------------------------
 # A run is AUTHORITATIVE only on a quiet machine. The dominant contamination
@@ -230,19 +203,6 @@ _VERDICT_DERIVED_NOTES = frozenset(
         "non-authoritative tree (local != origin/main or dirty)",
     }
 )
-
-# Verdicts that FAIL the gate (nonzero exit). WARN_COLD_FLOOR does NOT fail
-# unless --strict-cold; FAIL_STALE fails unless --allow-nonauthoritative.
-GATE_FAILING_VERDICTS = frozenset(
-    {
-        VERDICT_FAIL_ENGINE,
-        VERDICT_FAIL_COLD_BUDGET,
-        VERDICT_BUILD_FAILED,
-        VERDICT_RUN_ERROR,
-        VERDICT_UNSTABLE,
-    }
-)
-
 
 def _load_cold_start_budgets() -> dict:
     """Load the per (backend, profile) cold-start tax budgets in milliseconds.
@@ -3368,104 +3328,6 @@ def build_scoreboard_doc(
     }
 
 
-def _validate_schema(doc: dict) -> list[str]:
-    """Assert the emitted board matches the constitution schema. Returns problems."""
-    problems: list[str] = []
-    required_top = {
-        "schema_version",
-        "kind",
-        "generated_at",
-        "git_rev",
-        "provenance",
-        "host",
-        "direction",
-        "red_threshold",
-        "verdict_legend",
-        "methodology",
-        "reserved_columns",
-        "summary",
-        "benchmarks_run",
-        "benchmarks_deferred",
-        "scoreboard",
-    }
-    missing = required_top - set(doc)
-    if missing:
-        problems.append(f"missing top-level keys: {sorted(missing)}")
-    # Provenance block must carry the council-mandated identity fields.
-    required_prov = {
-        "origin_sha",
-        "local_head_sha",
-        "merge_base_sha",
-        "dirty_tree",
-        "benchmark_tool_sha",
-        "backend_binary_identity",
-        "stdlib_cache_key",
-        "authoritative",
-    }
-    pmiss = required_prov - set(doc.get("provenance", {}))
-    if pmiss:
-        problems.append(f"provenance missing fields: {sorted(pmiss)}")
-    # Summary must carry the two-dimensional verdict counts + breakdown.
-    required_summary = {
-        "cells_fail_engine",
-        "cells_fail_cold_budget",
-        "cells_warn_cold_floor",
-        "cells_fail_stale",
-        "verdict_breakdown",
-        "gate_fails",
-    }
-    smiss = required_summary - set(doc.get("summary", {}))
-    if smiss:
-        problems.append(f"summary missing 2-D fields: {sorted(smiss)}")
-    # JSON round-trips.
-    try:
-        json.loads(json.dumps(doc))
-    except (TypeError, ValueError) as exc:
-        problems.append(f"doc is not JSON-serializable: {exc}")
-    # Every cell must carry the verdict + 2-D measurement fields. pypy/codon
-    # are now POPULATED when those toolchains are installed (no longer asserted
-    # null) — only their presence as keys is required.
-    required_cell = {
-        "benchmark",
-        "target",
-        "backend",
-        "profile",
-        "cpython_ratio",
-        "cold_ratio",
-        "warm_ratio",
-        "warm_speedup",
-        "cold_speedup",
-        "startup_tax_ms",
-        "verdict",
-        "binary_size_kib",
-        "molt_peak_rss_mib",
-        "compile_time_s",
-        "stable",
-        "red",
-        "status",
-        "pypy_ratio",
-        "codon_ratio",
-        "codon_equivalent",
-        "log_artifact",
-    }
-    cells = _flatten_cells(doc)
-    if not cells:
-        problems.append("no cells emitted")
-    for c in cells:
-        cmiss = required_cell - set(c)
-        if cmiss:
-            problems.append(
-                f"cell {c.get('benchmark')} missing fields: {sorted(cmiss)}"
-            )
-            break
-        if c.get("verdict") in (None, "pending"):
-            problems.append(
-                f"cell {c.get('benchmark')} has unfinalized verdict {c.get('verdict')!r}"
-            )
-            break
-    return problems
-
-
 # ---------------------------------------------------------------------------
 # Human-readable summary (RED rows first)
 # ---------------------------------------------------------------------------
@@ -3765,13 +3627,7 @@ def _fastest_next_unlock(warm_reds: list[dict], cold_reds: list[dict]) -> str:
 
 
 def _flatten_cells(doc: dict) -> list[dict]:
-    out: list[dict] = []
-    for _bm, targets in doc["scoreboard"].items():
-        for _t, backends in targets.items():
-            for _b, profiles in backends.items():
-                for _p, cell in profiles.items():
-                    out.append(cell)
-    return out
+    return [dict(cell) for cell in flatten_cells(doc)]
 
 
 def _fmt(v: float | None, places: int = 2) -> str:
@@ -4641,7 +4497,7 @@ def main(argv: list[str]) -> int:
         # It inherently dirties the tree (the tool under test is modified), so
         # subjecting it to FAIL_STALE would be circular — it validates the
         # SCHEMA and returns on that alone.
-        problems = _validate_schema(doc)
+        problems = validate_scoreboard_doc(doc)
         print_summary(doc)
         if problems:
             print("[self-test] SCHEMA VALIDATION FAILED:", file=sys.stderr)
