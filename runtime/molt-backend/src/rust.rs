@@ -1060,24 +1060,47 @@ impl RustBackend {
             ));
         }
         if used("molt_unpack_sequence(") {
-            self.output.push_str(concat!(
-                "fn molt_unpack_sequence(seq: &MoltValue, expected_count: usize) -> Vec<MoltValue> {\n",
-                "    let items = match seq {\n",
-                "        MoltValue::List(v) => v.clone(),\n",
-                "        MoltValue::Dict(d) => d.iter().map(|(k, _)| k.clone()).collect(),\n",
-                "        MoltValue::Str(s) => s.chars().map(|c| MoltValue::Str(c.to_string())).collect(),\n",
-                "        _ => panic!(\"cannot unpack non-sequence\"),\n",
-                "    };\n",
-                "    let actual = items.len();\n",
-                "    if actual < expected_count {\n",
-                "        panic!(\"not enough values to unpack (expected {}, got {})\", expected_count, actual);\n",
-                "    }\n",
-                "    if actual > expected_count {\n",
-                "        panic!(\"too many values to unpack (expected {}, got {})\", expected_count, actual);\n",
-                "    }\n",
-                "    items\n",
-                "}\n\n",
-            ));
+            self.output.push_str(
+                r#"fn molt_unpack_type_name(seq: &MoltValue) -> &'static str {
+    match seq {
+        MoltValue::None => "NoneType",
+        MoltValue::Bool(_) => "bool",
+        MoltValue::Int(_) => "int",
+        MoltValue::Float(_) => "float",
+        MoltValue::Str(_) => "str",
+        MoltValue::List(_) => "list",
+        MoltValue::Dict(_) => "dict",
+        MoltValue::Func(_) => "function",
+    }
+}
+
+fn molt_unpack_too_many_message(expected_count: usize, actual: usize) -> String {
+    if molt_runtime_target_at_least(3, 14) {
+        format!("too many values to unpack (expected {}, got {})", expected_count, actual)
+    } else {
+        format!("too many values to unpack (expected {})", expected_count)
+    }
+}
+
+fn molt_unpack_sequence(seq: &MoltValue, expected_count: usize) -> Vec<MoltValue> {
+    let items = match seq {
+        MoltValue::List(v) => v.clone(),
+        MoltValue::Dict(d) => d.iter().map(|(k, _)| k.clone()).collect(),
+        MoltValue::Str(s) => s.chars().map(|c| MoltValue::Str(c.to_string())).collect(),
+        _ => panic!("cannot unpack non-iterable {} object", molt_unpack_type_name(seq)),
+    };
+    let actual = items.len();
+    if actual < expected_count {
+        panic!("not enough values to unpack (expected {}, got {})", expected_count, actual);
+    }
+    if actual > expected_count {
+        panic!("{}", molt_unpack_too_many_message(expected_count, actual));
+    }
+    items
+}
+
+"#,
+            );
         }
 
         // abs
@@ -1143,6 +1166,7 @@ impl RustBackend {
             || used("molt_sys_version_info(")
             || used("molt_sys_version(")
             || used("molt_sys_hexversion(")
+            || used("molt_unpack_sequence(")
             || needs_module_import;
         let needs_module_cache = used("molt_module_cache_get(")
             || used("molt_module_cache_set(")
@@ -1204,6 +1228,11 @@ fn molt_sys_version_state() -> &'static std::sync::Mutex<MoltSysVersionInfo> {
     static STATE: std::sync::OnceLock<std::sync::Mutex<MoltSysVersionInfo>> =
         std::sync::OnceLock::new();
     STATE.get_or_init(|| std::sync::Mutex::new(MoltSysVersionInfo::default()))
+}
+
+fn molt_runtime_target_at_least(major: i64, minor: i64) -> bool {
+    let state = molt_sys_version_state().lock().unwrap().clone();
+    (state.major, state.minor) >= (major, minor)
 }
 
 fn molt_sys_arg_int(args: &[MoltValue], index: usize, default: i64) -> i64 {
@@ -4577,6 +4606,10 @@ mod tests {
 
         let source = backend.compile(&ir);
         assert!(source.contains("fn molt_unpack_sequence("));
+        assert!(source.contains("fn molt_unpack_too_many_message("));
+        assert!(source.contains("fn molt_runtime_target_at_least("));
+        assert!(source.contains("cannot unpack non-iterable {} object"));
+        assert!(!source.contains("cannot unpack non-sequence"));
         assert!(source.contains("let __unpack_seq"));
         assert!(source.contains("let mut left: MoltValue = __unpack_seq[0].clone();"));
         assert!(source.contains("let mut right: MoltValue = __unpack_seq[1].clone();"));
