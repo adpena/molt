@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::types::TirType;
 use super::values::ValueId;
 
 /// Dialect namespace for operations (MLIR-style).
@@ -343,5 +344,68 @@ impl TirOp {
             && self.operands.len() == 1
             && self.results.len() == 1
             && self.attrs.is_empty()
+    }
+}
+
+/// Build a representation-matched dead placeholder constant for an SSA edge.
+///
+/// This is for values that are required to satisfy SSA arity but are proven dead
+/// by surrounding control flow before any observation. `I64` and `BigInt` both
+/// use `ConstInt(0)` so representation planning sees the same scalar default
+/// lane, while reference-like or otherwise dynamic continuations receive
+/// `ConstNone`.
+pub fn dead_placeholder_const_for_type(ty: &TirType, result: ValueId) -> TirOp {
+    let (opcode, attrs) = match ty {
+        TirType::I64 | TirType::BigInt => {
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Int(0));
+            (OpCode::ConstInt, attrs)
+        }
+        TirType::Bool => {
+            let mut attrs = AttrDict::new();
+            attrs.insert("value".into(), AttrValue::Bool(false));
+            (OpCode::ConstBool, attrs)
+        }
+        TirType::F64 => {
+            let mut attrs = AttrDict::new();
+            attrs.insert("f_value".into(), AttrValue::Float(0.0));
+            (OpCode::ConstFloat, attrs)
+        }
+        _ => (OpCode::ConstNone, AttrDict::new()),
+    };
+    TirOp {
+        dialect: Dialect::Molt,
+        opcode,
+        operands: Vec::new(),
+        results: vec![result],
+        attrs,
+        source_span: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dead_placeholder_constants_match_representation_defaults() {
+        for ty in [TirType::I64, TirType::BigInt] {
+            let op = dead_placeholder_const_for_type(&ty, ValueId(7));
+            assert_eq!(op.opcode, OpCode::ConstInt);
+            assert_eq!(op.attrs.get("value"), Some(&AttrValue::Int(0)));
+            assert_eq!(op.results, vec![ValueId(7)]);
+        }
+
+        let bool_op = dead_placeholder_const_for_type(&TirType::Bool, ValueId(8));
+        assert_eq!(bool_op.opcode, OpCode::ConstBool);
+        assert_eq!(bool_op.attrs.get("value"), Some(&AttrValue::Bool(false)));
+
+        let float_op = dead_placeholder_const_for_type(&TirType::F64, ValueId(9));
+        assert_eq!(float_op.opcode, OpCode::ConstFloat);
+        assert_eq!(float_op.attrs.get("f_value"), Some(&AttrValue::Float(0.0)));
+
+        let dynbox_op = dead_placeholder_const_for_type(&TirType::DynBox, ValueId(10));
+        assert_eq!(dynbox_op.opcode, OpCode::ConstNone);
+        assert!(dynbox_op.attrs.is_empty());
     }
 }

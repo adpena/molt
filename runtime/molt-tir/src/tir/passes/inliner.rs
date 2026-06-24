@@ -85,7 +85,7 @@ use super::super::function::{TirFunction, TirModule};
 use super::super::op_kinds_generated::{
     opcode_has_exception_label_attr_table, opcode_is_state_machine_table,
 };
-use super::super::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use super::super::ops::{AttrDict, AttrValue, OpCode, TirOp, dead_placeholder_const_for_type};
 use super::super::target_info::TargetInfo;
 use super::super::types::TirType;
 use super::super::values::{TirValue, ValueId};
@@ -1136,7 +1136,7 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
                 let ty = cont_ty.clone().unwrap_or(TirType::DynBox);
                 let placeholder = caller.fresh_value();
                 caller.value_types.entry(placeholder).or_insert(ty.clone());
-                let const_op = dead_placeholder_const(&ty, placeholder);
+                let const_op = dead_placeholder_const_for_type(&ty, placeholder);
                 caller
                     .blocks
                     .get_mut(&cloned_bid)
@@ -1184,44 +1184,6 @@ fn splice_call_site(caller: &mut TirFunction, callee: &TirFunction, site: &CallS
     );
 
     true
-}
-
-/// A representation-matched **dead** placeholder constant of `ty`, producing
-/// `result`. Used by [`splice_call_site`] for the continuation arg on an inlined
-/// exception-exit path: the value is never read (the caller's post-call
-/// `CheckException` reroutes first), but SSA requires the continuation phi edge to
-/// supply *some* value. Matching the type keeps the phi's representation clean for
-/// codegen — an unboxed-scalar continuation gets a matching unboxed zero, every
-/// boxed/reference continuation gets a boxed `None`. Attr conventions mirror the
-/// SSA lift (`ConstInt`/`ConstBool` under `"value"`, `ConstFloat` under
-/// `"f_value"`, `ConstNone` attr-less).
-fn dead_placeholder_const(ty: &TirType, result: ValueId) -> TirOp {
-    let (opcode, attrs) = match ty {
-        TirType::I64 | TirType::BigInt => {
-            let mut a = AttrDict::new();
-            a.insert("value".into(), AttrValue::Int(0));
-            (OpCode::ConstInt, a)
-        }
-        TirType::Bool => {
-            let mut a = AttrDict::new();
-            a.insert("value".into(), AttrValue::Bool(false));
-            (OpCode::ConstBool, a)
-        }
-        TirType::F64 => {
-            let mut a = AttrDict::new();
-            a.insert("f_value".into(), AttrValue::Float(0.0));
-            (OpCode::ConstFloat, a)
-        }
-        _ => (OpCode::ConstNone, AttrDict::new()),
-    };
-    TirOp {
-        dialect: Dialect::Molt,
-        opcode,
-        operands: vec![],
-        results: vec![result],
-        attrs,
-        source_span: None,
-    }
 }
 
 /// The type the callee returns, derived from its `Return` terminators'
@@ -1569,8 +1531,8 @@ mod tests {
     /// branches to a return block that yields the parameter. `has_exception_handling`
     /// is set (the `CheckException` would set it during lift) but there is NO
     /// handler region.
-    fn observation_callee(name: &str, exc_label: i64) -> TirFunction {
-        let mut f = TirFunction::new(name.into(), vec![TirType::I64], TirType::I64);
+    fn observation_callee_with_type(name: &str, exc_label: i64, ty: TirType) -> TirFunction {
+        let mut f = TirFunction::new(name.into(), vec![ty.clone()], ty.clone());
         f.has_exception_handling = true;
         let a = ValueId(0);
         let normal = f.fresh_block();
@@ -1615,8 +1577,12 @@ mod tests {
         // The exception edge resolves through label_id_map: the exit block carries
         // the handler label the entry's CheckException references.
         f.label_id_map.insert(exc_exit.0, exc_label);
-        f.value_types.insert(a, TirType::I64);
+        f.value_types.insert(a, ty);
         f
+    }
+
+    fn observation_callee(name: &str, exc_label: i64) -> TirFunction {
+        observation_callee_with_type(name, exc_label, TirType::I64)
     }
 
     /// A caller `fn c() { r = obs(5); <observe>; return r }` that calls an
@@ -2553,13 +2519,11 @@ mod tests {
                         .ops
                         .last()
                         .map(|op| {
-                            matches!(
-                                op.opcode,
-                                OpCode::ConstInt
-                                    | OpCode::ConstNone
-                                    | OpCode::ConstBool
-                                    | OpCode::ConstFloat
-                            ) && op.results.first() == args.first()
+                            let expected = dead_placeholder_const_for_type(&TirType::I64, args[0]);
+                            op.opcode == expected.opcode
+                                && op.operands == expected.operands
+                                && op.results == expected.results
+                                && op.attrs == expected.attrs
                         })
                         .unwrap_or(false)
                 {
