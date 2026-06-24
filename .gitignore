@@ -75,6 +75,7 @@ bench/friends/repos/
 # perf_scoreboard.py: keep the canonical cpython_<gitrev>.json boards; drop the
 # per-cell debug logs + ephemeral partial/tmp checkpoints.
 bench/scoreboard/logs_*/
+bench/scoreboard/host_calibration/
 bench/scoreboard/*.partial.json
 bench/scoreboard/*.tmp
 runtime/molt-runtime/fuzz/corpus/
