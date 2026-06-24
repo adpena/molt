@@ -1243,3 +1243,75 @@ def test_difftest_refuses_missing_program(drv):
         drv.cmd_difftest(_difftest_ns(drv, REPO_ROOT / "does-not-exist.py", REPO_ROOT))
     assert exc.value.code == drv.EXIT_USAGE
     assert "not found" in str(exc.value)
+
+
+def test_difftest_roots_relative_output_dir_before_safe_run(
+    drv, tmp_path, monkeypatch
+):
+    """A relative --out-dir is part of the rooted toolchain, not a process-cwd
+    accident.
+
+    On Windows, handing safe_run a relative extensionless native binary path can
+    fail at spawn time even though the build wrote the artifact successfully.
+    The difftest runner must pass an absolute, --root-scoped artifact path to
+    both build verification and safe_run.
+    """
+    root = tmp_path / "wt"
+    (root / "src" / "molt").mkdir(parents=True)
+    (root / "tools").mkdir()
+    (root / "src" / "molt" / "cli.py").write_text("", encoding="utf-8")
+    (root / "tools" / "safe_run.py").write_text("", encoding="utf-8")
+    program = root / "case.py"
+    program.write_text("print('ok')\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        drv, "_verify_interpreter_version", lambda _python, _version: (True, "3.12.0")
+    )
+
+    class Probe:
+        returncode = 0
+        stderr = ""
+
+    monkeypatch.setattr(drv, "_run_driver_command", lambda *a, **kw: Probe())
+
+    captured: list[list[str]] = []
+
+    def fake_capture(cmd, *, env, cwd, timeout):
+        captured.append(list(cmd))
+        if len(cmd) >= 2 and cmd[1] == str(program):
+            return 0, b"ok\r\n", b""
+        if cmd[1:3] == ["-m", "molt"]:
+            output = Path(cmd[cmd.index("--output") + 1])
+            assert output.is_absolute()
+            assert output.parent == root / "tmp" / "difftest-rel"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"MZ")
+            return 0, b"", b""
+        if cmd[1:2] == [str(root / "tools" / "safe_run.py")]:
+            artifact = Path(cmd[cmd.index("--") + 1])
+            assert artifact.is_absolute()
+            assert artifact.parent == root / "tmp" / "difftest-rel"
+            assert artifact.exists()
+            return 0, b"ok\n", b""
+        return 0, b"", b""
+
+    monkeypatch.setattr(drv, "_difftest_capture", fake_capture)
+
+    ns = drv.build_parser().parse_args(
+        [
+            "difftest",
+            str(program),
+            "--root",
+            str(root),
+            "--target",
+            "native",
+            "--python-version",
+            "3.12",
+            "--out-dir",
+            "tmp/difftest-rel",
+        ]
+    )
+    assert drv.cmd_difftest(ns) == drv.EXIT_OK
+
+    run_cmds = [cmd for cmd in captured if str(root / "tools" / "safe_run.py") in cmd]
+    assert len(run_cmds) == 1
