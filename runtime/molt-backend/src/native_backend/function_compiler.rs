@@ -3383,9 +3383,6 @@ impl SimpleBackend {
             ConditionalListBoolShadow,
         > = std::collections::BTreeMap::new();
         let scalar_fast_paths_enabled = !is_cold_module_chunk_function(&func_ir.name);
-        let op_index_key_is_integer_family = |op: &OpIR| {
-            scalar_fast_paths_enabled && representation_plan.op_index_key_is_integer_family(op)
-        };
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
         if returns_value {
@@ -4774,6 +4771,8 @@ impl SimpleBackend {
                 "dict_new"
                 | "dict_from_obj"
                 | "dict_get"
+                | "dict_set"
+                | "dict_update_missing"
                 | "dict_inc"
                 | "dict_str_int_inc"
                 | "string_split_ws_dict_inc"
@@ -4792,6 +4791,8 @@ impl SimpleBackend {
                 | "dict_items" => {
                     let __flow = fc::dict_ops::handle_dict_op(
                         &op,
+                        op_idx,
+                        &func_ir.name,
                         &mut self.module,
                         &mut self.import_ids,
                         &mut builder,
@@ -4801,6 +4802,8 @@ impl SimpleBackend {
                         &int_primary_vars,
                         &float_primary_vars,
                         &bool_primary_vars,
+                        scalar_fast_paths_enabled,
+                        &representation_plan,
                         &nbc,
                     );
                     match __flow {
@@ -4875,171 +4878,6 @@ impl SimpleBackend {
                         local_dec_ref_obj,
                         &nbc,
                     );
-                }
-                "dict_set" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict_bits = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_ir.name, op_idx));
-                    let key_bits = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[1],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .unwrap_or_else(|| panic!("Key not found in {} op {}", func_ir.name, op_idx));
-                    let val_bits = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[2],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .unwrap_or_else(|| panic!("Value not found in {} op {}", func_ir.name, op_idx));
-                    // Dispatch based on container specialization:
-                    // - list_int: flat i64 storage (Codon-style)
-                    // - fast_int: generic list but key is known int
-                    // - default: full dict/generic dispatch
-                    if representation_plan.op_has_container_storage(
-                        op_idx,
-                        &op,
-                        ContainerStorageKind::FlatListInt,
-                    ) {
-                        // raw_int_shadow fast path for list_int dict_set.
-                        // Inside loops, use Variable-only shadows (phi-correct).
-                        let raw_key_opt =
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[1]);
-                        let raw_val_opt =
-                            int_raw_value(&mut builder, &vars, &int_primary_vars, &args[2]);
-                        if let (Some(raw_key), Some(raw_val)) = (raw_key_opt, raw_val_opt) {
-                            let callee = Self::import_func_id_split(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                "molt_list_int_setitem_unchecked",
-                                &[types::I64, types::I64, types::I64],
-                                &[types::I64],
-                            );
-                            let local_callee =
-                                self.module.declare_func_in_func(callee, builder.func);
-                            let call = builder
-                                .ins()
-                                .call(local_callee, &[*dict_bits, raw_key, raw_val]);
-                            let res = builder.inst_results(call)[0];
-                            if let Some(out__) = op.out {
-                                def_var_named(&mut builder, &vars, out__, res);
-                            }
-                        } else {
-                            let callee = Self::import_func_id_split(
-                                &mut self.module,
-                                &mut self.import_ids,
-                                "molt_list_int_setitem",
-                                &[types::I64, types::I64, types::I64],
-                                &[types::I64],
-                            );
-                            let local_callee =
-                                self.module.declare_func_in_func(callee, builder.func);
-                            let call = builder
-                                .ins()
-                                .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
-                            let res = builder.inst_results(call)[0];
-                            if let Some(out__) = op.out {
-                                def_var_named(&mut builder, &vars, out__, res);
-                            }
-                        }
-                    } else {
-                        let fn_name = if op_index_key_is_integer_family(&op) {
-                            "molt_list_setitem_int_fast"
-                        } else {
-                            "molt_dict_set"
-                        };
-                        let callee = Self::import_func_id_split(
-                            &mut self.module,
-                            &mut self.import_ids,
-                            fn_name,
-                            &[types::I64, types::I64, types::I64],
-                            &[types::I64],
-                        );
-                        let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                        let call = builder
-                            .ins()
-                            .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
-                        let res = builder.inst_results(call)[0];
-                        if let Some(out__) = op.out {
-                            def_var_named(&mut builder, &vars, out__, res);
-                        }
-                    }
-                }
-                "dict_update_missing" => {
-                    let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-                    let dict_bits = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[0],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .unwrap_or_else(|| panic!("Dict not found in {} op {}", func_ir.name, op_idx));
-                    let key_bits = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[1],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .unwrap_or_else(|| panic!("Key not found in {} op {}", func_ir.name, op_idx));
-                    let val_bits = var_get_boxed_overflow_safe(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        &mut builder,
-                        &mut import_refs,
-                        &mut sealed_blocks,
-                        &vars,
-                        &args[2],
-                        &int_primary_vars,
-                        &float_primary_vars,
-                    )
-                    .unwrap_or_else(|| panic!("Value not found in {} op {}", func_ir.name, op_idx));
-                    let callee = Self::import_func_id_split(
-                        &mut self.module,
-                        &mut self.import_ids,
-                        "molt_dict_update_missing",
-                        &[types::I64, types::I64, types::I64],
-                        &[types::I64],
-                    );
-                    let local_callee = self.module.declare_func_in_func(callee, builder.func);
-                    let call = builder
-                        .ins()
-                        .call(local_callee, &[*dict_bits, *key_bits, *val_bits]);
-                    let res = builder.inst_results(call)[0];
-                    if let Some(out__) = op.out {
-                        def_var_named(&mut builder, &vars, out__, res);
-                    }
                 }
                 // handle_text_predicate family — extracted to fc::text_predicates (M1)
                 "bytes_find"

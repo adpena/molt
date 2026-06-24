@@ -355,9 +355,10 @@ lowering and exception-check elimination.
   `slice`, `slice_new`) under `native_backend/function_compiler/fc/indexing.rs`
   and sequence/iterator lowering (`len`, tuple/range construction, unpacking,
   iterator-next fusion) under
-  `native_backend/function_compiler/fc/sequence_ops.rs`. Residual inline
-  compiler-codegen clusters should move only as complete semantic authorities,
-  starting with the remaining dict mutation helpers.
+  `native_backend/function_compiler/fc/sequence_ops.rs`; dict mutation,
+  including `dict_set` and `dict_update_missing`, is fully owned by
+  `native_backend/function_compiler/fc/dict_ops.rs`. Residual inline
+  compiler-codegen clusters should move only as complete semantic authorities.
 - Keep the TIR pipeline unconditional for backend-facing lowering; debugging
   uses dumps and verifier evidence rather than an environment-variable bypass,
   and frontend midend fixed-point/idempotence verification must fail closed
