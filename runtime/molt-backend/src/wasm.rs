@@ -11381,16 +11381,16 @@ impl WasmBackend {
                         func.instruction(&Instruction::I64Const(layout_version));
                         func.instruction(&Instruction::I64Const(flags));
                         emit_call(func, reloc_enabled, import_ids["guarded_class_def"]);
-                        for arg_name in args.iter().rev() {
-                            let arg = locals[arg_name];
-                            func.instruction(&Instruction::LocalGet(arg));
-                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
-                        }
                         if let Some(out) = op.out.as_ref() {
                             let res = locals[out];
                             func.instruction(&Instruction::LocalSet(res));
                         } else {
                             func.instruction(&Instruction::Drop);
+                        }
+                        for arg_name in args.iter().rev() {
+                            let arg = locals[arg_name];
+                            func.instruction(&Instruction::LocalGet(arg));
+                            emit_call(func, reloc_enabled, import_ids["dec_ref_obj"]);
                         }
                     }
                     "class_set_base" => {
