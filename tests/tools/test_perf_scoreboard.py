@@ -49,6 +49,10 @@ def _cell(
     c.cold_molt_s = cold_molt_s
     c.cold_cpython_s = cold_cpython_s
     c.run_blocked = run_blocked
+    c.log_artifact = f"bench/scoreboard/logs/{Path(benchmark).stem}.log"
+    if build_ok:
+        c.binary_size_kib = 512.0
+        c.compile_time_s = 0.4
     if build_ok and molt_ok:
         c.molt_peak_rss_mib = 18.0
     if cpython_ok:
@@ -203,6 +207,18 @@ def test_build_failed_and_run_error_and_blocked_and_incompat() -> None:
 
 
 def _board(cells: list[ps.Cell], provenance: dict | None = None) -> dict:
+    full_provenance = {
+        "origin_sha": "a" * 40,
+        "local_head_sha": "a" * 40,
+        "merge_base_sha": "a" * 40,
+        "dirty_tree": False,
+        "benchmark_tool_sha": "b" * 40,
+        "backend_binary_identity": {"native/release-fast": "x|1|2"},
+        "stdlib_cache_key": "deadbeef",
+        "authoritative": True,
+    }
+    if provenance is not None:
+        full_provenance.update(provenance)
     return ps.build_scoreboard_doc(
         cells,
         benchmarks_run=[c.benchmark for c in cells],
@@ -210,7 +226,17 @@ def _board(cells: list[ps.Cell], provenance: dict | None = None) -> dict:
         cpython_version="3.14",
         samples=5,
         warmup=2,
-        provenance=provenance or {"authoritative": True},
+        provenance=full_provenance,
+        cpython_identity={
+            "cmd": ["test-python"],
+            "executable": "test-python",
+            "implementation": "CPython",
+            "version": "3.14",
+            "sys_platform": sys.platform,
+            "machine": ps.platform.machine(),
+            "arch": ps._host_arch(),
+            "pointer_bits": ps._host_pointer_bits(),
+        },
     )
 
 
@@ -289,6 +315,50 @@ def test_board_carries_provenance_and_passes_schema() -> None:
     assert doc["provenance"]["origin_sha"] == "a" * 40
     assert doc["summary"]["cells_green"] == 1
     assert doc["summary"]["gate_fails"] is False
+
+
+def test_scoreboard_writer_validates_before_emit(tmp_path: Path) -> None:
+    g = _cell(
+        warm_molt_s=0.10, warm_cpython_s=0.20, cold_molt_s=0.11, cold_cpython_s=0.25
+    )
+    g.finalize(budget_ms=1000.0, authoritative=True)
+    doc = _board([g])
+
+    out = tmp_path / "scoreboard.json"
+    ps._write_scoreboard_doc(out, doc, context="unit-valid")
+
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["summary"]["cells_green"] == 1
+
+    invalid = dict(doc)
+    invalid.pop("schema_version")
+    invalid_out = tmp_path / "invalid" / "scoreboard.json"
+    with pytest.raises(ps.ScoreboardSchemaError) as exc:
+        ps._write_scoreboard_doc(invalid_out, invalid, context="unit-invalid")
+    assert "schema_version" in str(exc.value)
+    assert not invalid_out.exists()
+
+    invalid_cell_doc = json.loads(json.dumps(doc))
+    only_cell = next(iter(ps.flatten_cells(invalid_cell_doc)))
+    only_cell["log_artifact"] = ""
+    with pytest.raises(ps.ScoreboardSchemaError) as cell_exc:
+        ps._write_scoreboard_doc(
+            tmp_path / "bad-cell.json", invalid_cell_doc, context="unit-bad-cell"
+        )
+    assert any("log_artifact" in problem for problem in cell_exc.value.problems)
+
+    atomic_out = tmp_path / "scoreboard.partial.json"
+    atomic_out.write_text("old-board\n", encoding="utf-8")
+    invalid_atomic_doc = json.loads(json.dumps(doc))
+    only_atomic_cell = next(iter(ps.flatten_cells(invalid_atomic_doc)))
+    only_atomic_cell["compile_time_s"] = None
+    with pytest.raises(ps.ScoreboardSchemaError) as atomic_exc:
+        ps._write_scoreboard_doc_atomic(
+            atomic_out, invalid_atomic_doc, context="unit-invalid-checkpoint"
+        )
+    assert atomic_out.read_text(encoding="utf-8") == "old-board\n"
+    assert not atomic_out.with_suffix(".tmp").exists()
+    assert any("compile_time_s" in problem for problem in atomic_exc.value.problems)
 
 
 def _oracle_payload(

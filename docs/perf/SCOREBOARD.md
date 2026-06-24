@@ -381,14 +381,21 @@ partial is a valid scoreboard document.
 
 `tools/perf_schema.py` is the schema authority: it owns the schema version, the
 verdict/classification vocabularies, the `RED_THRESHOLD` and `UNSTABLE_CV`
-gate constants, required top-level/provenance/summary/cell fields, and the
+gate constants, required top-level/provenance/host/summary/cell fields, and the
 `validate_cell()` / `validate_board()` helpers used by
 `tools/perf_scoreboard.py`. For measured verdicts (`GREEN`, `FAIL_ENGINE`,
 `FAIL_COLD_BUDGET`, `WARN_COLD_FLOOR`, `UNSTABLE`), `validate_cell()` now
-fails closed unless the build/run booleans, cold and warm timings, speedups,
-startup tax, RSS peaks, and log artifact are present. A `RED_STABLE`
-classification must also carry `measured_quiescent=true` plus a numeric repeat
-CI clearing below the CPython floor.
+fails closed unless the build/run booleans, binary size, compile time, cold and
+warm timings, speedups, startup tax, RSS peaks, and log artifact are present. A
+`RED_STABLE` classification must also carry `measured_quiescent=true` plus a
+numeric repeat CI clearing below the CPython floor. When a board carries modern
+host metadata, `validate_board()` also verifies that `host.cpython_oracle` is
+CPython, matches the board OS/architecture/pointer width, matches
+`cpython_baseline`, and uses the resolved executable as `cmd[0]` rather than a
+launcher wrapper. `tools/perf_scoreboard.py` validates every CPython scoreboard
+document before writing it, including checkpoint partials, rebuild-summary
+rewrites, merge outputs, and final run artifacts; a schema violation raises
+`ScoreboardSchemaError` and leaves the target artifact untouched.
 
 Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 `bench/scoreboard/logs_<gitrev>/`.
