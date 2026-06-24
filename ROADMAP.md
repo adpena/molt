@@ -357,7 +357,9 @@ lowering and exception-check elimination.
   iterator-next fusion) under
   `native_backend/function_compiler/fc/sequence_ops.rs`; dict mutation,
   including `dict_set` and `dict_update_missing`, is fully owned by
-  `native_backend/function_compiler/fc/dict_ops.rs`. Residual inline
+  `native_backend/function_compiler/fc/dict_ops.rs`; `raise` and
+  `check_exception` exception-control lowering now live under
+  `native_backend/function_compiler/fc/exception_control.rs`. Residual inline
   compiler-codegen clusters should move only as complete semantic authorities.
 - Keep the TIR pipeline unconditional for backend-facing lowering; debugging
   uses dumps and verifier evidence rather than an environment-variable bypass,
