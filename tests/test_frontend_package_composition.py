@@ -67,6 +67,7 @@ EXPECTED_MIXINS = [
     "PatternMatchMixin",
     "CallVisitorMixin",
     "ClassDefVisitorMixin",
+    "ComprehensionMixin",
 ]
 
 
