@@ -188,6 +188,8 @@ _OPCODE_FACT_SETS = (
     "lowered_state_machine_body_opcodes",
     "fusion_barrier_opcodes",
     "state_machine_opcodes",
+    "i64_overflow_box_dispatch_opcodes",
+    "i64_checked_overflow_triple_opcodes",
     "i64_zero_divisor_guard_opcodes",
     "i64_shift_count_guard_opcodes",
     "exception_label_attr_opcodes",
@@ -1433,6 +1435,33 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, state_machine_opcodes))
     out.append("    }\n}\n\n")
 
+    i64_overflow_box_dispatch = list(data.get("i64_overflow_box_dispatch_opcodes", []))
+    out.append(
+        "/// Whether raw-i64 arithmetic must fall back to boxed dispatch unless\n"
+        "/// operands and results are proven inside the inline-int window. This is\n"
+        "/// the lower_to_lir.rs overflow-custody authority for full-width\n"
+        "/// RawI64Safe carriers. EXHAUSTIVE over OpCode so new arithmetic cannot\n"
+        "/// silently bypass BigInt/overflow semantics.\n"
+        "#[inline]\n"
+        "pub fn opcode_requires_i64_overflow_box_dispatch_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, i64_overflow_box_dispatch))
+    out.append("    }\n}\n\n")
+
+    i64_checked_overflow_triples = list(
+        data.get("i64_checked_overflow_triple_opcodes", [])
+    )
+    out.append(
+        "/// Whether an opcode can lower to the LIR checked-overflow triple once\n"
+        "/// type/repr/value-range proof is complete. EXHAUSTIVE over OpCode so\n"
+        "/// checked arithmetic eligibility cannot drift from lower_to_lir.rs.\n"
+        "#[inline]\n"
+        "pub fn opcode_supports_i64_checked_overflow_triple_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, i64_checked_overflow_triples))
+    out.append("    }\n}\n\n")
     i64_zero_divisor_guards = list(data.get("i64_zero_divisor_guard_opcodes", []))
     out.append(
         "/// Whether a binary opcode needs a proven nonzero RHS before raw i64\n"
