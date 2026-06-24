@@ -40,6 +40,7 @@ use std::collections::HashMap;
 use super::PassStats;
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_operand_independent_result_tir_type;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
@@ -75,48 +76,17 @@ pub fn run(func: &mut TirFunction, tti: &TargetInfo) -> PassStats {
             type_map.insert(arg.id, arg.ty.clone());
         }
         for op in &block.ops {
-            match op.opcode {
-                OpCode::ConstInt => {
-                    if let Some(AttrValue::Int(v)) = op.attrs.get("value") {
-                        for &res in &op.results {
-                            const_map.insert(res, *v);
-                            type_map.insert(res, TirType::I64);
-                        }
-                    }
+            if op.opcode == OpCode::ConstInt
+                && let Some(AttrValue::Int(v)) = op.attrs.get("value")
+            {
+                for &res in &op.results {
+                    const_map.insert(res, *v);
                 }
-                OpCode::ConstBool => {
-                    for &res in &op.results {
-                        type_map.insert(res, TirType::Bool);
-                    }
+            }
+            if let Some(ty) = opcode_operand_independent_result_tir_type(op.opcode) {
+                for &res in &op.results {
+                    type_map.insert(res, ty.clone());
                 }
-                // Bool op (is_truthy) always produces Bool.
-                OpCode::Bool => {
-                    for &res in &op.results {
-                        type_map.insert(res, TirType::Bool);
-                    }
-                }
-                // Comparison ops produce Bool.
-                OpCode::Eq
-                | OpCode::Ne
-                | OpCode::Lt
-                | OpCode::Le
-                | OpCode::Gt
-                | OpCode::Ge
-                | OpCode::Is
-                | OpCode::IsNot
-                | OpCode::In
-                | OpCode::NotIn
-                | OpCode::Not => {
-                    for &res in &op.results {
-                        type_map.insert(res, TirType::Bool);
-                    }
-                }
-                OpCode::ConstFloat => {
-                    for &res in &op.results {
-                        type_map.insert(res, TirType::F64);
-                    }
-                }
-                _ => {}
             }
         }
     }

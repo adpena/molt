@@ -47,11 +47,21 @@
 #   - [[result_finalizer_source_kind]] — per-SPELLING extraction facts whose
 #                  fresh result may carry a finalizer-sensitive value from one
 #                  source operand (`list_pop` result from list operand 0).
+#   - operand_independent_result_type - optional single-result TirType fact for
+#                  opcodes whose result type is intrinsic to the opcode. Omitted
+#                  opcodes must be inferred from operands, attrs, or call/builtin
+#                  metadata by type_refine.rs.
 #   - [[result_validity]] - per-OpCode/per-result validity facts for result slots
 #                  that are not initialized on every outgoing edge
 #                  (`IterNextUnboxed` result 0 is valid only on the not-done edge).
 #   - literal_payload_opcodes - opcode literal payload facts consumed by
 #                  canonicalize.rs and check_exception_elim.rs.
+#   - gvn_value_keyed_constant_opcodes - constant constructors whose current
+#                  GVN key extraction records exact payload identity. ConstBigInt
+#                  stays out until it has an exact non-colliding ValueKey lane.
+#   - proven_result_type_seed_opcodes - constant constructors whose intrinsic
+#                  result type seeds type_refine.rs's proven-type map. ConstBigInt
+#                  stays out because DynBox does not narrow backend guard proof.
 #   - exception_label_attr_opcodes - opcode facts for ops whose `value` attr is
 #                  a SimpleIR exception label id.
 #   - exception_transfer_edge_opcodes - subset of exception-label ops whose
@@ -500,6 +510,32 @@ i64_shift_count_guard_opcodes = [
 literal_payload_opcodes = [
     { opcode = "ConstInt", literal = "int" },
     { opcode = "ConstBool", literal = "bool" },
+]
+
+# gvn_value_keyed_constant_opcodes: constants whose payload is represented in
+# gvn.rs's ValueKey today. ConstBigInt is intentionally excluded until ValueKey
+# has a precise heap-bigint payload key; otherwise every big-int literal would
+# collide on `(None, None, None)`.
+gvn_value_keyed_constant_opcodes = [
+    "ConstInt",
+    "ConstBool",
+    "ConstNone",
+    "ConstFloat",
+    "ConstStr",
+    "ConstBytes",
+]
+
+# proven_result_type_seed_opcodes: constants whose intrinsic result type is
+# useful as a proven-map seed. This is intentionally separate from
+# operand_independent_result_type: comparisons, module loads, and builders have
+# intrinsic result types, but the proven map tracks guard-removal proof seeds.
+proven_result_type_seed_opcodes = [
+    "ConstInt",
+    "ConstBool",
+    "ConstNone",
+    "ConstFloat",
+    "ConstStr",
+    "ConstBytes",
 ]
 
 exception_label_attr_opcodes = [
@@ -1067,6 +1103,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1076,6 +1113,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1085,6 +1123,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1094,6 +1133,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1103,6 +1143,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1112,6 +1153,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1121,6 +1163,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1130,6 +1173,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1139,6 +1183,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1148,6 +1193,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1237,6 +1283,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1246,6 +1293,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1412,6 +1460,7 @@ may_throw = true
 side_effecting = false
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "i64"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1478,6 +1527,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "list_dynbox"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = true
 
@@ -1487,6 +1537,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "dict_dynbox_dynbox"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = true
 
@@ -1505,6 +1556,7 @@ may_throw = false
 side_effecting = false
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "set_dynbox"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = true
 
@@ -1728,6 +1780,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "i64"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1737,6 +1790,10 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+# ConstBigInt is semantically `int`, but its value exceeds the raw i64 window.
+# The carrier is always boxed (DynBox; repr axis says MaybeBigInt). Typing it
+# I64 would license trusted-unbox on a heap BigInt pointer.
+operand_independent_result_type = "dynbox"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1746,6 +1803,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "f64"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1755,6 +1813,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "str"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1764,6 +1823,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bool"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1773,6 +1833,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "none"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1782,6 +1843,7 @@ may_throw = false
 side_effecting = false
 purity = "pure"
 result_arity = "one"
+operand_independent_result_type = "bytes"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1818,6 +1880,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "dynbox"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1845,6 +1908,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "dynbox"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1854,6 +1918,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "dynbox"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1863,6 +1928,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "dynbox"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
@@ -1872,6 +1938,7 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "one"
+operand_independent_result_type = "dynbox"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 

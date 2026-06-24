@@ -29,6 +29,9 @@ use crate::tir::analysis::{AnalysisManager, DomChildren, ImmediateDoms, StrictRe
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    opcode_is_gvn_value_keyed_constant_table, opcode_operand_independent_result_tir_type,
+};
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
@@ -55,18 +58,6 @@ struct ValueKey {
 /// Copy → NaN-boxed path), causing type mismatches.
 fn is_always_numberable(opcode: OpCode) -> bool {
     matches!(opcode, OpCode::BoxVal | OpCode::UnboxVal)
-}
-
-fn is_const_opcode(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::ConstInt
-            | OpCode::ConstBool
-            | OpCode::ConstNone
-            | OpCode::ConstFloat
-            | OpCode::ConstStr
-            | OpCode::ConstBytes
-    )
 }
 
 /// Returns `true` if the opcode is numberable when operands are proven typed.
@@ -179,12 +170,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let strict_reachable = am.get::<StrictReachable>(func).clone();
 
     // Build a value→type map from STRUCTURALLY GUARANTEED sources only:
-    // block args (set by type_refine), constants, and function params.
+    // block args (set by type_refine), operand-independent result-type opcodes,
+    // and function params.
     // NO speculative type inference — if a value's type isn't provably
     // known, it's treated as DynBox (not primitive, not safe to number).
     let mut value_type: HashMap<ValueId, crate::tir::types::TirType> = HashMap::new();
     {
-        use crate::tir::types::TirType;
         // Block arguments carry types from type_refine.
         for block in func.blocks.values() {
             for arg in &block.args {
@@ -195,19 +186,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         for (i, ty) in func.param_types.iter().enumerate() {
             value_type.insert(ValueId(i as u32), ty.clone());
         }
-        // Constants have known types.
+        // Generated opcode facts own operand-independent result types.
         for block in func.blocks.values() {
             for op in &block.ops {
-                let ty = match op.opcode {
-                    OpCode::ConstInt => Some(TirType::I64),
-                    OpCode::ConstFloat => Some(TirType::F64),
-                    OpCode::ConstBool => Some(TirType::Bool),
-                    OpCode::ConstNone => Some(TirType::None),
-                    OpCode::ConstStr => Some(TirType::Str),
-                    OpCode::ConstBytes => Some(TirType::Bytes),
-                    _ => None,
-                };
-                if let Some(t) = ty {
+                if let Some(t) = opcode_operand_independent_result_tir_type(op.opcode) {
                     for &res in &op.results {
                         value_type.insert(res, t.clone());
                     }
@@ -349,7 +331,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     };
 
                     if !numberable {
-                        if is_const_opcode(op.opcode) {
+                        if opcode_is_gvn_value_keyed_constant_table(op.opcode) {
                             let (const_int_key, const_str_key, const_bytes_key) = const_keys(op);
                             let key = ValueKey {
                                 opcode: op.opcode,

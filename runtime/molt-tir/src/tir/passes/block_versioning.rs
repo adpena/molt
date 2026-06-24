@@ -16,8 +16,9 @@
 //!    - **Generic version**: the original block, unchanged.
 //!
 //! 3. Rewire predecessors: if a predecessor can statically prove the guard
-//!    condition (e.g., the guarded value was produced by ConstInt, Add, or
-//!    another int-producing op), route it to the specialized version.
+//!    condition (e.g., the guarded value is a typed block argument or was
+//!    produced by an opcode with an operand-independent result type), route it
+//!    to the specialized version.
 //!    Otherwise route to the generic version.
 //!
 //! 4. Loop headers with back-edges are not versioned — doing so could create
@@ -37,6 +38,7 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::analysis::{AnalysisManager, PredMap};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_operand_independent_result_tir_type;
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -126,59 +128,15 @@ fn value_proves_type(
         return ty == expected;
     }
 
-    // Check the producing opcode.
+    // Check the producing opcode against the generated intrinsic-result table.
+    // Operand-dependent arithmetic stays out of this fast proof path; type_refine
+    // owns those proofs after it has operand facts.
     let opcode = match producing_ops.get(&value) {
         Some(op) => op,
         None => return false,
     };
 
-    match expected {
-        TirType::I64 => matches!(
-            opcode,
-            OpCode::ConstInt
-                | OpCode::Add
-                | OpCode::Sub
-                | OpCode::Mul
-                | OpCode::Div
-                | OpCode::FloorDiv
-                | OpCode::Mod
-                | OpCode::Pow
-                | OpCode::Neg
-                | OpCode::Pos
-                | OpCode::BitAnd
-                | OpCode::BitOr
-                | OpCode::BitXor
-                | OpCode::BitNot
-                | OpCode::Shl
-                | OpCode::Shr
-                | OpCode::InplaceAdd
-                | OpCode::InplaceSub
-                | OpCode::InplaceMul
-        ),
-        TirType::F64 => matches!(opcode, OpCode::ConstFloat),
-        TirType::Bool => matches!(
-            opcode,
-            OpCode::ConstBool
-                | OpCode::Eq
-                | OpCode::Ne
-                | OpCode::Lt
-                | OpCode::Le
-                | OpCode::Gt
-                | OpCode::Ge
-                | OpCode::Is
-                | OpCode::IsNot
-                | OpCode::In
-                | OpCode::NotIn
-                | OpCode::Not
-                | OpCode::Bool
-                | OpCode::And
-                | OpCode::Or
-        ),
-        TirType::Str => matches!(opcode, OpCode::ConstStr),
-        TirType::None => matches!(opcode, OpCode::ConstNone),
-        TirType::Bytes => matches!(opcode, OpCode::ConstBytes),
-        _ => false,
-    }
+    opcode_operand_independent_result_tir_type(*opcode).is_some_and(|ty| &ty == expected)
 }
 
 /// Clone a block, remapping all ValueIds using a fresh-value allocator.
@@ -769,6 +727,67 @@ mod tests {
                 );
             }
             other => panic!("expected Branch terminator, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn operand_dependent_producers_do_not_specialize_type_guard() {
+        for (opcode, guard_ty) in [
+            (OpCode::Div, "INT"),
+            (OpCode::Shl, "INT"),
+            (OpCode::And, "BOOL"),
+        ] {
+            let mut func = TirFunction::new(format!("f_{opcode:?}"), vec![], TirType::None);
+
+            let lhs = func.fresh_value();
+            let rhs = func.fresh_value();
+            let value = func.fresh_value();
+            let arg = func.fresh_value();
+            let ok = func.fresh_value();
+            let guarded = func.fresh_block();
+
+            {
+                let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+                entry.ops.push(make_const_int(lhs, 4));
+                entry.ops.push(make_const_int(rhs, 2));
+                entry.ops.push(make_op(opcode, vec![lhs, rhs], vec![value]));
+                entry.terminator = Terminator::Branch {
+                    target: guarded,
+                    args: vec![value],
+                };
+            }
+
+            func.blocks.insert(
+                guarded,
+                TirBlock {
+                    id: guarded,
+                    args: vec![TirValue {
+                        id: arg,
+                        ty: TirType::DynBox,
+                    }],
+                    ops: vec![make_type_guard(arg, ok, guard_ty)],
+                    terminator: Terminator::Return { values: vec![ok] },
+                },
+            );
+
+            let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+
+            assert_eq!(
+                stats.values_changed, 0,
+                "{opcode:?} must not prove {guard_ty} without operand-dependent type refinement"
+            );
+            assert_eq!(stats.ops_removed, 0);
+            match &func.blocks[&func.entry_block].terminator {
+                Terminator::Branch { target, .. } => assert_eq!(*target, guarded),
+                other => panic!("expected Branch terminator, got {:?}", other),
+            }
+            assert!(
+                func.blocks[&guarded]
+                    .ops
+                    .iter()
+                    .any(|op| op.opcode == OpCode::TypeGuard),
+                "{opcode:?} path should keep the generic TypeGuard"
+            );
         }
     }
 

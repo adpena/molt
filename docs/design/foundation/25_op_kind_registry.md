@@ -124,6 +124,21 @@ Current schema note: `op_kinds.toml` now also owns `result_arity`
 instead of maintaining a parallel opcode-to-result-count match. The generator
 rejects `variable` unless the opcode is on the audited context-dependent
 whitelist, so fixed-result opcodes cannot quietly escape verifier coverage.
+The same table owns opcode-intrinsic result types through
+`operand_independent_result_type`, generating
+`opcode_operand_independent_result_type_table` and
+`opcode_operand_independent_result_tir_type`. Operand-dependent producers
+(`Div`, shifts, arithmetic, `and`/`or`, indexing, iterators, calls, and tuple
+builders) deliberately stay absent so `type_refine.rs` proves them only from
+operand/attr facts, while `block_versioning.rs`, `branchless_count.rs`, and
+`gvn.rs` consume the generated intrinsic table instead of private opcode
+matches. GVN constant-key eligibility is also a generated fact:
+`gvn_value_keyed_constant_opcodes` feeds
+`opcode_is_gvn_value_keyed_constant_table`, keeping `ConstBigInt` out until it
+has an exact non-colliding value-key lane. Type-refine's proven map consumes
+the same intrinsic result-type oracle while ignoring plain `DynBox`, so payload
+identity and guard-proof seeding no longer share a private pass-local opcode
+list.
 The registry also owns `state_machine_opcodes` and generates
 `opcode_is_state_machine_table`; linear CFG transforms such as the TIR inliner
 and module-slot promotion consume that table instead of carrying private

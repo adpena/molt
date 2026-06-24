@@ -61,6 +61,18 @@ RUSTFMT_TMP = ROOT / "tmp" / "gen_op_kinds"
 # fallback classification).
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 _RESULT_ARITY_VALUES = {"zero", "one", "two", "variable"}
+_OPERAND_INDEPENDENT_RESULT_TYPES = {
+    "i64",
+    "f64",
+    "bool",
+    "str",
+    "none",
+    "bytes",
+    "dynbox",
+    "list_dynbox",
+    "dict_dynbox_dynbox",
+    "set_dynbox",
+}
 _VARIABLE_RESULT_ARITY_OPCODES = {
     # Calls may be emitted for value-producing expressions or result-discarding
     # statements. The return-value fact is present only when TIR carries a result.
@@ -189,11 +201,15 @@ _OPCODE_FACT_SETS = (
     "refcount_balance_dec_opcodes",
     "lowered_state_machine_body_opcodes",
     "fusion_barrier_opcodes",
+    "generator_fusion_poll_required_yield_opcodes",
+    "generator_fusion_poll_reject_opcodes",
     "state_machine_opcodes",
     "i64_overflow_box_dispatch_opcodes",
     "i64_checked_overflow_triple_opcodes",
     "i64_zero_divisor_guard_opcodes",
     "i64_shift_count_guard_opcodes",
+    "gvn_value_keyed_constant_opcodes",
+    "proven_result_type_seed_opcodes",
     "exception_label_attr_opcodes",
     "exception_transfer_edge_opcodes",
     *(key for key, _field in _PASS_DELTA_FACT_FIELDS),
@@ -224,6 +240,10 @@ _ALIAS_SLOT_OBSERVATION_SETS = (
 _REFCOUNT_BALANCE_ROLE_SETS = (
     "refcount_balance_inc_opcodes",
     "refcount_balance_dec_opcodes",
+)
+_GENERATOR_FUSION_POLL_ROLE_SETS = (
+    "generator_fusion_poll_required_yield_opcodes",
+    "generator_fusion_poll_reject_opcodes",
 )
 
 
@@ -284,6 +304,19 @@ def load_table() -> dict:
                 "audited context-dependent opcodes; use a fixed arity or add "
                 "the opcode to _VARIABLE_RESULT_ARITY_OPCODES with a rationale"
             )
+        result_type = row.get("operand_independent_result_type")
+        if result_type is not None:
+            if result_type not in _OPERAND_INDEPENDENT_RESULT_TYPES:
+                raise OpKindTableError(
+                    f"opcode {name}: operand_independent_result_type must be one "
+                    f"of {sorted(_OPERAND_INDEPENDENT_RESULT_TYPES)}, got "
+                    f"{result_type!r}"
+                )
+            if result_arity != "one":
+                raise OpKindTableError(
+                    f"opcode {name}: operand_independent_result_type requires "
+                    "result_arity = 'one'"
+                )
         # Cross-axis invariant: the `purity` class and `may_throw` bit are two
         # views of the same throw property and MUST agree. `OpEffects::PURE` has
         # `nothrow = true`, so a `pure` opcode cannot also be `may_throw`; a
@@ -351,6 +384,9 @@ def load_table() -> dict:
     )
     _validate_alias_opcode_role_sets(
         data, _REFCOUNT_BALANCE_ROLE_SETS, "refcount balance role"
+    )
+    _validate_alias_opcode_role_sets(
+        data, _GENERATOR_FUSION_POLL_ROLE_SETS, "generator-fusion poll role"
     )
     _validate_alias_memory_region_sets(data)
     _validate_alias_slot_observation_sets(data)
@@ -1167,6 +1203,7 @@ _RS_HEADER = """\
 // but that is absent here is caught by tools/audit_op_kinds.py --check.
 
 use crate::tir::ops::OpCode;
+use crate::tir::types::TirType;
 
 """
 
@@ -1364,6 +1401,34 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_result_arity_arms(opcodes))
     out.append("    }\n}\n\n")
 
+    out.append(_render_operand_independent_result_type(opcodes))
+    out.append("\n")
+
+    gvn_value_keyed_constants = list(data.get("gvn_value_keyed_constant_opcodes", []))
+    out.append(
+        "/// Whether a constant opcode is safe for GVN's current exact ValueKey\n"
+        "/// payload extraction. ConstBigInt stays false until it has a non-colliding\n"
+        "/// key lane. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_gvn_value_keyed_constant_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, gvn_value_keyed_constants))
+    out.append("    }\n}\n\n")
+
+    proven_result_type_seeds = list(data.get("proven_result_type_seed_opcodes", []))
+    out.append(
+        "/// Whether an opcode seeds type_refine's proven result-type map from its\n"
+        "/// intrinsic result type. This is narrower than operand-independent typing:\n"
+        "/// module lookups, builders, and comparisons are typed but are not initial\n"
+        "/// guard-removal proof seeds. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, proven_result_type_seeds))
+    out.append("    }\n}\n\n")
+
     alias_rc_barriers = list(data.get("alias_rc_barrier_opcodes", []))
     alias_heap_barriers = list(data.get("alias_heap_barrier_opcodes", []))
     out.append(
@@ -1432,6 +1497,9 @@ def _render_rs_unformatted(data: dict) -> str:
     )
     out.append(_render_opcode_bool_arms(opcodes, fusion_barriers))
     out.append("    }\n}\n\n")
+
+    out.append(_render_generator_fusion_poll_role(opcodes, data))
+    out.append("\n")
 
     state_machine_opcodes = list(data.get("state_machine_opcodes", []))
     out.append(
@@ -1727,6 +1795,94 @@ def _render_opcode_result_arity_arms(opcodes: list[dict]) -> str:
     return "".join(lines)
 
 
+_OPERAND_INDEPENDENT_RESULT_TYPE_VARIANTS = {
+    "i64": "OperandIndependentResultType::I64",
+    "f64": "OperandIndependentResultType::F64",
+    "bool": "OperandIndependentResultType::Bool",
+    "str": "OperandIndependentResultType::Str",
+    "none": "OperandIndependentResultType::None",
+    "bytes": "OperandIndependentResultType::Bytes",
+    "dynbox": "OperandIndependentResultType::DynBox",
+    "list_dynbox": "OperandIndependentResultType::ListDynBox",
+    "dict_dynbox_dynbox": "OperandIndependentResultType::DictDynBoxDynBox",
+    "set_dynbox": "OperandIndependentResultType::SetDynBox",
+}
+
+
+def _render_operand_independent_result_type(opcodes: list[dict]) -> str:
+    lines = [
+        "/// Operand-independent result type facts for opcodes whose single result\n",
+        "/// type is intrinsic to the opcode. Operand-, attr-, and builtin-dependent\n",
+        "/// opcodes deliberately return None and are inferred by type_refine.rs.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum OperandIndependentResultType {\n",
+        "    I64,\n",
+        "    F64,\n",
+        "    Bool,\n",
+        "    Str,\n",
+        "    None,\n",
+        "    Bytes,\n",
+        "    DynBox,\n",
+        "    ListDynBox,\n",
+        "    DictDynBoxDynBox,\n",
+        "    SetDynBox,\n",
+        "}\n\n",
+        "impl OperandIndependentResultType {\n",
+        "    #[inline]\n",
+        "    pub fn to_tir_type(self) -> TirType {\n",
+        "        match self {\n",
+        "            OperandIndependentResultType::I64 => TirType::I64,\n",
+        "            OperandIndependentResultType::F64 => TirType::F64,\n",
+        "            OperandIndependentResultType::Bool => TirType::Bool,\n",
+        "            OperandIndependentResultType::Str => TirType::Str,\n",
+        "            OperandIndependentResultType::None => TirType::None,\n",
+        "            OperandIndependentResultType::Bytes => TirType::Bytes,\n",
+        "            OperandIndependentResultType::DynBox => TirType::DynBox,\n",
+        "            OperandIndependentResultType::ListDynBox => {\n",
+        "                TirType::List(Box::new(TirType::DynBox))\n",
+        "            }\n",
+        "            OperandIndependentResultType::DictDynBoxDynBox => {\n",
+        "                TirType::Dict(Box::new(TirType::DynBox), Box::new(TirType::DynBox))\n",
+        "            }\n",
+        "            OperandIndependentResultType::SetDynBox => {\n",
+        "                TirType::Set(Box::new(TirType::DynBox))\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n\n",
+        "/// Operand-independent result type by opcode. EXHAUSTIVE over OpCode so new\n",
+        "/// opcodes cannot silently inherit or miss an intrinsic result-type fact.\n",
+        "#[inline]\n",
+        "pub fn opcode_operand_independent_result_type_table(\n",
+        "    opcode: OpCode,\n",
+        ") -> Option<OperandIndependentResultType> {\n",
+        "    match opcode {\n",
+    ]
+    for row in opcodes:
+        name = row["name"]
+        type_name = row.get("operand_independent_result_type")
+        variant = (
+            f"Some({_OPERAND_INDEPENDENT_RESULT_TYPE_VARIANTS[type_name]})"
+            if type_name is not None
+            else "None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.extend(
+        [
+            "    }\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub fn opcode_operand_independent_result_tir_type(\n",
+            "    opcode: OpCode,\n",
+            ") -> Option<TirType> {\n",
+            "    opcode_operand_independent_result_type_table(opcode)\n",
+            "        .map(OperandIndependentResultType::to_tir_type)\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
 def _render_pass_delta_opcode_facts(opcodes: list[dict], data: dict) -> str:
     fact_sets = {
         field: set(data.get(key, [])) for key, field in _PASS_DELTA_FACT_FIELDS
@@ -1866,6 +2022,11 @@ _REFCOUNT_BALANCE_ROLE_VARIANTS = {
     "refcount_balance_dec_opcodes": "RefcountBalanceRole::Decrement",
 }
 
+_GENERATOR_FUSION_POLL_ROLE_VARIANTS = {
+    "generator_fusion_poll_required_yield_opcodes": "GeneratorFusionPollRole::RequiredYield",
+    "generator_fusion_poll_reject_opcodes": "GeneratorFusionPollRole::Reject",
+}
+
 
 def _render_refcount_balance_role(opcodes: list[dict], data: dict) -> str:
     role_by_opcode: dict[str, str] = {}
@@ -1914,6 +2075,49 @@ def _render_refcount_balance_role(opcodes: list[dict], data: dict) -> str:
     for row in opcodes:
         name = row["name"]
         variant = role_by_opcode.get(name, "RefcountBalanceRole::NotRefcountBalance")
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_generator_fusion_poll_role(opcodes: list[dict], data: dict) -> str:
+    role_by_opcode: dict[str, str] = {}
+    for key, variant in _GENERATOR_FUSION_POLL_ROLE_VARIANTS.items():
+        for opcode in data.get(key, []):
+            role_by_opcode[opcode] = variant
+
+    lines = [
+        "/// Generator-fusion poll-body opcode role. Phase-1 fusion requires at\n",
+        "/// least one RequiredYield and rejects any Reject opcode; Neutral opcodes\n",
+        "/// do not decide eligibility by themselves.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum GeneratorFusionPollRole {\n",
+        "    Neutral,\n",
+        "    RequiredYield,\n",
+        "    Reject,\n",
+        "}\n\n",
+        "impl GeneratorFusionPollRole {\n",
+        "    #[inline]\n",
+        "    pub fn is_required_yield(self) -> bool {\n",
+        "        matches!(self, GeneratorFusionPollRole::RequiredYield)\n",
+        "    }\n\n",
+        "    #[inline]\n",
+        "    pub fn rejects_fusion(self) -> bool {\n",
+        "        matches!(self, GeneratorFusionPollRole::Reject)\n",
+        "    }\n",
+        "}\n\n",
+        "/// Generator-fusion poll role by opcode. EXHAUSTIVE over OpCode so a new\n",
+        "/// generator/state opcode cannot silently become fusable through a neutral\n",
+        "/// default in generator_fusion.rs.\n",
+        "#[inline]\n",
+        "pub fn opcode_generator_fusion_poll_role_table(\n",
+        "    opcode: OpCode,\n",
+        ") -> GeneratorFusionPollRole {\n",
+        "    match opcode {\n",
+    ]
+    for row in opcodes:
+        name = row["name"]
+        variant = role_by_opcode.get(name, "GeneratorFusionPollRole::Neutral")
         lines.append(f"        OpCode::{name} => {variant},\n")
     lines.append("    }\n}\n")
     return "".join(lines)
