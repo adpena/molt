@@ -28,6 +28,7 @@ from tests.cli.process_guard import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+ARTIFACT_STATE = importlib.import_module("molt.cli.artifact_state")
 LOCKFILES = importlib.import_module("molt.cli.lockfiles")
 PROJECT_ROOTS = importlib.import_module("molt.cli.project_roots")
 
@@ -4633,7 +4634,7 @@ def test_discover_module_graph_prunes_removed_persisted_dependency(
 
 def test_resolved_artifact_hash_key_is_cached(tmp_path: Path) -> None:
     artifact = tmp_path / "dist" / "output.o"
-    cli._resolved_artifact_hash_key.cache_clear()
+    ARTIFACT_STATE._resolved_artifact_hash_key.cache_clear()
 
     first = cli._resolved_artifact_hash_key(str(artifact))
     second = cli._resolved_artifact_hash_key(str(artifact))
@@ -4651,14 +4652,19 @@ def test_backend_fingerprint_path_uses_cached_artifact_hash(
     cli._resolved_artifact_hash_key.cache_clear()
 
     calls = 0
-    original = cli._resolved_artifact_hash_key
+    original = ARTIFACT_STATE._resolved_artifact_hash_key
 
     def wrapped(path_str: str) -> str:
         nonlocal calls
         calls += 1
         return original(path_str)
 
-    monkeypatch.setattr(cli, "_resolved_artifact_hash_key", wrapped, raising=True)
+    monkeypatch.setattr(
+        ARTIFACT_STATE,
+        "_resolved_artifact_hash_key",
+        wrapped,
+        raising=True,
+    )
 
     first = cli._backend_fingerprint_path(tmp_path, artifact, "dev-fast")
     second = cli._backend_fingerprint_path(tmp_path, artifact, "dev-fast")
@@ -4671,7 +4677,7 @@ def test_backend_fingerprint_path_uses_cached_artifact_hash(
 
 def test_artifact_state_path_is_cached(tmp_path: Path) -> None:
     artifact = tmp_path / "dist" / "output.o"
-    cli._artifact_state_path_cached.cache_clear()
+    ARTIFACT_STATE._artifact_state_path_cached.cache_clear()
 
     first = cli._artifact_state_path(
         tmp_path,
@@ -4701,7 +4707,7 @@ def test_artifact_sync_state_path_uses_cached_artifact_state_path(
     cli._artifact_state_path_cached.cache_clear()
 
     calls = 0
-    original = cli._artifact_state_path_cached
+    original = ARTIFACT_STATE._artifact_state_path_cached
 
     def wrapped(
         build_state_root_str: str,
@@ -4722,7 +4728,12 @@ def test_artifact_sync_state_path_uses_cached_artifact_state_path(
             extension,
         )
 
-    monkeypatch.setattr(cli, "_artifact_state_path_cached", wrapped, raising=True)
+    monkeypatch.setattr(
+        ARTIFACT_STATE,
+        "_artifact_state_path_cached",
+        wrapped,
+        raising=True,
+    )
 
     first = cli._artifact_sync_state_path(tmp_path, artifact)
     second = cli._artifact_sync_state_path(tmp_path, artifact)
