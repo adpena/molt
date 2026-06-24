@@ -9,7 +9,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 | metric | value |
 | --- | --- |
-| hand_classified_matches | 45 |
+| hand_classified_matches | 44 |
 | critical_hand_classifications | 1 |
 | handset_classifications | 30 |
 | debt_markers_total | 526 |
@@ -37,7 +37,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | god_file | `runtime/molt-backend/src/tir/lower_to_simple.rs` | 8188 lines (ceiling 4000) |
 | medium | god_file | `runtime/molt-backend/src/native_backend/simple_backend.rs` | 7860 lines (ceiling 4000) |
 
-## TOP DELETION CANDIDATES (31) — replace, don't just delete
+## TOP DELETION CANDIDATES (30) — replace, don't just delete
 
 | where | what | replacement authority | equivalence gate |
 | --- | --- | --- | --- |
@@ -45,7 +45,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | `runtime/molt-backend/src/tir/lower_to_simple.rs:1651` | hand-classified `match` over 108 opcodes ( | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-backend/src/tir/verify.rs:235` | hand-classified `match` over 74 opcodes (s | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-backend/src/tir/type_refine.rs:1218` | hand-classified `match` over 56 opcodes (s | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
-| `runtime/molt-backend/src/tir/passes/licm.rs:103` | hand-classified `match` over 5 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-backend/src/tir/passes/inliner.rs:1209` | hand-classified `match` over 4 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-backend/src/tir/passes/refcount_elim.rs…` | hand-classified `match` over 3 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-backend/src/tir/passes/block_versioning…` | hand-classified `match` over 38 opcodes (s | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
@@ -61,7 +60,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | `runtime/molt-backend/src/tir/passes/value_range.rs:1…` | hand-classified `match` over 8 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-backend/src/tir/passes/vectorize.rs:569` | hand-classified `match` over 8 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
 | `runtime/molt-backend/src/tir/ssa.rs:1326` | hand-classified `match` over 7 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
-| … | _11 more_ | | |
+| `runtime/molt-backend/src/tir/type_refine.rs:298` | hand-classified `match` over 7 opcodes (si | op_kinds.toml [[opcode]] row / classifier set (r | tools/gen_op_kinds.py --check + cargo test |
+| … | _10 more_ | | |
 
 ## TOP TOOLING GAPS
 
@@ -95,8 +95,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | 7521 lines (ceiling 4000) | `runtime/molt-runtime-http/src/functions_http.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7473 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/platform.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7326 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functions_http.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
+| medium | 7229 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7188 lines (ceiling 2500) | `src/molt/stdlib/asyncio/__init__.py` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
-| medium | 7180 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 7120 lines (ceiling 4000) | `runtime/molt-runtime/src/call/bind.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6803 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/io.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | medium | 6726 lines (ceiling 4000) | `runtime/molt-runtime/src/async_rt/sockets.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
@@ -120,7 +120,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 5709 lines (ceiling 4000) | `runtime/molt-runtime-regex/src/regex.rs` | extract cohesive submodules along legible seams (Lattner: one responsibility per |
 | … | _15 more_ | | run `--json` for full list |
 
-### semantic_fallthrough (75)
+### semantic_fallthrough (74)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
@@ -128,7 +128,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | medium | hand-classified `match` over 108 opcodes (silent default) | `runtime/molt-backend/src/tir/lower_to_simple.rs:1651` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 74 opcodes (silent default) | `runtime/molt-backend/src/tir/verify.rs:235` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 56 opcodes (silent default) | `runtime/molt-backend/src/tir/type_refine.rs:1218` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
-| medium | hand-classified `match` over 5 opcodes (silent default) | `runtime/molt-backend/src/tir/passes/licm.rs:103` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 4 opcodes (silent default) | `runtime/molt-backend/src/tir/passes/inliner.rs:1209` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 3 opcodes (silent default) | `runtime/molt-backend/src/tir/passes/refcount_elim.rs:710` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
 | medium | hand-classified `match` over 38 opcodes (silent default) | `runtime/molt-backend/src/tir/passes/block_versioning.rs:135` | if this encodes op semantics, migrate into op_kinds.toml ([[opcode]] row / class |
@@ -164,7 +163,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | `matches!` hand-set of 8 opcodes (implicit-false default) | `runtime/molt-backend/src/tir/passes/overflow_peel.rs:147` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 8 opcodes (implicit-false default) | `runtime/molt-backend/src/tir/passes/value_range.rs:1327` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
 | low | `matches!` hand-set of 8 opcodes (implicit-false default) | `runtime/molt-backend/src/tir/passes/vectorize.rs:129` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
-| … | _35 more_ | | run `--json` for full list |
+| low | `matches!` hand-set of 6 opcodes (implicit-false default) | `runtime/molt-backend/src/tir/function.rs:198` | if this encodes a semantic property, add a classifier set to op_kinds.toml and q |
+| … | _34 more_ | | run `--json` for full list |
 
 ### debt_marker (392)
 

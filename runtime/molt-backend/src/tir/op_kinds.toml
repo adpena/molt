@@ -82,6 +82,9 @@
 #   - i64_zero_divisor_guard_opcodes - opcode-only raw-i64 division-family fact.
 #                  These ops require a nonzero divisor proof before raw i64 LIR
 #                  can be used or before CheckException can be proven redundant.
+#   - i64_shift_count_guard_opcodes - opcode-only raw-i64 shift-family fact.
+#                  These ops require a count proof in [0, 63] before hoist/machine
+#                  shift guard sites can treat them as nothrow and well-defined.
 #
 # NB: TOML requires bare top-level keys (the classifier arrays) to precede any
 # [[array-of-tables]] section, so they appear first.
@@ -319,6 +322,15 @@ i64_zero_divisor_guard_opcodes = [
     "Div",
     "FloorDiv",
     "Mod",
+]
+
+# i64_shift_count_guard_opcodes: raw i64 hoist/lowering proof for these binary
+# opcodes must prove the count operand is in the valid machine-shift range
+# [0, 63]. Python shifts with negative counts raise; unchecked machine shifts
+# with oversized counts silently mask/wrap on backends.
+i64_shift_count_guard_opcodes = [
+    "Shl",
+    "Shr",
 ]
 
 literal_payload_opcodes = [

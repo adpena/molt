@@ -13,18 +13,10 @@
 # EXACTLY ONCE (resurrect), stays usable, and is destroyed once on the final
 # drain. Byte-identical to N1/N1000.
 #
-# STATUS: the IC SIGSEGV is FIXED (this no longer crashes), but a SEPARATE,
-# pre-existing defect — the loop-body finalizer-drop gap (task #58 / design-27
-# ownership lattice, parallel-session-owned) — means a construct-and-`del` inside
-# a `while`/`for` loop never lowers a per-iteration finalizer-aware DecRef, so
-# `__del__` does not fire for the loop-local instances. This is NOT the IC bug:
-# the IDENTICAL class constructed+del'd STRAIGHT-LINE (cold OR warm IC) finalizes
-# correctly (see resurrect_once_N1 and the straight-line IC-warm probe). Marked
-# xfail against #58 until loop-body drop placement lands; it auto-flips to a loud
-# xpass-failure the moment the loop-drop arc is fixed.
-# NOTE: byte-identical on the LLVM backend (which lowers loop-body finalizer
-# drops correctly) — the gap is NATIVE-Cranelift-specific drop lowering.
-# MOLT_META: xfail=molt xfail_reason=#58-loop-body-finalizer-drop-gap-NATIVE-cranelift-only-not-the-IC-fix
+# STATUS: native differential pass. The historical IC SIGSEGV and the later
+# loop-body finalizer-drop gap are both fixed for this warm-call-site shape:
+# the loop-local instances run `__del__`, resurrect, remain usable, and are
+# freed once on the final drain.
 import gc
 
 box = []

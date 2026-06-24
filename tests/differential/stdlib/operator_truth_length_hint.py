@@ -27,6 +27,15 @@ class HintRaisesTypeError:
         raise TypeError("bad hint")
 
 
+class LengthHintTypeError(TypeError):
+    pass
+
+
+class HintRaisesTypeErrorSubclass:
+    def __length_hint__(self):
+        raise LengthHintTypeError("bad hint subclass")
+
+
 class HintRaisesValueError:
     def __length_hint__(self):
         raise ValueError("bad hint")
@@ -47,6 +56,14 @@ class LenTypeErrorAndHint:
 
     def __length_hint__(self):
         return 5
+
+
+class LenTypeErrorSubclassAndHint:
+    def __len__(self):
+        raise LengthHintTypeError("bad len subclass")
+
+    def __length_hint__(self):
+        return 10
 
 
 class LenValueErrorAndHint:
@@ -75,6 +92,14 @@ if __name__ == "__main__":
     print("default_negative", operator.length_hint(Empty(), -1))
     print("default_bool", operator.length_hint(Empty(), True))
     print("hint_type_error_falls_back", operator.length_hint(HintRaisesTypeError(), 9))
+    print(
+        "hint_type_error_subclass_falls_back",
+        operator.length_hint(HintRaisesTypeErrorSubclass(), 11),
+    )
+    print(
+        "len_type_error_subclass_falls_back",
+        operator.length_hint(LenTypeErrorSubclassAndHint()),
+    )
     for label, value in (
         ("len_value_error", LenValueErrorAndHint()),
         ("negative_len", NegativeLenAndHint()),

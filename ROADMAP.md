@@ -27,6 +27,9 @@ folds are eligible only when class analysis proves default `object.__new__`.
 Runtime intrinsic default metadata is now manifest-owned and registered into
 function `__defaults__`; `operator.length_hint(obj, default=0)` uses that
 metadata and preserves CPython's `__len__`-before-`__length_hint__` precedence.
+Its `TypeError` fallback path now uses the shared runtime exception matcher, so
+custom `TypeError` subclasses match the same way in length hints, attribute
+error clearing, and C-API error matching.
 Deforestation fusion eligibility has also moved from a private pass-local
 purity table into the generated op-kind registry through
 `fusion_barrier_opcodes`; raw-i64 zero-divisor guard eligibility now uses the

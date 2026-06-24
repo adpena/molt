@@ -194,18 +194,7 @@ pub extern "C" fn molt_err_matches(exc_type_bits: MoltHandle) -> i32 {
         let Some(exc_bits) = exception_last_bits_noinc(_py) else {
             return 0;
         };
-        let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr() else {
-            return 0;
-        };
-        let mut class_bits = unsafe { exception_class_bits(exc_ptr) };
-        if class_bits == 0 || obj_from_bits(class_bits).is_none() {
-            let kind_bits = unsafe { exception_kind_bits(exc_ptr) };
-            class_bits = exception_type_bits(_py, kind_bits);
-        }
-        if class_bits == 0 || obj_from_bits(class_bits).is_none() {
-            return 0;
-        }
-        let matches = issubclass_bits(class_bits, exc_type_bits);
+        let matches = exception_matches_type(_py, exc_bits, exc_type_bits);
         if matches { 1 } else { 0 }
     })
 }

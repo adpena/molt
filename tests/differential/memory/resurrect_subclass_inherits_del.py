@@ -11,15 +11,9 @@
 # distinct classes (each class is a distinct type-call IC entry), so a marker
 # mishandle would crash on whichever class warms first.
 #
-# STATUS: the IC SIGSEGV is FIXED (no crash across either subclass's warm IC).
-# The remaining byte-divergence is the SEPARATE loop-body finalizer-drop gap
-# (task #58 / design-27, parallel-session-owned): the construct+del happen inside
-# a `while` loop, so the inherited `__del__` never fires for the loop-local
-# instances. NOT the IC bug. Marked xfail against #58 until loop-body drop
-# placement lands; auto-flips to xpass-failure when fixed.
-# NOTE: byte-identical on the LLVM backend (which lowers loop-body finalizer
-# drops correctly) — the gap is NATIVE-Cranelift-specific drop lowering.
-# MOLT_META: xfail=molt xfail_reason=#58-loop-body-finalizer-drop-gap-NATIVE-cranelift-only-not-the-IC-fix
+# STATUS: native differential pass. The inherited `__del__` runs for loop-local
+# instances across both warm subclasses, proving the marker-call IC and loop-body
+# finalizer drop placement agree for inherited finalizers.
 import gc
 
 box = []
