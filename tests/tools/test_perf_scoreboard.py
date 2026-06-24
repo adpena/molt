@@ -271,7 +271,7 @@ def test_board_carries_provenance_and_passes_schema() -> None:
         "authoritative": True,
     }
     doc = _board([g], provenance=prov)
-    problems = ps._validate_schema(doc)
+    problems = ps.validate_scoreboard_doc(doc)
     assert problems == [], f"schema problems: {problems}"
     assert doc["provenance"]["origin_sha"] == "a" * 40
     assert doc["summary"]["cells_green"] == 1

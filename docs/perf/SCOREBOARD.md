@@ -377,6 +377,10 @@ partial is a valid scoreboard document.
 
 ## The scoreboard JSON schema
 
+`tools/perf_schema.py` is the schema authority: it owns the schema version, the
+verdict/classification vocabularies, required top-level/provenance/summary/cell
+fields, and the validation helpers used by `tools/perf_scoreboard.py`.
+
 Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 `bench/scoreboard/logs_<gitrev>/`.
 
