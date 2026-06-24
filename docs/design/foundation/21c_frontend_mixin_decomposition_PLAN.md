@@ -6,12 +6,13 @@ Companion to 21 (program), 21b (crate graph). Design only. -->
 # 21c — Decompose `SimpleTIRGenerator` into Visitor Mixins (Move #2 / F1)
 
 ## Verdict
-Move #2 is **partially complete, but the mega-class is still the mega-class.** Eleven mixins
+Move #2 is **partially complete, but the mega-class is still the mega-class.** Thirteen mixins
 exist and are wired into the MRO, yet `src/molt/frontend/__init__.py` remains a god file and
-`SimpleTIRGenerator` still defines the large emit/analysis surface inline. The recent refactor extracted the
+`SimpleTIRGenerator` still defines the large emit and optimizer/midend surface inline. The recent refactor extracted the
 infrastructure (`_types.py` leaf, `_protocol.py` typing shim, `_MixinBase` pattern) +
 serialization, async/generator lowering, pattern matching, calls, classes, comprehensions, and
-expression, function/lambda/return, and statement visitor subfamilies. The remaining move is still a Python package refactor (no compile step): the win is
+expression, function/lambda/return, statement visitor subfamilies, collection/static analysis,
+and pattern recognizers. The remaining move is still a Python package refactor (no compile step): the win is
 edit-locality + parallel ownership, NOT build time. Constraint: move-only, ZERO behavior change.
 
 ## Current state (verified)
@@ -23,7 +24,8 @@ edit-locality + parallel ownership, NOT build time. Constraint: move-only, ZERO 
   calls `super().visit(node)` →
   resolves to `NodeVisitor.visit` (the dispatcher). **This ordering is load-bearing — every
   iteration must keep `ast.NodeVisitor` last.**
-- Already extracted: `visitors/async_gen.py` (AsyncGenVisitorMixin), `visitors/calls.py`
+- Already extracted: `lowering/analysis_collect_static.py` (AnalysisCollectStaticMixin),
+  `lowering/analysis_patterns.py` (AnalysisPatternMixin), `visitors/async_gen.py` (AsyncGenVisitorMixin), `visitors/calls.py`
   (CallVisitorMixin), `visitors/classes.py`
   (ClassDefVisitorMixin), `visitors/pattern_match.py` (PatternMatchMixin, owns
   `visit_Match`), `visitors/comprehensions.py` (ComprehensionMixin), `visitors/functions.py`
@@ -54,8 +56,8 @@ edit-locality + parallel ownership, NOT build time. Constraint: move-only, ZERO 
 ## Target layout
 New mixins (each `class XxxMixin(_MixinBase):` with the verbatim `_MixinBase` shim header from
 `calls.py` L41-47 — `if TYPE_CHECKING: _MixinBase = _GeneratorProtocol else: _MixinBase = object`):
-`lowering/{emit, analysis}.py` (emit = the family-agnostic `_emit_*` primitives;
-analysis = `_collect_*` + `_static_*` + `_midend_*` + the 19 loop-recognizer `_match_*`).
+`lowering/emit.py` (the family-agnostic `_emit_*` primitives) plus a follow-on optimizer/midend
+split for the remaining canonicalization, SCCP, CSE, policy, and borrowing helpers.
 
 Final assembly in `__init__.py` keeps `__init__`/shared state/overridden `visit()` + the public
 `compile_to_tir`, with the base tuple `class SimpleTIRGenerator(<remaining mixins>,
@@ -100,7 +102,7 @@ PEP-634. **Route them to `lowering/analysis.py`, NOT `pattern_match.py`.**
 
 ## Ordering (each commit green; largest/most-contended first per dependency)
 1. `lowering/emit.py` (158 `_emit_*` — most-shared, biggest contention reducer; unblocks visitors).
-2. `lowering/analysis.py` (38 `_collect_*` + 6 `_midend_*` + 4 `_static_*` + the 19 loop `_match_*`).
+2. DONE: analysis collection/static helpers and pattern recognizers landed as two under-ceiling mixins.
 3. DONE: statement visitors landed as three under-ceiling subfamilies.
 4. DONE: `visitors/expressions.py` (17).
 5. DONE: `visitors/async_gen.py` (6 async/gen).
