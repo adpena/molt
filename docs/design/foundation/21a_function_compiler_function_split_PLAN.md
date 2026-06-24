@@ -6,19 +6,23 @@ the working tree (post-T1 molt-tir extraction). Move-only / zero-logic-change. -
 
 # 21a — Decompose `function_compiler` (Move #1, function-extraction)
 
-## Executive finding: premise corrected, work already ~40% done
+## Executive finding: premise corrected; M1.1-M1.3 now landed
 
 doc 21's original move #1 ("STRICT move-only **file** split into opcode-family
-submodules") was investigated, **REFUSED, and replaced** by the DX lane; execution of
-the replacement is ~40% complete in the tree. Do not undo it. Three load-bearing facts:
+submodules") was investigated, **REFUSED, and replaced** by the DX lane. Execution of
+the replacement is in flight in the tree; M1.1 `arith`, M1.2 `compare`, and M1.3
+`unary_logic` are landed as standalone `fc/` handlers. Do not undo it. Three
+load-bearing facts:
 
 1. **`function_compiler` is already a directory module, partially extracted.**
-   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **28,144 lines**,
+   `runtime/molt-backend/src/native_backend/function_compiler.rs` (now **21,576 lines**,
    down from doc 21's 39,043) declares `mod fc;` (line 10) → `function_compiler/fc/`, a
-   subtree of **27 already-extracted family handler files** (~12,800 LOC: `list_ops.rs`,
+   subtree of **29 already-extracted handler files** (`arith.rs`, `compare.rs`,
+   `unary_logic.rs`, `list_ops.rs`,
    `dict_ops.rs`, `set_ops.rs`, `attrs.rs`, `exceptions.rs`, `text_predicates.rs` (1,716),
-   `text_transform.rs` (1,203), `vec_reductions.rs` (1,140), …). 33 `fc::<family>::handle_*`
-   delegations are already wired into the dispatch.
+   `text_transform.rs` (1,203), `vec_reductions.rs` (1,140), …). The dispatch now routes
+   arithmetic, comparison, and unary/logic families through `fc::<family>::handle_*`
+   handlers as well.
 
 2. **The file-split buys ~0 build win and was explicitly rejected.** `dx_baseline.md`
    §3.3/§4/§6 (MEASURED) proves `function_compiler.rs` is essentially ONE method,
@@ -54,21 +58,25 @@ still to extract). Strictly move-only / zero-logic-change / no-API-widening.
 ### 1.2 Dispatch + already-extracted families
 Dispatch fn `SimpleBackend::compile_func_inner` (3097); match at 4475 (~140 arms) closing 24587; epilogue at 24589 for any arm that fell through (did not `continue`). Already delegated (33): vec_reductions, scalar_builtins, callargs, list_ops, dict_ops, set_ops, generators, indexing, text_predicates, text_transform, statistics, type_conversions, memoryview_buffer, dataclass, parse_ops, future_promise, object_construct, modules, class_ops, type_checks, exceptions, context_mgmt, exception_stack, file_io, attrs.
 
-### 1.3 Remaining inline families → extraction targets (largest-value first)
+### 1.3 Extracted and remaining inline families
+Landed in `fc/`:
+- `fc::arith::handle_arith_op` (`arith.rs`) covers arithmetic, bitwise, shift, division/modulo, power, `round`, and `trunc`.
+- `fc::compare::handle_compare_op` (`compare.rs`) covers `lt|le|gt|ge|eq|ne|string_eq`.
+- `fc::unary_logic::handle_unary_logic_op` (`unary_logic.rs`) covers `is|not|neg|unary_neg|pos|unary_pos|abs|invert|bool|cast_bool|builtin_bool|and|or|contains`.
+
+Remaining inline families, current as of the M1.3 landing:
+
 | Handler | Op-kinds (arm labels, line) | Range | ≈LOC |
 |---|---|---|---|
-| `fc::arith::handle_arith_op` | add(4725),checked_add(5077),inplace_add(5184),sub(5515),inplace_sub(5787),mul(6038),inplace_mul(6304),bit_or/inplace(6548/6686),bit_and/inplace(6777/6914),bit_xor/inplace(7005/7142),lshift\|shl\|inplace(7233),rshift\|shr\|inplace(7282),matmul\|inplace(7329),div\|inplace(7376),floordiv\|inplace(7709),mod\|inplace(7988),floor_div\|binop_floor_div(8253),pow\|inplace(8359),pow_mod(8626),round(8678),trunc(8732) | 4725–8759 | ~4,030 |
-| `fc::compare::handle_compare_op` | lt(11439),le(11623),gt(11799),ge(11976),eq(12156),ne(12313),string_eq(12469) | 11439–12509 | ~1,070 |
-| `fc::unary_logic::handle_unary_logic_op` | is(12579),not(12619),neg\|unary_neg(12687),pos\|unary_pos(12820),abs(12909),invert(13017),bool\|cast_bool\|builtin_bool(13119),and(13232),or(13322),contains(13408) | 12579–13455 | ~877 |
-| `fc::calls::handle_call_op` | call(15494),call_internal(15991),call_guarded(16260),call_func(16634),invoke_ffi(16987),call_bind\|call_indirect(17096),call_method_ic(17205),call_super_method_ic(17307),call_method(17419) | 15494–17629 | ~2,135 |
-| `fc::control_flow::handle_branch_op` | if(18145),else(18655),end_if(18890) | 18145–19714 | ~1,570 |
-| `fc::loops::handle_loop_op` | loop_start(19715),loop_index_start(19945),loop_break_if_exception(20573),loop_break_if_true(20713),loop_break_if_false(20906),loop_break(21117),loop_index_next(21198),loop_continue(21245),loop_end(21396) | 19715–21459 | ~1,745 |
-| `fc::memory::handle_store_load_op` | alloc\|stack_alloc(21460),alloc_class*(21502–21597),alloc_task(21598),store(21696),store_init(22110),load(22421),closure_load(22451),closure_store(22486),guarded_load(22532),guarded_field_*(22562–22864),guard_type\|guard_tag(22865),guard_layout\|guard_dict_shape(22929) | 21460–23017 | ~1,560 |
-| `fc::ret_jump::handle_ret_jump_op` | ret(23018),ret_void(23351),jump(23457),br_if(23542),label\|state_label(23776),store_var(23859),delete_var(24145),load_var\|copy_var(24220),load_param(24567) | 23018–24586 | ~1,570 |
-| `fc::coroutine::handle_coroutine_op` | state_switch(13569),state_transition(13608),state_yield(13843),chan_send_yield(13925),chan_recv_yield(14093),chan_new(14249),chan_drop(14277),spawn(14302),cancel_token_*(14326–14544),call_async(14546) | 13569–14611 | ~1,040 |
-| `fc::funcobj::handle_funcobj_op` | builtin_func(14612),func_new(14666),func_new_closure(14747),code_new(14859),code_slot_set(15006),fn_ptr_code_set(15032),asyncgen_locals_register(15086),gen_locals_register(15152),code_slots_init(15219),frame_locals_set(15247),line(15276),missing(15401),function_closure_bits(15416),bound_method_new(15446) | 14612–15493 | ~880 |
+| `fc::calls::handle_call_op` | call(9557),call_internal(10054),call_guarded(10323),call_func(10697),invoke_ffi(11050),call_bind\|call_indirect(11159),call_method_ic(11268),call_super_method_ic(11370),call_method(11482), bound-method specializations, getargv/getframe/sys_executable | 9557–11902 | ~2,345 |
+| `fc::control_flow::handle_branch_op` | if(12208),else(12718),end_if(12953) | 12208–13777 | ~1,570 |
+| `fc::loops::handle_loop_op` | loop_start(13778),loop_index_start(14008),loop_break_if_exception(14636),loop_break_if_true(14776),loop_break_if_false(14969),loop_break(15180),loop_index_next(15261),loop_continue(15308),loop_end(15324) | 13778–15522 | ~1,745 |
+| `fc::memory::handle_store_load_op` | alloc\|stack_alloc(15523),alloc_class*(15565–15629),alloc_task(15661),store(15759),store_init(16173),load(16484),closure_load(16514),closure_store(16549),guarded_load(16595),guarded_field_*(16625–16822),guard_type\|guard_tag(16928),guard_layout\|guard_dict_shape(16992) | 15523–17080 | ~1,560 |
+| `fc::ret_jump::handle_ret_jump_op` | ret(17081),ret_void(17414),jump(17520),br_if(17605),label\|state_label(17839),phi(17915),store_var(17922),delete_var(18208),load_var\|copy_var(18283),load_param(18630) | 17081–18648 | ~1,570 |
+| `fc::coroutine::handle_coroutine_op` | state_switch(7632),state_transition(7671),state_yield(7906),chan_send_yield(7988),chan_recv_yield(8156),chan_new(8312),chan_drop(8340),spawn(8365),cancel_token_*(8389–8568),cancelled/cancel_current,call_async(8609) | 7632–8674 | ~1,040 |
+| `fc::funcobj::handle_funcobj_op` | builtin_func(8675),func_new(8729),func_new_closure(8810),code_new(8922),code_slot_set(9069),fn_ptr_code_set(9095),asyncgen_locals_register(9149),gen_locals_register(9215),code_slots_init(9282),trace slots/frame_locals_set/line/missing/function_closure_bits/GPU intrinsics | 8675–9556 | ~880 |
 
-Small arms (constants, len/id/ord/chr, iter*, print*, raise, check_exception) stay inline. Total extractable ≈16,000 lines → `compile_func_inner` shrinks to ~6K.
+Small arms (constants, len/id/ord/chr, iter*, print*, raise, check_exception) stay inline. Remaining extractable work is now concentrated in the seven families above.
 
 ### 1.4 Shared helper + shared-state sets
 - **Free helpers** (1–2983, reached via `super::*`): `var_get_boxed_overflow_safe_base`, `box_raw_i64_value_overflow_safe`, `ensure_boxed_overflow_safe`, `def_var_from_*`, `def_var_named`, `import_func_ref`, `merge_rebind_*`. Plus assoc fns `SimpleBackend::import_func_id_split`, `SimpleBackend::intern_data_segment`.
@@ -114,14 +122,14 @@ op-local closures reconstructed with identical captures (template: `list_ops.rs:
 
 ## 4. Ordering — each an independently-compiling move-only commit, green build
 - **M1.0 Prep audit:** per family, grep arm range for outer-loop `break;` + any private helper used; confirm `OpFlow` sufficiency; record exact param set (split-borrowed locals + caches).
-- **M1.1 `fc::arith`** (4725–8759, ~4,030) — biggest win, self-contained.
-- **M1.2 `fc::compare`** (11439–12509, ~1,070).
-- **M1.3 `fc::unary_logic`** (12579–13455, ~877).
-- **M1.4 `fc::funcobj`** (14612–15493, ~880) and **M1.5 `fc::coroutine`** (13569–14611, ~1,040) — independent.
-- **M1.6 `fc::calls`** (15494–17629, ~2,135) — highest care (labeled-block, IC dispatch); audit `break` first.
-- **M1.7 `fc::memory`** (21460–23017, ~1,560) and **M1.8 `fc::ret_jump`** (23018–24586, ~1,570).
-- **M1.9 `fc::control_flow`** (18145–19714, ~1,570) and **M1.10 `fc::loops`** (19715–21459, ~1,745) — LAST (densest shared-mutable-state: if_stack/loop_stack/phi side-tables; most likely to need `OpFlow::Break`).
-Stop-anywhere: M1.1–M1.3 alone removes ~6,000 lines.
+- **M1.1 `fc::arith`** — landed.
+- **M1.2 `fc::compare`** — landed.
+- **M1.3 `fc::unary_logic`** — landed.
+- **M1.4 `fc::funcobj`** (8675–9556, ~880) and **M1.5 `fc::coroutine`** (7632–8674, ~1,040) — independent.
+- **M1.6 `fc::calls`** (9557–11902, ~2,345) — highest care (labeled-block, IC dispatch); audit `break` first.
+- **M1.7 `fc::memory`** (15523–17080, ~1,560) and **M1.8 `fc::ret_jump`** (17081–18648, ~1,570).
+- **M1.9 `fc::control_flow`** (12208–13777, ~1,570) and **M1.10 `fc::loops`** (13778–15522, ~1,745) — LAST (densest shared-mutable-state: if_stack/loop_stack/phi side-tables; most likely to need `OpFlow::Break`).
+Stop-anywhere: M1.1–M1.3 removed the largest arithmetic/compare/unary families and converted them into separate codegen units; continue with M1.4/M1.5 or the larger M1.6 call family next.
 
 ## 5. Verification gates (per commit — 34e3bddbf / dx_baseline §9; isolated CARGO_TARGET_DIR)
 - **G1 0-warning builds, both feature sets:** `cargo build -p molt-backend --features native-backend --profile dev-fast` (0 warns); `--features wasm-backend` (fc is `#[cfg(feature="native-backend")]` → compiles out under wasm-only; diff warning set vs pre-split, no NEW warns); `cargo clippy -p molt-backend --features native-backend -- -D warnings`; `cargo clippy --features "native-backend llvm" --lib -- -D warnings`.
