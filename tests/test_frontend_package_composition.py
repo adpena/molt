@@ -140,9 +140,14 @@ def test_mixin_modules_import_standalone() -> None:
 # fail the moment the Protocol and the assembled class diverge.
 # ---------------------------------------------------------------------------
 
-# Names provided by ast.NodeVisitor (the dispatch base) / object are NOT part of
-# the generator's own surface and are excluded from the coverage contract.
-_BUILTIN_NAMES = set(dir(ast.NodeVisitor)) | set(dir(object))
+# Names provided by ast.NodeVisitor/object that are NOT part of the generator's
+# own protocol surface. The dispatcher methods are intentionally retained:
+# visitor mixins call ``self.visit(...)`` / ``self.generic_visit(...)`` through
+# the MRO, so the Protocol must model them.
+_NODE_VISITOR_DISPATCH_METHODS = {"generic_visit", "visit"}
+_BUILTIN_NAMES = (set(dir(ast.NodeVisitor)) - _NODE_VISITOR_DISPATCH_METHODS) | set(
+    dir(object)
+)
 
 
 def _protocol_methods() -> set[str]:
@@ -161,14 +166,11 @@ def _protocol_attrs() -> set[str]:
 
 
 def _assembled_class_methods() -> set[str]:
-    """Public methods contributed by SimpleTIRGenerator + all its mixins.
-
-    Excludes dunder methods and anything inherited from ast.NodeVisitor/object
-    (the dispatch base and Python builtins, which the Protocol does not model).
-    """
+    """Public methods contributed by SimpleTIRGenerator, its mixins, and the
+    NodeVisitor dispatcher methods used by those mixins."""
     names: set[str] = set()
     for klass in SimpleTIRGenerator.__mro__:
-        if klass in (object, ast.NodeVisitor):
+        if klass is object:
             continue
         for name, val in vars(klass).items():
             if name.startswith("__"):
