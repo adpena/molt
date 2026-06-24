@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
+from molt._host_exit import process_returncode_for_direct_os_exit
 from molt.cli.completion import _completion_script
 
 
@@ -151,11 +152,10 @@ def _flush_standard_streams() -> None:
 
 
 def _process_exit_code(returncode: int | None) -> int:
-    if returncode is None:
-        return 1
-    if returncode < 0:
-        return 128 + abs(returncode)
-    return returncode
+    return process_returncode_for_direct_os_exit(
+        returncode,
+        windows=_cli_module()._is_windows_process_model(),
+    )
 
 
 def _cli_hash_seed_reexec_argv() -> list[str] | None:
@@ -172,10 +172,11 @@ def _cli_hash_seed_reexec_argv() -> list[str] | None:
 
 
 def _reexec_cli_with_hash_seed(env: Mapping[str, str]) -> None:
-    argv = _cli_hash_seed_reexec_argv()
+    cli_module = _cli_module()
+    argv = cli_module._cli_hash_seed_reexec_argv()
     if argv is None:
         return
-    if _is_windows_process_model():
+    if cli_module._is_windows_process_model():
         try:
             completed = subprocess.run(argv, env=dict(env), check=False)
         except OSError as exc:
@@ -198,11 +199,17 @@ def _ensure_cli_hash_seed() -> None:
     if os.environ.get("PYTHONHASHSEED") == desired:
         return
     if os.environ.get(_hash_seed_sentinel_env()) == "1":
-        return
+        print(
+            "molt: deterministic PYTHONHASHSEED restart did not apply "
+            f"(expected {desired!r}, got {os.environ.get('PYTHONHASHSEED')!r}).",
+            file=sys.stderr,
+        )
+        _flush_standard_streams()
+        os._exit(127)
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = desired
     env[_hash_seed_sentinel_env()] = "1"
-    _reexec_cli_with_hash_seed(env)
+    _cli_module()._reexec_cli_with_hash_seed(env)
 
 
 _BUILD_ESSENTIAL_FLAGS = frozenset(
