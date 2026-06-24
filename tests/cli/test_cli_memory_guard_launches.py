@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -362,6 +363,8 @@ def test_git_source_commands_use_build_memory_guard(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    deps = importlib.import_module("molt.cli.deps")
+
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -379,9 +382,9 @@ def test_git_source_commands_use_build_memory_guard(
             return subprocess.CompletedProcess(cmd, 0, "tree123\n", "")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(cli, "_run_completed_command", fake_run)
+    monkeypatch.setattr(deps, "_run_completed_command", fake_run)
 
-    resolved, err = cli._resolve_git_ref(
+    resolved, err = deps._resolve_git_ref(
         "https://example.invalid/repo.git",
         "main",
         project_root=tmp_path,
@@ -391,7 +394,7 @@ def test_git_source_commands_use_build_memory_guard(
 
     dest = tmp_path / "vendor" / "pkg"
     dest.parent.mkdir()
-    commit, tree = cli._clone_git_source(
+    commit, tree = deps._clone_git_source(
         "https://example.invalid/repo.git",
         "abc123",
         dest,
