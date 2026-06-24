@@ -31,12 +31,15 @@ deployment claims:
 
 ### Documentation truth
 
-- `PRIMARY_HANDOFF.md` is the canonical fast resume point.
-- `SUPPORT_TEAM.md` remains detailed parallel-lane context for Falcon-OCR WASM.
+- The root `PRIMARY_HANDOFF.md` was retired on 2026-06-24 as stale April
+  context. Use `docs/INDEX.md`, `docs/spec/STATUS.md`, `ROADMAP.md`, and the
+  relevant design/spec area docs for current Molt routing.
+- `SUPPORT_TEAM.md` remains historical parallel-lane context for Falcon-OCR
+  WASM, not proof that the deployed R2 object currently instantiates or returns
+  OCR tokens.
 - Older 2026-04-14 entries below are retained as historical deployment logs,
   including earlier "WASM binary not found / not yet built" observations. They
-  should not be read as the current build claim without the newer handoff
-  context and fresh verification.
+  should not be read as current build claims without fresh verification.
 
 ---
 
