@@ -161,6 +161,7 @@ from molt.cli.command_runtime import (
     _CROSS_MEMORY_GUARD_PREFIX,
     _DIFF_MEMORY_GUARD_PREFIX,
     _load_cli_harness_memory_guard,
+    _resolve_timeout_env,
     _run_completed_command,
     _with_memory_guard_env,
 )
@@ -26468,19 +26469,6 @@ def _load_runtime_feedback(
         hot_functions=hot_functions,
     )
     return summary, path, None
-
-
-def _resolve_timeout_env(env_name: str) -> tuple[float | None, str | None]:
-    raw = os.environ.get(env_name)
-    if raw is None:
-        return None, None
-    try:
-        timeout = float(raw)
-    except ValueError:
-        return None, f"Invalid {env_name} value: {raw}"
-    if timeout <= 0:
-        return None, f"{env_name} must be greater than zero."
-    return timeout, None
 
 
 @contextmanager
