@@ -18,7 +18,7 @@ SRC_ROOT = ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from molt._host_exit import process_returncode_for_direct_os_exit
+from molt._host_exit import process_returncode_for_direct_os_exit  # noqa: E402
 
 PYTEST_OUTER_GUARD_SUMMARY_DIR = ROOT / "tmp" / "pytest-memory-guard"
 PYTEST_TEMP_ROOT = ROOT / "tmp" / "pytest-temproot"
@@ -117,6 +117,9 @@ def handoff_to_outer_guard(argv: Sequence[str], env: Mapping[str, str]) -> None:
                 check=False,
                 **_windows_process_group_kwargs(),
             )
+        except KeyboardInterrupt:
+            _flush_standard_streams()
+            os._exit(130)
         except OSError as exc:
             print(f"pytest memory guard bootstrap: spawn failed: {exc}", file=sys.stderr)
             _flush_standard_streams()

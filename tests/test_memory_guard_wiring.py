@@ -248,6 +248,31 @@ def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> No
     )
 
 
+def test_pytest_startup_windows_handoff_interrupt_exits_cleanly(monkeypatch) -> None:
+    def fake_run(argv, *, env, check, creationflags=0):
+        del argv, env, check, creationflags
+        raise KeyboardInterrupt
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    )
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.subprocess, "run", fake_run)
+    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "_exit", fake_exit)
+
+    try:
+        pytest_memory_guard_bootstrap.handoff_to_outer_guard(
+            [sys.executable, "-m", "pytest"],
+            {},
+        )
+    except SystemExit as exc:
+        assert exc.code == 130
+    else:  # pragma: no cover
+        raise AssertionError("expected interrupted Windows handoff to exit cleanly")
+
+
 def test_repo_test_script_startup_reexecs_under_memory_guard(monkeypatch) -> None:
     captured: dict[str, object] = {}
     script = REPO_ROOT / "tests" / "e2e" / "test_performance_guard.py"
