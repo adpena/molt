@@ -154,8 +154,10 @@ the implementation. For forward-looking priorities, use
   is validated/normalized through the integer-index protocol before any length
   lookup, `__len__` wins over `__length_hint__`, and the normalized default is
   used when neither length surface applies or `__length_hint__` itself raises
-  `TypeError`; non-`TypeError` failures and invalid non-int hint returns
-  propagate.
+  `TypeError` or a `TypeError` subclass; non-`TypeError` failures and invalid
+  non-int hint returns propagate. Runtime exception matching for this fallback
+  now routes through the shared exception matcher used by C-API error matching
+  and attribute-error clearing.
 - Deforestation fusion eligibility is generated from
   `runtime/molt-backend/src/tir/op_kinds.toml` as the exhaustive
   `fusion_barrier_opcodes` classifier. The classifier is intentionally distinct
@@ -168,6 +170,11 @@ the implementation. For forward-looking priorities, use
   lowering and `check_exception_elim`, so boxed-dispatch retention and
   nonzero-divisor exception elimination share one authority for `div`,
   `floordiv`, and `mod`.
+- Raw-i64 machine-shift count safety is registry-owned:
+  `i64_shift_count_guard_opcodes` generates the exhaustive
+  `opcode_requires_i64_shift_count_guard_table` classifier consumed by LICM's
+  throw-condition proof, so shift hoisting reuses one authority for the `[0, 63]`
+  count proof requirement.
 - Literal payload facts are registry-owned through `literal_payload_opcodes` and
   shared by canonicalization and exception-check elimination. Commutative
   reordering, comparison swaps, and ordered binary algebraic folds use adjacent

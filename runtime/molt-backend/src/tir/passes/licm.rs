@@ -45,6 +45,9 @@ use super::value_range::{ValueRange, ValueRangeResult};
 use crate::tir::analysis::{AnalysisManager, DefMap, LoopForest};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    opcode_requires_i64_shift_count_guard_table, opcode_requires_i64_zero_divisor_guard_table,
+};
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
@@ -100,23 +103,22 @@ fn is_hoistable(op: &TirOp, vr: &ValueRangeResult) -> bool {
 ///     documenting the refusal rather than shipping an unsound or fragile gate.
 ///     CSE of `Pow` (under dominance) is unaffected; only the hoist is withheld.
 fn throw_condition_disproven(op: &TirOp, vr: &ValueRangeResult) -> bool {
-    match op.opcode {
-        OpCode::Shl | OpCode::Shr => {
-            // Count operand proven in the valid machine-shift range [0, 63].
-            op.operands.get(1).is_some_and(|&count| {
-                let r = vr.range_of(count);
-                r.lo >= 0 && r.hi <= 63
-            })
-        }
-        OpCode::Div | OpCode::FloorDiv | OpCode::Mod => {
-            // Divisor proven to exclude zero.
-            op.operands
-                .get(1)
-                .is_some_and(|&divisor| vr.range_of(divisor).proves_nonzero())
-        }
-        // Pow's throw condition is not a single-operand range fact — refuse.
-        _ => false,
+    if opcode_requires_i64_shift_count_guard_table(op.opcode) {
+        // Count operand proven in the valid machine-shift range [0, 63].
+        return op.operands.get(1).is_some_and(|&count| {
+            let r = vr.range_of(count);
+            r.lo >= 0 && r.hi <= 63
+        });
     }
+    if opcode_requires_i64_zero_divisor_guard_table(op.opcode) {
+        // Divisor proven to exclude zero.
+        return op
+            .operands
+            .get(1)
+            .is_some_and(|&divisor| vr.range_of(divisor).proves_nonzero());
+    }
+    // Pow's throw condition is not a single-operand range fact — refuse.
+    false
 }
 
 /// Find the preheader block for a loop header.

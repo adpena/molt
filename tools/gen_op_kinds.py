@@ -150,6 +150,7 @@ _OPCODE_FACT_SETS = (
     "alias_slot_never_observer_opcodes",
     "fusion_barrier_opcodes",
     "i64_zero_divisor_guard_opcodes",
+    "i64_shift_count_guard_opcodes",
     "exception_label_attr_opcodes",
     "exception_transfer_edge_opcodes",
 )
@@ -1287,6 +1288,18 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, i64_zero_divisor_guards))
+    out.append("    }\n}\n\n")
+
+    i64_shift_count_guards = list(data.get("i64_shift_count_guard_opcodes", []))
+    out.append(
+        "/// Whether raw-i64 shift hoist/lowering proofs must prove count in [0, 63].\n"
+        "/// EXHAUSTIVE over OpCode so optimizer and backend guards share one\n"
+        "/// source of truth for machine-shift count safety.\n"
+        "#[inline]\n"
+        "pub(crate) fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, i64_shift_count_guards))
     out.append("    }\n}\n\n")
 
     exception_label_attrs = list(data.get("exception_label_attr_opcodes", []))

@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use molt_obj_model::MoltObject;
 
 use crate::builtins::annotations::pep649_enabled;
-use crate::builtins::exceptions::molt_exception_last_pending;
+use crate::builtins::exceptions::{exception_matches_builtin_name, molt_exception_last_pending};
 use crate::{
     FIELD_OFFSET_IC_HIT_COUNT, FIELD_OFFSET_IC_MISS_COUNT, TYPE_ID_CALL_ITER, TYPE_ID_CLASSMETHOD,
     TYPE_ID_DATACLASS, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW,
@@ -21,13 +21,12 @@ use crate::{
     class_layout_version_bits, class_mro_ref, class_mro_vec, class_name_bits, class_name_for_error,
     classmethod_func_bits, clear_exception, dataclass_desc_ptr, dataclass_dict_bits,
     dataclass_fields_ref, dataclass_set_dict_bits, dec_ref_bits, dict_get_in_place, dict_order,
-    dict_set_in_place, exception_class_bits, exception_dict_bits, exception_kind_bits,
-    exception_last_bits_noinc, exception_pending, exception_stack_pop, exception_stack_push,
-    exception_type_bits_from_name, inc_ref_bits, init_atomic_bits, instance_dict_bits,
-    instance_set_dict_bits, intern_static_name, is_builtin_class_bits, is_missing_bits, is_truthy,
-    issubclass_bits, maybe_ptr_from_bits, module_dict_bits, molt_awaitable_await,
-    molt_bound_method_new, molt_function_get_code, molt_function_get_globals, molt_iter,
-    molt_iter_next, obj_eq, obj_from_bits, object_class_bits, object_field_get_ptr_raw,
+    dict_set_in_place, exception_dict_bits, exception_kind_bits, exception_last_bits_noinc,
+    exception_pending, exception_stack_pop, exception_stack_push, inc_ref_bits, init_atomic_bits,
+    instance_dict_bits, instance_set_dict_bits, intern_static_name, is_builtin_class_bits,
+    is_missing_bits, is_truthy, issubclass_bits, maybe_ptr_from_bits, module_dict_bits,
+    molt_awaitable_await, molt_bound_method_new, molt_function_get_code, molt_function_get_globals,
+    molt_iter, molt_iter_next, obj_eq, obj_from_bits, object_class_bits, object_field_get_ptr_raw,
     object_set_class_bits, object_type_id, profile_hit_unchecked, property_get_bits,
     raise_exception, runtime_state, seq_vec_ref, staticmethod_func_bits, string_bytes, string_len,
     string_obj_to_owned, type_name, type_of_bits,
@@ -722,25 +721,7 @@ pub(crate) fn raise_attr_name_type_error(_py: &PyToken<'_>, name_bits: u64) -> u
 
 pub(crate) fn exception_is_attribute_error(_py: &PyToken<'_>, exc_bits: u64) -> bool {
     crate::gil_assert();
-    let exc_obj = obj_from_bits(exc_bits);
-    let Some(exc_ptr) = exc_obj.as_ptr() else {
-        return false;
-    };
-    unsafe {
-        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
-            return false;
-        }
-        let class_bits = exception_class_bits(exc_ptr);
-        if class_bits != 0 {
-            let attr_error_bits = exception_type_bits_from_name(_py, "AttributeError");
-            if attr_error_bits != 0 && issubclass_bits(class_bits, attr_error_bits) {
-                return true;
-            }
-        }
-        let kind_bits = exception_kind_bits(exc_ptr);
-        let kind = string_obj_to_owned(obj_from_bits(kind_bits));
-        kind.as_deref() == Some("AttributeError")
-    }
+    exception_matches_builtin_name(_py, exc_bits, "AttributeError")
 }
 
 pub(crate) fn clear_attribute_error_if_pending(_py: &PyToken<'_>) -> bool {

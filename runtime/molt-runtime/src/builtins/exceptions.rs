@@ -832,6 +832,55 @@ pub(crate) unsafe fn exception_class_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(7 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
+pub(crate) fn exception_match_class_bits(_py: &PyToken<'_>, exc_bits: u64) -> u64 {
+    let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr() else {
+        return 0;
+    };
+    unsafe {
+        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+            return type_of_bits(_py, exc_bits);
+        }
+        let class_bits = exception_class_bits(exc_ptr);
+        if class_bits != 0 && obj_from_bits(class_bits).as_ptr().is_some() {
+            return class_bits;
+        }
+        exception_type_bits(_py, exception_kind_bits(exc_ptr))
+    }
+}
+
+pub(crate) fn exception_matches_type(_py: &PyToken<'_>, exc_bits: u64, exc_type_bits: u64) -> bool {
+    let Some(exc_type_ptr) = obj_from_bits(exc_type_bits).as_ptr() else {
+        return false;
+    };
+    unsafe {
+        if object_type_id(exc_type_ptr) != TYPE_ID_TYPE {
+            return false;
+        }
+    }
+    let class_bits = exception_match_class_bits(_py, exc_bits);
+    class_bits != 0
+        && obj_from_bits(class_bits).as_ptr().is_some()
+        && issubclass_bits(class_bits, exc_type_bits)
+}
+
+pub(crate) fn exception_matches_builtin_name(_py: &PyToken<'_>, exc_bits: u64, name: &str) -> bool {
+    let target_bits = exception_type_bits_from_name(_py, name);
+    if target_bits != 0 && exception_matches_type(_py, exc_bits, target_bits) {
+        return true;
+    }
+    let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr() else {
+        return false;
+    };
+    unsafe {
+        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
+            return false;
+        }
+        let kind_bits = exception_kind_bits(exc_ptr);
+        let kind = string_obj_to_owned(obj_from_bits(kind_bits));
+        kind.as_deref() == Some(name)
+    }
+}
+
 pub(crate) unsafe fn exception_args_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(8 * std::mem::size_of::<u64>()) as *const u64) }
 }
