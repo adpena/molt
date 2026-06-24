@@ -30,7 +30,9 @@ use crate::tir::analysis::{AnalysisManager, ImmediateDoms, PredMap};
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::opcode_is_refcount_heap_exposure_table;
+use crate::tir::op_kinds_generated::{
+    RefcountBalanceRole, opcode_is_refcount_heap_exposure_table, opcode_refcount_balance_role_table,
+};
 use crate::tir::ops::OpCode;
 use crate::tir::passes::alias_analysis::{
     AliasAnalysis, AliasAnalysisResult, build_alias_union_find,
@@ -63,6 +65,18 @@ fn build_def_map(func: &TirFunction) -> HashMap<ValueId, BlockId> {
 /// (the value may escape the stack frame via this operation).
 fn is_heap_exposing(opcode: OpCode) -> bool {
     opcode_is_refcount_heap_exposure_table(opcode)
+}
+
+fn refcount_balance_role(opcode: OpCode) -> RefcountBalanceRole {
+    opcode_refcount_balance_role_table(opcode)
+}
+
+fn is_refcount_balance_op(opcode: OpCode) -> bool {
+    refcount_balance_role(opcode).is_refcount_balance()
+}
+
+fn complementary_refcount_opcode(opcode: OpCode) -> Option<OpCode> {
+    refcount_balance_role(opcode).complementary_opcode()
 }
 
 /// Build the set of ValueIds that have "heap exposure" — they appear as
@@ -185,7 +199,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
         // Step 2a: Remove IncRef/DecRef on StackAlloc values (no pairing needed).
         for i in 0..n {
             let op = &block.ops[i];
-            if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
+            if is_refcount_balance_op(op.opcode)
                 && op
                     .operands
                     .first()
@@ -203,21 +217,15 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                 continue;
             }
             let opcode_i = block.ops[i].opcode;
-            if opcode_i != OpCode::IncRef && opcode_i != OpCode::DecRef {
+            let Some(target_opcode) = complementary_refcount_opcode(opcode_i) else {
                 continue;
-            }
+            };
             let val_i = match block.ops[i].operands.first().copied() {
                 Some(v) => v,
                 None => continue,
             };
 
             // Look forward for the complementary op on the same value.
-            let target_opcode = if opcode_i == OpCode::IncRef {
-                OpCode::DecRef
-            } else {
-                OpCode::IncRef
-            };
-
             let partner: Option<usize> = {
                 let mut result = None;
                 for j in (i + 1)..n {
@@ -270,7 +278,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
         // Collect candidate trailing refcount ops per block: the last op that
         // is IncRef or DecRef with no barrier between it and the block end.
         struct TrailingInfo {
-            opcode: OpCode,
+            role: RefcountBalanceRole,
             val: ValueId,
             /// Index within block.ops
             idx: usize,
@@ -309,13 +317,10 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                     if alias.is_rc_barrier(op) {
                         break;
                     }
-                    if op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef {
+                    let role = refcount_balance_role(op.opcode);
+                    if role.is_refcount_balance() {
                         if let Some(&val) = op.operands.first() {
-                            result = Some(TrailingInfo {
-                                opcode: op.opcode,
-                                val,
-                                idx: i,
-                            });
+                            result = Some(TrailingInfo { role, val, idx: i });
                         }
                         break;
                     }
@@ -348,10 +353,8 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
             }
 
             // Find the leading refcount op in the successor block.
-            let target_opcode = if trail.opcode == OpCode::IncRef {
-                OpCode::DecRef
-            } else {
-                OpCode::IncRef
+            let Some(target_opcode) = trail.role.complementary_opcode() else {
+                continue;
             };
 
             let leading = {
@@ -369,7 +372,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                     // Non-barrier, non-matching op: keep scanning forward past
                     // harmless ops. But stop if we see a different refcount op
                     // on the same value (it could change the refcount balance).
-                    if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
+                    if is_refcount_balance_op(op.opcode)
                         && op.operands.first().copied() == Some(trail.val)
                     {
                         break;
@@ -392,9 +395,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                 && pred_idx < pred_block.ops.len()
             {
                 let op = &pred_block.ops[pred_idx];
-                if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
-                    && op.operands.first().copied().is_some()
-                {
+                if is_refcount_balance_op(op.opcode) && op.operands.first().copied().is_some() {
                     pred_block.ops.remove(pred_idx);
                     stats.ops_removed += 1;
                 }
@@ -404,9 +405,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                 && succ_idx < succ_block.ops.len()
             {
                 let op = &succ_block.ops[succ_idx];
-                if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
-                    && op.operands.first().copied().is_some()
-                {
+                if is_refcount_balance_op(op.opcode) && op.operands.first().copied().is_some() {
                     succ_block.ops.remove(succ_idx);
                     stats.ops_removed += 1;
                 }
@@ -477,9 +476,10 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
             // with no barrier in between, where x is loop-invariant.
             for i in 0..n {
                 let op_i = &block.ops[i];
-                if op_i.opcode != OpCode::IncRef && op_i.opcode != OpCode::DecRef {
+                let role_i = refcount_balance_role(op_i.opcode);
+                let Some(target_opcode) = role_i.complementary_opcode() else {
                     continue;
-                }
+                };
                 let val = match op_i.operands.first().copied() {
                     Some(v) => v,
                     None => continue,
@@ -498,12 +498,6 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                     continue; // Not dominated — not provably invariant.
                 }
 
-                let target_opcode = if op_i.opcode == OpCode::IncRef {
-                    OpCode::DecRef
-                } else {
-                    OpCode::IncRef
-                };
-
                 // Scan forward for the matching pair with no barrier.
                 let mut partner: Option<usize> = None;
                 for j in (i + 1)..n {
@@ -517,7 +511,9 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                     }
                     // If we see the same opcode on the same value, the balance
                     // is different; stop.
-                    if op_j.opcode == op_i.opcode && op_j.operands.first().copied() == Some(val) {
+                    if refcount_balance_role(op_j.opcode) == role_i
+                        && op_j.operands.first().copied() == Some(val)
+                    {
                         break;
                     }
                 }
@@ -603,7 +599,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
 
             let before_len = block.ops.len();
             block.ops.retain(|op| {
-                if (op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
+                if is_refcount_balance_op(op.opcode)
                     && op.operands.first().is_some_and(|v| {
                         let root = aliases.root(*v);
                         !heap_exposed.contains(&root) && !finalizer_roots.contains(&root)
@@ -680,18 +676,19 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                 None => continue,
             };
 
-            // Track net IncRef count per value within this block.
-            // Starts at 0; IncRef increments, DecRef decrements.
-            let mut inc_balance: HashMap<ValueId, i32> = HashMap::new();
+            // Track net refcount-balance deltas per value within this block.
+            // Starts at 0; increment roles add, decrement roles subtract.
+            let mut refcount_balance: HashMap<ValueId, i32> = HashMap::new();
 
             for op in &mut block.ops {
                 if let Some(&val) = op.operands.first() {
-                    match op.opcode {
-                        OpCode::IncRef => {
-                            *inc_balance.entry(val).or_insert(0) += 1;
+                    match refcount_balance_role(op.opcode) {
+                        RefcountBalanceRole::Increment => {
+                            *refcount_balance.entry(val).or_insert(0) +=
+                                RefcountBalanceRole::Increment.delta();
                         }
-                        OpCode::DecRef => {
-                            let balance = inc_balance.entry(val).or_insert(0);
+                        RefcountBalanceRole::Decrement => {
+                            let balance = refcount_balance.entry(val).or_insert(0);
                             // Unique ownership: value is from an alloc, no extra
                             // IncRefs were issued (balance == 0), the value has no
                             // heap exposure, and it is NOT a `__del__`-bearing
@@ -707,10 +704,10 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager, post_drop: bool) -
                                 op.opcode = OpCode::Free;
                                 stats.values_changed += 1;
                             } else {
-                                *balance -= 1;
+                                *balance += RefcountBalanceRole::Decrement.delta();
                             }
                         }
-                        _ => {}
+                        RefcountBalanceRole::NotRefcountBalance => {}
                     }
                 }
             }
@@ -1332,7 +1329,7 @@ mod tests {
         let remaining_refs: Vec<_> = entry
             .ops
             .iter()
-            .filter(|op| op.opcode == OpCode::IncRef || op.opcode == OpCode::DecRef)
+            .filter(|op| is_refcount_balance_op(op.opcode))
             .collect();
         assert_eq!(remaining_refs.len(), 2);
         for op in &remaining_refs {
