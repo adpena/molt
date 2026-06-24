@@ -1,0 +1,53 @@
+{
+  "task": "type_refine_generated_result_type_rules",
+  "timestamp_utc": "20260624T191624Z",
+  "host": {
+    "os": "Windows 11 AMD64",
+    "shell": "powershell",
+    "cwd": "C:\\Users\\adpen\\OneDrive\\Documents\\molt"
+  },
+  "touched_authority": [
+    "runtime/molt-tir/src/tir/op_kinds.toml",
+    "tools/gen_op_kinds.py",
+    "runtime/molt-tir/src/tir/type_refine.rs",
+    "runtime/molt-tir/src/tir/op_kinds_generated.rs",
+    "tests/test_gen_op_kinds.py",
+    "docs/design/foundation/25_op_kind_registry.md",
+    "docs/spec/README.md",
+    "docs/spec/STATUS.md",
+    "docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md"
+  ],
+  "proof": [
+    {
+      "command": "uv run --python 3.12 python tools/gen_op_kinds.py --check",
+      "result": "passed: op-kind generated files in sync"
+    },
+    {
+      "command": "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py",
+      "result": "passed: 83 passed"
+    },
+    {
+      "command": "cargo test -p molt-tir type_refine --lib",
+      "result": "passed: 49 passed"
+    },
+    {
+      "command": "cargo fmt -p molt-tir --check",
+      "result": "passed"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/audit_op_kinds.py --check",
+      "result": "passed: dangerous-cell baseline is exact"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/structural_audit.py --check",
+      "result": "passed: 498 findings; 4 metrics improved"
+    },
+    {
+      "command": "uv run --python 3.12 python -m pytest -q tests/test_frontend_midend_passes.py -p no:cacheprovider",
+      "result": "passed: 107 passed, 1 existing pytest config warning"
+    }
+  ],
+  "unowned_unstaged_changes_observed": [
+    "runtime/molt-backend/src/native_backend/function_compiler/fc/*.rs"
+  ]
+}

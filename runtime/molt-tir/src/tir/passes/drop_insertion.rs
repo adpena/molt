@@ -163,6 +163,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    opcode_is_drop_insertion_return_deferral_barrier_table,
+    opcode_is_drop_insertion_suspension_point_table,
+};
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::liveness::{TirLiveness, TirLivenessResult};
 use crate::tir::values::{TirValue, ValueId};
@@ -737,14 +741,13 @@ fn insert_exception_region_match_drops(
 /// True if `opcode` is a suspension point that escapes live values into a
 /// coroutine frame (design §2.9).
 fn is_suspension_point(opcode: OpCode) -> bool {
-    matches!(
-        opcode,
-        OpCode::StateYield
-            | OpCode::ChanSendYield
-            | OpCode::ChanRecvYield
-            | OpCode::Yield
-            | OpCode::YieldFrom
-    )
+    opcode_is_drop_insertion_suspension_point_table(opcode)
+}
+
+/// True if an opcode's operands are explicit ownership rails that block
+/// return-boundary deferral for touched finalizer-sensitive roots.
+fn is_return_deferral_barrier(opcode: OpCode) -> bool {
+    opcode_is_drop_insertion_return_deferral_barrier_table(opcode)
 }
 
 /// A stable identifier for ONE outgoing arc of a terminator, so the mixed-
@@ -2326,7 +2329,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                     }
                 }
                 for op in &block.ops {
-                    if matches!(op.opcode, OpCode::IncRef | OpCode::DecRef | OpCode::Free) {
+                    if is_return_deferral_barrier(op.opcode) {
                         for &operand in &op.operands {
                             disqualified.insert(canon(operand));
                         }

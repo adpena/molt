@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use super::PassStats;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_operand_independent_result_tir_type;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -31,29 +32,20 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         }
     }
 
-    // Collect constant values and infer result types from constant ops.
+    // Collect constant values and infer operand-independent result types.
     for block in func.blocks.values() {
         for op in &block.ops {
-            match op.opcode {
-                OpCode::ConstInt => {
-                    if let Some(AttrValue::Int(v)) = op.attrs.get("value") {
-                        for &res in &op.results {
-                            const_map.insert(res, *v);
-                            type_map.insert(res, TirType::I64);
-                        }
-                    }
+            if op.opcode == OpCode::ConstInt
+                && let Some(AttrValue::Int(v)) = op.attrs.get("value")
+            {
+                for &res in &op.results {
+                    const_map.insert(res, *v);
                 }
-                OpCode::ConstFloat => {
-                    for &res in &op.results {
-                        type_map.insert(res, TirType::F64);
-                    }
+            }
+            if let Some(ty) = opcode_operand_independent_result_tir_type(op.opcode) {
+                for &res in &op.results {
+                    type_map.insert(res, ty.clone());
                 }
-                OpCode::ConstBool => {
-                    for &res in &op.results {
-                        type_map.insert(res, TirType::Bool);
-                    }
-                }
-                _ => {}
             }
         }
     }

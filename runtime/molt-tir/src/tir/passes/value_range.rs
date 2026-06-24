@@ -37,6 +37,12 @@ use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{
+    ValueRangeCondNarrowRule, ValueRangeConstFoldRule, ValueRangeContainerLengthRule,
+    ValueRangeTransferRule, opcode_value_range_cond_narrow_rule_table,
+    opcode_value_range_const_fold_rule_table, opcode_value_range_container_length_rule_table,
+    opcode_value_range_transfer_rule_table,
+};
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::values::ValueId;
 
@@ -1250,10 +1256,10 @@ fn transfer_op_range(op: &TirOp, result: &ValueRangeResult) -> Option<IntRange> 
             .get(i)
             .and_then(|&v| result.const_int.get(&result.resolve(v)).copied())
     };
-    match op.opcode {
-        OpCode::Add if op.operands.len() == 2 => Some(r(0).add(r(1))),
-        OpCode::Sub if op.operands.len() == 2 => Some(r(0).sub(r(1))),
-        OpCode::Mul if op.operands.len() == 2 => {
+    match opcode_value_range_transfer_rule_table(op.opcode) {
+        ValueRangeTransferRule::Add if op.operands.len() == 2 => Some(r(0).add(r(1))),
+        ValueRangeTransferRule::Sub if op.operands.len() == 2 => Some(r(0).sub(r(1))),
+        ValueRangeTransferRule::Mul if op.operands.len() == 2 => {
             let (a, b) = (r(0), r(1));
             // A FULL operand makes the product FULL; guard to avoid i64::MIN ·
             // huge corner-product noise (still sound, just no information).
@@ -1263,11 +1269,17 @@ fn transfer_op_range(op: &TirOp, result: &ValueRangeResult) -> Option<IntRange> 
                 Some(a.mul(b))
             }
         }
-        OpCode::Neg if op.operands.len() == 1 => Some(r(0).neg()),
-        OpCode::BitAnd if op.operands.len() == 2 => Some(r(0).bit_and(r(1), c(0), c(1))),
-        OpCode::BitOr if op.operands.len() == 2 => Some(r(0).bit_or_xor(r(1), true)),
-        OpCode::BitXor if op.operands.len() == 2 => Some(r(0).bit_or_xor(r(1), false)),
-        OpCode::Mod if op.operands.len() == 2 => {
+        ValueRangeTransferRule::Neg if op.operands.len() == 1 => Some(r(0).neg()),
+        ValueRangeTransferRule::BitAnd if op.operands.len() == 2 => {
+            Some(r(0).bit_and(r(1), c(0), c(1)))
+        }
+        ValueRangeTransferRule::BitOr if op.operands.len() == 2 => {
+            Some(r(0).bit_or_xor(r(1), true))
+        }
+        ValueRangeTransferRule::BitXor if op.operands.len() == 2 => {
+            Some(r(0).bit_or_xor(r(1), false))
+        }
+        ValueRangeTransferRule::Mod if op.operands.len() == 2 => {
             // Constant divisor (Python sign-of-divisor semantics); else a
             // sign-uniform, non-zero divisor range.
             if let Some(cd) = c(1) {
@@ -1280,11 +1292,11 @@ fn transfer_op_range(op: &TirOp, result: &ValueRangeResult) -> Option<IntRange> 
                 Some(IntRange::mod_range(r(1)))
             }
         }
-        OpCode::Shr if op.operands.len() == 2 => match c(1) {
+        ValueRangeTransferRule::Shr if op.operands.len() == 2 => match c(1) {
             Some(s) => Some(r(0).shr_const(s)),
             None => Some(IntRange::FULL_I64),
         },
-        OpCode::Shl if op.operands.len() == 2 => match c(1) {
+        ValueRangeTransferRule::Shl if op.operands.len() == 2 => match c(1) {
             Some(s) => Some(r(0).shl_const(s)),
             None => Some(IntRange::FULL_I64),
         },
@@ -1324,18 +1336,8 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
         changed = false;
         for block in func.blocks.values() {
             for op in &block.ops {
-                if !matches!(
-                    op.opcode,
-                    OpCode::Add
-                        | OpCode::Sub
-                        | OpCode::Mul
-                        | OpCode::Shl
-                        | OpCode::Shr
-                        | OpCode::BitAnd
-                        | OpCode::BitOr
-                        | OpCode::BitXor
-                ) || op.operands.len() != 2
-                {
+                let const_fold_rule = opcode_value_range_const_fold_rule_table(op.opcode);
+                if const_fold_rule == ValueRangeConstFoldRule::None || op.operands.len() != 2 {
                     continue;
                 }
                 let Some(&a) = result.const_int.get(&result.resolve(op.operands[0])) else {
@@ -1344,14 +1346,14 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
                 let Some(&b) = result.const_int.get(&result.resolve(op.operands[1])) else {
                     continue;
                 };
-                let folded = match op.opcode {
-                    OpCode::Add => a.checked_add(b),
-                    OpCode::Sub => a.checked_sub(b),
-                    OpCode::Mul => a.checked_mul(b),
+                let folded = match const_fold_rule {
+                    ValueRangeConstFoldRule::Add => a.checked_add(b),
+                    ValueRangeConstFoldRule::Sub => a.checked_sub(b),
+                    ValueRangeConstFoldRule::Mul => a.checked_mul(b),
                     // `a << b`: only fold a non-negative, in-i64-range count whose
                     // result fits i64 (checked). A count `>= 64`, `< 0`, or an
                     // overflowing result yields no constant (boxed BigInt path).
-                    OpCode::Shl => {
+                    ValueRangeConstFoldRule::Shl => {
                         if (0..64).contains(&b) {
                             a.checked_shl(b as u32).filter(|&v| (v >> b) == a)
                         } else {
@@ -1360,17 +1362,17 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
                     }
                     // `a >> b`: arithmetic floor shift; only a non-negative,
                     // in-range count. `a >> b` never overflows i64.
-                    OpCode::Shr => {
+                    ValueRangeConstFoldRule::Shr => {
                         if (0..64).contains(&b) {
                             Some(a >> b)
                         } else {
                             None
                         }
                     }
-                    OpCode::BitAnd => Some(a & b),
-                    OpCode::BitOr => Some(a | b),
-                    OpCode::BitXor => Some(a ^ b),
-                    _ => None,
+                    ValueRangeConstFoldRule::BitAnd => Some(a & b),
+                    ValueRangeConstFoldRule::BitOr => Some(a | b),
+                    ValueRangeConstFoldRule::BitXor => Some(a ^ b),
+                    ValueRangeConstFoldRule::None => None,
                 };
                 if let Some(v) = folded {
                     for &r in &op.results {
@@ -1385,8 +1387,8 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
     // Second pass: container lengths (depends on constants for list-repeat).
     for block in func.blocks.values() {
         for op in &block.ops {
-            match op.opcode {
-                OpCode::BuildList => {
+            match opcode_value_range_container_length_rule_table(op.opcode) {
+                ValueRangeContainerLengthRule::FixedLiteral => {
                     let len = op.operands.len() as i64;
                     for &r in &op.results {
                         result
@@ -1394,50 +1396,44 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
                             .insert(r, KnownLength::Constant(len));
                     }
                 }
-                OpCode::BuildTuple => {
-                    let len = op.operands.len() as i64;
-                    for &r in &op.results {
-                        result
+                ValueRangeContainerLengthRule::ListRepeat => {
+                    if op.operands.len() == 2 {
+                        // list-repeat: Mul(list_of_1, count) → length == count.
+                        // Resolve operands through copies to reach the BuildList /
+                        // const sources.
+                        let (a, b) = (
+                            result.resolve(op.operands[0]),
+                            result.resolve(op.operands[1]),
+                        );
+                        let count = if result
                             .container_length
-                            .insert(r, KnownLength::Constant(len));
-                    }
-                }
-                OpCode::Mul if op.operands.len() == 2 => {
-                    // list-repeat: Mul(list_of_1, count) → length == count.
-                    // Resolve operands through copies to reach the BuildList /
-                    // const sources.
-                    let (a, b) = (
-                        result.resolve(op.operands[0]),
-                        result.resolve(op.operands[1]),
-                    );
-                    let count = if result
-                        .container_length
-                        .get(&a)
-                        .is_some_and(|l| matches!(l, KnownLength::Constant(1)))
-                    {
-                        Some(b)
-                    } else if result
-                        .container_length
-                        .get(&b)
-                        .is_some_and(|l| matches!(l, KnownLength::Constant(1)))
-                    {
-                        Some(a)
-                    } else {
-                        None
-                    };
-                    if let Some(count_val) = count {
-                        for &r in &op.results {
-                            if let Some(&c) = result.const_int.get(&count_val) {
-                                result.container_length.insert(r, KnownLength::Constant(c));
-                            } else {
-                                result
-                                    .container_length
-                                    .insert(r, KnownLength::SameAs(count_val));
+                            .get(&a)
+                            .is_some_and(|l| matches!(l, KnownLength::Constant(1)))
+                        {
+                            Some(b)
+                        } else if result
+                            .container_length
+                            .get(&b)
+                            .is_some_and(|l| matches!(l, KnownLength::Constant(1)))
+                        {
+                            Some(a)
+                        } else {
+                            None
+                        };
+                        if let Some(count_val) = count {
+                            for &r in &op.results {
+                                if let Some(&c) = result.const_int.get(&count_val) {
+                                    result.container_length.insert(r, KnownLength::Constant(c));
+                                } else {
+                                    result
+                                        .container_length
+                                        .insert(r, KnownLength::SameAs(count_val));
+                                }
                             }
                         }
                     }
                 }
-                OpCode::CallBuiltin => {
+                ValueRangeContainerLengthRule::LenCall => {
                     let name = op
                         .attrs
                         .get("name")
@@ -1453,7 +1449,7 @@ fn collect_constants_and_lengths(func: &TirFunction, result: &mut ValueRangeResu
                         }
                     }
                 }
-                _ => {}
+                ValueRangeContainerLengthRule::None => {}
             }
         }
     }
@@ -1674,9 +1670,10 @@ fn narrow_from_header_guards(
         //   Lt(var, n) ⇒ var <= n - 1
         //   Le(var, n) ⇒ var <= n
         let bound_const = result.const_int.get(&bound).copied();
+        let narrow_rule = opcode_value_range_cond_narrow_rule_table(*opcode);
         for &b in body {
-            match opcode {
-                OpCode::Lt => {
+            match narrow_rule {
+                ValueRangeCondNarrowRule::LtUpperExclusive => {
                     if let Some(n) = bound_const {
                         let narrow = IntRange::new(i64::MIN, n.saturating_sub(1));
                         narrow_block(result, b, var, narrow);
@@ -1684,7 +1681,7 @@ fn narrow_from_header_guards(
                     // Symbolic `var < bound` regardless of constancy.
                     result.record_symbolic_lt(b, var, bound);
                 }
-                OpCode::Le => {
+                ValueRangeCondNarrowRule::LeUpperInclusive => {
                     if let Some(n) = bound_const {
                         let narrow = IntRange::new(i64::MIN, n);
                         narrow_block(result, b, var, narrow);
@@ -1692,7 +1689,7 @@ fn narrow_from_header_guards(
                     // Le(var, n) ⇒ var < n+1; the symbolic-len path is Lt-only
                     // (the numeric path covers the constant n+1 length case).
                 }
-                _ => {}
+                ValueRangeCondNarrowRule::None => {}
             }
         }
     }

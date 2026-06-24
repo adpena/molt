@@ -257,7 +257,10 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
 
     assert "structural_kinds_from_registry(registry)" in audit
     assert "_STRUCTURAL_CLASSIFIER_FNS" not in audit
-    assert "extract_rust_str_slice_const" not in audit
+    structural_fn = audit.split("def structural_kinds_from_registry", maxsplit=1)[
+        1
+    ].split("def extract_vec_reduction_ops", maxsplit=1)[0]
+    assert "extract_rust_str_slice_const" not in structural_fn
 
 
 def test_simpleir_control_kind_validation_rejects_drift() -> None:
@@ -519,6 +522,21 @@ def test_audit_sources_backend_vocab_from_registry() -> None:
     assert set(res.fresh_value_prefixes) == set(data["classifier_fresh_value_prefixes"])
 
 
+def test_audit_native_arms_include_extracted_op_family_authority() -> None:
+    """Native dispatch coverage follows fc/* HANDLED_KINDS after decomposition."""
+    audit = _audit()
+    native_arms = audit.extract_native_simpleir_arm_kinds()
+    memory_consts = audit.extract_rust_str_slice_consts(
+        ROOT / "runtime/molt-backend/src/native_backend/function_compiler/fc/memory.rs",
+        {"HANDLED_KINDS"},
+    )
+
+    assert "guarded_field_init" in memory_consts["HANDLED_KINDS"]
+    assert "guarded_field_init" in native_arms
+    assert "guarded_field_set" in native_arms
+    assert "const" in native_arms
+
+
 def test_guarded_field_init_has_one_wire_spelling() -> None:
     """`GUARDED_SETATTR_INIT` has one cross-component wire spelling.
 
@@ -583,7 +601,7 @@ def test_guarded_field_init_has_one_wire_spelling() -> None:
 def test_effects_rs_delegates_to_generated_tables() -> None:
     """The effect oracle in effects.rs must DELEGATE to the generated tables (no
     hand-maintained `matches!` of opcodes), and the generated tables must embed a
-    correct exhaustive arm per opcode for may_throw / side_effecting / purity.
+    correct exhaustive arm per opcode for may_throw / side_effecting / effects.
     This is the structural kill for the matches!-default-false trap: the source of
     truth is the table, and a new opcode cannot compile without a row."""
     gen = _gen()
@@ -597,37 +615,51 @@ def test_effects_rs_delegates_to_generated_tables() -> None:
     for fn, table in (
         ("opcode_may_throw", "opcode_may_throw_table"),
         ("opcode_is_side_effecting", "opcode_is_side_effecting_table"),
-        ("opcode_effects", "opcode_purity_table"),
+        ("opcode_effects", "opcode_effects_table"),
     ):
         assert f"op_kinds_generated::{table}" in effects, (
             f"effects.rs {fn} must delegate to the generated {table}"
         )
+    for stale in (
+        "EXPECTED_MOVABLE",
+        "EXPECTED_GVN_",
+        "assert_opcode_is_listed",
+        "OpcodePurity",
+        "opcode_purity_table",
+    ):
+        assert stale not in effects, f"effects.rs still carries stale effect lane {stale}"
 
     # The generated may_throw / side_effecting tables embed the table's booleans.
+    all_opcodes_block = rendered.split("pub const ALL_OPCODES")[1].split(
+        "fn opcode_may_throw_table"
+    )[0]
     may_block = rendered.split("fn opcode_may_throw_table")[1].split(
         "fn opcode_is_side_effecting_table"
     )[0]
     side_block = rendered.split("fn opcode_is_side_effecting_table")[1].split(
-        "fn opcode_purity_table"
+        "fn opcode_effects_table"
     )[0]
-    purity_block = rendered.split("fn opcode_purity_table")[1]
-    purity_variant = {
-        "pure": "OpcodePurity::Pure",
-        "pure_may_throw": "OpcodePurity::PureMayThrow",
-        "impure": "OpcodePurity::Impure",
+    effects_block = rendered.split("fn opcode_effects_table")[1]
+    effect_const = {
+        "pure": "OPCODE_EFFECTS_PURE",
+        "pure_may_throw": "OPCODE_EFFECTS_PURE_MAY_THROW",
+        "impure": "OPCODE_EFFECTS_IMPURE",
     }
     for row in data["opcode"]:
         name = row["name"]
         mt = "true" if row["may_throw"] else "false"
         se = "true" if row["side_effecting"] else "false"
+        assert f"OpCode::{name}," in all_opcodes_block, (
+            f"ALL_OPCODES entry for {name} missing"
+        )
         assert f"OpCode::{name} => {mt}," in may_block, (
             f"opcode_may_throw arm for {name} missing/incorrect"
         )
         assert f"OpCode::{name} => {se}," in side_block, (
             f"opcode_is_side_effecting arm for {name} missing/incorrect"
         )
-        assert f"OpCode::{name} => {purity_variant[row['purity']]}," in purity_block, (
-            f"opcode_purity arm for {name} missing/incorrect"
+        assert f"OpCode::{name} => {effect_const[row['purity']]}," in effects_block, (
+            f"opcode_effects arm for {name} missing/incorrect"
         )
 
 
@@ -710,6 +742,211 @@ def test_verify_result_arity_delegates_to_generated_table() -> None:
     assert "OpCode::ConstInt\n                | OpCode::ConstBigInt" not in verify
 
 
+def test_call_roles_delegate_to_generated_tables() -> None:
+    """Call graph and CallFacts opcode/kind membership is registry-owned."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    call_graph = (ROOT / "runtime/molt-tir/src/tir/call_graph.rs").read_text(
+        encoding="utf-8"
+    )
+    call_facts = (ROOT / "runtime/molt-tir/src/tir/call_facts.rs").read_text(
+        encoding="utf-8"
+    )
+
+    expected_roles = {
+        "Call": "user_call",
+        "CallMethod": "dynamic_method",
+        "CallBuiltin": "runtime_builtin",
+        "Copy": "copy_original_kind",
+    }
+    assert {row["opcode"]: row["role"] for row in data["call_opcode_roles"]} == (
+        expected_roles
+    )
+    expected_user_call_kinds = [
+        "call",
+        "call_func",
+        "call_internal",
+        "call_indirect",
+        "call_bind",
+        "call_function",
+        "call_guarded",
+        "call_method",
+        "invoke_ffi",
+    ]
+    assert data["call_graph_user_call_kinds"] == expected_user_call_kinds
+
+    role_block = rendered.split("fn opcode_call_role_table")[1].split(
+        "fn simpleir_kind_is_call_graph_user_call"
+    )[0]
+    role_variant = {
+        "user_call": "UserCall",
+        "dynamic_method": "DynamicMethod",
+        "runtime_builtin": "RuntimeBuiltin",
+        "copy_original_kind": "CopyOriginalKind",
+    }
+    for opcode, role in expected_roles.items():
+        assert f"OpCode::{opcode} => CallOpcodeRole::{role_variant[role]}," in role_block
+    assert "OpCode::AllocTask => CallOpcodeRole::NotCall," in role_block
+
+    kind_block = rendered.split("fn simpleir_kind_is_call_graph_user_call")[1].split(
+        "fn opcode_fixed_result_count_table"
+    )[0]
+    for kind in expected_user_call_kinds:
+        assert f'"{kind}"' in kind_block
+    for excluded in ("gpu_thread_id", "gpu_barrier", "call_builtin", "range_new"):
+        assert f'"{excluded}"' not in kind_block
+
+    assert "opcode_call_role_table" in call_graph
+    assert "simpleir_kind_is_call_graph_user_call" in call_graph
+    assert "opcode_call_role_table" in call_facts
+    assert "fn is_call_kind" not in call_graph
+    assert "fn is_call_op" not in call_facts
+    assert "OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin" not in call_facts
+
+
+def test_call_role_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_role = json.loads(json.dumps(data))
+    bad_role["call_opcode_roles"].append(
+        {"opcode": "AllocTask", "role": "copy_original_kind"}
+    )
+    try:
+        gen._validate_call_opcode_roles(bad_role, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "copy_original_kind is reserved for OpCode::Copy" in str(exc)
+    else:
+        raise AssertionError("bad call opcode role was accepted")
+
+    mapper_opcode_by_spelling = {}
+    for row in data["kind"]:
+        for spelling in [row["canonical"], *row.get("aliases", [])]:
+            mapper_opcode_by_spelling[spelling] = row["mapper_opcode"]
+
+    bad_kind = json.loads(json.dumps(data))
+    bad_kind["call_graph_user_call_kinds"].append("call_builtin")
+    try:
+        gen._validate_call_graph_user_call_kinds(bad_kind, mapper_opcode_by_spelling)
+    except gen.OpKindTableError as exc:
+        assert "maps to OpCode::CallBuiltin" in str(exc)
+    else:
+        raise AssertionError("call_builtin was accepted as a user-call kind")
+
+
+def test_fuzz_tir_passes_uses_generated_opcode_shapes() -> None:
+    """The TIR pass fuzzer's opcode/input-generation shape is registry-owned."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    fuzz = (ROOT / "runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs").read_text(
+        encoding="utf-8"
+    )
+
+    expected = {
+        "Add": {"operands": 2, "attr_payload": "none"},
+        "Sub": {"operands": 2, "attr_payload": "none"},
+        "Mul": {"operands": 2, "attr_payload": "none"},
+        "Neg": {"operands": 1, "attr_payload": "none"},
+        "Not": {"operands": 1, "attr_payload": "none"},
+        "Eq": {"operands": 2, "attr_payload": "none"},
+        "Lt": {"operands": 2, "attr_payload": "none"},
+        "BitAnd": {"operands": 2, "attr_payload": "none"},
+        "BitOr": {"operands": 2, "attr_payload": "none"},
+        "Shl": {"operands": 2, "attr_payload": "none"},
+        "ConstInt": {"operands": 0, "attr_payload": "i64_value"},
+        "ConstFloat": {"operands": 0, "attr_payload": "f64_value"},
+        "ConstBool": {"operands": 0, "attr_payload": "bool_value"},
+        "ConstNone": {"operands": 0, "attr_payload": "none"},
+        "IncRef": {"operands": 1, "attr_payload": "none"},
+        "DecRef": {"operands": 1, "attr_payload": "none"},
+        "BoxVal": {"operands": 1, "attr_payload": "none"},
+        "UnboxVal": {"operands": 1, "attr_payload": "none"},
+    }
+    table = {
+        row["opcode"]: {
+            "operands": row["operands"],
+            "attr_payload": row.get("attr_payload", "none"),
+        }
+        for row in data["fuzz_tir_opcode_shapes"]
+    }
+    assert table == expected
+
+    shapes_region = rendered.split("pub const FUZZ_TIR_OPCODE_SHAPES")[1].split(
+        "pub fn opcode_fuzz_tir_operand_count_table"
+    )[0]
+    operand_region = rendered.split("fn opcode_fuzz_tir_operand_count_table")[1].split(
+        "fn opcode_fuzz_tir_attr_payload_rule_table"
+    )[0]
+    attr_region = rendered.split("fn opcode_fuzz_tir_attr_payload_rule_table")[1].split(
+        "pub enum OperandIndependentResultType"
+    )[0]
+    payload_variant = {
+        "none": "None",
+        "i64_value": "I64Value",
+        "f64_value": "F64Value",
+        "bool_value": "BoolValue",
+    }
+    for opcode, shape in expected.items():
+        operands = shape["operands"]
+        variant = payload_variant[shape["attr_payload"]]
+        assert (
+            "FuzzTirOpcodeShape {\n"
+            f"        opcode: OpCode::{opcode},\n"
+            f"        operands: {operands},\n"
+            f"        attr_payload: FuzzTirAttrPayloadRule::{variant},\n"
+            "    },"
+        ) in shapes_region
+        assert f"OpCode::{opcode} => Some({operands})," in operand_region
+        assert f"OpCode::{opcode} => FuzzTirAttrPayloadRule::{variant}," in attr_region
+    assert "OpCode::Copy => None," in operand_region
+    assert "OpCode::Copy => FuzzTirAttrPayloadRule::None," in attr_region
+
+    assert "FUZZ_TIR_OPCODE_SHAPES" in fuzz
+    assert "FuzzTirAttrPayloadRule" in fuzz
+    assert "opcode_fixed_result_count_table(opcode)" in fuzz
+    assert "const OPCODES" not in fuzz
+    assert "let num_operands = match opcode" not in fuzz
+    assert "let has_result = !matches!" not in fuzz
+    assert "match opcode" not in fuzz
+    assert "OpCode::Copy" not in fuzz
+
+
+def test_fuzz_tir_opcode_shape_validation_rejects_variable_result_opcodes() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    bad = json.loads(json.dumps(data))
+    bad["fuzz_tir_opcode_shapes"].append({"opcode": "Copy", "operands": 1})
+    opcodes = {row["name"]: row for row in bad["opcode"]}
+
+    try:
+        gen._validate_fuzz_tir_opcode_shapes(bad, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "fixed zero/one-result" in str(exc)
+    else:
+        raise AssertionError("variable-result fuzz TIR opcode shape was accepted")
+
+
+def test_fuzz_tir_opcode_shape_validation_rejects_attr_payload_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    bad = json.loads(json.dumps(data))
+    for row in bad["fuzz_tir_opcode_shapes"]:
+        if row["opcode"] == "ConstFloat":
+            row["attr_payload"] = "i64_value"
+            break
+    opcodes = {row["name"]: row for row in bad["opcode"]}
+
+    try:
+        gen._validate_fuzz_tir_opcode_shapes(bad, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "attr_payload must be 'f64_value'" in str(exc)
+    else:
+        raise AssertionError("bad fuzz TIR attr payload rule was accepted")
+
+
 def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     """Intrinsic result-type facts live in op_kinds.toml and generated Rust.
 
@@ -729,7 +966,13 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     branchless = (
         ROOT / "runtime/molt-tir/src/tir/passes/branchless_count.rs"
     ).read_text(encoding="utf-8")
+    fast_math = (ROOT / "runtime/molt-tir/src/tir/passes/fast_math.rs").read_text(
+        encoding="utf-8"
+    )
     gvn = (ROOT / "runtime/molt-tir/src/tir/passes/gvn.rs").read_text(encoding="utf-8")
+    strength_reduction = (
+        ROOT / "runtime/molt-tir/src/tir/passes/strength_reduction.rs"
+    ).read_text(encoding="utf-8")
 
     expected = {
         "ConstInt": "i64",
@@ -832,7 +1075,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     assert "OpCode::ConstInt => Some(TirType::I64)" not in infer_body
     assert "OpCode::BuildList => Some(TirType::List" not in infer_body
     assert "OpCode::ModuleCacheGet" not in infer_body
-    for source in (branchless, gvn):
+    for source in (branchless, fast_math, gvn, strength_reduction):
         production = source.split("#[cfg(test)]", maxsplit=1)[0]
         assert table_name in production
 
@@ -843,6 +1086,1054 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     gvn_production = gvn.split("#[cfg(test)]", maxsplit=1)[0]
     assert "opcode_gvn_numbering_role_table(op.opcode)" in gvn_production
     assert "OpCode::ConstInt\n            | OpCode::ConstBool" not in gvn_production
+
+    fast_math_production = fast_math.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "match op.opcode" not in fast_math_production
+    assert "OpCode::ConstFloat =>" not in fast_math_production
+    assert "OpCode::ConstInt =>" not in fast_math_production
+    assert "OpCode::ConstBool =>" not in fast_math_production
+
+    strength_reduction_production = strength_reduction.split(
+        "#[cfg(test)]", maxsplit=1
+    )[0]
+    assert "match op.opcode" not in strength_reduction_production.split(
+        "// Phase 2: Scan all blocks and rewrite eligible ops.", maxsplit=1
+    )[0]
+    assert "OpCode::ConstFloat =>" not in strength_reduction_production
+    assert "OpCode::ConstBool =>" not in strength_reduction_production
+
+
+def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
+    """type_refine owns rule semantics; op_kinds.toml owns opcode membership."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    type_refine = (ROOT / "runtime/molt-tir/src/tir/type_refine.rs").read_text(
+        encoding="utf-8"
+    )
+
+    expected_attr_rows = {
+        "ObjectNewBound": "object_type_hint",
+        "ObjectNewBoundStack": "object_type_hint",
+        "Call": "call_return_type",
+        "CallMethod": "call_return_type",
+        "CallBuiltin": "call_builtin_return_type",
+        "TypeGuard": "type_guard",
+        "Copy": "copy_original_kind",
+    }
+    expected_operand_rows = {
+        "Add": "add",
+        "InplaceAdd": "add",
+        "Mul": "mul",
+        "InplaceMul": "mul",
+        "Sub": "numeric_arithmetic",
+        "InplaceSub": "numeric_arithmetic",
+        "Mod": "numeric_arithmetic",
+        "Pow": "numeric_arithmetic",
+        "FloorDiv": "numeric_arithmetic",
+        "Div": "true_division",
+        "Neg": "unary_numeric",
+        "Pos": "unary_numeric",
+        "And": "bool_select",
+        "Or": "bool_select",
+        "BitAnd": "bitwise_i64",
+        "BitOr": "bitwise_i64",
+        "BitXor": "bitwise_i64",
+        "BitNot": "bit_not_i64",
+        "BuildTuple": "build_tuple",
+        "GetIter": "get_iter",
+        "ForIter": "iter_next",
+        "IterNext": "iter_next",
+        "Index": "index",
+        "Copy": "copy",
+        "BoxVal": "box_val",
+        "UnboxVal": "unbox_val",
+    }
+    assert {
+        row["opcode"]: row["rule"] for row in data["type_refine_attr_result_type_rules"]
+    } == expected_attr_rows
+    assert {
+        row["opcode"]: row["rule"] for row in data["type_refine_operand_type_rules"]
+    } == expected_operand_rows
+
+    attr_variant = {
+        "object_type_hint": "ObjectTypeHint",
+        "call_return_type": "CallReturnType",
+        "call_builtin_return_type": "CallBuiltinReturnType",
+        "type_guard": "TypeGuard",
+        "copy_original_kind": "CopyOriginalKind",
+    }
+    operand_variant = {
+        "add": "Add",
+        "mul": "Mul",
+        "numeric_arithmetic": "NumericArithmetic",
+        "true_division": "TrueDivision",
+        "unary_numeric": "UnaryNumeric",
+        "bool_select": "BoolSelect",
+        "bitwise_i64": "BitwiseI64",
+        "bit_not_i64": "BitNotI64",
+        "build_tuple": "BuildTuple",
+        "get_iter": "GetIter",
+        "iter_next": "IterNext",
+        "index": "Index",
+        "copy": "Copy",
+        "box_val": "BoxVal",
+        "unbox_val": "UnboxVal",
+    }
+    assert "pub enum TypeRefineAttrResultTypeRule" in rendered
+    assert "pub enum TypeRefineOperandTypeRule" in rendered
+    attr_block = rendered.split(
+        "fn opcode_type_refine_attr_result_type_rule_table", maxsplit=1
+    )[1].split("pub enum TypeRefineOperandTypeRule", maxsplit=1)[0]
+    operand_block = rendered.split(
+        "fn opcode_type_refine_operand_type_rule_table", maxsplit=1
+    )[1].split("pub enum GvnNumberingRole", maxsplit=1)[0]
+    for opcode, rule in expected_attr_rows.items():
+        expected = f"TypeRefineAttrResultTypeRule::{attr_variant[rule]}"
+        assert f"OpCode::{opcode} => {expected}," in attr_block
+    for opcode, rule in expected_operand_rows.items():
+        expected = f"TypeRefineOperandTypeRule::{operand_variant[rule]}"
+        assert f"OpCode::{opcode} => {expected}," in operand_block
+    for opcode in ("Shl", "Shr", "ConstInt", "BuildList"):
+        assert f"OpCode::{opcode} => TypeRefineOperandTypeRule::None," in operand_block
+
+    production = type_refine.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_type_refine_attr_result_type_rule_table(opcode)" in production
+    assert "opcode_type_refine_operand_type_rule_table(opcode)" in production
+    assert "attr_result_type_override(op.opcode, &op.attrs)" in production
+    infer_body = production.split("fn infer_single_result_type_with_attrs", maxsplit=1)[
+        1
+    ].split("fn fresh_value_kind_result_type", maxsplit=1)[0]
+    assert "match opcode {" not in infer_body
+    assert "OpCode::Add | OpCode::InplaceAdd" not in infer_body
+    assert "OpCode::Copy =>" not in infer_body
+    assert "TypeRefineOperandTypeRule::Copy => operand_types.first().cloned()" in infer_body
+
+
+def test_type_refine_result_type_rule_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_operand = json.loads(json.dumps(data))
+    bad_operand["type_refine_operand_type_rules"][0]["rule"] = "opcode_guess"
+    try:
+        gen._validate_opcode_rule_rows(
+            bad_operand,
+            "type_refine_operand_type_rules",
+            opcodes,
+            gen._TYPE_REFINE_OPERAND_TYPE_RULES,
+            "type-refine operand type rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "type-refine operand type rule must be one of" in str(exc)
+    else:
+        raise AssertionError("bad type-refine operand rule was accepted")
+
+    duplicate_attr = json.loads(json.dumps(data))
+    duplicate_attr["type_refine_attr_result_type_rules"].append(
+        json.loads(json.dumps(duplicate_attr["type_refine_attr_result_type_rules"][0]))
+    )
+    try:
+        gen._validate_opcode_rule_rows(
+            duplicate_attr,
+            "type_refine_attr_result_type_rules",
+            opcodes,
+            gen._TYPE_REFINE_ATTR_RESULT_TYPE_RULES,
+            "type-refine attr result-type rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "duplicate type_refine_attr_result_type_rules opcode" in str(exc)
+    else:
+        raise AssertionError("duplicate type-refine attr rule was accepted")
+
+    unknown_attr_opcode = json.loads(json.dumps(data))
+    unknown_attr_opcode["type_refine_attr_result_type_rules"][0][
+        "opcode"
+    ] = "AlmostCall"
+    try:
+        gen._validate_opcode_rule_rows(
+            unknown_attr_opcode,
+            "type_refine_attr_result_type_rules",
+            opcodes,
+            gen._TYPE_REFINE_ATTR_RESULT_TYPE_RULES,
+            "type-refine attr result-type rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "opcode 'AlmostCall' is not a known OpCode" in str(exc)
+    else:
+        raise AssertionError("unknown type-refine attr opcode was accepted")
+
+
+def test_sccp_constant_rules_delegate_to_generated_tables() -> None:
+    """SCCP owns fold semantics; op_kinds.toml owns foldable opcode membership."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    sccp = (ROOT / "runtime/molt-tir/src/tir/passes/sccp.rs").read_text(
+        encoding="utf-8"
+    )
+
+    expected_seed_rows = {
+        "ConstInt": "int_attr",
+        "ConstFloat": "float_attr",
+        "ConstBool": "bool_attr",
+        "ConstStr": "str_attr",
+        "ConstNone": "none_singleton",
+    }
+    expected_eval_rows = {
+        "Add": "add",
+        "Sub": "sub",
+        "Mul": "mul",
+        "Div": "div",
+        "FloorDiv": "floordiv",
+        "Mod": "mod",
+        "Pow": "pow",
+        "Eq": "eq",
+        "Ne": "ne",
+        "Lt": "lt",
+        "Le": "le",
+        "Gt": "gt",
+        "Ge": "ge",
+        "Neg": "neg",
+        "Not": "not",
+        "BuildList": "build_list",
+        "BuildDict": "build_dict",
+        "BuildTuple": "build_tuple_as_list",
+    }
+    assert {
+        row["opcode"]: row["rule"] for row in data["sccp_constant_seed_rules"]
+    } == expected_seed_rows
+    assert {
+        row["opcode"]: row["rule"] for row in data["sccp_constant_eval_rules"]
+    } == expected_eval_rows
+
+    seed_variant = {
+        "int_attr": "IntAttr",
+        "float_attr": "FloatAttr",
+        "bool_attr": "BoolAttr",
+        "str_attr": "StrAttr",
+        "none_singleton": "NoneSingleton",
+    }
+    eval_variant = {
+        "add": "Add",
+        "sub": "Sub",
+        "mul": "Mul",
+        "div": "Div",
+        "floordiv": "FloorDiv",
+        "mod": "Mod",
+        "pow": "Pow",
+        "eq": "Eq",
+        "ne": "Ne",
+        "lt": "Lt",
+        "le": "Le",
+        "gt": "Gt",
+        "ge": "Ge",
+        "neg": "Neg",
+        "not": "Not",
+        "build_list": "BuildList",
+        "build_dict": "BuildDict",
+        "build_tuple_as_list": "BuildTupleAsList",
+    }
+    assert "pub enum SccpConstantSeedRule" in rendered
+    assert "pub enum SccpConstantEvalRule" in rendered
+    seed_block = rendered.split(
+        "fn opcode_sccp_constant_seed_rule_table", maxsplit=1
+    )[1].split("pub enum SccpConstantEvalRule", maxsplit=1)[0]
+    eval_block = rendered.split(
+        "fn opcode_sccp_constant_eval_rule_table", maxsplit=1
+    )[1].split("pub enum GvnNumberingRole", maxsplit=1)[0]
+    for opcode, rule in expected_seed_rows.items():
+        expected = f"SccpConstantSeedRule::{seed_variant[rule]}"
+        assert f"OpCode::{opcode} => {expected}," in seed_block
+    for opcode in ("ConstBytes", "ConstBigInt", "Add"):
+        assert f"OpCode::{opcode} => SccpConstantSeedRule::None," in seed_block
+    for opcode, rule in expected_eval_rows.items():
+        expected = f"SccpConstantEvalRule::{eval_variant[rule]}"
+        assert f"OpCode::{opcode} => {expected}," in eval_block
+    for opcode in ("CallBuiltin", "CallMethod", "Shl", "ConstInt"):
+        assert f"OpCode::{opcode} => SccpConstantEvalRule::None," in eval_block
+
+    production = sccp.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "seed_constant_lattice_value(op.opcode, &op.attrs)" in production
+    assert "opcode_sccp_constant_seed_rule_table(op.opcode)" in production
+    assert "opcode_sccp_constant_eval_rule_table(opcode)" in production
+    seed_helper = production.split("fn seed_constant_lattice_value", maxsplit=1)[
+        1
+    ].split("/// Try to evaluate", maxsplit=1)[0]
+    assert "match opcode {" not in seed_helper
+    assert "OpCode::ConstInt =>" not in seed_helper
+    eval_body = production.split("fn evaluate_op", maxsplit=1)[1].split(
+        "/// Fold string concatenation", maxsplit=1
+    )[0]
+    assert "match opcode {" not in eval_body
+    assert "OpCode::Add =>" not in eval_body
+    assert "SccpConstantEvalRule::BuildTupleAsList => eval_build_list" in eval_body
+
+
+def test_sccp_constant_rule_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_eval = json.loads(json.dumps(data))
+    bad_eval["sccp_constant_eval_rules"][0]["rule"] = "fold_everything"
+    try:
+        gen._validate_opcode_rule_rows(
+            bad_eval,
+            "sccp_constant_eval_rules",
+            opcodes,
+            gen._SCCP_CONSTANT_EVAL_RULES,
+            "SCCP constant eval rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "SCCP constant eval rule must be one of" in str(exc)
+    else:
+        raise AssertionError("bad SCCP constant eval rule was accepted")
+
+    duplicate_seed = json.loads(json.dumps(data))
+    duplicate_seed["sccp_constant_seed_rules"].append(
+        json.loads(json.dumps(duplicate_seed["sccp_constant_seed_rules"][0]))
+    )
+    try:
+        gen._validate_opcode_rule_rows(
+            duplicate_seed,
+            "sccp_constant_seed_rules",
+            opcodes,
+            gen._SCCP_CONSTANT_SEED_RULES,
+            "SCCP constant seed rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "duplicate sccp_constant_seed_rules opcode" in str(exc)
+    else:
+        raise AssertionError("duplicate SCCP constant seed rule was accepted")
+
+    unknown_seed_opcode = json.loads(json.dumps(data))
+    unknown_seed_opcode["sccp_constant_seed_rules"][0]["opcode"] = "ConstMaybe"
+    try:
+        gen._validate_opcode_rule_rows(
+            unknown_seed_opcode,
+            "sccp_constant_seed_rules",
+            opcodes,
+            gen._SCCP_CONSTANT_SEED_RULES,
+            "SCCP constant seed rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "opcode 'ConstMaybe' is not a known OpCode" in str(exc)
+    else:
+        raise AssertionError("unknown SCCP constant seed opcode was accepted")
+
+
+def test_value_range_rules_delegate_to_generated_tables() -> None:
+    """Value-range owns interval formulas; op_kinds.toml owns opcode membership."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    value_range = (
+        ROOT / "runtime/molt-tir/src/tir/passes/value_range.rs"
+    ).read_text(encoding="utf-8")
+
+    expected_transfer_rows = {
+        "Add": "add",
+        "Sub": "sub",
+        "Mul": "mul",
+        "Neg": "neg",
+        "BitAnd": "bit_and",
+        "BitOr": "bit_or",
+        "BitXor": "bit_xor",
+        "Mod": "mod",
+        "Shr": "shr",
+        "Shl": "shl",
+    }
+    expected_const_fold_rows = {
+        "Add": "add",
+        "Sub": "sub",
+        "Mul": "mul",
+        "Shl": "shl",
+        "Shr": "shr",
+        "BitAnd": "bit_and",
+        "BitOr": "bit_or",
+        "BitXor": "bit_xor",
+    }
+    expected_cond_narrow_rows = {
+        "Lt": "lt_upper_exclusive",
+        "Le": "le_upper_inclusive",
+    }
+    expected_container_length_rows = {
+        "BuildList": "fixed_literal",
+        "BuildTuple": "fixed_literal",
+        "Mul": "list_repeat",
+        "CallBuiltin": "len_call",
+    }
+    assert {
+        row["opcode"]: row["rule"] for row in data["value_range_transfer_rules"]
+    } == expected_transfer_rows
+    assert {
+        row["opcode"]: row["rule"] for row in data["value_range_const_fold_rules"]
+    } == expected_const_fold_rows
+    assert {
+        row["opcode"]: row["rule"] for row in data["value_range_cond_narrow_rules"]
+    } == expected_cond_narrow_rows
+    assert {
+        row["opcode"]: row["rule"]
+        for row in data["value_range_container_length_rules"]
+    } == expected_container_length_rows
+
+    variant = {
+        "add": "Add",
+        "sub": "Sub",
+        "mul": "Mul",
+        "neg": "Neg",
+        "bit_and": "BitAnd",
+        "bit_or": "BitOr",
+        "bit_xor": "BitXor",
+        "mod": "Mod",
+        "shr": "Shr",
+        "shl": "Shl",
+    }
+    narrow_variant = {
+        "lt_upper_exclusive": "LtUpperExclusive",
+        "le_upper_inclusive": "LeUpperInclusive",
+    }
+    length_variant = {
+        "fixed_literal": "FixedLiteral",
+        "list_repeat": "ListRepeat",
+        "len_call": "LenCall",
+    }
+    assert "pub enum ValueRangeTransferRule" in rendered
+    assert "pub enum ValueRangeConstFoldRule" in rendered
+    assert "pub enum ValueRangeCondNarrowRule" in rendered
+    assert "pub enum ValueRangeContainerLengthRule" in rendered
+    transfer_block = rendered.split(
+        "fn opcode_value_range_transfer_rule_table", maxsplit=1
+    )[1].split("pub enum ValueRangeConstFoldRule", maxsplit=1)[0]
+    fold_block = rendered.split(
+        "fn opcode_value_range_const_fold_rule_table", maxsplit=1
+    )[1].split("pub enum ValueRangeCondNarrowRule", maxsplit=1)[0]
+    narrow_block = rendered.split(
+        "fn opcode_value_range_cond_narrow_rule_table", maxsplit=1
+    )[1].split("pub enum ValueRangeContainerLengthRule", maxsplit=1)[0]
+    length_block = rendered.split(
+        "fn opcode_value_range_container_length_rule_table", maxsplit=1
+    )[1].split("pub enum RangeDevirtRole", maxsplit=1)[0]
+    for opcode, rule in expected_transfer_rows.items():
+        expected = f"ValueRangeTransferRule::{variant[rule]}"
+        assert f"OpCode::{opcode} => {expected}," in transfer_block
+    for opcode, rule in expected_const_fold_rows.items():
+        expected = f"ValueRangeConstFoldRule::{variant[rule]}"
+        assert f"OpCode::{opcode} => {expected}," in fold_block
+    for opcode, rule in expected_cond_narrow_rows.items():
+        expected = f"ValueRangeCondNarrowRule::{narrow_variant[rule]}"
+        assert f"OpCode::{opcode} => {expected}," in narrow_block
+    for opcode, rule in expected_container_length_rows.items():
+        expected = f"ValueRangeContainerLengthRule::{length_variant[rule]}"
+        assert f"OpCode::{opcode} => {expected}," in length_block
+    for opcode in ("Div", "FloorDiv", "ConstInt", "BuildList"):
+        assert f"OpCode::{opcode} => ValueRangeTransferRule::None," in transfer_block
+        assert f"OpCode::{opcode} => ValueRangeConstFoldRule::None," in fold_block
+        assert f"OpCode::{opcode} => ValueRangeCondNarrowRule::None," in narrow_block
+    for opcode in ("Div", "FloorDiv", "ConstInt", "Lt"):
+        assert f"OpCode::{opcode} => ValueRangeContainerLengthRule::None," in length_block
+
+    production = value_range.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_value_range_transfer_rule_table(op.opcode)" in production
+    assert "opcode_value_range_const_fold_rule_table(op.opcode)" in production
+    assert "opcode_value_range_cond_narrow_rule_table(*opcode)" in production
+    assert "opcode_value_range_container_length_rule_table(op.opcode)" in production
+    transfer_body = production.split("fn transfer_op_range", maxsplit=1)[
+        1
+    ].split("/// Collect `ConstInt` values", maxsplit=1)[0]
+    assert "match op.opcode {" not in transfer_body
+    assert "OpCode::Add if op.operands.len() == 2" not in transfer_body
+    fold_loop = production.split("let mut changed = true;", maxsplit=1)[1].split(
+        "// Second pass: container lengths", maxsplit=1
+    )[0]
+    assert "matches!(" not in fold_loop
+    assert "match op.opcode {" not in fold_loop
+    assert "ValueRangeConstFoldRule::BitAnd => Some(a & b)" in fold_loop
+    guard_body = production.split("fn narrow_from_header_guards", maxsplit=1)[
+        1
+    ].split("/// Meet `range`", maxsplit=1)[0]
+    assert "match opcode" not in guard_body
+    assert "OpCode::Lt" not in guard_body
+    assert "OpCode::Le" not in guard_body
+    assert "ValueRangeCondNarrowRule::LtUpperExclusive" in guard_body
+    assert "ValueRangeCondNarrowRule::LeUpperInclusive" in guard_body
+    length_body = production.split(
+        "// Second pass: container lengths", maxsplit=1
+    )[1].split("/// Build header", maxsplit=1)[0]
+    assert "match op.opcode" not in length_body
+    assert "OpCode::BuildList" not in length_body
+    assert "OpCode::BuildTuple" not in length_body
+    assert "OpCode::Mul" not in length_body
+    assert "OpCode::CallBuiltin" not in length_body
+    assert "ValueRangeContainerLengthRule::FixedLiteral" in length_body
+    assert "ValueRangeContainerLengthRule::ListRepeat" in length_body
+    assert "ValueRangeContainerLengthRule::LenCall" in length_body
+
+
+def test_range_devirt_roles_delegate_to_generated_table() -> None:
+    """Range devirt owns range/CFG proof; op_kinds.toml owns opcode roles."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    range_devirt = (
+        ROOT / "runtime/molt-tir/src/tir/passes/range_devirt.rs"
+    ).read_text(encoding="utf-8")
+
+    expected_rows = [
+        {"opcode": "CallBuiltin", "role": "range_call_candidate"},
+        {"opcode": "GetIter", "role": "iterator_candidate"},
+        {"opcode": "IterNextUnboxed", "role": "next_unboxed_candidate"},
+    ]
+    assert data["range_devirt_roles"] == expected_rows
+
+    role_block = rendered.split("pub enum RangeDevirtRole", maxsplit=1)[1].split(
+        "pub enum VectorizeBodyAction", maxsplit=1
+    )[0]
+    assert "pub fn opcode_range_devirt_role_table" in role_block
+    assert "OpCode::CallBuiltin => RangeDevirtRole::RangeCallCandidate," in role_block
+    assert "OpCode::GetIter => RangeDevirtRole::IteratorCandidate," in role_block
+    assert (
+        "OpCode::IterNextUnboxed => RangeDevirtRole::NextUnboxedCandidate,"
+        in role_block
+    )
+    assert "OpCode::Add => RangeDevirtRole::None," in role_block
+
+    production = range_devirt.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_range_devirt_role_table(op.opcode)" in production
+    assert "RangeDevirtRole::RangeCallCandidate" in production
+    assert "RangeDevirtRole::IteratorCandidate" in production
+    assert "RangeDevirtRole::NextUnboxedCandidate" in production
+    assert "match op.opcode" not in production
+    assert "OpCode::CallBuiltin =>" not in production
+    assert "OpCode::GetIter if" not in production
+    assert "OpCode::IterNextUnboxed if" not in production
+
+
+def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
+    """Vectorize owns loop proof; op_kinds.toml owns opcode-level facts."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    vectorize = (
+        ROOT / "runtime/molt-tir/src/tir/passes/vectorize.rs"
+    ).read_text(encoding="utf-8")
+
+    expected_rows = {
+        "Add": {"body": "scalar_arithmetic", "reduction": "sum"},
+        "Sub": {"body": "scalar_arithmetic"},
+        "Mul": {"body": "scalar_arithmetic", "reduction": "product"},
+        "Div": {"body": "scalar_arithmetic"},
+        "FloorDiv": {"body": "scalar_arithmetic"},
+        "Mod": {"body": "scalar_arithmetic"},
+        "Pow": {"body": "scalar_arithmetic"},
+        "Neg": {"body": "scalar_arithmetic"},
+        "Pos": {"body": "scalar_arithmetic"},
+        "BitAnd": {"body": "scalar_arithmetic", "reduction": "and"},
+        "BitOr": {"body": "scalar_arithmetic", "reduction": "or"},
+        "BitXor": {"body": "scalar_arithmetic"},
+        "BitNot": {"body": "scalar_arithmetic"},
+        "Shl": {"body": "scalar_arithmetic"},
+        "Shr": {"body": "scalar_arithmetic"},
+        "Eq": {"body": "scalar_arithmetic"},
+        "Ne": {"body": "scalar_arithmetic"},
+        "Lt": {"body": "scalar_arithmetic", "reduction": "min"},
+        "Le": {"body": "scalar_arithmetic", "reduction": "min"},
+        "Gt": {"body": "scalar_arithmetic", "reduction": "max"},
+        "Ge": {"body": "scalar_arithmetic", "reduction": "max"},
+        "ConstInt": {"body": "scalar_arithmetic"},
+        "ConstFloat": {"body": "scalar_arithmetic"},
+        "ConstBool": {"body": "scalar_arithmetic"},
+        "UnboxVal": {"body": "scalar_arithmetic"},
+        "BoxVal": {"body": "scalar_arithmetic"},
+        "Copy": {"body": "copy_if_plain"},
+        "TypeGuard": {"body": "non_escaping_guard"},
+        "GetIter": {"body": "iteration_control", "annotation_target": True},
+        "IterNext": {"body": "iteration_control"},
+        "IterNextUnboxed": {"body": "iteration_control"},
+        "ForIter": {
+            "body": "iteration_control",
+            "loop_header": True,
+            "annotation_target": True,
+        },
+        "ScfFor": {
+            "body": "iteration_control",
+            "loop_header": True,
+            "annotation_target": True,
+        },
+    }
+    rows = {
+        row["opcode"]: {
+            "body": row["body"],
+            "reduction": row.get("reduction"),
+            "loop_header": row.get("loop_header", False),
+            "annotation_target": row.get("annotation_target", False),
+        }
+        for row in data["vectorize_opcode_facts"]
+    }
+    normalized_expected_rows = {
+        opcode: {
+            "body": facts["body"],
+            "reduction": facts.get("reduction"),
+            "loop_header": facts.get("loop_header", False),
+            "annotation_target": facts.get("annotation_target", False),
+        }
+        for opcode, facts in expected_rows.items()
+    }
+    assert "vector_reduction_rules" not in data
+    assert rows == normalized_expected_rows
+
+    action_variant = {
+        "scalar_arithmetic": "ScalarArithmetic",
+        "copy_if_plain": "CopyIfPlain",
+        "iteration_control": "IterationControl",
+        "non_escaping_guard": "NonEscapingGuard",
+    }
+    reduction_variant = {
+        "sum": "Sum",
+        "product": "Product",
+        "and": "And",
+        "or": "Or",
+        "min": "Min",
+        "max": "Max",
+    }
+    assert "pub enum VectorizeBodyAction" in rendered
+    assert "pub enum VectorReductionRule" in rendered
+    assert "pub struct VectorizeOpcodeFacts" in rendered
+    table_block = rendered.split("fn opcode_vectorize_facts_table", maxsplit=1)[
+        1
+    ].split("pub enum LirVerifyRule", maxsplit=1)[0]
+
+    def vectorize_arm(opcode: str) -> str:
+        match = re.search(
+            rf"OpCode::{opcode}\s*=>\s*VectorizeOpcodeFacts\s*\{{(?P<body>.*?)\}},",
+            table_block,
+            flags=re.S,
+        )
+        assert match is not None, f"missing vectorize facts arm for {opcode}"
+        return match.group("body")
+
+    for opcode, row in rows.items():
+        arm = vectorize_arm(opcode)
+        body = action_variant[row["body"]]
+        rule = row.get("reduction")
+        expected_rule = (
+            f"VectorReductionRule::{reduction_variant[rule]}"
+            if rule is not None
+            else "VectorReductionRule::None"
+        )
+        expected_loop_header = "true" if row["loop_header"] else "false"
+        expected_annotation = "true" if row["annotation_target"] else "false"
+        assert f"body_action: VectorizeBodyAction::{body}" in arm
+        assert f"reduction_rule: {expected_rule}" in arm
+        assert f"loop_header_marker: {expected_loop_header}" in arm
+        assert f"annotation_target: {expected_annotation}" in arm
+    call_arm = vectorize_arm("Call")
+    assert "body_action: VectorizeBodyAction::Reject" in call_arm
+    assert "reduction_rule: VectorReductionRule::None" in call_arm
+    assert "loop_header_marker: false" in call_arm
+    assert "annotation_target: false" in call_arm
+
+    production = vectorize.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_vectorize_facts_table(op.opcode)" in production
+    assert "opcode_vector_reduction_rule_table" not in production
+    assert "fn vectorize_body_decision(" in production
+    assert "VectorizeBodyAction::CopyIfPlain if op.is_plain_value_copy()" in production
+    helper = production.split("fn reduction_op_for_rule", maxsplit=1)[1].split(
+        "// ---------------------------------------------------------------------------",
+        maxsplit=1,
+    )[0]
+    assert "OpCode::" not in helper
+    assert "VectorReductionRule::Min => Some(ReductionOp::Min)" in helper
+    analysis = production.split("fn analyse_loop", maxsplit=1)[1].split(
+        "// Resolve the lane element type",
+        maxsplit=1,
+    )[0]
+    assert "let opcode_facts = opcode_vectorize_facts_table(op.opcode)" in analysis
+    assert "vectorize_body_decision(op, opcode_facts.body_action)" in analysis
+    assert "reduction = reduction_op_for_rule(opcode_facts.reduction_rule)" in analysis
+    for stale in (
+        "fn is_impure_call",
+        "fn is_memory_store",
+        "fn is_disqualifying",
+        "fn is_scalar_arithmetic",
+        "OpCode::Call | OpCode::CallMethod | OpCode::CallBuiltin",
+        "OpCode::ForIter | OpCode::ScfFor | OpCode::GetIter",
+    ):
+        assert stale not in production
+    assert "reduction = match op.opcode" not in analysis
+
+
+def test_vectorize_opcode_facts_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_rule = json.loads(json.dumps(data))
+    bad_rule["vectorize_opcode_facts"][0]["reduction"] = "maybe_sum"
+    try:
+        gen._validate_vectorize_opcode_facts(bad_rule, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "reduction must be one of" in str(exc)
+    else:
+        raise AssertionError("bad vectorize reduction rule was accepted")
+
+    duplicate_rule = json.loads(json.dumps(data))
+    duplicate_rule["vectorize_opcode_facts"].append(
+        json.loads(json.dumps(duplicate_rule["vectorize_opcode_facts"][0]))
+    )
+    try:
+        gen._validate_vectorize_opcode_facts(duplicate_rule, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "duplicate vectorize_opcode_facts opcode" in str(exc)
+    else:
+        raise AssertionError("duplicate vectorize opcode fact was accepted")
+
+    unknown_opcode = json.loads(json.dumps(data))
+    unknown_opcode["vectorize_opcode_facts"][0]["opcode"] = "ReduceMaybe"
+    try:
+        gen._validate_vectorize_opcode_facts(unknown_opcode, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "opcode 'ReduceMaybe' is not a known OpCode" in str(exc)
+    else:
+        raise AssertionError("unknown vectorize opcode fact was accepted")
+
+    bad_body = json.loads(json.dumps(data))
+    bad_body["vectorize_opcode_facts"][0]["body"] = "maybe_vector"
+    try:
+        gen._validate_vectorize_opcode_facts(bad_body, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "body must be one of" in str(exc)
+    else:
+        raise AssertionError("bad vectorize body action was accepted")
+
+    bad_flag = json.loads(json.dumps(data))
+    bad_flag["vectorize_opcode_facts"][0]["loop_header"] = "yes"
+    try:
+        gen._validate_vectorize_opcode_facts(bad_flag, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "loop_header must be bool" in str(exc)
+    else:
+        raise AssertionError("bad vectorize bool flag was accepted")
+
+    bad_loop_header_owner = json.loads(json.dumps(data))
+    bad_loop_header_owner["vectorize_opcode_facts"][0]["loop_header"] = True
+    try:
+        gen._validate_vectorize_opcode_facts(bad_loop_header_owner, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "loop_header requires body='iteration_control'" in str(exc)
+    else:
+        raise AssertionError("non-iteration loop-header marker was accepted")
+
+    bad_annotation_owner = json.loads(json.dumps(data))
+    bad_annotation_owner["vectorize_opcode_facts"][0]["annotation_target"] = True
+    try:
+        gen._validate_vectorize_opcode_facts(bad_annotation_owner, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "annotation_target requires body='iteration_control'" in str(exc)
+    else:
+        raise AssertionError("non-iteration annotation target was accepted")
+
+    bad_reduction_owner = json.loads(json.dumps(data))
+    bad_reduction_owner["vectorize_opcode_facts"][0]["body"] = "iteration_control"
+    try:
+        gen._validate_vectorize_opcode_facts(bad_reduction_owner, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "reduction requires body='scalar_arithmetic'" in str(exc)
+    else:
+        raise AssertionError("non-arithmetic vectorize reduction owner was accepted")
+
+
+def test_lir_verify_rules_delegate_to_generated_table() -> None:
+    """LIR verifier owns invariants; op_kinds.toml owns opcode dispatch."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    verify_lir = (ROOT / "runtime/molt-tir/src/tir/verify_lir.rs").read_text(
+        encoding="utf-8"
+    )
+
+    expected_rows = {
+        "BoxVal": "box_value",
+        "UnboxVal": "unbox_value",
+        "Add": "checked_i64_arithmetic",
+        "Sub": "checked_i64_arithmetic",
+        "Mul": "checked_i64_arithmetic",
+        "CallBuiltin": "truthy_materialization",
+    }
+    assert {row["opcode"]: row["rule"] for row in data["lir_verify_rules"]} == expected_rows
+
+    variant = {
+        "box_value": "BoxValue",
+        "unbox_value": "UnboxValue",
+        "checked_i64_arithmetic": "CheckedI64Arithmetic",
+        "truthy_materialization": "TruthyMaterialization",
+    }
+    assert "pub enum LirVerifyRule" in rendered
+    table_block = rendered.split("fn opcode_lir_verify_rule_table", maxsplit=1)[
+        1
+    ].split("pub enum GvnNumberingRole", maxsplit=1)[0]
+    for opcode, rule in expected_rows.items():
+        expected = f"LirVerifyRule::{variant[rule]}"
+        assert f"OpCode::{opcode} => {expected}," in table_block
+    for opcode in ("Div", "ConstInt", "Call", "StoreAttr"):
+        assert f"OpCode::{opcode} => LirVerifyRule::None," in table_block
+
+    production = verify_lir.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_lir_verify_rule_table(op.tir_op.opcode)" in production
+    verify_loop = production.split("fn verify_ops", maxsplit=1)[1].split(
+        "fn verify_op_surface",
+        maxsplit=1,
+    )[0]
+    assert "match op.tir_op.opcode" not in verify_loop
+    assert "OpCode::Add | OpCode::Sub | OpCode::Mul" not in verify_loop
+    assert (
+        "LirVerifyRule::CheckedI64Arithmetic => {\n"
+        "                    verify_checked_i64_arithmetic"
+    ) in verify_loop
+
+
+def test_lir_verify_rule_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_rule = json.loads(json.dumps(data))
+    bad_rule["lir_verify_rules"][0]["rule"] = "maybe_box"
+    try:
+        gen._validate_opcode_rule_rows(
+            bad_rule,
+            "lir_verify_rules",
+            opcodes,
+            gen._LIR_VERIFY_RULES,
+            "LIR verifier rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "LIR verifier rule must be one of" in str(exc)
+    else:
+        raise AssertionError("bad LIR verifier rule was accepted")
+
+    duplicate_rule = json.loads(json.dumps(data))
+    duplicate_rule["lir_verify_rules"].append(
+        json.loads(json.dumps(duplicate_rule["lir_verify_rules"][0]))
+    )
+    try:
+        gen._validate_opcode_rule_rows(
+            duplicate_rule,
+            "lir_verify_rules",
+            opcodes,
+            gen._LIR_VERIFY_RULES,
+            "LIR verifier rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "duplicate lir_verify_rules opcode" in str(exc)
+    else:
+        raise AssertionError("duplicate LIR verifier rule was accepted")
+
+    unknown_opcode = json.loads(json.dumps(data))
+    unknown_opcode["lir_verify_rules"][0]["opcode"] = "VerifyMaybe"
+    try:
+        gen._validate_opcode_rule_rows(
+            unknown_opcode,
+            "lir_verify_rules",
+            opcodes,
+            gen._LIR_VERIFY_RULES,
+            "LIR verifier rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "opcode 'VerifyMaybe' is not a known OpCode" in str(exc)
+    else:
+        raise AssertionError("unknown LIR verifier opcode was accepted")
+
+
+def test_value_range_rule_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_transfer = json.loads(json.dumps(data))
+    bad_transfer["value_range_transfer_rules"][0]["rule"] = "hopeful_range"
+    try:
+        gen._validate_opcode_rule_rows(
+            bad_transfer,
+            "value_range_transfer_rules",
+            opcodes,
+            gen._VALUE_RANGE_TRANSFER_RULES,
+            "value-range transfer rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "value-range transfer rule must be one of" in str(exc)
+    else:
+        raise AssertionError("bad value-range transfer rule was accepted")
+
+    duplicate_fold = json.loads(json.dumps(data))
+    duplicate_fold["value_range_const_fold_rules"].append(
+        json.loads(json.dumps(duplicate_fold["value_range_const_fold_rules"][0]))
+    )
+    try:
+        gen._validate_opcode_rule_rows(
+            duplicate_fold,
+            "value_range_const_fold_rules",
+            opcodes,
+            gen._VALUE_RANGE_CONST_FOLD_RULES,
+            "value-range const-fold rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "duplicate value_range_const_fold_rules opcode" in str(exc)
+    else:
+        raise AssertionError("duplicate value-range const-fold rule was accepted")
+
+    unknown_fold_opcode = json.loads(json.dumps(data))
+    unknown_fold_opcode["value_range_const_fold_rules"][0]["opcode"] = "FoldMaybe"
+    try:
+        gen._validate_opcode_rule_rows(
+            unknown_fold_opcode,
+            "value_range_const_fold_rules",
+            opcodes,
+            gen._VALUE_RANGE_CONST_FOLD_RULES,
+            "value-range const-fold rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "opcode 'FoldMaybe' is not a known OpCode" in str(exc)
+    else:
+        raise AssertionError("unknown value-range const-fold opcode was accepted")
+
+    bad_cond_narrow = json.loads(json.dumps(data))
+    bad_cond_narrow["value_range_cond_narrow_rules"][0]["rule"] = "maybe_less"
+    try:
+        gen._validate_opcode_rule_rows(
+            bad_cond_narrow,
+            "value_range_cond_narrow_rules",
+            opcodes,
+            gen._VALUE_RANGE_COND_NARROW_RULES,
+            "value-range conditional-narrow rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "value-range conditional-narrow rule must be one of" in str(exc)
+    else:
+        raise AssertionError("bad value-range conditional-narrow rule was accepted")
+
+    duplicate_cond_narrow = json.loads(json.dumps(data))
+    duplicate_cond_narrow["value_range_cond_narrow_rules"].append(
+        json.loads(json.dumps(duplicate_cond_narrow["value_range_cond_narrow_rules"][0]))
+    )
+    try:
+        gen._validate_opcode_rule_rows(
+            duplicate_cond_narrow,
+            "value_range_cond_narrow_rules",
+            opcodes,
+            gen._VALUE_RANGE_COND_NARROW_RULES,
+            "value-range conditional-narrow rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "duplicate value_range_cond_narrow_rules opcode" in str(exc)
+    else:
+        raise AssertionError(
+            "duplicate value-range conditional-narrow rule was accepted"
+        )
+
+    unknown_cond_narrow_opcode = json.loads(json.dumps(data))
+    unknown_cond_narrow_opcode["value_range_cond_narrow_rules"][0][
+        "opcode"
+    ] = "NarrowMaybe"
+    try:
+        gen._validate_opcode_rule_rows(
+            unknown_cond_narrow_opcode,
+            "value_range_cond_narrow_rules",
+            opcodes,
+            gen._VALUE_RANGE_COND_NARROW_RULES,
+            "value-range conditional-narrow rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "opcode 'NarrowMaybe' is not a known OpCode" in str(exc)
+    else:
+        raise AssertionError(
+            "unknown value-range conditional-narrow opcode was accepted"
+        )
+
+    bad_container_length = json.loads(json.dumps(data))
+    bad_container_length["value_range_container_length_rules"][0][
+        "rule"
+    ] = "maybe_len"
+    try:
+        gen._validate_opcode_rule_rows(
+            bad_container_length,
+            "value_range_container_length_rules",
+            opcodes,
+            gen._VALUE_RANGE_CONTAINER_LENGTH_RULES,
+            "value-range container-length rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "value-range container-length rule must be one of" in str(exc)
+    else:
+        raise AssertionError("bad value-range container-length rule was accepted")
+
+    duplicate_container_length = json.loads(json.dumps(data))
+    duplicate_container_length["value_range_container_length_rules"].append(
+        json.loads(
+            json.dumps(duplicate_container_length["value_range_container_length_rules"][0])
+        )
+    )
+    try:
+        gen._validate_opcode_rule_rows(
+            duplicate_container_length,
+            "value_range_container_length_rules",
+            opcodes,
+            gen._VALUE_RANGE_CONTAINER_LENGTH_RULES,
+            "value-range container-length rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "duplicate value_range_container_length_rules opcode" in str(exc)
+    else:
+        raise AssertionError(
+            "duplicate value-range container-length rule was accepted"
+        )
+
+    unknown_container_length_opcode = json.loads(json.dumps(data))
+    unknown_container_length_opcode["value_range_container_length_rules"][0][
+        "opcode"
+    ] = "LengthMaybe"
+    try:
+        gen._validate_opcode_rule_rows(
+            unknown_container_length_opcode,
+            "value_range_container_length_rules",
+            opcodes,
+            gen._VALUE_RANGE_CONTAINER_LENGTH_RULES,
+            "value-range container-length rule",
+        )
+    except gen.OpKindTableError as exc:
+        assert "opcode 'LengthMaybe' is not a known OpCode" in str(exc)
+    else:
+        raise AssertionError(
+            "unknown value-range container-length opcode was accepted"
+        )
+
+
+def test_range_devirt_role_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_role = json.loads(json.dumps(data))
+    bad_role["range_devirt_roles"][0]["role"] = "iterator_candidate"
+    try:
+        gen._validate_range_devirt_roles(bad_role, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "reserved for OpCode::GetIter" in str(exc)
+    else:
+        raise AssertionError("CallBuiltin was accepted with the GetIter role")
+
+    duplicate_role = json.loads(json.dumps(data))
+    duplicate_role["range_devirt_roles"].append(
+        json.loads(json.dumps(duplicate_role["range_devirt_roles"][0]))
+    )
+    try:
+        gen._validate_range_devirt_roles(duplicate_role, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "duplicate range_devirt_roles opcode: CallBuiltin" in str(exc)
+    else:
+        raise AssertionError("duplicate range-devirt opcode role was accepted")
 
 
 def test_operand_independent_result_type_validation_rejects_drift(
@@ -984,21 +2275,54 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "Bool",
         "TypeGuard",
     }
-    expected_value_keyed = {
-        "ConstInt",
-        "ConstBool",
-        "ConstNone",
-        "ConstFloat",
-        "ConstStr",
-        "ConstBytes",
+    expected_value_keyed_rows = {
+        "ConstInt": {"opcode": "ConstInt", "key": "i64_attr", "attrs": ["value"]},
+        "ConstBigInt": {
+            "opcode": "ConstBigInt",
+            "key": "str_attr",
+            "attrs": ["s_value"],
+        },
+        "ConstBool": {"opcode": "ConstBool", "key": "bool_attr", "attrs": ["value"]},
+        "ConstNone": {"opcode": "ConstNone", "key": "none_singleton"},
+        "ConstFloat": {
+            "opcode": "ConstFloat",
+            "key": "f64_bits_attr",
+            "attrs": ["f_value", "value"],
+        },
+        "ConstStr": {
+            "opcode": "ConstStr",
+            "key": "str_attr",
+            "attrs": ["s_value", "value"],
+        },
+        "ConstBytes": {
+            "opcode": "ConstBytes",
+            "key": "bytes_attr",
+            "attrs": ["bytes", "value"],
+        },
     }
+    expected_attr_key_rows = {
+        "TypeGuard": {
+            "opcode": "TypeGuard",
+            "key": "str_attr",
+            "attrs": ["expected_type", "ty"],
+        },
+    }
+    expected_value_keyed = set(expected_value_keyed_rows)
+    expected_proven_seeds = expected_value_keyed - {"ConstBigInt"}
     assert set(data["gvn_always_numberable_opcodes"]) == expected_always
     assert set(data["gvn_type_gated_numberable_opcodes"]) == expected_type_gated
-    assert set(data["gvn_value_keyed_constant_opcodes"]) == expected_value_keyed
-    assert set(data["proven_result_type_seed_opcodes"]) == expected_value_keyed
-    assert "ConstBigInt" not in expected_value_keyed
+    assert {
+        row["opcode"]: row for row in data["gvn_value_keyed_constant_opcodes"]
+    } == expected_value_keyed_rows
+    assert {
+        row["opcode"]: row for row in data["gvn_numberable_attr_key_opcodes"]
+    } == expected_attr_key_rows
+    assert set(data["proven_result_type_seed_opcodes"]) == expected_proven_seeds
 
     gvn_block = rendered.split("fn opcode_gvn_numbering_role_table")[1].split(
+        "enum GvnValueKeyKind"
+    )[0]
+    key_spec_block = rendered.split("fn opcode_gvn_value_key_spec_table")[1].split(
         "fn opcode_is_proven_result_type_seed_table"
     )[0]
     proven_block = rendered.split("fn opcode_is_proven_result_type_seed_table")[
@@ -1014,11 +2338,51 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
             expected_role = "GvnNumberingRole::ValueKeyedConstant"
         else:
             expected_role = "GvnNumberingRole::Never"
-        expected_bool = "true" if name in expected_value_keyed else "false"
+        expected_bool = "true" if name in expected_proven_seeds else "false"
         assert f"OpCode::{name} => {expected_role}," in gvn_block
         assert f"OpCode::{name} => {expected_bool}," in proven_block
-    assert "OpCode::ConstBigInt => GvnNumberingRole::Never," in gvn_block
+    assert "OpCode::ConstBigInt => GvnNumberingRole::ValueKeyedConstant," in gvn_block
     assert "OpCode::ConstBigInt => false," in proven_block
+    assert "pub enum GvnValueKeyKind" in rendered
+    assert "pub struct GvnValueKeySpec" in rendered
+    expected_key_variants = {
+        "ConstInt": "I64Attr",
+        "ConstBigInt": "StrAttr",
+        "ConstBool": "BoolAttr",
+        "ConstNone": "NoneSingleton",
+        "ConstFloat": "F64BitsAttr",
+        "ConstStr": "StrAttr",
+        "ConstBytes": "BytesAttr",
+        "TypeGuard": "StrAttr",
+    }
+    expected_attr_consts = {
+        "ConstInt": 'const GVN_VALUE_KEY_ATTRS_CONST_INT: &[&str] = &["value"];',
+        "ConstBigInt": 'const GVN_VALUE_KEY_ATTRS_CONST_BIG_INT: &[&str] = &["s_value"];',
+        "ConstBool": 'const GVN_VALUE_KEY_ATTRS_CONST_BOOL: &[&str] = &["value"];',
+        "ConstNone": "const GVN_VALUE_KEY_ATTRS_CONST_NONE: &[&str] = &[];",
+        "ConstFloat": (
+            'const GVN_VALUE_KEY_ATTRS_CONST_FLOAT: &[&str] = &["f_value", "value"];'
+        ),
+        "ConstStr": (
+            'const GVN_VALUE_KEY_ATTRS_CONST_STR: &[&str] = &["s_value", "value"];'
+        ),
+        "ConstBytes": (
+            'const GVN_VALUE_KEY_ATTRS_CONST_BYTES: &[&str] = &["bytes", "value"];'
+        ),
+        "TypeGuard": (
+            'const GVN_VALUE_KEY_ATTRS_TYPE_GUARD: &[&str] = &["expected_type", "ty"];'
+        ),
+    }
+    for opcode, variant in expected_key_variants.items():
+        const_decl = expected_attr_consts[opcode]
+        const_name = const_decl.split(":", maxsplit=1)[0].removeprefix("const ")
+        assert const_decl in rendered
+        arm = key_spec_block.split(
+            f"OpCode::{opcode} => Some(GvnValueKeySpec {{", maxsplit=1
+        )[1].split("}),", maxsplit=1)[0]
+        assert f"kind: GvnValueKeyKind::{variant}," in arm
+        assert f"attrs: {const_name}," in arm
+    assert "OpCode::Add => None," in key_spec_block
 
     type_refine_production = type_refine.split("#[cfg(test)]", maxsplit=1)[0]
     assert (
@@ -1030,16 +2394,88 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
     assert "match op.opcode" not in extract_proven_map
     gvn_production = gvn.split("#[cfg(test)]", maxsplit=1)[0]
     assert "opcode_gvn_numbering_role_table(op.opcode)" in gvn_production
+    assert "opcode_gvn_value_key_spec_table(op.opcode)" in gvn_production
     assert "GvnNumberingRole::Always" in gvn_production
     assert "GvnNumberingRole::TypeGated" in gvn_production
     assert "GvnNumberingRole::ValueKeyedConstant" in gvn_production
     assert "opcode_is_gvn_value_keyed_constant_table" not in gvn_production
+    assert "opcode_gvn_constant_key_spec_table" not in gvn_production
     assert "fn is_always_numberable" not in gvn_production
     assert "fn is_typed_numberable" not in gvn_production
     assert "fn is_const_opcode" not in gvn_production
+    assert "fn const_keys" not in gvn_production
+    assert "const_int_key" not in gvn_production
+    assert "const_str_key" not in gvn_production
+    assert "const_bytes_key" not in gvn_production
+    for opcode in expected_value_keyed:
+        assert f"OpCode::{opcode} =>" not in gvn_production
 
     effects_production = effects.split("#[cfg(test)]", maxsplit=1)[0]
     assert "opcode_is_type_gated_numberable" not in effects_production
+
+
+def test_gvn_value_keyed_constant_fact_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"]: row for row in data["opcode"]}
+
+    bad_key = json.loads(json.dumps(data))
+    bad_key["gvn_value_keyed_constant_opcodes"][0]["key"] = "opaque_default"
+    try:
+        gen._validate_gvn_value_keyed_constant_facts(bad_key, opcodes)
+    except gen.OpKindTableError as e:
+        assert "key must be one of" in str(e)
+    else:
+        raise AssertionError("bad GVN constant key kind was accepted")
+
+    missing_attrs = json.loads(json.dumps(data))
+    missing_attrs["gvn_value_keyed_constant_opcodes"][0].pop("attrs")
+    try:
+        gen._validate_gvn_value_keyed_constant_facts(missing_attrs, opcodes)
+    except gen.OpKindTableError as e:
+        assert "requires a non-empty attrs list" in str(e)
+    else:
+        raise AssertionError("GVN constant attr-key row without attrs was accepted")
+
+    duplicate = json.loads(json.dumps(data))
+    duplicate["gvn_value_keyed_constant_opcodes"].append(
+        json.loads(json.dumps(duplicate["gvn_value_keyed_constant_opcodes"][0]))
+    )
+    try:
+        gen._validate_gvn_value_keyed_constant_facts(duplicate, opcodes)
+    except gen.OpKindTableError as e:
+        assert "duplicate gvn_value_keyed_constant_opcodes opcode" in str(e)
+    else:
+        raise AssertionError("duplicate GVN constant key row was accepted")
+
+    attr_bad_opcode = json.loads(json.dumps(data))
+    attr_bad_opcode["gvn_numberable_attr_key_opcodes"].append(
+        {"opcode": "Call", "key": "str_attr", "attrs": ["name"]}
+    )
+    try:
+        gen._validate_gvn_numberable_attr_key_facts(attr_bad_opcode, opcodes)
+    except gen.OpKindTableError as e:
+        assert "opcode must be in gvn_always_numberable_opcodes" in str(e)
+    else:
+        raise AssertionError("GVN attr key for non-numbered opcode was accepted")
+
+    attr_none_key = json.loads(json.dumps(data))
+    attr_none_key["gvn_numberable_attr_key_opcodes"][0]["key"] = "none_singleton"
+    try:
+        gen._validate_gvn_numberable_attr_key_facts(attr_none_key, opcodes)
+    except gen.OpKindTableError as e:
+        assert "key must be one of" in str(e)
+    else:
+        raise AssertionError("GVN attr key row accepted none_singleton")
+
+    attr_missing_attrs = json.loads(json.dumps(data))
+    attr_missing_attrs["gvn_numberable_attr_key_opcodes"][0]["attrs"] = []
+    try:
+        gen._validate_gvn_numberable_attr_key_facts(attr_missing_attrs, opcodes)
+    except gen.OpKindTableError as e:
+        assert "requires a non-empty attrs list" in str(e)
+    else:
+        raise AssertionError("GVN attr key row without attrs was accepted")
 
 
 def test_alias_barrier_predicates_delegate_to_generated_tables() -> None:
@@ -1201,6 +2637,67 @@ def test_deforestation_fusion_barriers_delegate_to_generated_table() -> None:
     assert "OpCode::" not in body
 
 
+def test_polyhedral_opcodes_delegate_to_generated_tables() -> None:
+    """Polyhedral loop classification belongs to generated opcode facts."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    polyhedral = (ROOT / "runtime/molt-tir/src/tir/passes/polyhedral.rs").read_text(
+        encoding="utf-8"
+    )
+
+    loop_headers = {"ForIter", "ScfFor"}
+    affine_body = {
+        "Add",
+        "Sub",
+        "Mul",
+        "Div",
+        "FloorDiv",
+        "Mod",
+        "Index",
+        "StoreIndex",
+        "ConstInt",
+        "ConstFloat",
+        "ConstBool",
+        "ConstNone",
+        "Lt",
+        "Le",
+        "Gt",
+        "Ge",
+        "Eq",
+        "Ne",
+        "ForIter",
+        "ScfFor",
+        "ScfYield",
+        "GetIter",
+        "IterNext",
+    }
+    assert set(data["polyhedral_loop_header_opcodes"]) == loop_headers
+    assert set(data["polyhedral_affine_body_opcodes"]) == affine_body
+    assert "Copy" not in affine_body
+
+    header_block = rendered.split("fn opcode_is_polyhedral_loop_header_table")[
+        1
+    ].split("fn opcode_is_polyhedral_affine_body_table")[0]
+    affine_block = rendered.split("fn opcode_is_polyhedral_affine_body_table")[1].split(
+        "fn opcode_is_refcount_heap_exposure_table"
+    )[0]
+    for opcode in loop_headers:
+        assert f"OpCode::{opcode} => true," in header_block
+    assert "OpCode::Call => false," in header_block
+    for opcode in affine_body:
+        assert f"OpCode::{opcode} => true," in affine_block
+    for opcode in {"Call", "BuildList", "Copy", "StateYield"}:
+        assert f"OpCode::{opcode} => false," in affine_block
+
+    production = polyhedral.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_is_polyhedral_loop_header_table" in production
+    assert "opcode_is_polyhedral_affine_body_table" in production
+    assert "op.is_plain_value_copy()" in production
+    assert "matches!" not in production
+    assert "OpCode::" not in production
+
+
 def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
     """Generator poll-body eligibility has one opcode-role authority."""
     gen = _gen()
@@ -1225,11 +2722,16 @@ def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
     assert set(data["generator_fusion_poll_reject_opcodes"]) == reject
     assert required.isdisjoint(reject)
     assert "StateSwitch" not in required | reject
+    iter_use_roles = [
+        {"opcode": "IterNext", "role": "next_use"},
+        {"opcode": "Is", "role": "none_guard"},
+    ]
+    assert data["generator_fusion_iter_use_roles"] == iter_use_roles
 
     assert "pub enum GeneratorFusionPollRole" in rendered
     assert "pub fn opcode_generator_fusion_poll_role_table" in rendered
     table_block = rendered.split("fn opcode_generator_fusion_poll_role_table")[1].split(
-        "fn opcode_is_state_machine_table"
+        "pub enum GeneratorFusionIterUseRole"
     )[0]
     for row in data["opcode"]:
         if row["name"] in required:
@@ -1239,6 +2741,12 @@ def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
         else:
             role = "GeneratorFusionPollRole::Neutral"
         assert f"OpCode::{row['name']} => {role}," in table_block
+    iter_use_block = rendered.split(
+        "fn opcode_generator_fusion_iter_use_role_table"
+    )[1].split("fn opcode_is_state_machine_table")[0]
+    assert "OpCode::IterNext => GeneratorFusionIterUseRole::NextUse," in iter_use_block
+    assert "OpCode::Is => GeneratorFusionIterUseRole::NoneGuard," in iter_use_block
+    assert "OpCode::Add => GeneratorFusionIterUseRole::None," in iter_use_block
 
     production = generator_fusion.split("#[cfg(test)]", maxsplit=1)[0]
     assert "opcode_generator_fusion_poll_role_table" in production
@@ -1253,6 +2761,41 @@ def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
     assert "OpCode::YieldFrom" not in body
     assert "OpCode::AllocTask" not in body
     assert ".filter(|op| op.opcode == OpCode::StateYield)" not in production
+    iter_body = production.split(
+        "fn iter_uses_are_next_and_optional_none_guard", maxsplit=1
+    )[1].split("fn terminator_uses", maxsplit=1)[0]
+    assert "opcode_generator_fusion_iter_use_role_table(op.opcode)" in iter_body
+    assert "GeneratorFusionIterUseRole::NextUse" in iter_body
+    assert "GeneratorFusionIterUseRole::NoneGuard" in iter_body
+    assert "match op.opcode" not in iter_body
+    assert "OpCode::IterNext if" not in iter_body
+    assert "OpCode::Is =>" not in iter_body
+
+
+def test_generator_fusion_iter_use_role_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_role = json.loads(json.dumps(data))
+    bad_role["generator_fusion_iter_use_roles"][0]["role"] = "none_guard"
+    try:
+        gen._validate_generator_fusion_iter_use_roles(bad_role, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "reserved for OpCode::Is" in str(exc)
+    else:
+        raise AssertionError("IterNext was accepted with the Is guard role")
+
+    duplicate_role = json.loads(json.dumps(data))
+    duplicate_role["generator_fusion_iter_use_roles"].append(
+        json.loads(json.dumps(duplicate_role["generator_fusion_iter_use_roles"][0]))
+    )
+    try:
+        gen._validate_generator_fusion_iter_use_roles(duplicate_role, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "duplicate generator_fusion_iter_use_roles opcode: IterNext" in str(exc)
+    else:
+        raise AssertionError("duplicate generator-fusion iter role was accepted")
 
 
 def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> None:
@@ -1280,7 +2823,7 @@ def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> Non
 
     table_block = rendered.split("fn opcode_is_lowered_state_machine_body_table")[
         1
-    ].split("fn opcode_is_fusion_barrier_table")[0]
+    ].split("fn opcode_is_drop_insertion_suspension_point_table")[0]
     for row in data["opcode"]:
         expected_bool = "true" if row["name"] in expected else "false"
         assert f"OpCode::{row['name']} => {expected_bool}," in table_block
@@ -1304,6 +2847,101 @@ def test_lowered_state_machine_body_opcodes_delegate_to_generated_table() -> Non
     assert "Terminator::StateDispatch" in body
     assert f"{table_name}(op.opcode)" in body
     assert "OpCode::" not in body
+
+
+def test_drop_insertion_suspension_points_delegate_to_generated_table() -> None:
+    """Drop insertion's suspension retain points have one opcode authority."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    drop_insertion = (
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+
+    expected = {
+        "ChanRecvYield",
+        "ChanSendYield",
+        "StateYield",
+        "Yield",
+        "YieldFrom",
+    }
+    assert set(data["drop_insertion_suspension_point_opcodes"]) == expected
+    assert expected < set(data["state_machine_opcodes"])
+    assert {"AllocTask", "StateSwitch", "StateTransition"}.isdisjoint(expected)
+
+    table_block = rendered.split(
+        "fn opcode_is_drop_insertion_suspension_point_table"
+    )[1].split("fn opcode_is_drop_insertion_return_deferral_barrier_table")[0]
+    for row in data["opcode"]:
+        expected_bool = "true" if row["name"] in expected else "false"
+        assert f"OpCode::{row['name']} => {expected_bool}," in table_block
+
+    table_name = "opcode_is_drop_insertion_suspension_point_table"
+    assert table_name in drop_insertion
+    start = drop_insertion.index("fn is_suspension_point(")
+    brace = drop_insertion.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(drop_insertion)):
+        if drop_insertion[i] == "{":
+            depth += 1
+        elif drop_insertion[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = drop_insertion[start:end]
+    assert f"{table_name}(opcode)" in body
+    assert "matches!" not in body
+    assert "OpCode::" not in body
+
+
+def test_drop_insertion_return_deferral_barriers_delegate_to_generated_table() -> None:
+    """Return-boundary deferral barriers have one opcode authority."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    drop_insertion = (
+        ROOT / "runtime/molt-tir/src/tir/passes/drop_insertion.rs"
+    ).read_text(encoding="utf-8")
+
+    expected = {"DecRef", "Free", "IncRef"}
+    assert set(data["drop_insertion_return_deferral_barrier_opcodes"]) == expected
+    assert "DelBoundary" not in expected
+    assert expected.isdisjoint(data["drop_insertion_suspension_point_opcodes"])
+
+    table_block = rendered.split(
+        "fn opcode_is_drop_insertion_return_deferral_barrier_table"
+    )[1].split("fn opcode_is_fusion_barrier_table")[0]
+    for row in data["opcode"]:
+        expected_bool = "true" if row["name"] in expected else "false"
+        assert f"OpCode::{row['name']} => {expected_bool}," in table_block
+
+    table_name = "opcode_is_drop_insertion_return_deferral_barrier_table"
+    assert table_name in drop_insertion
+    start = drop_insertion.index("fn is_return_deferral_barrier(")
+    brace = drop_insertion.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(drop_insertion)):
+        if drop_insertion[i] == "{":
+            depth += 1
+        elif drop_insertion[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = drop_insertion[start:end]
+    assert f"{table_name}(opcode)" in body
+    assert "matches!" not in body
+    assert "OpCode::" not in body
+
+    scan = drop_insertion.split("let mut disqualified: HashSet<ValueId>", maxsplit=1)[
+        1
+    ].split("Gate (c) transfer rail", maxsplit=1)[0]
+    assert "is_return_deferral_barrier(op.opcode)" in scan
+    assert "OpCode::IncRef | OpCode::DecRef | OpCode::Free" not in scan
+    assert "matches!(op.opcode" not in scan
 
 
 def test_state_machine_opcodes_delegate_to_generated_table() -> None:
@@ -1424,6 +3062,54 @@ def test_refcount_heap_exposure_delegates_to_generated_table() -> None:
     assert "OpCode::" not in body
 
 
+def test_escape_alloc_sites_delegate_to_generated_table() -> None:
+    """Escape-analysis allocation roots have one opcode authority."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    escape_analysis = (
+        ROOT / "runtime/molt-tir/src/tir/passes/escape_analysis.rs"
+    ).read_text(encoding="utf-8")
+
+    expected = {
+        "Alloc",
+        "ObjectNewBound",
+        "BuildList",
+        "BuildDict",
+        "BuildTuple",
+        "BuildSet",
+        "AllocTask",
+    }
+    assert set(data["escape_alloc_site_opcodes"]) == expected
+
+    table_block = rendered.split("fn opcode_is_escape_alloc_site_table")[1].split(
+        "fn opcode_is_refcount_heap_exposure_table"
+    )[0]
+    for row in data["opcode"]:
+        opcode = row["name"]
+        expected_bool = "true" if opcode in expected else "false"
+        assert f"OpCode::{opcode} => {expected_bool}," in table_block
+
+    table_name = "opcode_is_escape_alloc_site_table"
+    assert table_name in escape_analysis
+    start = escape_analysis.index("fn is_alloc_site(")
+    brace = escape_analysis.index("{", start)
+    depth = 0
+    end = brace
+    for i in range(brace, len(escape_analysis)):
+        if escape_analysis[i] == "{":
+            depth += 1
+        elif escape_analysis[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    body = escape_analysis[start:end]
+    assert f"{table_name}(opcode)" in body
+    assert "matches!" not in body
+    assert "OpCode::" not in body
+
+
 def test_refcount_balance_roles_delegate_to_generated_table() -> None:
     """Refcount balance accounting has one opcode-role authority."""
     gen = _gen()
@@ -1498,7 +3184,7 @@ def test_i64_arithmetic_lowering_facts_delegate_to_generated_tables() -> None:
     )[1].split("fn opcode_supports_i64_checked_overflow_triple_table")[0]
     checked_table_block = rendered.split(
         "fn opcode_supports_i64_checked_overflow_triple_table"
-    )[1].split("fn opcode_requires_i64_zero_divisor_guard_table")[0]
+    )[1].split("fn opcode_uses_boxed_runtime_inplace_dispatch_table")[0]
     for row in data["opcode"]:
         overflow_bool = "true" if row["name"] in overflow_box_dispatch else "false"
         checked_bool = "true" if row["name"] in checked_triples else "false"
@@ -1542,6 +3228,33 @@ def test_i64_arithmetic_lowering_facts_delegate_to_generated_tables() -> None:
     helper_body = lower_to_lir[start:end]
     assert checked_table_name in helper_body
     assert "OpCode::Add | OpCode::Sub | OpCode::Mul" not in helper_body
+
+
+def test_llvm_boxed_runtime_inplace_dispatch_delegates_to_generated_table() -> None:
+    """First-class augassign opcodes must route boxed LLVM fallback via registry."""
+    gen = _gen()
+    data = gen.load_table()
+    rendered = gen.render_rs(data)
+    llvm_lowering = (
+        ROOT / "runtime/molt-backend/src/llvm_backend/lowering.rs"
+    ).read_text(encoding="utf-8")
+
+    expected = {"InplaceAdd", "InplaceSub", "InplaceMul"}
+    assert set(data["boxed_runtime_inplace_dispatch_opcodes"]) == expected
+
+    table_block = rendered.split(
+        "fn opcode_uses_boxed_runtime_inplace_dispatch_table"
+    )[1].split("fn opcode_requires_i64_zero_divisor_guard_table")[0]
+    for row in data["opcode"]:
+        expected_bool = "true" if row["name"] in expected else "false"
+        assert f"OpCode::{row['name']} => {expected_bool}," in table_block
+
+    table_name = "opcode_uses_boxed_runtime_inplace_dispatch_table"
+    body = _rust_fn_body(llvm_lowering, "fn emit_binary_arith(")
+    assert table_name in body
+    assert 'k.starts_with("inplace_")' in body
+    assert "matches!(\n                    op.opcode" not in body
+    assert "OpCode::InplaceAdd | OpCode::InplaceSub | OpCode::InplaceMul" not in body
 
 
 def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
@@ -1613,7 +3326,7 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
 
 
 def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
-    """Exception label attrs and CFG transfer edges have one opcode authority."""
+    """Exception metadata opcode roles have one registry authority."""
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
@@ -1630,38 +3343,86 @@ def test_exception_label_opcode_facts_delegate_to_generated_tables() -> None:
         "dominators": (ROOT / "runtime/molt-tir/src/tir/dominators.rs").read_text(
             encoding="utf-8"
         ),
+        "dce": (ROOT / "runtime/molt-tir/src/tir/passes/dce.rs").read_text(
+            encoding="utf-8"
+        ),
+        "sccp": (ROOT / "runtime/molt-tir/src/tir/passes/sccp.rs").read_text(
+            encoding="utf-8"
+        ),
     }
 
     label_attr = {"CheckException", "TryStart", "TryEnd"}
     transfer_edge = {"CheckException", "TryStart"}
+    nesting_roles = [
+        {"opcode": "TryStart", "role": "enter"},
+        {"opcode": "TryEnd", "role": "exit"},
+    ]
     assert set(data["exception_label_attr_opcodes"]) == label_attr
     assert set(data["exception_transfer_edge_opcodes"]) == transfer_edge
+    assert data["exception_region_nesting_roles"] == nesting_roles
 
     label_block = rendered.split("fn opcode_has_exception_label_attr_table")[1].split(
         "fn opcode_is_exception_transfer_edge_table"
     )[0]
     transfer_block = rendered.split("fn opcode_is_exception_transfer_edge_table")[
         1
-    ].split("enum AliasTypedSlotRole")[0]
+    ].split("enum ExceptionRegionNestingRole")[0]
+    nesting_block = rendered.split("enum ExceptionRegionNestingRole")[1].split(
+        "enum AliasTypedSlotRole"
+    )[0]
     for opcode in label_attr:
         assert f"OpCode::{opcode} => true," in label_block
     assert "OpCode::ExceptionPending => false," in label_block
     for opcode in transfer_edge:
         assert f"OpCode::{opcode} => true," in transfer_block
     assert "OpCode::TryEnd => false," in transfer_block
+    assert "pub fn opcode_exception_region_nesting_role_table" in nesting_block
+    assert "OpCode::TryStart => ExceptionRegionNestingRole::Enter," in nesting_block
+    assert "OpCode::TryEnd => ExceptionRegionNestingRole::Exit," in nesting_block
+    assert (
+        "OpCode::CheckException => ExceptionRegionNestingRole::None,"
+        in nesting_block
+    )
 
     assert "opcode_has_exception_label_attr_table" in sources["inliner"]
     assert "opcode_has_exception_label_attr_table" in sources["generator_fusion"]
     assert "opcode_has_exception_label_attr_table" in sources["lower_to_simple"]
     assert "opcode_is_exception_transfer_edge_table" in sources["dominators"]
+    assert "opcode_exception_region_nesting_role_table" in sources["dce"]
+    assert "ExceptionRegionNestingRole" in sources["dce"]
+    assert "opcode_exception_region_nesting_role_table" in sources["sccp"]
+    assert "ExceptionRegionNestingRole" in sources["sccp"]
 
     stale_literal = "OpCode::CheckException | OpCode::TryStart | OpCode::TryEnd"
-    for source in sources.values():
+    for name, source in sources.items():
+        if name == "dce":
+            source = source.split("#[cfg(test)]", maxsplit=1)[0]
         assert stale_literal not in source
     assert (
         "matches!(opcode, OpCode::CheckException | OpCode::TryStart)"
         not in sources["dominators"]
     )
+    dce_production = sources["dce"].split("#[cfg(test)]", maxsplit=1)[0]
+    assert "OpCode::TryStart =>" not in dce_production
+    assert "OpCode::TryEnd =>" not in dce_production
+    sccp_production = sources["sccp"].split("#[cfg(test)]", maxsplit=1)[0]
+    assert "OpCode::TryStart =>" not in sccp_production
+    assert "OpCode::TryEnd =>" not in sccp_production
+
+
+def test_exception_region_nesting_role_validation_rejects_drift() -> None:
+    gen = _gen()
+    data = gen.load_table()
+    opcodes = {row["name"] for row in data["opcode"]}
+
+    bad_role = json.loads(json.dumps(data))
+    bad_role["exception_region_nesting_roles"][0]["role"] = "exit"
+    try:
+        gen._validate_exception_region_nesting_roles(bad_role, opcodes)
+    except gen.OpKindTableError as exc:
+        assert "reserved for OpCode::TryEnd" in str(exc)
+    else:
+        raise AssertionError("TryStart was accepted with the TryEnd nesting role")
 
 
 def test_alias_slot_observation_delegates_to_generated_table() -> None:

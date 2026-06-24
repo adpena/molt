@@ -9,7 +9,12 @@ use std::collections::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
-use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::op_kinds_generated::{
+    ExceptionRegionNestingRole, opcode_exception_region_nesting_role_table,
+};
+#[cfg(test)]
+use crate::tir::ops::OpCode;
+use crate::tir::ops::TirOp;
 use crate::tir::values::ValueId;
 
 use super::PassStats;
@@ -186,16 +191,16 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             let mut try_depth = Vec::with_capacity(block.ops.len());
             let mut depth: u32 = 0;
             for op in &block.ops {
-                match op.opcode {
-                    OpCode::TryStart => {
+                match opcode_exception_region_nesting_role_table(op.opcode) {
+                    ExceptionRegionNestingRole::Enter => {
                         try_depth.push(depth);
                         depth += 1;
                     }
-                    OpCode::TryEnd => {
+                    ExceptionRegionNestingRole::Exit => {
                         depth = depth.saturating_sub(1);
                         try_depth.push(depth);
                     }
-                    _ => {
+                    ExceptionRegionNestingRole::None => {
                         try_depth.push(depth);
                     }
                 }

@@ -12,8 +12,10 @@ ONE table into every consumer so the tables can never drift:
   - ``runtime/molt-tir/src/tir/op_kinds_generated.rs`` — the data tables the
     backend's ``kind_to_opcode`` mapper, the ``CopyLowering`` classifier
     (``copy_kind_mints_fresh_owned_ref`` / ``classify_copy_kind`` /
-    ``copy_kind_is_explicit_no_heap_move``), and the per-OpCode effect oracle
-    (``opcode_may_throw`` / ``opcode_is_side_effecting`` / ``opcode_effects``)
+    ``copy_kind_is_explicit_no_heap_move``), the generated ``ALL_OPCODES``
+    enum-domain iterator, and the per-OpCode effect oracle
+    (``opcode_may_throw`` / ``opcode_is_side_effecting`` /
+    ``opcode_effects_table``)
     consume. The effect oracle is rendered as an EXHAUSTIVE match over the
     ``OpCode`` enum (no wildcard arm), so a newly added opcode fails to compile
     until it is given an explicit effect classification in the table — the
@@ -127,6 +129,151 @@ _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
 _TERMINATOR_OWNERSHIP_LEAVES = {"borrowed", "transferred", "none"}
 _RESULT_VALIDITY_VALUES = {"conditional_valid_only_on_edge"}
 _LITERAL_PAYLOAD_KINDS = {"int": "Int", "bool": "Bool"}
+_GVN_VALUE_KEY_KINDS = {
+    "i64_attr": "I64Attr",
+    "bool_attr": "BoolAttr",
+    "none_singleton": "NoneSingleton",
+    "f64_bits_attr": "F64BitsAttr",
+    "str_attr": "StrAttr",
+    "bytes_attr": "BytesAttr",
+}
+_TYPE_REFINE_ATTR_RESULT_TYPE_RULES = {
+    "object_type_hint": "ObjectTypeHint",
+    "call_return_type": "CallReturnType",
+    "call_builtin_return_type": "CallBuiltinReturnType",
+    "type_guard": "TypeGuard",
+    "copy_original_kind": "CopyOriginalKind",
+}
+_TYPE_REFINE_OPERAND_TYPE_RULES = {
+    "add": "Add",
+    "mul": "Mul",
+    "numeric_arithmetic": "NumericArithmetic",
+    "true_division": "TrueDivision",
+    "unary_numeric": "UnaryNumeric",
+    "bool_select": "BoolSelect",
+    "bitwise_i64": "BitwiseI64",
+    "bit_not_i64": "BitNotI64",
+    "build_tuple": "BuildTuple",
+    "get_iter": "GetIter",
+    "iter_next": "IterNext",
+    "index": "Index",
+    "copy": "Copy",
+    "box_val": "BoxVal",
+    "unbox_val": "UnboxVal",
+}
+_SCCP_CONSTANT_SEED_RULES = {
+    "int_attr": "IntAttr",
+    "float_attr": "FloatAttr",
+    "bool_attr": "BoolAttr",
+    "str_attr": "StrAttr",
+    "none_singleton": "NoneSingleton",
+}
+_SCCP_CONSTANT_EVAL_RULES = {
+    "add": "Add",
+    "sub": "Sub",
+    "mul": "Mul",
+    "div": "Div",
+    "floordiv": "FloorDiv",
+    "mod": "Mod",
+    "pow": "Pow",
+    "eq": "Eq",
+    "ne": "Ne",
+    "lt": "Lt",
+    "le": "Le",
+    "gt": "Gt",
+    "ge": "Ge",
+    "neg": "Neg",
+    "not": "Not",
+    "build_list": "BuildList",
+    "build_dict": "BuildDict",
+    "build_tuple_as_list": "BuildTupleAsList",
+}
+_VALUE_RANGE_TRANSFER_RULES = {
+    "add": "Add",
+    "sub": "Sub",
+    "mul": "Mul",
+    "neg": "Neg",
+    "bit_and": "BitAnd",
+    "bit_or": "BitOr",
+    "bit_xor": "BitXor",
+    "mod": "Mod",
+    "shr": "Shr",
+    "shl": "Shl",
+}
+_VALUE_RANGE_CONST_FOLD_RULES = {
+    "add": "Add",
+    "sub": "Sub",
+    "mul": "Mul",
+    "shl": "Shl",
+    "shr": "Shr",
+    "bit_and": "BitAnd",
+    "bit_or": "BitOr",
+    "bit_xor": "BitXor",
+}
+_VALUE_RANGE_COND_NARROW_RULES = {
+    "lt_upper_exclusive": "LtUpperExclusive",
+    "le_upper_inclusive": "LeUpperInclusive",
+}
+_VALUE_RANGE_CONTAINER_LENGTH_RULES = {
+    "fixed_literal": "FixedLiteral",
+    "list_repeat": "ListRepeat",
+    "len_call": "LenCall",
+}
+_RANGE_DEVIRT_ROLES = {
+    "none": "None",
+    "range_call_candidate": "RangeCallCandidate",
+    "iterator_candidate": "IteratorCandidate",
+    "next_unboxed_candidate": "NextUnboxedCandidate",
+}
+_VECTORIZE_BODY_ACTIONS = {
+    "reject": "Reject",
+    "scalar_arithmetic": "ScalarArithmetic",
+    "copy_if_plain": "CopyIfPlain",
+    "iteration_control": "IterationControl",
+    "non_escaping_guard": "NonEscapingGuard",
+}
+_VECTOR_REDUCTION_RULES = {
+    "sum": "Sum",
+    "product": "Product",
+    "and": "And",
+    "or": "Or",
+    "min": "Min",
+    "max": "Max",
+}
+_LIR_VERIFY_RULES = {
+    "box_value": "BoxValue",
+    "unbox_value": "UnboxValue",
+    "checked_i64_arithmetic": "CheckedI64Arithmetic",
+    "truthy_materialization": "TruthyMaterialization",
+}
+_CALL_OPCODE_ROLES = {
+    "not_call": "NotCall",
+    "user_call": "UserCall",
+    "dynamic_method": "DynamicMethod",
+    "runtime_builtin": "RuntimeBuiltin",
+    "copy_original_kind": "CopyOriginalKind",
+}
+_EXCEPTION_REGION_NESTING_ROLES = {
+    "none": "None",
+    "enter": "Enter",
+    "exit": "Exit",
+}
+_GENERATOR_FUSION_ITER_USE_ROLES = {
+    "none": "None",
+    "next_use": "NextUse",
+    "none_guard": "NoneGuard",
+}
+_FUZZ_TIR_ATTR_PAYLOAD_RULES = {
+    "none": "None",
+    "i64_value": "I64Value",
+    "f64_value": "F64Value",
+    "bool_value": "BoolValue",
+}
+_FUZZ_TIR_OPCODE_ATTR_PAYLOAD_RULES = {
+    "ConstInt": "i64_value",
+    "ConstFloat": "f64_value",
+    "ConstBool": "bool_value",
+}
 _CANONICALIZE_COMMUTATIVE_DOMAINS = {"numeric", "i64", "unboxed_scalar"}
 _CANONICALIZE_BINARY_PREDICATES = {
     "lhs_int": "int",
@@ -208,10 +355,16 @@ _OPCODE_FACT_SETS = (
     "alias_slot_direct_observer_opcodes",
     "alias_slot_typed_store_opcodes",
     "alias_slot_never_observer_opcodes",
+    "escape_alloc_site_opcodes",
+    "polyhedral_loop_header_opcodes",
+    "polyhedral_affine_body_opcodes",
     "refcount_heap_exposure_opcodes",
     "refcount_balance_inc_opcodes",
     "refcount_balance_dec_opcodes",
     "lowered_state_machine_body_opcodes",
+    "boxed_runtime_inplace_dispatch_opcodes",
+    "drop_insertion_suspension_point_opcodes",
+    "drop_insertion_return_deferral_barrier_opcodes",
     "fusion_barrier_opcodes",
     "generator_fusion_poll_required_yield_opcodes",
     "generator_fusion_poll_reject_opcodes",
@@ -222,7 +375,6 @@ _OPCODE_FACT_SETS = (
     "i64_shift_count_guard_opcodes",
     "gvn_always_numberable_opcodes",
     "gvn_type_gated_numberable_opcodes",
-    "gvn_value_keyed_constant_opcodes",
     "proven_result_type_seed_opcodes",
     "exception_label_attr_opcodes",
     "exception_transfer_edge_opcodes",
@@ -271,6 +423,10 @@ def _rs_bool(value: bool) -> str:
     return "true" if value else "false"
 
 
+def _rs_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 # ---------------------------------------------------------------------------
 # Table loading + validation
 # ---------------------------------------------------------------------------
@@ -294,6 +450,7 @@ def load_table() -> dict:
     if not opcodes:
         raise OpKindTableError("table has no [[opcode]] rows")
     seen_opcodes: set[str] = set()
+    opcodes_by_name: dict[str, dict] = {}
     for row in opcodes:
         name = row.get("name")
         if not isinstance(name, str) or not name:
@@ -301,6 +458,7 @@ def load_table() -> dict:
         if name in seen_opcodes:
             raise OpKindTableError(f"duplicate [[opcode]] name: {name}")
         seen_opcodes.add(name)
+        opcodes_by_name[name] = row
         if not isinstance(row.get("may_throw"), bool):
             raise OpKindTableError(f"opcode {name}: 'may_throw' must be a bool")
         if not isinstance(row.get("side_effecting"), bool):
@@ -392,9 +550,80 @@ def load_table() -> dict:
 
     _validate_simpleir_control_kinds(data)
     _validate_literal_payload_facts(data, seen_opcodes)
+    _validate_fuzz_tir_opcode_shapes(data, opcodes_by_name)
     _validate_canonicalize_facts(data, seen_opcodes)
     for key in _OPCODE_FACT_SETS:
         _validate_opcode_fact_set(data, key, seen_opcodes)
+    _validate_gvn_value_keyed_constant_facts(data, opcodes_by_name)
+    _validate_gvn_numberable_attr_key_facts(data, opcodes_by_name)
+    _validate_opcode_rule_rows(
+        data,
+        "type_refine_attr_result_type_rules",
+        seen_opcodes,
+        _TYPE_REFINE_ATTR_RESULT_TYPE_RULES,
+        "type-refine attr result-type rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "type_refine_operand_type_rules",
+        seen_opcodes,
+        _TYPE_REFINE_OPERAND_TYPE_RULES,
+        "type-refine operand type rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "sccp_constant_seed_rules",
+        seen_opcodes,
+        _SCCP_CONSTANT_SEED_RULES,
+        "SCCP constant seed rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "sccp_constant_eval_rules",
+        seen_opcodes,
+        _SCCP_CONSTANT_EVAL_RULES,
+        "SCCP constant eval rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "value_range_transfer_rules",
+        seen_opcodes,
+        _VALUE_RANGE_TRANSFER_RULES,
+        "value-range transfer rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "value_range_const_fold_rules",
+        seen_opcodes,
+        _VALUE_RANGE_CONST_FOLD_RULES,
+        "value-range const-fold rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "value_range_cond_narrow_rules",
+        seen_opcodes,
+        _VALUE_RANGE_COND_NARROW_RULES,
+        "value-range conditional-narrow rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "value_range_container_length_rules",
+        seen_opcodes,
+        _VALUE_RANGE_CONTAINER_LENGTH_RULES,
+        "value-range container-length rule",
+    )
+    _validate_range_devirt_roles(data, seen_opcodes)
+    _validate_generator_fusion_iter_use_roles(data, seen_opcodes)
+    _validate_vectorize_opcode_facts(data, seen_opcodes)
+    _validate_opcode_rule_rows(
+        data,
+        "lir_verify_rules",
+        seen_opcodes,
+        _LIR_VERIFY_RULES,
+        "LIR verifier rule",
+    )
+    _validate_exception_region_nesting_roles(data, seen_opcodes)
+    _validate_call_opcode_roles(data, seen_opcodes)
     _validate_pass_delta_opcode_facts(data)
     _validate_disjoint_opcode_role_sets(
         data, _ALIAS_TYPED_SLOT_ROLE_SETS, "alias typed-slot role"
@@ -419,6 +648,7 @@ def load_table() -> dict:
     # the mapper — a kind string maps to exactly one OpCode; two rows owning it
     # is the exact drift this registry kills.
     owner: dict[str, str] = {}
+    mapper_opcode_by_spelling: dict[str, str] = {}
     seen_canon: set[str] = set()
     for row in kinds:
         canon = row.get("canonical")
@@ -444,7 +674,9 @@ def load_table() -> dict:
                     f"{owner[spelling]!r} and {canon!r}"
                 )
             owner[spelling] = canon
+            mapper_opcode_by_spelling[spelling] = mapper
 
+    _validate_call_graph_user_call_kinds(data, mapper_opcode_by_spelling)
     # -- [[consuming_kind]] operand-ownership overrides per wire-kind spelling --
     # Each row names a wire-kind SPELLING (canonical OR alias of a [[kind]] row)
     # that consumes a specific operand. `owner` is exactly the set of valid
@@ -492,6 +724,58 @@ def _validate_literal_payload_facts(data: dict, opcodes: set[str]) -> None:
             raise OpKindTableError(
                 f"literal_payload_opcodes {opcode}: literal must be one of "
                 f"{sorted(_LITERAL_PAYLOAD_KINDS)}, got {literal!r}"
+            )
+
+
+def _validate_fuzz_tir_opcode_shapes(data: dict, opcodes: dict[str, dict]) -> None:
+    rows = data.get("fuzz_tir_opcode_shapes", [])
+    if not isinstance(rows, list) or not rows:
+        raise OpKindTableError(
+            "fuzz_tir_opcode_shapes must be a non-empty array of tables"
+        )
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError("fuzz_tir_opcode_shapes rows must be inline tables")
+        unknown = set(row) - {"opcode", "operands", "attr_payload"}
+        if unknown:
+            raise OpKindTableError(
+                f"fuzz_tir_opcode_shapes row has unknown fields "
+                f"{sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"fuzz_tir_opcode_shapes row missing opcode: {row}")
+        opcode_row = opcodes.get(opcode)
+        if opcode_row is None:
+            raise OpKindTableError(
+                f"fuzz_tir_opcode_shapes opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate fuzz_tir_opcode_shapes opcode: {opcode}")
+        seen.add(opcode)
+        operands = row.get("operands")
+        if type(operands) is not int or operands < 0 or operands > 2:
+            raise OpKindTableError(
+                f"fuzz_tir_opcode_shapes {opcode}: operands must be an integer "
+                f"in 0..=2, got {operands!r}"
+            )
+        if opcode_row.get("result_arity") not in {"zero", "one"}:
+            raise OpKindTableError(
+                f"fuzz_tir_opcode_shapes {opcode}: fuzz generator supports only "
+                "fixed zero/one-result opcodes"
+            )
+        attr_payload = row.get("attr_payload", "none")
+        if attr_payload not in _FUZZ_TIR_ATTR_PAYLOAD_RULES:
+            raise OpKindTableError(
+                f"fuzz_tir_opcode_shapes {opcode}: attr_payload must be one of "
+                f"{sorted(_FUZZ_TIR_ATTR_PAYLOAD_RULES)}, got {attr_payload!r}"
+            )
+        expected_attr_payload = _FUZZ_TIR_OPCODE_ATTR_PAYLOAD_RULES.get(opcode, "none")
+        if attr_payload != expected_attr_payload:
+            raise OpKindTableError(
+                f"fuzz_tir_opcode_shapes {opcode}: attr_payload must be "
+                f"{expected_attr_payload!r}, got {attr_payload!r}"
             )
 
 
@@ -733,18 +1017,485 @@ def _validate_opcode_fact_set(data: dict, key: str, opcodes: set[str]) -> None:
         raise OpKindTableError(f"{key} contains unknown OpCode names: {unknown}")
 
 
+def _opcode_role_members(data: dict, key: str) -> list[str]:
+    if key == "gvn_value_keyed_constant_opcodes":
+        return [row["opcode"] for row in data.get(key, [])]
+    return list(data.get(key, []))
+
+
 def _validate_disjoint_opcode_role_sets(
     data: dict, role_sets: tuple[str, ...], label: str
 ) -> None:
     owners: dict[str, str] = {}
     for key in role_sets:
-        for opcode in data.get(key, []):
+        for opcode in _opcode_role_members(data, key):
             if opcode in owners:
                 raise OpKindTableError(
                     f"{label} opcode {opcode!r} appears in both "
                     f"{owners[opcode]} and {key}"
                 )
             owners[opcode] = key
+
+
+def _validate_gvn_value_keyed_constant_facts(
+    data: dict, opcodes: dict[str, dict]
+) -> None:
+    rows = data.get("gvn_value_keyed_constant_opcodes", [])
+    if not isinstance(rows, list) or not rows:
+        raise OpKindTableError(
+            "gvn_value_keyed_constant_opcodes must be a non-empty array of tables"
+        )
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(
+                "gvn_value_keyed_constant_opcodes rows must be inline tables"
+            )
+        unknown = set(row) - {"opcode", "key", "attrs"}
+        if unknown:
+            raise OpKindTableError(
+                "gvn_value_keyed_constant_opcodes row has unknown fields "
+                f"{sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"gvn_value_keyed_constant_opcodes row missing opcode: {row}"
+            )
+        opcode_row = opcodes.get(opcode)
+        if opcode_row is None:
+            raise OpKindTableError(
+                f"gvn_value_keyed_constant_opcodes opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(
+                f"duplicate gvn_value_keyed_constant_opcodes opcode: {opcode}"
+            )
+        seen.add(opcode)
+        if opcode_row.get("purity") != "pure" or opcode_row.get("result_arity") != "one":
+            raise OpKindTableError(
+                f"gvn_value_keyed_constant_opcodes {opcode}: value-keyed constants "
+                "must be pure single-result opcodes"
+            )
+        key = row.get("key")
+        if key not in _GVN_VALUE_KEY_KINDS:
+            raise OpKindTableError(
+                f"gvn_value_keyed_constant_opcodes {opcode}: key must be one of "
+                f"{sorted(_GVN_VALUE_KEY_KINDS)}"
+            )
+        attrs = row.get("attrs", [])
+        if key == "none_singleton":
+            if attrs not in ([], None):
+                raise OpKindTableError(
+                    f"gvn_value_keyed_constant_opcodes {opcode}: none_singleton "
+                    "must not declare attrs"
+                )
+            continue
+        if not isinstance(attrs, list) or not attrs:
+            raise OpKindTableError(
+                f"gvn_value_keyed_constant_opcodes {opcode}: key {key!r} "
+                "requires a non-empty attrs list"
+            )
+        if not all(
+            isinstance(attr, str) and re.fullmatch(r"[_a-z][a-z0-9_]*", attr)
+            for attr in attrs
+        ):
+            raise OpKindTableError(
+                f"gvn_value_keyed_constant_opcodes {opcode}: attrs must be "
+                "attribute-name strings"
+            )
+        if len(set(attrs)) != len(attrs):
+            raise OpKindTableError(
+                f"gvn_value_keyed_constant_opcodes {opcode}: duplicate attrs"
+            )
+
+
+def _validate_gvn_numberable_attr_key_facts(
+    data: dict, opcodes: dict[str, dict]
+) -> None:
+    rows = data.get("gvn_numberable_attr_key_opcodes", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError(
+            "gvn_numberable_attr_key_opcodes must be an array of tables"
+        )
+    numberable = set(data.get("gvn_always_numberable_opcodes", [])) | set(
+        data.get("gvn_type_gated_numberable_opcodes", [])
+    )
+    constant_keyed = {
+        row["opcode"]
+        for row in data.get("gvn_value_keyed_constant_opcodes", [])
+        if isinstance(row, dict) and isinstance(row.get("opcode"), str)
+    }
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(
+                "gvn_numberable_attr_key_opcodes rows must be inline tables"
+            )
+        unknown = set(row) - {"opcode", "key", "attrs"}
+        if unknown:
+            raise OpKindTableError(
+                "gvn_numberable_attr_key_opcodes row has unknown fields "
+                f"{sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"gvn_numberable_attr_key_opcodes row missing opcode: {row}"
+            )
+        opcode_row = opcodes.get(opcode)
+        if opcode_row is None:
+            raise OpKindTableError(
+                f"gvn_numberable_attr_key_opcodes opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(
+                f"duplicate gvn_numberable_attr_key_opcodes opcode: {opcode}"
+            )
+        seen.add(opcode)
+        if opcode in constant_keyed:
+            raise OpKindTableError(
+                f"gvn_numberable_attr_key_opcodes {opcode}: constants must use "
+                "gvn_value_keyed_constant_opcodes"
+            )
+        if opcode not in numberable:
+            raise OpKindTableError(
+                f"gvn_numberable_attr_key_opcodes {opcode}: opcode must be in "
+                "gvn_always_numberable_opcodes or gvn_type_gated_numberable_opcodes"
+            )
+        if opcode_row.get("result_arity") != "one":
+            raise OpKindTableError(
+                f"gvn_numberable_attr_key_opcodes {opcode}: opcode must be single-result"
+            )
+        key = row.get("key")
+        if key not in _GVN_VALUE_KEY_KINDS or key == "none_singleton":
+            raise OpKindTableError(
+                f"gvn_numberable_attr_key_opcodes {opcode}: key must be one of "
+                f"{sorted(k for k in _GVN_VALUE_KEY_KINDS if k != 'none_singleton')}"
+            )
+        attrs = row.get("attrs")
+        if not isinstance(attrs, list) or not attrs:
+            raise OpKindTableError(
+                f"gvn_numberable_attr_key_opcodes {opcode}: key {key!r} "
+                "requires a non-empty attrs list"
+            )
+        if not all(
+            isinstance(attr, str) and re.fullmatch(r"[_a-z][a-z0-9_]*", attr)
+            for attr in attrs
+        ):
+            raise OpKindTableError(
+                f"gvn_numberable_attr_key_opcodes {opcode}: attrs must be "
+                "attribute-name strings"
+            )
+        if len(set(attrs)) != len(attrs):
+            raise OpKindTableError(
+                f"gvn_numberable_attr_key_opcodes {opcode}: duplicate attrs"
+            )
+
+
+def _validate_opcode_rule_rows(
+    data: dict,
+    key: str,
+    opcodes: set[str],
+    allowed_rules: dict[str, str],
+    label: str,
+) -> None:
+    rows = data.get(key, [])
+    if not isinstance(rows, list):
+        raise OpKindTableError(f"{key} must be an array of tables")
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(f"{key} rows must be inline tables")
+        unknown = set(row) - {"opcode", "rule"}
+        if unknown:
+            raise OpKindTableError(f"{key} row has unknown fields {sorted(unknown)}: {row}")
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"{key} row missing opcode: {row}")
+        if opcode not in opcodes:
+            raise OpKindTableError(f"{key} opcode {opcode!r} is not a known OpCode")
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate {key} opcode: {opcode}")
+        seen.add(opcode)
+        rule = row.get("rule")
+        if rule not in allowed_rules:
+            raise OpKindTableError(
+                f"{key} {opcode}: {label} must be one of {sorted(allowed_rules)}"
+            )
+
+
+def _validate_vectorize_opcode_facts(data: dict, opcodes: set[str]) -> None:
+    rows = data.get("vectorize_opcode_facts", [])
+    if not isinstance(rows, list) or not rows:
+        raise OpKindTableError(
+            "vectorize_opcode_facts must be a non-empty array of tables"
+        )
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError("vectorize_opcode_facts rows must be inline tables")
+        unknown = set(row) - {
+            "opcode",
+            "body",
+            "reduction",
+            "loop_header",
+            "annotation_target",
+        }
+        if unknown:
+            raise OpKindTableError(
+                f"vectorize_opcode_facts row has unknown fields "
+                f"{sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"vectorize_opcode_facts row missing opcode: {row}")
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"vectorize_opcode_facts opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate vectorize_opcode_facts opcode: {opcode}")
+        seen.add(opcode)
+
+        body = row.get("body", "reject")
+        if body not in _VECTORIZE_BODY_ACTIONS or body == "reject":
+            allowed = sorted(k for k in _VECTORIZE_BODY_ACTIONS if k != "reject")
+            raise OpKindTableError(
+                f"vectorize_opcode_facts {opcode}: body must be one of "
+                f"{allowed}, got {body!r}"
+            )
+        reduction = row.get("reduction")
+        if reduction is not None and reduction not in _VECTOR_REDUCTION_RULES:
+            raise OpKindTableError(
+                f"vectorize_opcode_facts {opcode}: reduction must be one of "
+                f"{sorted(_VECTOR_REDUCTION_RULES)}, got {reduction!r}"
+            )
+        for flag in ("loop_header", "annotation_target"):
+            value = row.get(flag, False)
+            if not isinstance(value, bool):
+                raise OpKindTableError(
+                    f"vectorize_opcode_facts {opcode}: {flag} must be bool"
+                )
+        if reduction is not None and body != "scalar_arithmetic":
+            raise OpKindTableError(
+                f"vectorize_opcode_facts {opcode}: reduction requires "
+                "body='scalar_arithmetic'"
+            )
+        if row.get("loop_header", False) and body != "iteration_control":
+            raise OpKindTableError(
+                f"vectorize_opcode_facts {opcode}: loop_header requires "
+                "body='iteration_control'"
+            )
+        if row.get("annotation_target", False) and body != "iteration_control":
+            raise OpKindTableError(
+                f"vectorize_opcode_facts {opcode}: annotation_target requires "
+                "body='iteration_control'"
+            )
+
+
+def _validate_call_opcode_roles(data: dict, opcodes: set[str]) -> None:
+    rows = data.get("call_opcode_roles", [])
+    if not isinstance(rows, list) or not rows:
+        raise OpKindTableError("call_opcode_roles must be a non-empty array of tables")
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError("call_opcode_roles rows must be inline tables")
+        unknown = set(row) - {"opcode", "role"}
+        if unknown:
+            raise OpKindTableError(
+                f"call_opcode_roles row has unknown fields {sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"call_opcode_roles row missing opcode: {row}")
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"call_opcode_roles opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate call_opcode_roles opcode: {opcode}")
+        seen.add(opcode)
+        role = row.get("role")
+        if role not in _CALL_OPCODE_ROLES or role == "not_call":
+            allowed = sorted(k for k in _CALL_OPCODE_ROLES if k != "not_call")
+            raise OpKindTableError(
+                f"call_opcode_roles {opcode}: role must be one of {allowed}, "
+                f"got {role!r}"
+            )
+        if role == "copy_original_kind" and opcode != "Copy":
+            raise OpKindTableError(
+                "call_opcode_roles copy_original_kind is reserved for OpCode::Copy"
+            )
+
+
+def _validate_range_devirt_roles(data: dict, opcodes: set[str]) -> None:
+    rows = data.get("range_devirt_roles", [])
+    if not isinstance(rows, list) or not rows:
+        raise OpKindTableError("range_devirt_roles must be a non-empty array of tables")
+    seen: set[str] = set()
+    expected_opcode_by_role = {
+        "range_call_candidate": "CallBuiltin",
+        "iterator_candidate": "GetIter",
+        "next_unboxed_candidate": "IterNextUnboxed",
+    }
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError("range_devirt_roles rows must be inline tables")
+        unknown = set(row) - {"opcode", "role"}
+        if unknown:
+            raise OpKindTableError(
+                f"range_devirt_roles row has unknown fields {sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(f"range_devirt_roles row missing opcode: {row}")
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"range_devirt_roles opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(f"duplicate range_devirt_roles opcode: {opcode}")
+        seen.add(opcode)
+        role = row.get("role")
+        if role not in _RANGE_DEVIRT_ROLES or role == "none":
+            allowed = sorted(k for k in _RANGE_DEVIRT_ROLES if k != "none")
+            raise OpKindTableError(
+                f"range_devirt_roles {opcode}: role must be one of {allowed}, "
+                f"got {role!r}"
+            )
+        expected_opcode = expected_opcode_by_role[role]
+        if opcode != expected_opcode:
+            raise OpKindTableError(
+                f"range_devirt_roles {opcode}: role {role!r} is reserved for "
+                f"OpCode::{expected_opcode}"
+            )
+
+
+def _validate_generator_fusion_iter_use_roles(data: dict, opcodes: set[str]) -> None:
+    rows = data.get("generator_fusion_iter_use_roles", [])
+    if not isinstance(rows, list) or not rows:
+        raise OpKindTableError(
+            "generator_fusion_iter_use_roles must be a non-empty array of tables"
+        )
+    seen: set[str] = set()
+    expected_opcode_by_role = {
+        "next_use": "IterNext",
+        "none_guard": "Is",
+    }
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(
+                "generator_fusion_iter_use_roles rows must be inline tables"
+            )
+        unknown = set(row) - {"opcode", "role"}
+        if unknown:
+            raise OpKindTableError(
+                "generator_fusion_iter_use_roles row has unknown fields "
+                f"{sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"generator_fusion_iter_use_roles row missing opcode: {row}"
+            )
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"generator_fusion_iter_use_roles opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(
+                f"duplicate generator_fusion_iter_use_roles opcode: {opcode}"
+            )
+        seen.add(opcode)
+        role = row.get("role")
+        if role not in _GENERATOR_FUSION_ITER_USE_ROLES or role == "none":
+            allowed = sorted(k for k in _GENERATOR_FUSION_ITER_USE_ROLES if k != "none")
+            raise OpKindTableError(
+                f"generator_fusion_iter_use_roles {opcode}: role must be one of "
+                f"{allowed}, got {role!r}"
+            )
+        expected_opcode = expected_opcode_by_role[role]
+        if opcode != expected_opcode:
+            raise OpKindTableError(
+                f"generator_fusion_iter_use_roles {opcode}: role {role!r} is "
+                f"reserved for OpCode::{expected_opcode}"
+            )
+
+
+def _validate_exception_region_nesting_roles(data: dict, opcodes: set[str]) -> None:
+    rows = data.get("exception_region_nesting_roles", [])
+    if not isinstance(rows, list) or not rows:
+        raise OpKindTableError(
+            "exception_region_nesting_roles must be a non-empty array of tables"
+        )
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise OpKindTableError(
+                "exception_region_nesting_roles rows must be inline tables"
+            )
+        unknown = set(row) - {"opcode", "role"}
+        if unknown:
+            raise OpKindTableError(
+                f"exception_region_nesting_roles row has unknown fields "
+                f"{sorted(unknown)}: {row}"
+            )
+        opcode = row.get("opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OpKindTableError(
+                f"exception_region_nesting_roles row missing opcode: {row}"
+            )
+        if opcode not in opcodes:
+            raise OpKindTableError(
+                f"exception_region_nesting_roles opcode {opcode!r} is not a known OpCode"
+            )
+        if opcode in seen:
+            raise OpKindTableError(
+                f"duplicate exception_region_nesting_roles opcode: {opcode}"
+            )
+        seen.add(opcode)
+        role = row.get("role")
+        if role not in _EXCEPTION_REGION_NESTING_ROLES or role == "none":
+            allowed = sorted(k for k in _EXCEPTION_REGION_NESTING_ROLES if k != "none")
+            raise OpKindTableError(
+                f"exception_region_nesting_roles {opcode}: role must be one of "
+                f"{allowed}, got {role!r}"
+            )
+        expected_opcode = {"enter": "TryStart", "exit": "TryEnd"}[role]
+        if opcode != expected_opcode:
+            raise OpKindTableError(
+                f"exception_region_nesting_roles {opcode}: role {role!r} is "
+                f"reserved for OpCode::{expected_opcode}"
+            )
+
+
+def _validate_call_graph_user_call_kinds(
+    data: dict, mapper_opcode_by_spelling: dict[str, str]
+) -> None:
+    members = data.get("call_graph_user_call_kinds", [])
+    if not isinstance(members, list) or not members:
+        raise OpKindTableError(
+            "call_graph_user_call_kinds must be a non-empty array of strings"
+        )
+    if not all(isinstance(kind, str) and kind for kind in members):
+        raise OpKindTableError(
+            "call_graph_user_call_kinds must contain only non-empty strings"
+        )
+    if len(set(members)) != len(members):
+        raise OpKindTableError("call_graph_user_call_kinds has duplicate members")
+    for kind in members:
+        opcode = mapper_opcode_by_spelling.get(kind)
+        if opcode is None:
+            raise OpKindTableError(
+                f"call_graph_user_call_kinds kind {kind!r} is not a known kind spelling"
+            )
+        if opcode not in {"Call", "CallMethod"}:
+            raise OpKindTableError(
+                f"call_graph_user_call_kinds {kind!r} maps to OpCode::{opcode}; "
+                "user-call Copy fallbacks may only map to Call or CallMethod"
+            )
 
 
 def _validate_simpleir_control_kinds(data: dict) -> None:
@@ -1419,6 +2170,9 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_matches_arm(no_heap))
     out.append("    )\n}\n\n")
 
+    out.append(_render_all_opcodes(opcodes))
+    out.append("\n")
+
     # -- effect oracle: exhaustive over OpCode -------------------------------
     may_throw = [r["name"] for r in opcodes if r["may_throw"]]
     side = [r["name"] for r in opcodes if r["side_effecting"]]
@@ -1444,26 +2198,41 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("    }\n}\n\n")
 
     out.append(
-        "/// Purity class for the LICM/GVN purity core (`opcode_effects`). The\n"
-        "/// consumer (effects.rs) maps each variant to its `OpEffects` triple,\n"
-        "/// keeping that triple's canonical definition on the consumer side:\n"
-        "///   `Pure`         => (consistent, effect_free, nothrow) = (T, T, T)\n"
-        "///   `PureMayThrow` => (T, T, F)\n"
-        "///   `Impure`       => (F, F, F)\n"
-        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
-        "pub enum OpcodePurity {\n"
-        "    Pure,\n"
-        "    PureMayThrow,\n"
-        "    Impure,\n"
+        "/// Effect triple for the LICM/GVN purity core. This is generated from\n"
+        "/// each opcode row's `purity` class so effects.rs never carries a second\n"
+        "/// opcode-classification table.\n"
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n"
+        "pub struct OpcodeEffects {\n"
+        "    pub consistent: bool,\n"
+        "    pub effect_free: bool,\n"
+        "    pub nothrow: bool,\n"
         "}\n\n"
-        "/// Per-OpCode purity class. EXHAUSTIVE over the enum — a new variant fails\n"
+        "pub const OPCODE_EFFECTS_PURE: OpcodeEffects = OpcodeEffects {\n"
+        "    consistent: true,\n"
+        "    effect_free: true,\n"
+        "    nothrow: true,\n"
+        "};\n"
+        "pub const OPCODE_EFFECTS_PURE_MAY_THROW: OpcodeEffects = OpcodeEffects {\n"
+        "    consistent: true,\n"
+        "    effect_free: true,\n"
+        "    nothrow: false,\n"
+        "};\n"
+        "pub const OPCODE_EFFECTS_IMPURE: OpcodeEffects = OpcodeEffects {\n"
+        "    consistent: false,\n"
+        "    effect_free: false,\n"
+        "    nothrow: false,\n"
+        "};\n\n"
+        "/// Per-OpCode effect triple. EXHAUSTIVE over the enum — a new variant fails\n"
         "/// to compile until classified in op_kinds.toml.\n"
         "#[inline]\n"
-        "pub fn opcode_purity_table(opcode: OpCode) -> OpcodePurity {\n"
+        "pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {\n"
         "    match opcode {\n"
     )
-    out.append(_render_opcode_purity_arms(opcodes))
+    out.append(_render_opcode_effect_arms(opcodes))
     out.append("    }\n}\n\n")
+
+    out.append(_render_call_opcode_roles(opcodes, data))
+    out.append("\n")
 
     out.append(
         "/// Fixed result count for opcodes whose arity is statically known.\n"
@@ -1477,10 +2246,37 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_result_arity_arms(opcodes))
     out.append("    }\n}\n\n")
 
+    out.append(_render_fuzz_tir_opcode_shapes(opcodes, data))
+    out.append("\n")
+
     out.append(_render_operand_independent_result_type(opcodes))
+    out.append("\n")
+    out.append(_render_type_refine_attr_result_type_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_type_refine_operand_type_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_sccp_constant_seed_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_sccp_constant_eval_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_value_range_transfer_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_value_range_const_fold_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_value_range_cond_narrow_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_value_range_container_length_rule(opcodes, data))
+    out.append("\n")
+    out.append(_render_range_devirt_role(opcodes, data))
+    out.append("\n")
+    out.append(_render_vectorize_opcode_facts(opcodes, data))
+    out.append("\n")
+    out.append(_render_lir_verify_rule(opcodes, data))
     out.append("\n")
 
     out.append(_render_gvn_numbering_role(opcodes, data))
+    out.append("\n")
+    out.append(_render_gvn_value_key_spec(opcodes, data))
     out.append("\n")
 
     proven_result_type_seeds = list(data.get("proven_result_type_seed_opcodes", []))
@@ -1518,6 +2314,42 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, alias_heap_barriers))
     out.append("    }\n}\n\n")
 
+    escape_alloc_sites = list(data.get("escape_alloc_site_opcodes", []))
+    out.append(
+        "/// Whether this opcode produces a heap allocation root tracked by\n"
+        "/// escape_analysis.rs. EXHAUSTIVE over OpCode; the set lives in\n"
+        "/// op_kinds.toml so escape roots cannot drift behind allocation opcodes.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, escape_alloc_sites))
+    out.append("    }\n}\n\n")
+
+    polyhedral_loop_headers = list(data.get("polyhedral_loop_header_opcodes", []))
+    out.append(
+        "/// Whether an opcode is a loop header the polyhedral pass can annotate.\n"
+        "/// EXHAUSTIVE over OpCode; the set lives in op_kinds.toml so loop-header\n"
+        "/// recognition cannot drift behind SCF/lowered loop opcodes.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, polyhedral_loop_headers))
+    out.append("    }\n}\n\n")
+
+    polyhedral_affine_body = list(data.get("polyhedral_affine_body_opcodes", []))
+    out.append(
+        "/// Whether an opcode is allowed in a polyhedral affine loop body before\n"
+        "/// live operand/value-copy checks. EXHAUSTIVE over OpCode; the pass owns\n"
+        "/// body traversal and Copy refinement, not opcode membership.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, polyhedral_affine_body))
+    out.append("    }\n}\n\n")
+
     refcount_heap_exposures = list(data.get("refcount_heap_exposure_opcodes", []))
     out.append(
         "/// Whether this opcode makes its operands heap/external roots for\n"
@@ -1548,6 +2380,34 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, lowered_state_machine_body))
     out.append("    }\n}\n\n")
 
+    drop_insertion_suspension_points = list(
+        data.get("drop_insertion_suspension_point_opcodes", [])
+    )
+    out.append(
+        "/// Whether an opcode suspends execution and requires drop_insertion.rs\n"
+        "/// to retain live owned values into the coroutine frame. DISTINCT from\n"
+        "/// broader state-machine/fusion facts. EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_drop_insertion_suspension_point_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, drop_insertion_suspension_points))
+    out.append("    }\n}\n\n")
+
+    drop_insertion_return_deferral_barriers = list(
+        data.get("drop_insertion_return_deferral_barrier_opcodes", [])
+    )
+    out.append(
+        "/// Whether an opcode is an explicit RC/free rail that disqualifies\n"
+        "/// drop_insertion.rs return-boundary deferral for a touched root.\n"
+        "/// EXHAUSTIVE over OpCode.\n"
+        "#[inline]\n"
+        "pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, drop_insertion_return_deferral_barriers))
+    out.append("    }\n}\n\n")
+
     fusion_barriers = list(data.get("fusion_barrier_opcodes", []))
     out.append(
         "/// Whether an opcode makes a comprehension/generator body ineligible for\n"
@@ -1566,6 +2426,8 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("    }\n}\n\n")
 
     out.append(_render_generator_fusion_poll_role(opcodes, data))
+    out.append("\n")
+    out.append(_render_generator_fusion_iter_use_role(opcodes, data))
     out.append("\n")
 
     state_machine_opcodes = list(data.get("state_machine_opcodes", []))
@@ -1608,6 +2470,23 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, i64_checked_overflow_triples))
+    out.append("    }\n}\n\n")
+
+    boxed_runtime_inplace_dispatch = list(
+        data.get("boxed_runtime_inplace_dispatch_opcodes", [])
+    )
+    out.append(
+        "/// Whether a first-class opcode's boxed arithmetic runtime fallback must\n"
+        "/// dispatch through `molt_inplace_*`, trying `__i<op>__` before the binary\n"
+        "/// / reflected dunder chain. Preserved-Copy `inplace_*` spellings are\n"
+        "/// string facts carried by `_original_kind`; this table owns OpCode facts.\n"
+        "/// EXHAUSTIVE over OpCode so augmented-assignment dunder routing cannot\n"
+        "/// drift behind newly added first-class in-place opcodes.\n"
+        "#[inline]\n"
+        "pub fn opcode_uses_boxed_runtime_inplace_dispatch_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(_render_opcode_bool_arms(opcodes, boxed_runtime_inplace_dispatch))
     out.append("    }\n}\n\n")
 
     i64_zero_divisor_guards = list(data.get("i64_zero_divisor_guard_opcodes", []))
@@ -1658,6 +2537,34 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, exception_transfer_edges))
+    out.append("    }\n}\n\n")
+
+    exception_region_roles = {
+        row["opcode"]: row["role"]
+        for row in data.get("exception_region_nesting_roles", [])
+    }
+    out.append(
+        "/// Exception-region nesting role for DCE try-depth tracking. DISTINCT\n"
+        "/// from exception label and transfer-edge facts: this owns lexical\n"
+        "/// TryStart/TryEnd nesting only. EXHAUSTIVE over OpCode.\n"
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n"
+        "pub enum ExceptionRegionNestingRole {\n"
+    )
+    for variant in _EXCEPTION_REGION_NESTING_ROLES.values():
+        out.append(f"    {variant},\n")
+    out.append(
+        "}\n\n"
+        "#[inline]\n"
+        "pub fn opcode_exception_region_nesting_role_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> ExceptionRegionNestingRole {\n"
+        "    match opcode {\n"
+    )
+    for row in opcodes:
+        name = row["name"]
+        role = exception_region_roles.get(name, "none")
+        variant = _EXCEPTION_REGION_NESTING_ROLES[role]
+        out.append(f"        OpCode::{name} => ExceptionRegionNestingRole::{variant},\n")
     out.append("    }\n}\n\n")
 
     out.append(_render_alias_typed_slot_role(opcodes, data))
@@ -1929,6 +2836,124 @@ def _render_opcode_result_arity_arms(opcodes: list[dict]) -> str:
     return "".join(lines)
 
 
+def _render_call_opcode_roles(opcodes: list[dict], data: dict) -> str:
+    """Render call graph / CallFacts opcode roles and Copy-kind predicate."""
+    rows = data.get("call_opcode_roles", [])
+    role_by_opcode = {row["opcode"]: row["role"] for row in rows}
+    lines = [
+        "/// Call graph / CallFacts role for first-class opcodes.\n",
+        "/// EXHAUSTIVE over OpCode; opcodes outside the role table are not calls.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum CallOpcodeRole {\n",
+    ]
+    for variant in _CALL_OPCODE_ROLES.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "#[inline]\n",
+            "pub fn opcode_call_role_table(opcode: OpCode) -> CallOpcodeRole {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        role = role_by_opcode.get(name, "not_call")
+        variant = _CALL_OPCODE_ROLES[role]
+        lines.append(f"        OpCode::{name} => CallOpcodeRole::{variant},\n")
+    lines.extend(
+        [
+            "    }\n}\n\n",
+            "/// SimpleIR kind spellings that make a Copy `_original_kind` a user-call edge.\n",
+            "/// Generated from `call_graph_user_call_kinds` so call_graph.rs has no\n",
+            "/// private call-kind string set beside the mapper table.\n",
+            "#[inline]\n",
+            "pub fn simpleir_kind_is_call_graph_user_call(kind: &str) -> bool {\n",
+            "    matches!(\n",
+            "        kind,\n",
+        ]
+    )
+    lines.append(_render_matches_arm(data.get("call_graph_user_call_kinds", [])))
+    lines.append("    )\n}\n")
+    return "".join(lines)
+
+
+def _render_fuzz_tir_opcode_shapes(opcodes: list[dict], data: dict) -> str:
+    """Render tooling-only opcode shapes for the TIR pass fuzz harness."""
+    rows = data.get("fuzz_tir_opcode_shapes", [])
+    operands_by_opcode = {row["opcode"]: row["operands"] for row in rows}
+    attrs_by_opcode = {row["opcode"]: row.get("attr_payload", "none") for row in rows}
+    lines = [
+        "/// Structured opcode palette for runtime/molt-backend/fuzz/fuzz_tir_passes.rs.\n",
+        "/// Operand counts and attr payload rules are fuzzer generation shape only;\n",
+        "/// result counts come from\n",
+        "/// `opcode_fixed_result_count_table` and the canonical `result_arity` rows.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum FuzzTirAttrPayloadRule {\n",
+    ]
+    for variant in _FUZZ_TIR_ATTR_PAYLOAD_RULES.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub struct FuzzTirOpcodeShape {\n",
+            "    pub opcode: OpCode,\n",
+            "    pub operands: usize,\n",
+            "    pub attr_payload: FuzzTirAttrPayloadRule,\n",
+            "}\n\n",
+            "pub const FUZZ_TIR_OPCODE_SHAPES: &[FuzzTirOpcodeShape] = &[\n",
+        ]
+    )
+    for row in rows:
+        rule_variant = _FUZZ_TIR_ATTR_PAYLOAD_RULES[
+            row.get("attr_payload", "none")
+        ]
+        lines.extend(
+            [
+                "    FuzzTirOpcodeShape {\n",
+                f"        opcode: OpCode::{row['opcode']},\n",
+                f"        operands: {row['operands']},\n",
+                f"        attr_payload: FuzzTirAttrPayloadRule::{rule_variant},\n",
+                "    },\n",
+            ]
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "/// Fuzz-generation operand count for the structured TIR pass palette.\n",
+            "/// EXHAUSTIVE over OpCode; opcodes outside the palette return None.\n",
+            "#[inline]\n",
+            "pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        count = operands_by_opcode.get(name)
+        rendered = f"Some({count})" if count is not None else "None"
+        lines.append(f"        OpCode::{name} => {rendered},\n")
+    lines.extend(
+        [
+            "    }\n}\n\n",
+            "/// Fuzz-generation attr payload rule for the structured TIR pass palette.\n",
+            "/// EXHAUSTIVE over OpCode; opcodes outside the palette have no payload.\n",
+            "#[inline]\n",
+            "pub fn opcode_fuzz_tir_attr_payload_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> FuzzTirAttrPayloadRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = attrs_by_opcode.get(name, "none")
+        variant = _FUZZ_TIR_ATTR_PAYLOAD_RULES[rule]
+        lines.append(f"        OpCode::{name} => FuzzTirAttrPayloadRule::{variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
 _OPERAND_INDEPENDENT_RESULT_TYPE_VARIANTS = {
     "i64": "OperandIndependentResultType::I64",
     "f64": "OperandIndependentResultType::F64",
@@ -2017,6 +3042,460 @@ def _render_operand_independent_result_type(opcodes: list[dict]) -> str:
     return "".join(lines)
 
 
+def _render_type_refine_attr_result_type_rule(opcodes: list[dict], data: dict) -> str:
+    rule_by_opcode = {
+        row["opcode"]: row["rule"]
+        for row in data.get("type_refine_attr_result_type_rules", [])
+    }
+    lines = [
+        "/// Type-refine attr-derived result-type rule by opcode. This table owns\n",
+        "/// the opcode membership for result types determined by op attrs rather\n",
+        "/// than operands; type_refine.rs owns the semantics of each rule.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum TypeRefineAttrResultTypeRule {\n",
+        "    None,\n",
+    ]
+    for variant in sorted(_TYPE_REFINE_ATTR_RESULT_TYPE_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Attr-result-type rule by opcode. EXHAUSTIVE over OpCode so new\n",
+            "/// attr-keyed producers cannot silently inherit a pass-local default.\n",
+            "#[inline]\n",
+            "pub fn opcode_type_refine_attr_result_type_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> TypeRefineAttrResultTypeRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"TypeRefineAttrResultTypeRule::{_TYPE_REFINE_ATTR_RESULT_TYPE_RULES[rule]}"
+            if rule is not None
+            else "TypeRefineAttrResultTypeRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_type_refine_operand_type_rule(opcodes: list[dict], data: dict) -> str:
+    rule_by_opcode = {
+        row["opcode"]: row["rule"] for row in data.get("type_refine_operand_type_rules", [])
+    }
+    lines = [
+        "/// Type-refine operand-dependent result-type rule by opcode. This table\n",
+        "/// owns opcode membership for inference that depends on operand types;\n",
+        "/// type_refine.rs owns the semantics of each rule.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum TypeRefineOperandTypeRule {\n",
+        "    None,\n",
+    ]
+    for variant in sorted(_TYPE_REFINE_OPERAND_TYPE_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Operand-dependent result-type rule by opcode. EXHAUSTIVE over OpCode so\n",
+            "/// new opcodes cannot silently bypass type-refine's generated rule lattice.\n",
+            "#[inline]\n",
+            "pub fn opcode_type_refine_operand_type_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> TypeRefineOperandTypeRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"TypeRefineOperandTypeRule::{_TYPE_REFINE_OPERAND_TYPE_RULES[rule]}"
+            if rule is not None
+            else "TypeRefineOperandTypeRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_sccp_constant_seed_rule(opcodes: list[dict], data: dict) -> str:
+    rule_by_opcode = {
+        row["opcode"]: row["rule"] for row in data.get("sccp_constant_seed_rules", [])
+    }
+    lines = [
+        "/// SCCP constant-seed rule by opcode. This table owns opcode\n",
+        "/// membership for constants SCCP can put directly into its lattice;\n",
+        "/// sccp.rs owns the attr parsing for each rule.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum SccpConstantSeedRule {\n",
+        "    None,\n",
+    ]
+    for variant in sorted(_SCCP_CONSTANT_SEED_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Constant-seed rule by opcode. EXHAUSTIVE over OpCode so new\n",
+            "/// constant constructors cannot silently inherit a pass-local default.\n",
+            "#[inline]\n",
+            "pub fn opcode_sccp_constant_seed_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> SccpConstantSeedRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"SccpConstantSeedRule::{_SCCP_CONSTANT_SEED_RULES[rule]}"
+            if rule is not None
+            else "SccpConstantSeedRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_sccp_constant_eval_rule(opcodes: list[dict], data: dict) -> str:
+    rule_by_opcode = {
+        row["opcode"]: row["rule"] for row in data.get("sccp_constant_eval_rules", [])
+    }
+    lines = [
+        "/// SCCP constant-evaluation rule by opcode. This table owns opcode\n",
+        "/// membership for foldable op families; sccp.rs owns each rule's\n",
+        "/// CPython-compatible constant evaluation semantics.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum SccpConstantEvalRule {\n",
+        "    None,\n",
+    ]
+    for variant in sorted(_SCCP_CONSTANT_EVAL_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Constant-evaluation rule by opcode. EXHAUSTIVE over OpCode so new\n",
+            "/// foldable ops cannot hide behind SCCP's non-foldable default.\n",
+            "#[inline]\n",
+            "pub fn opcode_sccp_constant_eval_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> SccpConstantEvalRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"SccpConstantEvalRule::{_SCCP_CONSTANT_EVAL_RULES[rule]}"
+            if rule is not None
+            else "SccpConstantEvalRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_value_range_transfer_rule(opcodes: list[dict], data: dict) -> str:
+    rule_by_opcode = {
+        row["opcode"]: row["rule"] for row in data.get("value_range_transfer_rules", [])
+    }
+    lines = [
+        "/// Value-range transfer rule by opcode. This table owns opcode\n",
+        "/// membership for modeled integer transfer functions; value_range.rs\n",
+        "/// owns each rule's interval arithmetic semantics.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum ValueRangeTransferRule {\n",
+        "    None,\n",
+    ]
+    for variant in sorted(_VALUE_RANGE_TRANSFER_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Integer range transfer rule by opcode. EXHAUSTIVE over OpCode so new\n",
+            "/// modeled arithmetic ops cannot hide behind value-range's default.\n",
+            "#[inline]\n",
+            "pub fn opcode_value_range_transfer_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> ValueRangeTransferRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"ValueRangeTransferRule::{_VALUE_RANGE_TRANSFER_RULES[rule]}"
+            if rule is not None
+            else "ValueRangeTransferRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_value_range_const_fold_rule(opcodes: list[dict], data: dict) -> str:
+    rule_by_opcode = {
+        row["opcode"]: row["rule"]
+        for row in data.get("value_range_const_fold_rules", [])
+    }
+    lines = [
+        "/// Value-range integer constant-fold rule by opcode. This table owns\n",
+        "/// membership for foldable integer expressions used by value_range.rs's\n",
+        "/// const/length collection; the pass owns checked arithmetic semantics.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum ValueRangeConstFoldRule {\n",
+        "    None,\n",
+    ]
+    for variant in sorted(_VALUE_RANGE_CONST_FOLD_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Integer constant-fold rule by opcode. EXHAUSTIVE over OpCode so\n",
+            "/// constant-mask/range derivation cannot drift from a private opcode list.\n",
+            "#[inline]\n",
+            "pub fn opcode_value_range_const_fold_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> ValueRangeConstFoldRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"ValueRangeConstFoldRule::{_VALUE_RANGE_CONST_FOLD_RULES[rule]}"
+            if rule is not None
+            else "ValueRangeConstFoldRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_value_range_cond_narrow_rule(opcodes: list[dict], data: dict) -> str:
+    rule_by_opcode = {
+        row["opcode"]: row["rule"]
+        for row in data.get("value_range_cond_narrow_rules", [])
+    }
+    lines = [
+        "/// Value-range conditional guard-narrowing rule by opcode. This table\n",
+        "/// owns opcode membership for guard-true upper-bound facts;\n",
+        "/// value_range.rs owns CFG polarity, operand resolution, and narrowing math.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum ValueRangeCondNarrowRule {\n",
+        "    None,\n",
+    ]
+    for variant in _VALUE_RANGE_COND_NARROW_RULES.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Conditional guard-narrowing rule by opcode. EXHAUSTIVE over OpCode so\n",
+            "/// edge-sensitive value-range facts cannot drift behind a private Lt/Le list.\n",
+            "#[inline]\n",
+            "pub fn opcode_value_range_cond_narrow_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> ValueRangeCondNarrowRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"ValueRangeCondNarrowRule::{_VALUE_RANGE_COND_NARROW_RULES[rule]}"
+            if rule is not None
+            else "ValueRangeCondNarrowRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_value_range_container_length_rule(opcodes: list[dict], data: dict) -> str:
+    rule_by_opcode = {
+        row["opcode"]: row["rule"]
+        for row in data.get("value_range_container_length_rules", [])
+    }
+    lines = [
+        "/// Value-range container-length rule by opcode. This table owns opcode\n",
+        "/// membership for length fact producers; value_range.rs owns operand counts,\n",
+        "/// builtin-name validation, copy resolution, and length formulas.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum ValueRangeContainerLengthRule {\n",
+        "    None,\n",
+    ]
+    for variant in _VALUE_RANGE_CONTAINER_LENGTH_RULES.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Container-length rule by opcode. EXHAUSTIVE over OpCode so list/tuple\n",
+            "/// builders, repeat candidates, and len calls cannot drift behind a private\n",
+            "/// value_range.rs opcode list.\n",
+            "#[inline]\n",
+            "pub fn opcode_value_range_container_length_rule_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> ValueRangeContainerLengthRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"ValueRangeContainerLengthRule::{_VALUE_RANGE_CONTAINER_LENGTH_RULES[rule]}"
+            if rule is not None
+            else "ValueRangeContainerLengthRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_range_devirt_role(opcodes: list[dict], data: dict) -> str:
+    role_by_opcode = {
+        row["opcode"]: row["role"] for row in data.get("range_devirt_roles", [])
+    }
+    lines = [
+        "/// Range-loop devirtualization scanner role by opcode. This table owns\n",
+        "/// only opcode membership for the CallBuiltin/GetIter/IterNextUnboxed\n",
+        "/// pattern roles; range_devirt.rs owns name, shape, loop, and CFG checks.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum RangeDevirtRole {\n",
+    ]
+    for variant in _RANGE_DEVIRT_ROLES.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Opcode role used by range_devirt.rs. EXHAUSTIVE over OpCode so new\n",
+            "/// iterator/range opcodes cannot inherit a pass-local silent default.\n",
+            "#[inline]\n",
+            "pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        role = role_by_opcode.get(name, "none")
+        variant = _RANGE_DEVIRT_ROLES[role]
+        lines.append(f"        OpCode::{name} => RangeDevirtRole::{variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_vectorize_opcode_facts(opcodes: list[dict], data: dict) -> str:
+    fact_by_opcode = {
+        row["opcode"]: row for row in data.get("vectorize_opcode_facts", [])
+    }
+    lines = [
+        "/// Vectorization body decision by opcode. This table owns opcode-level\n",
+        "/// eligibility facts; vectorize.rs owns CFG, attrs, lane typing, and\n",
+        "/// accumulator proof semantics.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum VectorizeBodyAction {\n",
+    ]
+    for variant in _VECTORIZE_BODY_ACTIONS.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Vectorization reduction rule by opcode, folded into VectorizeOpcodeFacts.\n",
+            "/// The table owns opcode-to-family membership; vectorize.rs owns proof that\n",
+            "/// a matching op is actually using the loop accumulator.\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub enum VectorReductionRule {\n",
+            "    None,\n",
+        ]
+    )
+    for variant in _VECTOR_REDUCTION_RULES.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// All opcode-level facts consumed by vectorize.rs.\n",
+            "///\n",
+            "/// This match is EXHAUSTIVE over OpCode so vectorization cannot grow\n",
+            "/// pass-local opcode taxonomies or silent defaults when new opcodes land.\n",
+            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+            "pub struct VectorizeOpcodeFacts {\n",
+            "    pub body_action: VectorizeBodyAction,\n",
+            "    pub reduction_rule: VectorReductionRule,\n",
+            "    pub loop_header_marker: bool,\n",
+            "    pub annotation_target: bool,\n",
+            "}\n\n",
+            "#[inline]\n",
+            "pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        fact = fact_by_opcode.get(name, {})
+        body = _VECTORIZE_BODY_ACTIONS[fact.get("body", "reject")]
+        reduction = fact.get("reduction")
+        reduction_variant = (
+            f"VectorReductionRule::{_VECTOR_REDUCTION_RULES[reduction]}"
+            if reduction is not None
+            else "VectorReductionRule::None"
+        )
+        loop_header = "true" if fact.get("loop_header", False) else "false"
+        annotation = "true" if fact.get("annotation_target", False) else "false"
+        lines.append(
+            f"        OpCode::{name} => VectorizeOpcodeFacts {{ "
+            f"body_action: VectorizeBodyAction::{body}, "
+            f"reduction_rule: {reduction_variant}, "
+            f"loop_header_marker: {loop_header}, "
+            f"annotation_target: {annotation} }},\n"
+        )
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _render_lir_verify_rule(opcodes: list[dict], data: dict) -> str:
+    rule_by_opcode = {
+        row["opcode"]: row["rule"] for row in data.get("lir_verify_rules", [])
+    }
+    lines = [
+        "/// Representation-aware LIR verifier hook by opcode. This table owns\n",
+        "/// verifier dispatch membership; verify_lir.rs owns each hook's invariant\n",
+        "/// implementation and diagnostics.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum LirVerifyRule {\n",
+        "    None,\n",
+    ]
+    for variant in sorted(_LIR_VERIFY_RULES.values()):
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// LIR verifier hook by opcode. EXHAUSTIVE over OpCode so new opcodes\n",
+            "/// cannot silently miss representation-aware verification dispatch.\n",
+            "#[inline]\n",
+            "pub fn opcode_lir_verify_rule_table(opcode: OpCode) -> LirVerifyRule {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        rule = rule_by_opcode.get(name)
+        variant = (
+            f"LirVerifyRule::{_LIR_VERIFY_RULES[rule]}"
+            if rule is not None
+            else "LirVerifyRule::None"
+        )
+        lines.append(f"        OpCode::{name} => {variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
 def _render_pass_delta_opcode_facts(opcodes: list[dict], data: dict) -> str:
     fact_sets = {
         field: set(data.get(key, [])) for key, field in _PASS_DELTA_FACT_FIELDS
@@ -2065,18 +3544,31 @@ def _render_pass_delta_opcode_facts(opcodes: list[dict], data: dict) -> str:
     return "".join(lines)
 
 
-_PURITY_VARIANT = {
-    "pure": "OpcodePurity::Pure",
-    "pure_may_throw": "OpcodePurity::PureMayThrow",
-    "impure": "OpcodePurity::Impure",
+_PURITY_EFFECTS = {
+    "pure": "OPCODE_EFFECTS_PURE",
+    "pure_may_throw": "OPCODE_EFFECTS_PURE_MAY_THROW",
+    "impure": "OPCODE_EFFECTS_IMPURE",
 }
 
 
-def _render_opcode_purity_arms(opcodes: list[dict]) -> str:
+def _render_all_opcodes(opcodes: list[dict]) -> str:
+    lines = [
+        "/// Every `OpCode` variant in op_kinds.toml order. Generated so tests and\n",
+        "/// diagnostics can iterate the closed enum domain without hand-maintained\n",
+        "/// opcode lists in pass-local modules.\n",
+        "pub const ALL_OPCODES: &[OpCode] = &[\n",
+    ]
+    for row in opcodes:
+        lines.append(f"    OpCode::{row['name']},\n")
+    lines.append("];\n")
+    return "".join(lines)
+
+
+def _render_opcode_effect_arms(opcodes: list[dict]) -> str:
     lines = []
     for row in opcodes:
         name = row["name"]
-        variant = _PURITY_VARIANT[row["purity"]]
+        variant = _PURITY_EFFECTS[row["purity"]]
         lines.append(f"        OpCode::{name} => {variant},\n")
     return "".join(lines)
 
@@ -2263,10 +3755,46 @@ def _render_generator_fusion_poll_role(opcodes: list[dict], data: dict) -> str:
     return "".join(lines)
 
 
+def _render_generator_fusion_iter_use_role(opcodes: list[dict], data: dict) -> str:
+    role_by_opcode = {
+        row["opcode"]: row["role"]
+        for row in data.get("generator_fusion_iter_use_roles", [])
+    }
+    lines = [
+        "/// Generator-fusion iterator-use scanner role by opcode. This table owns\n",
+        "/// only IterNext/Is role membership; generator_fusion.rs owns operand\n",
+        "/// position and terminator-use checks.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum GeneratorFusionIterUseRole {\n",
+    ]
+    for variant in _GENERATOR_FUSION_ITER_USE_ROLES.values():
+        lines.append(f"    {variant},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "/// Iterator-use scanner role by opcode. EXHAUSTIVE over OpCode so new\n",
+            "/// iterator/guard opcodes cannot silently inherit generator_fusion.rs's\n",
+            "/// rejecting default.\n",
+            "#[inline]\n",
+            "pub fn opcode_generator_fusion_iter_use_role_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> GeneratorFusionIterUseRole {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        name = row["name"]
+        role = role_by_opcode.get(name, "none")
+        variant = _GENERATOR_FUSION_ITER_USE_ROLES[role]
+        lines.append(f"        OpCode::{name} => GeneratorFusionIterUseRole::{variant},\n")
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
 def _render_gvn_numbering_role(opcodes: list[dict], data: dict) -> str:
     role_by_opcode: dict[str, str] = {}
     for key, variant in _GVN_NUMBERING_ROLE_VARIANTS.items():
-        for opcode in data.get(key, []):
+        for opcode in _opcode_role_members(data, key):
             role_by_opcode[opcode] = variant
 
     lines = [
@@ -2300,6 +3828,89 @@ def _render_gvn_numbering_role(opcodes: list[dict], data: dict) -> str:
         lines.append(f"        OpCode::{name} => {variant},\n")
     lines.append("    }\n}\n")
     return "".join(lines)
+
+
+def _gvn_value_key_rows(data: dict) -> list[dict]:
+    return list(data.get("gvn_value_keyed_constant_opcodes", [])) + list(
+        data.get("gvn_numberable_attr_key_opcodes", [])
+    )
+
+
+def _render_gvn_value_key_spec(opcodes: list[dict], data: dict) -> str:
+    rows = _gvn_value_key_rows(data)
+    rows_by_opcode = {row["opcode"]: row for row in rows}
+    lines = [
+        "/// Exact payload shape for attrs that participate in GVN value identity.\n",
+        "/// Generated from gvn_value_keyed_constant_opcodes and\n",
+        "/// gvn_numberable_attr_key_opcodes so gvn.rs never carries a private\n",
+        "/// opcode/attribute hand-set beside the registry.\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub enum GvnValueKeyKind {\n",
+        "    I64Attr,\n",
+        "    BoolAttr,\n",
+        "    NoneSingleton,\n",
+        "    F64BitsAttr,\n",
+        "    StrAttr,\n",
+        "    BytesAttr,\n",
+        "}\n\n",
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
+        "pub struct GvnValueKeySpec {\n",
+        "    pub kind: GvnValueKeyKind,\n",
+        "    pub attrs: &'static [&'static str],\n",
+        "}\n\n",
+    ]
+    for row in rows:
+        const_name = _gvn_value_key_attrs_const(row["opcode"])
+        attrs = row.get("attrs", [])
+        attr_list = ", ".join(_rs_string(attr) for attr in attrs)
+        lines.append(f"const {const_name}: &[&str] = &[{attr_list}];\n")
+    lines.extend(
+        [
+            "\n",
+            "/// GVN value-key payload spec. EXHAUSTIVE over OpCode; opcodes whose\n",
+            "/// value identity has no attr payload map to None instead of pass-local\n",
+            "/// defaults.\n",
+            "#[inline]\n",
+            "pub fn opcode_gvn_value_key_spec_table(\n",
+            "    opcode: OpCode,\n",
+            ") -> Option<GvnValueKeySpec> {\n",
+            "    match opcode {\n",
+        ]
+    )
+    for row in opcodes:
+        opcode = row["name"]
+        spec = rows_by_opcode.get(opcode)
+        if spec is None:
+            lines.append(f"        OpCode::{opcode} => None,\n")
+            continue
+        variant = _GVN_VALUE_KEY_KINDS[spec["key"]]
+        const_name = _gvn_value_key_attrs_const(opcode)
+        lines.append(
+            "        "
+            f"OpCode::{opcode} => Some(GvnValueKeySpec {{ "
+            f"kind: GvnValueKeyKind::{variant}, attrs: {const_name} "
+            "}),\n"
+        )
+    lines.append("    }\n}\n")
+    return "".join(lines)
+
+
+def _opcode_const_suffix(opcode: str) -> str:
+    words: list[str] = []
+    current = ""
+    for ch in opcode:
+        if ch.isupper() and current:
+            words.append(current)
+            current = ch
+        else:
+            current += ch
+    if current:
+        words.append(current)
+    return "_".join(w.upper() for w in words)
+
+
+def _gvn_value_key_attrs_const(opcode: str) -> str:
+    return f"GVN_VALUE_KEY_ATTRS_{_opcode_const_suffix(opcode)}"
 
 
 def _render_alias_typed_slot_role(opcodes: list[dict], data: dict) -> str:
@@ -2532,18 +4143,7 @@ def _render_canonicalize_binary_rules(opcodes: list[dict], rows: list[dict]) -> 
 
 
 def _canonicalize_binary_rules_const(opcode: str) -> str:
-    words: list[str] = []
-    current = ""
-    for ch in opcode:
-        if ch.isupper() and current:
-            words.append(current)
-            current = ch
-        else:
-            current += ch
-    if current:
-        words.append(current)
-    suffix = "_".join(w.upper() for w in words)
-    return f"CANONICALIZE_BINARY_RULES_{suffix}"
+    return f"CANONICALIZE_BINARY_RULES_{_opcode_const_suffix(opcode)}"
 
 
 def _canonicalize_operand_side(side: str) -> str:

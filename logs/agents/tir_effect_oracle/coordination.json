@@ -1,0 +1,61 @@
+{
+  "agent": "codex",
+  "artifact_roots": [
+    "target/",
+    "tmp/",
+    "logs/",
+    "bench/results/"
+  ],
+  "artifacts_dir": "logs/agents/tir_effect_oracle/artifacts",
+  "branch": "main",
+  "commit": "19aaae1ba7d2",
+  "created_at_utc": "2026-06-24T17:38:23Z",
+  "environment": {
+    "bash": "C:\\Windows\\system32\\bash.exe",
+    "bash_candidates": [
+      "C:\\Windows\\system32\\bash.exe",
+      "C:\\Users\\adpen\\AppData\\Local\\Microsoft\\WindowsApps\\bash.exe",
+      "C:\\Program Files\\Git\\bin\\bash.exe",
+      "C:\\Program Files\\Git\\usr\\bin\\bash.exe"
+    ],
+    "ci": "",
+    "codex_shell": "1",
+    "is_linux": false,
+    "is_macos": false,
+    "is_windows": true,
+    "is_wsl": false,
+    "os_name": "nt",
+    "platform_machine": "AMD64",
+    "platform_release": "11",
+    "platform_system": "Windows",
+    "posix_shell_available": true,
+    "py": "C:\\Windows\\py.exe",
+    "py_usable": true,
+    "python": "C:\\Users\\adpen\\OneDrive\\Documents\\molt\\.venv\\Scripts\\python.exe",
+    "python3": "C:\\Users\\adpen\\AppData\\Local\\Microsoft\\WindowsApps\\python3.exe",
+    "python3_usable": false,
+    "python_executable": "C:\\Users\\adpen\\OneDrive\\Documents\\molt\\.venv\\Scripts\\python.exe",
+    "python_usable": true,
+    "python_version": "3.12.13",
+    "recommended_python_command": "python",
+    "repo_root": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+    "shell": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "sys_platform": "win32",
+    "usable_bash": "C:\\Program Files\\Git\\bin\\bash.exe",
+    "uv": "C:\\Users\\adpen\\.local\\bin\\uv.exe"
+  },
+  "owned_paths": [
+    "runtime/molt-tir/src/tir/op_kinds.toml,runtime/molt-tir/src/tir/op_kinds_generated.rs,runtime/molt-tir/src/tir/passes/effects.rs,tools/gen_op_kinds.py,tests/test_gen_op_kinds.py,docs/design/foundation/25_op_kind_registry.md,docs/spec/README.md,docs/spec/STATUS.md,docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md,tools/structural_audit_baseline.json"
+  ],
+  "planned_proof_lane": "gen_op_kinds --check; pytest tests/test_gen_op_kinds.py; structural_audit --check; audit_op_kinds --check; cargo test -p molt-tir passes::effects",
+  "progress_log": "logs/agents/tir_effect_oracle/progress.log",
+  "proof_role": "implementer",
+  "repo_root": "C:\\Users\\adpen\\OneDrive\\Documents\\molt",
+  "report_path": "logs/agents/tir_effect_oracle/report_20260624T173823.md",
+  "schema_version": 1,
+  "session_id": "tir_effect_oracle",
+  "shared_target_root": "target",
+  "status": "proof-complete",
+  "task": "tir_effect_oracle",
+  "updated_at_utc": "2026-06-24T17:45:27Z"
+}

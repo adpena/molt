@@ -61,19 +61,65 @@
 #   - literal_payload_opcodes - opcode literal payload facts consumed by
 #                  canonicalize.rs and check_exception_elim.rs.
 #   - gvn_always_numberable_opcodes / gvn_type_gated_numberable_opcodes /
-#                  gvn_value_keyed_constant_opcodes - opcode-role facts for GVN
-#                  numbering policy. Always-numberable ops need no operand type
-#                  gate, type-gated ops require primitive operands, and
-#                  value-keyed constants get same-block local value numbers only.
-#                  ConstBigInt stays out until it has an exact non-colliding
-#                  ValueKey lane.
+#                  gvn_value_keyed_constant_opcodes /
+#                  gvn_numberable_attr_key_opcodes - opcode-role and value-key
+#                  facts for GVN numbering policy. Always-numberable ops need no
+#                  operand type gate, type-gated ops require primitive operands,
+#                  and value-keyed constants get same-block local value numbers
+#                  only. Any opcode whose equivalence depends on attrs names its
+#                  exact payload-key attrs here; omitted/malformed attrs fail
+#                  closed to identity numbering.
 #   - proven_result_type_seed_opcodes - constant constructors whose intrinsic
 #                  result type seeds type_refine.rs's proven-type map. ConstBigInt
 #                  stays out because DynBox does not narrow backend guard proof.
+#   - type_refine_attr_result_type_rules / type_refine_operand_type_rules -
+#                  generated opcode-to-rule lattices for type_refine.rs result
+#                  inference. The registry owns opcode membership; type_refine.rs
+#                  owns the rule semantics and live operand/attr parsing.
+#   - call_opcode_roles / call_graph_user_call_kinds - generated call graph and
+#                  CallFacts dispatch facts. The opcode role owns first-class
+#                  Call/CallMethod/CallBuiltin/Copy behavior; the kind predicate
+#                  owns the exact `_original_kind` spellings that make a Copy
+#                  fallback count as a user-level call edge.
+#   - polyhedral_loop_header_opcodes / polyhedral_affine_body_opcodes -
+#                  generated opcode-only facts for polyhedral.rs loop-header
+#                  annotation and affine-body eligibility. The pass owns body
+#                  traversal and Copy refinement; the registry owns membership.
+#   - sccp_constant_seed_rules / sccp_constant_eval_rules - generated
+#                  opcode-to-rule lattices for SCCP constant seeding and
+#                  constant evaluation. The registry owns opcode membership;
+#                  sccp.rs owns attr parsing and CPython-compatible fold
+#                  semantics.
+#   - value_range_transfer_rules / value_range_const_fold_rules - generated
+#                  opcode-to-rule lattices for integer interval transfer and
+#                  value_range.rs's constant-mask/length derivation. The
+#                  registry owns opcode membership; value_range.rs owns checked
+#                  arithmetic, Python shift/mod semantics, and range soundness.
+#   - range_devirt_roles - generated opcode-to-role lattice for the
+#                  range_devirt.rs pattern scanner. The registry owns the closed
+#                  CallBuiltin/GetIter/IterNextUnboxed role membership; the pass
+#                  owns range name, operand/result shape, loop-role, and
+#                  dominance/CFG validation.
+#   - fuzz_tir_opcode_shapes - tooling-only opcode palette, operand counts, and
+#                  synthetic attr payload rules for
+#                  runtime/molt-backend/fuzz/fuzz_tir_passes.rs. Result counts
+#                  come from `result_arity` through
+#                  `opcode_fixed_result_count_table`.
+#   - vectorize_opcode_facts - generated opcode-to-fact lattice for
+#                  vectorize.rs body eligibility, loop-header markers,
+#                  annotation targets, and reduction-family hints. The registry
+#                  owns opcode membership; vectorize.rs owns CFG, accumulator
+#                  recognition, lane typing, and hint emission.
+#   - lir_verify_rules - generated opcode-to-rule lattice for verify_lir.rs
+#                  representation-aware verifier hooks. The registry owns
+#                  dispatch membership; verify_lir.rs owns invariant checking.
 #   - exception_label_attr_opcodes - opcode facts for ops whose `value` attr is
 #                  a SimpleIR exception label id.
 #   - exception_transfer_edge_opcodes - subset of exception-label ops whose
 #                  label-valued `value` attr contributes an implicit CFG edge.
+#   - exception_region_nesting_roles - TryStart/TryEnd role facts consumed by
+#                  DCE/SCCP try-depth tracking. Distinct from label and transfer
+#                  facts: it owns lexical exception-region nesting only.
 #   - canonicalize_commutative_reorder / canonicalize_swapped_comparison /
 #                  canonicalize_binary_rules - ordered algebraic facts consumed
 #                  by canonicalize.rs. They live here so operand rewrites do not
@@ -94,6 +140,9 @@
 #                  propagation. These also feed slot-observation classification.
 #   - alias_slot_*_opcodes - opcode classes for alias_analysis.rs slot
 #                  observation. Omitted opcodes are conservative observers.
+#   - escape_alloc_site_opcodes - opcode-only allocation-root facts for
+#                  escape_analysis.rs. Omitted opcodes are not tracked as
+#                  allocation roots.
 #   - refcount_heap_exposure_opcodes - opcode-only deferred-RC fact for ops
 #                  whose operands become heap/external roots and therefore cannot
 #                  be treated as non-escaping by refcount_elim.rs.
@@ -104,6 +153,15 @@
 #                  TirFunction::has_state_machine. StateDispatch terminators
 #                  are the other half, so this remains distinct from the broad
 #                  state-machine pass-exclusion fact below.
+#   - boxed_runtime_inplace_dispatch_opcodes - first-class opcodes whose boxed
+#                  runtime fallback must call `molt_inplace_*` and try the
+#                  in-place dunder before binary fallback.
+#   - drop_insertion_suspension_point_opcodes - opcode-only frame-retain fact
+#                  for drop_insertion.rs. Omitted opcodes do not suspend and do
+#                  not require pre-op coroutine-frame IncRefs.
+#   - drop_insertion_return_deferral_barrier_opcodes - opcode-only fact for
+#                  explicit RC/free rails that disqualify return-boundary
+#                  finalizer-sensitive deferral for touched roots.
 #   - fusion_barrier_opcodes - opcode-only deforestation.rs fusion-eligibility
 #                  fact: ops that make a comprehension/generator body ineligible
 #                  for iterator-chain fusion. A DISTINCT fact from side_effecting
@@ -112,6 +170,10 @@
 #                  generator_fusion_poll_reject_opcodes - opcode-role facts for
 #                  generator_fusion.rs poll-body eligibility. Required-yield,
 #                  reject, and neutral roles are rendered as one exhaustive table.
+#   - generator_fusion_iter_use_roles - opcode-role facts for generator_fusion.rs
+#                  iterator-use safety scanning. The registry owns IterNext vs
+#                  optional None-guard membership; the pass owns operand and
+#                  terminator use checks.
 #   - state_machine_opcodes - opcode-only linear-transform legality fact: ops
 #                  that belong to generator/async/coroutine state machines and
 #                  therefore cannot be linearly spliced by the TIR function
@@ -161,6 +223,116 @@ pass_delta_exception_event_opcodes = [
 ]
 pass_delta_type_guard_opcodes = ["TypeGuard"]
 pass_delta_heap_alloc_opcodes = ["Alloc", "ObjectNewBound", "ObjectNewBoundStack"]
+
+# ===========================================================================
+# Call graph / CallFacts opcode and kind roles.
+#
+# The opcode role is a first-class call classification shared by call_graph.rs
+# and call_facts.rs. The user-call kind list is intentionally spelling-level:
+# it applies only to Copy fallbacks carrying `_original_kind`, so GPU helper
+# kinds that also map to OpCode::Call and CallBuiltin runtime helpers cannot
+# accidentally become user-level call graph edges.
+# ===========================================================================
+
+call_opcode_roles = [
+    { opcode = "Call", role = "user_call" },
+    { opcode = "CallMethod", role = "dynamic_method" },
+    { opcode = "CallBuiltin", role = "runtime_builtin" },
+    { opcode = "Copy", role = "copy_original_kind" },
+]
+
+call_graph_user_call_kinds = [
+    "call",
+    "call_func",
+    "call_internal",
+    "call_indirect",
+    "call_bind",
+    "call_function",
+    "call_guarded",
+    "call_method",
+    "invoke_ffi",
+]
+
+# ===========================================================================
+# Polyhedral loop classification.
+#
+# The loop-header set drives which loop ops receive tiling annotations. The
+# affine-body set is intentionally opcode-only and excludes Copy; polyhedral.rs
+# layers `op.is_plain_value_copy()` on top because Copy eligibility depends on
+# live attrs, not only the opcode.
+# ===========================================================================
+
+polyhedral_loop_header_opcodes = ["ForIter", "ScfFor"]
+
+polyhedral_affine_body_opcodes = [
+    "Add",
+    "Sub",
+    "Mul",
+    "Div",
+    "FloorDiv",
+    "Mod",
+    "Index",
+    "StoreIndex",
+    "ConstInt",
+    "ConstFloat",
+    "ConstBool",
+    "ConstNone",
+    "Lt",
+    "Le",
+    "Gt",
+    "Ge",
+    "Eq",
+    "Ne",
+    "ForIter",
+    "ScfFor",
+    "ScfYield",
+    "GetIter",
+    "IterNext",
+]
+
+# ===========================================================================
+# Range loop devirtualization pattern roles.
+#
+# These roles are deliberately opcode-only. range_devirt.rs still validates the
+# builtin name (`range`, `builtin_range`, `molt_range`), range arity, GetIter
+# shape, loop-header role, IterNextUnboxed result count, and CFG shape live.
+# ===========================================================================
+
+range_devirt_roles = [
+    { opcode = "CallBuiltin", role = "range_call_candidate" },
+    { opcode = "GetIter", role = "iterator_candidate" },
+    { opcode = "IterNextUnboxed", role = "next_unboxed_candidate" },
+]
+
+# ===========================================================================
+# Fuzz TIR pass generation shape.
+#
+# This is a tooling-only opcode palette for fuzz_tir_passes.rs. The operand
+# count and attr payload rule are byte-to-TIR generation shape, not general
+# semantic arity or payload tables; result counts stay owned by
+# [[opcode]].result_arity / opcode_fixed_result_count_table.
+# ===========================================================================
+
+fuzz_tir_opcode_shapes = [
+    { opcode = "Add", operands = 2 },
+    { opcode = "Sub", operands = 2 },
+    { opcode = "Mul", operands = 2 },
+    { opcode = "Neg", operands = 1 },
+    { opcode = "Not", operands = 1 },
+    { opcode = "Eq", operands = 2 },
+    { opcode = "Lt", operands = 2 },
+    { opcode = "BitAnd", operands = 2 },
+    { opcode = "BitOr", operands = 2 },
+    { opcode = "Shl", operands = 2 },
+    { opcode = "ConstInt", operands = 0, attr_payload = "i64_value" },
+    { opcode = "ConstFloat", operands = 0, attr_payload = "f64_value" },
+    { opcode = "ConstBool", operands = 0, attr_payload = "bool_value" },
+    { opcode = "ConstNone", operands = 0 },
+    { opcode = "IncRef", operands = 1 },
+    { opcode = "DecRef", operands = 1 },
+    { opcode = "BoxVal", operands = 1 },
+    { opcode = "UnboxVal", operands = 1 },
+]
 
 # ===========================================================================
 # CopyLowering classifier (alias_analysis.rs). FLAT sets of individual kinds +
@@ -356,6 +528,20 @@ alias_heap_barrier_opcodes = [
     "YieldFrom",
 ]
 
+# escape_alloc_site_opcodes: result-producing allocation roots that
+# escape_analysis.rs tracks in its lattice. This is NOT the same as refcount
+# heap exposure: it answers "does the result define a fresh root whose escape
+# state matters?", not "do operands flow into heap/external ownership?".
+escape_alloc_site_opcodes = [
+    "Alloc",
+    "ObjectNewBound",
+    "BuildList",
+    "BuildDict",
+    "BuildTuple",
+    "BuildSet",
+    "AllocTask",
+]
+
 # refcount_heap_exposure_opcodes: operands of these ops flow into a heap-owned
 # or externally visible root for deferred reference-count elimination. This is
 # NOT the alias heap barrier set: constructors (`Build*`, `AllocTask`) retain
@@ -406,6 +592,30 @@ lowered_state_machine_body_opcodes = [
     "StateSwitch",
     "StateTransition",
     "StateYield",
+]
+
+# drop_insertion_suspension_point_opcodes: execution-suspension points where
+# live owned values must be retained into the suspended coroutine/generator
+# frame before the op. This is deliberately distinct from state-machine
+# transform legality: StateSwitch/StateTransition/AllocTask are state-machine
+# machinery, but they do not themselves publish the live frame at a suspension.
+drop_insertion_suspension_point_opcodes = [
+    "ChanRecvYield",
+    "ChanSendYield",
+    "StateYield",
+    "Yield",
+    "YieldFrom",
+]
+
+# drop_insertion_return_deferral_barrier_opcodes: explicit ownership rails that
+# make a touched finalizer-sensitive root ineligible for return-boundary
+# deferral. IncRef/DecRef/Free already encode an RC/free transition at that
+# root, so drop_insertion.rs must keep the local release instead of extending
+# the root to a function return cleanup.
+drop_insertion_return_deferral_barrier_opcodes = [
+    "DecRef",
+    "Free",
+    "IncRef",
 ]
 
 # fusion_barrier_opcodes: deforestation.rs's loop/genexpr fusion barrier set.
@@ -462,6 +672,15 @@ generator_fusion_poll_reject_opcodes = [
     "AllocTask",
 ]
 
+# generator_fusion_iter_use_roles: allowed uses of the raw iterator value while
+# proving a generator poll can be fused. IterNext is the required consuming next
+# use; Is is the tolerated not-iterable/None guard. generator_fusion.rs still
+# verifies operand position and terminator non-use live.
+generator_fusion_iter_use_roles = [
+    { opcode = "IterNext", role = "next_use" },
+    { opcode = "Is", role = "none_guard" },
+]
+
 # state_machine_opcodes: generator/async/coroutine suspension machinery that
 # linear CFG transforms must refuse. A callee/loop-containing function with one
 # of these ops cannot be spliced or promoted without rebuilding the surrounding
@@ -515,6 +734,18 @@ i64_checked_overflow_triple_opcodes = [
     "Sub",
 ]
 
+# boxed_runtime_inplace_dispatch_opcodes: first-class opcodes whose boxed
+# runtime arithmetic fallback must call `molt_inplace_*` instead of `molt_*`,
+# preserving CPython's augmented-assignment protocol (`__i<op>__` before the
+# binary/reflected dunder chain). Preserved-Copy `inplace_*` spellings remain
+# string namespace facts carried by `_original_kind`; this opcode fact covers
+# the first-class InplaceAdd/Sub/Mul trio only.
+boxed_runtime_inplace_dispatch_opcodes = [
+    "InplaceAdd",
+    "InplaceSub",
+    "InplaceMul",
+]
+
 # i64_zero_divisor_guard_opcodes: raw i64 lowering for these binary opcodes can
 # machine-trap on a zero RHS (`i64.div_s`/`i64.rem_s`) while Python semantics
 # require `ZeroDivisionError`. The same semantic fact is consumed by
@@ -547,9 +778,11 @@ literal_payload_opcodes = [
 # operand proof. Type-gated ops are deterministic computations only when all
 # operands are primitive; gvn.rs checks that per value. Value-keyed constants
 # receive same-block local value numbers only, because backend-native constant
-# materialization is representation-sensitive. ConstBigInt is intentionally
-# never keyed until ValueKey has a precise heap-bigint payload lane; otherwise
-# every big-int literal would collide on `(None, None, None)`.
+# materialization is representation-sensitive. gvn_numberable_attr_key_opcodes
+# covers non-constant numbered ops whose semantic equivalence includes an attr
+# payload (TypeGuard's expected type, today). Each row names the exact payload
+# key GVN may extract; omitted/malformed attrs fail closed to identity numbering
+# rather than colliding through a pass-local default.
 gvn_always_numberable_opcodes = [
     "BoxVal",
     "UnboxVal",
@@ -590,12 +823,17 @@ gvn_type_gated_numberable_opcodes = [
 ]
 
 gvn_value_keyed_constant_opcodes = [
-    "ConstInt",
-    "ConstBool",
-    "ConstNone",
-    "ConstFloat",
-    "ConstStr",
-    "ConstBytes",
+    { opcode = "ConstInt", key = "i64_attr", attrs = ["value"] },
+    { opcode = "ConstBigInt", key = "str_attr", attrs = ["s_value"] },
+    { opcode = "ConstBool", key = "bool_attr", attrs = ["value"] },
+    { opcode = "ConstNone", key = "none_singleton" },
+    { opcode = "ConstFloat", key = "f64_bits_attr", attrs = ["f_value", "value"] },
+    { opcode = "ConstStr", key = "str_attr", attrs = ["s_value", "value"] },
+    { opcode = "ConstBytes", key = "bytes_attr", attrs = ["bytes", "value"] },
+]
+
+gvn_numberable_attr_key_opcodes = [
+    { opcode = "TypeGuard", key = "str_attr", attrs = ["expected_type", "ty"] },
 ]
 
 # proven_result_type_seed_opcodes: constants whose intrinsic result type is
@@ -611,6 +849,172 @@ proven_result_type_seed_opcodes = [
     "ConstBytes",
 ]
 
+type_refine_attr_result_type_rules = [
+    { opcode = "ObjectNewBound", rule = "object_type_hint" },
+    { opcode = "ObjectNewBoundStack", rule = "object_type_hint" },
+    { opcode = "Call", rule = "call_return_type" },
+    { opcode = "CallMethod", rule = "call_return_type" },
+    { opcode = "CallBuiltin", rule = "call_builtin_return_type" },
+    { opcode = "TypeGuard", rule = "type_guard" },
+    { opcode = "Copy", rule = "copy_original_kind" },
+]
+
+type_refine_operand_type_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "InplaceAdd", rule = "add" },
+    { opcode = "Mul", rule = "mul" },
+    { opcode = "InplaceMul", rule = "mul" },
+    { opcode = "Sub", rule = "numeric_arithmetic" },
+    { opcode = "InplaceSub", rule = "numeric_arithmetic" },
+    { opcode = "Mod", rule = "numeric_arithmetic" },
+    { opcode = "Pow", rule = "numeric_arithmetic" },
+    { opcode = "FloorDiv", rule = "numeric_arithmetic" },
+    { opcode = "Div", rule = "true_division" },
+    { opcode = "Neg", rule = "unary_numeric" },
+    { opcode = "Pos", rule = "unary_numeric" },
+    { opcode = "And", rule = "bool_select" },
+    { opcode = "Or", rule = "bool_select" },
+    { opcode = "BitAnd", rule = "bitwise_i64" },
+    { opcode = "BitOr", rule = "bitwise_i64" },
+    { opcode = "BitXor", rule = "bitwise_i64" },
+    { opcode = "BitNot", rule = "bit_not_i64" },
+    { opcode = "BuildTuple", rule = "build_tuple" },
+    { opcode = "GetIter", rule = "get_iter" },
+    { opcode = "ForIter", rule = "iter_next" },
+    { opcode = "IterNext", rule = "iter_next" },
+    { opcode = "Index", rule = "index" },
+    { opcode = "Copy", rule = "copy" },
+    { opcode = "BoxVal", rule = "box_val" },
+    { opcode = "UnboxVal", rule = "unbox_val" },
+]
+
+sccp_constant_seed_rules = [
+    { opcode = "ConstInt", rule = "int_attr" },
+    { opcode = "ConstFloat", rule = "float_attr" },
+    { opcode = "ConstBool", rule = "bool_attr" },
+    { opcode = "ConstStr", rule = "str_attr" },
+    { opcode = "ConstNone", rule = "none_singleton" },
+]
+
+sccp_constant_eval_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "Sub", rule = "sub" },
+    { opcode = "Mul", rule = "mul" },
+    { opcode = "Div", rule = "div" },
+    { opcode = "FloorDiv", rule = "floordiv" },
+    { opcode = "Mod", rule = "mod" },
+    { opcode = "Pow", rule = "pow" },
+    { opcode = "Eq", rule = "eq" },
+    { opcode = "Ne", rule = "ne" },
+    { opcode = "Lt", rule = "lt" },
+    { opcode = "Le", rule = "le" },
+    { opcode = "Gt", rule = "gt" },
+    { opcode = "Ge", rule = "ge" },
+    { opcode = "Neg", rule = "neg" },
+    { opcode = "Not", rule = "not" },
+    { opcode = "BuildList", rule = "build_list" },
+    { opcode = "BuildDict", rule = "build_dict" },
+    { opcode = "BuildTuple", rule = "build_tuple_as_list" },
+]
+
+value_range_transfer_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "Sub", rule = "sub" },
+    { opcode = "Mul", rule = "mul" },
+    { opcode = "Neg", rule = "neg" },
+    { opcode = "BitAnd", rule = "bit_and" },
+    { opcode = "BitOr", rule = "bit_or" },
+    { opcode = "BitXor", rule = "bit_xor" },
+    { opcode = "Mod", rule = "mod" },
+    { opcode = "Shr", rule = "shr" },
+    { opcode = "Shl", rule = "shl" },
+]
+
+value_range_const_fold_rules = [
+    { opcode = "Add", rule = "add" },
+    { opcode = "Sub", rule = "sub" },
+    { opcode = "Mul", rule = "mul" },
+    { opcode = "Shl", rule = "shl" },
+    { opcode = "Shr", rule = "shr" },
+    { opcode = "BitAnd", rule = "bit_and" },
+    { opcode = "BitOr", rule = "bit_or" },
+    { opcode = "BitXor", rule = "bit_xor" },
+]
+
+# value_range_cond_narrow_rules: comparison opcodes whose true edge narrows a
+# loop-body induction variable against its upper bound. The registry owns the
+# opcode membership; value_range.rs owns CFG polarity, operand resolution,
+# numeric saturation, and symbolic-len recording.
+value_range_cond_narrow_rules = [
+    { opcode = "Lt", rule = "lt_upper_exclusive" },
+    { opcode = "Le", rule = "le_upper_inclusive" },
+]
+
+# value_range_container_length_rules: opcodes that seed container-length and
+# len(container) facts used by ValueRangeResult::proves_index_in_bounds. The
+# registry owns opcode membership; value_range.rs owns operand counts,
+# builtin-name validation, copy resolution, and const/symbolic length formulas.
+value_range_container_length_rules = [
+    { opcode = "BuildList", rule = "fixed_literal" },
+    { opcode = "BuildTuple", rule = "fixed_literal" },
+    { opcode = "Mul", rule = "list_repeat" },
+    { opcode = "CallBuiltin", rule = "len_call" },
+]
+
+# vectorize_opcode_facts: all opcode-level facts consumed by vectorize.rs. This
+# deliberately covers body eligibility, non-semantic loop machinery skips,
+# loop-header detection, annotation target selection, and reduction family in
+# one table so vectorize.rs cannot grow parallel hand-maintained taxonomies.
+# Omitted opcodes reject vectorization by default. Copy remains a row with
+# `copy_if_plain` because eligibility depends on live attrs (`is_plain_value_copy`).
+vectorize_opcode_facts = [
+    { opcode = "Add", body = "scalar_arithmetic", reduction = "sum" },
+    { opcode = "Sub", body = "scalar_arithmetic" },
+    { opcode = "Mul", body = "scalar_arithmetic", reduction = "product" },
+    { opcode = "Div", body = "scalar_arithmetic" },
+    { opcode = "FloorDiv", body = "scalar_arithmetic" },
+    { opcode = "Mod", body = "scalar_arithmetic" },
+    { opcode = "Pow", body = "scalar_arithmetic" },
+    { opcode = "Neg", body = "scalar_arithmetic" },
+    { opcode = "Pos", body = "scalar_arithmetic" },
+    { opcode = "BitAnd", body = "scalar_arithmetic", reduction = "and" },
+    { opcode = "BitOr", body = "scalar_arithmetic", reduction = "or" },
+    { opcode = "BitXor", body = "scalar_arithmetic" },
+    { opcode = "BitNot", body = "scalar_arithmetic" },
+    { opcode = "Shl", body = "scalar_arithmetic" },
+    { opcode = "Shr", body = "scalar_arithmetic" },
+    { opcode = "Eq", body = "scalar_arithmetic" },
+    { opcode = "Ne", body = "scalar_arithmetic" },
+    { opcode = "Lt", body = "scalar_arithmetic", reduction = "min" },
+    { opcode = "Le", body = "scalar_arithmetic", reduction = "min" },
+    { opcode = "Gt", body = "scalar_arithmetic", reduction = "max" },
+    { opcode = "Ge", body = "scalar_arithmetic", reduction = "max" },
+    { opcode = "ConstInt", body = "scalar_arithmetic" },
+    { opcode = "ConstFloat", body = "scalar_arithmetic" },
+    { opcode = "ConstBool", body = "scalar_arithmetic" },
+    { opcode = "UnboxVal", body = "scalar_arithmetic" },
+    { opcode = "BoxVal", body = "scalar_arithmetic" },
+    { opcode = "Copy", body = "copy_if_plain" },
+    { opcode = "TypeGuard", body = "non_escaping_guard" },
+    { opcode = "GetIter", body = "iteration_control", annotation_target = true },
+    { opcode = "IterNext", body = "iteration_control" },
+    { opcode = "IterNextUnboxed", body = "iteration_control" },
+    { opcode = "ForIter", body = "iteration_control", loop_header = true, annotation_target = true },
+    { opcode = "ScfFor", body = "iteration_control", loop_header = true, annotation_target = true },
+]
+
+# lir_verify_rules: opcodes that require representation-aware LIR verifier
+# hooks after generic surface/dominance checks. This table owns dispatch
+# membership; verify_lir.rs owns hook invariants and diagnostic text.
+lir_verify_rules = [
+    { opcode = "BoxVal", rule = "box_value" },
+    { opcode = "UnboxVal", rule = "unbox_value" },
+    { opcode = "Add", rule = "checked_i64_arithmetic" },
+    { opcode = "Sub", rule = "checked_i64_arithmetic" },
+    { opcode = "Mul", rule = "checked_i64_arithmetic" },
+    { opcode = "CallBuiltin", rule = "truthy_materialization" },
+]
+
 exception_label_attr_opcodes = [
     "CheckException",
     "TryStart",
@@ -620,6 +1024,11 @@ exception_label_attr_opcodes = [
 exception_transfer_edge_opcodes = [
     "CheckException",
     "TryStart",
+]
+
+exception_region_nesting_roles = [
+    { opcode = "TryStart", role = "enter" },
+    { opcode = "TryEnd", role = "exit" },
 ]
 
 alias_memory_inert_opcodes = [

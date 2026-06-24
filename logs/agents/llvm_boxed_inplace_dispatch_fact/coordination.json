@@ -1,0 +1,79 @@
+{
+  "task": "llvm_boxed_inplace_dispatch_fact",
+  "timestamp_utc": "20260624T212055Z",
+  "environment": {
+    "host": "Windows 11 AMD64",
+    "shell": "powershell",
+    "repo": "C:\\Users\\adpen\\OneDrive\\Documents\\molt"
+  },
+  "proof_plan": {
+    "source": "tools/agent_coordination.py proof-plan",
+    "recommendations": 1,
+    "recommended_command": "cargo test -p molt-backend",
+    "paths": [
+      "runtime/molt-tir/src/tir/op_kinds.toml",
+      "runtime/molt-tir/src/tir/op_kinds_generated.rs",
+      "runtime/molt-backend/src/llvm_backend/lowering.rs",
+      "tests/test_gen_op_kinds.py",
+      "tools/gen_op_kinds.py",
+      "docs/design/foundation/25_op_kind_registry.md",
+      "docs/spec/README.md",
+      "docs/spec/STATUS.md"
+    ]
+  },
+  "owned_changes": [
+    "Added boxed_runtime_inplace_dispatch_opcodes to op_kinds.toml.",
+    "Rendered opcode_uses_boxed_runtime_inplace_dispatch_table as an exhaustive generated predicate.",
+    "Migrated LLVM emit_binary_arith off the InplaceAdd/InplaceSub/InplaceMul matches! hand-set.",
+    "Pinned source/render/consumer behavior in tests/test_gen_op_kinds.py.",
+    "Updated registry design docs, spec routing, status, and the generated structural audit board."
+  ],
+  "proof": [
+    {
+      "command": "uv run --python 3.12 python tools/gen_op_kinds.py --check",
+      "result": "passed",
+      "summary": "op-kind generated files: in sync"
+    },
+    {
+      "command": "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py::test_llvm_boxed_runtime_inplace_dispatch_delegates_to_generated_table tests/test_gen_op_kinds.py::test_i64_arithmetic_lowering_facts_delegate_to_generated_tables",
+      "result": "passed",
+      "summary": "2 passed"
+    },
+    {
+      "command": "cargo fmt -p molt-backend --check",
+      "result": "passed",
+      "summary": "backend Rust formatting clean"
+    },
+    {
+      "command": "cargo test -p molt-backend",
+      "result": "passed",
+      "summary": "package-level backend tests passed"
+    },
+    {
+      "command": "cargo check -p molt-backend --features llvm --lib",
+      "result": "blocked",
+      "summary": "blocked by host LLVM toolchain: llvm-sys could not find LLVM 21 or LLVM_SYS_211_PREFIX"
+    },
+    {
+      "command": "uv run --python 3.12 pytest -q tests/test_gen_op_kinds.py",
+      "result": "passed",
+      "summary": "98 passed"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/audit_op_kinds.py --check",
+      "result": "passed",
+      "summary": "op-kind drift check: OK"
+    },
+    {
+      "command": "uv run --python 3.12 python tools/structural_audit.py --check",
+      "result": "passed",
+      "summary": "structural ratchet OK (483 findings; 4 metrics improved)"
+    }
+  ],
+  "structural_audit": {
+    "before_findings": 484,
+    "after_findings": 483,
+    "board_regenerated": "docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md"
+  },
+  "blocked_optional_proof": "LLVM feature compile requires LLVM 21 discoverable via system path or LLVM_SYS_211_PREFIX."
+}

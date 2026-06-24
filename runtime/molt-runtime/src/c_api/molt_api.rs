@@ -75,13 +75,33 @@ pub extern "C" fn molt_int_from_i64(value: i64) -> MoltHandle {
     })
 }
 
+/// Raise a fresh `TypeError(message)` ONLY when no exception is already pending.
+///
+/// The `molt_*_as_*` extraction primitives recover a concrete value (raw f64,
+/// i64, buffer pointer) from a boxed handle. Native codegen and the C API chain
+/// them onto the result of a *fallible* boxing call — e.g. the native `float(x)`
+/// lowering calls `molt_float_from_obj` and then `molt_float_as_f64` to land the
+/// result in a raw-f64 lane. When that prior call raised — e.g. `float("nope")`
+/// raised `ValueError: could not convert string to float: 'nope'` — it returns
+/// the `None` error sentinel, which then fails this extractor's type check.
+/// Raising the generic "X expected" `TypeError` at that point would CLOBBER the
+/// real, more specific exception. Guarding on `exception_pending` preserves it;
+/// the genuine wrong-type case (no exception pending) still raises as before.
+/// Callers return their own error sentinel after this returns either way.
+#[inline]
+fn raise_type_error_unless_pending(_py: &PyToken<'_>, message: &str) {
+    if !exception_pending(_py) {
+        raise_exception::<()>(_py, "TypeError", message);
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_as_i64(value_bits: MoltHandle) -> i64 {
     crate::with_gil_entry_nopanic!(_py, {
         if let Some(value) = to_i64(obj_from_bits(value_bits)) {
             return value;
         }
-        let _ = raise_exception::<u64>(_py, "TypeError", "int-compatible object expected");
+        raise_type_error_unless_pending(_py, "int-compatible object expected");
         -1
     })
 }
@@ -101,7 +121,7 @@ pub extern "C" fn molt_float_as_f64(value_bits: MoltHandle) -> f64 {
         if let Some(value) = to_i64(value_obj) {
             return value as f64;
         }
-        let _ = raise_exception::<u64>(_py, "TypeError", "float-compatible object expected");
+        raise_type_error_unless_pending(_py, "float-compatible object expected");
         -1.0
     })
 }
@@ -1409,12 +1429,12 @@ pub unsafe extern "C" fn molt_bytes_from(data: *const u8, len: u64) -> MoltHandl
 pub unsafe extern "C" fn molt_bytes_as_ptr(bytes_bits: MoltHandle, out_len: *mut u64) -> *const u8 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(bytes_bits).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "bytes object expected");
+            raise_type_error_unless_pending(_py, "bytes object expected");
             return std::ptr::null();
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_BYTES {
-                let _ = raise_exception::<u64>(_py, "TypeError", "bytes object expected");
+                raise_type_error_unless_pending(_py, "bytes object expected");
                 return std::ptr::null();
             }
             if !out_len.is_null() {
@@ -1450,12 +1470,12 @@ pub unsafe extern "C" fn molt_string_as_ptr(
 ) -> *const u8 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(string_bits).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "string object expected");
+            raise_type_error_unless_pending(_py, "string object expected");
             return std::ptr::null();
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_STRING {
-                let _ = raise_exception::<u64>(_py, "TypeError", "string object expected");
+                raise_type_error_unless_pending(_py, "string object expected");
                 return std::ptr::null();
             }
             if !out_len.is_null() {
@@ -1491,12 +1511,12 @@ pub unsafe extern "C" fn molt_bytearray_as_ptr(
 ) -> *mut u8 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(ptr) = obj_from_bits(bytearray_bits).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "bytearray object expected");
+            raise_type_error_unless_pending(_py, "bytearray object expected");
             return std::ptr::null_mut();
         };
         unsafe {
             if object_type_id(ptr) != TYPE_ID_BYTEARRAY {
-                let _ = raise_exception::<u64>(_py, "TypeError", "bytearray object expected");
+                raise_type_error_unless_pending(_py, "bytearray object expected");
                 return std::ptr::null_mut();
             }
             let vec_ptr = bytearray_vec_ptr(ptr);

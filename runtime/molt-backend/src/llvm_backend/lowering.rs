@@ -34,6 +34,8 @@ use crate::tir::blocks::{BlockId, Terminator};
 #[cfg(feature = "llvm")]
 use crate::tir::function::TirFunction;
 #[cfg(feature = "llvm")]
+use crate::tir::op_kinds_generated::opcode_uses_boxed_runtime_inplace_dispatch_table;
+#[cfg(feature = "llvm")]
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 #[cfg(feature = "llvm")]
 use crate::tir::types::TirType;
@@ -5077,17 +5079,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // above stay on the binary instruction because builtin numerics have
             // no in-place dunder (so the result is byte-identical there).
             _ => {
-                let is_inplace = matches!(
-                    op.opcode,
-                    OpCode::InplaceAdd | OpCode::InplaceSub | OpCode::InplaceMul
-                ) || op
-                    .attrs
-                    .get("_original_kind")
-                    .and_then(|v| match v {
-                        AttrValue::Str(s) => Some(s.as_str()),
-                        _ => None,
-                    })
-                    .is_some_and(|k| k.starts_with("inplace_"));
+                let is_inplace = opcode_uses_boxed_runtime_inplace_dispatch_table(op.opcode)
+                    || op
+                        .attrs
+                        .get("_original_kind")
+                        .and_then(|v| match v {
+                            AttrValue::Str(s) => Some(s.as_str()),
+                            _ => None,
+                        })
+                        .is_some_and(|k| k.starts_with("inplace_"));
                 let rt_name = match (name, is_inplace) {
                     ("add", false) => "molt_add",
                     ("add", true) => "molt_inplace_add",

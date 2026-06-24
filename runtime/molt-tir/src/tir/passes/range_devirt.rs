@@ -37,6 +37,7 @@ use std::collections::HashMap;
 
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::{RangeDevirtRole, opcode_range_devirt_role_table};
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -108,8 +109,8 @@ fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
     for &bid in &block_ids {
         let block = &func.blocks[&bid];
         for (op_idx, op) in block.ops.iter().enumerate() {
-            match op.opcode {
-                OpCode::CallBuiltin => {
+            match opcode_range_devirt_role_table(op.opcode) {
+                RangeDevirtRole::RangeCallCandidate => {
                     let name = op
                         .attrs
                         .get("name")
@@ -125,7 +126,9 @@ fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
                         call_builtin_defs.insert(op.results[0], (bid, op_idx, op.operands.clone()));
                     }
                 }
-                OpCode::GetIter if !op.operands.is_empty() && !op.results.is_empty() => {
+                RangeDevirtRole::IteratorCandidate
+                    if !op.operands.is_empty() && !op.results.is_empty() =>
+                {
                     get_iter_defs.insert(op.results[0], (bid, op_idx, op.operands[0]));
                 }
                 _ => {}
@@ -150,8 +153,11 @@ fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
 
         // Find IterNextUnboxed or ForIter in the header.
         for (op_idx, op) in header_block.ops.iter().enumerate() {
-            let (uses_unboxed, elem_val, done_val) = match op.opcode {
-                OpCode::IterNextUnboxed if op.results.len() == 2 && !op.operands.is_empty() => {
+            let (uses_unboxed, elem_val, done_val) = match opcode_range_devirt_role_table(op.opcode)
+            {
+                RangeDevirtRole::NextUnboxedCandidate
+                    if op.results.len() == 2 && !op.operands.is_empty() =>
+                {
                     (true, op.results[0], op.results[1])
                 }
                 _ => continue,

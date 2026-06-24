@@ -178,12 +178,22 @@ the implementation. For forward-looking priorities, use
   from side-effecting/may-throw facts: fusion preserves per-element evaluation
   order, so allocation, attribute reads, indexing, and arithmetic that may throw
   are not barriers unless they alter cross-iteration/control state or suspend.
+- TIR effect classification is generated from `may_throw`, `side_effecting`,
+  and `purity` rows in `runtime/molt-tir/src/tir/op_kinds.toml`. The generator
+  emits exhaustive `opcode_may_throw_table`, `opcode_is_side_effecting_table`,
+  generated `ALL_OPCODES`, and typed `opcode_effects_table` facts, so
+  `effects.rs` no longer carries a pass-local opcode classifier.
 - Deferred refcount heap exposure is generated from
   `refcount_heap_exposure_opcodes` as the exhaustive
   `opcode_is_refcount_heap_exposure_table` classifier. The classifier is
   intentionally distinct from alias heap barriers: it answers whether operands
   become heap/external roots for deferred RC, not whether an op creates a generic
   heap memory definition.
+- Escape-analysis allocation roots are generated from
+  `escape_alloc_site_opcodes` as the exhaustive
+  `opcode_is_escape_alloc_site_table` classifier. The classifier is intentionally
+  distinct from refcount heap exposure: it answers whether an opcode result is a
+  fresh allocation root whose escape state should be tracked.
 - Raw-i64 division-family exception custody is also registry-owned:
   `i64_zero_divisor_guard_opcodes` generates the exhaustive
   `opcode_requires_i64_zero_divisor_guard_table` classifier consumed by LIR
@@ -195,12 +205,101 @@ the implementation. For forward-looking priorities, use
   `opcode_requires_i64_shift_count_guard_table` classifier consumed by LICM's
   throw-condition proof, so shift hoisting reuses one authority for the `[0, 63]`
   count proof requirement.
+- Boxed augmented-assignment runtime dispatch is registry-owned:
+  `boxed_runtime_inplace_dispatch_opcodes` generates
+  `opcode_uses_boxed_runtime_inplace_dispatch_table`, consumed by LLVM lowering
+  when first-class `InplaceAdd`/`InplaceSub`/`InplaceMul` reach the boxed slow
+  path. That path calls `molt_inplace_*` so `__i<op>__` is tried before the
+  binary/reflected dunder chain; preserved-Copy `inplace_*` spellings remain
+  carried by `_original_kind`.
 - GVN numbering policy is registry-owned:
   `gvn_always_numberable_opcodes`, `gvn_type_gated_numberable_opcodes`, and
-  `gvn_value_keyed_constant_opcodes` generate the exhaustive
-  `opcode_gvn_numbering_role_table`, so unconditional value transforms,
-  primitive-gated computations, and same-block literal keys cannot drift as
-  private pass-local opcode lists.
+  `gvn_value_keyed_constant_opcodes` plus `gvn_numberable_attr_key_opcodes`
+  generate the exhaustive
+  `opcode_gvn_numbering_role_table` and
+  `opcode_gvn_value_key_spec_table`, so unconditional value transforms,
+  primitive-gated computations, same-block literal payload keys, and
+  attr-sensitive numbered ops cannot drift as private pass-local opcode or
+  attribute lists.
+- Type-refine result-type membership is registry-owned:
+  `type_refine_attr_result_type_rules` and
+  `type_refine_operand_type_rules` generate exhaustive rule tables for
+  attr-derived class/call/guard/Copy-original-kind facts and operand-dependent
+  arithmetic, boolean, bitwise, iterator, indexing, tuple, Copy, BoxVal, and
+  UnboxVal inference. `type_refine.rs` owns only the rule semantics and live
+  operand/attribute parsing, not opcode membership.
+- Operand-independent result-type facts are registry-owned through
+  `operand_independent_result_type` rows and generated
+  `opcode_operand_independent_result_tir_type`. Type refine, block versioning,
+  branchless counting, fast-math type seeding, strength-reduction type seeding,
+  and GVN consume that helper instead of carrying private
+  Const*/comparison/module-result opcode matches.
+- Call graph and CallFacts dispatch are registry-owned:
+  `call_opcode_roles` generates the exhaustive `opcode_call_role_table` for
+  first-class Call/CallMethod/CallBuiltin/Copy behavior, and
+  `call_graph_user_call_kinds` generates
+  `simpleir_kind_is_call_graph_user_call` for Copy `_original_kind` fallbacks.
+  `call_graph.rs` and `call_facts.rs` own target resolution, GPU runtime-symbol
+  carve-outs, builtin no-throw proof, and fact lattice semantics, not private
+  call opcode or call-kind sets.
+- SCCP constant-folding membership is registry-owned:
+  `sccp_constant_seed_rules` and `sccp_constant_eval_rules` generate exhaustive
+  rule tables for lattice seeding and constant evaluation. `sccp.rs` owns the
+  rule semantics, including attr parsing, overflow refusal, Python numeric
+  error behavior, compound-size caps, and tuple-as-list lattice representation,
+  not private opcode lists.
+- Value-range integer rule membership is registry-owned:
+  `value_range_transfer_rules`, `value_range_const_fold_rules`, and
+  `value_range_cond_narrow_rules`, and `value_range_container_length_rules`
+  generate exhaustive rule tables for modeled interval transfer functions,
+  checked integer constant folding used by constant-mask/container-length
+  derivation, loop-guard true-edge upper-bound narrowing, and fixed
+  literal/list-repeat/`len(...)` length facts. `value_range.rs` owns the
+  interval formulas, saturation, Python shift/mod semantics, CFG polarity
+  checks, symbolic-len recording, builtin-name and operand-shape validation,
+  copy resolution, and raw-lane soundness boundary, not private opcode lists.
+- Range-loop devirtualization pattern roles are registry-owned:
+  `range_devirt_roles` generates the exhaustive
+  `opcode_range_devirt_role_table` for CallBuiltin/GetIter/IterNextUnboxed
+  roles in the `range(...)` iterator pattern. `range_devirt.rs` still owns
+  builtin-name checks, operand/result shape, loop-header role, dominance, and
+  CFG validation.
+- Polyhedral loop classification is registry-owned:
+  `polyhedral_loop_header_opcodes` generates
+  `opcode_is_polyhedral_loop_header_table`, and
+  `polyhedral_affine_body_opcodes` generates
+  `opcode_is_polyhedral_affine_body_table`. `polyhedral.rs` owns loop-body
+  traversal, tiling annotation, and live Copy refinement, not private
+  loop-header or affine-body opcode sets.
+- Vectorization opcode classification is registry-owned:
+  `vectorize_opcode_facts` generates the exhaustive
+  `opcode_vectorize_facts_table` consumed by `vectorize.rs`. The pass owns
+  accumulator recognition, live Copy refinement, min/max pattern validation,
+  lane typing, and hint emission, not private body-eligibility, loop-header,
+  annotation-target, or reduction opcode lists.
+- Representation-aware LIR verifier dispatch is registry-owned:
+  `lir_verify_rules` generates the exhaustive `opcode_lir_verify_rule_table`
+  consumed by `verify_lir.rs`. The verifier owns hook invariants and
+  diagnostics, not private BoxVal/UnboxVal/arithmetic/CallBuiltin dispatch.
+- TIR pass fuzzing generation shape is registry-owned:
+  `fuzz_tir_opcode_shapes` generates `FUZZ_TIR_OPCODE_SHAPES` and
+  `opcode_fuzz_tir_operand_count_table` plus
+  `opcode_fuzz_tir_attr_payload_rule_table` for
+  `runtime/molt-backend/fuzz/fuzz_targets/fuzz_tir_passes.rs`. The fuzzer uses
+  that generated palette for operand counts and synthetic constant payload
+  generation, while the canonical `opcode_fixed_result_count_table` owns result
+  counts; variable-result opcodes such as `Copy` stay out of the fixed-shape
+  palette.
+- Drop-insertion suspension retain points are registry-owned:
+  `drop_insertion_suspension_point_opcodes` generates the exhaustive
+  `opcode_is_drop_insertion_suspension_point_table` consumed by
+  `drop_insertion.rs`, keeping coroutine-frame retain placement distinct from
+  broader state-machine transform legality and fusion barriers.
+- Drop-insertion return-boundary deferral barriers are registry-owned:
+  `drop_insertion_return_deferral_barrier_opcodes` generates the exhaustive
+  `opcode_is_drop_insertion_return_deferral_barrier_table`, so explicit
+  IncRef/DecRef/Free rails define one authority for finalizer-sensitive roots
+  that cannot be extended to return cleanup.
 - Literal payload facts are registry-owned through `literal_payload_opcodes` and
   shared by canonicalization and exception-check elimination. Commutative
   reordering, comparison swaps, and ordered binary algebraic folds use adjacent
@@ -210,7 +309,17 @@ the implementation. For forward-looking priorities, use
   identifies ops whose `value` attr carries a SimpleIR exception label id, and
   `exception_transfer_edge_opcodes` is the generated subset that contributes
   implicit CFG transfer edges. Inliner, generator fusion, lower-to-simple, and
-  dominator construction consume those generated tables.
+  dominator construction consume those generated tables. Lexical try-region
+  nesting is a separate generated role fact: `exception_region_nesting_roles`
+  feeds `opcode_exception_region_nesting_role_table` for TryStart/TryEnd
+  Enter/Exit roles, while DCE and SCCP still own try-depth traversal and their
+  conservative may-throw dead-op / constant-folding policies.
+- Generator-fusion opcode roles are registry-owned:
+  `generator_fusion_poll_required_yield_opcodes` and
+  `generator_fusion_poll_reject_opcodes` generate the poll-eligibility role
+  table, while `generator_fusion_iter_use_roles` generates the IterNext/Is
+  iterator-use scanner role table. `generator_fusion.rs` owns operand-position,
+  terminator-use, and CFG proof.
 - `molt-gpu` schedules `Movement` operands as zero-copy views over source
   storage and schedules `Contiguous` DAG operands as first-class
   `KernelBody::MaterializeCopy` producers with fresh storage identity.

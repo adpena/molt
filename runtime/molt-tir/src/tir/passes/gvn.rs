@@ -30,10 +30,22 @@ use crate::tir::blocks::BlockId;
 use crate::tir::dominators::dominates;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    GvnNumberingRole, opcode_gvn_numbering_role_table, opcode_operand_independent_result_tir_type,
+    GvnNumberingRole, GvnValueKeyKind, GvnValueKeySpec, opcode_gvn_numbering_role_table,
+    opcode_gvn_value_key_spec_table, opcode_operand_independent_result_tir_type,
 };
 use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::values::ValueId;
+
+/// Exact literal payload identity for same-block constant value numbering.
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+enum GvnValueKey {
+    I64(i64),
+    Bool(bool),
+    NoneSingleton,
+    F64Bits(u64),
+    Str(String),
+    Bytes(Vec<u8>),
+}
 
 /// A hashable representation of a computation for value numbering.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -41,12 +53,10 @@ struct ValueKey {
     opcode: OpCode,
     /// Operand value numbers (canonicalized through the scoped leader table).
     operands: Vec<ValueId>,
-    /// For constants, the literal value distinguishes different constants
-    /// with the same opcode.  Uses the exact value (no hashing) to prevent
-    /// collisions between distinct constants.
-    const_int_key: Option<i64>,
-    const_str_key: Option<String>,
-    const_bytes_key: Option<Vec<u8>>,
+    /// Optional attr payload participating in value identity. The payload shape
+    /// is generated from op_kinds.toml; if a required attr is missing/malformed,
+    /// the op is not numbered rather than colliding through a local default.
+    attr_key: Option<GvnValueKey>,
 }
 
 /// A type is "primitive" when arithmetic on it is provably side-effect-free.
@@ -58,62 +68,41 @@ fn is_primitive_type(ty: &crate::tir::types::TirType) -> bool {
     )
 }
 
-/// Extract constant keys for deduplicating constants by exact value.
-fn const_keys(op: &TirOp) -> (Option<i64>, Option<String>, Option<Vec<u8>>) {
-    match op.opcode {
-        OpCode::ConstInt => {
-            let k = op.attrs.get("value").and_then(|v| match v {
-                AttrValue::Int(i) => Some(*i),
-                _ => None,
-            });
-            (k, None, None)
-        }
-        OpCode::ConstBool => {
-            let k = op.attrs.get("value").and_then(|v| match v {
-                AttrValue::Bool(b) => Some(if *b { 1 } else { 0 }),
-                AttrValue::Int(i) => Some(*i),
-                _ => None,
-            });
-            (k, None, None)
-        }
-        OpCode::ConstNone => (Some(0), None, None),
-        OpCode::ConstFloat => {
-            // TIR ConstFloat stores the float in "f_value" (or "value" as fallback).
-            let k = op
-                .attrs
-                .get("f_value")
-                .or_else(|| op.attrs.get("value"))
-                .and_then(|v| match v {
-                    AttrValue::Float(f) => Some(f.to_bits() as i64),
-                    _ => None,
-                });
-            (k, None, None)
-        }
-        OpCode::ConstStr => {
-            // TIR ConstStr stores the string in "s_value", not "value".
-            let s = op
-                .attrs
-                .get("s_value")
-                .or_else(|| op.attrs.get("value"))
-                .and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.clone()),
-                    _ => None,
-                });
-            (None, s, None)
-        }
-        OpCode::ConstBytes => {
-            let b = op
-                .attrs
-                .get("bytes")
-                .or_else(|| op.attrs.get("value"))
-                .and_then(|v| match v {
-                    AttrValue::Bytes(b) => Some(b.clone()),
-                    _ => None,
-                });
-            (None, None, b)
-        }
-        _ => (None, None, None),
+fn attr_for_gvn_value_key<'a>(op: &'a TirOp, spec: GvnValueKeySpec) -> Option<&'a AttrValue> {
+    spec.attrs.iter().find_map(|attr| op.attrs.get(*attr))
+}
+
+fn gvn_value_key_from_spec(op: &TirOp, spec: GvnValueKeySpec) -> Option<GvnValueKey> {
+    match spec.kind {
+        GvnValueKeyKind::I64Attr => match attr_for_gvn_value_key(op, spec) {
+            Some(AttrValue::Int(i)) => Some(GvnValueKey::I64(*i)),
+            _ => None,
+        },
+        GvnValueKeyKind::BoolAttr => match attr_for_gvn_value_key(op, spec) {
+            Some(AttrValue::Bool(b)) => Some(GvnValueKey::Bool(*b)),
+            Some(AttrValue::Int(i)) => Some(GvnValueKey::Bool(*i != 0)),
+            _ => None,
+        },
+        GvnValueKeyKind::NoneSingleton => Some(GvnValueKey::NoneSingleton),
+        GvnValueKeyKind::F64BitsAttr => match attr_for_gvn_value_key(op, spec) {
+            Some(AttrValue::Float(f)) => Some(GvnValueKey::F64Bits(f.to_bits())),
+            _ => None,
+        },
+        GvnValueKeyKind::StrAttr => match attr_for_gvn_value_key(op, spec) {
+            Some(AttrValue::Str(s)) => Some(GvnValueKey::Str(s.clone())),
+            _ => None,
+        },
+        GvnValueKeyKind::BytesAttr => match attr_for_gvn_value_key(op, spec) {
+            Some(AttrValue::Bytes(b)) => Some(GvnValueKey::Bytes(b.clone())),
+            _ => None,
+        },
     }
+}
+
+/// Extract a generated GVN value-key attr payload.
+fn gvn_value_key(op: &TirOp) -> Option<GvnValueKey> {
+    let spec = opcode_gvn_value_key_spec_table(op.opcode)?;
+    gvn_value_key_from_spec(op, spec)
 }
 
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
@@ -303,20 +292,19 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
                     if !numberable {
                         if numbering_role.is_value_keyed_constant() {
-                            let (const_int_key, const_str_key, const_bytes_key) = const_keys(op);
-                            let key = ValueKey {
-                                opcode: op.opcode,
-                                operands: Vec::new(),
-                                const_int_key,
-                                const_str_key,
-                                const_bytes_key,
-                            };
-                            let leader = local_const_key_to_leader
-                                .get(&key)
-                                .copied()
-                                .unwrap_or(result);
-                            local_const_key_to_leader.entry(key).or_insert(result);
-                            local_value_number.insert(result, leader);
+                            if let Some(constant_key) = gvn_value_key(op) {
+                                let key = ValueKey {
+                                    opcode: op.opcode,
+                                    operands: Vec::new(),
+                                    attr_key: Some(constant_key),
+                                };
+                                let leader = local_const_key_to_leader
+                                    .get(&key)
+                                    .copied()
+                                    .unwrap_or(result);
+                                local_const_key_to_leader.entry(key).or_insert(result);
+                                local_value_number.insert(result, leader);
+                            }
                         }
                         let prior = value_number.insert(result, result);
                         vn_undo.push((result, prior));
@@ -340,13 +328,22 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                         })
                         .collect();
 
-                    let (const_int_key, const_str_key, const_bytes_key) = const_keys(op);
+                    let attr_key = match opcode_gvn_value_key_spec_table(op.opcode) {
+                        Some(spec) => match gvn_value_key_from_spec(op, spec) {
+                            Some(key) => Some(key),
+                            None => {
+                                let prior = value_number.insert(result, result);
+                                vn_undo.push((result, prior));
+                                continue;
+                            }
+                        },
+                        None => None,
+                    };
+
                     let key = ValueKey {
                         opcode: op.opcode,
                         operands: numbered_operands,
-                        const_int_key,
-                        const_str_key,
-                        const_bytes_key,
+                        attr_key,
                     };
 
                     if let Some(&leader) = key_to_leader.get(&key) {
@@ -502,6 +499,24 @@ mod tests {
         }
     }
 
+    fn make_type_guard(operand: ValueId, expected_type: &str, result: ValueId) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::TypeGuard,
+            operands: vec![operand],
+            results: vec![result],
+            attrs: {
+                let mut m = AttrDict::new();
+                m.insert(
+                    "expected_type".into(),
+                    AttrValue::Str(expected_type.to_string()),
+                );
+                m
+            },
+            source_span: None,
+        }
+    }
+
     #[test]
     fn redundant_add_eliminated() {
         let mut func = TirFunction::new("f".into(), vec![TirType::I64, TirType::I64], TirType::I64);
@@ -617,6 +632,52 @@ mod tests {
         let ops = &func.blocks[&func.entry_block].ops;
         assert_eq!(ops[0].opcode, OpCode::Call);
         assert_eq!(ops[1].opcode, OpCode::Call);
+    }
+
+    #[test]
+    fn duplicate_type_guards_with_same_attr_are_deduped() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::Bool);
+        let p0 = ValueId(0);
+        let g1 = func.fresh_value();
+        let g2 = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_type_guard(p0, "int", g1));
+        entry.ops.push(make_type_guard(p0, "int", g2));
+        entry.terminator = Terminator::Return { values: vec![g2] };
+
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+        assert_eq!(stats.values_changed, 1);
+
+        let ops = &func.blocks[&func.entry_block].ops;
+        assert_eq!(ops[1].opcode, OpCode::Copy);
+        assert_eq!(ops[1].operands[0], g1);
+    }
+
+    #[test]
+    fn type_guard_value_key_includes_expected_type_attr() {
+        let mut func = TirFunction::new("f".into(), vec![TirType::I64], TirType::Bool);
+        let p0 = ValueId(0);
+        let is_int = func.fresh_value();
+        let is_str = func.fresh_value();
+
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(make_type_guard(p0, "int", is_int));
+        entry.ops.push(make_type_guard(p0, "str", is_str));
+        entry.terminator = Terminator::Return {
+            values: vec![is_str],
+        };
+
+        let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
+        assert_eq!(stats.values_changed, 0);
+
+        let ops = &func.blocks[&func.entry_block].ops;
+        assert_eq!(ops[0].opcode, OpCode::TypeGuard);
+        assert_eq!(ops[1].opcode, OpCode::TypeGuard);
+        assert_eq!(
+            ops[1].attrs.get("expected_type"),
+            Some(&AttrValue::Str("str".to_string()))
+        );
     }
 
     // ── Cross-block dominator-scoped GVN tests ──────────────────────────

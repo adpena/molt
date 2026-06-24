@@ -508,7 +508,7 @@ pub(crate) enum CopyLowering {
 /// double-free.
 pub(crate) fn copy_kind_mints_fresh_owned_ref(kind: &str) -> bool {
     // The fresh-value allow-list is the single-source-of-truth op-kind registry
-    // (`runtime/molt-backend/src/tir/op_kinds.toml`'s `classifier_fresh_value` +
+    // (`runtime/molt-tir/src/tir/op_kinds.toml`'s `classifier_fresh_value` +
     // `classifier_fresh_value_prefixes`, generated into
     // [`crate::tir::op_kinds_generated`]; see
     // `docs/design/foundation/25_op_kind_registry.md`). Membership means the

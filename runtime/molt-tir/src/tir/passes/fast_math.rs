@@ -21,6 +21,7 @@ use std::collections::HashMap;
 
 use super::PassStats;
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::opcode_operand_independent_result_tir_type;
 use crate::tir::ops::{AttrValue, OpCode};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
@@ -58,25 +59,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         for arg in &block.args {
             type_map.insert(arg.id, arg.ty.clone());
         }
-        // Infer result types from constant-producing ops.
+        // Infer result types from operand-independent producers.
         for op in &block.ops {
-            match op.opcode {
-                OpCode::ConstFloat => {
-                    for &res in &op.results {
-                        type_map.insert(res, TirType::F64);
-                    }
+            if let Some(ty) = opcode_operand_independent_result_tir_type(op.opcode) {
+                for &res in &op.results {
+                    type_map.insert(res, ty.clone());
                 }
-                OpCode::ConstInt => {
-                    for &res in &op.results {
-                        type_map.insert(res, TirType::I64);
-                    }
-                }
-                OpCode::ConstBool => {
-                    for &res in &op.results {
-                        type_map.insert(res, TirType::Bool);
-                    }
-                }
-                _ => {}
             }
         }
     }
