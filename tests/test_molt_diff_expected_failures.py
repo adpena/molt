@@ -35,12 +35,15 @@ def test_diff_capabilities_prefers_explicit_diff_override_then_test_contract() -
         "process.exec"
     )
     assert module._diff_capabilities({"MOLT_CAPABILITIES": ""}) == ""
-    assert module._diff_capabilities(
-        {
-            "MOLT_CAPABILITIES": "process.exec",
-            "MOLT_DIFF_CAPABILITIES": "fs,env,time,random",
-        }
-    ) == "fs,env,time,random"
+    assert (
+        module._diff_capabilities(
+            {
+                "MOLT_CAPABILITIES": "process.exec",
+                "MOLT_DIFF_CAPABILITIES": "fs,env,time,random",
+            }
+        )
+        == "fs,env,time,random"
+    )
 
 
 def test_expected_failure_status_maps_fail_to_xfail_pass() -> None:
@@ -698,14 +701,17 @@ def test_run_molt_build_only_uses_build_profile_flag(
 ) -> None:
     module = _load_diff_module()
     seen_cmds: list[list[str]] = []
+    seen_envs: list[dict[str, str]] = []
     diff_root = tmp_path / "diff-root"
     target_root = tmp_path / "target-root"
 
     def fake_run_with_optional_time(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
-        del kwargs
         seen_cmds.append(list(cmd))
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        seen_envs.append(dict(env))
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("")
@@ -753,6 +759,61 @@ def test_run_molt_build_only_uses_build_profile_flag(
             "fs,env,time,random",
         ]
     ]
+    diagnostics_path = Path(seen_envs[0]["MOLT_DIAGNOSTICS_FILE"])
+    assert diagnostics_path.name == "runtime_diagnostics.log"
+    assert diagnostics_path.parent.parent == tmp_path
+
+
+def test_run_molt_preserves_explicit_runtime_diagnostics_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_diff_module()
+    seen_envs: list[dict[str, str]] = []
+    explicit_diagnostics = tmp_path / "explicit-runtime-diagnostics.log"
+
+    def fake_run_with_optional_time(
+        cmd: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        seen_envs.append(dict(env))
+        if "build" in cmd:
+            output_path = Path(cmd[cmd.index("--output") + 1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
+    monkeypatch.setattr(module, "_diff_tmp_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_root", lambda: tmp_path / "diff-root")
+    monkeypatch.setattr(
+        module, "_diff_cargo_target_root", lambda: tmp_path / "target-root"
+    )
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_allow_rustc_wrapper", lambda: False)
+    monkeypatch.setattr(module, "_diff_trusted_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_backend_daemon_default", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_no_cache", lambda: False)
+    monkeypatch.setattr(module, "_diff_force_rebuild", lambda: False)
+    monkeypatch.setattr(module, "_diff_timeout", lambda: 60.0)
+    monkeypatch.setattr(module, "_diff_build_timeout", lambda timeout: timeout)
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 0)
+    monkeypatch.setattr(module, "_rss_exceeded", lambda metrics, limit: (False, ""))
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda output: None)
+    monkeypatch.setattr(module, "_collect_env_overrides", lambda file_path: {})
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: sys.executable)
+
+    stdout, stderr, rc = module.run_molt(
+        "tests/differential/stdlib/unicodedata_basic.py",
+        "dev",
+        extra_env={"MOLT_DIAGNOSTICS_FILE": str(explicit_diagnostics)},
+    )
+
+    assert (stdout, stderr, rc) == ("", "", 0)
+    assert seen_envs
+    assert {env["MOLT_DIAGNOSTICS_FILE"] for env in seen_envs} == {
+        str(explicit_diagnostics)
+    }
 
 
 def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
