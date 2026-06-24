@@ -6,19 +6,19 @@ Companion to 21 (program), 21b (crate graph). Design only. -->
 # 21c — Decompose `SimpleTIRGenerator` into Visitor Mixins (Move #2 / F1)
 
 ## Verdict
-Move #2 is **partially complete, but the mega-class is still the mega-class.** Eight mixins
+Move #2 is **partially complete, but the mega-class is still the mega-class.** Eleven mixins
 exist and are wired into the MRO, yet `src/molt/frontend/__init__.py` remains a god file and
-`SimpleTIRGenerator` still defines the large emit/analysis surface plus statement visitor
-families inline. The recent refactor extracted the
+`SimpleTIRGenerator` still defines the large emit/analysis surface inline. The recent refactor extracted the
 infrastructure (`_types.py` leaf, `_protocol.py` typing shim, `_MixinBase` pattern) +
 serialization, async/generator lowering, pattern matching, calls, classes, comprehensions, and
-expression and function/lambda/return visitors. The remaining move is still a Python package refactor (no compile step): the win is
+expression, function/lambda/return, and statement visitor subfamilies. The remaining move is still a Python package refactor (no compile step): the win is
 edit-locality + parallel ownership, NOT build time. Constraint: move-only, ZERO behavior change.
 
 ## Current state (verified)
 - `__init__.py` L243: `class SimpleTIRGenerator(SerializationMixin, PatternMatchMixin,
   AsyncGenVisitorMixin, CallVisitorMixin, ClassDefVisitorMixin, ComprehensionMixin,
-  ExpressionVisitorMixin, FunctionVisitorMixin,
+  ExpressionVisitorMixin, FunctionVisitorMixin, AssignmentStatementVisitorMixin,
+  ControlFlowStatementVisitorMixin, StatementScopeVisitorMixin,
   ast.NodeVisitor)`. `ast.NodeVisitor` is correctly LAST. The class overrides `visit()` and
   calls `super().visit(node)` →
   resolves to `NodeVisitor.visit` (the dispatcher). **This ordering is load-bearing — every
@@ -27,8 +27,10 @@ edit-locality + parallel ownership, NOT build time. Constraint: move-only, ZERO 
   (CallVisitorMixin), `visitors/classes.py`
   (ClassDefVisitorMixin), `visitors/pattern_match.py` (PatternMatchMixin, owns
   `visit_Match`), `visitors/comprehensions.py` (ComprehensionMixin), `visitors/functions.py`
-  (FunctionVisitorMixin), `visitors/expressions.py` (ExpressionVisitorMixin), and
-  `lowering/serialization.py` (SerializationMixin, to_json).
+  (FunctionVisitorMixin), `visitors/expressions.py` (ExpressionVisitorMixin),
+  `visitors/statement_scope.py`, `visitors/statement_assignments.py`, and
+  `visitors/statement_control_flow.py`. `lowering/serialization.py` owns
+  SerializationMixin/to_json.
   `_types.py` (data leaf), `_protocol.py`+`_protocol_attrs.py` (the `_GeneratorProtocol`
   self-typing shim, GENERATED — regenerate, never hand-edit), and
   `lowering/op_kinds_generated.py` (generated) remain the support surface.
@@ -37,11 +39,10 @@ edit-locality + parallel ownership, NOT build time. Constraint: move-only, ZERO 
 - **Expressions** → `visitors/expressions.py` (17): landed for scalar names/constants,
   string/template strings, collection literals, indexing/slicing, attributes, named
   expressions, comparison/unary/binary operations, conditional expressions, and boolean ops.
-- **Statements** → `visitors/statements.py` (20): visit_Module(2767), Global(5980),
-  Nonlocal(5986), AnnAssign(13286), TypeAlias(13504), Assign(13932), Delete(14391),
-  AugAssign(14591), If(15069), With(15150), For(15491), While(15965), Try(16620),
-  TryStar(17037), Raise(17864), Assert(18005), Break(18050), Continue(18080), Import(19865),
-  ImportFrom(19911).
+- **Statements** → landed as under-ceiling subfamilies: `visitors/statement_scope.py`
+  (module/global/nonlocal/type-alias/import/import-from), `visitors/statement_assignments.py`
+  (annassign/assign/delete/augassign), and `visitors/statement_control_flow.py`
+  (if/with/for/while/try/trystar/raise/assert/break/continue).
 - **Functions** → `visitors/functions.py` (3): landed for `visit_FunctionDef`,
   `visit_Lambda`, and `visit_Return`.
 - **Comprehensions** → `visitors/comprehensions.py` (4): landed for `visit_ListComp`,
@@ -53,8 +54,7 @@ edit-locality + parallel ownership, NOT build time. Constraint: move-only, ZERO 
 ## Target layout
 New mixins (each `class XxxMixin(_MixinBase):` with the verbatim `_MixinBase` shim header from
 `calls.py` L41-47 — `if TYPE_CHECKING: _MixinBase = _GeneratorProtocol else: _MixinBase = object`):
-the remaining statement visitor subfamilies + `lowering/{emit, analysis}.py`
-(emit = the family-agnostic `_emit_*` primitives;
+`lowering/{emit, analysis}.py` (emit = the family-agnostic `_emit_*` primitives;
 analysis = `_collect_*` + `_static_*` + `_midend_*` + the 19 loop-recognizer `_match_*`).
 
 Final assembly in `__init__.py` keeps `__init__`/shared state/overridden `visit()` + the public
@@ -101,7 +101,7 @@ PEP-634. **Route them to `lowering/analysis.py`, NOT `pattern_match.py`.**
 ## Ordering (each commit green; largest/most-contended first per dependency)
 1. `lowering/emit.py` (158 `_emit_*` — most-shared, biggest contention reducer; unblocks visitors).
 2. `lowering/analysis.py` (38 `_collect_*` + 6 `_midend_*` + 4 `_static_*` + the 19 loop `_match_*`).
-3. `visitors/statements.py` (20 handlers incl. the giants For/While/Try/Assign).
+3. DONE: statement visitors landed as three under-ceiling subfamilies.
 4. DONE: `visitors/expressions.py` (17).
 5. DONE: `visitors/async_gen.py` (6 async/gen).
 6. DONE: `visitors/functions.py` (FunctionDef/Lambda/Return).

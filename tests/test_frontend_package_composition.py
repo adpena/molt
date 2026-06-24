@@ -73,6 +73,9 @@ EXPECTED_MIXINS = [
     "ComprehensionMixin",
     "ExpressionVisitorMixin",
     "FunctionVisitorMixin",
+    "AssignmentStatementVisitorMixin",
+    "ControlFlowStatementVisitorMixin",
+    "StatementScopeVisitorMixin",
 ]
 
 
@@ -136,6 +139,13 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "visit_BinOp")
     assert hasattr(SimpleTIRGenerator, "visit_TemplateStr")
     assert hasattr(SimpleTIRGenerator, "visit_BoolOp")
+    # statement subfamilies
+    assert hasattr(SimpleTIRGenerator, "visit_Module")
+    assert hasattr(SimpleTIRGenerator, "visit_ImportFrom")
+    assert hasattr(SimpleTIRGenerator, "visit_Assign")
+    assert hasattr(SimpleTIRGenerator, "visit_AugAssign")
+    assert hasattr(SimpleTIRGenerator, "visit_For")
+    assert hasattr(SimpleTIRGenerator, "visit_TryStar")
 
 
 def test_mixin_modules_import_standalone() -> None:
@@ -150,6 +160,9 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.visitors.comprehensions",
         "molt.frontend.visitors.expressions",
         "molt.frontend.visitors.functions",
+        "molt.frontend.visitors.statement_assignments",
+        "molt.frontend.visitors.statement_control_flow",
+        "molt.frontend.visitors.statement_scope",
     ):
         assert importlib.import_module(mod) is not None
 
