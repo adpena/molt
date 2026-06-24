@@ -141,6 +141,14 @@ from molt.cli.backend_diagnostics import (
     _env_requests_backend_diagnostics,
     _forward_compilation_warnings,
 )
+from molt.cli.command_runtime import (
+    _CLI_MEMORY_GUARD_PREFIX,
+    _CROSS_MEMORY_GUARD_PREFIX,
+    _DIFF_MEMORY_GUARD_PREFIX,
+    _load_cli_harness_memory_guard,
+    _run_completed_command,
+    _with_memory_guard_env,
+)
 from molt.cli.capability_spec import (
     CAPABILITY_PROFILES as CAPABILITY_PROFILES,
     CAPABILITY_TOKEN_RE as CAPABILITY_TOKEN_RE,
@@ -165,6 +173,15 @@ from molt.cli.capability_spec import (
     _parse_package_grants as _parse_package_grants,
     _resolve_capability_manifest as _resolve_capability_manifest,
     _split_tokens,
+)
+from molt.cli.default_paths import (
+    _default_home_str,
+    _default_molt_bin,
+    _default_molt_bin_cached,
+    _default_molt_cache,
+    _default_molt_cache_cached,
+    _default_molt_home,
+    _default_molt_home_cached,
 )
 from molt.cli.debug_helpers import _emit_debug_payload, _load_debug_oracle
 from molt.cli.deps import (
@@ -200,6 +217,7 @@ from molt.cli.deps import (
     install_add,
     vendor,
 )
+from molt.cli.env_paths import _base_env, _molt_venv_site_packages, _vendor_roots
 from molt.cli.file_hashing import _sha256_file
 from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
@@ -218,6 +236,16 @@ from molt.cli.output import (
     fail as _fail,
     json_payload as _json_payload,
     subprocess_output_text as _subprocess_output_text,
+)
+from molt.cli.project_roots import (
+    _find_molt_root,
+    _find_molt_root_cached,
+    _find_project_root,
+    _find_project_root_cached,
+    _has_molt_repo_markers,
+    _has_project_markers,
+    _require_molt_root,
+    _resolve_root_override,
 )
 from molt.cli.json_contract import (
     _coerce_json_path,
@@ -1006,10 +1034,6 @@ def _write_wrapper_build_cache_manifest(
     )
 
 
-_CLI_MEMORY_GUARD_PREFIX = _process_guard.CLI_MEMORY_GUARD_PREFIX
-_CROSS_MEMORY_GUARD_PREFIX = "MOLT_CROSS"
-_DIFF_MEMORY_GUARD_PREFIX = "MOLT_DIFF"
-
 
 def _run_wrapper_build(
     *,
@@ -1185,106 +1209,6 @@ def _resolve_python_exe(python_exe: str | None) -> str:
         if base_exe and Path(base_exe).exists():
             return base_exe
     return python_exe
-
-
-def _vendor_roots(project_root: Path) -> list[Path]:
-    vendor_root = project_root / "vendor"
-    roots: list[Path] = []
-    for name in ("packages", "local"):
-        candidate = vendor_root / name
-        if candidate.exists():
-            roots.append(candidate)
-    return roots
-
-
-def _molt_venv_site_packages(project_root: Path) -> list[Path]:
-    """Discover site-packages directories inside .molt-venv/."""
-    venv = _molt_venv_path(project_root)
-    if not venv.exists():
-        return []
-    results: list[Path] = []
-    # Unix: lib/pythonX.Y/site-packages
-    for sp in sorted(venv.glob("lib/python*/site-packages")):
-        if sp.is_dir():
-            results.append(sp)
-    # Windows: Lib/site-packages
-    win_sp = venv / "Lib" / "site-packages"
-    if win_sp.is_dir() and win_sp not in results:
-        results.append(win_sp)
-    return results
-
-
-def _base_env(
-    root: Path,
-    script_path: Path | None = None,
-    *,
-    molt_root: Path | None = None,
-) -> dict[str, str]:
-    env = os.environ.copy()
-    paths = [env.get("PYTHONPATH", "")]
-    if script_path is not None:
-        paths.append(str(script_path.parent))
-    roots: list[Path] = []
-    if molt_root is not None and molt_root != root:
-        roots.append(molt_root)
-    roots.append(root)
-    for base in roots:
-        paths.extend([str(base / "src"), str(base)])
-        paths.extend(str(path) for path in _vendor_roots(base))
-        # Include .molt-venv site-packages so `molt run` can find UV-installed deps
-        paths.extend(str(sp) for sp in _molt_venv_site_packages(base))
-    env["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
-    env.setdefault("PYTHONHASHSEED", "0")
-    if molt_root is not None:
-        env.setdefault("MOLT_PROJECT_ROOT", str(molt_root))
-    return env
-
-
-def _load_cli_harness_memory_guard(cwd: Path | None) -> Any:
-    return _process_guard.load_harness_memory_guard(cwd)
-
-
-def _with_memory_guard_env(
-    env: dict[str, str] | None, memory_guard_prefix: str
-) -> dict[str, str] | None:
-    return _process_guard.with_memory_guard_env(env, memory_guard_prefix)
-
-
-def _run_completed_command(
-    cmd: list[str],
-    *,
-    env: dict[str, str] | None,
-    cwd: Path | None,
-    capture_output: bool,
-    memory_guard_prefix: str | None,
-    input: str | None = None,
-    timeout: float | None = None,
-) -> subprocess.CompletedProcess[str]:
-    guard_env = (
-        None
-        if memory_guard_prefix is None
-        else _with_memory_guard_env(env, memory_guard_prefix)
-    )
-    if memory_guard_prefix is None:
-        return subprocess.run(
-            cmd,
-            env=env,
-            cwd=cwd,
-            input=input,
-            capture_output=capture_output,
-            text=True,
-            timeout=timeout,
-        )
-    return _process_guard.run_completed_command(
-        cmd,
-        env=guard_env,
-        cwd=cwd,
-        capture_output=capture_output,
-        memory_guard_prefix=memory_guard_prefix,
-        input=input,
-        timeout=timeout,
-        guard_loader=_load_cli_harness_memory_guard,
-    )
 
 
 def _run_command(
@@ -2610,99 +2534,6 @@ def _expand_module_chain_cached(name: str) -> tuple[str, ...]:
 
 def _expand_module_chain(name: str) -> list[str]:
     return list(_expand_module_chain_cached(name))
-
-
-def _resolve_root_override(var: str) -> Path | None:
-    override = os.environ.get(var)
-    if not override:
-        return None
-    path = Path(override).expanduser()
-    if not path.is_absolute():
-        path = (Path.cwd() / path).absolute()
-    if path.exists():
-        return path
-    return None
-
-
-def _has_molt_repo_markers(path: Path) -> bool:
-    return (path / "runtime/molt-runtime/Cargo.toml").exists() and (
-        path / "src/molt/cli/__init__.py"
-    ).exists()
-
-
-@functools.lru_cache(maxsize=64)
-def _find_project_root_cached(start_text: str, override_text: str | None) -> Path:
-    if override_text:
-        override = Path(override_text)
-        if override.exists():
-            return override
-    start = Path(start_text)
-    for parent in [start] + list(start.parents):
-        if _has_project_markers(parent):
-            return parent
-    return start.parent
-
-
-def _has_project_markers(path: Path) -> bool:
-    return (
-        (path / "pyproject.toml").exists()
-        or (path / ".git").exists()
-        or _has_molt_repo_markers(path)
-    )
-
-
-def _find_project_root(start: Path) -> Path:
-    override = _resolve_root_override("MOLT_PROJECT_ROOT")
-    override_text = str(override) if override is not None else None
-    return _find_project_root_cached(str(start), override_text)
-
-
-@functools.lru_cache(maxsize=64)
-def _find_molt_root_cached(
-    candidate_texts: tuple[str, ...],
-    override_text: str | None,
-) -> Path:
-    if override_text:
-        override = Path(override_text)
-        if override.exists():
-            return override
-    candidates = tuple(Path(text) for text in candidate_texts)
-    for candidate in candidates:
-        for parent in [candidate] + list(candidate.parents):
-            if _has_molt_repo_markers(parent):
-                return parent
-    module_path = Path(__file__).resolve()
-    for parent in [module_path] + list(module_path.parents):
-        if _has_molt_repo_markers(parent):
-            return parent
-    if candidates:
-        return candidates[0]
-    return Path.cwd()
-
-
-def _find_molt_root(*candidates: Path) -> Path:
-    override = _resolve_root_override("MOLT_PROJECT_ROOT")
-    override_text = str(override) if override is not None else None
-    return _find_molt_root_cached(
-        tuple(str(candidate) for candidate in candidates),
-        override_text,
-    )
-
-
-def _require_molt_root(
-    molt_root: Path,
-    json_output: bool,
-    command: str,
-) -> int | None:
-    runtime_toml = molt_root / "runtime/molt-runtime/Cargo.toml"
-    backend_toml = molt_root / "runtime/molt-backend/Cargo.toml"
-    if runtime_toml.exists() and backend_toml.exists():
-        return None
-    message = (
-        f"Molt runtime sources not found under {molt_root}. "
-        "Set MOLT_PROJECT_ROOT to the Molt repo root or run from within the Molt repo."
-    )
-    return _fail(message, json_output, command=command)
 
 
 def _stdlib_root_path() -> Path:
@@ -27513,143 +27344,6 @@ def _resolve_env_path(var: str, default: Path) -> Path:
 def _safe_output_base(name: str) -> str:
     cleaned = _OUTPUT_BASE_SAFE_RE.sub("_", name)
     return cleaned or "molt"
-
-
-@functools.lru_cache(maxsize=128)
-def _default_molt_cache_cached(
-    cache_override: str | None,
-    xdg_cache_home: str | None,
-    cwd_str: str,
-    home_str: str | None,
-    platform_name: str,
-    ext_root_str: str | None,
-) -> Path:
-    if cache_override:
-        path = Path(cache_override).expanduser()
-        if not path.is_absolute():
-            path = (Path(cwd_str) / path).absolute()
-        return path
-    if platform_name == "darwin":
-        if home_str is None:
-            fallback_base = Path(ext_root_str) if ext_root_str else Path(cwd_str)
-            if not fallback_base.is_absolute():
-                fallback_base = (Path(cwd_str) / fallback_base).absolute()
-            return fallback_base / ".molt_cache"
-        base = Path(home_str) / "Library" / "Caches"
-    else:
-        if xdg_cache_home:
-            base = Path(xdg_cache_home).expanduser()
-            if not base.is_absolute():
-                base = (Path(cwd_str) / base).absolute()
-        elif home_str is None:
-            fallback_base = Path(ext_root_str) if ext_root_str else Path(cwd_str)
-            if not fallback_base.is_absolute():
-                fallback_base = (Path(cwd_str) / fallback_base).absolute()
-            return fallback_base / ".molt_cache"
-        else:
-            base = Path(home_str) / ".cache"
-    return base / "molt"
-
-
-def _default_home_str() -> str | None:
-    try:
-        return os.fspath(Path.home())
-    except RuntimeError:
-        return None
-
-
-def _default_molt_cache() -> Path:
-    return _default_molt_cache_cached(
-        os.environ.get("MOLT_CACHE"),
-        os.environ.get("XDG_CACHE_HOME"),
-        os.fspath(Path.cwd()),
-        _default_home_str(),
-        sys.platform,
-        os.environ.get("MOLT_EXT_ROOT"),
-    )
-
-
-@functools.lru_cache(maxsize=128)
-def _default_molt_home_cached(
-    home_override: str | None,
-    cache_override: str | None,
-    xdg_cache_home: str | None,
-    cwd_str: str,
-    home_str: str | None,
-    platform_name: str,
-    ext_root_str: str | None,
-) -> Path:
-    if home_override:
-        path = Path(home_override).expanduser()
-        if not path.is_absolute():
-            path = (Path(cwd_str) / path).absolute()
-        return path
-    return (
-        _default_molt_cache_cached(
-            cache_override,
-            xdg_cache_home,
-            cwd_str,
-            home_str,
-            platform_name,
-            ext_root_str,
-        )
-        / "home"
-    )
-
-
-def _default_molt_home() -> Path:
-    return _default_molt_home_cached(
-        os.environ.get("MOLT_HOME"),
-        os.environ.get("MOLT_CACHE"),
-        os.environ.get("XDG_CACHE_HOME"),
-        os.fspath(Path.cwd()),
-        _default_home_str(),
-        sys.platform,
-        os.environ.get("MOLT_EXT_ROOT"),
-    )
-
-
-@functools.lru_cache(maxsize=128)
-def _default_molt_bin_cached(
-    bin_override: str | None,
-    home_override: str | None,
-    cache_override: str | None,
-    xdg_cache_home: str | None,
-    cwd_str: str,
-    home_str: str | None,
-    platform_name: str,
-    ext_root_str: str | None,
-) -> Path:
-    if bin_override:
-        path = Path(bin_override).expanduser()
-        if not path.is_absolute():
-            path = (Path(cwd_str) / path).absolute()
-        return path
-    return (
-        _default_molt_home_cached(
-            home_override,
-            cache_override,
-            xdg_cache_home,
-            cwd_str,
-            home_str,
-            platform_name,
-            ext_root_str,
-        )
-        / "bin"
-    )
-
-
-def _default_molt_bin() -> Path:
-    return _default_molt_bin_cached(
-        os.environ.get("MOLT_BIN"),
-        os.environ.get("MOLT_HOME"),
-        os.environ.get("MOLT_CACHE"),
-        os.environ.get("XDG_CACHE_HOME"),
-        os.fspath(Path.cwd()),
-        _default_home_str(),
-        sys.platform,
-        os.environ.get("MOLT_EXT_ROOT"),
-    )
 
 
 @functools.lru_cache(maxsize=256)
