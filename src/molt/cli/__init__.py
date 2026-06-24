@@ -134,6 +134,12 @@ from molt.cli.arg_helpers import (
     _strip_leading_double_dash,
     completion,
 )
+from molt.cli.atomic_io import (
+    _atomic_write_bytes,
+    _atomic_write_json,
+    _atomic_write_text,
+    _write_json_sidecar,
+)
 from molt.cli.backend_diagnostics import (
     _BACKEND_DIAGNOSTIC_ENV_KNOBS as _BACKEND_DIAGNOSTIC_ENV_KNOBS,
     _FALSY_ENV_VALUES,
@@ -13973,70 +13979,6 @@ def _read_cached_json_object(path: Path) -> dict[str, Any] | None:
         payload,
     )
     return payload
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        if os.name == "posix":
-            with contextlib.suppress(OSError):
-                dir_fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
-    finally:
-        with contextlib.suppress(OSError):
-            if tmp_path.exists():
-                tmp_path.unlink()
-
-
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        with tmp_path.open("wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        if os.name == "posix":
-            with contextlib.suppress(OSError):
-                dir_fd = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
-    finally:
-        with contextlib.suppress(OSError):
-            if tmp_path.exists():
-                tmp_path.unlink()
-
-
-def _atomic_write_json(
-    path: Path,
-    payload: Any,
-    *,
-    indent: int | None = 2,
-    sort_keys: bool = False,
-    default: Any | None = None,
-) -> None:
-    _atomic_write_text(
-        path,
-        json.dumps(
-            payload,
-            indent=indent,
-            sort_keys=sort_keys,
-            default=default,
-        )
-        + "\n",
-    )
 
 
 @contextmanager
@@ -31378,10 +31320,6 @@ def _resolve_validate_summary_path(root: Path, summary_out: str | None) -> Path:
     if not path.is_absolute():
         path = root / path
     return path
-
-
-def _write_json_sidecar(path: Path, payload: Mapping[str, Any]) -> None:
-    _atomic_write_json(path, payload, indent=2, sort_keys=True)
 
 
 def _persist_validate_summary(
