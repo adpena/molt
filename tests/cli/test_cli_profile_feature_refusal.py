@@ -20,8 +20,8 @@ from molt._runtime_feature_gates import (
 )
 
 
-STDLIB_ROOT = Path(cli.__file__).resolve().parent / "stdlib"
-MOLT_ROOT = Path(cli.__file__).resolve().parents[2]
+MOLT_ROOT = cli._compiler_root()
+STDLIB_ROOT = MOLT_ROOT / "src" / "molt" / "stdlib"
 
 
 def _micro_features() -> frozenset[str]:

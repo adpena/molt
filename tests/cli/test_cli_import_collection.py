@@ -9527,7 +9527,7 @@ def test_emit_build_diagnostics_prints_allocation_summary(
                 "peak_bytes": 4096,
                 "top": [
                     {
-                        "file": "src/molt/cli.py",
+                        "file": "src/molt/cli/__init__.py",
                         "line": 123,
                         "size_bytes": 2048,
                         "count": 7,
@@ -9542,7 +9542,7 @@ def test_emit_build_diagnostics_prints_allocation_summary(
     stderr = capsys.readouterr().err
     assert "- alloc.current_bytes: 1024" in stderr
     assert "- alloc.peak_bytes: 4096" in stderr
-    assert "alloc.top.1: src/molt/cli.py:123 size_bytes=2048 count=7" in stderr
+    assert "alloc.top.1: src/molt/cli/__init__.py:123 size_bytes=2048 count=7" in stderr
 
 
 def test_midend_policy_config_snapshot_honors_env(

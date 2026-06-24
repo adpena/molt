@@ -129,12 +129,16 @@ class TestEntropySourceAudit:
     def test_no_entropy_in_compiler_sources(self) -> None:
         """No compiler source file should use entropy sources in codegen paths.
 
-        We exclude cli.py and other non-codegen modules where uuid/random usage
-        is legitimate (e.g., temp file naming, upload IDs).
+        We exclude the CLI package and other non-codegen modules where
+        uuid/random usage is legitimate (e.g., temp file naming, upload IDs).
         """
         # Files where entropy usage is acceptable (not in codegen paths)
         _ENTROPY_ALLOWLIST = {
-            "src/molt/cli.py",  # temp files, upload IDs
+            "src/molt/cli/__init__.py",  # temp files, upload IDs
+            "src/molt/cli/arg_helpers.py",  # PYTHONHASHSEED=random opt-out parsing
+            "src/molt/cli/deps.py",  # temporary vendor worktrees
+            "src/molt/cli/wasm.py",  # generated WASI random_get host shim text
+            "src/molt/dx.py",  # write-probe temp names
             "src/molt/net.py",  # network request IDs
             "src/molt/asgi.py",  # request handling
             "src/molt/gpu/generate.py",  # sampling for text generation
@@ -146,7 +150,7 @@ class TestEntropySourceAudit:
         all_findings: list[tuple[str, int, str]] = []
         for src in _compiler_source_files():
             rel = src.relative_to(ROOT)
-            rel_str = str(rel)
+            rel_str = rel.as_posix()
             if "test" in rel_str.lower():
                 continue
             if rel_str in _ENTROPY_ALLOWLIST:

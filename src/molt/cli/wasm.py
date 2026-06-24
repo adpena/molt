@@ -20,6 +20,10 @@ def _which(executable: str) -> str | None:
     return _cli_module().shutil.which(executable)
 
 
+def _compiler_root() -> Path:
+    return _cli_module()._compiler_root()
+
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     _cli_module()._atomic_write_bytes(path, data)
 
@@ -497,7 +501,7 @@ def _effective_split_worker_table_base(
 @functools.lru_cache(maxsize=1)
 def _reserved_wasm_runtime_callable_count() -> int:
     include_path = (
-        Path(__file__).resolve().parents[2] / "runtime" / "wasm_runtime_callables.inc"
+        _compiler_root() / "runtime" / "wasm_runtime_callables.inc"
     )
     pattern = re.compile(r"^\s*\((\d+),")
     count = 0

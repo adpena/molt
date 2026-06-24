@@ -1224,8 +1224,8 @@ def _difftest_ns(drv, program, root):
 
 
 def test_difftest_refuses_non_molt_root(drv, tmp_path):
-    """A --root without src/molt/cli.py is a LOUD usage refusal, never a build
-    that silently uses the canonical checkout's runtime."""
+    """A --root without the Molt CLI package is a LOUD usage refusal, never a
+    build that silently uses the canonical checkout's runtime."""
     prog = tmp_path / "p.py"
     prog.write_text("print('hi')\n", encoding="utf-8")
     not_a_checkout = tmp_path / "empty"
@@ -1257,9 +1257,9 @@ def test_difftest_roots_relative_output_dir_before_safe_run(
     both build verification and safe_run.
     """
     root = tmp_path / "wt"
-    (root / "src" / "molt").mkdir(parents=True)
+    (root / "src" / "molt" / "cli").mkdir(parents=True)
     (root / "tools").mkdir()
-    (root / "src" / "molt" / "cli.py").write_text("", encoding="utf-8")
+    (root / "src" / "molt" / "cli" / "__init__.py").write_text("", encoding="utf-8")
     (root / "tools" / "safe_run.py").write_text("", encoding="utf-8")
     program = root / "case.py"
     program.write_text("print('ok')\n", encoding="utf-8")
