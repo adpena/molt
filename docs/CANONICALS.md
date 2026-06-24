@@ -48,6 +48,7 @@ of truth when a claim drifts.
 - [design/foundation/authority_manifest.toml](design/foundation/authority_manifest.toml)
 - [design/foundation/51_ten_year_roadmap.md](design/foundation/51_ten_year_roadmap.md)
 - [design/foundation/52_autonomous_operating_charter.md](design/foundation/52_autonomous_operating_charter.md)
+- Portfolio route cluster: [54 throughput/concurrency](design/foundation/54_throughput_concurrency_async.md), [55 ownership lattice](design/foundation/55_memory_safety_ownership_lattice.md), [56 DX/build speed](design/foundation/56_dx_buildspeed_tooling.md), [57 UX/diagnostics](design/foundation/57_ux_cli_errors_onboarding.md), [58 killer demos](design/foundation/58_killer_demos.md), [59 semantic fact plane](design/foundation/59_semantic_fact_plane.md), [60 whole-program DCE](design/foundation/60_tree_shaking_whole_program_dce.md), [61 size plane](design/foundation/61_binary_size_and_output_optimization.md), [62 cold start](design/foundation/62_startup_cold_start.md), [63 deforestation/fusion](design/foundation/63_deforestation_fusion.md), [64 scoreboards](design/foundation/64_perf_scoreboards_and_harness.md), [65 perf compression](design/foundation/65_perf_compression_ladder.md), [66 CPython parity](design/foundation/66_compat_cpython_parity.md), and [67 tinygrad/DFlash fidelity](design/foundation/67_compat_tinygrad_dflash.md).
 
 ## Proof And Validation
 
