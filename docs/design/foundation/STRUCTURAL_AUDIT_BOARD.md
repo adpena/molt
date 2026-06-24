@@ -66,7 +66,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 ## TOP TOOLING GAPS
 
 - **RULE: discovery may be heuristic; authority may not** — this tool's regex discovery RANKS candidates only; it asserts no semantic correctness. The authoritative gate stays tools/gen_op_kinds.py --check (consumes the generated registry). A future version should parse the Rust AST / consume compiler-emitted facts for any claim that gates behavior.
-- **MISSING: fact-by-benchmark attribution** — MISSING-FACT-by-benchmark impact needs tools/call_fact_coverage.py (built) + tools/perf_causality.py (not built) joined to #76 hot profiles.
+- **PARTIAL: fact-by-benchmark attribution** — MISSING-FACT-by-benchmark impact now has `tools/perf_causality.py` for #76 cycle-profile attribution plus taxonomy fallback, and `tools/call_fact_coverage.py` is built; the missing closure is the census/pass-delta join and pass-delta dashboard.
 - **MISSING: pass-delta ledger** — tools/pass_delta_dashboard.py (not built) — which pass loses Repr / adds boxing / increases generic calls / RC events. Needed to attribute drift.
 - **MISSING: fact graph** — runtime/.../fact_graph.rs + tools/fact_graph_dump.py (not built) — per-value provenance (producer/consumer/invalidator) to explain 'why is this boxed?'.
 

@@ -42,6 +42,12 @@ def _cell(**overrides: object) -> dict[str, object]:
         "output_parity": True,
         "log_artifact": "bench/scoreboard/logs/fib.log",
         "classification": schema.CLASS_GREEN,
+        "fact_class": "repr_tir_type_lattice",
+        "suspected_missing_fact": "Repr/TirType numeric lane",
+        "pypy_advantage_class": "loop_specialization",
+        "reference_class": "numeric",
+        "codon_semantics": "equivalent",
+        "attribution_confidence": 0.8,
     }
     cell.update(overrides)
     return cell
@@ -139,6 +145,8 @@ def test_schema_accepts_valid_board_and_materializes_cell() -> None:
     assert perf_cell.verdict == schema.VERDICT_GREEN
     assert perf_cell.stable is True
     assert perf_cell.warm_speedup == 2.0
+    assert perf_cell.fact_class == "repr_tir_type_lattice"
+    assert perf_cell.attribution_confidence == 0.8
 
 
 def test_schema_accepts_modern_cpython_oracle_host_metadata() -> None:
@@ -185,6 +193,22 @@ def test_schema_rejects_unknown_verdict_and_classification() -> None:
 
     assert any("unknown verdict" in problem for problem in problems)
     assert any("unknown classification" in problem for problem in problems)
+
+
+def test_schema_rejects_invalid_attribution_fields() -> None:
+    cell = _cell(attribution_confidence=1.5)
+    problems = schema.validate_cell(cell)
+    assert any("out-of-range attribution_confidence" in problem for problem in problems)
+
+    cell = _cell(suspected_missing_fact="")
+    problems = schema.validate_cell(cell)
+    assert any("invalid suspected_missing_fact" in problem for problem in problems)
+
+    cell = _cell(fact_class="shape_facts", suspected_missing_fact=None)
+    problems = schema.validate_cell(cell)
+    assert any(
+        "fact_class without suspected_missing_fact" in problem for problem in problems
+    )
 
 
 def test_schema_rejects_measured_verdict_without_method_facts() -> None:

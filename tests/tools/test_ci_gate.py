@@ -240,6 +240,22 @@ def test_parallel_workers_clamped_by_global_memory_budget() -> None:
     assert module._parallel_workers_for_memory_guard(4, memory_limits=None) >= 1
 
 
+def test_ci_gate_tier1_includes_perf_scoreboard_contract() -> None:
+    module = _load_ci_gate()
+
+    checks = {check.name: check for check in module._build_checks()}
+    check = checks["perf-scoreboard-contract"]
+
+    assert check.tier == 1
+    assert check.required is True
+    assert check.needs_pytest is True
+    assert check.needs_rust is False
+    assert check.timeout == 120
+    assert str(module.TESTS / "tools" / "test_perf_causality.py") in check.cmd
+    assert str(module.TESTS / "tools" / "test_perf_schema.py") in check.cmd
+    assert str(module.TESTS / "tools" / "test_perf_scoreboard.py") in check.cmd
+
+
 def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch) -> None:
     module = _load_ci_gate()
     slot_calls: list[dict[str, object]] = []
@@ -340,7 +356,10 @@ def test_launch_background_gate_strips_recursive_background_flag(
     ]
     assert command[6:9] == ["--", module.sys.executable, str(module.CI_GATE)]
     assert popen_calls[0]["start_new_session"] is True
-    assert callable(popen_calls[0]["preexec_fn"])
+    if os.name == "posix":
+        assert callable(popen_calls[0]["preexec_fn"])
+    else:
+        assert "preexec_fn" not in popen_calls[0]
     assert metadata.metadata_path.exists()
 
 
@@ -349,7 +368,7 @@ def test_ci_gate_script_runs_directly_without_pythonpath() -> None:
     env.pop("PYTHONPATH", None)
 
     result = run_guarded_test_process(
-        ["python3", "tools/ci_gate.py", "--tier", "1", "--dry-run", "--json"],
+        [sys.executable, "tools/ci_gate.py", "--tier", "1", "--dry-run", "--json"],
         prefix="MOLT_TEST_SUITE",
         cwd=REPO_ROOT,
         env=env,
@@ -368,7 +387,7 @@ def test_ci_gate_help_reports_memory_guard_hard_cap() -> None:
     env.pop("PYTHONPATH", None)
 
     result = run_guarded_test_process(
-        ["python3", "tools/ci_gate.py", "--help"],
+        [sys.executable, "tools/ci_gate.py", "--help"],
         prefix="MOLT_TEST_SUITE",
         cwd=REPO_ROOT,
         env=env,

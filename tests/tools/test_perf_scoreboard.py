@@ -94,6 +94,35 @@ def test_fail_engine_when_warm_at_or_below_floor() -> None:
     assert c.warm_speedup is not None and c.warm_speedup < 1.0
     assert ps.verdict_fails_gate(c.verdict) is True
     assert c.suspected_missing_fact  # a triage hint is attached
+    assert c.fact_class == "repr_tir_type_lattice"
+    assert c.attribution_confidence == 0.35
+
+
+def test_fail_engine_uses_cycle_profile_fact_attribution() -> None:
+    c = _cell(
+        benchmark="tests/benchmarks/bench_exception_heavy.py",
+        warm_molt_s=0.20,
+        warm_cpython_s=0.12,
+        cold_molt_s=0.30,
+        cold_cpython_s=0.30,
+    )
+    c.cycle_profile = {
+        "available": True,
+        "in_binary_top": [
+            {
+                "symbol": "molt_runtime::builtins::exceptions::record_exception",
+                "self_samples": 70,
+            },
+            {"symbol": "molt_inc_ref_obj", "self_samples": 40},
+        ],
+    }
+    c.finalize(budget_ms=1000.0, authoritative=True)
+
+    assert c.verdict == ps.VERDICT_FAIL_ENGINE
+    assert c.fact_class == "exception_region"
+    assert c.suspected_missing_fact == "ExceptionRegion/ownership"
+    assert c.pypy_advantage_class == "borrow_inference"
+    assert c.attribution_confidence is not None and c.attribution_confidence > 0.5
 
 
 def test_fail_engine_at_exactly_one() -> None:
@@ -409,9 +438,7 @@ def test_cpython_oracle_resolver_requires_host_native_cpython(
         if name == "pypy":
             return SimpleNamespace(
                 returncode=0,
-                stdout=_oracle_payload(
-                    implementation="PyPy", executable="pypy-real"
-                ),
+                stdout=_oracle_payload(implementation="PyPy", executable="pypy-real"),
                 stderr="",
             )
         if name == "old-python":
@@ -450,7 +477,9 @@ def test_cpython_oracle_resolver_requires_host_native_cpython(
 def test_cpython_oracle_windows_launcher_resolves_to_real_interpreter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(ps, "_default_cpython_candidate_cmds", lambda: [("py", "-3.14")])
+    monkeypatch.setattr(
+        ps, "_default_cpython_candidate_cmds", lambda: [("py", "-3.14")]
+    )
     monkeypatch.setattr(
         ps.bench, "_canonical_interpreter", lambda executable: f"resolved:{executable}"
     )
@@ -474,7 +503,9 @@ def test_cpython_oracle_windows_launcher_resolves_to_real_interpreter(
 def test_cpython_oracle_explicit_bad_baseline_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(ps.bench, "_canonical_interpreter", lambda executable: executable)
+    monkeypatch.setattr(
+        ps.bench, "_canonical_interpreter", lambda executable: executable
+    )
     monkeypatch.setattr(
         ps,
         "_metadata_probe",

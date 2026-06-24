@@ -396,6 +396,17 @@ launcher wrapper. `tools/perf_scoreboard.py` validates every CPython scoreboard
 document before writing it, including checkpoint partials, rebuild-summary
 rewrites, merge outputs, and final run artifacts; a schema violation raises
 `ScoreboardSchemaError` and leaves the target artifact untouched.
+`tools/perf_causality.py` owns the deterministic cycle-symbol/taxonomy join that
+fills `fact_class`, `suspected_missing_fact`, `pypy_advantage_class`,
+`reference_class`, `codon_semantics`, and `attribution_confidence`; the
+scoreboard runner copies those derived fields into red cells instead of keeping
+a private name-pattern hint table.
+
+The unified CI driver includes this as the required Tier 1
+`perf-scoreboard-contract` check: it runs `tests/tools/test_perf_causality.py`,
+`tests/tools/test_perf_schema.py`, and `tests/tools/test_perf_scoreboard.py`
+without a Rust rebuild, so schema, attribution, oracle, and emission-contract
+drift cannot bypass the default gate.
 
 Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
 `bench/scoreboard/logs_<gitrev>/`.
@@ -466,7 +477,12 @@ Written to `bench/scoreboard/cpython_<gitrev>.json`. Per-cell logs in
       "startup_tax_ms": 184.0,         // = (cold_molt - warm_molt) * 1000
       "cold_budget_ms": 250.0,         // the budget this cell was gated against
       "verdict": "WARN_COLD_FLOOR",    // GREEN|FAIL_ENGINE|FAIL_COLD_BUDGET|WARN_COLD_FLOOR|…
-      "suspected_missing_fact": "…",   // triage hint for a warm red
+      "fact_class": "shape_facts",     // derived fact family for a warm red
+      "suspected_missing_fact": "…",   // derived missing-fact attribution
+      "pypy_advantage_class": "shape_propagation",
+      "reference_class": "static_equiv",
+      "codon_semantics": "non_equivalent",
+      "attribution_confidence": 0.7,
       "suspected_startup_component": "…", // triage hint for a cold red
       // peak RSS + stability ---
       "molt_peak_rss_mib": 8.0, "cpython_peak_rss_mib": 15.0,
