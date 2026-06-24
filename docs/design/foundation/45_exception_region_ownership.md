@@ -1,7 +1,6 @@
-<!-- Foundation design 45. Supervisor-authored from the #77 diagnosis + recovery
-agent's lifecycle proof (baton: memory/project_exception_loop_leak_baton.md) +
-council directive (2026-06-08). Executable design, not a survey. HEAD-anchored
-at origin/main 0e233db5f. -->
+<!-- Foundation design 45. Supervisor-authored from the #77 diagnosis, then
+refreshed after the live ExceptionRegions/drop-insertion implementation replaced
+the old recovery-patch prototypes. Executable design, not a survey. -->
 
 # ExceptionRegion ownership — the exception-lifetime substrate
 
@@ -24,9 +23,10 @@ Per raised-and-immediately-caught exception in a loop (diagnosed op-by-op via
 `MOLT_DUMP_FINAL_FUNC_IR` + `MOLT_TRACE_EXC_RC`):
 
 - **Component A — CreationRef** (`exception_new*` result): per-iteration-dead,
-  SSA last-use = the `raise`. **Value-tracking-expressible** — a #46-style
-  per-iteration-temp analysis releases it (prototype: rc 2→1, preserved at
-  `memory/recovery/excfix_wip/function_compiler_excregion_wip.patch`).
+  SSA last-use = the `raise`. **Value-tracking-expressible** — now consumed by
+  shared TIR DropInsertion via `ExceptionRegions` CreationRef facts, with
+  regression coverage in
+  `tests/differential/memory/exception_raise_catch_loop_leak.py`.
 - **Component B — MatchRef** (`exception_last_pending` result): was the
   remaining native leak class in the original diagnosis. Its SSA last-use is
   the re-raise in the **no-match ELSE branch that never executes** on the
@@ -307,8 +307,10 @@ be deleted without leaks or double-frees. No benchmark-only speed fix is
 acceptable while backend runtime parity evidence, the wider `HandlerState`
 boundary, and authoritative exception-heavy speed evidence remain open.
 
-Related: memory/project_exception_loop_leak_baton.md (the op-level map +
-preserved prototype), #58 (ownership-boundary lattice), #24
+Related live authorities: `runtime/molt-tir/src/tir/exception_regions.rs`,
+`runtime/molt-tir/src/tir/passes/drop_insertion.rs`,
+`tests/differential/memory/exception_raise_catch_loop_leak.py`, #58
+(ownership-boundary lattice), #24
 (docs/design/llvm_async_state_resume_dominance.md — StateDispatch/exception-CFG),
 #46 (the generator-temp per-iteration-dead pattern Component A reuses), #TV-1
 (the ownership-event validator).
