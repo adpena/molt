@@ -88,6 +88,33 @@ molt build app.py --profile cloudflare   # Platform-optimized build
 
 </details>
 
+#### `molt factgraph`
+
+Compile an entry module through the frontend and TIR module pipeline, then write
+the selected function's fact graph JSON. The graph records per-value producers,
+consumers, and compiler facts for debugging semantic authority drift.
+
+```bash
+molt factgraph app.py molt_main --output tmp/facts/molt_main.json
+molt factgraph --module pkg.app entry --output tmp/facts/entry.json --target wasm
+molt factgraph app.py hot_loop --output tmp/facts/hot_loop.json --target llvm
+```
+
+| Flag | Description |
+|------|-------------|
+| `--module MODULE` | Entry module name. Uses `pkg.__main__` when present. |
+| `--output PATH` | Required fact graph JSON artifact path. Relative paths resolve from the project root. |
+| `--target {native,wasm,luau,llvm}` | Target semantics used by the TIR pipeline. |
+| `--backend {auto,cranelift,llvm}` | Native backend fact selection; `--target llvm` selects the LLVM backend. |
+| `--profile {dev,release}` | Build profile for frontend/midend optimization. |
+| `--type-hints {ignore,trust,check}` | Apply type annotations to guide lowering and specialization. |
+| `--fallback {error,bridge}` | Fallback policy for unsupported constructs. |
+| `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, or `3.14`. |
+| `--capabilities SPEC` | Capability profiles/tokens or path to manifest. |
+| `--trusted / --no-trusted` | Disable capability checks for trusted native analysis. |
+| `--json` | Emit JSON command status for tooling. |
+| `--verbose` | Emit verbose backend diagnostics. |
+
 #### `molt run`
 
 Build and execute a Python program. Supports native, WASM (via the canonical Node host shim), Luau (via lune), and MLIR targets.

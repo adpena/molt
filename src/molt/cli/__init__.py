@@ -116,6 +116,7 @@ from molt.type_facts import (
 )
 
 from molt.cli.completion import _completion_script
+from molt.cli import factgraph as _factgraph
 from molt.cli.maintenance import _load_artifact_cleanup_module, clean, show_config
 from molt.cli.arg_helpers import (
     _BUILD_ESSENTIAL_FLAGS,
@@ -179,6 +180,15 @@ from molt.cli.native_toolchain import (
     _run_bolt_post_link,
     _strip_arch_flags,
     _zig_target_query,
+)
+from molt.cli.output import (
+    JSON_SCHEMA_VERSION,
+    CliFailure as _CliFailure,
+    coerce_process_text as _coerce_process_text,
+    emit_json as _emit_json,
+    fail as _fail,
+    json_payload as _json_payload,
+    subprocess_output_text as _subprocess_output_text,
 )
 from molt.cli.wasm import (
     _build_wasm_sections,
@@ -267,7 +277,6 @@ _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
         IMPORTER_MODULE_NAME,
     }
 )
-JSON_SCHEMA_VERSION = "1.0"
 REMOTE_REGISTRY_SCHEMES = {"http", "https"}
 _ARTIFACT_SYNC_STATE_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
 _PERSISTED_JSON_OBJECT_CACHE: dict[Path, tuple[int, int, dict[str, Any] | None]] = {}
@@ -628,60 +637,6 @@ class ExtensionManifestValidation:
     abi_tag: str | None
     capabilities: list[str]
     wheel_tags: tuple[str, str, str] | None
-
-
-def _emit_json(payload: dict[str, Any], json_output: bool) -> None:
-    if json_output:
-        print(json.dumps(payload))
-
-
-def _json_payload(
-    command: str,
-    status: str,
-    *,
-    data: dict[str, Any] | None = None,
-    warnings: list[str] | None = None,
-    errors: list[str] | None = None,
-) -> dict[str, Any]:
-    payload = {
-        "schema_version": JSON_SCHEMA_VERSION,
-        "command": command,
-        "status": status,
-        "data": data or {},
-        "warnings": warnings or [],
-        "errors": errors or [],
-    }
-    return payload
-
-
-def _fail(
-    message: str,
-    json_output: bool,
-    code: int = 2,
-    command: str = "molt",
-) -> int:
-    if json_output:
-        payload = _json_payload(
-            command,
-            "error",
-            data={"returncode": code},
-            errors=[message],
-        )
-        _emit_json(payload, json_output=True)
-    else:
-        print(message, file=sys.stderr)
-    return code
-
-
-_CliFailure = int
-
-
-def _coerce_process_text(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
 
 
 _PYTHON_WARNING_RE = re.compile(
@@ -6015,9 +5970,7 @@ def _collect_imports(
     module_string_constants: dict[str, str] = {}
     helper_string_functions: dict[str, tuple[list[str], ast.expr]] = {}
     helper_param_import_positions: dict[str, set[int]] = {}
-    helper_import_arg_exprs: dict[
-        str, tuple[list[str], set[str], list[ast.expr]]
-    ] = {}
+    helper_import_arg_exprs: dict[str, tuple[list[str], set[str], list[ast.expr]]] = {}
     (
         package_override_set,
         package_override,
@@ -6110,7 +6063,10 @@ def _collect_imports(
                     return None
                 return "importlib.import_module"
             if isinstance(func, ast.Attribute) and func.attr == "find_spec":
-                if isinstance(func.value, ast.Name) and func.value.id in self.util_aliases:
+                if (
+                    isinstance(func.value, ast.Name)
+                    and func.value.id in self.util_aliases
+                ):
                     return "importlib.util.find_spec"
                 if (
                     isinstance(func.value, ast.Attribute)
@@ -6183,10 +6139,14 @@ def _collect_imports(
             return None
         if isinstance(node, ast.Call):
             target = helper_importlib_bindings.target(node.func)
-            if target in {
-                "_MOLT_IMPORTLIB_RESOLVE_NAME",
-                "molt_importlib_resolve_name",
-            } and node.args:
+            if (
+                target
+                in {
+                    "_MOLT_IMPORTLIB_RESOLVE_NAME",
+                    "molt_importlib_resolve_name",
+                }
+                and node.args
+            ):
                 resolved = _resolve_string_constant(node.args[0], bindings, seen)
                 if resolved is None:
                     return None
@@ -6350,7 +6310,9 @@ def _collect_imports(
                 helper_importlib_bindings.record_rebinding_target(stmt.target)
             elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 stmt_nodes = tuple(ast.walk(stmt))
-                function_walks.append((stmt, stmt_nodes, helper_importlib_bindings.fork()))
+                function_walks.append(
+                    (stmt, stmt_nodes, helper_importlib_bindings.fork())
+                )
                 if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Return):
                     continue
                 ret_expr = stmt.body[0].value
@@ -6426,9 +6388,7 @@ def _collect_imports(
                 )
                 if call_bindings is not None:
                     for expr in exprs:
-                        resolved = _resolve_string_constant(
-                            expr, call_bindings, set()
-                        )
+                        resolved = _resolve_string_constant(expr, call_bindings, set())
                         if resolved is not None:
                             imports.append(resolved)
 
@@ -6487,7 +6447,9 @@ def _collect_imports(
             names.append(args.kwarg.arg)
         return names
 
-    def _visit_many(nodes: Iterable[ast.AST], bindings: _ImportlibStaticBindings) -> None:
+    def _visit_many(
+        nodes: Iterable[ast.AST], bindings: _ImportlibStaticBindings
+    ) -> None:
         for child in nodes:
             _visit(child, bindings)
 
@@ -7729,9 +7691,9 @@ def _scoped_lowering_input_view(
         scoped_lowering_inputs is not None
         and module_name in scoped_lowering_inputs.known_func_kinds_by_module
     ):
-        scoped_known_func_kinds = (
-            scoped_lowering_inputs.known_func_kinds_by_module[module_name]
-        )
+        scoped_known_func_kinds = scoped_lowering_inputs.known_func_kinds_by_module[
+            module_name
+        ]
     else:
         scoped_known_func_kinds = _scoped_known_func_kinds(
             module_name,
@@ -9767,9 +9729,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
     known_func_defaults = cast(
         dict[str, dict[str, dict[str, Any]]], payload["known_func_defaults"]
     )
-    known_func_kinds = cast(
-        dict[str, dict[str, str]], payload["known_func_kinds"]
-    )
+    known_func_kinds = cast(dict[str, dict[str, str]], payload["known_func_kinds"])
     module_chunking = bool(payload["module_chunking"])
     module_chunk_max_ops = int(payload["module_chunk_max_ops"])
     optimization_profile = cast(BuildProfile, payload["optimization_profile"])
@@ -17073,9 +17033,7 @@ def _load_module_analysis(
     persisted_defaults = (
         persisted_analysis[0] if persisted_analysis is not None else None
     )
-    persisted_kinds = (
-        persisted_analysis[1] if persisted_analysis is not None else None
-    )
+    persisted_kinds = persisted_analysis[1] if persisted_analysis is not None else None
     persisted_imports_from_analysis = (
         persisted_analysis[2] if persisted_analysis is not None else None
     )
@@ -22645,6 +22603,7 @@ def _prepare_backend_dispatch(
     ensure_runtime_wasm_reloc: Callable[[set[str] | frozenset[str] | None], bool],
     resolved_modules: set[str] | frozenset[str] | None,
     warnings: list[str],
+    start_daemon: bool = True,
 ) -> tuple[_PreparedBackendDispatch | None, _CliFailure | None]:
     backend_env = os.environ.copy() if is_wasm else None
     if backend_env is not None:
@@ -22812,7 +22771,12 @@ def _prepare_backend_dispatch(
     daemon_socket: Path | None = None
     daemon_ready = False
     daemon_config_digest = backend_daemon_config_digest
-    if not is_rust_transpile and not is_luau_transpile and _backend_daemon_enabled():
+    if (
+        start_daemon
+        and not is_rust_transpile
+        and not is_luau_transpile
+        and _backend_daemon_enabled()
+    ):
         daemon_config_digest = _backend_daemon_config_digest(
             molt_root,
             backend_cargo_profile,
@@ -23175,28 +23139,17 @@ def _execute_backend_compile(
                 # fairly. Default: half of available cores, minimum 2.
                 _default_threads = str(max(2, (os.cpu_count() or 4) // 2))
                 backend_env.setdefault("RAYON_NUM_THREADS", _default_threads)
-            cmd = [str(backend_bin)]
-            if is_luau_transpile:
-                cmd.extend(["--target", "luau"])
-            elif is_rust_transpile:
-                cmd.extend(["--target", "rust"])
-            elif is_wasm:
-                cmd.extend(["--target", "wasm"])
-                if wasm_link:
-                    cmd.append("--wasm-link")
-                if wasm_data_base is not None:
-                    cmd.extend(["--wasm-data-base", str(wasm_data_base)])
-                if wasm_table_base is not None:
-                    cmd.extend(["--wasm-table-base", str(wasm_table_base)])
-                if wasm_split_runtime_runtime_table_min is not None:
-                    cmd.extend(
-                        [
-                            "--wasm-split-runtime-runtime-table-min",
-                            str(wasm_split_runtime_runtime_table_min),
-                        ]
-                    )
-            elif target_triple:
-                cmd.extend(["--target-triple", target_triple])
+            cmd = _factgraph.backend_command_prefix(
+                backend_bin=backend_bin,
+                is_luau_transpile=is_luau_transpile,
+                is_rust_transpile=is_rust_transpile,
+                is_wasm=is_wasm,
+                target_triple=target_triple,
+                wasm_link=wasm_link,
+                wasm_data_base=wasm_data_base,
+                wasm_table_base=wasm_table_base,
+                wasm_split_runtime_runtime_table_min=wasm_split_runtime_runtime_table_min,
+            )
             cmd_with_output = cmd + ["--output", str(backend_output)]
             # Ensure the output directory exists — --rebuild may have
             # cleared the cache tree, and the backend's own
@@ -23614,6 +23567,7 @@ def _run_backend_pipeline(
     precompile: bool = False,
     snapshot: bool = False,
     stdlib_profile: str | None = "micro",
+    fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
     (
         prepared_frontend_run_ticket,
@@ -23694,6 +23648,11 @@ def _run_backend_pipeline(
             )
         return backend_ir_file_path
 
+    def _cleanup_backend_ir_file_path() -> None:
+        if backend_ir_file_path is not None:
+            with contextlib.suppress(OSError):
+                backend_ir_file_path.unlink()
+
     prepared_backend_setup, prepared_backend_setup_error = _prepare_backend_setup(
         is_rust_transpile=output_layout.is_rust_transpile,
         is_luau_transpile=output_layout.is_luau_transpile,
@@ -23744,6 +23703,31 @@ def _run_backend_pipeline(
     if prepared_backend_runtime_error is not None:
         return prepared_backend_runtime_error
     assert prepared_backend_runtime_context is not None
+    if fact_graph_request is not None:
+        return _factgraph.emit_pipeline_fact_graph(
+            request=fact_graph_request,
+            output_layout=output_layout,
+            deterministic=deterministic,
+            profile=profile,
+            runtime_context=prepared_backend_runtime_context,
+            build_config=prepared_build_config,
+            build_roots=prepared_build_roots,
+            build_preamble=prepared_build_preamble,
+            resolved_modules=resolved_modules,
+            json_output=json_output,
+            verbose=verbose,
+            target=target,
+            entry_module=resolved_build_entry.entry_module,
+            prepare_backend_dispatch=_prepare_backend_dispatch,
+            ensure_backend_ir_file_path=_ensure_backend_ir_file_path,
+            cleanup_backend_ir_file_path=_cleanup_backend_ir_file_path,
+            run_subprocess_captured_to_tempfiles=_run_subprocess_captured_to_tempfiles,
+            subprocess_output_text=_subprocess_output_text,
+            fail=_fail,
+            emit_json=_emit_json,
+            json_payload=_json_payload,
+            entry_override_env=ENTRY_OVERRIDE_ENV,
+        )
     try:
         prepared_backend_compile, prepared_backend_compile_error = (
             _prepare_backend_compile(
@@ -24849,6 +24833,7 @@ def _run_build_pipeline(
     precompile: bool = False,
     snapshot: bool = False,
     stdlib_profile: str | None = "micro",
+    fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
     prepared_frontend_run_ticket = prepared_frontend_pipeline_bundle[0]
     frontend_layer_error = _run_frontend_pipeline(
@@ -24869,6 +24854,12 @@ def _run_build_pipeline(
     )
     if native_artifact_custody_error is not None:
         return _fail(native_artifact_custody_error, json_output, command="build")
+    if fact_graph_request is not None and output_layout.is_mlir_emit:
+        return _fail(
+            "factgraph does not support the MLIR backend",
+            json_output,
+            command="factgraph",
+        )
     if output_layout.is_mlir_emit:
         (
             _frt,
@@ -24961,6 +24952,7 @@ def _run_build_pipeline(
         precompile=precompile,
         snapshot=snapshot,
         stdlib_profile=stdlib_profile,
+        fact_graph_request=fact_graph_request,
     )
 
 
@@ -25238,7 +25230,9 @@ def _prepare_frontend_stage_state(
             known_func_defaults=prepared_frontend_analysis.known_func_defaults,
             known_func_kinds=prepared_frontend_analysis.known_func_kinds,
             pgo_hot_function_names=pgo_hot_function_names,
-            generated_module_source_paths=dict(import_plan.generated_module_source_paths),
+            generated_module_source_paths=dict(
+                import_plan.generated_module_source_paths
+            ),
             entry_module=entry_module,
             namespace_module_names=set(import_plan.namespace_module_names),
             module_source_catalog=prepared_frontend_analysis.module_source_catalog,
@@ -30719,14 +30713,6 @@ def _backend_ir_format_and_bytes(ir: dict[str, Any]) -> tuple[str, bytes]:
         return "json", _backend_ir_bytes(ir)
 
 
-def _subprocess_output_text(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
-
-
 def _run_subprocess_captured_to_tempfiles(
     cmd: Sequence[str],
     *,
@@ -30742,9 +30728,7 @@ def _run_subprocess_captured_to_tempfiles(
     This avoids pipe-inheritance hangs from descendants that keep stdout/stderr
     open after the direct child has already exited.
     """
-    harness_memory_guard = _load_cli_harness_memory_guard(
-        _compiler_root()
-    )
+    harness_memory_guard = _load_cli_harness_memory_guard(_compiler_root())
     return harness_memory_guard.guarded_completed_process_to_tempfiles(
         cmd,
         prefix=memory_guard_prefix,
@@ -30859,6 +30843,7 @@ def build(
     type_gate: bool = False,
     python_version: str | None = None,
     build_config: Mapping[str, Any] | None = None,
+    fact_graph_request: _factgraph.FactGraphRequest | None = None,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -30980,6 +30965,7 @@ def build(
             precompile=precompile,
             snapshot=snapshot,
             stdlib_profile=stdlib_profile,
+            fact_graph_request=fact_graph_request,
         )
 
 
@@ -38849,6 +38835,12 @@ def main() -> int:
         "--verbose", action="store_true", help="Emit verbose diagnostics."
     )
 
+    _factgraph.add_factgraph_parser(
+        subparsers,
+        formatter_class=_BuildHelpFormatter,
+        build_profile_choices=_BUILD_PROFILE_CHOICES,
+    )
+
     extension_parser = subparsers.add_parser(
         "extension",
         help="Build and audit C extensions compiled against libmolt.",
@@ -40546,6 +40538,15 @@ def main() -> int:
         ):
             return bolt_rc
         return build_rc
+    if args.command == "factgraph":
+        return _factgraph.run_factgraph_command(
+            args=args,
+            build=build,
+            build_config=build_cfg,
+            config_capabilities=cfg_capabilities,
+            coerce_bool=_coerce_bool,
+            fail=_fail,
+        )
     if args.command == "extension":
         if args.extension_command == "build":
             deterministic = (

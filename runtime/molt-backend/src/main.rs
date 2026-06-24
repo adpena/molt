@@ -44,6 +44,9 @@ use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileE
 #[cfg(all(feature = "native-backend", windows))]
 use windows_sys::Win32::System::IO::OVERLAPPED;
 
+mod fact_graph_emit;
+use fact_graph_emit::{FactGraphEmitRequest, emit_fact_graph_for_ir};
+
 #[cfg(any(unix, test))]
 use molt_backend::json_boundary::{
     expect_object, optional_bool, optional_string, optional_u32, required_field, required_string,
@@ -3227,6 +3230,22 @@ fn main() -> io::Result<()> {
         .position(|arg| arg == "--ir-file")
         .and_then(|idx| args.get(idx + 1))
         .map(String::as_str);
+    let fact_graph_output_path = args
+        .iter()
+        .position(|arg| arg == "--fact-graph-output")
+        .and_then(|idx| args.get(idx + 1))
+        .map(String::as_str);
+    let fact_graph_function = args
+        .iter()
+        .position(|arg| arg == "--fact-graph-function")
+        .and_then(|idx| args.get(idx + 1))
+        .map(String::as_str);
+    if fact_graph_output_path.is_some() != fact_graph_function.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--fact-graph-output and --fact-graph-function must be supplied together",
+        ));
+    }
 
     #[cfg_attr(not(feature = "wasm-backend"), allow(unused_variables))]
     let wasm_link_flag = args.iter().any(|arg| arg == "--wasm-link");
@@ -3405,6 +3424,29 @@ fn main() -> io::Result<()> {
     // prune unreachable runtime/bootstrap support before textual codegen.
     if is_luau {
         ir.tree_shake_luau();
+    }
+
+    if let (Some(path), Some(function_name)) = (fact_graph_output_path, fact_graph_function) {
+        let backend_setting = std::env::var("MOLT_BACKEND").ok();
+        let target_info = if is_luau {
+            molt_backend::tir::target_info::TargetInfo::luau_release_fast()
+        } else if is_wasm {
+            molt_backend::tir::target_info::TargetInfo::wasm_release_fast()
+        } else if backend_setting.as_deref() == Some("llvm") {
+            molt_backend::tir::target_info::TargetInfo::llvm_release_fast()
+        } else {
+            molt_backend::tir::target_info::TargetInfo::native_release_fast()
+        };
+        emit_fact_graph_for_ir(
+            &ir,
+            FactGraphEmitRequest {
+                output_path: Path::new(path),
+                function_name,
+                target_info: &target_info,
+            },
+        )?;
+        eprintln!("Wrote TIR fact graph for '{function_name}' to {path}");
+        return Ok(());
     }
 
     // Luau module phase (Tier-2 E1 parity): source emission is still one
