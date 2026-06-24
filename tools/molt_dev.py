@@ -1972,6 +1972,20 @@ def _difftest_capture(
     return proc.returncode, proc.stdout or b"", proc.stderr or b""
 
 
+def _difftest_streams_match(expected: bytes, actual: bytes) -> bool:
+    """Compare captured program output with host-stdio newline parity.
+
+    CPython on Windows translates ``print(..., "\\n")`` to CRLF when stdout is a
+    pipe; Molt's native runtime writes LF. The main differential harness compares
+    text after newline normalization, so ``difftest`` must not report a Windows
+    false negative once exit codes and logical output match.
+    """
+    if os.name == "nt":
+        expected = expected.replace(b"\r\n", b"\n")
+        actual = actual.replace(b"\r\n", b"\n")
+    return expected == actual
+
+
 def cmd_difftest(args: argparse.Namespace) -> int:
     """Build a program through a CONSISTENTLY-ROOTED toolchain and differential-
     test its native/LLVM/WASM output against pinned CPython.
@@ -2058,9 +2072,12 @@ def cmd_difftest(args: argparse.Namespace) -> int:
     )
 
     failures: list[str] = []
+    out_dir = Path(args.out_dir)
+    if not out_dir.is_absolute():
+        out_dir = root / out_dir
     for target in args.target:
         _step(f"target {target}")
-        out_bin = Path(args.out_dir) / f"difftest_{program.stem}_{target}"
+        out_bin = out_dir / f"difftest_{program.stem}_{target}"
         out_bin.parent.mkdir(parents=True, exist_ok=True)
         if out_bin.exists():
             out_bin.unlink()  # never re-run a stale artifact (hazard 6)
@@ -2099,7 +2116,7 @@ def cmd_difftest(args: argparse.Namespace) -> int:
         mrc, mout, _me = _difftest_capture(
             run_cmd, env=base_env, cwd=root, timeout=args.run_timeout + 30
         )
-        out_match = mout == cpy_out
+        out_match = _difftest_streams_match(cpy_out, mout)
         rc_match = mrc == cpy_rc
         if out_match and rc_match:
             _ok(f"{target}: PASS (exit={mrc}, stdout byte-identical to CPython)")
