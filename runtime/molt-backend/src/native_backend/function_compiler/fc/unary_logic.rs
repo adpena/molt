@@ -140,7 +140,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
             let call = builder.ins().call(local_callee, &[*lhs, *rhs]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
-                def_bool_result(&mut *builder, vars, bool_primary_vars, &out__, res, None);
+                def_bool_result(&mut *builder, vars, bool_primary_vars, out__, res, None);
             }
         }
         "not" => {
@@ -201,7 +201,7 @@ pub(in crate::native_backend::function_compiler) fn handle_unary_logic_op(
                 builder.inst_results(call)[0]
             };
             if let Some(out__) = op.out.as_ref() {
-                def_bool_result(&mut *builder, vars, bool_primary_vars, &out__, res, not_raw);
+                def_bool_result(&mut *builder, vars, bool_primary_vars, out__, res, not_raw);
             }
         }
         "neg" | "unary_neg" => {

@@ -17193,11 +17193,11 @@ def test_backend_daemon_skip_output_sync_flags_stats_artifact_once(
     original_stat = Path.stat
     calls = 0
 
-    def wrapped_stat(self: Path):  # type: ignore[no-untyped-def]
+    def wrapped_stat(self: Path, *, follow_symlinks: bool = True):  # type: ignore[no-untyped-def]
         nonlocal calls
         if self == output_artifact:
             calls += 1
-        return original_stat(self)
+        return original_stat(self, follow_symlinks=follow_symlinks)
 
     monkeypatch.setattr(Path, "stat", wrapped_stat)
 
