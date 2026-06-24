@@ -106,6 +106,10 @@ _TYPE_CHECKING_IMPORTS = {
     "TypeFacts": "molt.type_facts",
 }
 
+# ast.NodeVisitor's traversal dispatch is part of the self surface used by the
+# mixins; the rest of NodeVisitor remains builtin/base-class noise.
+_NODE_VISITOR_DISPATCH_METHODS = {"generic_visit", "visit"}
+
 # Stdlib modules that ``_types`` happens to re-export (it imports them at module
 # scope) but which the generated files import directly by their own line. They
 # must never be pulled from the ``from molt.frontend._types import (...)`` block.
@@ -135,17 +139,16 @@ def _load_generator() -> type:
 def _surface_classes(generator: type) -> list[type]:
     """The MRO classes that contribute to the generator's own surface.
 
-    Excludes ``object`` and ``ast.NodeVisitor`` (the dispatch base + Python
-    builtins, which the Protocol intentionally does not model - exactly the
-    exclusion the coverage tests apply).
+    Excludes ``object``. Keeps ``ast.NodeVisitor`` so `visit` and
+    `generic_visit` remain in the Protocol; visitor mixins call those dispatch
+    methods through `self`.
     """
-    return [k for k in generator.__mro__ if k not in (object, ast.NodeVisitor)]
+    return [k for k in generator.__mro__ if k is not object]
 
 
 def _builtin_names() -> set[str]:
-    """Names provided by ``ast.NodeVisitor`` / ``object`` (not part of the
-    generator's own surface; the coverage tests subtract exactly this set)."""
-    return set(dir(ast.NodeVisitor)) | set(dir(object))
+    """Base names not part of the generator's own protocol surface."""
+    return (set(dir(ast.NodeVisitor)) - _NODE_VISITOR_DISPATCH_METHODS) | set(dir(object))
 
 
 def _unwrap(value: object) -> object:
