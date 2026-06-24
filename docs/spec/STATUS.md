@@ -318,9 +318,10 @@ the implementation. For forward-looking priorities, use
 - Frontend midend fixed-point verification fails closed: non-convergence and
   post-convergence idempotence drift record policy diagnostics and raise instead
   of accepting the last verified round or probe output behind an env-controlled
-  policy switch. Each canonicalization round now closes CSE-created dead pure
-  definitions with verified post-CSE DCE before convergence is measured, so
-  guarded type-fact cleanup cannot leak into a follow-on proof round.
+  policy switch. Each canonicalization round now runs a bounded CSE/post-CSE-DCE
+  closure before convergence is measured; cap exhaustion is a non-convergence
+  failure, so CSE-created dead pure definitions cannot leak into a follow-on
+  proof round.
 - WASM `Auto` import retention is split by output form. Non-relocatable Auto
   registers the canonical import registry, records actual import lookups during
   code emission through `TrackedImportIds`, and validates serialized-module
