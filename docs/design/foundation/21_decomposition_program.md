@@ -10,8 +10,22 @@ refactored in the session that produced it. -->
 
 **God-file inventory · crate graph · phased move-only extraction plan**
 
-Status: design (no code landed). Base commit: `9e93503bb`.
+Status: **IN EXECUTION.** T1 (`molt-tir` crate) LANDED (`cd8a62a30`); M1
+(`function_compiler` function-split) in progress. Base commit: `9e93503bb`.
 Companion: `08_DX-buildspeed.md` (the build-speed sub-arc, partially landed — see §0.3).
+
+> **CORRECTIONS — read these for the authoritative plan.** This doc's original move #1
+> and crate granularity were written before the dependency DAG was measured and are
+> SUPERSEDED:
+> - **Move #1** → [`21a_function_compiler_function_split_PLAN.md`](21a_function_compiler_function_split_PLAN.md):
+>   the *function*-split of `compile_func_inner`, not a file-split (a file-split buys ~0
+>   build win — a function is rustc's atomic codegen unit; see `dx_baseline.md` §8).
+> - **Crate graph** → [`21b_crate_graph_blueprint.md`](21b_crate_graph_blueprint.md):
+>   split `molt-tir` into `molt-ir` ← `molt-passes` ← `molt-lower`; one crate *per*
+>   backend (native→llvm is a real one-way edge — NOT grouped); add `molt-codegen-abi`
+>   for the shared NaN-box ABI. 21b §"Flags" lists every granularity correction to this
+>   doc and to 08.
+> - **Frontend move #2** → [`21c_frontend_mixin_decomposition_PLAN.md`](21c_frontend_mixin_decomposition_PLAN.md).
 Methodology precedent: `34e3bddbf` (the `lib.rs` god-file split: 6,928→264 lines,
 move-only, 0-warning build + byte-identical diagnostics + lib tests + symbol identity +
 e2e). This program continues that arc.
