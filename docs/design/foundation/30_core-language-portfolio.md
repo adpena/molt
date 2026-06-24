@@ -307,7 +307,7 @@ Before the per-family scorecards, the evidence base establishes the following ar
 
 #### 6c. Unpacking / starred assignment
 
-**UPSTREAM.** Star targets in assignment: `visit_Assign` with `ast.Starred`. Error propagation tests: `assignment_unpack_error_propagation.py`, `assignment_unpack_error_order.py`, `assignment_unpack_error_custom_iter.py`. The unpack-error parity baton (`cf53b72c7`) documented an error message parity gap.
+**UPSTREAM.** Star targets in assignment: `visit_Assign` with `ast.Starred`. Error propagation tests: `assignment_unpack_error_propagation.py`, `assignment_unpack_error_order.py`, `assignment_unpack_error_custom_iter.py`. Exact unpack diagnostic parity is covered by `tests/differential/basic/unpack_error_messages.py`, including target-version-gated known-length too-many messages, generic-iterator no-count too-many messages, too-few/starred-too-few messages, and non-iterable runtime type names.
 
 **Score.** IMPORTANCE=2, GAP=1.
 
